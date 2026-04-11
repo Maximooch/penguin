@@ -26,9 +26,10 @@
 - `penguin/llm/runtime.py`
 - `penguin/llm/provider_registry.py`
 - `penguin/llm/provider_transform.py`
-- `penguin/llm/provider_adapters.py`
-- `penguin/llm/openrouter_gateway.py`
-- `penguin/llm/litellm_gateway.py`
+- `penguin/llm/adapters/openrouter.py`
+- `penguin/llm/adapters/litellm.py`
+- `penguin/llm/openrouter_gateway.py` (compatibility shim)
+- `penguin/llm/litellm_gateway.py` (compatibility shim)
 - `penguin/llm/stream_handler.py`
 - `tests/llm/provider_contract_fixtures.py`
 - `tests/llm/test_provider_contract_matrix.py`
@@ -144,6 +145,9 @@ Important constraint:
 - `web/routes.py` now delegates reasoning-note and reasoning-debug snapshot logic into `penguin/llm/runtime.py`.
 - Native/provider reasoning variant support now lives under `penguin/llm/reasoning_variants.py`, with `web/routes.py` delegating override/restore behavior into `penguin/llm/runtime.py`.
 - `tools/tool_manager.py` no longer imports provider-specific tool normalization helpers from `penguin/llm/provider_transform.py`.
+- OpenRouter and LiteLLM gateway implementations now live under `penguin/llm/adapters/`, with top-level compatibility shims kept temporarily to avoid breaking imports.
+- `LLMClient` now routes requests through `APIClient` instead of maintaining a fully separate runtime path, while keeping a compatibility `_get_gateway()` surface for older tests/callers.
+- `provider_adapters.py` has been retired; unsupported native providers now fail explicitly instead of silently falling back to the legacy generic adapter path.
 
 ## Boundary Reality Check
 
@@ -242,11 +246,11 @@ Phase 3 follow-up items that are useful but not required to consider the validat
 
 ### 5. Structural cleanup after behavior stabilizes
 
-- [ ] Retire `provider_adapters.py`
+- [x] Retire `provider_adapters.py`
 - [ ] Proceed with `context/tasks/llm-module-consolidation.md`
-- [ ] Move OpenRouter and LiteLLM gateway implementations under `penguin/llm/adapters/`
-- [ ] Create a single `penguin/llm/runtime.py` or equivalent orchestration layer that owns canonical provider execution behavior
-- [ ] Reduce overlapping LLM entry points once semantic parity is in place
+- [x] Move OpenRouter and LiteLLM gateway implementations under `penguin/llm/adapters/`
+- [x] Create a single `penguin/llm/runtime.py` or equivalent orchestration layer that owns canonical provider execution behavior
+- [x] Reduce overlapping LLM entry points once semantic parity is in place
 
 ### 6. Link Verification
 
@@ -261,6 +265,8 @@ Phase 3 follow-up items that are useful but not required to consider the validat
 - `penguin/llm/reasoning_variants.py` now owns provider-aware native reasoning effort support that previously lived under `web/services/`.
 - UI/tool presentation mapping should not live in `penguin/llm`; `ui_runtime.py` was an exploratory detour and has been discarded.
 - `core.py` still owns UI/OpenCode tool mapping for now.
+- OpenRouter/LiteLLM implementations have moved under `penguin/llm/adapters/`, but old import paths remain as temporary compatibility shims.
+- `APIClient` is now the primary runtime entry point. `LLMClient` is reduced to a thin Link/config wrapper over `APIClient` rather than a second runtime implementation.
 - This should reduce symptom-chasing, but the package is still mid-migration until gateway implementations and remaining helper paths are consolidated under `penguin/llm`.
 
 ## Priority Shift

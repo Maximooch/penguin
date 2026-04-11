@@ -10,7 +10,6 @@ __all__ = [
     "get_adapter",
 ]
 
-from ..provider_adapters import get_provider_adapter
 from ..provider_transform import normalize_provider_name
 from .base import BaseAdapter
 # Lazy import the heavy adapters to avoid import time overhead
@@ -52,9 +51,7 @@ def get_adapter(provider: str, model_config):
     except (ImportError, AttributeError) as e:
         logging.warning(f"Native adapter for {provider} not available: {e}")
 
-    # Fall back to provider_adapters.py implementation
-    logging.warning(
-        "Using deprecated generic adapter for %s via provider_adapters; add a first-class adapter or explicit gateway path",
-        provider,
+    raise ValueError(
+        f"No native adapter found for provider '{provider}'. "
+        "Use a first-class native adapter, openrouter, litellm, or openai_compatible path instead."
     )
-    return get_provider_adapter(provider, model_config)

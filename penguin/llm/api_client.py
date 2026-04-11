@@ -269,7 +269,13 @@ class APIClient:
         logger (logging.Logger): Logger for this class.
     """
 
-    def __init__(self, model_config: ModelConfig):
+    def __init__(
+        self,
+        model_config: ModelConfig,
+        *,
+        base_url: Optional[str] = None,
+        extra_headers: Optional[Dict[str, str]] = None,
+    ):
         """
         Initialize the APIClient.
 
@@ -283,6 +289,8 @@ class APIClient:
         self.logger = logging.getLogger(__name__)
         self.client_handler = None  # Will be set based on preference
         self._last_error: Optional[LLMError] = None
+        self._base_url = base_url
+        self._extra_headers = dict(extra_headers or {})
         self.provider_registry = ProviderRegistry(
             native_adapter_factory=get_adapter,
             litellm_gateway_loader=load_litellm_gateway_class,
@@ -296,7 +304,11 @@ class APIClient:
 
         # --- Instantiate the correct handler via the shared registry ---
         try:
-            self.client_handler = self.provider_registry.create_handler(model_config)
+            self.client_handler = self.provider_registry.create_handler(
+                model_config,
+                base_url=self._base_url,
+                extra_headers=self._extra_headers,
+            )
             self.logger.info(
                 "Using %s for %s (provider=%s, preference=%s)",
                 type(self.client_handler).__name__,

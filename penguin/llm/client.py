@@ -28,6 +28,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
+from .api_client import APIClient
 from .adapters import get_adapter
 from .litellm_support import load_litellm_gateway_class
 from .provider_registry import ProviderRegistry
@@ -175,6 +176,8 @@ class LLMClient:
         self.model_config = model_config
         self._config = config or LLMClientConfig.from_env()
         self._config_lock = threading.RLock()
+        self._api_client: Optional[APIClient] = None
+        self._api_client_lock = threading.RLock()
         self._gateway: Optional[Any] = None
         self._gateway_lock = threading.RLock()
         self._provider_registry = ProviderRegistry(
@@ -254,7 +257,9 @@ class LLMClient:
                 f"link_user_id={new_link.user_id}"
             )
 
-        # Invalidate cached gateway
+        # Invalidate cached runtime client and compatibility gateway
+        with self._api_client_lock:
+            self._api_client = None
         with self._gateway_lock:
             self._gateway = None
 
@@ -280,12 +285,25 @@ class LLMClient:
 
             return headers
 
-    def _get_gateway(self) -> Any:
-        """Get or create the underlying gateway with current configuration.
+    def _get_api_client(self) -> APIClient:
+        """Get or create the shared APIClient with current Link-aware config."""
+        with self._api_client_lock:
+            if self._api_client is not None:
+                return self._api_client
 
-        Lazily creates the gateway and caches it. Cache is invalidated
-        when configuration changes.
-        """
+            with self._config_lock:
+                base_url = self._config.base_url
+                link_headers = self.get_link_headers()
+
+            self._api_client = APIClient(
+                self.model_config,
+                base_url=base_url,
+                extra_headers=link_headers,
+            )
+            return self._api_client
+
+    def _get_gateway(self) -> Any:
+        """Compatibility shim for callers/tests that still expect a raw handler."""
         with self._gateway_lock:
             if self._gateway is not None:
                 return self._gateway
@@ -299,7 +317,6 @@ class LLMClient:
                 base_url=base_url,
                 extra_headers=link_headers,
             )
-
             return self._gateway
 
     async def chat_completion(
@@ -329,33 +346,8 @@ class LLMClient:
         Returns:
             Response dict with 'content', 'model', 'usage', etc.
         """
-        gateway = self._get_gateway()
-
-        # Refresh Link headers on each request (in case config was updated)
-        with self._config_lock:
-            link_headers = self.get_link_headers()
-
-        # Update gateway headers if it supports it
-        if link_headers:
-            if hasattr(gateway, "extra_headers"):
-                if isinstance(gateway.extra_headers, dict):
-                    gateway.extra_headers.update(link_headers)
-                else:
-                    gateway.extra_headers = dict(link_headers)
-
-            client = getattr(gateway, "client", None)
-            if client is not None:
-                default_headers = getattr(client, "default_headers", None)
-                if isinstance(default_headers, dict):
-                    default_headers.update(link_headers)
-                elif default_headers is None:
-                    try:
-                        client.default_headers = dict(link_headers)
-                    except Exception:
-                        pass
-
-        # Forward to gateway - OpenRouterGateway uses get_response which returns a string
-        response_text = await gateway.get_response(
+        api_client = self._get_api_client()
+        response_text = await api_client.get_response(
             messages=messages,
             max_output_tokens=max_output_tokens,
             temperature=temperature,
@@ -373,28 +365,21 @@ class LLMClient:
     async def count_tokens(self, messages: List[Dict[str, Any]]) -> int:
         """Count tokens in messages using the gateway's token counter."""
         gateway = self._get_gateway()
-        if hasattr(gateway, "count_tokens"):
-            result = gateway.count_tokens(messages)
-            if inspect.isawaitable(result):
-                return await result
-            return int(result)
-        # Fallback: rough estimate
-        import tiktoken
-
-        try:
-            enc = tiktoken.get_encoding("cl100k_base")
-            text = " ".join(
-                m.get("content", "")
-                for m in messages
-                if isinstance(m.get("content"), str)
-            )
-            return len(enc.encode(text))
-        except Exception:
-            return sum(len(str(m.get("content", ""))) // 4 for m in messages)
+        result = gateway.count_tokens(messages)
+        if inspect.isawaitable(result):
+            return await result
+        return int(result)
 
     def get_status(self) -> Dict[str, Any]:
         """Get current client status for diagnostics."""
         with self._config_lock:
+            handler_name = None
+            with self._api_client_lock:
+                if (
+                    self._api_client is not None
+                    and self._api_client.client_handler is not None
+                ):
+                    handler_name = type(self._api_client.client_handler).__name__
             return {
                 "base_url": self._config.effective_base_url,
                 "is_link_proxy": self._config.is_link_proxy,
@@ -404,4 +389,5 @@ class LLMClient:
                 "config_source": self._config._source,
                 "client_preference": self.model_config.client_preference,
                 "model": self.model_config.model,
+                "handler": handler_name,
             }

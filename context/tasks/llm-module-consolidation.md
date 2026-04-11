@@ -62,6 +62,11 @@ Active or semi-active files currently include:
 - `provider_transform.py`
 - `stream_handler.py`
 
+Current state note:
+
+- `openrouter_gateway.py` and `litellm_gateway.py` now remain at the top level only as compatibility shims.
+- Their implementations have been moved under `penguin/llm/adapters/`.
+
 The package currently exposes too many top-level concepts that should either be:
 
 - consolidated
@@ -147,11 +152,17 @@ This is directionally correct, not a mandatory exact tree.
 
 ### Phase 2 - Structural Cleanup
 
-- [ ] Retire `provider_adapters.py`
-- [ ] Move gateway-style provider implementations under `adapters/`
-- [ ] Decide whether `api_client.py` survives as the main runtime or becomes a compatibility shim
+- [x] Retire `provider_adapters.py`
+- [x] Move gateway-style provider implementations under `adapters/`
+- [x] Decide whether `api_client.py` survives as the main runtime or becomes a compatibility shim
 - [ ] Decide final Link-focused module name and responsibility boundary
 - [ ] Merge or remove thin wrapper layers that no longer add distinct value
+
+Current decision:
+
+- `APIClient` remains the main runtime entry point.
+- `LLMClient` is now reduced to a thin Link/config wrapper over `APIClient` rather than a fully separate runtime path.
+- Old top-level gateway module paths remain as temporary compatibility shims only.
 
 ### Phase 3 - Public Surface Cleanup
 
