@@ -67,6 +67,22 @@ That mismatch is a concrete example of the broader provider-contract drift track
 - Native OpenAI SDK calls and direct Codex OAuth HTTP calls both use the same normalized payload.
 - `ToolManager.get_responses_tools()` no longer returns a shape that is ambiguous between Chat Completions and Responses APIs.
 
+## Status
+
+- [x] Add regression coverage for OAuth/Codex requests with function tools.
+- [x] Normalize Responses function tools to top-level `name`/`description`/`parameters`.
+- [x] Normalize `tool_choice` for Responses function-tool selection.
+- [x] Keep SDK Responses and direct Codex OAuth requests on the same canonical tool schema.
+
+Implemented in:
+
+- `penguin/llm/provider_transform.py`
+- `penguin/tools/tool_manager.py`
+- `penguin/llm/adapters/openai.py`
+- `tests/llm/test_openai_oauth_subscription_flow.py`
+- `tests/test_parser_and_tools.py`
+- `tests/test_engine_responses_tool_calls.py`
+
 ## Proposed Fix Shape
 
 ### Phase 1 - Lock Down Failing Behavior

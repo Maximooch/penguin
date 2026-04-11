@@ -13,8 +13,10 @@ from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Tuple, U
 
 from PIL import Image  # type: ignore
 
+from .contracts import FinishReason, LLMError, LLMUsage
 from .litellm_support import _format_feature_message
 from .model_config import ModelConfig
+from .provider_transform import build_llm_error, normalize_finish_reason
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +56,50 @@ class LiteLLMGateway:
         self.model_config = model_config
         self._litellm = _load_litellm()
         self._litellm.set_verbose = False
+        self._last_error: Optional[LLMError] = None
+        self._last_usage: Dict[str, Any] = {}
+        self._last_finish_reason = FinishReason.UNKNOWN
+        self._last_reasoning = ""
         logger.info(f"LiteLLMGateway initialized for model: {self.model_config.model}")
+
+    def _reset_response_state(self) -> None:
+        self._last_error = None
+        self._last_usage = {}
+        self._last_finish_reason = FinishReason.UNKNOWN
+        self._last_reasoning = ""
+
+    def _set_last_error(self, error: Optional[LLMError]) -> None:
+        self._last_error = error
+
+    def get_last_error(self) -> Optional[LLMError]:
+        return self._last_error if isinstance(self._last_error, LLMError) else None
+
+    def _set_last_usage(self, usage: Any) -> None:
+        if isinstance(usage, dict):
+            self._last_usage = LLMUsage.from_dict(
+                {
+                    "input_tokens": usage.get("prompt_tokens")
+                    or usage.get("input_tokens"),
+                    "output_tokens": usage.get("completion_tokens")
+                    or usage.get("output_tokens"),
+                    "reasoning_tokens": usage.get("reasoning_tokens"),
+                    "total_tokens": usage.get("total_tokens"),
+                    "cost": usage.get("cost") or usage.get("total_cost"),
+                }
+            ).to_dict()
+
+    def get_last_usage(self) -> Dict[str, Any]:
+        return dict(self._last_usage) if isinstance(self._last_usage, dict) else {}
+
+    def _set_last_finish_reason(self, finish_reason: Any) -> FinishReason:
+        self._last_finish_reason = normalize_finish_reason(finish_reason)
+        return self._last_finish_reason
+
+    def get_last_finish_reason(self) -> FinishReason:
+        return self._last_finish_reason
+
+    def get_last_reasoning(self) -> str:
+        return self._last_reasoning
 
     async def get_response(
         self,
@@ -78,29 +123,40 @@ class LiteLLMGateway:
         Returns:
             The complete response string from the LLM.
         """
-        request_id = os.urandom(4).hex() # Generate a simple request ID for tracking
+        request_id = os.urandom(4).hex()  # Generate a simple request ID for tracking
         logger.info(f"[Request:{request_id}] LiteLLMGateway.get_response called.")
+        self._reset_response_state()
 
         legacy_max_tokens = kwargs.pop("max_tokens", None)
         if max_output_tokens is None and legacy_max_tokens is not None:
             max_output_tokens = legacy_max_tokens
-        
-        # Determine if streaming should be used; fall back to non-streaming if 
+
+        # Determine if streaming should be used; fall back to non-streaming if
         # streaming is requested but no callback is provided
         use_streaming = stream and stream_callback is not None
         if stream and not stream_callback:
-            logger.warning(f"[Request:{request_id}] Streaming requested but no stream_callback provided. Falling back to non-streaming mode.")
-            
+            logger.warning(
+                f"[Request:{request_id}] Streaming requested but no stream_callback provided. Falling back to non-streaming mode."
+            )
+
+        litellm_params: Dict[str, Any] = {}
+
         try:
             # 1. Format messages (especially handle images for vision models)
             formatted_messages = self._format_messages(messages)
             logger.debug(f"[Request:{request_id}] Formatted messages prepared.")
             # Log message content safely (avoid logging full image data)
             try:
-                 safe_messages_log = self._safe_log_content({"messages": formatted_messages}).get("messages", [])
-                 logger.debug(f"[Request:{request_id}] Safe Formatted Messages: {safe_messages_log}")
+                safe_messages_log = self._safe_log_content(
+                    {"messages": formatted_messages}
+                ).get("messages", [])
+                logger.debug(
+                    f"[Request:{request_id}] Safe Formatted Messages: {safe_messages_log}"
+                )
             except Exception as log_err:
-                 logger.warning(f"[Request:{request_id}] Error creating safe log for messages: {log_err}")
+                logger.warning(
+                    f"[Request:{request_id}] Error creating safe log for messages: {log_err}"
+                )
 
             # 2. Prepare parameters for LiteLLM
             litellm_params = self._prepare_litellm_params(
@@ -109,60 +165,129 @@ class LiteLLMGateway:
             logger.debug(f"[Request:{request_id}] LiteLLM parameters prepared.")
             # Log params safely (redacts API key)
             try:
-                 safe_params_log = self._safe_log_content(litellm_params)
-                 logger.debug(f"[Request:{request_id}] Safe LiteLLM Params: {safe_params_log}")
+                safe_params_log = self._safe_log_content(litellm_params)
+                logger.debug(
+                    f"[Request:{request_id}] Safe LiteLLM Params: {safe_params_log}"
+                )
             except Exception as log_err:
-                 logger.warning(f"[Request:{request_id}] Error creating safe log for params: {log_err}")
+                logger.warning(
+                    f"[Request:{request_id}] Error creating safe log for params: {log_err}"
+                )
 
             # 3. Call LiteLLM (streaming or non-streaming)
             if use_streaming:
-                logger.info(f"[Request:{request_id}] Initiating STREAMING call via LiteLLM: {litellm_params.get('model', 'Unknown Model')}")
+                logger.info(
+                    f"[Request:{request_id}] Initiating STREAMING call via LiteLLM: {litellm_params.get('model', 'Unknown Model')}"
+                )
                 full_response = await self._handle_streaming(
                     litellm_params, stream_callback, request_id
                 )
             else:
-                logger.info(f"[Request:{request_id}] Initiating NON-STREAMING call via LiteLLM: {litellm_params.get('model', 'Unknown Model')}")
+                logger.info(
+                    f"[Request:{request_id}] Initiating NON-STREAMING call via LiteLLM: {litellm_params.get('model', 'Unknown Model')}"
+                )
                 raw_response_obj = None
                 try:
                     raw_response_obj = await self._litellm.acompletion(**litellm_params)
-                    logger.info(f"[Request:{request_id}] Raw response object received from litellm.acompletion.")
-                    logger.debug(f"[Request:{request_id}] Raw Response Type: {type(raw_response_obj)}")
-                    if hasattr(raw_response_obj, '__dict__'):
-                         logger.debug(f"[Request:{request_id}] Raw Response Attributes: {vars(raw_response_obj).keys()}")
+                    logger.info(
+                        f"[Request:{request_id}] Raw response object received from litellm.acompletion."
+                    )
+                    logger.debug(
+                        f"[Request:{request_id}] Raw Response Type: {type(raw_response_obj)}"
+                    )
+                    if hasattr(raw_response_obj, "__dict__"):
+                        logger.debug(
+                            f"[Request:{request_id}] Raw Response Attributes: {vars(raw_response_obj).keys()}"
+                        )
                     elif isinstance(raw_response_obj, dict):
-                         logger.debug(f"[Request:{request_id}] Raw Response Keys: {raw_response_obj.keys()}")
+                        logger.debug(
+                            f"[Request:{request_id}] Raw Response Keys: {raw_response_obj.keys()}"
+                        )
 
                 except Exception as api_call_err:
-                     logger.error(f"[Request:{request_id}] Error during litellm.acompletion call: {api_call_err}", exc_info=True)
-                     raise
+                    logger.error(
+                        f"[Request:{request_id}] Error during litellm.acompletion call: {api_call_err}",
+                        exc_info=True,
+                    )
+                    raise
 
                 full_response = self._process_response(raw_response_obj, request_id)
 
-            logger.info(f"[Request:{request_id}] LiteLLMGateway.get_response finished. Response length: {len(full_response)}")
+            logger.info(
+                f"[Request:{request_id}] LiteLLMGateway.get_response finished. Response length: {len(full_response)}"
+            )
             return full_response
 
         except self._litellm.exceptions.AuthenticationError as e:
             logger.error(f"LiteLLM Authentication Error: {e}")
+            self._set_last_error(
+                build_llm_error(
+                    message=str(e),
+                    provider=self.model_config.provider,
+                    model=self.model_config.model,
+                    category="auth",
+                )
+            )
             return f"Error: Authentication failed. Check API key for {self.model_config.provider}."
         except self._litellm.exceptions.RateLimitError as e:
             logger.error(f"LiteLLM Rate Limit Error: {e}")
+            self._set_last_error(
+                build_llm_error(
+                    message=str(e),
+                    provider=self.model_config.provider,
+                    model=self.model_config.model,
+                    category="rate_limit",
+                )
+            )
             return "Error: Rate limit exceeded. Please try again later."
         except self._litellm.exceptions.APIConnectionError as e:
             logger.error(f"LiteLLM API Connection Error: {e}")
+            self._set_last_error(
+                build_llm_error(
+                    message=str(e),
+                    provider=self.model_config.provider,
+                    model=self.model_config.model,
+                    category="network",
+                )
+            )
             return f"Error: Could not connect to the API endpoint ({self.model_config.api_base or 'default'})."
         except self._litellm.exceptions.BadRequestError as e:
-             logger.error(f"[Request:{request_id}] LiteLLM Bad Request Error: {e}")
-             details = getattr(e, 'message', str(e))
-             status_code = getattr(e, 'status_code', 'N/A')
-             logger.error(f"[Request:{request_id}] Status Code: {status_code}, Details: {details}")
-             if 'litellm_params' in locals():
-                  logger.error(f"[Request:{request_id}] Problematic Params: {self._safe_log_content(litellm_params)}")
-             else:
-                  logger.error(f"[Request:{request_id}] Could not log problematic params (error occurred before definition).")
-             return f"Error: Invalid request (Status {status_code}). Please check input parameters or model compatibility. Details: {details}"
+            logger.error(f"[Request:{request_id}] LiteLLM Bad Request Error: {e}")
+            details = getattr(e, "message", str(e))
+            status_code = getattr(e, "status_code", "N/A")
+            logger.error(
+                f"[Request:{request_id}] Status Code: {status_code}, Details: {details}"
+            )
+            if "litellm_params" in locals():
+                logger.error(
+                    f"[Request:{request_id}] Problematic Params: {self._safe_log_content(litellm_params)}"
+                )
+            else:
+                logger.error(
+                    f"[Request:{request_id}] Could not log problematic params (error occurred before definition)."
+                )
+            self._set_last_error(
+                build_llm_error(
+                    message=str(details),
+                    provider=self.model_config.provider,
+                    model=self.model_config.model,
+                    status_code=status_code if isinstance(status_code, int) else None,
+                    category="bad_request",
+                )
+            )
+            return f"Error: Invalid request (Status {status_code}). Please check input parameters or model compatibility. Details: {details}"
         except Exception as e:
-            logger.error(f"[Request:{request_id}] Unexpected error during LiteLLM call: {e}")
+            logger.error(
+                f"[Request:{request_id}] Unexpected error during LiteLLM call: {e}"
+            )
             logger.error(traceback.format_exc())
+            self._set_last_error(
+                build_llm_error(
+                    message=str(e),
+                    provider=self.model_config.provider,
+                    model=self.model_config.model,
+                )
+            )
             return f"An unexpected error occurred: {str(e)}"
 
     def _prepare_litellm_params(
@@ -176,7 +301,9 @@ class LiteLLMGateway:
             "model": self.model_config.model,
             "messages": messages,
             "max_tokens": max_output_tokens or self.model_config.max_output_tokens,
-            "temperature": temperature if temperature is not None else self.model_config.temperature,
+            "temperature": temperature
+            if temperature is not None
+            else self.model_config.temperature,
             # Add other common params if needed (top_p, presence_penalty, etc.)
         }
 
@@ -194,14 +321,12 @@ class LiteLLMGateway:
 
         # Add API version if specified (e.g., for Azure)
         if self.model_config.api_version:
-             params["api_version"] = self.model_config.api_version
+            params["api_version"] = self.model_config.api_version
 
         # Remove None values to avoid sending empty params
         return {k: v for k, v in params.items() if v is not None}
 
-    def _format_messages(
-        self, messages: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+    def _format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Formats messages into OpenAI format, handling images."""
         formatted_messages = []
         for message in messages:
@@ -223,10 +348,20 @@ class LiteLLMGateway:
                                     processed_content_parts.append(image_part)
                                 else:
                                     # Failed to process, add placeholder
-                                    processed_content_parts.append({"type": "text", "text": "[Image processing failed]"})
+                                    processed_content_parts.append(
+                                        {
+                                            "type": "text",
+                                            "text": "[Image processing failed]",
+                                        }
+                                    )
                             else:
                                 # Vision not enabled, add placeholder
-                                processed_content_parts.append({"type": "text", "text": "[Image ignored - Vision not enabled]"})
+                                processed_content_parts.append(
+                                    {
+                                        "type": "text",
+                                        "text": "[Image ignored - Vision not enabled]",
+                                    }
+                                )
                         else:
                             # Pass through other potential dict types
                             processed_content_parts.append(part)
@@ -234,18 +369,28 @@ class LiteLLMGateway:
                         # Convert string parts to text dict
                         processed_content_parts.append({"type": "text", "text": part})
                     else:
-                        logger.warning(f"Unsupported part type in message content: {type(part)}. Skipping.")
+                        logger.warning(
+                            f"Unsupported part type in message content: {type(part)}. Skipping."
+                        )
 
-                if processed_content_parts: # Only add message if content parts were processed
-                    formatted_messages.append({"role": role, "content": processed_content_parts})
+                if (
+                    processed_content_parts
+                ):  # Only add message if content parts were processed
+                    formatted_messages.append(
+                        {"role": role, "content": processed_content_parts}
+                    )
                 else:
-                     logger.warning(f"Skipping message with role '{role}' due to empty processed content.")
+                    logger.warning(
+                        f"Skipping message with role '{role}' due to empty processed content."
+                    )
 
             elif isinstance(content, str):
                 # Simple string content
                 formatted_messages.append({"role": role, "content": content})
             else:
-                logger.warning(f"Unsupported content type for message: {type(content)}. Converting to string.")
+                logger.warning(
+                    f"Unsupported content type for message: {type(content)}. Converting to string."
+                )
                 formatted_messages.append({"role": role, "content": str(content)})
 
         return formatted_messages
@@ -255,7 +400,11 @@ class LiteLLMGateway:
         image_path = part.get("image_path")
         image_url_data = part.get("image_url", {})
         # Handle cases where image_url is a string or dict
-        image_url = image_url_data if isinstance(image_url_data, str) else image_url_data.get("url")
+        image_url = (
+            image_url_data
+            if isinstance(image_url_data, str)
+            else image_url_data.get("url")
+        )
 
         source = image_path or image_url
 
@@ -266,7 +415,9 @@ class LiteLLMGateway:
         try:
             # Determine if it's a local path or URL
             is_local_path = os.path.exists(source)
-            is_url = isinstance(source, str) and source.startswith(('http://', 'https://'))
+            is_url = isinstance(source, str) and source.startswith(
+                ("http://", "https://")
+            )
 
             if is_local_path:
                 logger.debug(f"Encoding local image: {source}")
@@ -274,7 +425,13 @@ class LiteLLMGateway:
                 with Image.open(source) as img:
                     # Resize if needed (optional, adjust as needed)
                     max_size = (1024, 1024)
-                    img.thumbnail(max_size, Image.LANCZOS)
+                    resampling_namespace = getattr(Image, "Resampling", Image)
+                    img.thumbnail(
+                        max_size,
+                        getattr(
+                            Image, "LANCZOS", getattr(resampling_namespace, "LANCZOS")
+                        ),
+                    )
 
                     if img.mode != "RGB":
                         img = img.convert("RGB")
@@ -288,27 +445,32 @@ class LiteLLMGateway:
                     # if ext == ".png": img_format, media_type = "PNG", "image/png"
                     # ... etc
                     img.save(buffer, format=img_format)
-                    base64_image = base64.b64encode(buffer.getvalue()).decode('utf-8')
+                    base64_image = base64.b64encode(buffer.getvalue()).decode("utf-8")
 
                     return {
                         "type": "image_url",
-                        "image_url": {"url": f"data:{media_type};base64,{base64_image}"}
+                        "image_url": {
+                            "url": f"data:{media_type};base64,{base64_image}"
+                        },
                     }
             elif is_url:
-                 # If it's a web URL, LiteLLM/provider *should* handle it directly.
-                 # We just pass it in the OpenAI format.
-                 logger.debug(f"Passing image URL directly: {source}")
-                 return {
-                     "type": "image_url",
-                     "image_url": {"url": source}
-                 }
+                # If it's a web URL, LiteLLM/provider *should* handle it directly.
+                # We just pass it in the OpenAI format.
+                logger.debug(f"Passing image URL directly: {source}")
+                return {"type": "image_url", "image_url": {"url": source}}
             else:
                 logger.error(f"Unsupported image source format: {source}")
-                return {"type": "text", "text": f"[Unsupported image source: {source[:50]}...]"}
+                return {
+                    "type": "text",
+                    "text": f"[Unsupported image source: {source[:50]}...]",
+                }
 
         except FileNotFoundError:
             logger.error(f"Image file not found: {source}")
-            return {"type": "text", "text": f"[Image not found: {os.path.basename(source)}]"}
+            return {
+                "type": "text",
+                "text": f"[Image not found: {os.path.basename(source)}]",
+            }
         except Exception as e:
             logger.error(f"Error processing image source {source}: {str(e)}")
             logger.error(traceback.format_exc())
@@ -317,80 +479,159 @@ class LiteLLMGateway:
     def _process_response(self, response_obj: Optional[Any], request_id: str) -> str:
         """Extracts the response content from LiteLLM's ModelResponse object."""
         if response_obj is None:
-            logger.warning(f"[Request:{request_id}] _process_response received None object.")
+            logger.warning(
+                f"[Request:{request_id}] _process_response received None object."
+            )
+            self._set_last_error(
+                build_llm_error(
+                    message="No response object received from API call",
+                    provider=self.model_config.provider,
+                    model=self.model_config.model,
+                )
+            )
             return "[Error: No response object received from API call]"
 
         try:
-            logger.debug(f"[Request:{request_id}] Attempting to process response object: Type={type(response_obj)}")
+            logger.debug(
+                f"[Request:{request_id}] Attempting to process response object: Type={type(response_obj)}"
+            )
             try:
-                 logger.debug(f"[Request:{request_id}] Raw Response Object for Processing: {response_obj}")
+                logger.debug(
+                    f"[Request:{request_id}] Raw Response Object for Processing: {response_obj}"
+                )
             except Exception as log_err:
-                 logger.warning(f"[Request:{request_id}] Could not log raw response object directly: {log_err}")
+                logger.warning(
+                    f"[Request:{request_id}] Could not log raw response object directly: {log_err}"
+                )
 
-            if response_obj and response_obj.choices and response_obj.choices[0].message:
+            if (
+                response_obj
+                and response_obj.choices
+                and response_obj.choices[0].message
+            ):
+                self._set_last_usage(getattr(response_obj, "usage", None))
+                self._set_last_finish_reason(
+                    getattr(response_obj.choices[0], "finish_reason", None)
+                )
                 content = response_obj.choices[0].message.content
                 if content is not None:
-                    logger.debug(f"[Request:{request_id}] Extracted content successfully. Length: {len(content)}")
+                    logger.debug(
+                        f"[Request:{request_id}] Extracted content successfully. Length: {len(content)}"
+                    )
                     stripped_content = content.strip()
-                    return stripped_content if stripped_content else "[Model produced empty string content]"
+                    return (
+                        stripped_content
+                        if stripped_content
+                        else "[Model produced empty string content]"
+                    )
                 else:
-                    logger.warning(f"[Request:{request_id}] LiteLLM response object had None message content.")
-                    usage = getattr(response_obj, 'usage', None)
-                    finish_reason = getattr(response_obj.choices[0], 'finish_reason', 'N/A')
-                    logger.debug(f"[Request:{request_id}] None content details: finish_reason={finish_reason}, usage={usage}")
+                    logger.warning(
+                        f"[Request:{request_id}] LiteLLM response object had None message content."
+                    )
+                    usage = getattr(response_obj, "usage", None)
+                    finish_reason = getattr(
+                        response_obj.choices[0], "finish_reason", "N/A"
+                    )
+                    logger.debug(
+                        f"[Request:{request_id}] None content details: finish_reason={finish_reason}, usage={usage}"
+                    )
+                    self._set_last_error(
+                        build_llm_error(
+                            message="Model finished but content was None",
+                            provider=self.model_config.provider,
+                            model=self.model_config.model,
+                            finish_reason=finish_reason,
+                        )
+                    )
                     return f"[Model finished ({finish_reason}) but content was None. Usage: {usage}]"
             else:
-                logger.warning(f"[Request:{request_id}] Could not extract content from LiteLLM response object structure.")
-                logger.debug(f"[Request:{request_id}] Response object structure: {response_obj}")
+                logger.warning(
+                    f"[Request:{request_id}] Could not extract content from LiteLLM response object structure."
+                )
+                logger.debug(
+                    f"[Request:{request_id}] Response object structure: {response_obj}"
+                )
+                self._set_last_error(
+                    build_llm_error(
+                        message="Could not parse response structure from LiteLLM",
+                        provider=self.model_config.provider,
+                        model=self.model_config.model,
+                    )
+                )
                 return "[Error: Could not parse response structure from LiteLLM]"
         except Exception as e:
-            logger.error(f"[Request:{request_id}] Error processing LiteLLM response object: {e}", exc_info=True)
-            logger.debug(f"[Request:{request_id}] Failing response object structure: {response_obj}")
+            logger.error(
+                f"[Request:{request_id}] Error processing LiteLLM response object: {e}",
+                exc_info=True,
+            )
+            logger.debug(
+                f"[Request:{request_id}] Failing response object structure: {response_obj}"
+            )
+            self._set_last_error(
+                build_llm_error(
+                    message=str(e),
+                    provider=self.model_config.provider,
+                    model=self.model_config.model,
+                )
+            )
             return f"[Error processing response: {str(e)}]"
 
     async def _handle_streaming(
         self,
         litellm_params: Dict[str, Any],
-        stream_callback: Callable[[str], None],
-        request_id: str
+        stream_callback: Optional[Callable[[str], None]],
+        request_id: str,
     ) -> str:
         """Handles the streaming response from LiteLLM."""
         accumulated_response = []
         logger.debug(f"[Request:{request_id}] Entering _handle_streaming.")
         try:
-            response_stream = await self._litellm.acompletion(**litellm_params, stream=True)
+            response_stream = await self._litellm.acompletion(
+                **litellm_params, stream=True
+            )
             logger.debug(f"[Request:{request_id}] Received streaming iterator.")
             async for chunk in response_stream:
                 delta_content = None
                 if chunk.choices and chunk.choices[0].delta:
-                     delta_content = chunk.choices[0].delta.content
+                    delta_content = chunk.choices[0].delta.content
 
                 if delta_content:
                     try:
-                         stream_callback(delta_content)
-                         accumulated_response.append(delta_content)
+                        if stream_callback:
+                            stream_callback(delta_content)
+                        accumulated_response.append(delta_content)
                     except Exception as cb_err:
-                         logger.error(f"[Request:{request_id}] Error in stream_callback: {cb_err}")
+                        logger.error(
+                            f"[Request:{request_id}] Error in stream_callback: {cb_err}"
+                        )
                 # else:
                 #     logger.debug(f"[Request:{request_id}] Stream chunk had no extractable delta content.")
 
         except asyncio.CancelledError:
-             logger.warning(f"[Request:{request_id}] LiteLLM streaming was cancelled.")
+            logger.warning(f"[Request:{request_id}] LiteLLM streaming was cancelled.")
         except Exception as e:
-             logger.error(f"[Request:{request_id}] Error during LiteLLM streaming: {e}", exc_info=True)
-             try:
-                 stream_callback(f"\n[STREAMING ERROR: {str(e)}]")
-             except Exception as cb_err:
-                  logger.error(f"[Request:{request_id}] Error calling stream_callback with error message: {cb_err}")
-             error_msg = f"[STREAMING ERROR: {str(e)}]"
-             if accumulated_response:
-                 return "".join(accumulated_response) + "\n" + error_msg
-             else:
-                 return error_msg
+            logger.error(
+                f"[Request:{request_id}] Error during LiteLLM streaming: {e}",
+                exc_info=True,
+            )
+            try:
+                if stream_callback:
+                    stream_callback(f"\n[STREAMING ERROR: {str(e)}]")
+            except Exception as cb_err:
+                logger.error(
+                    f"[Request:{request_id}] Error calling stream_callback with error message: {cb_err}"
+                )
+            error_msg = f"[STREAMING ERROR: {str(e)}]"
+            if accumulated_response:
+                return "".join(accumulated_response) + "\n" + error_msg
+            else:
+                return error_msg
         finally:
-             final_response = "".join(accumulated_response)
-             logger.debug(f"[Request:{request_id}] Streaming finished. Accumulated response length: {len(final_response)}")
-             return final_response
+            final_response = "".join(accumulated_response)
+            logger.debug(
+                f"[Request:{request_id}] Streaming finished. Accumulated response length: {len(final_response)}"
+            )
+            return final_response
 
     def count_tokens(self, content: Union[str, List[Dict[str, Any]]]) -> int:
         """
@@ -405,17 +646,25 @@ class LiteLLMGateway:
         try:
             if isinstance(content, str):
                 # Count tokens for a single string
-                return self._litellm.token_counter(model=self.model_config.model, text=content)
+                return self._litellm.token_counter(
+                    model=self.model_config.model, text=content
+                )
             elif isinstance(content, list):
-                 # Count tokens for a list of messages
-                 # Note: Ensure messages are formatted correctly if needed by token_counter
-                 # For simplicity, we assume OpenAI format is okay here.
-                 return self._litellm.token_counter(model=self.model_config.model, messages=content)
+                # Count tokens for a list of messages
+                # Note: Ensure messages are formatted correctly if needed by token_counter
+                # For simplicity, we assume OpenAI format is okay here.
+                return self._litellm.token_counter(
+                    model=self.model_config.model, messages=content
+                )
             else:
-                 logger.warning(f"Unsupported content type for token counting: {type(content)}")
-                 return 0
+                logger.warning(
+                    f"Unsupported content type for token counting: {type(content)}"
+                )
+                return 0
         except Exception as e:
-            logger.error(f"Error using litellm.token_counter for model {self.model_config.model}: {e}")
+            logger.error(
+                f"Error using litellm.token_counter for model {self.model_config.model}: {e}"
+            )
             # Fallback: very rough estimate
             return len(str(content)) // 4
 
@@ -432,26 +681,42 @@ class LiteLLMGateway:
                             if isinstance(safe_msg["content"], list):
                                 safe_content = []
                                 for part in safe_msg["content"]:
-                                    if isinstance(part, dict) and part.get("type") == "image_url":
-                                         # Check if it's base64 data
-                                         url = part.get("image_url", {}).get("url", "")
-                                         if url.startswith("data:image"):
-                                             safe_content.append({"type": "image_url", "image_url": {"url": "[BASE64 DATA REDACTED]"}})
-                                         else:
-                                             safe_content.append(part) # Keep regular URLs
+                                    if (
+                                        isinstance(part, dict)
+                                        and part.get("type") == "image_url"
+                                    ):
+                                        # Check if it's base64 data
+                                        url = part.get("image_url", {}).get("url", "")
+                                        if url.startswith("data:image"):
+                                            safe_content.append(
+                                                {
+                                                    "type": "image_url",
+                                                    "image_url": {
+                                                        "url": "[BASE64 DATA REDACTED]"
+                                                    },
+                                                }
+                                            )
+                                        else:
+                                            safe_content.append(
+                                                part
+                                            )  # Keep regular URLs
                                     else:
-                                         safe_content.append(part)
+                                        safe_content.append(part)
                                 safe_msg["content"] = safe_content
                             elif isinstance(safe_msg["content"], str):
                                 # Keep text content as is for logging context
-                                safe_msg["content"] = safe_msg["content"][:500] + ("..." if len(safe_msg["content"]) > 500 else "")
+                                safe_msg["content"] = safe_msg["content"][:500] + (
+                                    "..." if len(safe_msg["content"]) > 500 else ""
+                                )
 
                         safe_messages.append(safe_msg)
                     else:
-                        safe_messages.append(msg) # Should not happen based on formatting
+                        safe_messages.append(
+                            msg
+                        )  # Should not happen based on formatting
                 safe_params[k] = safe_messages
             elif k == "api_key":
-                 safe_params[k] = "[REDACTED]"
+                safe_params[k] = "[REDACTED]"
             else:
                 # Log other params directly (or add more redaction if needed)
                 safe_params[k] = v

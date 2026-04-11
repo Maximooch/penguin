@@ -6062,14 +6062,12 @@ class PenguinCore:
             messages.pop(message_id, None)
             transcript["order"] = [item for item in order if item != message_id]
 
-            try:
-                manager.mark_session_modified(session_id)
-                if should_save:
-                    manager.save_session(session)
-            except Exception:
-                logger.warning(
-                    "Unable to persist OpenCode transcript event", exc_info=True
-                )
+        try:
+            manager.mark_session_modified(session_id)
+            if should_save:
+                manager.save_session(session)
+        except Exception:
+            logger.warning("Unable to persist OpenCode transcript event", exc_info=True)
 
     # ------------------------------------------------------------------
     # OpenCode TUI Adapter Integration

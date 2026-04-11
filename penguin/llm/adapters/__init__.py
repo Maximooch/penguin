@@ -53,5 +53,8 @@ def get_adapter(provider: str, model_config):
         logging.warning(f"Native adapter for {provider} not available: {e}")
 
     # Fall back to provider_adapters.py implementation
-    logging.info(f"Using generic adapter for {provider} via provider_adapters")
+    logging.warning(
+        "Using deprecated generic adapter for %s via provider_adapters; add a first-class adapter or explicit gateway path",
+        provider,
+    )
     return get_provider_adapter(provider, model_config)

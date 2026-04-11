@@ -43,6 +43,14 @@ from penguin.utils.parser import (  # type: ignore
 )
 from penguin.system.state import MessageCategory  # type: ignore
 from penguin.llm.api_client import APIClient  # type: ignore
+from penguin.llm.runtime import (
+    build_empty_response_diagnostics as build_llm_empty_response_diagnostics,
+    build_reasoning_fallback_note,
+    call_with_retry as call_llm_with_retry,
+    execute_pending_tool_call,
+    handler_has_pending_tool_call,
+    prepare_responses_tool_kwargs,
+)
 from penguin.tools import ToolManager  # type: ignore
 from penguin.config import TASK_COMPLETION_PHRASE  # Add this import
 from penguin.constants import get_engine_max_iterations_default
@@ -2049,32 +2057,14 @@ class Engine:
         Returns:
             Dict with 'tools' and 'tool_choice' keys if applicable, empty dict otherwise.
         """
-        extra_kwargs = {}
         try:
-            model_cfg = self._get_runtime_model_config()
-            uses_openai_native_responses = bool(
-                model_cfg
-                and getattr(model_cfg, "provider", "") == "openai"
-                and getattr(model_cfg, "client_preference", "") == "native"
+            return prepare_responses_tool_kwargs(
+                self._get_runtime_model_config(),
+                tool_manager,
             )
-            if model_cfg and (
-                getattr(model_cfg, "use_responses_api", False)
-                or uses_openai_native_responses
-            ):
-                tools_payload = (
-                    tool_manager.get_responses_tools()
-                    if hasattr(tool_manager, "get_responses_tools")
-                    else []
-                )
-                if tools_payload:
-                    if uses_openai_native_responses:
-                        setattr(model_cfg, "interrupt_on_tool_call", True)
-                    extra_kwargs["tools"] = tools_payload
-                    extra_kwargs["tool_choice"] = "auto"
-        except Exception as _tools_err:
-            logger.debug(f"Failed to prepare Responses tools: {_tools_err}")
-
-        return extra_kwargs
+        except Exception as exc:
+            logger.debug("Failed to prepare Responses tools: %s", exc)
+            return {}
 
     def _build_empty_response_diagnostics(
         self,
@@ -2092,129 +2082,28 @@ class Engine:
         Returns:
             Dict with 'summary', 'user_message', and detailed diagnostic fields
         """
-        diagnostics: Dict[str, Any] = {
-            "raw_response": repr(raw_response) if raw_response else "(None)",
-            "response_length": len(raw_response) if raw_response else 0,
-        }
-
-        # Message stats
+        provider_error = None
         try:
-            diagnostics["message_count"] = len(messages)
-            diagnostics["total_chars"] = sum(
-                len(str(m.get("content", ""))) for m in messages
-            )
-            diagnostics["approx_tokens"] = diagnostics["total_chars"] // 4
+            error_getter = getattr(api_client, "get_last_error", None)
+            provider_error = error_getter() if callable(error_getter) else None
         except Exception:
-            diagnostics["message_stats_error"] = "Failed to compute message stats"
+            provider_error = None
 
-        # Model config
-        try:
-            model_cfg = getattr(self, "model_config", None)
-            if model_cfg:
-                diagnostics["model"] = getattr(model_cfg, "model", "unknown")
-                diagnostics["provider"] = getattr(model_cfg, "provider", "unknown")
-                diagnostics["max_context_window_tokens"] = getattr(
-                    model_cfg, "max_context_window_tokens", None
-                )
-                diagnostics["max_output_tokens"] = getattr(
-                    model_cfg, "max_output_tokens", None
-                )
-        except Exception:
-            diagnostics["model_config_error"] = "Failed to get model config"
-
-        # Check for API error in response
-        api_error_detected = False
-        error_type = "unknown"
-        error_detail = None
-
-        if raw_response:
-            stripped = raw_response.strip()
-            if stripped.startswith("[Error:"):
-                api_error_detected = True
-                error_detail = stripped
-                # Parse error type
-                if "context" in stripped.lower() or "token" in stripped.lower():
-                    error_type = "context_window_exceeded"
-                elif "quota" in stripped.lower() or "credit" in stripped.lower():
-                    error_type = "quota_exceeded"
-                elif "rate" in stripped.lower() or "429" in stripped:
-                    error_type = "rate_limited"
-                elif "auth" in stripped.lower() or "key" in stripped.lower():
-                    error_type = "authentication_error"
-                elif "model" in stripped.lower() and "not found" in stripped.lower():
-                    error_type = "model_not_found"
-                else:
-                    error_type = "api_error"
-
-        diagnostics["api_error_detected"] = api_error_detected
-        diagnostics["error_type"] = error_type
-        if error_detail:
-            diagnostics["error_detail"] = error_detail
-
-        # Check for handler-level errors
-        try:
-            handler = getattr(api_client, "client_handler", None)
-            if handler:
-                last_error = getattr(handler, "last_error", None) or getattr(
-                    handler, "_last_error", None
-                )
-                if last_error:
-                    diagnostics["handler_error"] = str(last_error)
-        except Exception:
-            pass
-
-        # Build user-friendly message based on error type
-        user_messages = {
-            "context_window_exceeded": (
-                f"Context window exceeded. Your conversation has ~{diagnostics.get('approx_tokens', '?')} tokens "
-                f"but the model limit may be lower. Try starting a new conversation."
-            ),
-            "quota_exceeded": (
-                "API quota/credits exceeded. Check your account balance and billing status."
-            ),
-            "rate_limited": (
-                "Rate limit exceeded. Wait a moment and try again, or reduce request frequency."
-            ),
-            "authentication_error": (
-                "API authentication failed. Check your API key is valid and properly configured."
-            ),
-            "model_not_found": (
-                f"Model '{diagnostics.get('model', 'unknown')}' not found. "
-                "Check the model name is correct and you have access to it."
-            ),
-            "api_error": (
-                f"API returned an error: {error_detail or 'Unknown error'}. "
-                "Check the API status and your request parameters."
-            ),
-            "unknown": (
-                f"Model returned empty response after retry. "
-                f"Conversation has {diagnostics.get('message_count', '?')} messages, "
-                f"~{diagnostics.get('approx_tokens', '?')} tokens. "
-                f"Possible causes: (1) Context too large, (2) API issue, (3) Model refusing to respond."
-            ),
-        }
-
-        diagnostics["user_message"] = user_messages.get(
-            error_type, user_messages["unknown"]
+        return build_llm_empty_response_diagnostics(
+            messages=messages,
+            raw_response=raw_response,
+            model_config=getattr(self, "model_config", None),
+            provider_error=provider_error,
+            handler=getattr(api_client, "client_handler", None),
         )
-        diagnostics["summary"] = (
-            f"Empty response from {diagnostics.get('model', 'unknown')} "
-            f"(type={error_type}, msgs={diagnostics.get('message_count', '?')}, "
-            f"tokens≈{diagnostics.get('approx_tokens', '?')})"
-        )
-
-        return diagnostics
 
     def _handler_has_pending_tool_call(self, api_client: APIClient) -> bool:
         """Return whether the active handler captured a tool call to execute."""
         try:
-            handler = getattr(api_client, "client_handler", None)
-            checker = getattr(handler, "has_pending_tool_call", None)
-            if callable(checker):
-                return bool(checker())
+            return handler_has_pending_tool_call(api_client)
         except Exception:
             logger.debug("Failed to check handler for pending tool call", exc_info=True)
-        return False
+            return False
 
     async def _call_llm_with_retry(
         self,
@@ -2239,72 +2128,24 @@ class Engine:
         Raises:
             LLMEmptyResponseError: If response is empty after retry
         """
-        streamed_assistant_chunk = False
-
-        async def _tracked_stream_callback(
-            chunk: str,
-            message_type: str = "assistant",
-        ) -> None:
-            nonlocal streamed_assistant_chunk
-            if chunk and message_type == "assistant":
-                streamed_assistant_chunk = True
-            if stream_callback is None:
-                return
-            if asyncio.iscoroutinefunction(stream_callback):
-                await stream_callback(chunk, message_type)
-                return
-            try:
-                stream_callback(chunk, message_type)
-            except TypeError:
-                stream_callback(chunk)
-
-        # First attempt – honour requested streaming setting
-        assistant_response = await api_client.get_response(
-            messages,
-            stream=streaming,
-            stream_callback=(
-                _tracked_stream_callback
-                if streaming and stream_callback
-                else stream_callback
-            ),
-            **extra_kwargs,
-        )
-
-        # If empty, retry once with stream=False (some providers fail in streaming mode)
-        if not assistant_response or not assistant_response.strip():
-            if streamed_assistant_chunk:
-                logger.info(
-                    "_llm_step received empty final text after streaming assistant chunks; skipping non-stream retry."
-                )
-                return assistant_response or ""
-            if self._handler_has_pending_tool_call(api_client):
-                logger.info(
-                    "_llm_step received empty text because handler captured a tool call; skipping empty-response retry."
-                )
-                return assistant_response or ""
-            logger.warning(
-                "_llm_step got empty response (stream=%s). Retrying once without streaming.",
-                streaming,
+        try:
+            return await call_llm_with_retry(
+                api_client=api_client,
+                messages=messages,
+                streaming=streaming,
+                stream_callback=stream_callback,
+                extra_kwargs=extra_kwargs,
+                model_config=getattr(self, "model_config", None),
             )
-            assistant_response = await api_client.get_response(messages, stream=False)
-
-        # Still empty? Raise exception to prevent infinite loops
-        if not assistant_response or not assistant_response.strip():
-            if self._handler_has_pending_tool_call(api_client):
-                logger.info(
-                    "_llm_step still has no assistant text after retry because a tool call is pending; returning control to tool execution."
-                )
-                return assistant_response or ""
-            # Build detailed diagnostics
+        except LLMEmptyResponseError:
             diagnostics = self._build_empty_response_diagnostics(
-                api_client, messages, assistant_response
+                api_client,
+                messages,
+                None,
             )
-            logger.error(f"[EMPTY_RESPONSE] {diagnostics['summary']}")
-            logger.error(f"[EMPTY_RESPONSE] Details: {diagnostics}")
-
-            raise LLMEmptyResponseError(diagnostics["user_message"])
-
-        return assistant_response
+            logger.error("[EMPTY_RESPONSE] %s", diagnostics["summary"])
+            logger.error("[EMPTY_RESPONSE] Details: %s", diagnostics)
+            raise
 
     async def _handle_responses_tool_call(
         self,
@@ -2322,67 +2163,28 @@ class Engine:
         Returns:
             Action result dict if tool was executed, None otherwise
         """
-        # Check if gateway interrupted due to Responses tool_call
-        try:
-            handler = getattr(api_client, "client_handler", None)
-            getter = getattr(handler, "get_and_clear_last_tool_call", None)
-            tool_info = (
-                await getter()
-                if callable(getter) and asyncio.iscoroutinefunction(getter)
-                else (getter() if callable(getter) else None)
-            )
-        except Exception:
-            logger.exception("Failed to get tool_call info from handler")
-            return None
-
-        if not tool_info or not isinstance(tool_info, dict):
-            return None
-
-        try:
-            tool_name = str(tool_info.get("name") or "").strip()
-            raw_args = tool_info.get("arguments") or "{}"
-            import json as _json
-
-            try:
-                tool_args = (
-                    _json.loads(raw_args)
-                    if isinstance(raw_args, str) and raw_args.strip()
-                    else {}
-                )
-            except Exception:
-                logger.exception(
-                    f"Failed to parse tool arguments for '{tool_name}': {raw_args[:100]}"
-                )
-                tool_args = {}
-
-            # Execute via ToolManager
-            output = tool_manager.execute_tool(tool_name, tool_args)
-
-            # Format result (using standardized field names: action/result)
-            action_result = {
-                "action": tool_name,
-                "result": str(output if output is not None else ""),
-                "status": "completed",
-            }
-
-            # Persist result
-            cm.add_action_result(
+        return await execute_pending_tool_call(
+            api_client=api_client,
+            tool_manager=tool_manager,
+            persist_action_result=lambda action_result: cm.add_action_result(
                 action_type=action_result["action"],
                 result=action_result["result"],
                 status=action_result["status"],
-            )
-
-            # Emit UI event
-            await self._emit_tool_event(cm, action_result)
-
-            # NOTE: Removed forced tool_choice (architectural violation)
-            # Model should decide next action based on tool result, not be forced
-
-            return action_result
-
-        except Exception as _tool_exec_err:
-            logger.debug(f"Responses tool_call execution failed: {_tool_exec_err}")
-            return None
+            ),
+            emit_action_start=(
+                (lambda payload: cm.core.emit_ui_event("action", payload))
+                if hasattr(cm, "core") and cm.core
+                else None
+            ),
+            emit_action_result=(
+                (lambda payload: cm.core.emit_ui_event("action_result", payload))
+                if hasattr(cm, "core") and cm.core
+                else None
+            ),
+            emit_tool_timeline=lambda action_result: self._emit_tool_event(
+                cm, action_result
+            ),
+        )
 
     async def _emit_tool_event(
         self, cm: ConversationManager, action_result: Dict[str, Any]
@@ -2428,12 +2230,53 @@ class Engine:
         except Exception as e:
             logger.warning(f"Failed to emit tool result UI event: {e}")
 
-    def _finalize_streaming_response(
+    def _build_reasoning_fallback_note(self, api_client: Any) -> Optional[str]:
+        """Return a fallback note when reasoning ran but no visible summary exists."""
+        return build_reasoning_fallback_note(
+            api_client,
+            usage=self._extract_usage_from_api_client(api_client),
+        )
+
+    async def _inject_reasoning_fallback_note(
+        self,
+        cm: ConversationManager,
+        api_client: Any,
+        *,
+        agent_id: Optional[str],
+        session_id: Optional[str],
+    ) -> None:
+        """Inject fallback reasoning text into the active stream before finalize."""
+
+        note = self._build_reasoning_fallback_note(api_client)
+        if not note:
+            return
+        if not hasattr(cm, "core") or not cm.core:
+            return
+
+        request_id, request_session_id = self._trace_request_fields()
+        _trace_log_info(
+            "engine.reasoning.fallback request=%s session=%s agent=%s note=%r",
+            request_id,
+            request_session_id or "unknown",
+            agent_id or self.current_agent_id or self.default_agent_id,
+            note,
+        )
+
+        await cm.core._handle_stream_chunk(
+            note,
+            message_type="reasoning",
+            agent_id=agent_id or self.current_agent_id,
+            session_id=session_id,
+            conversation_id=session_id,
+        )
+
+    async def _finalize_streaming_response(
         self,
         cm: ConversationManager,
         assistant_response: str,
         streaming: Optional[bool],
         agent_id: Optional[str] = None,
+        api_client: Optional[Any] = None,
     ) -> str:
         """Finalize streaming response and persist to conversation.
 
@@ -2504,6 +2347,12 @@ class Engine:
                 cm.get_current_session() if hasattr(cm, "get_current_session") else None
             )
             session_id = getattr(session, "id", None)
+            await self._inject_reasoning_fallback_note(
+                cm,
+                api_client,
+                agent_id=agent_id,
+                session_id=session_id,
+            )
             finalized = cm.core.finalize_streaming_message(
                 agent_id=agent_id or self.current_agent_id,
                 session_id=session_id,
@@ -2729,21 +2578,30 @@ class Engine:
         )
 
         # Step 3: Handle Responses API tool_call if one was triggered
-        await self._handle_responses_tool_call(api_client, tool_manager, cm)
+        responses_action_result = await self._handle_responses_tool_call(
+            api_client,
+            tool_manager,
+            cm,
+        )
 
         # Step 4: Finalize streaming response and persist message
-        assistant_response = self._finalize_streaming_response(
+        assistant_response = await self._finalize_streaming_response(
             cm,
             assistant_response,
             streaming,
             agent_id=agent_id or self.current_agent_id,
+            api_client=api_client,
         )
 
         # Step 5: Execute CodeAct actions if enabled
         action_results = []
+        if isinstance(responses_action_result, dict):
+            action_results.append(responses_action_result)
         if tools_enabled:
-            action_results = await self._execute_codeact_actions(
-                cm, action_executor, assistant_response
+            action_results.extend(
+                await self._execute_codeact_actions(
+                    cm, action_executor, assistant_response
+                )
             )
 
         usage = self._extract_usage_from_api_client(api_client)

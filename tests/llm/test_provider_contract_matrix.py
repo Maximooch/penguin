@@ -4,6 +4,8 @@ from typing import Any
 
 import pytest
 
+from penguin.llm.contracts import FinishReason
+
 from .provider_contract_fixtures import (
     ANTHROPIC_USAGE,
     OPENAI_USAGE,
@@ -163,7 +165,7 @@ def _build_handler(
                 monkeypatch,
                 stream_chunks=[
                     make_openrouter_chunk(
-                        model="openai/gpt-4o",
+                        model="openai/gpt-4.1-mini",
                         content="answer",
                         finish_reason="stop",
                         usage=OPENROUTER_USAGE,
@@ -177,12 +179,12 @@ def _build_handler(
                 monkeypatch,
                 stream_chunks=[
                     make_openrouter_chunk(
-                        model="openai/gpt-4o",
+                        model="arcee-ai/trinity-large-thinking",
                         reasoning="thinking...",
                         usage=OPENROUTER_USAGE,
                     ),
                     make_openrouter_chunk(
-                        model="openai/gpt-4o",
+                        model="arcee-ai/trinity-large-thinking",
                         content="answer",
                         finish_reason="stop",
                         usage=OPENROUTER_USAGE,
@@ -190,13 +192,15 @@ def _build_handler(
                 ],
                 final_text="answer",
                 usage=OPENROUTER_USAGE,
+                model_id="arcee-ai/trinity-large-thinking",
+                reasoning_enabled=True,
             )
         if scenario == "tool_call":
             return build_openrouter_handler(
                 monkeypatch,
                 stream_chunks=[
                     make_openrouter_chunk(
-                        model="openai/gpt-4o",
+                        model="openai/gpt-4.1-mini",
                         tool_calls=[
                             {
                                 "id": "call_1",
@@ -240,6 +244,7 @@ async def test_provider_contract_nonstream_usage_matrix(
     assert usage["input_tokens"] > 0
     assert usage["output_tokens"] > 0
     assert usage["total_tokens"] >= usage["input_tokens"] + usage["output_tokens"]
+    assert handler.get_last_finish_reason() == FinishReason.STOP
     assert handler.has_pending_tool_call() is False
     assert handler.get_and_clear_last_tool_call() is None
     assert handler.count_tokens("hello") > 0
@@ -294,6 +299,7 @@ async def test_provider_contract_reasoning_stream_matrix(
     assert result == "answer"
     assert chunks[0] == ("thinking...", "reasoning")
     assert chunks[1] == ("answer", "assistant")
+    assert handler.get_last_reasoning() == "thinking..."
 
 
 @pytest.mark.parametrize(
@@ -319,6 +325,7 @@ async def test_provider_contract_tool_call_interrupt_matrix(
 
     assert result == ""
     assert chunks == []
+    assert handler.get_last_finish_reason() == FinishReason.TOOL_CALLS
     assert handler.has_pending_tool_call() is True
     tool_call = handler.get_and_clear_last_tool_call()
     assert tool_call is not None

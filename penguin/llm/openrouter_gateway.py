@@ -18,6 +18,12 @@ from openai import AsyncOpenAI, APIError  # type: ignore
 
 # Connection pooling for parallel LLM calls
 from penguin.llm.api_client import ConnectionPoolManager
+from penguin.llm.contracts import FinishReason, LLMError
+from penguin.llm.provider_transform import (
+    build_llm_error,
+    extract_retry_after_seconds,
+    normalize_finish_reason,
+)
 
 # Assuming ModelConfig is in the same directory or adjust import path
 try:
@@ -87,6 +93,9 @@ class OpenRouterGateway:
         self._tool_call_acc: Dict[str, Any] = {"name": None, "arguments": ""}
         self._last_tool_call: Optional[Dict[str, Any]] = None
         self._last_usage: Dict[str, Any] = {}
+        self._last_error: Optional[LLMError] = None
+        self._last_finish_reason = FinishReason.UNKNOWN
+        self._last_reasoning = ""
 
         # --- Determine Base URL (before API key check) ---
         # Priority: explicit param > model_config > OpenRouter env override >
@@ -333,6 +342,96 @@ class OpenRouterGateway:
         if uvicorn_logger is not self.logger:
             uvicorn_logger.info(message, *args)
 
+    def _set_last_error(self, error: Optional[LLMError]) -> None:
+        self._last_error = error
+
+    def get_last_error(self) -> Optional[LLMError]:
+        return self._last_error if isinstance(self._last_error, LLMError) else None
+
+    def _set_last_finish_reason(self, finish_reason: Any) -> FinishReason:
+        self._last_finish_reason = normalize_finish_reason(finish_reason)
+        return self._last_finish_reason
+
+    def get_last_finish_reason(self) -> FinishReason:
+        return self._last_finish_reason
+
+    def _append_reasoning(self, text: Any) -> None:
+        if isinstance(text, str) and text:
+            self._last_reasoning += text
+
+    def get_last_reasoning(self) -> str:
+        return self._last_reasoning
+
+    def _record_error(
+        self,
+        *,
+        message: str,
+        status_code: Optional[int] = None,
+        retry_after_seconds: Optional[float] = None,
+        finish_reason: Any = None,
+        provider_data: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self._set_last_error(
+            build_llm_error(
+                message=message,
+                provider="openrouter",
+                model=self.model_config.model,
+                status_code=status_code,
+                retry_after_seconds=retry_after_seconds,
+                finish_reason=finish_reason,
+                provider_data=provider_data,
+            )
+        )
+
+    def _store_tool_call(self, tool_call: Any) -> None:
+        tc0 = None
+        if isinstance(tool_call, (list, tuple)) and tool_call:
+            tc0 = tool_call[0]
+        else:
+            tc0 = tool_call
+        if tc0 is None:
+            return
+
+        payload = tc0 if isinstance(tc0, dict) else {}
+        if not payload and tc0 is not None:
+            try:
+                payload = vars(tc0)
+            except Exception:
+                payload = {}
+
+        function_payload = (
+            payload.get("function") if isinstance(payload, dict) else None
+        )
+        if function_payload is None and tc0 is not None:
+            function_payload = getattr(tc0, "function", None)
+        if function_payload is None:
+            return
+
+        if not isinstance(function_payload, dict):
+            try:
+                function_payload = vars(function_payload)
+            except Exception:
+                function_payload = {}
+
+        name = function_payload.get("name")
+        arguments = function_payload.get("arguments") or ""
+        call_id = payload.get("id") if isinstance(payload, dict) else None
+        if not call_id and tc0 is not None:
+            call_id = getattr(tc0, "id", None)
+        if name:
+            self._last_tool_call = {
+                "item_id": None,
+                "call_id": call_id,
+                "name": name,
+                "arguments": arguments,
+            }
+            self._tool_call_acc = {
+                "name": name,
+                "arguments": arguments,
+                "call_id": call_id,
+            }
+            self._set_last_finish_reason(FinishReason.TOOL_CALLS)
+
     def _extract_generation_id_from_headers(self, headers: Any) -> Optional[str]:
         """Extract OpenRouter generation id from response headers."""
         if headers is None:
@@ -514,7 +613,13 @@ class OpenRouterGateway:
         )
         return False
 
-    def _parse_openrouter_error(self, error_text: str, status_code: int) -> str:
+    def _parse_openrouter_error(
+        self,
+        error_text: str,
+        status_code: int,
+        *,
+        retry_after_seconds: Optional[float] = None,
+    ) -> str:
         """
         Parse OpenRouter error response and return a user-friendly message.
 
@@ -538,52 +643,75 @@ class OpenRouterGateway:
                     "context" in error_message.lower()
                     or "token" in error_message.lower()
                 ):
-                    return f"[Error: Context too large for {provider_name}. {error_message}]"
+                    message = f"[Error: Context too large for {provider_name}. {error_message}]"
                 elif "model" in error_message.lower():
-                    return f"[Error: Model issue ({provider_name}). {error_message}]"
+                    message = f"[Error: Model issue ({provider_name}). {error_message}]"
                 else:
-                    return f"[Error: Bad request to {provider_name}. {error_message}]"
+                    message = (
+                        f"[Error: Bad request to {provider_name}. {error_message}]"
+                    )
 
             elif status_code == 401:
-                return f"[Error: Authentication failed. Check your API key. {error_message}]"
+                message = f"[Error: Authentication failed. Check your API key. {error_message}]"
 
             elif status_code == 402:
-                return (
+                message = (
                     f"[Error: Insufficient credits/payment required. {error_message}]"
                 )
 
             elif status_code == 403:
-                return f"[Error: Access denied to {provider_name}. {error_message}]"
+                message = f"[Error: Access denied to {provider_name}. {error_message}]"
 
             elif status_code == 404:
-                return f"[Error: Model not found. {error_message}]"
+                message = f"[Error: Model not found. {error_message}]"
 
             elif status_code == 429:
                 # Rate limit - include retry info if available
-                return (
+                message = (
                     f"[Error: Rate limit exceeded ({provider_name}). {error_message}]"
                 )
 
             elif status_code == 502 or status_code == 503:
-                return f"[Error: {provider_name} is temporarily unavailable. {error_message}]"
+                message = f"[Error: {provider_name} is temporarily unavailable. {error_message}]"
 
             elif status_code == 504:
-                return f"[Error: Request to {provider_name} timed out. Try again or use a different model.]"
+                message = f"[Error: Request to {provider_name} timed out. Try again or use a different model.]"
 
             else:
                 # Generic error with all available info
-                return (
+                message = (
                     f"[Error: {provider_name} returned {error_code}. {error_message}]"
                 )
+
+            self._record_error(
+                message=error_message,
+                status_code=status_code,
+                retry_after_seconds=retry_after_seconds,
+                provider_data={
+                    "provider_name": provider_name,
+                    "error_code": error_code,
+                },
+            )
+            return message
 
         except json.JSONDecodeError:
             # Not JSON, return raw text (truncated)
             truncated = (
                 error_text[:200] + "..." if len(error_text) > 200 else error_text
             )
+            self._record_error(
+                message=truncated,
+                status_code=status_code,
+                retry_after_seconds=retry_after_seconds,
+            )
             return f"[Error: API returned status {status_code}. {truncated}]"
         except Exception as e:
             self.logger.warning(f"Failed to parse error response: {e}")
+            self._record_error(
+                message=f"API call failed with status {status_code}",
+                status_code=status_code,
+                retry_after_seconds=retry_after_seconds,
+            )
             return f"[Error: API call failed with status {status_code}]"
 
     async def _encode_image(self, image_path: str) -> Optional[str]:
@@ -595,7 +723,13 @@ class OpenRouterGateway:
             logger.debug(f"Encoding image from path: {image_path}")
             with PILImage.open(image_path) as img:
                 max_size = (1024, 1024)  # Configurable?
-                img.thumbnail(max_size, PILImage.LANCZOS)
+                resampling_namespace = getattr(PILImage, "Resampling", PILImage)
+                img.thumbnail(
+                    max_size,
+                    getattr(
+                        PILImage, "LANCZOS", getattr(resampling_namespace, "LANCZOS")
+                    ),
+                )
                 if img.mode != "RGB":
                     img = img.convert("RGB")
                 buffer = io.BytesIO()
@@ -797,6 +931,11 @@ class OpenRouterGateway:
 
         # self.logger.info(f"[OpenRouterGateway] ENTERING get_response [{request_id}]: stream_arg={stream}, stream_callback_arg={stream_callback}, model_config_streaming={self.model_config.streaming_enabled}")
         self._last_usage = {}
+        self._last_error = None
+        self._last_finish_reason = FinishReason.UNKNOWN
+        self._last_reasoning = ""
+        self._last_tool_call = None
+        self._tool_call_acc = {"name": None, "arguments": ""}
 
         # Determine if streaming should be used *based on the passed flag first*
         # If stream is explicitly False, don't stream, even if config says yes.
@@ -828,6 +967,9 @@ class OpenRouterGateway:
             self.logger.error(
                 f"Error processing messages for vision and conversation format: {e}",
                 exc_info=True,
+            )
+            self._record_error(
+                message=f"Failed to process message content - {str(e)}",
             )
             return f"[Error: Failed to process message content - {str(e)}]"
         # --- End vision and conversation processing ---
@@ -991,6 +1133,7 @@ class OpenRouterGateway:
                     )
                     if chunk_finish_reason:
                         sdk_last_finish_reason = chunk_finish_reason
+                        self._set_last_finish_reason(chunk_finish_reason)
                         self.logger.debug(
                             f"[OpenRouterGateway] SDK stream finish_reason: {chunk_finish_reason}"
                         )
@@ -1019,6 +1162,11 @@ class OpenRouterGateway:
                                 "message": error_message,
                                 "provider": provider_name,
                             }
+                            self._record_error(
+                                message=error_message,
+                                finish_reason=chunk_finish_reason,
+                                provider_data={"provider_name": provider_name},
+                            )
                             self.logger.error(
                                 f"[OpenRouterGateway] SDK mid-stream error from {provider_name}: {error_message}"
                             )
@@ -1070,6 +1218,7 @@ class OpenRouterGateway:
 
                         if new_reasoning_segment:
                             _gateway_accumulated_reasoning += new_reasoning_segment
+                            self._append_reasoning(new_reasoning_segment)
                             # debug_stream_chunk(request_id, {'chunk': new_reasoning_segment, 'type': 'reasoning'}, "reasoning")
                             if stream_callback:
                                 try:
@@ -1228,12 +1377,7 @@ class OpenRouterGateway:
                                 )
                                 # Snapshot last tool call
                                 try:
-                                    self._last_tool_call = {
-                                        "name": self._tool_call_acc.get("name"),
-                                        "arguments": self._tool_call_acc.get(
-                                            "arguments", ""
-                                        ),
-                                    }
+                                    self._store_tool_call(tool_calls_delta)
                                 except Exception:
                                     self._last_tool_call = None
                                 try:
@@ -1280,7 +1424,18 @@ class OpenRouterGateway:
                     )
                     # If we have reasoning but no content, the model may have only produced thinking
                     if full_reasoning_content:
+                        self._record_error(
+                            message="Model produced reasoning but no final response",
+                            finish_reason=sdk_last_finish_reason,
+                        )
                         return "[Note: Model produced reasoning tokens but no final response. This may indicate the model is still processing or encountered an issue.]"
+                    self._record_error(
+                        message=(
+                            f"Model {self.model_config.model} returned empty response. "
+                            "The model may not support this request type or encountered an issue."
+                        ),
+                        finish_reason=sdk_last_finish_reason,
+                    )
                     return f"[Error: Model {self.model_config.model} returned empty response. The model may not support this request type or encountered an issue.]"
 
                 # Check for truncation (finish_reason: 'length')
@@ -1301,6 +1456,7 @@ class OpenRouterGateway:
                     response_message = completion.choices[0].message
                     full_response_content = response_message.content or ""
                     sdk_finish_reason = completion.choices[0].finish_reason
+                    self._set_last_finish_reason(sdk_finish_reason)
 
                     # Handle error finish_reason
                     if sdk_finish_reason == "error":
@@ -1320,6 +1476,11 @@ class OpenRouterGateway:
                         else:
                             error_message = "Unknown error"
                             provider_name = "unknown provider"
+                        self._record_error(
+                            message=error_message,
+                            finish_reason=sdk_finish_reason,
+                            provider_data={"provider_name": provider_name},
+                        )
                         if full_response_content:
                             return f"{full_response_content}\n\n[Error: {provider_name} returned error: {error_message}]"
                         return f"[Error: {provider_name} returned: {error_message}]"
@@ -1328,6 +1489,7 @@ class OpenRouterGateway:
                     reasoning_content = getattr(response_message, "reasoning", None)
                     if reasoning_content:
                         full_reasoning_content = reasoning_content
+                        self._append_reasoning(str(reasoning_content))
                         self.logger.info(
                             f"[OpenRouterGateway] Non-streaming response includes reasoning tokens: {len(reasoning_content)} chars"
                         )
@@ -1355,12 +1517,13 @@ class OpenRouterGateway:
                         self.logger.info(
                             f"Received tool calls: {response_message.tool_calls}"
                         )
+                        self._store_tool_call(response_message.tool_calls)
                         # How should this be returned? The current interface expects only a string.
                         # This needs coordination with api_client and core.
                         # For now, we prioritize returning the text content if available.
                         if not full_response_content:
                             # Maybe return a placeholder or representation of the tool call?
-                            full_response_content = f"[Tool Calls Received: {len(response_message.tool_calls)}]"
+                            full_response_content = ""
 
                 if not full_response_content:
                     self.logger.warning(
@@ -1373,6 +1536,14 @@ class OpenRouterGateway:
                         error_message = error_info.get("message", "Unknown error")
                         provider_info = error_info.get("metadata", {}).get(
                             "provider_name", "unknown provider"
+                        )
+                        self._record_error(
+                            message=error_message,
+                            status_code=error_code
+                            if isinstance(error_code, int)
+                            else None,
+                            finish_reason=sdk_finish_reason,
+                            provider_data={"provider_name": provider_info},
                         )
 
                         # Handle provider-specific errors
@@ -1393,6 +1564,10 @@ class OpenRouterGateway:
                         self.logger.info(
                             f"Model generated {completion_tokens} tokens but returned empty content"
                         )
+                        self._record_error(
+                            message="Model processed the request but returned empty content",
+                            finish_reason=sdk_finish_reason,
+                        )
                         return "[Note: Model processed the request but returned empty content. Try rephrasing your query.]"
 
                     # Check finish reason?
@@ -1406,6 +1581,10 @@ class OpenRouterGateway:
                     # Return a placeholder message instead of empty string for debugging
                     self.logger.warning(
                         f"Model finished (reason: {finish_reason}) but returned no content and generated 0 completion tokens."
+                    )
+                    self._record_error(
+                        message=f"Model finished with no content from {provider}",
+                        finish_reason=finish_reason,
                     )
                     return f"[Model finished with no content from {provider}. Please try again or try with a different model.]"
 
@@ -1437,6 +1616,10 @@ class OpenRouterGateway:
                 )
                 return self._parse_openrouter_error(error_text, status_code)
             # Fallback to basic error info - include full error message
+            self._record_error(
+                message=str(message),
+                status_code=status_code if isinstance(status_code, int) else None,
+            )
             return f"[Error: {message}]"
         except Exception as e:
             self.logger.error(
@@ -1450,6 +1633,9 @@ class OpenRouterGateway:
                     )
                 except Exception:
                     pass
+            self._record_error(
+                message=f"Unexpected error communicating with OpenRouter - {str(e)}"
+            )
             return f"[Error: Unexpected error communicating with OpenRouter - {str(e)}]"
 
     async def _direct_api_call_with_reasoning(
@@ -1497,17 +1683,29 @@ class OpenRouterGateway:
 
         except httpx.ReadTimeout:
             self.logger.error(f"Request timed out for model {self.model_config.model}")
+            self._record_error(
+                message=f"Request timed out for {self.model_config.model}",
+            )
             return f"[Error: Request timed out. Model {self.model_config.model} may be cold-starting or experiencing high load. Try again in a moment.]"
         except httpx.ConnectTimeout:
             self.logger.error(
                 f"Connection timed out for model {self.model_config.model}"
+            )
+            self._record_error(
+                message="Connection timed out communicating with OpenRouter",
             )
             return f"[Error: Connection timed out. OpenRouter may be experiencing issues. Try again later.]"
         except Exception as e:
             self.logger.error(f"Direct API call failed: {e}", exc_info=True)
             # Check for timeout-related errors in the exception
             if "timeout" in str(e).lower():
+                self._record_error(
+                    message=f"Request timed out for {self.model_config.model}",
+                )
                 return f"[Error: Request timed out for {self.model_config.model}. The model may need time to warm up. Try again.]"
+            self._record_error(
+                message=f"Direct API call failed - {str(e)}",
+            )
             return f"[Error: Direct API call failed - {str(e)}]"
 
     async def _handle_streaming_response(
@@ -1545,7 +1743,11 @@ class OpenRouterGateway:
                 self.logger.error(
                     f"Direct API call failed with status {response.status_code}: {error_text}"
                 )
-                return self._parse_openrouter_error(error_text, response.status_code)
+                return self._parse_openrouter_error(
+                    error_text,
+                    response.status_code,
+                    retry_after_seconds=extract_retry_after_seconds(response.headers),
+                )
 
             generation_id = self._extract_generation_id_from_headers(response.headers)
             line_iter = response.aiter_lines().__aiter__()
@@ -1568,6 +1770,9 @@ class OpenRouterGateway:
                         chunk_timeout_seconds,
                         total_timeout_seconds,
                         exc,
+                    )
+                    self._record_error(
+                        message=f"OpenRouter stream stalled for {self.model_config.model}",
                     )
                     return (
                         f"[Error: OpenRouter stream stalled for {self.model_config.model}. "
@@ -1616,6 +1821,7 @@ class OpenRouterGateway:
                         finish_reason = choice.get("finish_reason")
                         if finish_reason:
                             last_finish_reason = finish_reason
+                            self._set_last_finish_reason(finish_reason)
                             self.logger.debug(
                                 f"[OpenRouterGateway] Received finish_reason: {finish_reason}"
                             )
@@ -1635,6 +1841,11 @@ class OpenRouterGateway:
                                     "provider": provider_name,
                                     "code": error_info.get("code"),
                                 }
+                                self._record_error(
+                                    message=error_message,
+                                    finish_reason=finish_reason,
+                                    provider_data={"provider_name": provider_name},
+                                )
                                 self.logger.error(
                                     f"[OpenRouterGateway] Mid-stream error from {provider_name}: {error_message}"
                                 )
@@ -1648,6 +1859,7 @@ class OpenRouterGateway:
                         )
                         if reasoning_delta and not reasoning_phase_complete:
                             full_reasoning += reasoning_delta
+                            self._append_reasoning(reasoning_delta)
                             if stream_callback:
                                 try:
                                     await stream_callback(reasoning_delta, "reasoning")
@@ -1763,18 +1975,10 @@ class OpenRouterGateway:
                                     self.logger.debug(
                                         f"[OpenRouterGateway] tool_call accumulation failed: {_acc_err2}"
                                     )
+                                self._store_tool_call(tool_calls_delta)
                                 self.logger.info(
                                     "[OpenRouterGateway] Interrupting stream on tool_call delta (Direct API path)"
                                 )
-                                try:
-                                    self._last_tool_call = {
-                                        "name": self._tool_call_acc.get("name"),
-                                        "arguments": self._tool_call_acc.get(
-                                            "arguments", ""
-                                        ),
-                                    }
-                                except Exception:
-                                    self._last_tool_call = None
                                 try:
                                     self._telemetry["interrupts"] += 1
                                 except Exception:
@@ -1821,7 +2025,18 @@ class OpenRouterGateway:
                 f"Direct streaming response completed with no content. Model: {self.model_config.model}"
             )
             if full_reasoning:
+                self._record_error(
+                    message="Model produced reasoning but no final response",
+                    finish_reason=last_finish_reason,
+                )
                 return "[Note: Model produced reasoning tokens but no final response. This may indicate the model is still processing or encountered an issue.]"
+            self._record_error(
+                message=(
+                    f"Model {self.model_config.model} returned empty response. "
+                    "The model may not support this request type or encountered an issue."
+                ),
+                finish_reason=last_finish_reason,
+            )
             return f"[Error: Model {self.model_config.model} returned empty response. The model may not support this request type or encountered an issue.]"
 
         # Check for truncation (finish_reason: 'length')
@@ -1859,7 +2074,7 @@ class OpenRouterGateway:
             data = self._last_tool_call
             self._last_tool_call = None
             self._tool_call_acc = {"name": None, "arguments": ""}
-            return data
+            return dict(data) if isinstance(data, dict) else None
         except Exception:
             return None
 
@@ -1881,7 +2096,11 @@ class OpenRouterGateway:
             self.logger.error(
                 f"Direct API call failed with status {response.status_code}: {error_text}"
             )
-            return self._parse_openrouter_error(error_text, response.status_code)
+            return self._parse_openrouter_error(
+                error_text,
+                response.status_code,
+                retry_after_seconds=extract_retry_after_seconds(response.headers),
+            )
 
         try:
             data = response.json()
@@ -1890,10 +2109,16 @@ class OpenRouterGateway:
             choice = data.get("choices", [{}])[0]
             message = choice.get("message", {})
             finish_reason = choice.get("finish_reason")
+            self._set_last_finish_reason(finish_reason)
 
             # Some providers include keys with explicit None values; coalesce to empty strings
             content = message.get("content") or ""
             reasoning = message.get("reasoning") or ""
+            tool_calls = message.get("tool_calls") or []
+            if reasoning:
+                self._append_reasoning(reasoning)
+            if tool_calls:
+                self._store_tool_call(tool_calls)
 
             # If we have reasoning and a callback, emit it
             if reasoning and stream_callback:
@@ -1913,6 +2138,11 @@ class OpenRouterGateway:
                 provider_name = error_info.get("metadata", {}).get(
                     "provider_name", "unknown provider"
                 )
+                self._record_error(
+                    message=error_message,
+                    finish_reason=finish_reason,
+                    provider_data={"provider_name": provider_name},
+                )
                 if content:
                     return f"{content}\n\n[Error: {provider_name} returned error: {error_message}]"
                 return f"[Error: {provider_name} returned: {error_message}]"
@@ -1929,9 +2159,25 @@ class OpenRouterGateway:
                     provider_name = error_info.get("metadata", {}).get(
                         "provider_name", "unknown provider"
                     )
+                    self._record_error(
+                        message=error_message,
+                        finish_reason=finish_reason,
+                        provider_data={"provider_name": provider_name},
+                    )
                     return f"[Error: {provider_name} returned: {error_message}]"
                 if reasoning:
+                    self._record_error(
+                        message="Model produced reasoning but no final response",
+                        finish_reason=finish_reason,
+                    )
                     return "[Note: Model produced reasoning tokens but no final response. This may indicate the model is still processing or encountered an issue.]"
+                self._record_error(
+                    message=(
+                        f"Model {self.model_config.model} returned empty response. "
+                        "The model may not support this request type or encountered an issue."
+                    ),
+                    finish_reason=finish_reason,
+                )
                 return f"[Error: Model {self.model_config.model} returned empty response. The model may not support this request type or encountered an issue.]"
 
             # Check for truncation (finish_reason: 'length')
@@ -1945,6 +2191,7 @@ class OpenRouterGateway:
 
         except json.JSONDecodeError as e:
             self.logger.error(f"Failed to parse response JSON: {e}")
+            self._record_error(message=f"Failed to parse response - {str(e)}")
             return f"[Error: Failed to parse response - {str(e)}]"
 
     def count_tokens(self, content: Union[str, List, Dict]) -> int:

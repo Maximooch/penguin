@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
+from ..contracts import FinishReason, LLMError
+
 
 class BaseAdapter(ABC):
     """Base adapter interface for LLM providers"""
@@ -91,3 +93,15 @@ class BaseAdapter(ABC):
     def get_and_clear_last_tool_call(self) -> Optional[Dict[str, Any]]:
         """Return the last captured tool call when supported by the provider."""
         return None
+
+    def get_last_error(self) -> Optional[LLMError]:
+        """Return canonical error metadata from the latest request when available."""
+        return None
+
+    def get_last_finish_reason(self) -> FinishReason:
+        """Return the canonical finish reason from the latest request."""
+        return FinishReason.UNKNOWN
+
+    def get_last_reasoning(self) -> str:
+        """Return the latest accumulated reasoning text when available."""
+        return ""

@@ -12,7 +12,7 @@ from penguin.llm.model_config import ModelConfig
 async def test_llm_client_count_tokens_accepts_sync_gateway_counter() -> None:
     client = LLMClient(
         ModelConfig(
-            model="openai/gpt-4o",
+            model="openai/gpt-5.4-nano",
             provider="openrouter",
             client_preference="openrouter",
         )

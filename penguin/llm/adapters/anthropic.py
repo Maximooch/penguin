@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import inspect
+import json
 import logging
 import os
 import time
@@ -12,8 +13,9 @@ from anthropic.types import ContentBlock, MessageParam  # type: ignore
 from anthropic import AsyncAnthropic, Anthropic
 
 from .base import BaseAdapter
-from ..contracts import LLMUsage
+from ..contracts import FinishReason, LLMError, LLMUsage
 from ..model_config import ModelConfig
+from ..provider_transform import build_llm_error, normalize_finish_reason
 
 from penguin.constants import get_default_max_output_tokens
 
@@ -36,6 +38,10 @@ class AnthropicAdapter(BaseAdapter):
         # Initialize async client for message creation
         self.async_client = AsyncAnthropic(api_key=self.api_key)
         self._last_usage: Dict[str, Any] = {}
+        self._last_error: Optional[LLMError] = None
+        self._last_finish_reason = FinishReason.UNKNOWN
+        self._last_reasoning = ""
+        self._last_tool_call: Optional[Dict[str, Any]] = None
 
         # Add a logger for the adapter
         self.logger = logging.getLogger(__name__)
@@ -43,6 +49,33 @@ class AnthropicAdapter(BaseAdapter):
     @property
     def provider(self) -> str:
         return "anthropic"
+
+    def _reset_response_state(self) -> None:
+        self._last_usage = {}
+        self._last_error = None
+        self._last_finish_reason = FinishReason.UNKNOWN
+        self._last_reasoning = ""
+        self._last_tool_call = None
+
+    def _set_last_error(self, error: Optional[LLMError]) -> None:
+        self._last_error = error
+
+    def get_last_error(self) -> Optional[LLMError]:
+        return self._last_error if isinstance(self._last_error, LLMError) else None
+
+    def _set_last_finish_reason(self, finish_reason: Any) -> FinishReason:
+        self._last_finish_reason = normalize_finish_reason(finish_reason)
+        return self._last_finish_reason
+
+    def get_last_finish_reason(self) -> FinishReason:
+        return self._last_finish_reason
+
+    def _append_reasoning(self, text: str) -> None:
+        if text:
+            self._last_reasoning += text
+
+    def get_last_reasoning(self) -> str:
+        return self._last_reasoning
 
     def _usage_to_dict(self, usage: Any) -> Dict[str, Any]:
         if isinstance(usage, dict):
@@ -82,6 +115,18 @@ class AnthropicAdapter(BaseAdapter):
         if not isinstance(getattr(self, "_last_usage", None), dict):
             return {}
         return dict(self._last_usage)
+
+    def has_pending_tool_call(self) -> bool:
+        return isinstance(self._last_tool_call, dict) and bool(
+            self._last_tool_call.get("name")
+        )
+
+    def get_and_clear_last_tool_call(self) -> Optional[Dict[str, Any]]:
+        tool_call = (
+            self._last_tool_call if isinstance(self._last_tool_call, dict) else None
+        )
+        self._last_tool_call = None
+        return dict(tool_call) if isinstance(tool_call, dict) else None
 
     async def create_message(
         self,
@@ -273,6 +318,7 @@ class AnthropicAdapter(BaseAdapter):
         - Streams via create_completion when stream=True and returns accumulated text
         - Non-streaming: calls create_completion and processes the response
         """
+        self._reset_response_state()
         if stream:
             # Ensure callback is callable; pass through directly
             final_text = await self.create_completion(
@@ -304,6 +350,7 @@ class AnthropicAdapter(BaseAdapter):
         callback: Optional[Callable[..., Any]] = None,
     ) -> str:
         """Handle streaming response from Anthropic API with enhanced error handling"""
+        self._reset_response_state()
         accumulated_response = []
         stream_start_time = time.time()
         streaming_timeout = 30  # seconds
@@ -357,6 +404,7 @@ class AnthropicAdapter(BaseAdapter):
                             ):
                                 content = chunk.delta.thinking
                                 if content:
+                                    self._append_reasoning(content)
                                     if callback:
                                         await self._safe_invoke_callback(
                                             callback, content, "reasoning"
@@ -370,6 +418,21 @@ class AnthropicAdapter(BaseAdapter):
                                 chunk.content_block, "text"
                             ):
                                 content = chunk.content_block.text
+                            elif chunk.content_block.type == "tool_use":
+                                tool_input = (
+                                    getattr(chunk.content_block, "input", {}) or {}
+                                )
+                                self._last_tool_call = {
+                                    "item_id": getattr(chunk.content_block, "id", None),
+                                    "call_id": getattr(chunk.content_block, "id", None),
+                                    "name": getattr(chunk.content_block, "name", None),
+                                    "arguments": json.dumps(tool_input),
+                                }
+                                self._set_last_finish_reason(FinishReason.TOOL_CALLS)
+                                if getattr(
+                                    self.model_config, "interrupt_on_tool_call", False
+                                ):
+                                    return "".join(accumulated_response)
 
                         elif (
                             chunk.type == "message_delta"
@@ -378,6 +441,7 @@ class AnthropicAdapter(BaseAdapter):
                         ):
                             # Capture usage and stop reason from message_delta if available
                             stop_reason = chunk.stop_reason
+                            self._set_last_finish_reason(stop_reason)
                             usage_info = chunk.usage
                             self.logger.debug(
                                 f"Received message_delta: stop_reason={stop_reason}, usage={usage_info}"
@@ -435,6 +499,7 @@ class AnthropicAdapter(BaseAdapter):
                     # Extract final stop reason and usage if not already captured
                     if not stop_reason:
                         stop_reason = final_response_object.stop_reason
+                    self._set_last_finish_reason(stop_reason)
                     if not usage_info:
                         usage_info = final_response_object.usage
             except Exception as e:
@@ -469,6 +534,14 @@ class AnthropicAdapter(BaseAdapter):
                     self.logger.error(
                         f"Empty response detected: '{complete_response}'. Stop Reason: {stop_reason}, Usage: {usage_info}"
                     )
+                    self._set_last_error(
+                        build_llm_error(
+                            message=error_message,
+                            provider=self.provider,
+                            model=getattr(self.model_config, "model", None),
+                            finish_reason=stop_reason,
+                        )
+                    )
 
                     # If we got nothing but have some chunks, try to salvage
                     if chunk_count > 0:
@@ -488,6 +561,7 @@ class AnthropicAdapter(BaseAdapter):
             self.logger.debug(
                 f"Returning final accumulated streaming response (length {len(complete_response)} chars)"
             )
+            self._set_last_finish_reason(stop_reason or FinishReason.STOP)
             return complete_response
 
         except asyncio.CancelledError as e:
@@ -511,6 +585,14 @@ class AnthropicAdapter(BaseAdapter):
             elapsed_time = time.time() - stream_start_time
             self.logger.error(
                 f"Stream error details: elapsed_time={elapsed_time:.2f}s, chunks_received={chunk_count}, stop_reason={stop_reason}, usage={usage_info}"
+            )
+            self._set_last_error(
+                build_llm_error(
+                    message=error_msg,
+                    provider=self.provider,
+                    model=getattr(self.model_config, "model", None),
+                    finish_reason=stop_reason,
+                )
             )
 
             if callback:
@@ -625,6 +707,7 @@ class AnthropicAdapter(BaseAdapter):
             # Handle AsyncAnthropic Message object (from non-streaming calls)
             if hasattr(response, "content") and hasattr(response, "stop_reason"):
                 stop_reason = response.stop_reason
+                self._set_last_finish_reason(stop_reason)
                 usage = getattr(response, "usage", None)
                 self._set_last_usage(usage)
 
@@ -642,6 +725,25 @@ class AnthropicAdapter(BaseAdapter):
 
                         if block_type == "text" and block_text is not None:
                             text_content.append(block_text)
+                        elif block_type == "tool_use":
+                            tool_input = (
+                                getattr(block, "input", None)
+                                or (isinstance(block, dict) and block.get("input"))
+                                or {}
+                            )
+                            tool_name = getattr(block, "name", None) or (
+                                isinstance(block, dict) and block.get("name")
+                            )
+                            tool_id = getattr(block, "id", None) or (
+                                isinstance(block, dict) and block.get("id")
+                            )
+                            self._last_tool_call = {
+                                "item_id": tool_id,
+                                "call_id": tool_id,
+                                "name": tool_name,
+                                "arguments": json.dumps(tool_input),
+                            }
+                            self._set_last_finish_reason(FinishReason.TOOL_CALLS)
                         else:
                             self.logger.warning(
                                 f"Skipping non-text or empty text block in response content: type={block_type}"
@@ -667,6 +769,14 @@ class AnthropicAdapter(BaseAdapter):
                     )
                     # Return a more informative message instead of just empty string
                     info_message = f"[Model finished ({stop_reason}) but produced no text content. Input Tokens: {usage.input_tokens if usage else 'N/A'}, Output Tokens: {usage.output_tokens if usage else 'N/A'}]"
+                    self._set_last_error(
+                        build_llm_error(
+                            message=info_message,
+                            provider=self.provider,
+                            model=getattr(self.model_config, "model", None),
+                            finish_reason=stop_reason,
+                        )
+                    )
                     return info_message, []
                 elif not final_text.strip():
                     # Handle empty content due to other stop reasons (like max_tokens)
@@ -793,7 +903,19 @@ class AnthropicAdapter(BaseAdapter):
                                     with Image.open(image_path) as img:
                                         # Resize if needed
                                         max_size = (1024, 1024)
-                                        img.thumbnail(max_size, Image.LANCZOS)
+                                        resampling_namespace = getattr(
+                                            Image, "Resampling", Image
+                                        )
+                                        img.thumbnail(
+                                            max_size,
+                                            getattr(
+                                                Image,
+                                                "LANCZOS",
+                                                getattr(
+                                                    resampling_namespace, "LANCZOS"
+                                                ),
+                                            ),
+                                        )
 
                                         # Convert to RGB if necessary
                                         if img.mode != "RGB":
@@ -848,7 +970,20 @@ class AnthropicAdapter(BaseAdapter):
                                             with Image.open(local_path) as img:
                                                 # Same processing as above
                                                 max_size = (1024, 1024)
-                                                img.thumbnail(max_size, Image.LANCZOS)
+                                                resampling_namespace = getattr(
+                                                    Image, "Resampling", Image
+                                                )
+                                                img.thumbnail(
+                                                    max_size,
+                                                    getattr(
+                                                        Image,
+                                                        "LANCZOS",
+                                                        getattr(
+                                                            resampling_namespace,
+                                                            "LANCZOS",
+                                                        ),
+                                                    ),
+                                                )
                                                 if img.mode != "RGB":
                                                     img = img.convert("RGB")
 

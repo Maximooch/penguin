@@ -47,24 +47,35 @@ def _is_git_repo(path: Path) -> bool:
         return False
 
 
-def create_folder(path):
+def create_folder(path: str, workspace_path: Optional[str] = None) -> str:
     try:
-        os.makedirs(path, exist_ok=True)
-        return f"Folder created: {os.path.abspath(path)}"
+        root_env = os.environ.get("PENGUIN_WRITE_ROOT", "").lower()
+        root_pref = (
+            root_env
+            if root_env in ("project", "workspace")
+            else get_default_write_root()
+        )
+        safe_path = enforce_allowed_path(
+            Path(path),
+            root_pref=root_pref,
+            cwd_override=workspace_path,
+        )
+        os.makedirs(safe_path, exist_ok=True)
+        return f"Folder created: {os.path.abspath(safe_path)}"
     except Exception as e:
         return f"Error creating folder: {str(e)}"
 
 
-def create_file(path: str, content: str = "") -> str:
+def create_file(
+    path: str,
+    content: str = "",
+    workspace_path: Optional[str] = None,
+) -> str:
     try:
         logging.getLogger(__name__).debug(
             f"Attempting to create file at: {os.path.abspath(path)}"
         )
         logging.getLogger(__name__).debug(f"Current working directory: {os.getcwd()}")
-
-        dir_name = os.path.dirname(path)
-        if dir_name:
-            os.makedirs(dir_name, exist_ok=True)
 
         root_env = os.environ.get("PENGUIN_WRITE_ROOT", "").lower()
         root_pref = (
@@ -72,7 +83,12 @@ def create_file(path: str, content: str = "") -> str:
             if root_env in ("project", "workspace")
             else get_default_write_root()
         )
-        safe_path = enforce_allowed_path(Path(path), root_pref=root_pref)
+        safe_path = enforce_allowed_path(
+            Path(path),
+            root_pref=root_pref,
+            cwd_override=workspace_path,
+        )
+        safe_path.parent.mkdir(parents=True, exist_ok=True)
         with open(safe_path, "w") as f:
             f.write(content)
         return f"File created successfully at {os.path.abspath(safe_path)}"

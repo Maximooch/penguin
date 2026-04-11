@@ -78,7 +78,7 @@ def test_provider_registry_routes_openrouter_gateway_with_context(
         litellm_gateway_loader=_unused_litellm_loader,
     )
     config = ModelConfig(
-        model="openai/gpt-4o",
+        model="openai/gpt-5.4-nano",
         provider="openrouter",
         client_preference="openrouter",
     )
@@ -92,7 +92,7 @@ def test_provider_registry_routes_openrouter_gateway_with_context(
     assert isinstance(handler, _Gateway)
     assert captured == {
         "provider": "openrouter",
-        "model": "openai/gpt-4o",
+        "model": "openai/gpt-5.4-nano",
         "base_url": "http://localhost:3001/api/v1",
         "extra_headers": {"X-Link-User-Id": "user-123"},
     }

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Iterable, cast
 
+from penguin.llm.contracts import FinishReason
 from penguin.llm.adapters.anthropic import AnthropicAdapter
 from penguin.llm.adapters.openai import OpenAIAdapter
 from penguin.llm.adapters.openai_compatible import OpenAICompatibleAdapter
@@ -340,6 +341,7 @@ def build_openrouter_handler(
     usage: dict[str, Any],
     reasoning_enabled: bool = False,
     interrupt_on_tool_call: bool = False,
+    model_id: str = "openai/gpt-4.1-mini",
 ) -> OpenRouterGateway:
     stream_response = OpenRouterStream(stream_chunks)
     create_response = SimpleNamespace(
@@ -373,7 +375,7 @@ def build_openrouter_handler(
 
     gateway = OpenRouterGateway(
         ModelConfig(
-            model="openai/gpt-4o",
+            model=model_id,
             provider="openrouter",
             client_preference="openrouter",
             api_key="sk-or-v1-fixture",
@@ -383,6 +385,46 @@ def build_openrouter_handler(
             interrupt_on_tool_call=interrupt_on_tool_call,
         )
     )
+
+    if reasoning_enabled:
+
+        async def _direct_api_call_with_reasoning(
+            request_params: dict[str, Any],
+            reasoning_config: dict[str, Any],
+            use_streaming: bool,
+            stream_callback: Any,
+        ) -> str:
+            del request_params, reasoning_config
+            full_content = ""
+            for chunk in stream_chunks:
+                choice = chunk.choices[0] if chunk.choices else {}
+                delta = choice.get("delta", {})
+                finish_reason = choice.get("finish_reason")
+                if finish_reason:
+                    gateway._set_last_finish_reason(finish_reason)
+                reasoning_delta = delta.get("reasoning")
+                if reasoning_delta:
+                    gateway._append_reasoning(reasoning_delta)
+                    if use_streaming and stream_callback:
+                        await stream_callback(reasoning_delta, "reasoning")
+                content_delta = delta.get("content")
+                if content_delta:
+                    full_content += content_delta
+                    if use_streaming and stream_callback:
+                        await stream_callback(content_delta, "assistant")
+                tool_calls_delta = delta.get("tool_calls")
+                if tool_calls_delta and interrupt_on_tool_call:
+                    gateway._store_tool_call(tool_calls_delta)
+                    return full_content
+                gateway._set_last_usage(getattr(chunk, "usage", None))
+            if (
+                not gateway.get_last_finish_reason()
+                or gateway.get_last_finish_reason() == FinishReason.UNKNOWN
+            ):
+                gateway._set_last_finish_reason(FinishReason.STOP)
+            return full_content or final_text
+
+        gateway._direct_api_call_with_reasoning = _direct_api_call_with_reasoning  # type: ignore[method-assign]
     return gateway
 
 
