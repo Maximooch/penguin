@@ -42,6 +42,36 @@ async def test_part_adapter_invokes_persist_callback_before_emit():
 
 
 @pytest.mark.asyncio
+async def test_part_adapter_user_message_preserves_supplied_message_id() -> None:
+    bus = _EventBus()
+    adapter = PartEventAdapter(bus)
+    adapter.set_session("session_user_id")
+
+    message_id = await adapter.on_user_message_with_metadata(
+        "hello",
+        message_id="msg_client_1",
+        agent_id="build",
+        model_id="gpt-5.4",
+        provider_id="openai",
+        variant="high",
+    )
+
+    assert message_id == "msg_client_1"
+
+    user_updates = [
+        item
+        for item in _opencode_events(bus, "message.updated")
+        if item.get("role") == "user"
+    ]
+    assert user_updates
+    latest = user_updates[-1]
+    assert latest["id"] == "msg_client_1"
+    assert latest["agent"] == "build"
+    assert latest["model"]["modelID"] == "gpt-5.4"
+    assert latest["model"]["providerID"] == "openai"
+
+
+@pytest.mark.asyncio
 async def test_tool_only_lifecycle_balances_session_status_and_completes_message():
     bus = _EventBus()
     adapter = PartEventAdapter(bus)
@@ -122,6 +152,88 @@ async def test_tool_events_attach_to_completed_stream_message_when_available():
     ]
     assert tool_parts
     assert tool_parts[0]["messageID"] == message_id
+
+
+@pytest.mark.asyncio
+async def test_tool_only_turn_followed_by_stream_reuses_same_message() -> None:
+    bus = _EventBus()
+    adapter = PartEventAdapter(bus)
+    adapter.set_session("session_reuse")
+
+    tool_part_id = await adapter.on_tool_start(
+        "read",
+        {"filePath": "README.md"},
+        tool_call_id="call_reuse",
+    )
+    await adapter.on_tool_end(tool_part_id, "ok")
+
+    tool_parts = [
+        item.get("part", {})
+        for item in _opencode_events(bus, "message.part.updated")
+        if item.get("part", {}).get("type") == "tool"
+    ]
+    assert tool_parts
+    tool_message_id = tool_parts[-1]["messageID"]
+
+    message_id, part_id = await adapter.on_stream_start(
+        agent_id="default",
+        model_id="gpt-5.4",
+        provider_id="openai",
+        variant="high",
+    )
+    assert message_id == tool_message_id
+
+    await adapter.on_stream_chunk(message_id, part_id, "final answer", "assistant")
+    await adapter.on_stream_end(message_id, part_id)
+
+    assistant_updates = [
+        item
+        for item in _opencode_events(bus, "message.updated")
+        if item.get("role") == "assistant" and item.get("id") == message_id
+    ]
+    assert assistant_updates
+    assert assistant_updates[-1]["modelID"] == "gpt-5.4"
+    assert assistant_updates[-1]["providerID"] == "openai"
+    assert assistant_updates[-1]["variant"] == "high"
+
+    text_parts = [
+        item.get("part", {})
+        for item in _opencode_events(bus, "message.part.updated")
+        if item.get("part", {}).get("type") == "text"
+    ]
+    assert text_parts
+    assert text_parts[-1]["messageID"] == message_id
+
+
+@pytest.mark.asyncio
+async def test_user_message_resets_tool_only_message_target() -> None:
+    bus = _EventBus()
+    adapter = PartEventAdapter(bus)
+    adapter.set_session("session_turns")
+
+    first_part_id = await adapter.on_tool_start(
+        "bash",
+        {"command": "pwd"},
+        tool_call_id="call_first",
+    )
+    await adapter.on_tool_end(first_part_id, "ok")
+
+    await adapter.on_user_message("next prompt")
+
+    second_part_id = await adapter.on_tool_start(
+        "bash",
+        {"command": "ls"},
+        tool_call_id="call_second",
+    )
+    await adapter.on_tool_end(second_part_id, "ok")
+
+    tool_parts = [
+        item.get("part", {})
+        for item in _opencode_events(bus, "message.part.updated")
+        if item.get("part", {}).get("type") == "tool"
+    ]
+    assert len(tool_parts) >= 2
+    assert tool_parts[0]["messageID"] != tool_parts[-1]["messageID"]
 
 
 @pytest.mark.asyncio

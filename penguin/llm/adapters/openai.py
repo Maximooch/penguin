@@ -924,6 +924,15 @@ class OpenAIAdapter(BaseAdapter):
         }
         if isinstance(reasoning_config, dict) and reasoning_config:
             payload["reasoning"] = reasoning_config
+            include_items = payload.get("include")
+            resolved_include = (
+                [item for item in include_items if isinstance(item, str)]
+                if isinstance(include_items, list)
+                else []
+            )
+            if "reasoning.encrypted_content" not in resolved_include:
+                resolved_include.append("reasoning.encrypted_content")
+            payload["include"] = resolved_include
         if previous_response_id:
             payload["previous_response_id"] = previous_response_id
         if conversation_id:
@@ -1213,7 +1222,7 @@ class OpenAIAdapter(BaseAdapter):
                                         response_obj
                                     )
                                 )
-                                if reasoning_text:
+                                if reasoning_text and not accumulated_reasoning.strip():
                                     accumulated_reasoning += reasoning_text
                                     self._append_reasoning(reasoning_text)
                             extracted = self._extract_text_from_response_object(
@@ -1657,6 +1666,7 @@ class OpenAIAdapter(BaseAdapter):
     ) -> str:
         """Stream using the official OpenAI SDK responses.stream API."""
         accumulated_content: List[str] = []
+        accumulated_reasoning = ""
         try:
             # Async streaming context
             async with self.client.responses.stream(**request_params) as stream:  # type: ignore[attr-defined]
@@ -1680,6 +1690,7 @@ class OpenAIAdapter(BaseAdapter):
                             event
                         )
                         if reasoning_delta:
+                            accumulated_reasoning += reasoning_delta
                             self._append_reasoning(reasoning_delta)
                         if reasoning_delta and stream_callback:
                             await self._safe_invoke_callback(
@@ -1689,9 +1700,10 @@ class OpenAIAdapter(BaseAdapter):
                             )
                 final = await stream.get_final_response()
                 self._set_last_usage(getattr(final, "usage", None))
-                self._append_reasoning(
-                    self._extract_reasoning_from_response_object(final)
-                )
+                final_reasoning = self._extract_reasoning_from_response_object(final)
+                if final_reasoning and not accumulated_reasoning.strip():
+                    accumulated_reasoning += final_reasoning
+                    self._append_reasoning(final_reasoning)
                 tool_call = self._extract_function_call_from_response_object(final)
                 if tool_call:
                     self._last_tool_call = tool_call
@@ -1870,14 +1882,55 @@ class OpenAIAdapter(BaseAdapter):
             return reasoning_config
 
         prepared = dict(reasoning_config)
-        if not stream:
-            return prepared
         if bool(getattr(self.model_config, "reasoning_exclude", False)):
             return prepared
 
         if "summary" not in prepared and "generate_summary" not in prepared:
-            prepared["summary"] = "concise"
+            prepared["summary"] = "auto"
         return prepared
+
+    def _extract_reasoning_texts(self, payload: Any) -> List[str]:
+        """Extract reasoning summary text from nested Responses payload shapes."""
+
+        texts: List[str] = []
+        seen: set[str] = set()
+
+        def append(value: Any) -> None:
+            text = self._coerce_reasoning_text(value)
+            if not text or text in seen:
+                return
+            seen.add(text)
+            texts.append(text)
+
+        def walk(value: Any) -> None:
+            if isinstance(value, dict):
+                append(value.get("text"))
+                append(value.get("delta"))
+
+                summary = value.get("summary")
+                if isinstance(summary, list):
+                    for item in summary:
+                        walk(item)
+                else:
+                    walk(summary)
+
+                content = value.get("content")
+                if isinstance(content, list):
+                    for item in content:
+                        walk(item)
+                else:
+                    walk(content)
+                return
+
+            if isinstance(value, list):
+                for item in value:
+                    walk(item)
+                return
+
+            append(value)
+
+        walk(payload)
+        return texts
 
     def _extract_reasoning_delta_from_sdk_event(self, event: Any) -> str:
         """Extract reasoning text from OpenAI SDK stream events."""
@@ -1898,6 +1951,16 @@ class OpenAIAdapter(BaseAdapter):
             if part is None:
                 return ""
             return self._coerce_reasoning_text(getattr(part, "text", ""))
+
+        if etype in {"response.output_item.added", "response.output_item.done"}:
+            item = getattr(event, "item", None)
+            item_payload = self._to_dict(item)
+            if item_payload.get("type") in {
+                "reasoning",
+                "summary",
+                "reasoning_summary",
+            }:
+                return "".join(self._extract_reasoning_texts(item_payload))
 
         return ""
 
@@ -1922,6 +1985,15 @@ class OpenAIAdapter(BaseAdapter):
             part = payload.get("part")
             if isinstance(part, dict):
                 return self._coerce_reasoning_text(part.get("text", ""))
+
+        if etype in {"response.output_item.added", "response.output_item.done"}:
+            item = payload.get("item")
+            if isinstance(item, dict) and item.get("type") in {
+                "reasoning",
+                "summary",
+                "reasoning_summary",
+            }:
+                return "".join(self._extract_reasoning_texts(item))
 
         return ""
 
@@ -1992,15 +2064,7 @@ class OpenAIAdapter(BaseAdapter):
             if item_type not in {"reasoning", "summary", "reasoning_summary"}:
                 continue
 
-            for content_item in item_payload.get("content", []) or []:
-                content_payload = self._to_dict(content_item)
-                text = self._coerce_reasoning_text(
-                    content_payload.get("text")
-                    or content_payload.get("summary")
-                    or content_payload.get("content")
-                )
-                if text:
-                    reasoning_parts.append(text)
+            reasoning_parts.extend(self._extract_reasoning_texts(item_payload))
 
         return "".join(reasoning_parts)
 

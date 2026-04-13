@@ -481,8 +481,158 @@ def test_get_session_messages_prefers_transcript_over_legacy_rows():
     messages = get_session_messages(core, session.id)
 
     assert messages is not None
-    assert [item["info"]["id"] for item in messages] == ["msg_assistant"]
+    assert [item["info"]["id"] for item in messages] == ["msg_assistant", "msg_user"]
     assert messages[0]["parts"][0]["text"] == "assistant from transcript"
+
+
+def test_get_session_messages_merges_legacy_user_rows_when_transcript_omits_them():
+    now = datetime.now().isoformat()
+    user_created = int(datetime.fromisoformat(now).timestamp() * 1000)
+    session = _session("session_transcript_users", "Transcript Users", now)
+    session.messages.append(
+        Message(
+            id="msg_user",
+            role="user",
+            content="please update the port",
+            category=MessageCategory.DIALOG,
+            timestamp=now,
+        )
+    )
+    session.metadata[TRANSCRIPT_KEY] = {
+        "order": ["msg_assistant"],
+        "messages": {
+            "msg_assistant": {
+                "info": {
+                    "id": "msg_assistant",
+                    "sessionID": session.id,
+                    "role": "assistant",
+                    "time": {
+                        "created": user_created + 1,
+                        "completed": user_created + 2,
+                    },
+                    "parentID": "root",
+                    "modelID": "m",
+                    "providerID": "p",
+                    "mode": "chat",
+                    "agent": "default",
+                    "path": {"cwd": "/tmp", "root": "/tmp"},
+                    "cost": 0,
+                    "tokens": {
+                        "input": 0,
+                        "output": 0,
+                        "reasoning": 0,
+                        "cache": {"read": 0, "write": 0},
+                    },
+                },
+                "part_order": ["part_assistant"],
+                "parts": {
+                    "part_assistant": {
+                        "id": "part_assistant",
+                        "sessionID": session.id,
+                        "messageID": "msg_assistant",
+                        "type": "text",
+                        "text": "done",
+                    }
+                },
+            }
+        },
+    }
+    core = _core([session])
+
+    messages = get_session_messages(core, session.id)
+
+    assert messages is not None
+    assert [item["info"]["role"] for item in messages] == ["user", "assistant"]
+    assert messages[0]["info"]["id"] == "msg_user"
+    assert messages[1]["info"]["id"] == "msg_assistant"
+
+
+def test_get_session_messages_dedupes_equivalent_transcript_and_legacy_users():
+    transcript_created = int(
+        datetime.fromisoformat("2026-02-03T00:00:10").timestamp() * 1000
+    )
+    session = _session(
+        "session_transcript_user_dedupe",
+        "Transcript User Dedupe",
+        "2026-02-03T00:00:00",
+    )
+    session.messages.append(
+        Message(
+            id="msg_user_legacy",
+            role="user",
+            content="Please update the port",
+            category=MessageCategory.DIALOG,
+            timestamp="2026-02-03T00:00:10",
+        )
+    )
+    session.metadata[TRANSCRIPT_KEY] = {
+        "order": ["msg_user_transcript", "msg_assistant"],
+        "messages": {
+            "msg_user_transcript": {
+                "info": {
+                    "id": "msg_user_transcript",
+                    "sessionID": session.id,
+                    "role": "user",
+                    "time": {"created": transcript_created},
+                    "agent": "default",
+                    "model": {"providerID": "p", "modelID": "m"},
+                },
+                "part_order": ["part_user"],
+                "parts": {
+                    "part_user": {
+                        "id": "part_user",
+                        "sessionID": session.id,
+                        "messageID": "msg_user_transcript",
+                        "type": "text",
+                        "text": "please   update the   port",
+                    }
+                },
+            },
+            "msg_assistant": {
+                "info": {
+                    "id": "msg_assistant",
+                    "sessionID": session.id,
+                    "role": "assistant",
+                    "time": {
+                        "created": transcript_created + 1000,
+                        "completed": transcript_created + 2000,
+                    },
+                    "parentID": "root",
+                    "modelID": "m",
+                    "providerID": "p",
+                    "mode": "chat",
+                    "agent": "default",
+                    "path": {"cwd": "/tmp", "root": "/tmp"},
+                    "cost": 0,
+                    "tokens": {
+                        "input": 0,
+                        "output": 0,
+                        "reasoning": 0,
+                        "cache": {"read": 0, "write": 0},
+                    },
+                },
+                "part_order": ["part_assistant"],
+                "parts": {
+                    "part_assistant": {
+                        "id": "part_assistant",
+                        "sessionID": session.id,
+                        "messageID": "msg_assistant",
+                        "type": "text",
+                        "text": "done",
+                    }
+                },
+            },
+        },
+    }
+    core = _core([session])
+
+    messages = get_session_messages(core, session.id)
+
+    assert messages is not None
+    assert [item["info"]["id"] for item in messages] == [
+        "msg_user_transcript",
+        "msg_assistant",
+    ]
 
 
 def test_session_todo_round_trip():

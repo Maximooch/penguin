@@ -960,6 +960,91 @@ def _legacy_message_to_with_parts(
     return {"info": info, "parts": [part]}
 
 
+def _row_created_at(row: dict[str, Any]) -> int:
+    """Return message creation time in milliseconds for transcript rows."""
+    info = row.get("info") if isinstance(row, dict) else None
+    if not isinstance(info, dict):
+        return 0
+    time_data = info.get("time")
+    if not isinstance(time_data, dict):
+        return 0
+    created = time_data.get("created")
+    return created if isinstance(created, int) else 0
+
+
+def _normalize_text(value: str) -> str:
+    """Normalize message text for loose deduplication."""
+    return " ".join(value.split()).strip().lower()
+
+
+def _row_text(row: dict[str, Any]) -> str:
+    """Return normalized text content from transcript rows."""
+    parts = row.get("parts") if isinstance(row, dict) else None
+    if not isinstance(parts, list):
+        return ""
+    text_parts = [
+        part.get("text", "")
+        for part in parts
+        if isinstance(part, dict)
+        and part.get("type") == "text"
+        and isinstance(part.get("text"), str)
+    ]
+    return _normalize_text("\n".join(text_parts)) if text_parts else ""
+
+
+def _merge_transcript_with_legacy_users(
+    rows: list[dict[str, Any]],
+    legacy_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge older legacy user rows when a persisted transcript omitted them."""
+    if not rows:
+        return rows
+
+    known_ids = {
+        str(row["info"].get("id"))
+        for row in rows
+        if isinstance(row.get("info"), dict) and row["info"].get("id")
+    }
+    transcript_users_by_text: dict[str, list[int]] = {}
+    for row in rows:
+        info = row.get("info") if isinstance(row, dict) else None
+        if not isinstance(info, dict) or info.get("role") != "user":
+            continue
+        text = _row_text(row)
+        if not text:
+            continue
+        transcript_users_by_text.setdefault(text, []).append(_row_created_at(row))
+
+    merged = list(rows)
+    for row in legacy_rows:
+        info = row.get("info") if isinstance(row, dict) else None
+        if not isinstance(info, dict) or info.get("role") != "user":
+            continue
+        message_id = info.get("id")
+        if isinstance(message_id, str) and message_id in known_ids:
+            continue
+        text = _row_text(row)
+        created_at = _row_created_at(row)
+        existing_times = transcript_users_by_text.get(text)
+        if text and existing_times:
+            if any(
+                not existing_time
+                or not created_at
+                or abs(existing_time - created_at) <= 30_000
+                for existing_time in existing_times
+            ):
+                continue
+        merged.append(row)
+
+    merged.sort(
+        key=lambda row: (
+            _row_created_at(row),
+            str((row.get("info") or {}).get("id") or ""),
+        )
+    )
+    return merged
+
+
 def _normalize_todo_items(raw: Any) -> list[dict[str, str]]:
     """Normalize todo payloads to OpenCode-compatible Todo[] shape."""
     if not isinstance(raw, list):
@@ -1113,6 +1198,7 @@ def get_session_messages(
         legacy_rows.append(_legacy_message_to_with_parts(core, session, message))
 
     if rows:
+        rows = _merge_transcript_with_legacy_users(rows, legacy_rows)
         if limit is not None and limit > 0:
             return rows[-limit:]
         return rows

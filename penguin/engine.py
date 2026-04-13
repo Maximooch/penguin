@@ -2610,20 +2610,23 @@ class Engine:
             api_client, messages, streaming, stream_callback, extra_kwargs
         )
 
-        # Step 3: Handle Responses API tool_call if one was triggered
-        responses_action_result = await self._handle_responses_tool_call(
-            api_client,
-            tool_manager,
-            cm,
-        )
-
-        # Step 4: Finalize streaming response and persist message
+        # Step 3: Finalize streaming response and persist message.
+        # This must happen before Responses tool execution so any provider
+        # preamble text is attached to the current assistant turn before the
+        # tool result is persisted against it.
         assistant_response = await self._finalize_streaming_response(
             cm,
             assistant_response,
             streaming,
             agent_id=agent_id or self.current_agent_id,
             api_client=api_client,
+        )
+
+        # Step 4: Handle Responses API tool_call if one was triggered
+        responses_action_result = await self._handle_responses_tool_call(
+            api_client,
+            tool_manager,
+            cm,
         )
 
         # Step 5: Execute CodeAct actions if enabled

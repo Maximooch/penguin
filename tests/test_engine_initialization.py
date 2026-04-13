@@ -31,7 +31,8 @@ def test_engine_initializes_without_run_state_attribute_error() -> None:
     assert "default" in engine.agents
 
 
-def test_finalize_streaming_response_persists_non_chunk_output() -> None:
+@pytest.mark.asyncio
+async def test_finalize_streaming_response_persists_non_chunk_output() -> None:
     engine = Engine(
         EngineSettings(),
         MagicMock(),
@@ -51,7 +52,7 @@ def test_finalize_streaming_response_persists_non_chunk_output() -> None:
         get_current_session=MagicMock(return_value=SimpleNamespace(id="session_1")),
     )
 
-    result = engine._finalize_streaming_response(
+    result = await engine._finalize_streaming_response(
         cast(Any, cm),
         "[Error: Model rejected image input]",
         streaming=True,
@@ -64,7 +65,8 @@ def test_finalize_streaming_response_persists_non_chunk_output() -> None:
     )
 
 
-def test_finalize_streaming_response_uses_finalized_content_without_duplicate_save() -> (
+@pytest.mark.asyncio
+async def test_finalize_streaming_response_uses_finalized_content_without_duplicate_save() -> (
     None
 ):
     engine = Engine(
@@ -90,7 +92,7 @@ def test_finalize_streaming_response_uses_finalized_content_without_duplicate_sa
         get_current_session=MagicMock(return_value=SimpleNamespace(id="session_1")),
     )
 
-    result = engine._finalize_streaming_response(
+    result = await engine._finalize_streaming_response(
         cast(Any, cm),
         "fallback answer",
         streaming=True,

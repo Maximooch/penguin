@@ -2604,9 +2604,13 @@ class PenguinCore:
         if isinstance(input_data, str):
             message = input_data
             image_paths = None
+            client_message_id = None
         else:
             message = input_data.get("text", "")
             image_paths = input_data.get("image_paths")
+            client_message_id = input_data.get("client_message_id")
+            if not isinstance(client_message_id, str) or not client_message_id.strip():
+                client_message_id = None
             if not image_paths:
                 legacy_path = input_data.get("image_path")
                 if isinstance(legacy_path, str) and legacy_path.strip():
@@ -2758,6 +2762,11 @@ class PenguinCore:
             # Emit user message event before processing
             logger.debug(f"Emitting user message event: {message[:30]}...")
             await self.emit_ui_event("message", user_message_dict)
+            await self._emit_opencode_user_message_with_metadata(
+                message,
+                message_id=client_message_id,
+                agent_id=agent_id,
+            )
 
             # Use new Engine layer if available
             if self.engine:
@@ -4130,25 +4139,17 @@ class PenguinCore:
                 message=message,
                 category=category,
             )
+            trace_session_id = target_session_id if persisted else None
             try:
-                # Try to get agent-specific conversation if available
-                conv = self.conversation_manager.get_agent_conversation(
-                    resolved_agent_id
-                )
-                current_session_id = getattr(getattr(conv, "session", None), "id", None)
-                _trace_log_info(
-                    "core.stream.finalize request=%s session=%s conversation=%s agent=%s current_conv_session=%s persisted=%s message_len=%s events=%s empty=%s",
-                    execution_context.request_id if execution_context else "unknown",
-                    target_session_id or "unknown",
-                    resolved_conversation_id or "",
-                    resolved_agent_id,
-                    current_session_id or "unknown",
-                    persisted,
-                    len(message.content or ""),
-                    len(events),
-                    bool(message.was_empty),
-                )
                 if not persisted:
+                    # Try to get agent-specific conversation if available
+                    conv = self.conversation_manager.get_agent_conversation(
+                        resolved_agent_id
+                    )
+                    current_session_id = getattr(
+                        getattr(conv, "session", None), "id", None
+                    )
+                    trace_session_id = current_session_id or trace_session_id
                     if target_session_id and current_session_id != target_session_id:
                         logger.warning(
                             "Skipping shared-conversation finalize persistence for agent '%s': target session '%s' != current session '%s'",
@@ -4172,6 +4173,7 @@ class PenguinCore:
                     current_session_id = getattr(
                         getattr(conv, "session", None), "id", None
                     )
+                    trace_session_id = current_session_id or trace_session_id
                     if target_session_id and current_session_id != target_session_id:
                         logger.warning(
                             "Skipping fallback finalize persistence: target session '%s' != current session '%s'",
@@ -4187,6 +4189,19 @@ class PenguinCore:
                         )
                         if hasattr(conv, "save"):
                             conv.save()
+
+            _trace_log_info(
+                "core.stream.finalize request=%s session=%s conversation=%s agent=%s effective_conv_session=%s persisted=%s message_len=%s events=%s empty=%s",
+                execution_context.request_id if execution_context else "unknown",
+                target_session_id or "unknown",
+                resolved_conversation_id or "",
+                resolved_agent_id,
+                trace_session_id or "unknown",
+                persisted,
+                len(message.content or ""),
+                len(events),
+                bool(message.was_empty),
+            )
 
             # For WebSocket streaming (RunMode), emit a message event
             if hasattr(self, "_temp_ws_callback") and self._temp_ws_callback:
@@ -5577,6 +5592,7 @@ class PenguinCore:
                 stream_state = maybe_state
         message_id_hint = stream_state.get("message_id")
         agent_id_hint = data.get("agent_id") or data.get("agentID") or "default"
+        model_state = self._resolve_opencode_model_state(session_id=session_id)
 
         call_id = data.get("id") or data.get("call_id") or data.get("callID")
         if not call_id:
@@ -5590,6 +5606,9 @@ class PenguinCore:
             metadata=metadata,
             message_id=message_id_hint,
             agent_id=agent_id_hint,
+            model_id=model_state.get("modelID"),
+            provider_id=model_state.get("providerID"),
+            variant=model_state.get("variant"),
         )
         self._opencode_tool_parts[tool_key] = part_id
         self._opencode_tool_info[tool_key] = {
@@ -5636,6 +5655,7 @@ class PenguinCore:
                     stream_state = maybe_state
             message_id_hint = stream_state.get("message_id")
             agent_id_hint = data.get("agent_id") or data.get("agentID") or "default"
+            model_state = self._resolve_opencode_model_state(session_id=session_id)
 
             part_id = await adapter.on_tool_start(
                 mapped_tool,
@@ -5644,6 +5664,9 @@ class PenguinCore:
                 metadata=metadata,
                 message_id=message_id_hint,
                 agent_id=agent_id_hint,
+                model_id=model_state.get("modelID"),
+                provider_id=model_state.get("providerID"),
+                variant=model_state.get("variant"),
             )
             self._opencode_tool_parts[tool_key] = part_id
             info = {"tool": mapped_tool, "input": tool_input, "metadata": metadata}
@@ -6218,6 +6241,16 @@ class PenguinCore:
 
     async def _emit_opencode_user_message(self, content: str) -> str:
         """Emit user message in OpenCode format."""
+        return await self._emit_opencode_user_message_with_metadata(content)
+
+    async def _emit_opencode_user_message_with_metadata(
+        self,
+        content: str,
+        *,
+        message_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+    ) -> str:
+        """Emit user message in OpenCode format with stable message metadata."""
         execution_context = get_current_execution_context()
         session_id = None
         if execution_context:
@@ -6228,4 +6261,12 @@ class PenguinCore:
             current_session = self.conversation_manager.get_current_session()
             session_id = current_session.id if current_session else "unknown"
         adapter = self._get_tui_adapter(session_id)
-        return await adapter.on_user_message(content)
+        model_state = self._resolve_opencode_model_state(session_id=session_id)
+        return await adapter.on_user_message_with_metadata(
+            content,
+            message_id=message_id,
+            agent_id=agent_id or "default",
+            model_id=model_state.get("modelID"),
+            provider_id=model_state.get("providerID"),
+            variant=model_state.get("variant"),
+        )

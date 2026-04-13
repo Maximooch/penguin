@@ -77,6 +77,7 @@ def test_finalize_streaming_message_persists_to_target_session_store() -> None:
     load_calls: list[str] = []
     add_calls: list[dict[str, object]] = []
     save_calls: list[str] = []
+    get_agent_calls: list[str] = []
 
     target_session = SimpleNamespace(
         id="target-session",
@@ -99,7 +100,8 @@ def test_finalize_streaming_message_persists_to_target_session_store() -> None:
     )
     core.conversation_manager = SimpleNamespace(
         current_agent_id="default",
-        get_agent_conversation=lambda agent_id: conversation,
+        get_agent_conversation=lambda agent_id: get_agent_calls.append(agent_id)
+        or conversation,
         session_manager=session_manager,
         agent_session_managers={"default": session_manager},
     )
@@ -116,6 +118,7 @@ def test_finalize_streaming_message_persists_to_target_session_store() -> None:
     assert result == {"content": "scoped response"}
     assert load_calls == []
     assert add_calls == []
+    assert get_agent_calls == []
     assert save_calls == ["target-session"]
     assert len(target_session.messages) == 1
     assert target_session.messages[0].content == "scoped response"

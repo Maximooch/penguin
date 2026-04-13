@@ -3529,6 +3529,11 @@ async def handle_chat_message(
 
         # Create input data dictionary from request
         input_data = {"text": request.text}
+        if (
+            isinstance(request.client_message_id, str)
+            and request.client_message_id.strip()
+        ):
+            input_data["client_message_id"] = request.client_message_id.strip()
 
         # Add image paths if provided (with limit enforcement)
         if image_paths:

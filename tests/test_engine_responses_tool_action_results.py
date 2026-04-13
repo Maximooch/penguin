@@ -6,6 +6,8 @@ from typing import Any, cast
 import pytest
 
 from penguin.engine import Engine
+from penguin.system.conversation import ConversationSystem
+from penguin.system.state import Session
 
 
 @pytest.mark.asyncio
@@ -76,3 +78,101 @@ async def test_llm_step_includes_responses_tool_call_in_action_results() -> None
     assert result["action_results"] == [
         {"action": "code_execution", "result": "7", "status": "completed"}
     ]
+
+
+@pytest.mark.asyncio
+async def test_llm_step_persists_assistant_before_responses_tool_result() -> None:
+    engine = Engine.__new__(Engine)
+    cast(Any, engine)._default_run_state = SimpleNamespace(current_agent_id="default")
+    engine.current_agent_id = "default"
+    engine.default_agent_id = "default"
+    engine._trace_request_fields = lambda: ("req-1", "session-1")  # type: ignore[method-assign]
+    engine._apply_agent_mode_notice = lambda messages: messages  # type: ignore[method-assign]
+    engine._prepare_responses_tools = lambda _tm: {}  # type: ignore[method-assign]
+
+    async def _call_llm_with_retry(*args: Any, **kwargs: Any) -> str:
+        del args, kwargs
+        return "Checking git state, then I'll write the roadmap file."
+
+    async def _finalize_streaming_response(
+        cm: Any,
+        response: str,
+        streaming: bool,
+        agent_id: str | None = None,
+        api_client: Any = None,
+    ) -> str:
+        del streaming, agent_id, api_client
+        cm.conversation.add_assistant_message(response)
+        return response
+
+    async def _execute_codeact_actions(*args: Any, **kwargs: Any) -> list[Any]:
+        del args, kwargs
+        return []
+
+    engine._call_llm_with_retry = _call_llm_with_retry  # type: ignore[method-assign]
+    engine._finalize_streaming_response = _finalize_streaming_response  # type: ignore[method-assign]
+    engine._execute_codeact_actions = _execute_codeact_actions  # type: ignore[method-assign]
+    engine._extract_usage_from_api_client = lambda _api_client: {}  # type: ignore[method-assign]
+
+    session = Session()
+    conversation = ConversationSystem(
+        session_manager=SimpleNamespace(
+            current_session=session,
+            mark_session_modified=lambda _session_id: None,
+            check_session_boundary=lambda _session: False,
+        )
+    )
+    conversation.session = session
+
+    cm = SimpleNamespace(
+        conversation=conversation,
+        add_action_result=conversation.add_action_result,
+        core=None,
+    )
+    api_client = SimpleNamespace(
+        model_config=SimpleNamespace(provider="openai", model="gpt-5.4"),
+        client_handler=SimpleNamespace(
+            get_and_clear_last_tool_call=lambda: {
+                "call_id": "call_123",
+                "name": "write_file",
+                "arguments": '{"path":"context/todo.md","content":"hi"}',
+            }
+        ),
+    )
+    tool_manager = SimpleNamespace(execute_tool=lambda _name, _args: "ok")
+    action_executor = SimpleNamespace()
+    engine._resolve_components = lambda _agent_id: (  # type: ignore[method-assign]
+        cm,
+        api_client,
+        tool_manager,
+        action_executor,
+    )
+
+    result = await engine._llm_step(
+        tools_enabled=True, streaming=True, agent_id="default"
+    )
+
+    assert (
+        result["assistant_response"]
+        == "Checking git state, then I'll write the roadmap file."
+    )
+    assert result["action_results"] == [
+        {"action": "write_file", "result": "ok", "status": "completed"}
+    ]
+    assert [message.role for message in conversation.session.messages] == [
+        "assistant",
+        "tool",
+    ]
+    assistant_message = conversation.session.messages[0]
+    tool_message = conversation.session.messages[1]
+    assert assistant_message.metadata["tool_calls"] == [
+        {
+            "id": "call_123",
+            "type": "function",
+            "function": {
+                "name": "write_file",
+                "arguments": '{"path":"context/todo.md","content":"hi"}',
+            },
+        }
+    ]
+    assert tool_message.metadata["tool_call_id"] == "call_123"
