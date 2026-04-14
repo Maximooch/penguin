@@ -1225,6 +1225,12 @@ class OpenAIAdapter(BaseAdapter):
                                 if reasoning_text and not accumulated_reasoning.strip():
                                     accumulated_reasoning += reasoning_text
                                     self._append_reasoning(reasoning_text)
+                                    if stream_callback:
+                                        await self._safe_invoke_callback(
+                                            stream_callback,
+                                            reasoning_text,
+                                            "reasoning",
+                                        )
                             extracted = self._extract_text_from_response_object(
                                 response_obj
                             )
@@ -1235,6 +1241,12 @@ class OpenAIAdapter(BaseAdapter):
                         reasoning_delta = (
                             self._extract_reasoning_delta_from_sse_payload(data)
                         )
+                        if (
+                            reasoning_delta
+                            and etype == "response.output_item.done"
+                            and accumulated_reasoning.strip()
+                        ):
+                            reasoning_delta = ""
                         if reasoning_delta:
                             accumulated_reasoning += reasoning_delta
                             self._append_reasoning(reasoning_delta)
@@ -1689,6 +1701,12 @@ class OpenAIAdapter(BaseAdapter):
                         reasoning_delta = self._extract_reasoning_delta_from_sdk_event(
                             event
                         )
+                        if (
+                            reasoning_delta
+                            and etype == "response.output_item.done"
+                            and accumulated_reasoning.strip()
+                        ):
+                            reasoning_delta = ""
                         if reasoning_delta:
                             accumulated_reasoning += reasoning_delta
                             self._append_reasoning(reasoning_delta)
@@ -1704,6 +1722,12 @@ class OpenAIAdapter(BaseAdapter):
                 if final_reasoning and not accumulated_reasoning.strip():
                     accumulated_reasoning += final_reasoning
                     self._append_reasoning(final_reasoning)
+                    if stream_callback:
+                        await self._safe_invoke_callback(
+                            stream_callback,
+                            final_reasoning,
+                            "reasoning",
+                        )
                 tool_call = self._extract_function_call_from_response_object(final)
                 if tool_call:
                     self._last_tool_call = tool_call
@@ -1947,12 +1971,9 @@ class OpenAIAdapter(BaseAdapter):
             "response.reasoning_summary_part.added",
             "response.reasoning_summary_part.done",
         }:
-            part = getattr(event, "part", None)
-            if part is None:
-                return ""
-            return self._coerce_reasoning_text(getattr(part, "text", ""))
+            return ""
 
-        if etype in {"response.output_item.added", "response.output_item.done"}:
+        if etype == "response.output_item.done":
             item = getattr(event, "item", None)
             item_payload = self._to_dict(item)
             if item_payload.get("type") in {
@@ -1982,11 +2003,9 @@ class OpenAIAdapter(BaseAdapter):
             "response.reasoning_summary_part.added",
             "response.reasoning_summary_part.done",
         }:
-            part = payload.get("part")
-            if isinstance(part, dict):
-                return self._coerce_reasoning_text(part.get("text", ""))
+            return ""
 
-        if etype in {"response.output_item.added", "response.output_item.done"}:
+        if etype == "response.output_item.done":
             item = payload.get("item")
             if isinstance(item, dict) and item.get("type") in {
                 "reasoning",

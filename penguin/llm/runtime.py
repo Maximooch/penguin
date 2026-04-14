@@ -383,25 +383,10 @@ def build_reasoning_visibility_note(
     reasoning_payload: Optional[Dict[str, Any]],
     usage: Optional[Dict[str, Any]],
 ) -> Optional[str]:
-    """Explain when reasoning was applied but no visible summary was returned."""
+    """Return no UI note when visible reasoning is absent."""
 
-    if not include_reasoning:
-        return None
-    if not isinstance(reasoning_payload, dict) or not reasoning_payload:
-        return None
-    if isinstance(reasoning_text, str) and reasoning_text.strip():
-        return None
-    reasoning_tokens = 0
-    if isinstance(usage, dict):
-        try:
-            reasoning_tokens = int(usage.get("reasoning_tokens") or 0)
-        except Exception:
-            reasoning_tokens = 0
-    if reasoning_tokens <= 0:
-        return None
-    return (
-        "Reasoning effort applied, but provider returned no visible reasoning summary."
-    )
+    del include_reasoning, reasoning_text, reasoning_payload, usage
+    return None
 
 
 def build_reasoning_debug_snapshot(
@@ -482,45 +467,10 @@ def persist_reasoning_debug_snapshot(
 def build_reasoning_fallback_note(
     api_client: Any, usage: Optional[Dict[str, Any]] = None
 ) -> Optional[str]:
-    """Return a fallback note when reasoning ran but no visible summary exists."""
+    """Return no fallback note when visible reasoning is absent."""
 
-    if api_client is None:
-        return None
-    model_config = getattr(api_client, "model_config", None)
-    reasoning_payload = resolve_reasoning_payload(model_config)
-    if not isinstance(reasoning_payload, dict) or not reasoning_payload:
-        return None
-
-    handler = getattr(api_client, "client_handler", None)
-    getter = getattr(handler, "get_last_reasoning", None)
-    reasoning_text = ""
-    if callable(getter):
-        try:
-            reasoning_text = str(getter() or "")
-        except Exception:
-            reasoning_text = ""
-    if reasoning_text.strip():
-        return None
-
-    resolved_usage = dict(usage or {})
-    if not resolved_usage:
-        usage_getter = getattr(handler, "get_last_usage", None)
-        if callable(usage_getter):
-            try:
-                maybe_usage = usage_getter()
-                if isinstance(maybe_usage, dict):
-                    resolved_usage = maybe_usage
-            except Exception:
-                resolved_usage = {}
-    try:
-        reasoning_tokens = int(resolved_usage.get("reasoning_tokens") or 0)
-    except Exception:
-        reasoning_tokens = 0
-    if reasoning_tokens <= 0:
-        return None
-    return (
-        "Reasoning effort applied, but provider returned no visible reasoning summary."
-    )
+    del api_client, usage
+    return None
 
 
 def apply_reasoning_variant_override(

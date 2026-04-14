@@ -31,10 +31,7 @@ def test_build_reasoning_fallback_note_when_tokens_exist_without_visible_summary
 
     note = engine._build_reasoning_fallback_note(api_client)
 
-    assert (
-        note
-        == "Reasoning effort applied, but provider returned no visible reasoning summary."
-    )
+    assert note is None
 
 
 @pytest.mark.asyncio
@@ -65,12 +62,4 @@ async def test_inject_reasoning_fallback_note_routes_into_streaming_reasoning_ch
         session_id="session-1",
     )
 
-    assert seen == [
-        {
-            "chunk": "Reasoning effort applied, but provider returned no visible reasoning summary.",
-            "message_type": "reasoning",
-            "agent_id": "default",
-            "session_id": "session-1",
-            "conversation_id": "session-1",
-        }
-    ]
+    assert seen == []

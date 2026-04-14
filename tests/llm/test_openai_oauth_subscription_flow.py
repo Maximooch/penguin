@@ -359,7 +359,15 @@ async def test_oauth_stream_records_reasoning_debug_snapshot(
             response = _FakeResponse(
                 200,
                 lines=[
+                    (
+                        'data: {"type":"response.reasoning_summary_part.added",'
+                        '"part":{"text":"thinking..."}}'
+                    ),
                     'data: {"type":"response.reasoning_summary_text.delta","delta":"thinking..."}',
+                    (
+                        'data: {"type":"response.reasoning_summary_part.done",'
+                        '"part":{"text":"thinking..."}}'
+                    ),
                     'data: {"type":"response.output_text.delta","delta":"ok"}',
                     'data: {"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":2,"output_tokens_details":{"reasoning_tokens":5},"total_tokens":12}}}',
                     "data: [DONE]",
@@ -514,15 +522,13 @@ async def test_oauth_stream_extracts_reasoning_from_output_item_done_summary(
             response = _FakeResponse(
                 200,
                 lines=[
-                    (
-                        'data: {"type":"response.output_item.done","item":{'
-                        '"id":"rs_1","type":"reasoning","summary":['
-                        '{"type":"summary_text","text":"Thinking from summary."}'
-                        "]}}"
-                    ),
                     'data: {"type":"response.output_text.delta","delta":"ok"}',
                     (
-                        'data: {"type":"response.completed","response":{"usage":{'
+                        'data: {"type":"response.completed","response":{"output":['
+                        '{"type":"reasoning","summary":['
+                        '{"type":"summary_text","text":"Thinking from summary."}'
+                        "]}"
+                        '],"usage":{'
                         '"input_tokens":10,"output_tokens":2,'
                         '"output_tokens_details":{"reasoning_tokens":5},'
                         '"total_tokens":12}}}'
@@ -558,7 +564,7 @@ async def test_oauth_stream_extracts_reasoning_from_output_item_done_summary(
     )
 
     assert result == "ok"
-    assert chunks == [("Thinking from summary.", "reasoning"), ("ok", "assistant")]
+    assert chunks == [("ok", "assistant"), ("Thinking from summary.", "reasoning")]
     assert adapter.get_last_reasoning() == "Thinking from summary."
     debug_snapshot = adapter.get_reasoning_debug_snapshot()
     assert debug_snapshot["visible_reasoning_summary_returned"] is True

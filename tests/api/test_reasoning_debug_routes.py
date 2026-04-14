@@ -44,10 +44,7 @@ def test_reasoning_visibility_note_when_tokens_exist_without_summary() -> None:
         usage={"reasoning_tokens": 158},
     )
 
-    assert (
-        note
-        == "Reasoning effort applied, but provider returned no visible reasoning summary."
-    )
+    assert note is None
 
 
 def test_reasoning_debug_endpoint_returns_persisted_snapshot(tmp_path: Path) -> None:
