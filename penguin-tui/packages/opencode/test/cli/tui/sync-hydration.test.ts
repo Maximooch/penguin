@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import type { Message, Part, Session } from "@opencode-ai/sdk/v2"
 import {
+  compareMessagesByCreated,
   hydrateSessionSnapshot,
   mergeHydratedMessages,
   type SessionHydrationClient,
@@ -279,5 +280,28 @@ describe("sync hydration", () => {
 
     expect(merged).toHaveLength(2)
     expect(merged.map((item) => item.id)).toEqual(["msg_server_old", "msg_local_2"])
+  })
+
+  test("sorts live messages by creation time instead of arrival order", () => {
+    const laterUser: Message = {
+      id: "msg_user_2",
+      sessionID: "ses_reopen",
+      role: "user",
+      agent: "build",
+      model: { providerID: "openrouter", modelID: "openai/gpt-5-mini" },
+      time: { created: 20 },
+    }
+    const earlierAssistant: Message = {
+      ...assistant,
+      id: "msg_assistant_0",
+      time: { created: 10, completed: 11 },
+    }
+
+    const sorted = [laterUser, earlierAssistant].sort(compareMessagesByCreated)
+
+    expect(sorted.map((item) => item.id)).toEqual([
+      "msg_assistant_0",
+      "msg_user_2",
+    ])
   })
 })

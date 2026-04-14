@@ -8,7 +8,9 @@ import pytest
 
 from penguin.llm import api_client as api_client_module
 from penguin.llm.api_client import APIClient
+from penguin.llm.contracts import ErrorCategory, LLMProviderError
 from penguin.llm.model_config import ModelConfig
+from penguin.llm.provider_transform import build_llm_error
 
 
 @pytest.mark.parametrize(
@@ -189,4 +191,87 @@ async def test_api_client_classifies_context_limit_400_as_upstream_request(
 
     assert result.startswith(
         "Error: LLM upstream rejected the request, likely due to context or output token limits. Diagnostic ID:"
+    )
+
+
+@pytest.mark.asyncio
+async def test_api_client_formats_retry_after_from_canonical_handler_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FailingAdapter:
+        async def get_response(self, *args: Any, **kwargs: Any) -> str:
+            del args, kwargs
+            raise LLMProviderError(
+                build_llm_error(
+                    message="Rate limited (diag_id=rl_deadbeef)",
+                    provider="openai",
+                    model="gpt-5.4",
+                    category=ErrorCategory.RATE_LIMIT,
+                    retry_after_seconds=12,
+                )
+            )
+
+    def _get_adapter(provider_id: str, model_config: ModelConfig) -> _FailingAdapter:
+        del provider_id, model_config
+        return _FailingAdapter()
+
+    monkeypatch.setattr(api_client_module, "get_adapter", _get_adapter)
+
+    cfg = ModelConfig(
+        model="gpt-5.4",
+        provider="openai",
+        client_preference="native",
+        api_key="test-key",
+    )
+    client = APIClient(cfg)
+
+    result = await client.get_response(
+        [{"role": "user", "content": "hello"}],
+        stream=False,
+    )
+
+    assert result == (
+        "Error: LLM upstream rate-limited this request. Retry after 12s. Diagnostic ID: rl_deadbeef."
+    )
+
+
+@pytest.mark.asyncio
+async def test_api_client_prefers_canonical_handler_error_over_placeholder_string(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FailingAdapter:
+        async def get_response(self, *args: Any, **kwargs: Any) -> str:
+            del args, kwargs
+            return "[Error: Rate limit exceeded (provider-x). Please retry later.]"
+
+        def get_last_error(self):
+            return build_llm_error(
+                message="Rate limit exceeded (diag_id=rl_surface123)",
+                provider="openrouter",
+                model="openai/gpt-5.4-nano",
+                category=ErrorCategory.RATE_LIMIT,
+                retry_after_seconds=8,
+            )
+
+    def _get_adapter(provider_id: str, model_config: ModelConfig) -> _FailingAdapter:
+        del provider_id, model_config
+        return _FailingAdapter()
+
+    monkeypatch.setattr(api_client_module, "get_adapter", _get_adapter)
+
+    cfg = ModelConfig(
+        model="openai/gpt-5.4-nano",
+        provider="openai",
+        client_preference="native",
+        api_key="test-key",
+    )
+    client = APIClient(cfg)
+
+    result = await client.get_response(
+        [{"role": "user", "content": "hello"}],
+        stream=False,
+    )
+
+    assert result == (
+        "Error: LLM upstream rate-limited this request. Retry after 8s. Diagnostic ID: rl_surface123."
     )

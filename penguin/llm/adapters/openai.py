@@ -8,7 +8,7 @@ import logging
 import mimetypes
 import os
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union, cast
 
 import httpx  # type: ignore
 import tiktoken  # type: ignore
@@ -25,7 +25,15 @@ from penguin.web.services.provider_credentials import (
 )
 
 from ..api_client import ConnectionPoolManager
+from ..contracts import FinishReason, LLMError, LLMProviderError, LLMUsage
 from ..model_config import ModelConfig
+from ..provider_transform import (
+    build_llm_error,
+    extract_retry_after_seconds,
+    normalize_finish_reason,
+    normalize_openai_responses_tool_choice,
+    normalize_openai_responses_tools,
+)
 from .base import BaseAdapter
 
 logger = logging.getLogger(__name__)
@@ -93,6 +101,11 @@ class OpenAIAdapter(BaseAdapter):
             base_url=model_config.api_base or None,
             default_headers=default_headers or None,
         )
+        self._last_usage: Dict[str, Any] = {}
+        self._last_error: Optional[LLMError] = None
+        self._last_finish_reason = FinishReason.UNKNOWN
+        self._last_reasoning = ""
+        self._last_reasoning_debug: Dict[str, Any] = {}
         self._reset_tool_call_state()
 
     @property
@@ -121,6 +134,118 @@ class OpenAIAdapter(BaseAdapter):
         )
         self._reset_tool_call_state()
         return dict(tool_call) if isinstance(tool_call, dict) else None
+
+    def _reset_response_state(self) -> None:
+        self._last_usage = {}
+        self._last_error = None
+        self._last_finish_reason = FinishReason.UNKNOWN
+        self._last_reasoning = ""
+        self._last_reasoning_debug = {}
+
+    def _set_last_error(self, error: Optional[LLMError]) -> None:
+        self._last_error = error
+
+    def get_last_error(self) -> Optional[LLMError]:
+        if not isinstance(self._last_error, LLMError):
+            return None
+        return self._last_error
+
+    def _set_last_finish_reason(self, finish_reason: Any) -> FinishReason:
+        self._last_finish_reason = normalize_finish_reason(finish_reason)
+        return self._last_finish_reason
+
+    def get_last_finish_reason(self) -> FinishReason:
+        return self._last_finish_reason
+
+    def _append_reasoning(self, reasoning_text: str) -> None:
+        if reasoning_text:
+            self._last_reasoning += reasoning_text
+
+    def get_last_reasoning(self) -> str:
+        return self._last_reasoning
+
+    def get_reasoning_debug_snapshot(self) -> Dict[str, Any]:
+        if not isinstance(self._last_reasoning_debug, dict):
+            return {}
+        return dict(self._last_reasoning_debug)
+
+    def _start_reasoning_debug_snapshot(self, **fields: Any) -> None:
+        self._last_reasoning_debug = {
+            "event_types": [],
+            "reasoning_event_types": [],
+            **fields,
+        }
+
+    def _record_reasoning_debug_event(
+        self, event_type: Any, payload: Any = None
+    ) -> None:
+        snapshot = self._last_reasoning_debug
+        if not isinstance(snapshot, dict):
+            return
+
+        event_name = str(event_type or "").strip()
+        if not event_name:
+            return
+
+        event_types = snapshot.setdefault("event_types", [])
+        if (
+            isinstance(event_types, list)
+            and event_name not in event_types
+            and len(event_types) < 64
+        ):
+            event_types.append(event_name)
+
+        if "reasoning" in event_name or "thinking" in event_name:
+            reasoning_event_types = snapshot.setdefault("reasoning_event_types", [])
+            if (
+                isinstance(reasoning_event_types, list)
+                and event_name not in reasoning_event_types
+                and len(reasoning_event_types) < 64
+            ):
+                reasoning_event_types.append(event_name)
+
+        if event_name == "response.completed" and isinstance(payload, dict):
+            snapshot["completed_event_present"] = True
+
+    def _finalize_reasoning_debug_snapshot(self, **fields: Any) -> None:
+        if not isinstance(self._last_reasoning_debug, dict):
+            self._last_reasoning_debug = {}
+        self._last_reasoning_debug.update(fields)
+
+    def _normalize_usage(self, usage: Any) -> Dict[str, Any]:
+        payload = self._to_dict(usage)
+        if not payload:
+            return {}
+
+        input_details = self._to_dict(payload.get("input_tokens_details"))
+        output_details = self._to_dict(payload.get("output_tokens_details"))
+        normalized = LLMUsage.from_dict(
+            {
+                "input_tokens": payload.get("input_tokens"),
+                "output_tokens": payload.get("output_tokens"),
+                "reasoning_tokens": output_details.get("reasoning_tokens")
+                or payload.get("reasoning_tokens"),
+                "cache_read_tokens": input_details.get("cached_tokens")
+                or payload.get("input_cache_read_tokens"),
+                "cache_write_tokens": payload.get("input_cache_write_tokens"),
+                "total_tokens": payload.get("total_tokens"),
+                "cost": payload.get("cost")
+                or payload.get("total_cost")
+                or payload.get("usd"),
+            }
+        )
+        return normalized.to_dict()
+
+    def _set_last_usage(self, usage: Any) -> None:
+        normalized = self._normalize_usage(usage)
+        if normalized:
+            self._last_usage = normalized
+
+    def get_last_usage(self) -> Dict[str, Any]:
+        """Return normalized usage from the latest request."""
+        if not isinstance(self._last_usage, dict):
+            return {}
+        return dict(self._last_usage)
 
     def _to_dict(self, value: Any) -> Dict[str, Any]:
         if isinstance(value, dict):
@@ -309,6 +434,7 @@ class OpenAIAdapter(BaseAdapter):
             max_output_tokens = legacy_max_tokens
 
         self._reset_tool_call_state()
+        self._reset_response_state()
 
         processed_messages = await self._process_messages_for_vision(messages)
 
@@ -325,8 +451,8 @@ class OpenAIAdapter(BaseAdapter):
         previous_response_id: Optional[str] = kwargs.get("previous_response_id")
         conversation_id: Optional[str] = kwargs.get("conversation")
         response_format: Optional[Dict[str, Any]] = kwargs.get("response_format")
-        tools: Optional[List[Dict[str, Any]]] = kwargs.get("tools")
-        tool_choice: Optional[Union[str, Dict[str, Any]]] = kwargs.get("tool_choice")
+        tools = normalize_openai_responses_tools(kwargs.get("tools"))
+        tool_choice = normalize_openai_responses_tool_choice(kwargs.get("tool_choice"))
 
         oauth_record = await self._resolve_oauth_record_for_request()
         if oauth_record is not None:
@@ -408,9 +534,14 @@ class OpenAIAdapter(BaseAdapter):
 
         # Non-streaming
         resp = await self.client.responses.create(**request_params)
+        self._set_last_usage(getattr(resp, "usage", None))
+        self._append_reasoning(self._extract_reasoning_from_response_object(resp))
         tool_call = self._extract_function_call_from_response_object(resp)
         if tool_call:
             self._last_tool_call = tool_call
+            self._set_last_finish_reason(FinishReason.TOOL_CALLS)
+        else:
+            self._set_last_finish_reason(FinishReason.STOP)
 
         output_text = getattr(resp, "output_text", None)
         if isinstance(output_text, str):
@@ -617,14 +748,7 @@ class OpenAIAdapter(BaseAdapter):
             saw_non_system_message = True
 
             if role == "tool":
-                tool_text = self._extract_codex_text_content(message.get("content"))
-                if tool_text:
-                    transformed_messages.append(
-                        {
-                            "role": "user",
-                            "content": f"[TOOL RESULT]\n{tool_text}",
-                        }
-                    )
+                transformed_messages.append({**message, "role": "tool"})
                 continue
 
             transformed_messages.append(
@@ -647,10 +771,64 @@ class OpenAIAdapter(BaseAdapter):
         messages: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
         items: List[Dict[str, Any]] = []
+        seen_function_call_ids: set[str] = set()
         for message in messages:
-            role = self._normalize_codex_role(
-                str(message.get("role", "user") or "user")
-            )
+            raw_role = str(message.get("role", "user") or "user")
+            role = self._normalize_codex_role(raw_role)
+
+            if raw_role.strip().lower() == "tool":
+                tool_call_id = str(message.get("tool_call_id") or "").strip()
+                output_text = self._extract_codex_text_content(message.get("content"))
+                tool_name = str(message.get("name") or "").strip()
+                tool_arguments = (
+                    str(message.get("tool_arguments") or "{}").strip() or "{}"
+                )
+                if (
+                    tool_call_id
+                    and tool_call_id not in seen_function_call_ids
+                    and tool_name
+                ):
+                    items.append(
+                        {
+                            "type": "function_call",
+                            "call_id": tool_call_id,
+                            "name": tool_name,
+                            "arguments": tool_arguments,
+                        }
+                    )
+                    seen_function_call_ids.add(tool_call_id)
+                if tool_call_id and output_text:
+                    items.append(
+                        {
+                            "type": "function_call_output",
+                            "call_id": tool_call_id,
+                            "output": output_text,
+                        }
+                    )
+                continue
+
+            tool_calls = message.get("tool_calls")
+            if role == "assistant" and isinstance(tool_calls, list):
+                for tool_call in tool_calls:
+                    if not isinstance(tool_call, dict):
+                        continue
+                    function_payload = tool_call.get("function")
+                    if not isinstance(function_payload, dict):
+                        continue
+                    call_id = str(tool_call.get("id") or "").strip()
+                    name = str(function_payload.get("name") or "").strip()
+                    arguments = function_payload.get("arguments") or "{}"
+                    if call_id and name:
+                        items.append(
+                            {
+                                "type": "function_call",
+                                "call_id": call_id,
+                                "name": name,
+                                "arguments": str(arguments),
+                            }
+                        )
+                        seen_function_call_ids.add(call_id)
+
             text_part_type = self._codex_text_part_type_for_role(role)
             content = message.get("content", "")
             parts: List[Dict[str, Any]] = []
@@ -746,16 +924,27 @@ class OpenAIAdapter(BaseAdapter):
         }
         if isinstance(reasoning_config, dict) and reasoning_config:
             payload["reasoning"] = reasoning_config
+            include_items = payload.get("include")
+            resolved_include = (
+                [item for item in include_items if isinstance(item, str)]
+                if isinstance(include_items, list)
+                else []
+            )
+            if "reasoning.encrypted_content" not in resolved_include:
+                resolved_include.append("reasoning.encrypted_content")
+            payload["include"] = resolved_include
         if previous_response_id:
             payload["previous_response_id"] = previous_response_id
         if conversation_id:
             payload["conversation"] = conversation_id
         if response_format:
             payload["response_format"] = response_format
-        if tools:
-            payload["tools"] = tools
-        if tool_choice:
-            payload["tool_choice"] = tool_choice
+        normalized_tools = normalize_openai_responses_tools(tools)
+        normalized_tool_choice = normalize_openai_responses_tool_choice(tool_choice)
+        if normalized_tools:
+            payload["tools"] = normalized_tools
+        if normalized_tool_choice:
+            payload["tool_choice"] = normalized_tool_choice
 
         try:
             uses_effort_style = bool(self.model_config._uses_effort_style())
@@ -790,6 +979,19 @@ class OpenAIAdapter(BaseAdapter):
             payload.get("store"),
             bool(account_id),
             isinstance(reasoning_config, dict) and bool(reasoning_config),
+        )
+        self._start_reasoning_debug_snapshot(
+            provider=self.provider,
+            model=model_id,
+            diag_id=diag_id,
+            stage="stream" if stream else "request",
+            requested_stream=bool(stream),
+            reasoning_requested=bool(
+                isinstance(reasoning_config, dict) and reasoning_config
+            ),
+            reasoning_config=dict(reasoning_config or {}),
+            visible_reasoning_chars=0,
+            visible_reasoning_summary_returned=False,
         )
 
         return await self._stream_codex_oauth(
@@ -863,6 +1065,7 @@ class OpenAIAdapter(BaseAdapter):
                 diag_id=diag_id,
                 trace=trace,
                 latency_ms=latency_ms,
+                retry_after_seconds=extract_retry_after_seconds(response.headers),
             )
 
         _log_info(
@@ -884,7 +1087,30 @@ class OpenAIAdapter(BaseAdapter):
                 body = response.text
 
         if isinstance(body, str):
+            self._set_last_finish_reason(FinishReason.STOP)
+            self._finalize_reasoning_debug_snapshot(
+                visible_reasoning_chars=len(self.get_last_reasoning()),
+                visible_reasoning_summary_returned=bool(self.get_last_reasoning()),
+                usage=self.get_last_usage(),
+                finish_reason=self.get_last_finish_reason().value,
+            )
             return body
+        if isinstance(body, dict):
+            self._record_reasoning_debug_event("response.completed", body)
+            self._set_last_usage(body.get("usage"))
+            self._append_reasoning(self._extract_reasoning_from_response_object(body))
+        tool_call = self._extract_function_call_from_response_object(body)
+        if tool_call:
+            self._last_tool_call = tool_call
+            self._set_last_finish_reason(FinishReason.TOOL_CALLS)
+        else:
+            self._set_last_finish_reason(FinishReason.STOP)
+        self._finalize_reasoning_debug_snapshot(
+            visible_reasoning_chars=len(self.get_last_reasoning()),
+            visible_reasoning_summary_returned=bool(self.get_last_reasoning()),
+            usage=self.get_last_usage(),
+            finish_reason=self.get_last_finish_reason().value,
+        )
         return self._extract_text_from_response_object(body) or ""
 
     async def _stream_codex_oauth(
@@ -902,6 +1128,7 @@ class OpenAIAdapter(BaseAdapter):
 
         accumulated_content: List[str] = []
         completed_text = ""
+        accumulated_reasoning = ""
         started = time.monotonic()
         response: httpx.Response | None = None
         try:
@@ -930,6 +1157,9 @@ class OpenAIAdapter(BaseAdapter):
                             diag_id=diag_id,
                             trace=self._trace_headers(response),
                             latency_ms=latency_ms,
+                            retry_after_seconds=extract_retry_after_seconds(
+                                response.headers
+                            ),
                         )
 
                     async for line in response.aiter_lines():
@@ -949,8 +1179,19 @@ class OpenAIAdapter(BaseAdapter):
                         if not isinstance(data, dict):
                             continue
 
+                        self._record_reasoning_debug_event(data.get("type"), data)
+
                         tool_call = self._capture_responses_tool_event(data)
                         if tool_call and self._interrupt_on_tool_call():
+                            self._set_last_finish_reason(FinishReason.TOOL_CALLS)
+                            self._finalize_reasoning_debug_snapshot(
+                                visible_reasoning_chars=len(self.get_last_reasoning()),
+                                visible_reasoning_summary_returned=bool(
+                                    self.get_last_reasoning()
+                                ),
+                                usage=self.get_last_usage(),
+                                finish_reason=self.get_last_finish_reason().value,
+                            )
                             return completed_text or "".join(accumulated_content)
 
                         etype = data.get("type")
@@ -974,6 +1215,22 @@ class OpenAIAdapter(BaseAdapter):
 
                         if etype == "response.completed":
                             response_obj = data.get("response")
+                            if isinstance(response_obj, dict):
+                                self._set_last_usage(response_obj.get("usage"))
+                                reasoning_text = (
+                                    self._extract_reasoning_from_response_object(
+                                        response_obj
+                                    )
+                                )
+                                if reasoning_text and not accumulated_reasoning.strip():
+                                    accumulated_reasoning += reasoning_text
+                                    self._append_reasoning(reasoning_text)
+                                    if stream_callback:
+                                        await self._safe_invoke_callback(
+                                            stream_callback,
+                                            reasoning_text,
+                                            "reasoning",
+                                        )
                             extracted = self._extract_text_from_response_object(
                                 response_obj
                             )
@@ -984,6 +1241,15 @@ class OpenAIAdapter(BaseAdapter):
                         reasoning_delta = (
                             self._extract_reasoning_delta_from_sse_payload(data)
                         )
+                        if (
+                            reasoning_delta
+                            and etype == "response.output_item.done"
+                            and accumulated_reasoning.strip()
+                        ):
+                            reasoning_delta = ""
+                        if reasoning_delta:
+                            accumulated_reasoning += reasoning_delta
+                            self._append_reasoning(reasoning_delta)
                         if reasoning_delta and stream_callback:
                             await self._safe_invoke_callback(
                                 stream_callback,
@@ -1034,8 +1300,25 @@ class OpenAIAdapter(BaseAdapter):
             output_chars,
             trace,
         )
+        self._finalize_reasoning_debug_snapshot(
+            visible_reasoning_chars=len(self.get_last_reasoning()),
+            visible_reasoning_summary_returned=bool(self.get_last_reasoning()),
+            usage=self.get_last_usage(),
+            finish_reason=self.get_last_finish_reason().value,
+        )
+        _log_info(
+            "openai.oauth.codex.reasoning_debug diag_id=%s model=%s visible_reasoning_chars=%s summary_returned=%s reasoning_tokens=%s reasoning_events=%s event_types=%s",
+            diag_id,
+            model_id,
+            self._last_reasoning_debug.get("visible_reasoning_chars", 0),
+            self._last_reasoning_debug.get("visible_reasoning_summary_returned", False),
+            self.get_last_usage().get("reasoning_tokens", 0),
+            self._last_reasoning_debug.get("reasoning_event_types", []),
+            self._last_reasoning_debug.get("event_types", []),
+        )
 
         if completed_text:
+            self._set_last_finish_reason(FinishReason.STOP)
             if not accumulated_content and stream_callback:
                 await self._safe_invoke_callback(
                     stream_callback,
@@ -1044,6 +1327,7 @@ class OpenAIAdapter(BaseAdapter):
                 )
             return completed_text
 
+        self._set_last_finish_reason(FinishReason.STOP)
         return "".join(accumulated_content)
 
     def _codex_error_detail(
@@ -1121,6 +1405,7 @@ class OpenAIAdapter(BaseAdapter):
         diag_id: str,
         trace: Dict[str, str] | None = None,
         latency_ms: int | None = None,
+        retry_after_seconds: float | None = None,
     ) -> None:
         input_payload = payload.get("input")
         input_is_list = isinstance(input_payload, list)
@@ -1140,10 +1425,32 @@ class OpenAIAdapter(BaseAdapter):
             f"trace={trace or {}}"
         )
         _log_error(error_message)
-
-        if status_code in {401, 403}:
-            raise RuntimeError(f"OpenAI OAuth reauth required: {error_message}")
-        raise RuntimeError(error_message)
+        prefix = "OpenAI OAuth reauth required: " if status_code in {401, 403} else ""
+        llm_error = build_llm_error(
+            message=f"{prefix}{error_message}",
+            provider=self.provider,
+            model=model_id,
+            status_code=status_code,
+            retry_after_seconds=retry_after_seconds,
+            provider_data={
+                "diag_id": diag_id,
+                "trace": trace or {},
+                "stage": stage,
+                "model_fallback": model_fallback,
+            },
+        )
+        self._set_last_error(llm_error)
+        self._finalize_reasoning_debug_snapshot(
+            status="error",
+            visible_reasoning_chars=len(self.get_last_reasoning()),
+            visible_reasoning_summary_returned=bool(self.get_last_reasoning()),
+            usage=self.get_last_usage(),
+            finish_reason=llm_error.finish_reason.value
+            if llm_error.finish_reason
+            else None,
+            error=llm_error.message,
+        )
+        raise LLMProviderError(llm_error)
 
     def _raise_codex_transport_error(
         self,
@@ -1172,7 +1479,28 @@ class OpenAIAdapter(BaseAdapter):
             f"store={store_flag}, error_type={type(error).__name__}) detail={error}"
         )
         _log_error(error_message, exc_info=True)
-        raise RuntimeError(error_message) from error
+        llm_error = build_llm_error(
+            message=error_message,
+            provider=self.provider,
+            model=model_id,
+            provider_data={
+                "diag_id": diag_id,
+                "stage": stage,
+                "model_fallback": model_fallback,
+            },
+        )
+        self._set_last_error(llm_error)
+        self._finalize_reasoning_debug_snapshot(
+            status="error",
+            visible_reasoning_chars=len(self.get_last_reasoning()),
+            visible_reasoning_summary_returned=bool(self.get_last_reasoning()),
+            usage=self.get_last_usage(),
+            finish_reason=llm_error.finish_reason.value
+            if llm_error.finish_reason
+            else None,
+            error=llm_error.message,
+        )
+        raise LLMProviderError(llm_error) from error
 
     def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Pass-through for OpenAI chat format with minimal normalization.
@@ -1201,9 +1529,15 @@ class OpenAIAdapter(BaseAdapter):
                             fixed_parts.append(part)
                     else:
                         fixed_parts.append({"type": "text", "text": str(part)})
-                normalized.append({"role": role, "content": fixed_parts})
+                item = dict(m)
+                item["role"] = role
+                item["content"] = fixed_parts
+                normalized.append(item)
             else:
-                normalized.append({"role": role, "content": str(content)})
+                item = dict(m)
+                item["role"] = role
+                item["content"] = str(content)
+                normalized.append(item)
         return normalized
 
     def process_response(self, response: Any) -> Tuple[str, List[Any]]:
@@ -1316,7 +1650,13 @@ class OpenAIAdapter(BaseAdapter):
 
             with PILImage.open(image_path) as img:
                 max_size = (1024, 1024)
-                img.thumbnail(max_size, PILImage.LANCZOS)
+                resampling_namespace = getattr(PILImage, "Resampling", PILImage)
+                resample_filter = getattr(
+                    PILImage,
+                    "LANCZOS",
+                    getattr(resampling_namespace, "LANCZOS"),
+                )
+                img.thumbnail(max_size, resample_filter)
                 if img.mode != "RGB":
                     img = img.convert("RGB")
                 buffer = io.BytesIO()
@@ -1338,12 +1678,14 @@ class OpenAIAdapter(BaseAdapter):
     ) -> str:
         """Stream using the official OpenAI SDK responses.stream API."""
         accumulated_content: List[str] = []
+        accumulated_reasoning = ""
         try:
             # Async streaming context
             async with self.client.responses.stream(**request_params) as stream:  # type: ignore[attr-defined]
                 async for event in stream:
                     tool_call = self._capture_responses_tool_event(event)
                     if tool_call and self._interrupt_on_tool_call():
+                        self._set_last_finish_reason(FinishReason.TOOL_CALLS)
                         return "".join(accumulated_content)
 
                     etype = getattr(event, "type", None)
@@ -1359,6 +1701,15 @@ class OpenAIAdapter(BaseAdapter):
                         reasoning_delta = self._extract_reasoning_delta_from_sdk_event(
                             event
                         )
+                        if (
+                            reasoning_delta
+                            and etype == "response.output_item.done"
+                            and accumulated_reasoning.strip()
+                        ):
+                            reasoning_delta = ""
+                        if reasoning_delta:
+                            accumulated_reasoning += reasoning_delta
+                            self._append_reasoning(reasoning_delta)
                         if reasoning_delta and stream_callback:
                             await self._safe_invoke_callback(
                                 stream_callback,
@@ -1366,11 +1717,25 @@ class OpenAIAdapter(BaseAdapter):
                                 "reasoning",
                             )
                 final = await stream.get_final_response()
+                self._set_last_usage(getattr(final, "usage", None))
+                final_reasoning = self._extract_reasoning_from_response_object(final)
+                if final_reasoning and not accumulated_reasoning.strip():
+                    accumulated_reasoning += final_reasoning
+                    self._append_reasoning(final_reasoning)
+                    if stream_callback:
+                        await self._safe_invoke_callback(
+                            stream_callback,
+                            final_reasoning,
+                            "reasoning",
+                        )
                 tool_call = self._extract_function_call_from_response_object(final)
                 if tool_call:
                     self._last_tool_call = tool_call
+                    self._set_last_finish_reason(FinishReason.TOOL_CALLS)
                     if self._interrupt_on_tool_call():
                         return "".join(accumulated_content)
+                else:
+                    self._set_last_finish_reason(FinishReason.STOP)
                 # Prefer SDK's convenience property if present
                 final_text = getattr(final, "output_text", None)
                 if isinstance(final_text, str) and final_text:
@@ -1415,8 +1780,15 @@ class OpenAIAdapter(BaseAdapter):
         async with http.stream("POST", url, headers=headers, json=payload) as resp:
             if resp.status_code != 200:
                 text = (await resp.aread()).decode()
-                logger.error(f"Responses SSE failed {resp.status_code}: {text}")
-                return ""
+                error = build_llm_error(
+                    message=f"Responses SSE failed {resp.status_code}: {text}",
+                    provider=self.provider,
+                    model=self.model_config.model,
+                    status_code=resp.status_code,
+                    retry_after_seconds=extract_retry_after_seconds(resp.headers),
+                )
+                self._set_last_error(error)
+                raise LLMProviderError(error)
             async for line in resp.aiter_lines():
                 if not line or not line.strip():
                     continue
@@ -1429,6 +1801,7 @@ class OpenAIAdapter(BaseAdapter):
                     data = json.loads(data_str)
                     tool_call = self._capture_responses_tool_event(data)
                     if tool_call and self._interrupt_on_tool_call():
+                        self._set_last_finish_reason(FinishReason.TOOL_CALLS)
                         return completed_text or "".join(accumulated_content)
 
                     etype = data.get("type")
@@ -1446,6 +1819,13 @@ class OpenAIAdapter(BaseAdapter):
                             completed_text = done_text
                     elif etype == "response.completed":
                         response_obj = data.get("response")
+                        if isinstance(response_obj, dict):
+                            self._set_last_usage(response_obj.get("usage"))
+                            self._append_reasoning(
+                                self._extract_reasoning_from_response_object(
+                                    response_obj
+                                )
+                            )
                         extracted = self._extract_text_from_response_object(
                             response_obj
                         )
@@ -1455,6 +1835,8 @@ class OpenAIAdapter(BaseAdapter):
                         reasoning_delta = (
                             self._extract_reasoning_delta_from_sse_payload(data)
                         )
+                        if reasoning_delta:
+                            self._append_reasoning(reasoning_delta)
                         if reasoning_delta and stream_callback:
                             await self._safe_invoke_callback(
                                 stream_callback,
@@ -1465,15 +1847,20 @@ class OpenAIAdapter(BaseAdapter):
                     # Skip malformed lines
                     continue
         if completed_text:
+            self._set_last_finish_reason(FinishReason.STOP)
             if not accumulated_content and stream_callback:
                 await self._safe_invoke_callback(
                     stream_callback, completed_text, "assistant"
                 )
             return completed_text
+        self._set_last_finish_reason(FinishReason.STOP)
         return "".join(accumulated_content)
 
     async def _safe_invoke_callback(
-        self, cb: Callable[[str], None], chunk: str, message_type: str
+        self,
+        cb: Callable[..., Any],
+        chunk: str,
+        message_type: str,
     ) -> None:
         """Invoke provided callback safely with support for legacy signatures."""
         try:
@@ -1481,10 +1868,11 @@ class OpenAIAdapter(BaseAdapter):
 
             if asyncio.iscoroutinefunction(cb):
                 params = list(inspect.signature(cb).parameters.keys())
+                callback = cast(Callable[..., Any], cb)
                 if len(params) >= 2:
-                    await cb(chunk, message_type)
+                    await callback(chunk, message_type)
                 else:
-                    await cb(chunk)
+                    await callback(chunk)
             else:
                 loop = asyncio.get_event_loop()
                 params = []
@@ -1495,9 +1883,15 @@ class OpenAIAdapter(BaseAdapter):
                 except Exception:
                     params = []
                 if len(params) >= 2:
-                    await loop.run_in_executor(None, cb, chunk, message_type)
+                    await loop.run_in_executor(
+                        None,
+                        lambda: cast(Callable[..., Any], cb)(chunk, message_type),
+                    )
                 else:
-                    await loop.run_in_executor(None, cb, chunk)
+                    await loop.run_in_executor(
+                        None,
+                        lambda: cast(Callable[..., Any], cb)(chunk),
+                    )
         except Exception as e:
             logger.error(f"Error in stream callback: {e}")
 
@@ -1512,14 +1906,55 @@ class OpenAIAdapter(BaseAdapter):
             return reasoning_config
 
         prepared = dict(reasoning_config)
-        if not stream:
-            return prepared
         if bool(getattr(self.model_config, "reasoning_exclude", False)):
             return prepared
 
         if "summary" not in prepared and "generate_summary" not in prepared:
-            prepared["summary"] = "concise"
+            prepared["summary"] = "auto"
         return prepared
+
+    def _extract_reasoning_texts(self, payload: Any) -> List[str]:
+        """Extract reasoning summary text from nested Responses payload shapes."""
+
+        texts: List[str] = []
+        seen: set[str] = set()
+
+        def append(value: Any) -> None:
+            text = self._coerce_reasoning_text(value)
+            if not text or text in seen:
+                return
+            seen.add(text)
+            texts.append(text)
+
+        def walk(value: Any) -> None:
+            if isinstance(value, dict):
+                append(value.get("text"))
+                append(value.get("delta"))
+
+                summary = value.get("summary")
+                if isinstance(summary, list):
+                    for item in summary:
+                        walk(item)
+                else:
+                    walk(summary)
+
+                content = value.get("content")
+                if isinstance(content, list):
+                    for item in content:
+                        walk(item)
+                else:
+                    walk(content)
+                return
+
+            if isinstance(value, list):
+                for item in value:
+                    walk(item)
+                return
+
+            append(value)
+
+        walk(payload)
+        return texts
 
     def _extract_reasoning_delta_from_sdk_event(self, event: Any) -> str:
         """Extract reasoning text from OpenAI SDK stream events."""
@@ -1536,10 +1971,17 @@ class OpenAIAdapter(BaseAdapter):
             "response.reasoning_summary_part.added",
             "response.reasoning_summary_part.done",
         }:
-            part = getattr(event, "part", None)
-            if part is None:
-                return ""
-            return self._coerce_reasoning_text(getattr(part, "text", ""))
+            return ""
+
+        if etype == "response.output_item.done":
+            item = getattr(event, "item", None)
+            item_payload = self._to_dict(item)
+            if item_payload.get("type") in {
+                "reasoning",
+                "summary",
+                "reasoning_summary",
+            }:
+                return "".join(self._extract_reasoning_texts(item_payload))
 
         return ""
 
@@ -1561,9 +2003,16 @@ class OpenAIAdapter(BaseAdapter):
             "response.reasoning_summary_part.added",
             "response.reasoning_summary_part.done",
         }:
-            part = payload.get("part")
-            if isinstance(part, dict):
-                return self._coerce_reasoning_text(part.get("text", ""))
+            return ""
+
+        if etype == "response.output_item.done":
+            item = payload.get("item")
+            if isinstance(item, dict) and item.get("type") in {
+                "reasoning",
+                "summary",
+                "reasoning_summary",
+            }:
+                return "".join(self._extract_reasoning_texts(item))
 
         return ""
 
@@ -1618,6 +2067,25 @@ class OpenAIAdapter(BaseAdapter):
         except Exception:
             pass
         return ""
+
+    def _extract_reasoning_from_response_object(self, resp: Any) -> str:
+        """Best-effort extraction of reasoning text from a Responses API object/dict."""
+
+        payload = self._to_dict(resp)
+        output = payload.get("output")
+        if not isinstance(output, list):
+            return ""
+
+        reasoning_parts: List[str] = []
+        for item in output:
+            item_payload = self._to_dict(item)
+            item_type = item_payload.get("type")
+            if item_type not in {"reasoning", "summary", "reasoning_summary"}:
+                continue
+
+            reasoning_parts.extend(self._extract_reasoning_texts(item_payload))
+
+        return "".join(reasoning_parts)
 
     def _build_transcript_input(self, messages: List[Dict[str, Any]]) -> str:
         """Flatten chat messages to a single textual transcript for input."""

@@ -19,7 +19,10 @@ import tiktoken  # type: ignore
 # from litellm import acompletion, completion, token_counter, cost_per_token, completion_cost
 from PIL import Image  # type: ignore
 
+from .contracts import ErrorCategory, LLMError, LLMProviderError
 from .model_config import ModelConfig
+from .provider_registry import ProviderRegistry
+from .provider_transform import apply_model_config_transforms, build_llm_error
 from penguin.constants import get_default_max_history_tokens
 from penguin.utils.callbacks import adapt_stream_callback
 from .adapters import get_adapter  # Keep for native preference
@@ -266,7 +269,13 @@ class APIClient:
         logger (logging.Logger): Logger for this class.
     """
 
-    def __init__(self, model_config: ModelConfig):
+    def __init__(
+        self,
+        model_config: ModelConfig,
+        *,
+        base_url: Optional[str] = None,
+        extra_headers: Optional[Dict[str, str]] = None,
+    ):
         """
         Initialize the APIClient.
 
@@ -279,6 +288,13 @@ class APIClient:
         self.system_prompt = None
         self.logger = logging.getLogger(__name__)
         self.client_handler = None  # Will be set based on preference
+        self._last_error: Optional[LLMError] = None
+        self._base_url = base_url
+        self._extra_headers = dict(extra_headers or {})
+        self.provider_registry = ProviderRegistry(
+            native_adapter_factory=get_adapter,
+            litellm_gateway_loader=load_litellm_gateway_class,
+        )
 
         self.logger.info(
             f"Initializing APIClient for model: {model_config.model}, "
@@ -286,64 +302,32 @@ class APIClient:
             f"Preference: {model_config.client_preference}"
         )
 
-        # --- Instantiate the correct handler ---
-        if model_config.client_preference == "litellm":
-            try:
-                LiteLLMGateway = load_litellm_gateway_class(
-                    "client_preference='litellm'"
-                )
-                # LiteLLM gateway handles API keys/base internally based on model_config
-                self.client_handler = LiteLLMGateway(model_config)
-                self.logger.info(f"Using LiteLLMGateway for {model_config.model}")
-            except RuntimeError as e:
-                self.logger.error("LiteLLM support unavailable: %s", e)
-                raise RuntimeError(str(e)) from e
-            except Exception as e:
-                self.logger.error(
-                    f"Failed to initialize LiteLLMGateway: {e}", exc_info=True
-                )
-                raise ValueError(f"Could not initialize LiteLLMGateway: {e}") from e
-
-        elif model_config.client_preference == "openrouter":
-            try:
-                # Lazy import OpenRouterGateway to avoid import overhead
-                from .openrouter_gateway import OpenRouterGateway
-
-                # Initialize OpenRouter gateway with model_config
-                self.client_handler = OpenRouterGateway(model_config)
-                self.logger.info(f"Using OpenRouterGateway for {model_config.model}")
-            except Exception as e:
-                self.logger.error(
-                    f"Failed to initialize OpenRouterGateway: {e}", exc_info=True
-                )
-                raise ValueError(f"Could not initialize OpenRouterGateway: {e}") from e
-
-        elif model_config.client_preference == "native":
-            try:
-                # Get native adapter
-                # Note: Native adapters might expect simpler model names in model_config.model
-                self.client_handler = get_adapter(model_config.provider, model_config)
-                if not self.client_handler:
-                    raise ValueError(
-                        f"No native adapter found for provider: {model_config.provider}"
-                    )
-                self.logger.info(
-                    f"Using native adapter for provider: {model_config.provider} "
-                    f"(Model: {model_config.model})"
-                )
-                # Native adapter might need API key directly (handled by get_adapter?)
-                # self.api_key = model_config.api_key # Store if needed separately? get_adapter should handle it.
-
-            except Exception as e:
-                self.logger.error(
-                    f"Failed to initialize native adapter for {model_config.provider}: {e}",
-                    exc_info=True,
-                )
-                raise ValueError(f"Could not initialize native adapter: {e}") from e
-        else:
-            raise ValueError(
-                f"Invalid client_preference: {model_config.client_preference}. Must be 'native', 'litellm', or 'openrouter'."
+        # --- Instantiate the correct handler via the shared registry ---
+        try:
+            self.client_handler = self.provider_registry.create_handler(
+                model_config,
+                base_url=self._base_url,
+                extra_headers=self._extra_headers,
             )
+            self.logger.info(
+                "Using %s for %s (provider=%s, preference=%s)",
+                type(self.client_handler).__name__,
+                model_config.model,
+                model_config.provider,
+                model_config.client_preference,
+            )
+        except RuntimeError as e:
+            self.logger.error("Provider handler unavailable: %s", e)
+            raise RuntimeError(str(e)) from e
+        except Exception as e:
+            self.logger.error(
+                "Failed to initialize provider handler for %s/%s: %s",
+                model_config.provider,
+                model_config.model,
+                e,
+                exc_info=True,
+            )
+            raise ValueError(f"Could not initialize provider handler: {e}") from e
 
         # Common properties (potentially less relevant now?)
         self.max_history_tokens = (
@@ -375,24 +359,7 @@ class APIClient:
 
     def _canonicalize_native_model_id(self) -> None:
         """Normalize provider-prefixed native model IDs before adapter creation."""
-        if getattr(self.model_config, "client_preference", "native") != "native":
-            return
-
-        provider = str(getattr(self.model_config, "provider", "") or "").strip().lower()
-        if provider not in {"openai", "anthropic"}:
-            return
-
-        model_value = str(getattr(self.model_config, "model", "") or "").strip()
-        if "/" not in model_value:
-            return
-
-        prefix, remainder = model_value.split("/", 1)
-        if prefix.strip().lower() != provider:
-            return
-        if not remainder.strip():
-            return
-
-        self.model_config.model = remainder.strip()
+        apply_model_config_transforms(self.model_config)
 
     def set_system_prompt(self, prompt: str) -> None:
         """Set the system prompt."""
@@ -458,6 +425,8 @@ class APIClient:
         return value or None
 
     def _classify_handler_exception(self, error: Exception) -> str:
+        if isinstance(error, LLMProviderError):
+            return error.category.value
         if isinstance(
             error, (asyncio.TimeoutError, TimeoutError, httpx.TimeoutException)
         ):
@@ -486,21 +455,75 @@ class APIClient:
             return "timeout"
         return "runtime"
 
-    def _format_user_error_message(self, *, category: str, diag_id: str) -> str:
-        if category == "auth":
+    def _coerce_handler_error(self, error: Exception) -> LLMError:
+        if isinstance(error, LLMProviderError):
+            return error.error
+
+        return build_llm_error(
+            message=str(error),
+            provider=getattr(self.model_config, "provider", None),
+            model=getattr(self.model_config, "model", None),
+            category=self._classify_handler_exception(error),
+        )
+
+    def _get_handler_error(self) -> Optional[LLMError]:
+        handler = getattr(self, "client_handler", None)
+        getter = getattr(handler, "get_last_error", None)
+        if not callable(getter):
+            return None
+        try:
+            error = getter()
+        except Exception:
+            self.logger.debug("Failed to get handler error", exc_info=True)
+            return None
+        return error if isinstance(error, LLMError) else None
+
+    def get_last_error(self) -> Optional[LLMError]:
+        """Return canonical error metadata from the latest request."""
+
+        if not isinstance(self._last_error, LLMError):
+            return None
+        return self._last_error
+
+    def get_reasoning_debug_snapshot(self) -> Dict[str, Any]:
+        """Return handler-provided reasoning debug details when available."""
+
+        handler = getattr(self, "client_handler", None)
+        getter = getattr(handler, "get_reasoning_debug_snapshot", None)
+        if callable(getter):
+            try:
+                snapshot = getter()
+            except Exception:
+                self.logger.debug(
+                    "Failed to get handler reasoning debug snapshot", exc_info=True
+                )
+                return {}
+            if isinstance(snapshot, dict):
+                return dict(snapshot)
+        return {}
+
+    def _format_user_error_message(self, *, error: LLMError, diag_id: str) -> str:
+        category = error.category.value
+        if category == ErrorCategory.AUTH.value:
             reason = "Provider authentication failed. Reconnect and retry"
-        elif category == "timeout":
+        elif category == ErrorCategory.TIMEOUT.value:
             reason = "LLM request timed out"
-        elif category == "network":
+        elif category == ErrorCategory.NETWORK.value:
             reason = "LLM network request failed"
-        elif category == "upstream_request":
+        elif category in {"upstream_request", ErrorCategory.BAD_REQUEST.value}:
             reason = "LLM upstream rejected the request, likely due to context or output token limits"
-        elif category == "rate_limit":
+        elif category == ErrorCategory.RATE_LIMIT.value:
             reason = "LLM upstream rate-limited this request"
-        elif category == "upstream_unavailable":
+        elif category in {
+            "upstream_unavailable",
+            ErrorCategory.PROVIDER_UNAVAILABLE.value,
+        }:
             reason = "LLM upstream is unavailable"
         else:
             reason = "LLM request failed"
+
+        if error.retry_after_seconds and error.retry_after_seconds > 0:
+            reason = f"{reason}. Retry after {int(error.retry_after_seconds)}s"
 
         return f"Error: {reason}. Diagnostic ID: {diag_id}."
 
@@ -555,6 +578,7 @@ class APIClient:
             session_id_ctx = None
 
         request_id_api = request_id_ctx or os.urandom(4).hex()
+        self._last_error = None
         self.logger.info(
             f"[Request:{request_id_api}] APIClient calling handler {type(self.client_handler).__name__}.get_response session={session_id_ctx} model={getattr(self.model_config, 'model', None)} stream={use_streaming}"
         )
@@ -673,6 +697,25 @@ class APIClient:
                 **kwargs,  # Pass through additional parameters like reasoning config
             )
 
+            handler_error = self._get_handler_error()
+            if isinstance(handler_error, LLMError):
+                self._last_error = handler_error
+                is_error_like = isinstance(
+                    response_text, str
+                ) and response_text.lstrip().startswith(
+                    ("[Error:", "Error:", "[Model finished")
+                )
+                if is_error_like or not str(response_text or "").strip():
+                    diag_id = (
+                        self._extract_diagnostic_id(response_text or "")
+                        or self._extract_diagnostic_id(handler_error.message)
+                        or f"llm_{os.urandom(5).hex()}"
+                    )
+                    return self._format_user_error_message(
+                        error=handler_error,
+                        diag_id=diag_id,
+                    )
+
             # If streaming, the callback handled output. Return minimal response.
             # The response_text here is the final accumulated text from the gateway.
             if use_streaming:
@@ -710,21 +753,22 @@ class APIClient:
             handler_name = type(self.client_handler).__name__
             upstream_diag_id = self._extract_diagnostic_id(str(e))
             diag_id = upstream_diag_id or f"llm_{os.urandom(5).hex()}"
-            category = self._classify_handler_exception(e)
+            error_payload = self._coerce_handler_error(e)
+            self._last_error = error_payload
 
             _log_error(
                 "[Request:%s] llm.handler.failure diag_id=%s category=%s "
                 "handler=%s provider=%s model=%s detail=%s",
                 request_id_api,
                 diag_id,
-                category,
+                error_payload.category.value,
                 handler_name,
                 getattr(self.model_config, "provider", "unknown"),
                 getattr(self.model_config, "model", "unknown"),
                 str(e),
                 exc_info=True,
             )
-            return self._format_user_error_message(category=category, diag_id=diag_id)
+            return self._format_user_error_message(error=error_payload, diag_id=diag_id)
 
     # --- Methods below might be simplified or removed if get_response handles all ---
 
@@ -920,7 +964,11 @@ class APIClient:
         try:
             with Image.open(image_path) as img:
                 max_size = (1024, 1024)
-                img.thumbnail(max_size, Image.LANCZOS)
+                resampling_namespace = getattr(Image, "Resampling", Image)
+                img.thumbnail(
+                    max_size,
+                    getattr(Image, "LANCZOS", getattr(resampling_namespace, "LANCZOS")),
+                )
                 if img.mode != "RGB":
                     img = img.convert("RGB")
                 img_byte_arr = io.BytesIO()

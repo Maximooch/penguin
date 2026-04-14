@@ -122,7 +122,7 @@ def test_get_responses_tools_returns_canonical_edit_names_only() -> None:
     )
 
     names = {
-        tool["function"]["name"]
+        tool["name"]
         for tool in tool_manager.get_responses_tools()
         if tool.get("type") == "function"
     }

@@ -32,7 +32,11 @@ import { batch, onMount } from "solid-js"
 import { Log } from "@/util/log"
 import { iife } from "@/util/iife"
 import type { Path } from "@opencode-ai/sdk"
-import { hydrateSessionSnapshot, mergeHydratedMessages } from "./session-hydration"
+import {
+  compareMessagesByCreated,
+  hydrateSessionSnapshot,
+  mergeHydratedMessages,
+} from "./session-hydration"
 import { expandSessionSearchResults, removeSessionRecord, upsertSessionRecord } from "../util/session-family"
 
 type SessionUsage = {
@@ -519,7 +523,14 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           if (sdk.penguin) {
             const match = messages.findIndex((item) => item.id === normalized.id)
             if (match !== -1) {
-              setStore("message", normalized.sessionID, match, reconcile(normalized))
+              setStore(
+                "message",
+                normalized.sessionID,
+                produce((draft) => {
+                  draft.splice(match, 1, normalized)
+                  draft.sort(compareMessagesByCreated)
+                }),
+              )
               if (
                 normalized.role === "assistant" &&
                 typeof normalized.time === "object" &&
@@ -534,6 +545,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
               normalized.sessionID,
               produce((draft) => {
                 draft.push(normalized)
+                draft.sort(compareMessagesByCreated)
               }),
             )
             const updated = store.message[normalized.sessionID]

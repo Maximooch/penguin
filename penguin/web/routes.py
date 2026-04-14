@@ -35,6 +35,14 @@ import httpx
 
 from penguin.config import WORKSPACE_PATH
 from penguin.core import PenguinCore
+from penguin.llm.runtime import (
+    apply_reasoning_variant_override as apply_llm_reasoning_variant_override,
+    build_reasoning_debug_snapshot as build_llm_reasoning_debug_snapshot,
+    build_reasoning_visibility_note as build_llm_reasoning_visibility_note,
+    persist_reasoning_debug_snapshot as persist_llm_reasoning_debug_snapshot,
+    restore_reasoning_variant_override as restore_llm_reasoning_variant_override,
+    resolve_reasoning_payload,
+)
 from penguin import __version__
 from penguin.constants import get_engine_max_iterations_default
 from penguin.utils.events import EventBus as UtilsEventBus
@@ -81,7 +89,6 @@ from penguin.web.services.opencode_provider import (
     provider_oauth_callback,
     remove_provider_auth_record,
     set_provider_auth_record,
-    supported_native_reasoning_variants,
 )
 from penguin.system.execution_context import (
     ExecutionContext,
@@ -803,7 +810,7 @@ class MessageRequest(BaseModel):
     streaming: Optional[bool] = True
     max_iterations: Optional[int] = None  # Uses MAX_TASK_ITERATIONS if not specified
     image_paths: Optional[List[str]] = None  # Multiple images supported (max 10)
-    include_reasoning: Optional[bool] = False
+    include_reasoning: Optional[bool] = True
     agent_id: Optional[str] = None
     agent_mode: Optional[str] = None
     directory: Optional[str] = None
@@ -826,72 +833,10 @@ def _apply_reasoning_variant_override(
     *,
     model_config: Optional[Any] = None,
 ) -> Optional[Dict[str, Any]]:
-    model_config = model_config or getattr(core, "model_config", None)
-    if model_config is None:
-        return None
-
-    value = variant.strip().lower() if isinstance(variant, str) else ""
-    if not value:
-        return None
-
-    snapshot = {
-        "reasoning_enabled": getattr(model_config, "reasoning_enabled", False),
-        "reasoning_effort": getattr(model_config, "reasoning_effort", None),
-        "reasoning_max_tokens": getattr(model_config, "reasoning_max_tokens", None),
-        "reasoning_exclude": getattr(model_config, "reasoning_exclude", False),
-        "supports_reasoning": getattr(model_config, "supports_reasoning", None),
-        "_has_supports_reasoning": hasattr(model_config, "supports_reasoning"),
-    }
-
-    if value in _REASONING_DISABLE_VARIANTS:
-        model_config.reasoning_enabled = False
-        model_config.reasoning_effort = None
-        model_config.reasoning_max_tokens = None
-        model_config.reasoning_exclude = False
-        return snapshot
-
-    provider_id = str(getattr(model_config, "provider", "") or "").strip().lower()
-    model_id = str(getattr(model_config, "model", "") or "").strip()
-
-    if provider_id in {"openai", "anthropic"}:
-        supported_native_variants = set(
-            supported_native_reasoning_variants(provider_id, model_id)
-        )
-        if value not in supported_native_variants:
-            logger.debug(
-                "Ignoring unsupported native reasoning variant '%s' for %s/%s (supported=%s)",
-                value,
-                provider_id,
-                model_id,
-                sorted(supported_native_variants),
-            )
-            return None
-
-        model_config.reasoning_enabled = True
-        model_config.reasoning_effort = value
-        model_config.reasoning_max_tokens = None
-        model_config.reasoning_exclude = False
-        model_config.supports_reasoning = True
-        return snapshot
-
-    if value in _REASONING_EFFORT_VARIANTS:
-        model_config.reasoning_enabled = True
-        model_config.reasoning_effort = value
-        model_config.reasoning_max_tokens = None
-        model_config.reasoning_exclude = False
-        model_config.supports_reasoning = True
-        return snapshot
-
-    if value in _REASONING_MAX_VARIANTS:
-        model_config.reasoning_enabled = True
-        model_config.reasoning_effort = None
-        model_config.reasoning_max_tokens = 32000
-        model_config.reasoning_exclude = False
-        model_config.supports_reasoning = True
-        return snapshot
-
-    logger.debug("Ignoring unsupported reasoning variant '%s'", value)
-    return None
+    return apply_llm_reasoning_variant_override(
+        model_config or getattr(core, "model_config", None),
+        variant,
+    )
 
 
 def _restore_reasoning_variant_override(
@@ -900,24 +845,69 @@ def _restore_reasoning_variant_override(
     *,
     model_config: Optional[Any] = None,
 ) -> None:
-    if not isinstance(snapshot, dict):
-        return
+    restore_llm_reasoning_variant_override(
+        model_config or getattr(core, "model_config", None),
+        snapshot,
+    )
 
-    model_config = model_config or getattr(core, "model_config", None)
-    if model_config is None:
-        return
 
-    model_config.reasoning_enabled = bool(snapshot.get("reasoning_enabled", False))
-    model_config.reasoning_effort = snapshot.get("reasoning_effort")
-    model_config.reasoning_max_tokens = snapshot.get("reasoning_max_tokens")
-    model_config.reasoning_exclude = bool(snapshot.get("reasoning_exclude", False))
-    if snapshot.get("_has_supports_reasoning"):
-        model_config.supports_reasoning = snapshot.get("supports_reasoning")
-    elif hasattr(model_config, "supports_reasoning"):
-        try:
-            delattr(model_config, "supports_reasoning")
-        except Exception:
-            pass
+def _resolve_include_reasoning(value: Optional[Any]) -> bool:
+    """Default reasoning visibility to on unless explicitly disabled."""
+
+    if value is None:
+        return True
+    return bool(value)
+
+
+def _build_reasoning_visibility_note(
+    *,
+    include_reasoning: bool,
+    reasoning_text: str,
+    reasoning_payload: Optional[Dict[str, Any]],
+    usage: Optional[Dict[str, Any]],
+) -> Optional[str]:
+    """Explain when reasoning was applied but no visible summary was returned."""
+    return build_llm_reasoning_visibility_note(
+        include_reasoning=include_reasoning,
+        reasoning_text=reasoning_text,
+        reasoning_payload=reasoning_payload,
+        usage=usage,
+    )
+
+
+def _persist_reasoning_debug_snapshot(
+    core: Any,
+    session_id: Optional[str],
+    snapshot: Optional[Dict[str, Any]],
+) -> None:
+    """Persist the latest reasoning debug snapshot for inspection."""
+    persist_llm_reasoning_debug_snapshot(core, session_id, snapshot)
+
+
+def _build_reasoning_debug_snapshot(
+    *,
+    api_client: Optional[Any],
+    session_id: Optional[str],
+    request_id: Optional[str],
+    model_config: Optional[Any],
+    reasoning_payload: Optional[Dict[str, Any]],
+    include_reasoning: bool,
+    reasoning_text: str,
+    reasoning_note: Optional[str],
+    usage: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Collect a persisted reasoning debug snapshot for the last request."""
+    return build_llm_reasoning_debug_snapshot(
+        api_client=api_client,
+        session_id=session_id,
+        request_id=request_id,
+        model_config=model_config,
+        reasoning_payload=reasoning_payload,
+        include_reasoning=include_reasoning,
+        reasoning_text=reasoning_text,
+        reasoning_note=reasoning_note,
+        usage=usage,
+    )
 
 
 async def _resolve_request_runtime_for_model(
@@ -3539,6 +3529,11 @@ async def handle_chat_message(
 
         # Create input data dictionary from request
         input_data = {"text": request.text}
+        if (
+            isinstance(request.client_message_id, str)
+            and request.client_message_id.strip()
+        ):
+            input_data["client_message_id"] = request.client_message_id.strip()
 
         # Add image paths if provided (with limit enforcement)
         if image_paths:
@@ -3573,12 +3568,14 @@ async def handle_chat_message(
                 unresolved_data_urls,
             )
 
+        include_reasoning = _resolve_include_reasoning(request.include_reasoning)
+
         # If reasoning is requested, capture reasoning chunks via a local callback
         reasoning_buf: List[str] = []
         stream_cb = None
         # Respect client streaming preference for OpenCode compatibility.
         effective_streaming = bool(request.streaming)
-        if request.include_reasoning:
+        if include_reasoning:
             effective_streaming = (
                 True  # force streaming internally to collect reasoning
             )
@@ -3607,18 +3604,7 @@ async def handle_chat_message(
             if isinstance(request.variant, str) and request.variant.strip()
             else None
         )
-        reasoning_payload = None
-        reasoning_getter = getattr(model_config, "get_reasoning_config", None)
-        if callable(reasoning_getter):
-            try:
-                resolved = reasoning_getter()
-                if isinstance(resolved, dict):
-                    reasoning_payload = dict(resolved)
-            except Exception:
-                logger.debug(
-                    "Failed to resolve reasoning payload for request log",
-                    exc_info=True,
-                )
+        reasoning_payload = resolve_reasoning_payload(model_config)
         if variant_value or reasoning_payload:
             _request_log_info(
                 "chat.reasoning.request session=%s model=%s variant=%s reasoning=%s",
@@ -3704,8 +3690,50 @@ async def handle_chat_message(
             "action_results": process_result.get("action_results", []),
             "aborted": bool(process_result.get("aborted")),
         }
-        if request.include_reasoning:
-            resp["reasoning"] = "".join(reasoning_buf)
+        reasoning_text = "".join(reasoning_buf) if include_reasoning else ""
+        reasoning_note = _build_reasoning_visibility_note(
+            include_reasoning=include_reasoning,
+            reasoning_text=reasoning_text,
+            reasoning_payload=reasoning_payload,
+            usage=process_result.get("usage")
+            if isinstance(process_result, dict)
+            else None,
+        )
+        if reasoning_note:
+            _request_log_info(
+                "chat.reasoning.note session=%s model=%s note=%s usage=%s",
+                request_session_id or "unknown",
+                getattr(model_config, "model", None),
+                reasoning_note,
+                process_result.get("usage") if isinstance(process_result, dict) else {},
+            )
+
+        active_api_client = request_api_client or getattr(core, "api_client", None)
+        reasoning_debug_snapshot = _build_reasoning_debug_snapshot(
+            api_client=active_api_client,
+            session_id=request_session_id,
+            request_id=execution_context.request_id
+            if "execution_context" in locals()
+            else None,
+            model_config=model_config,
+            reasoning_payload=reasoning_payload,
+            include_reasoning=include_reasoning,
+            reasoning_text=reasoning_text,
+            reasoning_note=reasoning_note,
+            usage=process_result.get("usage")
+            if isinstance(process_result, dict)
+            else None,
+        )
+        _persist_reasoning_debug_snapshot(
+            core,
+            request_session_id,
+            reasoning_debug_snapshot,
+        )
+
+        if include_reasoning:
+            resp["reasoning"] = reasoning_text or (reasoning_note or "")
+        if reasoning_note:
+            resp["reasoning_note"] = reasoning_note
         _request_log_debug(
             "chat.trace.response request=%s session=%s response_len=%s reasoning_len=%s aborted=%s preview=%r",
             execution_context.request_id or "unknown",
@@ -3891,7 +3919,9 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
             max_iterations = data.get("max_iterations", 100)
             image_paths = data.get("image_paths")  # Multiple images supported
             parts = data.get("parts")
-            include_reasoning = bool(data.get("include_reasoning", False))
+            include_reasoning = _resolve_include_reasoning(
+                data.get("include_reasoning")
+            )
             variant = data.get("variant")
             model = data.get("model")
             agent_id = data.get("agent_id")
@@ -4114,18 +4144,7 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
                     if isinstance(variant, str) and variant.strip()
                     else None
                 )
-                reasoning_payload = None
-                reasoning_getter = getattr(model_config, "get_reasoning_config", None)
-                if callable(reasoning_getter):
-                    try:
-                        resolved = reasoning_getter()
-                        if isinstance(resolved, dict):
-                            reasoning_payload = dict(resolved)
-                    except Exception:
-                        logger.debug(
-                            "Failed to resolve reasoning payload for websocket request log",
-                            exc_info=True,
-                        )
+                reasoning_payload = resolve_reasoning_payload(model_config)
                 if variant_value or reasoning_payload:
                     _request_log_info(
                         "chat.stream.reasoning.request session=%s model=%s variant=%s reasoning=%s",
@@ -4197,15 +4216,74 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
 
                 # Send final complete message AFTER sender is done
                 logger.info("Sending 'complete' event to client.")
+                reasoning_text = (
+                    getattr(core, "streaming_reasoning_content", "")
+                    if include_reasoning
+                    else ""
+                )
+                reasoning_note = _build_reasoning_visibility_note(
+                    include_reasoning=include_reasoning,
+                    reasoning_text=reasoning_text,
+                    reasoning_payload=reasoning_payload,
+                    usage=process_result.get("usage")
+                    if isinstance(process_result, dict)
+                    else None,
+                )
+                if reasoning_note and include_reasoning and not reasoning_text:
+                    try:
+                        await websocket.send_json(
+                            {
+                                "event": "reasoning_note",
+                                "data": {"message": reasoning_note},
+                            }
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Failed to send reasoning note event", exc_info=True
+                        )
+                    _request_log_info(
+                        "chat.stream.reasoning.note session=%s model=%s note=%s usage=%s",
+                        effective_session_id or "unknown",
+                        getattr(model_config, "model", None),
+                        reasoning_note,
+                        process_result.get("usage")
+                        if isinstance(process_result, dict)
+                        else {},
+                    )
+
+                active_api_client = request_api_client or getattr(
+                    core, "api_client", None
+                )
+                reasoning_debug_snapshot = _build_reasoning_debug_snapshot(
+                    api_client=active_api_client,
+                    session_id=effective_session_id,
+                    request_id=execution_context.request_id,
+                    model_config=model_config,
+                    reasoning_payload=reasoning_payload,
+                    include_reasoning=include_reasoning,
+                    reasoning_text=reasoning_text,
+                    reasoning_note=reasoning_note,
+                    usage=process_result.get("usage")
+                    if isinstance(process_result, dict)
+                    else None,
+                )
+                _persist_reasoning_debug_snapshot(
+                    core,
+                    effective_session_id,
+                    reasoning_debug_snapshot,
+                )
+
                 complete_payload = {
                     "response": process_result.get("assistant_response", ""),
                     "action_results": process_result.get("action_results", []),
                     "aborted": bool(process_result.get("aborted")),
                 }
                 if include_reasoning:
-                    complete_payload["reasoning"] = getattr(
-                        core, "streaming_reasoning_content", ""
+                    complete_payload["reasoning"] = reasoning_text or (
+                        reasoning_note or ""
                     )
+                if reasoning_note:
+                    complete_payload["reasoning_note"] = reasoning_note
 
                 try:
                     await websocket.send_json(
@@ -5154,6 +5232,27 @@ async def session_abort(session_id: str, core: PenguinCore = Depends(get_core)):
         return False
     result = await handler(session_id)
     return bool(result)
+
+
+@router.get("/session/{session_id}/reasoning-debug")
+@router.get("/api/v1/session/{session_id}/reasoning-debug")
+async def session_reasoning_debug(
+    session_id: str,
+    core: PenguinCore = Depends(get_core),
+):
+    snapshot_store = getattr(core, "_reasoning_debug_snapshots", None)
+    if not isinstance(snapshot_store, dict):
+        raise HTTPException(
+            status_code=404, detail="No reasoning debug snapshots available"
+        )
+
+    snapshot = snapshot_store.get(session_id)
+    if not isinstance(snapshot, dict):
+        raise HTTPException(
+            status_code=404,
+            detail=f"No reasoning debug snapshot for session {session_id}",
+        )
+    return snapshot
 
 
 @router.post("/session/{session_id}/summarize")

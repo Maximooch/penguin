@@ -43,6 +43,12 @@ function messageCreatedAt(message: Message): number {
   return typeof value === "number" ? value : 0
 }
 
+export function compareMessagesByCreated(left: Message, right: Message): number {
+  const diff = messageCreatedAt(left) - messageCreatedAt(right)
+  if (diff !== 0) return diff
+  return left.id.localeCompare(right.id)
+}
+
 function normalizeText(value: string): string {
   return value.replace(/\s+/g, " ").trim().toLowerCase()
 }
@@ -95,11 +101,7 @@ export function mergeHydratedMessages(
   if (preserved.length === 0) return incoming
 
   const merged = [...incoming, ...preserved]
-  merged.sort((left, right) => {
-    const timeDiff = messageCreatedAt(left) - messageCreatedAt(right)
-    if (timeDiff !== 0) return timeDiff
-    return left.id.localeCompare(right.id)
-  })
+  merged.sort(compareMessagesByCreated)
   return merged
 }
 
