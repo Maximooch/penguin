@@ -87,13 +87,13 @@ This makes parity checks much less noisy.
 ## CLI Verification
 
 ### 0. Command Discovery and Root Consistency
-- [ ] `uv run penguin project --help` shows the expected public subcommands
-- [ ] `uv run penguin project task --help` shows the expected task subcommands
-- [ ] help output reflects current wording for:
+- [x] `uv run penguin project --help` shows the expected public subcommands
+- [x] `uv run penguin project task --help` shows the expected task subcommands
+- [x] help output reflects current wording for:
   - `start` → active-state semantics
   - `complete` → pending-review approval semantics
-- [ ] workspace / execution-root detection is stable across nested CLI subcommands
-- [ ] CLI does not silently switch to a different repository/workspace root between related help or command invocations
+- [x] workspace / execution-root detection is stable across nested CLI subcommands
+- [x] CLI does not silently switch to a different repository/workspace root between related help or command invocations
 
 Evidence to capture:
 - `uv run penguin project --help`
@@ -103,10 +103,10 @@ Evidence to capture:
 
 ### 1. Task Status Filter Semantics
 - [ ] `penguin project task list --status running` works
-- [ ] `penguin project task list --status RUNNING` works
+- [x] `penguin project task list --status RUNNING` works
 - [ ] `penguin project task list --status pending_review` works
-- [ ] invalid status input fails cleanly
-- [ ] invalid status error message lists real current lifecycle values
+- [x] invalid status input fails cleanly
+- [x] invalid status error message lists real current lifecycle values
 
 Evidence to capture:
 - command output for lowercase success
@@ -123,9 +123,9 @@ Evidence to capture:
 - direct task list output for the same project
 
 ### 3. Task Start Semantics
-- [ ] `penguin project task start <TASK_ID>` succeeds for a valid task
-- [ ] CLI messaging says the task moved to **active state**
-- [ ] CLI does not falsely say “running” if the actual state is `active`
+- [x] `penguin project task start <TASK_ID>` succeeds for a valid task
+- [x] CLI messaging says the task moved to **active state**
+- [x] CLI does not falsely say “running” if the actual state is `active`
 - [ ] resulting task state matches command output
 
 Evidence to capture:
@@ -134,9 +134,9 @@ Evidence to capture:
 
 ### 4. Task Complete / Review Approval Semantics
 - [ ] `penguin project task complete <TASK_ID>` only succeeds for `pending_review` or already-completed tasks
-- [ ] command behavior is clearly approval-oriented, not side-door completion
+- [x] command behavior is clearly approval-oriented, not side-door completion
 - [ ] tasks not in `pending_review` fail cleanly with honest messaging
-- [ ] already-completed tasks report that they are already completed
+- [x] already-completed tasks report that they are already completed
 
 Evidence to capture:
 - approval success path
@@ -181,8 +181,8 @@ Still requiring separate follow-up beyond the current script:
 
 ### 1. Task List Status Filter Semantics
 - [ ] `GET /api/v1/tasks?status=running` works
-- [ ] `GET /api/v1/tasks?status=RUNNING` works
-- [ ] invalid status input returns 400 with real current options
+- [x] `GET /api/v1/tasks?status=RUNNING` works
+- [x] invalid status input returns 400 with real current options
 - [ ] no false rejection of valid lowercase/uppercase values remains
 
 Evidence to capture:
@@ -191,19 +191,19 @@ Evidence to capture:
 - invalid-status error payload
 
 ### 2. Task Payload Truth
-- [ ] task payloads include `status`
-- [ ] task payloads include `phase`
-- [ ] task payloads include `dependencies`
-- [ ] task payloads include `dependency_specs`
-- [ ] task payloads include `artifact_evidence`
-- [ ] task payloads include `recipe`
-- [ ] task payloads include `metadata`
-- [ ] task payloads include `clarification_requests`
+- [x] task payloads include `status`
+- [x] task payloads include `phase`
+- [x] task payloads include `dependencies`
+- [x] task payloads include `dependency_specs`
+- [x] task payloads include `artifact_evidence`
+- [x] task payloads include `recipe`
+- [x] task payloads include `metadata`
+- [x] task payloads include `clarification_requests`
 
 Applicable routes:
 - [ ] `GET /api/v1/tasks`
-- [ ] `GET /api/v1/tasks/{task_id}`
-- [ ] project task embedding where relevant
+- [x] `GET /api/v1/tasks/{task_id}`
+- [x] project task embedding where relevant
 
 Evidence to capture:
 - representative JSON payloads
@@ -220,7 +220,7 @@ Evidence to capture:
 
 ### 4. Clarification Resume Route
 - [ ] `POST /api/v1/tasks/{task_id}/clarification/resume` accepts an answer
-- [ ] resume route fails cleanly for missing task
+- [x] resume route fails cleanly for missing task
 - [ ] resume route returns updated task payload
 - [ ] clarification answer is reflected in task metadata/state as expected
 
@@ -274,24 +274,24 @@ These are high-value because surfaces drift silently.
 - [ ] clarification answer/resume is not exposed in one surface and missing in another
 
 ### 3. Messaging / Terminology Parity
-- [ ] “active” vs “running” wording is not contradictory across surfaces
-- [ ] “complete” vs “approve pending review” wording is not contradictory across surfaces
+- [x] “active” vs “running” wording is not contradictory across surfaces
+- [x] “complete” vs “approve pending review” wording is not contradictory across surfaces
 
 ---
 
 ## Docs Truth Checks
 
 ### CLI / Task / Project Docs
-- [ ] CLI command docs reflect current task-start semantics
-- [ ] CLI command docs reflect review-approval semantics
-- [ ] task-management docs do not teach obsolete pending/in-progress lifecycle as literal current truth
-- [ ] project-management docs do not claim web/API is merely “coming soon”
+- [x] CLI command docs reflect current task-start semantics
+- [x] CLI command docs reflect review-approval semantics
+- [x] task-management docs do not teach obsolete pending/in-progress lifecycle as literal current truth
+- [x] project-management docs do not claim web/API is merely “coming soon”
 
 ### Web/API Docs
-- [ ] web/API docs mention richer task payloads
-- [ ] web/API docs mention clarification resume route
-- [ ] web/API docs mention SSE clarification visibility
-- [ ] `PenguinAPI` docs mention `resume_with_clarification(...)`
+- [x] web/API docs mention richer task payloads
+- [x] web/API docs mention clarification resume route
+- [x] web/API docs mention SSE clarification visibility
+- [x] `PenguinAPI` docs mention `resume_with_clarification(...)`
 
 ---
 
