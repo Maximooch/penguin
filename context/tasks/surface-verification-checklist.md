@@ -158,6 +158,27 @@ Evidence to capture:
 
 ## Web/API Verification
 
+### Current Scripted Verification Status
+
+The scripted web/API verification path is now passing via:
+
+- `scripts/verify_web_api_surface.sh`
+
+Currently verified by script:
+- health endpoint / server startup on a free local port
+- case-insensitive task status filtering
+- honest invalid-status `400` response
+- enriched task payload truth
+- enriched project payload embedding
+- active-state truth for task start route
+- review-approval truth for task complete route
+- honest missing-task `404` on clarification resume route
+
+Still requiring separate follow-up beyond the current script:
+- execute-route verification with a task that actually reaches `waiting_input`
+- SSE clarification event verification against a live clarification-producing session
+
+
 ### 1. Task List Status Filter Semantics
 - [ ] `GET /api/v1/tasks?status=running` works
 - [ ] `GET /api/v1/tasks?status=RUNNING` works
