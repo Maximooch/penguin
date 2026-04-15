@@ -16,6 +16,27 @@ Do **not** turn this file into a second copy of the architecture contracts or th
 
 ## Completed
 
+- [x] Review and update CLI/API/library surfaces for compatibility with the refactored runtime
+  - Includes:
+    - CLI scripted verification completed
+    - web/API scripted verification completed
+    - lightweight PenguinAPI compatibility/delegation checks added
+  - References:
+    - `context/tasks/surface-verification-checklist.md`
+    - `tests/test_cli_surface_audit_regressions.py`
+    - `tests/api/test_web_routes_task_shapes.py`
+    - `tests/api/test_penguin_api_surface.py`
+- [x] Audit event/UI consumers for new clarification status events
+  - Includes CLI clarification-needed / clarification-answered visibility work
+- [x] Review README / architecture / public docs drift after the runtime refactor
+  - Includes CLI/task/project surface docs refresh for current lifecycle truth
+- [x] Define and normalize public-surface contracts for task and clarification flows
+  - Current branch scope covered CLI and web/API truth; deeper PenguinAPI polish is deferred
+- [x] Wire clarification handling into CLI/API surfaces
+  - Includes:
+    - CLI clarification status handling
+    - web/API clarification resume route
+    - execution/result preservation of `waiting_input`
 - [x] Define and document the canonical task state-machine contract
   - Reference: `context/architecture/ituv-task-state-machine-contract.md`
 - [x] Define and document the artifact evidence contract
@@ -65,15 +86,8 @@ Do **not** turn this file into a second copy of the architecture contracts or th
 
 ## Next
 
-- [ ] Review and update CLI/API/library surfaces for compatibility with the refactored runtime
-  - Audit user-facing and embedding entry points so they reflect current task, clarification, and dependency behavior
-  - Reference: `context/tasks/runtime-surface-audit-checklist.md`
 - [ ] Review Blueprint sync/import callers for new parser and diagnostics semantics
 - [ ] Audit task metadata consumers for clarification and artifact evidence compatibility
-- [ ] Audit event/UI consumers for new clarification status events
-- [ ] Review README / architecture / public docs drift after the runtime refactor
-- [ ] Define and normalize public-surface contracts for task and clarification flows
-  - Especially return shapes and entry points across CLI, API, and library embeddings
 - [ ] Update public docs for typed dependencies, diagnostics, and clarification handling
 - [ ] Review `context/process/blueprint.template.md` for typed dependency and diagnostics drift
 - [ ] Review `context/tasks/testing_scenarios.md` for stale scenarios after clarification, diagnostics, and dependency-policy changes
@@ -84,11 +98,12 @@ Do **not** turn this file into a second copy of the architecture contracts or th
 - [ ] Add stateful transition tests for `TaskStatus` and `TaskPhase`
 - [ ] Add clarification lifecycle invariants for waiting/resume behavior
 - [ ] Decide whether waiting tasks should release execution slots for other ready tasks
-- [ ] Wire clarification handling into CLI/API surfaces
-  - Expose `resume_with_clarification` through a real user-facing interface
 
 ## Deferred
 
+- [ ] PenguinAPI surface refresh / deeper audit
+  - Current stance: defer deeper library-surface normalization, docs refresh, and parity work to a dedicated follow-up plan
+  - Reference: `context/tasks/penguinapi-surface-refresh-plan.md`
 - [ ] Waiting-time vs execution-time accounting
   - Current stance: defer until timebox enforcement matters operationally
 - [ ] Automatic blocker escalation after unanswered clarification timeout
