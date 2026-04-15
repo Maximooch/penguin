@@ -36,6 +36,12 @@ class _EventBus:
     ("action", "params", "expected_tool", "expected_values"),
     [
         (
+            "code_execution",
+            {"code": "print(13)"},
+            "bash",
+            {"command": "print(13)", "description": "IPython"},
+        ),
+        (
             "insert_lines",
             {"path": "src/main.py", "after_line": 4, "new_content": "print('x')"},
             "edit",
@@ -212,6 +218,153 @@ def test_map_action_result_metadata_extracts_diff_for_replace_lines() -> None:
     assert metadata["filePath"] == "src/main.py"
     assert metadata["diff"].startswith("--- a/src/main.py")
     assert "+++ b/src/main.py" in metadata["diff"]
+
+
+def test_map_action_result_metadata_sets_output_for_code_execution() -> None:
+    core = PenguinCore.__new__(PenguinCore)
+
+    metadata = core._map_action_result_metadata(
+        "code_execution",
+        "13\nRESULT=13",
+        existing={"source": "test"},
+    )
+
+    assert metadata["source"] == "test"
+    assert metadata["output"] == "13\nRESULT=13"
+
+
+@pytest.mark.asyncio
+async def test_on_tui_action_passes_model_state_for_tool_only_turns() -> None:
+    class _Adapter:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def on_tool_start(
+            self,
+            tool_name: str,
+            tool_input: dict[str, Any],
+            *,
+            tool_call_id: str | None = None,
+            metadata: dict[str, Any] | None = None,
+            message_id: str | None = None,
+            agent_id: str = "default",
+            model_id: str | None = None,
+            provider_id: str | None = None,
+            variant: str | None = None,
+        ) -> str:
+            self.calls.append(
+                {
+                    "tool_name": tool_name,
+                    "tool_input": tool_input,
+                    "tool_call_id": tool_call_id,
+                    "metadata": metadata or {},
+                    "message_id": message_id,
+                    "agent_id": agent_id,
+                    "model_id": model_id,
+                    "provider_id": provider_id,
+                    "variant": variant,
+                }
+            )
+            return "part_tool_1"
+
+    core = PenguinCore.__new__(PenguinCore)
+    adapter = _Adapter()
+    core.model_config = SimpleNamespace(model="gpt-5.4", provider="openai")
+    setattr(core, "_opencode_tool_parts", {})
+    setattr(core, "_opencode_tool_info", {})
+    setattr(core, "_opencode_stream_states", {})
+    setattr(core, "_get_tui_adapter", lambda _session_id: adapter)
+
+    await core._on_tui_action(
+        "action",
+        {
+            "session_id": "session_tool_only",
+            "id": "call_tool_1",
+            "action": "read_file",
+            "params": '{"path": "README.md", "limit": 120}',
+        },
+    )
+
+    assert adapter.calls
+    call = adapter.calls[-1]
+    assert call["tool_name"] == "read"
+    assert call["tool_call_id"] == "call_tool_1"
+    assert call["message_id"] is None
+    assert call["model_id"] == "gpt-5.4"
+    assert call["provider_id"] == "openai"
+
+
+@pytest.mark.asyncio
+async def test_emit_opencode_user_message_uses_client_message_id_and_model_state() -> (
+    None
+):
+    class _Adapter:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def on_user_message_with_metadata(
+            self,
+            content: str,
+            *,
+            message_id: str | None = None,
+            agent_id: str = "default",
+            model_id: str | None = None,
+            provider_id: str | None = None,
+            variant: str | None = None,
+        ) -> str:
+            self.calls.append(
+                {
+                    "content": content,
+                    "message_id": message_id,
+                    "agent_id": agent_id,
+                    "model_id": model_id,
+                    "provider_id": provider_id,
+                    "variant": variant,
+                }
+            )
+            return message_id or "msg_generated"
+
+    core = PenguinCore.__new__(PenguinCore)
+    adapter = _Adapter()
+    setattr(
+        core, "conversation_manager", SimpleNamespace(get_current_session=lambda: None)
+    )
+    setattr(core, "model_config", SimpleNamespace(model="gpt-5.4", provider="openai"))
+    setattr(core, "_get_tui_adapter", lambda _session_id: adapter)
+    setattr(
+        core,
+        "_resolve_opencode_model_state",
+        lambda session_id: {
+            "modelID": "gpt-5.4",
+            "providerID": "openai",
+            "variant": "high",
+        },
+    )
+
+    with execution_context_scope(
+        ExecutionContext(
+            session_id="session_user_emit",
+            conversation_id="session_user_emit",
+            agent_id="build",
+        )
+    ):
+        message_id = await core._emit_opencode_user_message_with_metadata(
+            "hello",
+            message_id="msg_client_1",
+            agent_id="build",
+        )
+
+    assert message_id == "msg_client_1"
+    assert adapter.calls == [
+        {
+            "content": "hello",
+            "message_id": "msg_client_1",
+            "agent_id": "build",
+            "model_id": "gpt-5.4",
+            "provider_id": "openai",
+            "variant": "high",
+        }
+    ]
 
 
 def test_map_action_result_metadata_extracts_diff_for_edit_with_pattern() -> None:
@@ -872,3 +1025,55 @@ async def test_persist_opencode_events_replays_tool_parts_in_order() -> None:
     assert rows is not None
     assert len(rows) == 1
     assert [part["id"] for part in rows[0]["parts"]] == ["part_text", "part_tool"]
+
+
+@pytest.mark.asyncio
+async def test_persist_opencode_event_uses_session_model_metadata_for_new_entry() -> (
+    None
+):
+    session = Session(id="session_track_model_meta")
+    session.metadata["_opencode_provider_id_v1"] = "openrouter"
+    session.metadata["_opencode_model_id_v1"] = "z-ai/glm-5-turbo"
+    session.metadata["_opencode_variant_v1"] = "high"
+    manager = _SessionManager(session)
+    conversation_manager = SimpleNamespace(
+        session_manager=manager,
+        agent_session_managers={"default": manager},
+    )
+
+    core = PenguinCore.__new__(PenguinCore)
+    setattr(core, "conversation_manager", conversation_manager)
+    setattr(
+        core,
+        "model_config",
+        SimpleNamespace(model="z-ai/glm-4.7", provider="openrouter"),
+    )
+    setattr(
+        core,
+        "runtime_config",
+        SimpleNamespace(active_root="/tmp/project", project_root="/tmp/project"),
+    )
+    setattr(core, "_opencode_session_directories", {session.id: "/tmp/project"})
+
+    await core._persist_opencode_event(
+        "message.part.updated",
+        {
+            "part": {
+                "id": "part_text",
+                "sessionID": session.id,
+                "messageID": "msg_1",
+                "type": "text",
+                "text": "hello",
+            }
+        },
+    )
+
+    transcript = session.metadata.get(TRANSCRIPT_KEY)
+    assert isinstance(transcript, dict)
+    message_entry = transcript.get("messages", {}).get("msg_1")
+    assert isinstance(message_entry, dict)
+    info = message_entry.get("info")
+    assert isinstance(info, dict)
+    assert info["providerID"] == "openrouter"
+    assert info["modelID"] == "z-ai/glm-5-turbo"
+    assert info["variant"] == "high"

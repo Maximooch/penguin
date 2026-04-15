@@ -4,17 +4,19 @@ from types import SimpleNamespace
 
 import pytest
 
-from penguin.engine import Engine
+from penguin.engine import Engine, LoopState
 
 
 def test_prepare_responses_tools_enables_openai_native_tools() -> None:
+    model_config = SimpleNamespace(
+        provider="openai",
+        client_preference="native",
+        use_responses_api=False,
+        interrupt_on_tool_call=False,
+    )
     engine_like = SimpleNamespace(
-        model_config=SimpleNamespace(
-            provider="openai",
-            client_preference="native",
-            use_responses_api=False,
-            interrupt_on_tool_call=False,
-        )
+        model_config=model_config,
+        _get_runtime_model_config=lambda: model_config,
     )
     tool_manager = SimpleNamespace(
         get_responses_tools=lambda: [{"type": "function", "name": "read_file"}]
@@ -23,7 +25,14 @@ def test_prepare_responses_tools_enables_openai_native_tools() -> None:
     extra_kwargs = Engine._prepare_responses_tools(engine_like, tool_manager)
 
     assert extra_kwargs == {
-        "tools": [{"type": "function", "name": "read_file"}],
+        "tools": [
+            {
+                "type": "function",
+                "name": "read_file",
+                "description": "",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ],
         "tool_choice": "auto",
     }
     assert engine_like.model_config.interrupt_on_tool_call is True
@@ -60,3 +69,49 @@ async def test_call_llm_with_retry_skips_retry_when_tool_call_pending() -> None:
 
     assert result == ""
     assert api_client.calls == 1
+
+
+def test_wallet_guard_does_not_break_on_tool_only_empty_iteration() -> None:
+    engine = Engine.__new__(Engine)
+    engine._default_run_state = SimpleNamespace(current_agent_id="default")
+    loop_state = LoopState(empty_response_count=2)
+    engine._get_loop_state = lambda: loop_state  # type: ignore[method-assign]
+
+    should_break, status = Engine._check_wallet_guard_termination(
+        engine,
+        last_response="",
+        iteration_results=[
+            {"action": "code_execution", "result": "42", "status": "completed"}
+        ],
+        mode="response",
+    )
+
+    assert should_break is False
+    assert status is None
+    assert loop_state.empty_response_count == 0
+
+
+def test_wallet_guard_ignores_repeated_empty_tool_only_iterations() -> None:
+    engine = Engine.__new__(Engine)
+    engine._default_run_state = SimpleNamespace(current_agent_id="default")
+    loop_state = LoopState(
+        empty_response_count=2,
+        last_response_hash=hash(""),
+        repeat_count=2,
+    )
+    engine._get_loop_state = lambda: loop_state  # type: ignore[method-assign]
+
+    should_break, status = Engine._check_wallet_guard_termination(
+        engine,
+        last_response="",
+        iteration_results=[
+            {"action": "find_file", "result": "No match", "status": "completed"}
+        ],
+        mode="response",
+    )
+
+    assert should_break is False
+    assert status is None
+    assert loop_state.empty_response_count == 0
+    assert loop_state.repeat_count == 0
+    assert loop_state.last_response_hash is None

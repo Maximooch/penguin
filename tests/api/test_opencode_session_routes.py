@@ -9,7 +9,7 @@ from typing import Any, Optional, cast
 import pytest
 from fastapi import HTTPException
 
-from penguin.system.state import Session
+from penguin.system.state import Message, MessageCategory, Session
 from penguin.web.routes import (
     api_session_abort,
     api_session_create,
@@ -26,6 +26,7 @@ from penguin.web.routes import (
     session_diff,
     session_get,
     session_list,
+    session_messages,
     session_summarize,
     session_todo,
     session_status,
@@ -245,12 +246,69 @@ async def test_session_alias_endpoints_work(tmp_path: Path) -> None:
     todos = await api_session_todo(session_id, core=typed_core)
     assert len(todos) == 1
     assert todos[0]["content"] == "Verify alias todo endpoint"
-
     diffs = await api_session_diff(session_id, core=typed_core, messageID=None)
     assert isinstance(diffs, list)
 
     deleted = await api_session_delete(session_id, core=typed_core)
     assert deleted is True
+
+
+@pytest.mark.asyncio
+async def test_session_messages_prefer_transcript_over_legacy_rows(
+    tmp_path: Path,
+) -> None:
+    core = _Core(tmp_path)
+    typed_core = cast(Any, core)
+
+    created = await session_create(
+        payload={"title": "Transcript Wins"},
+        core=typed_core,
+        directory=str(tmp_path),
+    )
+    session_id = created["id"]
+
+    manager = core.conversation_manager.session_manager
+    session_obj = manager.load_session(session_id)
+    assert session_obj is not None
+
+    session_obj.metadata[TRANSCRIPT_KEY] = {
+        "order": ["msg_transcript"],
+        "messages": {
+            "msg_transcript": {
+                "info": {
+                    "id": "msg_transcript",
+                    "sessionID": session_id,
+                    "role": "assistant",
+                    "time": {"created": 1, "completed": 2},
+                },
+                "part_order": ["part_transcript"],
+                "parts": {
+                    "part_transcript": {
+                        "id": "part_transcript",
+                        "sessionID": session_id,
+                        "messageID": "msg_transcript",
+                        "type": "text",
+                        "text": "authoritative transcript response",
+                    }
+                },
+            }
+        },
+    }
+
+    session_obj.messages.append(
+        Message(
+            role="assistant",
+            content="polluted legacy response",
+            category=MessageCategory.DIALOG,
+        )
+    )
+
+    messages = await session_messages(session_id, core=typed_core, limit=None)
+
+    assert messages is not None
+    assert len(messages) == 1
+    assert messages[0]["info"]["id"] == "msg_transcript"
+    assert messages[0]["parts"][0]["text"] == "authoritative transcript response"
 
 
 @pytest.mark.asyncio

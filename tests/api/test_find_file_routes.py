@@ -188,3 +188,47 @@ def test_find_file_uses_session_directory_request_for_fallback(tmp_path: Path) -
         fallback = client.get("/find/file", params={"query": "readme"})
         assert fallback.status_code == 200
         assert "README.md" in fallback.json()
+
+
+def test_find_file_uses_bound_session_directory_over_raw_directory(
+    tmp_path: Path,
+) -> None:
+    _clear_find_cache()
+    repo_a = tmp_path / "repo_find_bound_a"
+    repo_b = tmp_path / "repo_find_bound_b"
+    repo_a.mkdir()
+    repo_b.mkdir()
+    (repo_a / "alpha.md").write_text("a", encoding="utf-8")
+    (repo_b / "beta.md").write_text("b", encoding="utf-8")
+
+    core = _Core(tmp_path)
+    core._opencode_session_directories["session_bound"] = str(repo_a)
+    with _build_client(core) as client:
+        response = client.get(
+            "/find/file",
+            params={"session_id": "session_bound", "query": "alpha"},
+        )
+        assert response.status_code == 200
+        assert response.json() == ["alpha.md"]
+
+
+def test_find_file_rejects_mismatched_session_directory(tmp_path: Path) -> None:
+    _clear_find_cache()
+    repo_a = tmp_path / "repo_find_conflict_a"
+    repo_b = tmp_path / "repo_find_conflict_b"
+    repo_a.mkdir()
+    repo_b.mkdir()
+    (repo_a / "alpha.md").write_text("a", encoding="utf-8")
+
+    core = _Core(tmp_path)
+    core._opencode_session_directories["session_conflict"] = str(repo_a)
+    with _build_client(core) as client:
+        response = client.get(
+            "/find/file",
+            params={
+                "session_id": "session_conflict",
+                "directory": str(repo_b),
+                "query": "alpha",
+            },
+        )
+        assert response.status_code == 409

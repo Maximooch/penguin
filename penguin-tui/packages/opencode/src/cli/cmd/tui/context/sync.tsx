@@ -32,7 +32,11 @@ import { batch, onMount } from "solid-js"
 import { Log } from "@/util/log"
 import { iife } from "@/util/iife"
 import type { Path } from "@opencode-ai/sdk"
-import { hydrateSessionSnapshot, mergeHydratedMessages } from "./session-hydration"
+import {
+  compareMessagesByCreated,
+  hydrateSessionSnapshot,
+  mergeHydratedMessages,
+} from "./session-hydration"
 import { expandSessionSearchResults, removeSessionRecord, upsertSessionRecord } from "../util/session-family"
 
 type SessionUsage = {
@@ -51,6 +55,9 @@ type PenguinSession = Session & {
   agent_mode?: string
   agent_id?: string
   parent_agent_id?: string
+  providerID?: string
+  modelID?: string
+  variant?: string
 }
 
 const parseUsage = (raw: unknown): SessionUsage | undefined => {
@@ -98,7 +105,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         [sessionID: string]: QuestionRequest[]
       }
       config: Config
-      session: Session[]
+      session: PenguinSession[]
       session_status: {
         [sessionID: string]: SessionStatus
       }
@@ -333,20 +340,37 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         const sid = eventSessionID(event)
         const dir = normalizeDirectory(eventDirectory(event))
         const baseDir = appDirectory()
-        if (sid) {
-          const sidDir = sessionDirectory(sid)
-          if (sidDir && baseDir && sidDir !== baseDir) return
-          if (!sidDir && dir && baseDir && dir !== baseDir) return
-        }
-        if (!sid) {
-          if (dir && baseDir && dir !== baseDir) return
-          if (
-            !dir &&
-            (event.type === "lsp.updated" ||
-              event.type === "lsp.client.diagnostics" ||
-              event.type === "vcs.branch.updated")
-          ) {
-            return
+        const activeSessionID = route.data.type === "session" ? route.data.sessionID : undefined
+        if (activeSessionID) {
+          if (sid && sid !== activeSessionID) return
+          const activeDir = sessionDirectory(activeSessionID) ?? baseDir
+          if (!sid) {
+            if (dir && activeDir && dir !== activeDir) return
+            if (
+              !dir &&
+              (event.type === "lsp.updated" ||
+                event.type === "lsp.client.diagnostics" ||
+                event.type === "vcs.branch.updated")
+            ) {
+              return
+            }
+          }
+        } else {
+          if (sid) {
+            const sidDir = sessionDirectory(sid)
+            if (sidDir && baseDir && sidDir !== baseDir) return
+            if (!sidDir && dir && baseDir && dir !== baseDir) return
+          }
+          if (!sid) {
+            if (dir && baseDir && dir !== baseDir) return
+            if (
+              !dir &&
+              (event.type === "lsp.updated" ||
+                event.type === "lsp.client.diagnostics" ||
+                event.type === "vcs.branch.updated")
+            ) {
+              return
+            }
           }
         }
       }
@@ -499,7 +523,14 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           if (sdk.penguin) {
             const match = messages.findIndex((item) => item.id === normalized.id)
             if (match !== -1) {
-              setStore("message", normalized.sessionID, match, reconcile(normalized))
+              setStore(
+                "message",
+                normalized.sessionID,
+                produce((draft) => {
+                  draft.splice(match, 1, normalized)
+                  draft.sort(compareMessagesByCreated)
+                }),
+              )
               if (
                 normalized.role === "assistant" &&
                 typeof normalized.time === "object" &&
@@ -514,6 +545,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
               normalized.sessionID,
               produce((draft) => {
                 draft.push(normalized)
+                draft.sort(compareMessagesByCreated)
               }),
             )
             const updated = store.message[normalized.sessionID]
@@ -877,6 +909,12 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           if (sessionMode) {
             payload.agent_mode = sessionMode
           }
+          const providerID = typeof item.providerID === "string" ? item.providerID : undefined
+          if (providerID) payload.providerID = providerID
+          const modelID = typeof item.modelID === "string" ? item.modelID : undefined
+          if (modelID) payload.modelID = modelID
+          const variant = typeof item.variant === "string" ? item.variant : undefined
+          if (variant) payload.variant = variant
           const agentID = typeof item.agent_id === "string" ? item.agent_id : undefined
           if (agentID) payload.agent_id = agentID
           const parentAgentID = typeof item.parent_agent_id === "string" ? item.parent_agent_id : undefined

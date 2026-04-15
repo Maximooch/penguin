@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from penguin.core import PenguinCore
+from penguin.llm.model_config import safe_context_window
 
 
 def _as_any(value: object) -> Any:
@@ -26,6 +27,12 @@ def _attach_core_helpers(core_like: SimpleNamespace) -> None:
             model_id,
             provider,
             client_preference,
+        )
+    )
+    core_like._build_model_config_for_model = (
+        lambda model_id: PenguinCore._build_model_config_for_model(  # noqa: E501
+            _as_any(core_like),
+            model_id,
         )
     )
 
@@ -189,3 +196,42 @@ async def test_load_model_surfaces_reason_when_openrouter_specs_missing() -> Non
     assert ok is False
     assert isinstance(core_like._last_model_load_error, str)
     assert "Could not fetch specifications" in core_like._last_model_load_error
+
+
+@pytest.mark.asyncio
+async def test_load_model_clamps_max_output_tokens_to_safe_window() -> None:
+    applied: dict[str, Any] = {}
+    core_like = SimpleNamespace(
+        config=SimpleNamespace(model_configs={}),
+        model_config=SimpleNamespace(client_preference="openrouter"),
+        _last_model_load_error=None,
+    )
+    _attach_core_helpers(core_like)
+
+    def _resolve(model_id: str) -> tuple[str, str]:
+        del model_id
+        return "openrouter", "openrouter"
+
+    def _apply(config: Any, context_window_tokens: Any = None) -> None:
+        applied["model"] = str(config.model)
+        applied["max_output_tokens"] = getattr(config, "max_output_tokens", None)
+        applied["context_window_tokens"] = context_window_tokens
+
+    core_like._resolve_model_provider = _resolve
+    core_like._apply_new_model_config = _apply
+
+    with patch(
+        "penguin.core.fetch_model_specs",
+        new=AsyncMock(
+            return_value={
+                "context_length": 204800,
+                "max_output_tokens": 202752,
+            }
+        ),
+    ):
+        ok = await PenguinCore.load_model(_as_any(core_like), "openrouter/z-ai/glm-5.1")
+
+    assert ok is True
+    assert applied["model"] == "z-ai/glm-5.1"
+    assert applied["max_output_tokens"] == safe_context_window(204800)
+    assert applied["context_window_tokens"] == safe_context_window(204800)

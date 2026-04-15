@@ -1949,11 +1949,9 @@ class ToolManager:
             responses_tools.append(
                 {
                     "type": "function",
-                    "function": {
-                        "name": name,
-                        "description": desc,
-                        "parameters": params_schema,
-                    },
+                    "name": name,
+                    "description": desc,
+                    "parameters": params_schema,
                 }
             )
         # Optionally add built-in Responses web_search tool
@@ -1999,13 +1997,17 @@ class ToolManager:
         if operation_name == "create_folder":
             from penguin.tools.core.support import create_folder
 
-            return create_folder(os.path.join(effective_root, tool_input["path"]))
+            return create_folder(
+                os.path.join(effective_root, tool_input["path"]),
+                workspace_path=effective_root,
+            )
         elif operation_name == "create_file":
             from penguin.tools.core.support import create_file
 
             return create_file(
                 os.path.join(effective_root, tool_input["path"]),
                 tool_input.get("content", ""),
+                workspace_path=effective_root,
             )
         elif operation_name in {"write_to_file", "write_file"}:
             warnings = self._extract_internal_warnings(tool_input)

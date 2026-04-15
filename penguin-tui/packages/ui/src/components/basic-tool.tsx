@@ -1,6 +1,7 @@
 import { createEffect, createSignal, For, Match, Show, Switch, type JSX } from "solid-js"
 import { Collapsible } from "./collapsible"
 import { Icon, IconProps } from "./icon"
+import { Markdown } from "./markdown"
 
 export type TriggerTitle = {
   title: string
@@ -113,6 +114,27 @@ export function BasicTool(props: BasicToolProps) {
   )
 }
 
-export function GenericTool(props: { tool: string; hideDetails?: boolean }) {
-  return <BasicTool icon="mcp" trigger={{ title: props.tool }} hideDetails={props.hideDetails} />
+export function GenericTool(props: {
+  tool: string
+  hideDetails?: boolean
+  output?: string
+  metadata?: Record<string, unknown>
+}) {
+  const output = () => {
+    if (typeof props.output === "string" && props.output) return props.output
+    const metadataOutput = props.metadata?.output
+    return typeof metadataOutput === "string" ? metadataOutput : ""
+  }
+
+  return (
+    <BasicTool icon="mcp" trigger={{ title: props.tool }} hideDetails={props.hideDetails}>
+      <Show when={output()}>
+        {(value) => (
+          <div data-component="tool-output" data-scrollable>
+            <Markdown text={value()} />
+          </div>
+        )}
+      </Show>
+    </BasicTool>
+  )
 }

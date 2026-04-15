@@ -213,11 +213,18 @@ export function Autocomplete(props: {
       if (!store.visible || store.visible === "/") return []
 
       const { lineRange, baseQuery } = extractLineRange(query ?? "")
+      const params = {
+        query: baseQuery,
+        directory: sdk.sessionID
+          ? sync.session.get(sdk.sessionID)?.directory ?? sdk.directory
+          : sdk.directory,
+        session_id: sdk.sessionID,
+      } as Parameters<typeof sdk.client.find.files>[0] & {
+        session_id?: string
+      }
 
       // Get files from SDK
-      const result = await sdk.client.find.files({
-        query: baseQuery,
-      })
+      const result = await sdk.client.find.files(params)
 
       const options: AutocompleteOption[] = []
 

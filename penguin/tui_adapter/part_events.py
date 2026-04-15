@@ -48,6 +48,7 @@ class Message:
     time_completed: Optional[float] = None
     model_id: Optional[str] = None
     provider_id: Optional[str] = None
+    variant: Optional[str] = None
     agent_id: str = "default"
     parent_id: str = "root"
     path: Dict[str, str] = field(default_factory=dict)
@@ -160,7 +161,11 @@ class PartEventAdapter:
             self._last_id_ts = ts
             self._last_id_inc = 0
         stamp = str(ts).rjust(13, "0")
-        return f"{prefix}_{stamp}_{self._last_id_inc:02d}"
+        session_fragment = (
+            re.sub(r"[^a-zA-Z0-9]+", "_", self._session_id or "unknown").strip("_")
+            or "unknown"
+        )
+        return f"{prefix}_{session_fragment}_{stamp}_{self._last_id_inc:02d}"
 
     def _strip_action_tags_keep_whitespace(self, text: str) -> str:
         if not text:
@@ -280,11 +285,30 @@ class PartEventAdapter:
         self,
         message_id: Optional[str] = None,
         agent_id: str = "default",
+        model_id: Optional[str] = None,
+        provider_id: Optional[str] = None,
+        variant: Optional[str] = None,
     ) -> str:
         """Ensure a target assistant message exists for tool parts."""
         existing_message_id = message_id or self._current_message_id
         if existing_message_id and existing_message_id in self._active_messages:
+            existing_message = self._active_messages.get(existing_message_id)
+            metadata_updated = False
+            if isinstance(existing_message, Message):
+                if model_id and not existing_message.model_id:
+                    existing_message.model_id = model_id
+                    metadata_updated = True
+                if provider_id and not existing_message.provider_id:
+                    existing_message.provider_id = provider_id
+                    metadata_updated = True
+                if variant and not existing_message.variant:
+                    existing_message.variant = variant
+                    metadata_updated = True
             self._current_message_id = existing_message_id
+            if metadata_updated and isinstance(existing_message, Message):
+                await self._emit(
+                    "message.updated", self._message_to_dict(existing_message)
+                )
             return existing_message_id
 
         created_message_id = existing_message_id or self._next_id("msg")
@@ -293,6 +317,9 @@ class PartEventAdapter:
             session_id=self._session_id or "unknown",
             role="assistant",
             time_created=time.time(),
+            model_id=model_id,
+            provider_id=provider_id,
+            variant=variant,
             agent_id=agent_id,
             parent_id="root",
             path=self._path(),
@@ -303,11 +330,23 @@ class PartEventAdapter:
         await self._emit("message.updated", self._message_to_dict(message))
         return created_message_id
 
+    def _message_has_content_parts(self, message_id: str) -> bool:
+        """Return whether a message already has text or reasoning parts."""
+        if not message_id:
+            return False
+        for part in self._active_parts.values():
+            if part.message_id != message_id:
+                continue
+            if part.type in {PartType.TEXT, PartType.REASONING}:
+                return True
+        return False
+
     async def on_stream_start(
         self,
         agent_id: str = "default",
         model_id: Optional[str] = None,
         provider_id: Optional[str] = None,
+        variant: Optional[str] = None,
     ) -> Tuple[str, str]:
         """Called when streaming starts - creates Message and initial TextPart.
 
@@ -316,22 +355,47 @@ class PartEventAdapter:
         """
         self._action_active = None
         self._action_buffer = ""
-        message_id = self._next_id("msg")
+
+        message: Optional[Message] = None
+        reuse_message_id = self._current_message_id
+        if reuse_message_id and not self._stream_active:
+            candidate = self._active_messages.get(reuse_message_id)
+            if (
+                isinstance(candidate, Message)
+                and candidate.role == "assistant"
+                and not self._message_has_content_parts(reuse_message_id)
+            ):
+                message = candidate
+
+        message_id = (
+            message.id if isinstance(message, Message) else self._next_id("msg")
+        )
         reasoning_id = self._next_id("part")
         part_id = self._next_id("part")
 
-        message = Message(
-            id=message_id,
-            session_id=self._session_id or "unknown",
-            role="assistant",
-            time_created=time.time(),
-            model_id=model_id,
-            provider_id=provider_id,
-            agent_id=agent_id,
-            parent_id="root",
-            path=self._path(),
-            mode=self._mode(),
-        )
+        if message is None:
+            message = Message(
+                id=message_id,
+                session_id=self._session_id or "unknown",
+                role="assistant",
+                time_created=time.time(),
+                model_id=model_id,
+                provider_id=provider_id,
+                variant=variant,
+                agent_id=agent_id,
+                parent_id="root",
+                path=self._path(),
+                mode=self._mode(),
+            )
+        else:
+            message.time_completed = None
+            message.agent_id = agent_id or message.agent_id
+            if model_id:
+                message.model_id = model_id
+            if provider_id:
+                message.provider_id = provider_id
+            if variant:
+                message.variant = variant
         self._active_messages[message_id] = message
         self._current_message_id = message_id
         self._current_text_part_id = part_id
@@ -439,6 +503,9 @@ class PartEventAdapter:
         metadata: Optional[Dict[str, Any]] = None,
         message_id: Optional[str] = None,
         agent_id: str = "default",
+        model_id: Optional[str] = None,
+        provider_id: Optional[str] = None,
+        variant: Optional[str] = None,
     ) -> str:
         """Called when a tool starts executing.
 
@@ -448,6 +515,9 @@ class PartEventAdapter:
         msg_id = await self._ensure_tool_message(
             message_id=message_id,
             agent_id=agent_id,
+            model_id=model_id,
+            provider_id=provider_id,
+            variant=variant,
         )
         self._current_message_id = msg_id
         target_message_id = msg_id or "unknown"
@@ -596,15 +666,39 @@ class PartEventAdapter:
 
     async def on_user_message(self, content: str) -> str:
         """Called when user sends a message."""
-        message_id = self._next_id("msg")
+        return await self.on_user_message_with_metadata(content)
+
+    async def on_user_message_with_metadata(
+        self,
+        content: str,
+        *,
+        message_id: Optional[str] = None,
+        agent_id: str = "default",
+        model_id: Optional[str] = None,
+        provider_id: Optional[str] = None,
+        variant: Optional[str] = None,
+    ) -> str:
+        """Called when user sends a message with optional OpenCode metadata."""
+        # A new user turn should not let future tool-only assistant work attach
+        # to the previously completed assistant message.
+        self._current_message_id = None
+        self._current_text_part_id = None
+        self._current_reasoning_part_id = None
+        self._action_active = None
+        self._action_buffer = ""
+
+        resolved_message_id = message_id or self._next_id("msg")
 
         message = Message(
-            id=message_id,
+            id=resolved_message_id,
             session_id=self._session_id or "unknown",
             role="user",
             time_created=time.time(),
             time_completed=time.time(),  # User messages are complete immediately
-            agent_id="default",
+            model_id=model_id,
+            provider_id=provider_id,
+            variant=variant,
+            agent_id=agent_id,
             parent_id="root",
             path=self._path(),
             mode=self._mode(),
@@ -614,7 +708,7 @@ class PartEventAdapter:
         part_id = self._next_id("part")
         text_part = Part(
             id=part_id,
-            message_id=message_id,
+            message_id=resolved_message_id,
             session_id=self._session_id or "unknown",
             type=PartType.TEXT,
             content={"text": self._strip_internal(content)},
@@ -625,7 +719,7 @@ class PartEventAdapter:
             "message.part.updated", {"part": self._part_to_dict(text_part)}
         )
 
-        return message_id
+        return resolved_message_id
 
     async def update_assistant_usage(
         self,
@@ -690,6 +784,7 @@ class PartEventAdapter:
                 "parentID": msg.parent_id,
                 "modelID": msg.model_id,
                 "providerID": msg.provider_id,
+                "variant": msg.variant,
                 "mode": msg.mode,
                 "agent": msg.agent_id,
                 "path": msg.path or self._path(),

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import logging
 import os
 from pathlib import Path
 import subprocess
@@ -17,9 +18,14 @@ AGENT_MODE_KEY = "_opencode_agent_mode_v1"
 REVERT_KEY = "_opencode_revert_v1"
 SUMMARY_KEY = "_opencode_summary_v1"
 REVERT_SNAPSHOT_KEY = "_opencode_revert_snapshot_v1"
+MODEL_ID_KEY = "_opencode_model_id_v1"
+PROVIDER_ID_KEY = "_opencode_provider_id_v1"
+VARIANT_KEY = "_opencode_variant_v1"
 
 _TODO_STATUS_VALUES = {"pending", "in_progress", "completed", "cancelled"}
 _TODO_PRIORITY_VALUES = {"high", "medium", "low"}
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_agent_mode(value: Any) -> Optional[str]:
@@ -29,6 +35,62 @@ def _normalize_agent_mode(value: Any) -> Optional[str]:
     if normalized in {"plan", "build"}:
         return normalized
     return None
+
+
+def _normalize_non_empty_string(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _resolve_session_model_state(
+    core: Any,
+    session: Any,
+    message: Any | None = None,
+) -> dict[str, Optional[str]]:
+    """Resolve model/provider/variant from message, then session, then global fallback."""
+    session_meta_raw = getattr(session, "metadata", None)
+    session_meta = session_meta_raw if isinstance(session_meta_raw, dict) else {}
+    message_meta_raw = (
+        getattr(message, "metadata", None) if message is not None else None
+    )
+    message_meta = message_meta_raw if isinstance(message_meta_raw, dict) else {}
+    message_model = message_meta.get("model")
+    message_model_dict = message_model if isinstance(message_model, dict) else {}
+
+    provider_id = (
+        _normalize_non_empty_string(message_meta.get("providerID"))
+        or _normalize_non_empty_string(message_meta.get("provider_id"))
+        or _normalize_non_empty_string(message_model_dict.get("providerID"))
+        or _normalize_non_empty_string(session_meta.get(PROVIDER_ID_KEY))
+        or _normalize_non_empty_string(session_meta.get("providerID"))
+        or _normalize_non_empty_string(session_meta.get("provider_id"))
+        or _normalize_non_empty_string(
+            getattr(getattr(core, "model_config", None), "provider", None)
+        )
+    )
+    model_id = (
+        _normalize_non_empty_string(message_meta.get("modelID"))
+        or _normalize_non_empty_string(message_meta.get("model_id"))
+        or _normalize_non_empty_string(message_model_dict.get("modelID"))
+        or _normalize_non_empty_string(session_meta.get(MODEL_ID_KEY))
+        or _normalize_non_empty_string(session_meta.get("modelID"))
+        or _normalize_non_empty_string(session_meta.get("model_id"))
+        or _normalize_non_empty_string(
+            getattr(getattr(core, "model_config", None), "model", None)
+        )
+    )
+    variant = (
+        _normalize_non_empty_string(message_meta.get("variant"))
+        or _normalize_non_empty_string(session_meta.get(VARIANT_KEY))
+        or _normalize_non_empty_string(session_meta.get("variant"))
+    )
+    return {
+        "providerID": provider_id,
+        "modelID": model_id,
+        "variant": variant,
+    }
 
 
 def _iso_to_ms(value: Optional[str]) -> int:
@@ -76,13 +138,28 @@ def _find_session(core: Any, session_id: str) -> tuple[Optional[Any], Optional[A
 
         index = getattr(manager, "session_index", {})
         if isinstance(index, dict) and session_id in index:
-            try:
-                session = manager.load_session(session_id)
-            except Exception:
-                session = None
+            session = _load_session_view_only(manager, session_id)
             if session is not None:
                 return session, manager
     return None, None
+
+
+def _load_session_view_only(manager: Any, session_id: str) -> Optional[Any]:
+    """Load a session for inspection without changing shared current_session."""
+    previous = getattr(manager, "current_session", None)
+    try:
+        return manager.load_session(session_id)
+    except Exception:
+        logger.warning(
+            "session.view.load_failed session=%s manager=%s",
+            session_id,
+            hex(id(manager)),
+            exc_info=True,
+        )
+        return None
+    finally:
+        if hasattr(manager, "current_session"):
+            manager.current_session = previous
 
 
 def _infer_title(session: Any) -> str:
@@ -115,16 +192,30 @@ def _build_session_info(core: Any, session: Any, manager: Any) -> dict[str, Any]
     session_dirs = getattr(core, "_opencode_session_directories", {})
 
     directory = ""
+    directory_source = "missing"
     if isinstance(session_dirs, dict):
         mapped = session_dirs.get(str(session.id))
         if isinstance(mapped, str) and mapped.strip():
             directory = mapped
+            directory_source = "session_map"
     if isinstance(metadata, dict) and isinstance(metadata.get("directory"), str):
         directory = metadata["directory"]
+        directory_source = "metadata"
     if not directory and runtime_dir:
         directory = str(runtime_dir)
+        directory_source = "runtime"
     if not directory:
         directory = str(Path.cwd())
+        directory_source = "cwd"
+
+    if directory_source in {"runtime", "cwd"}:
+        logger.warning(
+            "session.view.directory_fallback session=%s source=%s resolved=%s manager=%s",
+            getattr(session, "id", "unknown"),
+            directory_source,
+            directory,
+            hex(id(manager)),
+        )
 
     created = _iso_to_ms(getattr(session, "created_at", None))
     updated = _iso_to_ms(getattr(session, "last_active", None))
@@ -148,6 +239,14 @@ def _build_session_info(core: Any, session: Any, manager: Any) -> dict[str, Any]
             "updated": updated,
         },
     }
+
+    model_state = _resolve_session_model_state(core, session)
+    if model_state["providerID"]:
+        payload["providerID"] = model_state["providerID"]
+    if model_state["modelID"]:
+        payload["modelID"] = model_state["modelID"]
+    if model_state["variant"]:
+        payload["variant"] = model_state["variant"]
 
     if isinstance(metadata, dict):
         metadata_agent_mode = _normalize_agent_mode(
@@ -262,6 +361,9 @@ def create_session_info(
     directory: str | None = None,
     permission: list[dict[str, Any]] | None = None,
     agent_mode: str | None = None,
+    provider_id: str | None = None,
+    model_id: str | None = None,
+    variant: str | None = None,
 ) -> dict[str, Any]:
     """Create a session and return OpenCode Session.Info payload."""
     manager = _manager_for_new_session(core, parent_id=parent_id)
@@ -285,6 +387,15 @@ def create_session_info(
     normalized_agent_mode = _normalize_agent_mode(agent_mode)
     if normalized_agent_mode:
         metadata[AGENT_MODE_KEY] = normalized_agent_mode
+    normalized_provider = _normalize_non_empty_string(provider_id)
+    if normalized_provider:
+        metadata[PROVIDER_ID_KEY] = normalized_provider
+    normalized_model = _normalize_non_empty_string(model_id)
+    if normalized_model:
+        metadata[MODEL_ID_KEY] = normalized_model
+    normalized_variant = _normalize_non_empty_string(variant)
+    if normalized_variant:
+        metadata[VARIANT_KEY] = normalized_variant
 
     manager.mark_session_modified(session.id)
     manager.save_session(session)
@@ -299,6 +410,9 @@ def update_session_info(
     title: str | None = None,
     archived: int | None = None,
     agent_mode: str | None = None,
+    provider_id: str | None = None,
+    model_id: str | None = None,
+    variant: str | None = None,
 ) -> Optional[dict[str, Any]]:
     """Update a session and return OpenCode Session.Info payload."""
     session, manager = _find_session(core, session_id)
@@ -326,6 +440,18 @@ def update_session_info(
     normalized_agent_mode = _normalize_agent_mode(agent_mode)
     if normalized_agent_mode:
         metadata[AGENT_MODE_KEY] = normalized_agent_mode
+    normalized_provider = _normalize_non_empty_string(provider_id)
+    if normalized_provider:
+        metadata[PROVIDER_ID_KEY] = normalized_provider
+    normalized_model = _normalize_non_empty_string(model_id)
+    if normalized_model:
+        metadata[MODEL_ID_KEY] = normalized_model
+    if variant is not None:
+        normalized_variant = _normalize_non_empty_string(variant)
+        if normalized_variant:
+            metadata[VARIANT_KEY] = normalized_variant
+        else:
+            metadata.pop(VARIANT_KEY, None)
 
     manager.mark_session_modified(session.id)
     manager.save_session(session)
@@ -560,42 +686,6 @@ def _directory_matches(left: str, right: str) -> bool:
         return False
 
 
-def _git_project_key(
-    directory: str,
-    cache: dict[str, Optional[str]],
-) -> Optional[str]:
-    """Return stable git/worktree identity key for directory filtering."""
-    cached = cache.get(directory)
-    if cached is not None or directory in cache:
-        return cached
-
-    top_level = _run_git(["rev-parse", "--show-toplevel"], directory)
-    if not top_level:
-        cache[directory] = None
-        return None
-
-    common_dir = _run_git(["rev-parse", "--git-common-dir"], directory)
-    if common_dir:
-        common_path = Path(common_dir)
-        if not common_path.is_absolute():
-            common_path = Path(directory) / common_path
-        try:
-            common_resolved = common_path.expanduser().resolve()
-        except Exception:
-            common_resolved = common_path.expanduser()
-        key = f"git:{common_resolved}"
-        cache[directory] = key
-        return key
-
-    try:
-        top_resolved = Path(top_level).expanduser().resolve()
-    except Exception:
-        top_resolved = Path(top_level).expanduser()
-    key = f"root:{top_resolved}"
-    cache[directory] = key
-    return key
-
-
 def _session_directory(core: Any, session: Any) -> str:
     metadata = getattr(session, "metadata", {})
     if isinstance(metadata, dict):
@@ -685,7 +775,14 @@ def get_session_diff(
     if by_file:
         return list(by_file.values())
 
-    return _git_fallback_diffs(_session_directory(core, session))
+    fallback_diffs = _git_fallback_diffs(_session_directory(core, session))
+    logger.warning(
+        "session.view.diff_git_fallback session=%s message_id=%s diff_count=%s",
+        session_id,
+        message_id or "",
+        len(fallback_diffs),
+    )
+    return fallback_diffs
 
 
 def list_session_infos(
@@ -701,12 +798,6 @@ def list_session_infos(
     results: list[dict[str, Any]] = []
     lowered_search = search.lower() if search else None
     normalized_directory = _normalize_existing_directory(directory)
-    project_cache: dict[str, Optional[str]] = {}
-    requested_project_key = (
-        _git_project_key(normalized_directory, project_cache)
-        if normalized_directory
-        else None
-    )
 
     for manager in _iter_session_managers(core):
         index = getattr(manager, "session_index", {})
@@ -719,10 +810,7 @@ def list_session_infos(
             if isinstance(cached, dict) and session_id in cached:
                 session = cached[session_id][0]
             if session is None:
-                try:
-                    session = manager.load_session(session_id)
-                except Exception:
-                    session = None
+                session = _load_session_view_only(manager, session_id)
             if session is None:
                 continue
 
@@ -735,14 +823,7 @@ def list_session_infos(
                 if not session_directory:
                     continue
                 if not _directory_matches(session_directory, normalized_directory):
-                    if not requested_project_key:
-                        continue
-                    session_project_key = _git_project_key(
-                        session_directory,
-                        project_cache,
-                    )
-                    if session_project_key != requested_project_key:
-                        continue
+                    continue
             if start is not None and info["time"]["updated"] < start:
                 continue
             if lowered_search and lowered_search not in info["title"].lower():
@@ -792,22 +873,20 @@ def _default_assistant_info(
     message_id: str,
     *,
     agent_id: str | None = None,
+    session: Any | None = None,
 ) -> dict[str, Any]:
     """Build a minimal valid assistant info envelope."""
     now = int(datetime.now().timestamp() * 1000)
     cwd = str(Path.cwd())
+    model_state = _resolve_session_model_state(core, session or object())
     return {
         "id": message_id,
         "sessionID": session_id,
         "role": "assistant",
         "time": {"created": now},
         "parentID": "root",
-        "modelID": getattr(
-            getattr(core, "model_config", None), "model", "penguin-default"
-        ),
-        "providerID": getattr(
-            getattr(core, "model_config", None), "provider", "penguin"
-        ),
+        "modelID": model_state["modelID"] or "penguin-default",
+        "providerID": model_state["providerID"] or "penguin",
         "mode": "chat",
         "agent": agent_id.strip()
         if isinstance(agent_id, str) and agent_id.strip()
@@ -820,6 +899,7 @@ def _default_assistant_info(
             "reasoning": 0,
             "cache": {"read": 0, "write": 0},
         },
+        **({"variant": model_state["variant"]} if model_state["variant"] else {}),
     }
 
 
@@ -834,6 +914,7 @@ def _legacy_message_to_with_parts(
     created = created or int(datetime.now().timestamp() * 1000)
     content = getattr(message, "content", "")
     text = content if isinstance(content, str) else str(content)
+    model_state = _resolve_session_model_state(core, session, message)
 
     if role == "user":
         info = {
@@ -843,13 +924,10 @@ def _legacy_message_to_with_parts(
             "time": {"created": created},
             "agent": getattr(message, "agent_id", None) or "default",
             "model": {
-                "providerID": getattr(
-                    getattr(core, "model_config", None), "provider", "penguin"
-                ),
-                "modelID": getattr(
-                    getattr(core, "model_config", None), "model", "penguin-default"
-                ),
+                "providerID": model_state["providerID"] or "penguin",
+                "modelID": model_state["modelID"] or "penguin-default",
             },
+            **({"variant": model_state["variant"]} if model_state["variant"] else {}),
         }
     else:
         message_agent = getattr(message, "agent_id", None)
@@ -862,8 +940,15 @@ def _legacy_message_to_with_parts(
             session_id,
             message_id,
             agent_id=message_agent if isinstance(message_agent, str) else None,
+            session=session,
         )
         info["time"] = {"created": created, "completed": created}
+        if model_state["providerID"]:
+            info["providerID"] = model_state["providerID"]
+        if model_state["modelID"]:
+            info["modelID"] = model_state["modelID"]
+        if model_state["variant"]:
+            info["variant"] = model_state["variant"]
 
     part = {
         "id": f"part_{message_id}_0",
@@ -873,6 +958,91 @@ def _legacy_message_to_with_parts(
         "text": text,
     }
     return {"info": info, "parts": [part]}
+
+
+def _row_created_at(row: dict[str, Any]) -> int:
+    """Return message creation time in milliseconds for transcript rows."""
+    info = row.get("info") if isinstance(row, dict) else None
+    if not isinstance(info, dict):
+        return 0
+    time_data = info.get("time")
+    if not isinstance(time_data, dict):
+        return 0
+    created = time_data.get("created")
+    return created if isinstance(created, int) else 0
+
+
+def _normalize_text(value: str) -> str:
+    """Normalize message text for loose deduplication."""
+    return " ".join(value.split()).strip().lower()
+
+
+def _row_text(row: dict[str, Any]) -> str:
+    """Return normalized text content from transcript rows."""
+    parts = row.get("parts") if isinstance(row, dict) else None
+    if not isinstance(parts, list):
+        return ""
+    text_parts = [
+        part.get("text", "")
+        for part in parts
+        if isinstance(part, dict)
+        and part.get("type") == "text"
+        and isinstance(part.get("text"), str)
+    ]
+    return _normalize_text("\n".join(text_parts)) if text_parts else ""
+
+
+def _merge_transcript_with_legacy_users(
+    rows: list[dict[str, Any]],
+    legacy_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge older legacy user rows when a persisted transcript omitted them."""
+    if not rows:
+        return rows
+
+    known_ids = {
+        str(row["info"].get("id"))
+        for row in rows
+        if isinstance(row.get("info"), dict) and row["info"].get("id")
+    }
+    transcript_users_by_text: dict[str, list[int]] = {}
+    for row in rows:
+        info = row.get("info") if isinstance(row, dict) else None
+        if not isinstance(info, dict) or info.get("role") != "user":
+            continue
+        text = _row_text(row)
+        if not text:
+            continue
+        transcript_users_by_text.setdefault(text, []).append(_row_created_at(row))
+
+    merged = list(rows)
+    for row in legacy_rows:
+        info = row.get("info") if isinstance(row, dict) else None
+        if not isinstance(info, dict) or info.get("role") != "user":
+            continue
+        message_id = info.get("id")
+        if isinstance(message_id, str) and message_id in known_ids:
+            continue
+        text = _row_text(row)
+        created_at = _row_created_at(row)
+        existing_times = transcript_users_by_text.get(text)
+        if text and existing_times:
+            if any(
+                not existing_time
+                or not created_at
+                or abs(existing_time - created_at) <= 30_000
+                for existing_time in existing_times
+            ):
+                continue
+        merged.append(row)
+
+    merged.sort(
+        key=lambda row: (
+            _row_created_at(row),
+            str((row.get("info") or {}).get("id") or ""),
+        )
+    )
+    return merged
 
 
 def _normalize_todo_items(raw: Any) -> list[dict[str, str]]:
@@ -1027,39 +1197,30 @@ def get_session_messages(
             continue
         legacy_rows.append(_legacy_message_to_with_parts(core, session, message))
 
-    if not rows:
-        rows = legacy_rows
-    elif legacy_rows:
-        transcript_by_id: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            info = row.get("info") if isinstance(row, dict) else None
-            message_id = info.get("id") if isinstance(info, dict) else None
-            if isinstance(message_id, str):
-                transcript_by_id[message_id] = row
+    if rows:
+        rows = _merge_transcript_with_legacy_users(rows, legacy_rows)
+        if limit is not None and limit > 0:
+            return rows[-limit:]
+        return rows
 
-        merged_rows: list[dict[str, Any]] = []
-        merged_ids: set[str] = set()
-        for legacy_row in legacy_rows:
-            info = legacy_row.get("info") if isinstance(legacy_row, dict) else None
-            message_id = info.get("id") if isinstance(info, dict) else None
-            if isinstance(message_id, str) and message_id in transcript_by_id:
-                merged_rows.append(transcript_by_id[message_id])
-                merged_ids.add(message_id)
-                continue
-            merged_rows.append(legacy_row)
-            if isinstance(message_id, str):
-                merged_ids.add(message_id)
+    rows = legacy_rows
 
-        for row in rows:
-            info = row.get("info") if isinstance(row, dict) else None
-            message_id = info.get("id") if isinstance(info, dict) else None
-            if isinstance(message_id, str) and message_id in merged_ids:
-                continue
-            merged_rows.append(row)
-            if isinstance(message_id, str):
-                merged_ids.add(message_id)
-
-        rows = merged_rows
+    if rows:
+        first_id = ""
+        last_id = ""
+        first_info = rows[0].get("info") if isinstance(rows[0], dict) else None
+        last_info = rows[-1].get("info") if isinstance(rows[-1], dict) else None
+        if isinstance(first_info, dict):
+            first_id = str(first_info.get("id") or "")
+        if isinstance(last_info, dict):
+            last_id = str(last_info.get("id") or "")
+        logger.warning(
+            "session.view.messages_legacy_fallback session=%s count=%s first=%s last=%s",
+            session_id,
+            len(rows),
+            first_id,
+            last_id,
+        )
 
     if limit is not None and limit > 0:
         return rows[-limit:]

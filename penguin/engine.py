@@ -12,6 +12,7 @@ remains test‑friendly and avoids hidden globals.
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import asyncio
+import copy
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from penguin.constants import UI_ASYNC_SLEEP_SECONDS
@@ -34,9 +35,22 @@ from typing import (
 from penguin.utils.errors import LLMEmptyResponseError
 
 from penguin.system.conversation_manager import ConversationManager  # type: ignore
-from penguin.utils.parser import parse_action, CodeActAction, ActionExecutor  # type: ignore
+from penguin.utils.parser import (  # type: ignore
+    ActionExecutor,
+    ActionType,
+    CodeActAction,
+    parse_action,
+)
 from penguin.system.state import MessageCategory  # type: ignore
 from penguin.llm.api_client import APIClient  # type: ignore
+from penguin.llm.runtime import (
+    build_empty_response_diagnostics as build_llm_empty_response_diagnostics,
+    build_reasoning_fallback_note,
+    call_with_retry as call_llm_with_retry,
+    execute_pending_tool_call,
+    handler_has_pending_tool_call,
+    prepare_responses_tool_kwargs,
+)
 from penguin.tools import ToolManager  # type: ignore
 from penguin.config import TASK_COMPLETION_PHRASE  # Add this import
 from penguin.constants import get_engine_max_iterations_default
@@ -52,6 +66,17 @@ except ImportError:
     ProtocolMessage = None  # type: ignore
 
 logger = logging.getLogger(__name__)
+
+
+def _trace_log_info(message: str, *args: Any) -> None:
+    """Mirror engine trace logs to uvicorn for live server debugging."""
+    logger.info(message, *args)
+    uvicorn_logger = logging.getLogger("uvicorn.error")
+    if uvicorn_logger is not logger:
+        uvicorn_logger.info(message, *args)
+
+
+_ACTION_TAG_NAME_PATTERN = "|".join(action_type.value for action_type in ActionType)
 
 # ---------------------------------------------------------------------------
 # Settings & Stop‑conditions
@@ -247,6 +272,11 @@ class EngineRunState:
     current_iteration: int = 0
     start_time: datetime = field(default_factory=datetime.utcnow)
     loop_state: LoopState = field(default_factory=LoopState)
+    scoped_conversation_managers: Dict[tuple[int, str], Any] = field(
+        default_factory=dict
+    )
+    api_client: Optional[Any] = None
+    model_config: Optional[Any] = None
 
 
 _CURRENT_ENGINE_RUN_STATE: ContextVar[Optional[EngineRunState]] = ContextVar(
@@ -269,7 +299,30 @@ class _ScopedConversationManager:
             )
         if conversation is None:
             conversation = getattr(base_manager, "conversation", None)
-        self._conversation = conversation
+        self._conversation = self._clone_conversation(conversation)
+
+    def _clone_conversation(self, conversation: Any) -> Any:
+        if conversation is None:
+            return None
+        try:
+            cloned = copy.copy(conversation)
+        except Exception:
+            return conversation
+
+        session = getattr(conversation, "session", None)
+        if session is None:
+            return cloned
+
+        try:
+            cloned_session = copy.copy(session)
+            if isinstance(getattr(session, "messages", None), list):
+                cloned_session.messages = list(session.messages)
+            if isinstance(getattr(session, "metadata", None), dict):
+                cloned_session.metadata = dict(session.metadata)
+            cloned.session = cloned_session
+        except Exception:
+            return cloned
+        return cloned
 
     @property
     def conversation(self) -> Any:
@@ -287,12 +340,27 @@ class _ScopedConversationManager:
         action_type: str,
         result: str,
         status: str = "completed",
+        *,
+        tool_call_id: Optional[str] = None,
+        tool_arguments: Optional[str] = None,
     ) -> Any:
         if self._conversation is not None and hasattr(
             self._conversation, "add_action_result"
         ):
-            return self._conversation.add_action_result(action_type, result, status)
-        return self._base_manager.add_action_result(action_type, result, status)
+            return self._conversation.add_action_result(
+                action_type,
+                result,
+                status,
+                tool_call_id=tool_call_id,
+                tool_arguments=tool_arguments,
+            )
+        return self._base_manager.add_action_result(
+            action_type,
+            result,
+            status,
+            tool_call_id=tool_call_id,
+            tool_arguments=tool_arguments,
+        )
 
     def get_current_session(self) -> Any:
         session = getattr(self._conversation, "session", None)
@@ -364,12 +432,63 @@ class Engine:
 
         # Light run‑time state
         self._interrupted: bool = False
+        self._pending_scoped_conversation_managers: Dict[tuple[str, str], Any] = {}
+
+    @staticmethod
+    def _trace_preview(value: Any, limit: int = 120) -> str:
+        text = str(value or "")
+        text = text.replace("\n", "\\n")
+        if len(text) <= limit:
+            return text
+        return text[: max(limit - 3, 0)] + "..."
+
+    def _trace_request_fields(self) -> tuple[str, str]:
+        execution_context = get_current_execution_context()
+        request_id = (
+            execution_context.request_id
+            if execution_context and execution_context.request_id
+            else "unknown"
+        )
+        session_id = (
+            execution_context.session_id
+            if execution_context and execution_context.session_id
+            else (
+                execution_context.conversation_id
+                if execution_context and execution_context.conversation_id
+                else ""
+            )
+        )
+        return request_id, session_id
+
+    @staticmethod
+    def _conversation_session_id(cm: Any) -> Optional[str]:
+        try:
+            session = (
+                cm.get_current_session() if hasattr(cm, "get_current_session") else None
+            )
+        except Exception:
+            session = None
+        if session is None:
+            session = getattr(getattr(cm, "conversation", None), "session", None)
+        return getattr(session, "id", None) if session is not None else None
 
     def _get_loop_state(self) -> LoopState:
         run_state = _CURRENT_ENGINE_RUN_STATE.get()
         if run_state is not None:
             return run_state.loop_state
         return self._default_run_state.loop_state
+
+    def _get_runtime_api_client(self) -> Any:
+        run_state = _CURRENT_ENGINE_RUN_STATE.get()
+        if run_state is not None and run_state.api_client is not None:
+            return run_state.api_client
+        return self.api_client
+
+    def _get_runtime_model_config(self) -> Any:
+        run_state = _CURRENT_ENGINE_RUN_STATE.get()
+        if run_state is not None and run_state.model_config is not None:
+            return run_state.model_config
+        return getattr(self, "model_config", None)
 
     @property
     def current_agent_id(self) -> Optional[str]:
@@ -477,7 +596,7 @@ class Engine:
             return None
         if resolved_agent_id:
             try:
-                return _ScopedConversationManager(
+                return self._get_scoped_conversation_manager(
                     agent.conversation_manager,
                     resolved_agent_id,
                 )
@@ -681,7 +800,7 @@ class Engine:
             cm = self.conversation_manager
             if agent_id:
                 try:
-                    cm = _ScopedConversationManager(cm, agent_id)
+                    cm = self._get_scoped_conversation_manager(cm, agent_id)
                 except Exception:
                     logger.exception(
                         "Failed to build scoped conversation manager for agent '%s'",
@@ -689,14 +808,14 @@ class Engine:
                     )
             return (
                 cm,
-                self.api_client,
+                self._get_runtime_api_client(),
                 self.tool_manager,
                 self.action_executor,
             )
         cm = agent.conversation_manager
         if agent_id:
             try:
-                cm = _ScopedConversationManager(cm, agent_id)
+                cm = self._get_scoped_conversation_manager(cm, agent_id)
             except Exception:
                 logger.exception(
                     "Failed to build scoped conversation manager for agent '%s'",
@@ -704,9 +823,101 @@ class Engine:
                 )
         return (
             cm,
-            agent.api_client or self.api_client,
+            agent.api_client or self._get_runtime_api_client(),
             agent.tool_manager or self.tool_manager,
             agent.action_executor or self.action_executor,
+        )
+
+    def _get_scoped_conversation_manager(
+        self,
+        base_manager: ConversationManager,
+        agent_id: str,
+    ) -> _ScopedConversationManager:
+        """Return a request-scoped conversation view reused within the same run."""
+        request_id, session_id = self._trace_request_fields()
+        run_state = _CURRENT_ENGINE_RUN_STATE.get()
+        if run_state is None:
+            scoped = _ScopedConversationManager(base_manager, agent_id)
+            _trace_log_info(
+                "engine.scope.create request=%s session=%s agent=%s cache=none base_cm=%s scoped_cm=%s scoped_session=%s",
+                request_id,
+                session_id or "unknown",
+                agent_id,
+                hex(id(base_manager)),
+                hex(id(scoped)),
+                self._conversation_session_id(scoped) or "unknown",
+            )
+            return scoped
+
+        key = (id(base_manager), agent_id)
+        cached = run_state.scoped_conversation_managers.get(key)
+        if isinstance(cached, _ScopedConversationManager):
+            _trace_log_info(
+                "engine.scope.reuse request=%s session=%s agent=%s cache=%s base_cm=%s scoped_cm=%s scoped_session=%s",
+                request_id,
+                session_id or "unknown",
+                agent_id,
+                len(run_state.scoped_conversation_managers),
+                hex(id(base_manager)),
+                hex(id(cached)),
+                self._conversation_session_id(cached) or "unknown",
+            )
+            return cached
+
+        pending_key = (request_id, agent_id)
+        pending = self._pending_scoped_conversation_managers.pop(pending_key, None)
+        if pending is not None:
+            run_state.scoped_conversation_managers[key] = pending
+            _trace_log_info(
+                "engine.scope.adopt request=%s session=%s agent=%s cache=%s base_cm=%s scoped_cm=%s scoped_session=%s",
+                request_id,
+                session_id or "unknown",
+                agent_id,
+                len(run_state.scoped_conversation_managers),
+                hex(id(base_manager)),
+                hex(id(pending)),
+                self._conversation_session_id(pending) or "unknown",
+            )
+            return pending
+
+        scoped = _ScopedConversationManager(base_manager, agent_id)
+        run_state.scoped_conversation_managers[key] = scoped
+        _trace_log_info(
+            "engine.scope.create request=%s session=%s agent=%s cache=%s base_cm=%s scoped_cm=%s scoped_session=%s",
+            request_id,
+            session_id or "unknown",
+            agent_id,
+            len(run_state.scoped_conversation_managers),
+            hex(id(base_manager)),
+            hex(id(scoped)),
+            self._conversation_session_id(scoped) or "unknown",
+        )
+        return scoped
+
+    def prime_scoped_conversation_manager(
+        self,
+        agent_id: str,
+        conversation_manager: Any,
+    ) -> None:
+        """Prime the next request-local engine run with a preloaded scoped manager."""
+        execution_context = get_current_execution_context()
+        request_id = (
+            execution_context.request_id
+            if execution_context and execution_context.request_id
+            else None
+        )
+        if not request_id:
+            return
+        self._pending_scoped_conversation_managers[(request_id, agent_id)] = (
+            conversation_manager
+        )
+        _trace_log_info(
+            "engine.scope.prime request=%s session=%s agent=%s scoped_cm=%s scoped_session=%s",
+            request_id,
+            execution_context.session_id if execution_context else "unknown",
+            agent_id,
+            hex(id(conversation_manager)),
+            self._conversation_session_id(conversation_manager) or "unknown",
         )
 
     def _extract_usage_from_api_client(self, api_client: Any) -> Dict[str, Any]:
@@ -745,8 +956,16 @@ class Engine:
             - should_break: True if loop should terminate
             - completion_status: Status string if breaking, None otherwise
         """
+        stripped_response = (last_response or "").strip()
+
         # Check for no-action completion (models that don't use CodeAct format)
         if not iteration_results and last_response:
+            if self._looks_like_malformed_action_output(last_response):
+                logger.warning(
+                    "[WALLET_GUARD] Suppressing implicit completion for malformed %s response",
+                    mode,
+                )
+                return False, None
             has_action_tags = bool(
                 re.search(r"<\w+>.*?</\w+>", last_response, re.DOTALL)
             )
@@ -755,6 +974,15 @@ class Engine:
                     f"[WALLET_GUARD] No actions in {mode} response, treating as complete (model may not support CodeAct)"
                 )
                 return True, "implicit_completion" if mode == "task" else None
+
+        # Tool-only turns are valid for providers like OpenAI/Codex. Treat an
+        # empty assistant transcript as in-progress work rather than a loop.
+        if iteration_results and not stripped_response:
+            loop_state = self._get_loop_state()
+            loop_state.empty_response_count = 0
+            loop_state.repeat_count = 0
+            loop_state.last_response_hash = None
+            return False, None
 
         # Check for confused model echoing tool results
         if last_response and "[Tool Result]" in last_response:
@@ -772,7 +1000,11 @@ class Engine:
             return True, "implicit_completion" if mode == "task" else None
 
         # Check for empty/trivial responses
-        stripped_response = (last_response or "").strip()
+        # Tool-bearing turns with assistant text still reset the trivial counter.
+        if iteration_results:
+            loop_state.empty_response_count = 0
+            return False, None
+
         is_empty_or_trivial, should_break = loop_state.check_trivial(last_response)
 
         # DIAGNOSTIC: Log trivial responses
@@ -800,6 +1032,78 @@ class Engine:
             return True, "implicit_completion" if mode == "task" else None
 
         return False, None
+
+    def _looks_like_malformed_action_output(self, response: str) -> bool:
+        """Return whether text looks like a partial or malformed tool call."""
+        if not isinstance(response, str) or not response.strip():
+            return False
+        if parse_action(response):
+            return False
+
+        stripped = response.strip()
+        if re.search(rf"</(?:{_ACTION_TAG_NAME_PATTERN})>", stripped, re.IGNORECASE):
+            return True
+        if re.search(
+            rf"<(?:{_ACTION_TAG_NAME_PATTERN})>(?:(?!</).)*$",
+            stripped,
+            re.DOTALL | re.IGNORECASE,
+        ):
+            return True
+        if re.search(
+            rf"<(?:{_ACTION_TAG_NAME_PATTERN})?[^>]*$", stripped, re.IGNORECASE
+        ):
+            return True
+        return False
+
+    def _queue_malformed_action_repair_note(
+        self,
+        cm: Any,
+        response: str,
+        *,
+        mode: str,
+    ) -> bool:
+        """Add a repair note when the model emits broken tool syntax."""
+        if not self._looks_like_malformed_action_output(response):
+            return False
+
+        request_id, session_id = self._trace_request_fields()
+        preview = self._trace_preview(response)
+        logger.warning(
+            "[WALLET_GUARD] Malformed action syntax in %s response request=%s session=%s preview=%r",
+            mode,
+            request_id,
+            session_id or "unknown",
+            preview,
+        )
+        try:
+            cm.conversation.add_message(
+                role="system",
+                content=(
+                    "The previous assistant response ended with malformed or partial tool syntax. "
+                    "Do not treat it as complete. Repair by continuing with either plain assistant text "
+                    "or one complete valid tool tag. Do not emit dangling XML-like fragments."
+                ),
+                category=MessageCategory.SYSTEM_OUTPUT,
+                metadata={
+                    "type": "malformed_action_output",
+                    "mode": mode,
+                    "preview": preview,
+                },
+                message_type="status",
+            )
+        except Exception:
+            logger.exception("Failed to record malformed action repair note")
+            return False
+
+        _trace_log_info(
+            "engine.action.repair request=%s session=%s mode=%s conv_session=%s preview=%r",
+            request_id,
+            session_id or "unknown",
+            mode,
+            self._conversation_session_id(cm) or "unknown",
+            preview,
+        )
+        return True
 
     async def _iteration_loop(
         self,
@@ -968,6 +1272,19 @@ class Engine:
                         f"Preview: {last_response[:100]}..."
                     )
 
+                if not iteration_results and self._queue_malformed_action_repair_note(
+                    cm,
+                    last_response,
+                    mode=config.mode,
+                ):
+                    await self._save_conversation(cm, async_save=config.async_save)
+                    if config.message_callback:
+                        await config.message_callback(
+                            "Assistant returned malformed tool syntax; requesting a repair turn.",
+                            "system_output",
+                        )
+                    continue
+
                 # WALLET_GUARD: Consolidated termination checks
                 should_break, guard_status = self._check_wallet_guard_termination(
                     last_response, iteration_results, mode=config.mode
@@ -1109,6 +1426,8 @@ class Engine:
         stream_callback: Optional[Callable[[str], None]] = None,
         agent_id: Optional[str] = None,
         agent_role: Optional[str] = None,
+        api_client_override: Optional[Any] = None,
+        model_config_override: Optional[Any] = None,
     ):
         """Run a single reasoning cycle for the requested agent/role."""
         selected, lite_output = await self._resolve_agent(
@@ -1124,7 +1443,11 @@ class Engine:
             }
 
         token: Token[Optional[EngineRunState]] = _CURRENT_ENGINE_RUN_STATE.set(
-            EngineRunState(current_agent_id=selected)
+            EngineRunState(
+                current_agent_id=selected,
+                api_client=api_client_override,
+                model_config=model_config_override,
+            )
         )
         try:
             cm, _api, _tm, _ae = self._resolve_components(self.current_agent_id)
@@ -1154,6 +1477,8 @@ class Engine:
         stream_callback: Optional[Callable[[str], None]] = None,
         agent_id: Optional[str] = None,
         agent_role: Optional[str] = None,
+        api_client_override: Optional[Any] = None,
+        model_config_override: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """
         Multi-step conversational loop for natural conversation flow.
@@ -1198,7 +1523,11 @@ class Engine:
             }
 
         token: Token[Optional[EngineRunState]] = _CURRENT_ENGINE_RUN_STATE.set(
-            EngineRunState(current_agent_id=selected)
+            EngineRunState(
+                current_agent_id=selected,
+                api_client=api_client_override,
+                model_config=model_config_override,
+            )
         )
         all_action_results: List[Dict[str, Any]] = []
         try:
@@ -1209,6 +1538,7 @@ class Engine:
 
             last_response = ""
             latest_usage: Dict[str, Any] = {}
+            final_status = "completed"
 
             # Reset loop state for this run
             self._get_loop_state().reset()
@@ -1297,6 +1627,14 @@ class Engine:
                         f"[LOOP DEBUG] Response contains 'finish_response' text but wasn't parsed as action. Response preview: {last_response[:100]}..."
                     )
 
+                if not iteration_results and self._queue_malformed_action_repair_note(
+                    cm,
+                    last_response,
+                    mode="response",
+                ):
+                    await self._save_conversation(cm, async_save=True)
+                    continue
+
                 # WALLET_GUARD: Consolidated termination checks
                 should_break, _ = self._check_wallet_guard_termination(
                     last_response, iteration_results, mode="response"
@@ -1305,9 +1643,8 @@ class Engine:
                     break
 
             # Determine final status
-            final_status = (
-                "completed" if self.current_iteration < max_iters else "max_iterations"
-            )
+            if final_status == "completed" and self.current_iteration >= max_iters:
+                final_status = "max_iterations"
 
             return {
                 "assistant_response": last_response,
@@ -1345,6 +1682,8 @@ class Engine:
         message_callback: Optional[Callable[[str, str], Awaitable[None]]] = None,
         agent_id: Optional[str] = None,
         agent_role: Optional[str] = None,
+        api_client_override: Optional[Any] = None,
+        model_config_override: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """
         Multi-step reasoning loop with comprehensive task handling.
@@ -1383,7 +1722,11 @@ class Engine:
             selected = self.default_agent_id
 
         token: Token[Optional[EngineRunState]] = _CURRENT_ENGINE_RUN_STATE.set(
-            EngineRunState(current_agent_id=selected)
+            EngineRunState(
+                current_agent_id=selected,
+                api_client=api_client_override,
+                model_config=model_config_override,
+            )
         )
         self.current_iteration = 0
         self.start_time = datetime.utcnow()
@@ -1574,6 +1917,19 @@ class Engine:
                             logger.debug("EventBus not available for completion event")
                     break
 
+                if not iteration_results and self._queue_malformed_action_repair_note(
+                    cm,
+                    last_response,
+                    mode="task",
+                ):
+                    await self._save_conversation(cm, async_save=True)
+                    if message_callback:
+                        await message_callback(
+                            "Assistant returned malformed tool syntax; requesting a repair turn.",
+                            "system_output",
+                        )
+                    continue
+
                 # WALLET_GUARD: Consolidated termination checks
                 should_break, guard_status = self._check_wallet_guard_termination(
                     last_response, iteration_results, mode="task"
@@ -1731,32 +2087,14 @@ class Engine:
         Returns:
             Dict with 'tools' and 'tool_choice' keys if applicable, empty dict otherwise.
         """
-        extra_kwargs = {}
         try:
-            model_cfg = getattr(self, "model_config", None)
-            uses_openai_native_responses = bool(
-                model_cfg
-                and getattr(model_cfg, "provider", "") == "openai"
-                and getattr(model_cfg, "client_preference", "") == "native"
+            return prepare_responses_tool_kwargs(
+                self._get_runtime_model_config(),
+                tool_manager,
             )
-            if model_cfg and (
-                getattr(model_cfg, "use_responses_api", False)
-                or uses_openai_native_responses
-            ):
-                tools_payload = (
-                    tool_manager.get_responses_tools()
-                    if hasattr(tool_manager, "get_responses_tools")
-                    else []
-                )
-                if tools_payload:
-                    if uses_openai_native_responses:
-                        setattr(model_cfg, "interrupt_on_tool_call", True)
-                    extra_kwargs["tools"] = tools_payload
-                    extra_kwargs["tool_choice"] = "auto"
-        except Exception as _tools_err:
-            logger.debug(f"Failed to prepare Responses tools: {_tools_err}")
-
-        return extra_kwargs
+        except Exception as exc:
+            logger.debug("Failed to prepare Responses tools: %s", exc)
+            return {}
 
     def _build_empty_response_diagnostics(
         self,
@@ -1774,129 +2112,28 @@ class Engine:
         Returns:
             Dict with 'summary', 'user_message', and detailed diagnostic fields
         """
-        diagnostics: Dict[str, Any] = {
-            "raw_response": repr(raw_response) if raw_response else "(None)",
-            "response_length": len(raw_response) if raw_response else 0,
-        }
-
-        # Message stats
+        provider_error = None
         try:
-            diagnostics["message_count"] = len(messages)
-            diagnostics["total_chars"] = sum(
-                len(str(m.get("content", ""))) for m in messages
-            )
-            diagnostics["approx_tokens"] = diagnostics["total_chars"] // 4
+            error_getter = getattr(api_client, "get_last_error", None)
+            provider_error = error_getter() if callable(error_getter) else None
         except Exception:
-            diagnostics["message_stats_error"] = "Failed to compute message stats"
+            provider_error = None
 
-        # Model config
-        try:
-            model_cfg = getattr(self, "model_config", None)
-            if model_cfg:
-                diagnostics["model"] = getattr(model_cfg, "model", "unknown")
-                diagnostics["provider"] = getattr(model_cfg, "provider", "unknown")
-                diagnostics["max_context_window_tokens"] = getattr(
-                    model_cfg, "max_context_window_tokens", None
-                )
-                diagnostics["max_output_tokens"] = getattr(
-                    model_cfg, "max_output_tokens", None
-                )
-        except Exception:
-            diagnostics["model_config_error"] = "Failed to get model config"
-
-        # Check for API error in response
-        api_error_detected = False
-        error_type = "unknown"
-        error_detail = None
-
-        if raw_response:
-            stripped = raw_response.strip()
-            if stripped.startswith("[Error:"):
-                api_error_detected = True
-                error_detail = stripped
-                # Parse error type
-                if "context" in stripped.lower() or "token" in stripped.lower():
-                    error_type = "context_window_exceeded"
-                elif "quota" in stripped.lower() or "credit" in stripped.lower():
-                    error_type = "quota_exceeded"
-                elif "rate" in stripped.lower() or "429" in stripped:
-                    error_type = "rate_limited"
-                elif "auth" in stripped.lower() or "key" in stripped.lower():
-                    error_type = "authentication_error"
-                elif "model" in stripped.lower() and "not found" in stripped.lower():
-                    error_type = "model_not_found"
-                else:
-                    error_type = "api_error"
-
-        diagnostics["api_error_detected"] = api_error_detected
-        diagnostics["error_type"] = error_type
-        if error_detail:
-            diagnostics["error_detail"] = error_detail
-
-        # Check for handler-level errors
-        try:
-            handler = getattr(api_client, "client_handler", None)
-            if handler:
-                last_error = getattr(handler, "last_error", None) or getattr(
-                    handler, "_last_error", None
-                )
-                if last_error:
-                    diagnostics["handler_error"] = str(last_error)
-        except Exception:
-            pass
-
-        # Build user-friendly message based on error type
-        user_messages = {
-            "context_window_exceeded": (
-                f"Context window exceeded. Your conversation has ~{diagnostics.get('approx_tokens', '?')} tokens "
-                f"but the model limit may be lower. Try starting a new conversation."
-            ),
-            "quota_exceeded": (
-                "API quota/credits exceeded. Check your account balance and billing status."
-            ),
-            "rate_limited": (
-                "Rate limit exceeded. Wait a moment and try again, or reduce request frequency."
-            ),
-            "authentication_error": (
-                "API authentication failed. Check your API key is valid and properly configured."
-            ),
-            "model_not_found": (
-                f"Model '{diagnostics.get('model', 'unknown')}' not found. "
-                "Check the model name is correct and you have access to it."
-            ),
-            "api_error": (
-                f"API returned an error: {error_detail or 'Unknown error'}. "
-                "Check the API status and your request parameters."
-            ),
-            "unknown": (
-                f"Model returned empty response after retry. "
-                f"Conversation has {diagnostics.get('message_count', '?')} messages, "
-                f"~{diagnostics.get('approx_tokens', '?')} tokens. "
-                f"Possible causes: (1) Context too large, (2) API issue, (3) Model refusing to respond."
-            ),
-        }
-
-        diagnostics["user_message"] = user_messages.get(
-            error_type, user_messages["unknown"]
+        return build_llm_empty_response_diagnostics(
+            messages=messages,
+            raw_response=raw_response,
+            model_config=getattr(self, "model_config", None),
+            provider_error=provider_error,
+            handler=getattr(api_client, "client_handler", None),
         )
-        diagnostics["summary"] = (
-            f"Empty response from {diagnostics.get('model', 'unknown')} "
-            f"(type={error_type}, msgs={diagnostics.get('message_count', '?')}, "
-            f"tokens≈{diagnostics.get('approx_tokens', '?')})"
-        )
-
-        return diagnostics
 
     def _handler_has_pending_tool_call(self, api_client: APIClient) -> bool:
         """Return whether the active handler captured a tool call to execute."""
         try:
-            handler = getattr(api_client, "client_handler", None)
-            checker = getattr(handler, "has_pending_tool_call", None)
-            if callable(checker):
-                return bool(checker())
+            return handler_has_pending_tool_call(api_client)
         except Exception:
             logger.debug("Failed to check handler for pending tool call", exc_info=True)
-        return False
+            return False
 
     async def _call_llm_with_retry(
         self,
@@ -1921,44 +2158,24 @@ class Engine:
         Raises:
             LLMEmptyResponseError: If response is empty after retry
         """
-        # First attempt – honour requested streaming setting
-        assistant_response = await api_client.get_response(
-            messages,
-            stream=streaming,
-            stream_callback=stream_callback,
-            **extra_kwargs,
-        )
-
-        # If empty, retry once with stream=False (some providers fail in streaming mode)
-        if not assistant_response or not assistant_response.strip():
-            if self._handler_has_pending_tool_call(api_client):
-                logger.info(
-                    "_llm_step received empty text because handler captured a tool call; skipping empty-response retry."
-                )
-                return assistant_response or ""
-            logger.warning(
-                "_llm_step got empty response (stream=%s). Retrying once without streaming.",
-                streaming,
+        try:
+            return await call_llm_with_retry(
+                api_client=api_client,
+                messages=messages,
+                streaming=streaming,
+                stream_callback=stream_callback,
+                extra_kwargs=extra_kwargs,
+                model_config=getattr(self, "model_config", None),
             )
-            assistant_response = await api_client.get_response(messages, stream=False)
-
-        # Still empty? Raise exception to prevent infinite loops
-        if not assistant_response or not assistant_response.strip():
-            if self._handler_has_pending_tool_call(api_client):
-                logger.info(
-                    "_llm_step still has no assistant text after retry because a tool call is pending; returning control to tool execution."
-                )
-                return assistant_response or ""
-            # Build detailed diagnostics
+        except LLMEmptyResponseError:
             diagnostics = self._build_empty_response_diagnostics(
-                api_client, messages, assistant_response
+                api_client,
+                messages,
+                None,
             )
-            logger.error(f"[EMPTY_RESPONSE] {diagnostics['summary']}")
-            logger.error(f"[EMPTY_RESPONSE] Details: {diagnostics}")
-
-            raise LLMEmptyResponseError(diagnostics["user_message"])
-
-        return assistant_response
+            logger.error("[EMPTY_RESPONSE] %s", diagnostics["summary"])
+            logger.error("[EMPTY_RESPONSE] Details: %s", diagnostics)
+            raise
 
     async def _handle_responses_tool_call(
         self,
@@ -1976,67 +2193,31 @@ class Engine:
         Returns:
             Action result dict if tool was executed, None otherwise
         """
-        # Check if gateway interrupted due to Responses tool_call
-        try:
-            handler = getattr(api_client, "client_handler", None)
-            getter = getattr(handler, "get_and_clear_last_tool_call", None)
-            tool_info = (
-                await getter()
-                if callable(getter) and asyncio.iscoroutinefunction(getter)
-                else (getter() if callable(getter) else None)
-            )
-        except Exception:
-            logger.exception("Failed to get tool_call info from handler")
-            return None
-
-        if not tool_info or not isinstance(tool_info, dict):
-            return None
-
-        try:
-            tool_name = str(tool_info.get("name") or "").strip()
-            raw_args = tool_info.get("arguments") or "{}"
-            import json as _json
-
-            try:
-                tool_args = (
-                    _json.loads(raw_args)
-                    if isinstance(raw_args, str) and raw_args.strip()
-                    else {}
-                )
-            except Exception:
-                logger.exception(
-                    f"Failed to parse tool arguments for '{tool_name}': {raw_args[:100]}"
-                )
-                tool_args = {}
-
-            # Execute via ToolManager
-            output = tool_manager.execute_tool(tool_name, tool_args)
-
-            # Format result (using standardized field names: action/result)
-            action_result = {
-                "action": tool_name,
-                "result": str(output if output is not None else ""),
-                "status": "completed",
-            }
-
-            # Persist result
-            cm.add_action_result(
+        return await execute_pending_tool_call(
+            api_client=api_client,
+            tool_manager=tool_manager,
+            persist_action_result=lambda action_result,
+            tool_context: cm.add_action_result(
                 action_type=action_result["action"],
                 result=action_result["result"],
                 status=action_result["status"],
-            )
-
-            # Emit UI event
-            await self._emit_tool_event(cm, action_result)
-
-            # NOTE: Removed forced tool_choice (architectural violation)
-            # Model should decide next action based on tool result, not be forced
-
-            return action_result
-
-        except Exception as _tool_exec_err:
-            logger.debug(f"Responses tool_call execution failed: {_tool_exec_err}")
-            return None
+                tool_call_id=tool_context.get("tool_call_id"),
+                tool_arguments=tool_context.get("tool_arguments"),
+            ),
+            emit_action_start=(
+                (lambda payload: cm.core.emit_ui_event("action", payload))
+                if hasattr(cm, "core") and cm.core
+                else None
+            ),
+            emit_action_result=(
+                (lambda payload: cm.core.emit_ui_event("action_result", payload))
+                if hasattr(cm, "core") and cm.core
+                else None
+            ),
+            emit_tool_timeline=lambda action_result: self._emit_tool_event(
+                cm, action_result
+            ),
+        )
 
     async def _emit_tool_event(
         self, cm: ConversationManager, action_result: Dict[str, Any]
@@ -2082,12 +2263,53 @@ class Engine:
         except Exception as e:
             logger.warning(f"Failed to emit tool result UI event: {e}")
 
-    def _finalize_streaming_response(
+    def _build_reasoning_fallback_note(self, api_client: Any) -> Optional[str]:
+        """Return a fallback note when reasoning ran but no visible summary exists."""
+        return build_reasoning_fallback_note(
+            api_client,
+            usage=self._extract_usage_from_api_client(api_client),
+        )
+
+    async def _inject_reasoning_fallback_note(
+        self,
+        cm: ConversationManager,
+        api_client: Any,
+        *,
+        agent_id: Optional[str],
+        session_id: Optional[str],
+    ) -> None:
+        """Inject fallback reasoning text into the active stream before finalize."""
+
+        note = self._build_reasoning_fallback_note(api_client)
+        if not note:
+            return
+        if not hasattr(cm, "core") or not cm.core:
+            return
+
+        request_id, request_session_id = self._trace_request_fields()
+        _trace_log_info(
+            "engine.reasoning.fallback request=%s session=%s agent=%s note=%r",
+            request_id,
+            request_session_id or "unknown",
+            agent_id or self.current_agent_id or self.default_agent_id,
+            note,
+        )
+
+        await cm.core._handle_stream_chunk(
+            note,
+            message_type="reasoning",
+            agent_id=agent_id or self.current_agent_id,
+            session_id=session_id,
+            conversation_id=session_id,
+        )
+
+    async def _finalize_streaming_response(
         self,
         cm: ConversationManager,
         assistant_response: str,
         streaming: Optional[bool],
         agent_id: Optional[str] = None,
+        api_client: Optional[Any] = None,
     ) -> str:
         """Finalize streaming response and persist to conversation.
 
@@ -2099,6 +2321,16 @@ class Engine:
         Returns:
             Finalized response text (may be updated from streaming buffer)
         """
+        request_id, request_session_id = self._trace_request_fields()
+        _trace_log_info(
+            "engine.stream.finalize.start request=%s session=%s agent=%s conv_session=%s streaming=%s response_len=%s",
+            request_id,
+            request_session_id or "unknown",
+            agent_id or self.current_agent_id or self.default_agent_id,
+            self._conversation_session_id(cm) or "unknown",
+            streaming,
+            len(assistant_response or ""),
+        )
         if not streaming:
             # Non-streaming: check if message already added, add if not
             try:
@@ -2126,6 +2358,16 @@ class Engine:
                     f"Added assistant message to conversation ({len(assistant_response)} chars)"
                 )
 
+            _trace_log_info(
+                "engine.stream.finalize.done request=%s session=%s agent=%s conv_session=%s response_len=%s finalized=%s",
+                request_id,
+                request_session_id or "unknown",
+                agent_id or self.current_agent_id or self.default_agent_id,
+                self._conversation_session_id(cm) or "unknown",
+                len(assistant_response or ""),
+                False,
+            )
+
             return assistant_response
 
         # Streaming: finalize streaming message
@@ -2138,6 +2380,12 @@ class Engine:
                 cm.get_current_session() if hasattr(cm, "get_current_session") else None
             )
             session_id = getattr(session, "id", None)
+            await self._inject_reasoning_fallback_note(
+                cm,
+                api_client,
+                agent_id=agent_id,
+                session_id=session_id,
+            )
             finalized = cm.core.finalize_streaming_message(
                 agent_id=agent_id or self.current_agent_id,
                 session_id=session_id,
@@ -2185,6 +2433,16 @@ class Engine:
                     "Persisted non-chunk streaming response as assistant message (%s chars)",
                     len(assistant_response),
                 )
+
+        _trace_log_info(
+            "engine.stream.finalize.done request=%s session=%s agent=%s conv_session=%s response_len=%s finalized=%s",
+            request_id,
+            request_session_id or "unknown",
+            agent_id or self.current_agent_id or self.default_agent_id,
+            self._conversation_session_id(cm) or "unknown",
+            len(assistant_response or ""),
+            bool(finalized_content),
+        )
 
         return assistant_response
 
@@ -2321,6 +2579,28 @@ class Engine:
         )
         messages = cm.conversation.get_formatted_messages()
         messages = self._apply_agent_mode_notice(messages)
+        request_id, session_id = self._trace_request_fields()
+        last_message = messages[-1] if messages else {}
+        _trace_log_info(
+            "engine.llm_step.start request=%s session=%s agent=%s cm=%s conv=%s conv_session=%s msgs=%s last_role=%s last_preview=%r streaming=%s tools=%s",
+            request_id,
+            session_id or "unknown",
+            agent_id or self.current_agent_id or self.default_agent_id,
+            hex(id(cm)),
+            hex(id(getattr(cm, "conversation", None)))
+            if getattr(cm, "conversation", None) is not None
+            else "none",
+            self._conversation_session_id(cm) or "unknown",
+            len(messages),
+            last_message.get("role") if isinstance(last_message, dict) else None,
+            self._trace_preview(
+                last_message.get("content", "")
+                if isinstance(last_message, dict)
+                else ""
+            ),
+            streaming,
+            tools_enabled,
+        )
 
         # Step 1: Prepare Responses API tools if enabled
         extra_kwargs = self._prepare_responses_tools(tool_manager)
@@ -2330,25 +2610,47 @@ class Engine:
             api_client, messages, streaming, stream_callback, extra_kwargs
         )
 
-        # Step 3: Handle Responses API tool_call if one was triggered
-        await self._handle_responses_tool_call(api_client, tool_manager, cm)
-
-        # Step 4: Finalize streaming response and persist message
-        assistant_response = self._finalize_streaming_response(
+        # Step 3: Finalize streaming response and persist message.
+        # This must happen before Responses tool execution so any provider
+        # preamble text is attached to the current assistant turn before the
+        # tool result is persisted against it.
+        assistant_response = await self._finalize_streaming_response(
             cm,
             assistant_response,
             streaming,
             agent_id=agent_id or self.current_agent_id,
+            api_client=api_client,
+        )
+
+        # Step 4: Handle Responses API tool_call if one was triggered
+        responses_action_result = await self._handle_responses_tool_call(
+            api_client,
+            tool_manager,
+            cm,
         )
 
         # Step 5: Execute CodeAct actions if enabled
         action_results = []
+        if isinstance(responses_action_result, dict):
+            action_results.append(responses_action_result)
         if tools_enabled:
-            action_results = await self._execute_codeact_actions(
-                cm, action_executor, assistant_response
+            action_results.extend(
+                await self._execute_codeact_actions(
+                    cm, action_executor, assistant_response
+                )
             )
 
         usage = self._extract_usage_from_api_client(api_client)
+        _trace_log_info(
+            "engine.llm_step.done request=%s session=%s agent=%s conv_session=%s response_len=%s actions=%s usage=%s",
+            request_id,
+            session_id or "unknown",
+            agent_id or self.current_agent_id or self.default_agent_id,
+            self._conversation_session_id(cm) or "unknown",
+            len(assistant_response or ""),
+            len(action_results),
+            usage,
+        )
 
         # Note: cm.save() removed - caller (run_response/run_task) handles persistence
         # This avoids redundant saves per iteration

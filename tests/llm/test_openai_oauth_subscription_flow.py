@@ -236,6 +236,462 @@ async def test_oauth_request_preserves_requested_model_id(
 
 
 @pytest.mark.asyncio
+async def test_oauth_request_normalizes_responses_function_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_OAUTH_ACCESS_TOKEN", "oauth-access")
+    monkeypatch.setenv("OPENAI_ACCOUNT_ID", "acct-1")
+    monkeypatch.setattr("penguin.llm.adapters.openai.AsyncOpenAI", _SDKClient)
+    monkeypatch.setattr(
+        "penguin.llm.adapters.openai.get_provider_credential",
+        lambda provider_id: {
+            "type": "oauth",
+            "access": "oauth-access",
+            "refresh": "oauth-refresh",
+            "expires": 9_999_999_999_000,
+            "accountId": "acct-1",
+        }
+        if provider_id == "openai"
+        else None,
+    )
+
+    seen: dict[str, Any] = {}
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout: float) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self) -> _FakeAsyncClient:
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> bool:  # type: ignore[no-untyped-def]
+            del exc_type, exc, tb
+            return False
+
+        def stream(self, method: str, url: str, headers=None, json=None):  # type: ignore[no-untyped-def]
+            del method, url, headers
+            seen["json"] = dict(json or {})
+            response = _FakeResponse(
+                200,
+                lines=[
+                    'data: {"type":"response.output_text.delta","delta":"ok"}',
+                    "data: [DONE]",
+                ],
+            )
+            return _FakeStreamContext(response)
+
+    monkeypatch.setattr(
+        "penguin.llm.adapters.openai.httpx.AsyncClient", _FakeAsyncClient
+    )
+
+    model_config = ModelConfig(
+        model="gpt-5.4",
+        provider="openai",
+        client_preference="native",
+        api_key="sk-test",
+        streaming_enabled=False,
+    )
+    adapter = OpenAIAdapter(model_config)
+    result = await adapter.get_response(
+        [{"role": "user", "content": "hello"}],
+        stream=False,
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Read a file",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+        tool_choice={"type": "function", "function": {"name": "read_file"}},
+    )
+
+    assert result == "ok"
+    assert seen["json"]["tools"] == [
+        {
+            "type": "function",
+            "name": "read_file",
+            "description": "Read a file",
+            "parameters": {"type": "object", "properties": {}},
+        }
+    ]
+    assert seen["json"]["tool_choice"] == {
+        "type": "function",
+        "name": "read_file",
+    }
+
+
+@pytest.mark.asyncio
+async def test_oauth_stream_records_reasoning_debug_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_OAUTH_ACCESS_TOKEN", "oauth-access")
+    monkeypatch.setenv("OPENAI_ACCOUNT_ID", "acct-1")
+    monkeypatch.setattr("penguin.llm.adapters.openai.AsyncOpenAI", _SDKClient)
+    monkeypatch.setattr(
+        "penguin.llm.adapters.openai.get_provider_credential",
+        lambda provider_id: {
+            "type": "oauth",
+            "access": "oauth-access",
+            "refresh": "oauth-refresh",
+            "expires": 9_999_999_999_000,
+            "accountId": "acct-1",
+        }
+        if provider_id == "openai"
+        else None,
+    )
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout: float) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self) -> _FakeAsyncClient:
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> bool:  # type: ignore[no-untyped-def]
+            del exc_type, exc, tb
+            return False
+
+        def stream(self, method: str, url: str, headers=None, json=None):  # type: ignore[no-untyped-def]
+            del method, url, headers, json
+            response = _FakeResponse(
+                200,
+                lines=[
+                    (
+                        'data: {"type":"response.reasoning_summary_part.added",'
+                        '"part":{"text":"thinking..."}}'
+                    ),
+                    'data: {"type":"response.reasoning_summary_text.delta","delta":"thinking..."}',
+                    (
+                        'data: {"type":"response.reasoning_summary_part.done",'
+                        '"part":{"text":"thinking..."}}'
+                    ),
+                    'data: {"type":"response.output_text.delta","delta":"ok"}',
+                    'data: {"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":2,"output_tokens_details":{"reasoning_tokens":5},"total_tokens":12}}}',
+                    "data: [DONE]",
+                ],
+            )
+            return _FakeStreamContext(response)
+
+    monkeypatch.setattr(
+        "penguin.llm.adapters.openai.httpx.AsyncClient", _FakeAsyncClient
+    )
+
+    model_config = ModelConfig(
+        model="gpt-5.4",
+        provider="openai",
+        client_preference="native",
+        api_key="sk-test",
+        streaming_enabled=False,
+        reasoning_enabled=True,
+        reasoning_effort="xhigh",
+    )
+    adapter = OpenAIAdapter(model_config)
+    chunks: list[tuple[str, str]] = []
+
+    async def on_chunk(chunk: str, message_type: str) -> None:
+        chunks.append((chunk, message_type))
+
+    result = await adapter.get_response(
+        [{"role": "user", "content": "hello"}],
+        stream=True,
+        stream_callback=on_chunk,  # type: ignore[arg-type]
+    )
+
+    assert result == "ok"
+    assert chunks == [("thinking...", "reasoning"), ("ok", "assistant")]
+    debug_snapshot = adapter.get_reasoning_debug_snapshot()
+    assert debug_snapshot["reasoning_config"] == {
+        "effort": "xhigh",
+        "summary": "auto",
+    }
+    assert debug_snapshot["visible_reasoning_summary_returned"] is True
+    assert debug_snapshot["visible_reasoning_chars"] == len("thinking...")
+    assert (
+        "response.reasoning_summary_text.delta"
+        in debug_snapshot["reasoning_event_types"]
+    )
+    assert "response.completed" in debug_snapshot["event_types"]
+
+
+@pytest.mark.asyncio
+async def test_oauth_request_includes_reasoning_summary_auto_and_encrypted_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_OAUTH_ACCESS_TOKEN", "oauth-access")
+    monkeypatch.setenv("OPENAI_ACCOUNT_ID", "acct-1")
+    monkeypatch.setattr("penguin.llm.adapters.openai.AsyncOpenAI", _SDKClient)
+    monkeypatch.setattr(
+        "penguin.llm.adapters.openai.get_provider_credential",
+        lambda provider_id: {
+            "type": "oauth",
+            "access": "oauth-access",
+            "refresh": "oauth-refresh",
+            "expires": 9_999_999_999_000,
+            "accountId": "acct-1",
+        }
+        if provider_id == "openai"
+        else None,
+    )
+
+    seen: dict[str, Any] = {}
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout: float) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self) -> _FakeAsyncClient:
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> bool:  # type: ignore[no-untyped-def]
+            del exc_type, exc, tb
+            return False
+
+        def stream(self, method: str, url: str, headers=None, json=None):  # type: ignore[no-untyped-def]
+            del method, url, headers
+            seen["json"] = dict(json or {})
+            response = _FakeResponse(
+                200,
+                lines=[
+                    'data: {"type":"response.output_text.delta","delta":"ok"}',
+                    "data: [DONE]",
+                ],
+            )
+            return _FakeStreamContext(response)
+
+    monkeypatch.setattr(
+        "penguin.llm.adapters.openai.httpx.AsyncClient", _FakeAsyncClient
+    )
+
+    model_config = ModelConfig(
+        model="gpt-5.4",
+        provider="openai",
+        client_preference="native",
+        api_key="sk-test",
+        streaming_enabled=False,
+        reasoning_enabled=True,
+        reasoning_effort="high",
+    )
+    adapter = OpenAIAdapter(model_config)
+
+    result = await adapter.get_response(
+        [{"role": "user", "content": "hello"}],
+        stream=False,
+    )
+
+    assert result == "ok"
+    assert seen["json"]["reasoning"] == {"effort": "high", "summary": "auto"}
+    assert seen["json"]["include"] == ["reasoning.encrypted_content"]
+
+
+@pytest.mark.asyncio
+async def test_oauth_stream_extracts_reasoning_from_output_item_done_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_OAUTH_ACCESS_TOKEN", "oauth-access")
+    monkeypatch.setenv("OPENAI_ACCOUNT_ID", "acct-1")
+    monkeypatch.setattr("penguin.llm.adapters.openai.AsyncOpenAI", _SDKClient)
+    monkeypatch.setattr(
+        "penguin.llm.adapters.openai.get_provider_credential",
+        lambda provider_id: {
+            "type": "oauth",
+            "access": "oauth-access",
+            "refresh": "oauth-refresh",
+            "expires": 9_999_999_999_000,
+            "accountId": "acct-1",
+        }
+        if provider_id == "openai"
+        else None,
+    )
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout: float) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self) -> _FakeAsyncClient:
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> bool:  # type: ignore[no-untyped-def]
+            del exc_type, exc, tb
+            return False
+
+        def stream(self, method: str, url: str, headers=None, json=None):  # type: ignore[no-untyped-def]
+            del method, url, headers, json
+            response = _FakeResponse(
+                200,
+                lines=[
+                    'data: {"type":"response.output_text.delta","delta":"ok"}',
+                    (
+                        'data: {"type":"response.completed","response":{"output":['
+                        '{"type":"reasoning","summary":['
+                        '{"type":"summary_text","text":"Thinking from summary."}'
+                        "]}"
+                        '],"usage":{'
+                        '"input_tokens":10,"output_tokens":2,'
+                        '"output_tokens_details":{"reasoning_tokens":5},'
+                        '"total_tokens":12}}}'
+                    ),
+                    "data: [DONE]",
+                ],
+            )
+            return _FakeStreamContext(response)
+
+    monkeypatch.setattr(
+        "penguin.llm.adapters.openai.httpx.AsyncClient", _FakeAsyncClient
+    )
+
+    model_config = ModelConfig(
+        model="gpt-5.4",
+        provider="openai",
+        client_preference="native",
+        api_key="sk-test",
+        streaming_enabled=False,
+        reasoning_enabled=True,
+        reasoning_effort="high",
+    )
+    adapter = OpenAIAdapter(model_config)
+    chunks: list[tuple[str, str]] = []
+
+    async def on_chunk(chunk: str, message_type: str) -> None:
+        chunks.append((chunk, message_type))
+
+    result = await adapter.get_response(
+        [{"role": "user", "content": "hello"}],
+        stream=True,
+        stream_callback=on_chunk,  # type: ignore[arg-type]
+    )
+
+    assert result == "ok"
+    assert chunks == [("ok", "assistant"), ("Thinking from summary.", "reasoning")]
+    assert adapter.get_last_reasoning() == "Thinking from summary."
+    debug_snapshot = adapter.get_reasoning_debug_snapshot()
+    assert debug_snapshot["visible_reasoning_summary_returned"] is True
+    assert debug_snapshot["visible_reasoning_chars"] == len("Thinking from summary.")
+
+
+def test_extract_reasoning_from_response_object_reads_summary_array() -> None:
+    model_config = ModelConfig(
+        model="gpt-5.4",
+        provider="openai",
+        client_preference="native",
+        api_key="sk-test",
+    )
+    adapter = OpenAIAdapter(model_config)
+
+    reasoning = adapter._extract_reasoning_from_response_object(
+        {
+            "output": [
+                {
+                    "type": "reasoning",
+                    "summary": [
+                        {
+                            "type": "summary_text",
+                            "text": "First summary.",
+                        },
+                        {
+                            "type": "summary_text",
+                            "text": "Second summary.",
+                        },
+                    ],
+                }
+            ]
+        }
+    )
+
+    assert reasoning == "First summary.Second summary."
+
+
+def test_codex_input_items_include_function_call_and_output_for_tool_history() -> None:
+    model_config = ModelConfig(
+        model="gpt-5.4",
+        provider="openai",
+        client_preference="native",
+        api_key="sk-test",
+    )
+    adapter = OpenAIAdapter(model_config)
+
+    _, transformed = adapter._prepare_codex_messages_and_instructions(
+        None,
+        [
+            {
+                "role": "assistant",
+                "content": "Running a tiny Python function now.",
+                "tool_calls": [
+                    {
+                        "id": "call_123",
+                        "type": "function",
+                        "function": {
+                            "name": "code_execution",
+                            "arguments": '{"code":"print(13)"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_123",
+                "content": "13\nRESULT=13",
+                "name": "code_execution",
+            },
+        ],
+    )
+
+    items = adapter._build_codex_input_items(transformed)
+
+    assert {
+        "type": "function_call",
+        "call_id": "call_123",
+        "name": "code_execution",
+        "arguments": '{"code":"print(13)"}',
+    } in items
+    assert {
+        "type": "function_call_output",
+        "call_id": "call_123",
+        "output": "13\nRESULT=13",
+    } in items
+
+
+def test_codex_input_items_synthesize_function_call_from_tool_message_when_needed() -> (
+    None
+):
+    model_config = ModelConfig(
+        model="gpt-5.4",
+        provider="openai",
+        client_preference="native",
+        api_key="sk-test",
+    )
+    adapter = OpenAIAdapter(model_config)
+
+    items = adapter._build_codex_input_items(
+        [
+            {
+                "role": "tool",
+                "tool_call_id": "call_456",
+                "name": "code_execution",
+                "tool_arguments": '{"code":"print(44)"}',
+                "content": "44\nRESULT=44",
+            }
+        ]
+    )
+
+    assert items == [
+        {
+            "type": "function_call",
+            "call_id": "call_456",
+            "name": "code_execution",
+            "arguments": '{"code":"print(44)"}',
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "call_456",
+            "output": "44\nRESULT=44",
+        },
+    ]
+
+
+@pytest.mark.asyncio
 async def test_oauth_request_refreshes_before_codex_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

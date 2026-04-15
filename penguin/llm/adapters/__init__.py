@@ -3,13 +3,14 @@ import logging
 
 __all__ = [
     "AnthropicAdapter",
-    "BaseAdapter", 
+    "BaseAdapter",
     "OllamaAdapter",
     "OpenAIAdapter",
+    "OpenAICompatibleAdapter",
     "get_adapter",
 ]
 
-from ..provider_adapters import get_provider_adapter
+from ..provider_transform import normalize_provider_name
 from .base import BaseAdapter
 # Lazy import the heavy adapters to avoid import time overhead
 # from .anthropic import AnthropicAdapter
@@ -21,6 +22,8 @@ def get_adapter(provider: str, model_config):
     Get the appropriate adapter for the provider.
     Uses client_preference to determine whether to use native adapter or generic one.
     """
+    provider = normalize_provider_name(provider)
+
     # Try to import native adapter first if client_preference is 'native'
     try:
         # Map provider names to module & class names
@@ -28,6 +31,7 @@ def get_adapter(provider: str, model_config):
             "anthropic": ("anthropic", "AnthropicAdapter"),
             "ollama": ("ollama", "OllamaAdapter"),
             "openai": ("openai", "OpenAIAdapter"),
+            "openai_compatible": ("openai_compatible", "OpenAICompatibleAdapter"),
             # Add more mappings as needed
         }
 
@@ -47,6 +51,7 @@ def get_adapter(provider: str, model_config):
     except (ImportError, AttributeError) as e:
         logging.warning(f"Native adapter for {provider} not available: {e}")
 
-    # Fall back to provider_adapters.py implementation
-    logging.info(f"Using generic adapter for {provider} via provider_adapters")
-    return get_provider_adapter(provider, model_config)
+    raise ValueError(
+        f"No native adapter found for provider '{provider}'. "
+        "Use a first-class native adapter, openrouter, litellm, or openai_compatible path instead."
+    )

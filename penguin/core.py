@@ -104,6 +104,7 @@ See Also:
 """
 
 import asyncio
+import copy
 import inspect
 import logging
 import time
@@ -232,6 +233,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 console = Console()
+
+_SESSION_MODEL_ID_KEY = "_opencode_model_id_v1"
+_SESSION_PROVIDER_ID_KEY = "_opencode_provider_id_v1"
+_SESSION_VARIANT_KEY = "_opencode_variant_v1"
+
+
+def _trace_log_info(message: str, *args: Any) -> None:
+    """Mirror core trace logs to uvicorn for live server debugging."""
+    logger.info(message, *args)
+    uvicorn_logger = logging.getLogger("uvicorn.error")
+    if uvicorn_logger is not logger:
+        uvicorn_logger.info(message, *args)
 
 
 # ---------------------------------------------------------------------------
@@ -802,6 +815,7 @@ class PenguinCore:
                 stop_conditions=default_stops,
             )
             try:
+                self.engine.model_config = self.model_config  # type: ignore[attr-defined]
                 self.engine.coordinator = self.get_coordinator()
                 self.engine.telemetry = getattr(self, "telemetry", None)
                 # Setup MessageBus integration for inter-agent communication
@@ -1814,7 +1828,7 @@ class PenguinCore:
                 )
                 aborted = bool(adapter_aborted) or aborted
             except Exception:
-                logger.debug("Failed to abort active TUI parts", exc_info=True)
+                logger.warning("Failed to abort active TUI parts", exc_info=True)
 
         tasks_map = getattr(self, "_opencode_process_tasks", None)
         if isinstance(tasks_map, dict):
@@ -1839,7 +1853,7 @@ class PenguinCore:
                     await adapter.on_stream_end(message_id, part_id)
                     aborted = True
                 except Exception:
-                    logger.debug(
+                    logger.warning(
                         "Failed to force-finalize aborted stream", exc_info=True
                     )
             state["active"] = False
@@ -2560,11 +2574,13 @@ class PenguinCore:
         context: Optional[Dict[str, Any]] = None,
         conversation_id: Optional[str] = None,
         agent_id: Optional[str] = None,
-        max_iterations: int = MAX_TASK_ITERATIONS,  # Use config value (default 5000)
+        max_iterations: int = MAX_TASK_ITERATIONS,  # Use config value (default 5000) #TODO:247 mode and other loops need to be infinite.
         context_files: Optional[List[str]] = None,
         streaming: Optional[bool] = None,
         stream_callback: Optional[Callable[[str], None]] = None,
         multi_step: bool = True,
+        api_client_override: Optional[APIClient] = None,
+        model_config_override: Optional[ModelConfig] = None,
     ) -> Dict[str, Any]:
         """
         Process a message with Penguin.
@@ -2581,7 +2597,7 @@ class PenguinCore:
             context: Optional additional context for processing
             conversation_id: Optional ID for conversation continuity
             agent_id: Optional agent identifier to scope the request
-            max_iterations: Maximum reasoning-action cycles (default: 5)
+            max_iterations: Maximum reasoning-action cycles (default: 5) #TODO:247 mode and other loops need to be infinite.
             context_files: Optional list of context files to load
             streaming: Whether to use streaming mode for responses.
             stream_callback: Optional callback function for handling streaming output chunks.
@@ -2594,9 +2610,13 @@ class PenguinCore:
         if isinstance(input_data, str):
             message = input_data
             image_paths = None
+            client_message_id = None
         else:
             message = input_data.get("text", "")
             image_paths = input_data.get("image_paths")
+            client_message_id = input_data.get("client_message_id")
+            if not isinstance(client_message_id, str) or not client_message_id.strip():
+                client_message_id = None
             if not image_paths:
                 legacy_path = input_data.get("image_path")
                 if isinstance(legacy_path, str) and legacy_path.strip():
@@ -2640,6 +2660,25 @@ class PenguinCore:
             if execution_context and execution_context.session_id
             else conversation_id
         )
+        scoped_conversation = getattr(conversation_manager, "conversation", None)
+        scoped_session_before = getattr(
+            getattr(scoped_conversation, "session", None), "id", None
+        )
+        _trace_log_info(
+            "core.process.trace.start request=%s session=%s conversation=%s agent=%s cm=%s conv=%s conv_session=%s msg_len=%s context_files=%s images=%s streaming=%s multi_step=%s",
+            execution_context.request_id if execution_context else "unknown",
+            request_session_id or "unknown",
+            conversation_id or "",
+            agent_id or "default",
+            hex(id(conversation_manager)),
+            hex(id(scoped_conversation)) if scoped_conversation is not None else "none",
+            scoped_session_before or "unknown",
+            len(message or ""),
+            len(context_files or []),
+            len(image_paths or []),
+            streaming,
+            multi_step,
+        )
         request_task = asyncio.current_task()
         request_tracked = False
         if isinstance(request_session_id, str) and request_session_id:
@@ -2665,13 +2704,37 @@ class PenguinCore:
                 scoped_conversation = getattr(
                     conversation_manager, "conversation", None
                 )
+                load_ok = True
+                load_via = "conversation"
                 if scoped_conversation is not None and hasattr(
                     scoped_conversation, "load"
                 ):
-                    if not scoped_conversation.load(conversation_id):
+                    load_ok = bool(scoped_conversation.load(conversation_id))
+                    if not load_ok:
                         logger.warning(f"Failed to load conversation {conversation_id}")
-                elif not conversation_manager.load(conversation_id):
-                    logger.warning(f"Failed to load conversation {conversation_id}")
+                else:
+                    load_via = "manager"
+                    load_ok = bool(conversation_manager.load(conversation_id))
+                    if not load_ok:
+                        logger.warning(f"Failed to load conversation {conversation_id}")
+                scoped_session_after_load = getattr(
+                    getattr(
+                        getattr(conversation_manager, "conversation", None),
+                        "session",
+                        None,
+                    ),
+                    "id",
+                    None,
+                )
+                _trace_log_info(
+                    "core.process.trace.load request=%s session=%s conversation=%s via=%s ok=%s conv_session=%s",
+                    execution_context.request_id if execution_context else "unknown",
+                    request_session_id or "unknown",
+                    conversation_id,
+                    load_via,
+                    load_ok,
+                    scoped_session_after_load or "unknown",
+                )
 
             # Load context files if specified
             if context_files:
@@ -2685,6 +2748,13 @@ class PenguinCore:
                         scoped_conversation.load_context_file(file_path)
                     else:
                         conversation_manager.load_context_file(file_path)
+                _trace_log_info(
+                    "core.process.trace.context request=%s session=%s conversation=%s count=%s",
+                    execution_context.request_id if execution_context else "unknown",
+                    request_session_id or "unknown",
+                    conversation_id or "",
+                    len(context_files),
+                )
 
             # Add user message to conversation explicitly
             user_message_dict = {
@@ -2698,6 +2768,11 @@ class PenguinCore:
             # Emit user message event before processing
             logger.debug(f"Emitting user message event: {message[:30]}...")
             await self.emit_ui_event("message", user_message_dict)
+            await self._emit_opencode_user_message_with_metadata(
+                message,
+                message_id=client_message_id,
+                agent_id=agent_id,
+            )
 
             # Use new Engine layer if available
             if self.engine:
@@ -2729,6 +2804,15 @@ class PenguinCore:
                         scoped_session_id = None
                 if not scoped_conversation_id:
                     scoped_conversation_id = scoped_session_id
+
+                prime_agent_id = agent_id or getattr(
+                    self.engine, "default_agent_id", "default"
+                )
+                if hasattr(self.engine, "prime_scoped_conversation_manager"):
+                    self.engine.prime_scoped_conversation_manager(
+                        prime_agent_id,
+                        conversation_manager,
+                    )
 
                 async def _scoped_stream_callback(
                     chunk: str,
@@ -2793,6 +2877,31 @@ class PenguinCore:
                 if multi_step:
                     # Check if this is a formal task (RunMode) or conversational multi-step
                     is_formal_task = context and context.get("task_mode", False)
+                    _trace_log_info(
+                        "core.process.trace.engine request=%s session=%s conversation=%s agent=%s formal_task=%s cm=%s conv=%s conv_session=%s",
+                        execution_context.request_id
+                        if execution_context
+                        else "unknown",
+                        request_session_id or "unknown",
+                        scoped_conversation_id or "",
+                        agent_id or "default",
+                        bool(is_formal_task),
+                        hex(id(conversation_manager)),
+                        hex(id(getattr(conversation_manager, "conversation", None)))
+                        if getattr(conversation_manager, "conversation", None)
+                        is not None
+                        else "none",
+                        getattr(
+                            getattr(
+                                getattr(conversation_manager, "conversation", None),
+                                "session",
+                                None,
+                            ),
+                            "id",
+                            None,
+                        )
+                        or "unknown",
+                    )
 
                     if is_formal_task:
                         # Bridge the simple stream_callback to the Engine's richer message_callback
@@ -2823,6 +2932,8 @@ class PenguinCore:
                             task_context=context,
                             message_callback=engine_message_callback,
                             agent_id=agent_id,
+                            api_client_override=api_client_override,
+                            model_config_override=model_config_override,
                         )
                     else:
                         # Use the new conversational multi-step engine
@@ -2833,6 +2944,8 @@ class PenguinCore:
                             streaming=streaming,
                             stream_callback=engine_stream_callback,
                             agent_id=agent_id,
+                            api_client_override=api_client_override,
+                            model_config_override=model_config_override,
                         )
                 else:
                     # Use the single-turn conversational engine
@@ -2842,7 +2955,24 @@ class PenguinCore:
                         streaming=streaming,
                         stream_callback=engine_stream_callback,
                         agent_id=agent_id,
+                        api_client_override=api_client_override,
+                        model_config_override=model_config_override,
                     )
+                _trace_log_info(
+                    "core.process.trace.done request=%s session=%s conversation=%s status=%s iterations=%s actions=%s usage=%s response_len=%s",
+                    execution_context.request_id if execution_context else "unknown",
+                    request_session_id or "unknown",
+                    scoped_conversation_id if self.engine else (conversation_id or ""),
+                    response.get("status") if isinstance(response, dict) else None,
+                    response.get("iterations") if isinstance(response, dict) else None,
+                    len(response.get("action_results", []) or [])
+                    if isinstance(response, dict)
+                    else None,
+                    response.get("usage") if isinstance(response, dict) else None,
+                    len(response.get("assistant_response", "") or "")
+                    if isinstance(response, dict)
+                    else None,
+                )
             else:
                 # ---------- Legacy path (fallback) ----------
                 # Prepare conversation and call get_response directly
@@ -3299,6 +3429,150 @@ class PenguinCore:
                     f"Failed to propagate new model config to ContextWindowManager: {e}"
                 )
 
+        if getattr(self, "engine", None) is not None:
+            try:
+                self.engine.model_config = new_model_config  # type: ignore[attr-defined]
+            except Exception as e:
+                logger.warning(f"Failed to propagate new model config to Engine: {e}")
+
+    async def _build_model_config_for_model(
+        self, model_id: str
+    ) -> tuple[ModelConfig, Optional[int]]:
+        """Resolve a runtime model id into a concrete ModelConfig without mutating global state."""
+
+        def _coerce_optional_int(value: Any) -> Optional[int]:
+            try:
+                parsed = int(value)
+            except Exception:
+                return None
+            return parsed if parsed > 0 else None
+
+        provider, client_pref = self._resolve_model_provider(model_id)
+        if not provider:
+            raise ValueError(f"Could not resolve provider for model '{model_id}'")
+
+        provider_value = provider.strip().lower()
+        client_value = client_pref.strip().lower()
+        runtime_model_id = self._canonicalize_runtime_model_id(
+            model_id,
+            provider_value,
+            client_value,
+        )
+
+        model_configs = getattr(self.config, "model_configs", None)
+        if not isinstance(model_configs, dict):
+            model_configs = {}
+        model_lookup_id = (
+            runtime_model_id
+            if runtime_model_id in model_configs and model_id not in model_configs
+            else model_id
+        )
+
+        requires_openrouter_specs = bool(
+            provider_value == "openrouter" or client_value == "openrouter"
+        )
+        model_specs: Dict[str, Any] = {}
+        spec_model_id = runtime_model_id if provider_value == "openrouter" else model_id
+
+        if requires_openrouter_specs:
+            model_specs = await fetch_model_specs(spec_model_id)
+            if not model_specs:
+                raise ValueError(
+                    f"Could not fetch specifications for model '{spec_model_id}'"
+                )
+            logger.info(f"Fetched specs for {spec_model_id}: {model_specs}")
+
+        model_specific = model_configs.get(model_lookup_id, {})
+        if not isinstance(model_specific, dict):
+            model_specific = {}
+
+        context_length = _coerce_optional_int(model_specs.get("context_length"))
+        if context_length is None:
+            context_length = _coerce_optional_int(
+                model_specific.get("context_window")
+                or model_specific.get("max_context_window_tokens")
+            )
+
+        safe_window = safe_context_window(context_length)
+        max_output = _coerce_optional_int(model_specs.get("max_output_tokens"))
+        if max_output is None:
+            max_output = _coerce_optional_int(
+                model_specific.get("max_output_tokens")
+                or model_specific.get("max_tokens")
+            )
+        if max_output is None:
+            max_output = safe_window
+        elif safe_window is not None and max_output > safe_window:
+            logger.warning(
+                "Clamping model '%s' max_output_tokens from %s to safe window %s",
+                runtime_model_id,
+                max_output,
+                safe_window,
+            )
+            max_output = safe_window
+
+        new_model_config = ModelConfig.for_model(
+            model_name=model_lookup_id,
+            provider=provider,
+            client_preference=client_pref,
+            model_configs=model_configs,
+        )
+
+        new_model_config.model = runtime_model_id
+        if context_length is not None:
+            new_model_config.max_context_window_tokens = context_length
+            new_model_config.max_history_tokens = safe_window
+        if max_output is not None:
+            new_model_config.max_output_tokens = max_output
+
+        user_explicit_vision = model_specific.get("vision_enabled")
+        if user_explicit_vision is not None:
+            new_model_config.vision_enabled = bool(user_explicit_vision)
+            logger.info(
+                f"Model '{runtime_model_id}' vision set to {new_model_config.vision_enabled} (user config)"
+            )
+        elif model_specs.get("supports_vision"):
+            new_model_config.vision_enabled = True
+            logger.info(f"Model '{runtime_model_id}' supports vision (auto-detected)")
+
+        return new_model_config, safe_window
+
+    async def resolve_request_runtime(
+        self,
+        model_id: Optional[str] = None,
+    ) -> tuple[ModelConfig, APIClient]:
+        """Build a request-scoped model config and API client without mutating global state."""
+        current_model = (
+            self.get_current_model() if hasattr(self, "get_current_model") else {}
+        )
+        current_raw = (
+            str(current_model.get("model") or "").strip()
+            if isinstance(current_model, dict)
+            else ""
+        )
+        current_provider = (
+            str(current_model.get("provider") or "").strip()
+            if isinstance(current_model, dict)
+            else ""
+        )
+        current_qualified = (
+            f"{current_provider}/{current_raw}"
+            if current_provider and current_raw
+            else ""
+        )
+
+        requested_model = model_id.strip() if isinstance(model_id, str) else ""
+        if requested_model and requested_model not in {current_raw, current_qualified}:
+            new_model_config, _ = await self._build_model_config_for_model(
+                requested_model
+            )
+        else:
+            new_model_config = copy.deepcopy(self.model_config)
+
+        api_client = APIClient(model_config=new_model_config)
+        api_client.set_system_prompt(self.system_prompt)
+        return new_model_config, api_client
+
     async def load_model(self, model_id: str) -> bool:
         """Replace the active model at runtime.
 
@@ -3310,115 +3584,16 @@ class PenguinCore:
         """
         self._last_model_load_error = None
 
-        def _coerce_optional_int(value: Any) -> Optional[int]:
-            try:
-                parsed = int(value)
-            except Exception:
-                return None
-            return parsed if parsed > 0 else None
-
         try:
-            # Resolve provider and client preference
-            provider, client_pref = self._resolve_model_provider(model_id)
-            if not provider:
-                self._last_model_load_error = (
-                    f"Could not resolve provider for model '{model_id}'"
-                )
-                return False
-
-            provider_value = provider.strip().lower()
-            client_value = client_pref.strip().lower()
-            runtime_model_id = self._canonicalize_runtime_model_id(
-                model_id,
-                provider_value,
-                client_value,
+            new_model_config, safe_window = await self._build_model_config_for_model(
+                model_id
             )
-
-            model_configs = getattr(self.config, "model_configs", None)
-            if not isinstance(model_configs, dict):
-                model_configs = {}
-            model_lookup_id = (
-                runtime_model_id
-                if runtime_model_id in model_configs and model_id not in model_configs
-                else model_id
-            )
-
-            requires_openrouter_specs = bool(
-                provider_value == "openrouter" or client_value == "openrouter"
-            )
-            model_specs: Dict[str, Any] = {}
-            spec_model_id = (
-                runtime_model_id if provider_value == "openrouter" else model_id
-            )
-
-            if requires_openrouter_specs:
-                model_specs = await fetch_model_specs(spec_model_id)
-                if not model_specs:
-                    self._last_model_load_error = (
-                        f"Could not fetch specifications for model '{spec_model_id}'"
-                    )
-                    logger.error(self._last_model_load_error)
-                    return False
-                logger.info(f"Fetched specs for {spec_model_id}: {model_specs}")
-
-            model_specific = model_configs.get(model_lookup_id, {})
-            if not isinstance(model_specific, dict):
-                model_specific = {}
-
-            context_length = _coerce_optional_int(model_specs.get("context_length"))
-            if context_length is None:
-                context_length = _coerce_optional_int(
-                    model_specific.get("context_window")
-                    or model_specific.get("max_context_window_tokens")
-                )
-
-            safe_window = safe_context_window(context_length)
-            max_output = _coerce_optional_int(model_specs.get("max_output_tokens"))
-            if max_output is None:
-                max_output = _coerce_optional_int(
-                    model_specific.get("max_output_tokens")
-                    or model_specific.get("max_tokens")
-                )
-            if max_output is None:
-                max_output = safe_window
-
-            # Build and apply new ModelConfig
-            new_model_config = ModelConfig.for_model(
-                model_name=model_lookup_id,
-                provider=provider,
-                client_preference=client_pref,
-                model_configs=model_configs,
-            )
-
-            new_model_config.model = runtime_model_id
-            if context_length is not None:
-                new_model_config.max_context_window_tokens = context_length
-                new_model_config.max_history_tokens = safe_window
-            if max_output is not None:
-                new_model_config.max_output_tokens = max_output
-
-            # Apply vision support from actual model specs, but respect explicit user config.
-            # Only auto-enable if user hasn't explicitly set vision_enabled in model_configs.
-            user_explicit_vision = model_specific.get("vision_enabled")
-            if user_explicit_vision is not None:
-                # User explicitly configured vision - respect their choice
-                new_model_config.vision_enabled = bool(user_explicit_vision)
-                logger.info(
-                    f"Model '{runtime_model_id}' vision set to {new_model_config.vision_enabled} (user config)"
-                )
-            elif model_specs.get("supports_vision"):
-                # No explicit user config, auto-enable based on model capability
-                new_model_config.vision_enabled = True
-                logger.info(
-                    f"Model '{runtime_model_id}' supports vision (auto-detected)"
-                )
-
             self._apply_new_model_config(
                 new_model_config, context_window_tokens=safe_window
             )
 
             logger.info(
-                f"Switched to model '{runtime_model_id}' (context: {safe_window} tokens, vision: {new_model_config.vision_enabled})"
+                f"Switched to model '{new_model_config.model}' (context: {safe_window} tokens, vision: {new_model_config.vision_enabled})"
             )
             return True
 
@@ -3811,14 +3986,18 @@ class PenguinCore:
                 event_data["conversation_id"] = scoped_conversation_id
                 event_data["session_id"] = scoped_session_id or scoped_conversation_id
             else:
-                try:
-                    session = self.conversation_manager.get_current_session()
-                    sid = session.id if session else "unknown"
-                    event_data["session_id"] = sid
-                    event_data["conversation_id"] = sid
-                except Exception:
-                    event_data["session_id"] = "unknown"
-                    event_data["conversation_id"] = "unknown"
+                # Do not borrow shared current_session here. In multi-session
+                # mode a concurrent read/poll can temporarily repoint it.
+                event_data["session_id"] = "unknown"
+                event_data["conversation_id"] = "unknown"
+                logger.warning(
+                    "stream.event.unknown_scope request=%s event=%s agent=%s scope=%s chunk_preview=%r",
+                    execution_context.request_id if execution_context else "unknown",
+                    event.event_type,
+                    agent_id or "default",
+                    resolved_scope_id,
+                    (chunk or "")[:120],
+                )
 
             event_data["agent_id"] = agent_id
             event_data = self._filter_internal_markers_from_event(event_data)
@@ -3900,17 +4079,55 @@ class PenguinCore:
             agent_id=resolved_stream_scope_id
         )
         if message is None:
-            logical_agent_id = resolved_agent_id
-            if resolved_stream_scope_id != logical_agent_id:
-                message, events = self._stream_manager.finalize(
-                    agent_id=logical_agent_id
-                )
-            if message is None:
-                active_scopes = self._stream_manager.get_active_agents()
-                if len(active_scopes) == 1:
+            active_scopes = self._stream_manager.get_active_agents()
+            allow_unscoped_fallback = not (
+                isinstance(resolved_session_id, str) and resolved_session_id
+            ) and not (
+                isinstance(resolved_conversation_id, str) and resolved_conversation_id
+            )
+            logger.warning(
+                "stream.finalize.scope_miss request=%s session=%s conversation=%s agent=%s scope=%s active_scopes=%s allow_unscoped_fallback=%s",
+                execution_context.request_id if execution_context else "unknown",
+                resolved_session_id or "",
+                resolved_conversation_id or "",
+                resolved_agent_id,
+                resolved_stream_scope_id,
+                active_scopes,
+                allow_unscoped_fallback,
+            )
+            if allow_unscoped_fallback:
+                logical_agent_id = resolved_agent_id
+                if resolved_stream_scope_id != logical_agent_id:
                     message, events = self._stream_manager.finalize(
-                        agent_id=active_scopes[0]
+                        agent_id=logical_agent_id
                     )
+                    if message is not None:
+                        logger.warning(
+                            "stream.finalize.fallback_used request=%s session=%s conversation=%s requested_scope=%s fallback_scope=%s",
+                            execution_context.request_id
+                            if execution_context
+                            else "unknown",
+                            resolved_session_id or "",
+                            resolved_conversation_id or "",
+                            resolved_stream_scope_id,
+                            logical_agent_id,
+                        )
+                if message is None:
+                    if len(active_scopes) == 1:
+                        message, events = self._stream_manager.finalize(
+                            agent_id=active_scopes[0]
+                        )
+                        if message is not None:
+                            logger.warning(
+                                "stream.finalize.single_active_fallback request=%s session=%s conversation=%s requested_scope=%s fallback_scope=%s",
+                                execution_context.request_id
+                                if execution_context
+                                else "unknown",
+                                resolved_session_id or "",
+                                resolved_conversation_id or "",
+                                resolved_stream_scope_id,
+                                active_scopes[0],
+                            )
 
         if message is None:
             return None
@@ -3931,25 +4148,80 @@ class PenguinCore:
 
         # Add to the correct agent's conversation
         if hasattr(self, "conversation_manager") and self.conversation_manager:
+            target_session_id = (
+                resolved_session_id
+                if isinstance(resolved_session_id, str) and resolved_session_id
+                else None
+            )
+            persisted = self._persist_finalized_message(
+                agent_id=resolved_agent_id,
+                session_id=target_session_id,
+                message=message,
+                category=category,
+            )
+            trace_session_id = target_session_id if persisted else None
             try:
-                # Try to get agent-specific conversation if available
-                conv = self.conversation_manager.get_agent_conversation(
-                    resolved_agent_id
-                )
-                conv.add_message(
-                    role=message.role,
-                    content=message.content,
-                    category=category,
-                    metadata=message.metadata,
-                )
+                if not persisted:
+                    # Try to get agent-specific conversation if available
+                    conv = self.conversation_manager.get_agent_conversation(
+                        resolved_agent_id
+                    )
+                    current_session_id = getattr(
+                        getattr(conv, "session", None), "id", None
+                    )
+                    trace_session_id = current_session_id or trace_session_id
+                    if target_session_id and current_session_id != target_session_id:
+                        logger.warning(
+                            "Skipping shared-conversation finalize persistence for agent '%s': target session '%s' != current session '%s'",
+                            resolved_agent_id,
+                            target_session_id,
+                            current_session_id,
+                        )
+                    else:
+                        conv.add_message(
+                            role=message.role,
+                            content=message.content,
+                            category=category,
+                            metadata=message.metadata,
+                        )
+                        if hasattr(conv, "save"):
+                            conv.save()
             except (KeyError, AttributeError):
                 # Fallback to current conversation
-                self.conversation_manager.conversation.add_message(
-                    role=message.role,
-                    content=message.content,
-                    category=category,
-                    metadata=message.metadata,
-                )
+                if not persisted:
+                    conv = self.conversation_manager.conversation
+                    current_session_id = getattr(
+                        getattr(conv, "session", None), "id", None
+                    )
+                    trace_session_id = current_session_id or trace_session_id
+                    if target_session_id and current_session_id != target_session_id:
+                        logger.warning(
+                            "Skipping fallback finalize persistence: target session '%s' != current session '%s'",
+                            target_session_id,
+                            current_session_id,
+                        )
+                    else:
+                        conv.add_message(
+                            role=message.role,
+                            content=message.content,
+                            category=category,
+                            metadata=message.metadata,
+                        )
+                        if hasattr(conv, "save"):
+                            conv.save()
+
+            _trace_log_info(
+                "core.stream.finalize request=%s session=%s conversation=%s agent=%s effective_conv_session=%s persisted=%s message_len=%s events=%s empty=%s",
+                execution_context.request_id if execution_context else "unknown",
+                target_session_id or "unknown",
+                resolved_conversation_id or "",
+                resolved_agent_id,
+                trace_session_id or "unknown",
+                persisted,
+                len(message.content or ""),
+                len(events),
+                bool(message.was_empty),
+            )
 
             # For WebSocket streaming (RunMode), emit a message event
             if hasattr(self, "_temp_ws_callback") and self._temp_ws_callback:
@@ -3992,14 +4264,16 @@ class PenguinCore:
                 event_data["session_id"] = scoped_session_id or scoped_conversation_id
                 event_data["conversation_id"] = scoped_conversation_id
             else:
-                try:
-                    session = self.conversation_manager.get_current_session()
-                    sid = session.id if session else "unknown"
-                    event_data["session_id"] = sid
-                    event_data["conversation_id"] = sid
-                except Exception:
-                    event_data["session_id"] = "unknown"
-                    event_data["conversation_id"] = "unknown"
+                # Avoid leaking a stale shared current_session into UI routing.
+                event_data["session_id"] = "unknown"
+                event_data["conversation_id"] = "unknown"
+                logger.warning(
+                    "stream.finalize.unknown_scope request=%s agent=%s scope=%s active_scopes=%s",
+                    execution_context.request_id if execution_context else "unknown",
+                    resolved_agent_id,
+                    resolved_stream_scope_id,
+                    self._stream_manager.get_active_agents(),
+                )
 
             event_data["agent_id"] = resolved_agent_id
             event_data = self._filter_internal_markers_from_event(event_data)
@@ -4011,6 +4285,54 @@ class PenguinCore:
                 )
 
         return message.to_dict()
+
+    def _persist_finalized_message(
+        self,
+        *,
+        agent_id: str,
+        session_id: Optional[str],
+        message: Message,
+        category: MessageCategory,
+    ) -> bool:
+        """Persist a finalized streaming message without reloading shared conversations."""
+        target_session_id = session_id.strip() if isinstance(session_id, str) else ""
+        if not target_session_id:
+            return False
+
+        session, manager = self._find_session_store(target_session_id)
+        if session is None or manager is None:
+            _trace_log_info(
+                "core.stream.persist session=%s agent=%s status=missing_store",
+                target_session_id,
+                agent_id,
+            )
+            return False
+
+        persisted_message = Message(
+            role=message.role,
+            content=message.content,
+            category=category,
+            id=getattr(message, "id", None) or f"msg_{datetime.now().timestamp()}",
+            timestamp=getattr(message, "timestamp", None) or datetime.now().isoformat(),
+            metadata=dict(getattr(message, "metadata", {}) or {}),
+            tokens=int(getattr(message, "tokens", 0) or 0),
+            agent_id=getattr(message, "agent_id", None) or agent_id,
+            recipient_id=getattr(message, "recipient_id", None),
+            message_type=getattr(message, "message_type", "message") or "message",
+        )
+        session.add_message(persisted_message)
+        saved = bool(manager.save_session(session))
+        _trace_log_info(
+            "core.stream.persist session=%s agent=%s manager=%s message_id=%s saved=%s message_len=%s category=%s",
+            target_session_id,
+            agent_id,
+            hex(id(manager)),
+            persisted_message.id,
+            saved,
+            len(persisted_message.content or ""),
+            category,
+        )
+        return saved
 
     def _prepare_runmode_stream_callback(
         self,
@@ -4396,12 +4718,15 @@ class PenguinCore:
             state["active"] = True
             state["stream_id"] = stream_id
 
+            model_state = self._resolve_opencode_model_state(session_id=session_id)
+
             # Create message and text part
             try:
                 message_id, part_id = await adapter.on_stream_start(
                     agent_id=agent_id,
-                    model_id=getattr(self.model_config, "model", None),
-                    provider_id=getattr(self.model_config, "provider", None),
+                    model_id=model_state.get("modelID"),
+                    provider_id=model_state.get("providerID"),
+                    variant=model_state.get("variant"),
                 )
                 state["message_id"] = message_id
                 state["part_id"] = part_id
@@ -4756,7 +5081,7 @@ class PenguinCore:
                 or ""
             )
 
-        if action_name == "execute":
+        if action_name in {"execute", "code_execution"}:
             tool_input = {"command": raw, "description": "IPython"}
             return "bash", tool_input, metadata
 
@@ -5185,7 +5510,7 @@ class PenguinCore:
             if isinstance(raw_diff, str) and raw_diff.strip():
                 metadata["attemptedDiff"] = raw_diff
 
-        if action_name in {"execute", "execute_command"}:
+        if action_name in {"execute", "execute_command", "code_execution"}:
             metadata.setdefault("output", "" if result is None else str(result))
         if status != "error" and action_name in {"todowrite", "todoread"}:
             todos = self._extract_todos_from_result(result)
@@ -5287,6 +5612,7 @@ class PenguinCore:
                 stream_state = maybe_state
         message_id_hint = stream_state.get("message_id")
         agent_id_hint = data.get("agent_id") or data.get("agentID") or "default"
+        model_state = self._resolve_opencode_model_state(session_id=session_id)
 
         call_id = data.get("id") or data.get("call_id") or data.get("callID")
         if not call_id:
@@ -5300,6 +5626,9 @@ class PenguinCore:
             metadata=metadata,
             message_id=message_id_hint,
             agent_id=agent_id_hint,
+            model_id=model_state.get("modelID"),
+            provider_id=model_state.get("providerID"),
+            variant=model_state.get("variant"),
         )
         self._opencode_tool_parts[tool_key] = part_id
         self._opencode_tool_info[tool_key] = {
@@ -5346,6 +5675,7 @@ class PenguinCore:
                     stream_state = maybe_state
             message_id_hint = stream_state.get("message_id")
             agent_id_hint = data.get("agent_id") or data.get("agentID") or "default"
+            model_state = self._resolve_opencode_model_state(session_id=session_id)
 
             part_id = await adapter.on_tool_start(
                 mapped_tool,
@@ -5354,6 +5684,9 @@ class PenguinCore:
                 metadata=metadata,
                 message_id=message_id_hint,
                 agent_id=agent_id_hint,
+                model_id=model_state.get("modelID"),
+                provider_id=model_state.get("providerID"),
+                variant=model_state.get("variant"),
             )
             self._opencode_tool_parts[tool_key] = part_id
             info = {"tool": mapped_tool, "input": tool_input, "metadata": metadata}
@@ -5543,6 +5876,59 @@ class PenguinCore:
 
         return None, None
 
+    def _resolve_opencode_model_state(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        model_id: Optional[str] = None,
+        provider_id: Optional[str] = None,
+        variant: Optional[str] = None,
+    ) -> Dict[str, Optional[str]]:
+        """Resolve model/provider/variant for OpenCode event persistence."""
+
+        def _normalize(value: Any) -> Optional[str]:
+            if not isinstance(value, str):
+                return None
+            stripped = value.strip()
+            return stripped or None
+
+        normalized_session_id = _normalize(session_id)
+        session_meta: Dict[str, Any] = {}
+        if normalized_session_id:
+            session, _ = self._find_session_store(normalized_session_id)
+            metadata = (
+                getattr(session, "metadata", None) if session is not None else None
+            )
+            if isinstance(metadata, dict):
+                session_meta = metadata
+
+        resolved_provider = (
+            _normalize(provider_id)
+            or _normalize(session_meta.get(_SESSION_PROVIDER_ID_KEY))
+            or _normalize(session_meta.get("providerID"))
+            or _normalize(session_meta.get("provider_id"))
+            or _normalize(
+                getattr(getattr(self, "model_config", None), "provider", None)
+            )
+        )
+        resolved_model = (
+            _normalize(model_id)
+            or _normalize(session_meta.get(_SESSION_MODEL_ID_KEY))
+            or _normalize(session_meta.get("modelID"))
+            or _normalize(session_meta.get("model_id"))
+            or _normalize(getattr(getattr(self, "model_config", None), "model", None))
+        )
+        resolved_variant = (
+            _normalize(variant)
+            or _normalize(session_meta.get(_SESSION_VARIANT_KEY))
+            or _normalize(session_meta.get("variant"))
+        )
+        return {
+            "providerID": resolved_provider,
+            "modelID": resolved_model,
+            "variant": resolved_variant,
+        }
+
     async def _persist_opencode_event(
         self, event_type: str, properties: Dict[str, Any]
     ) -> None:
@@ -5643,6 +6029,7 @@ class PenguinCore:
                     or os.getenv("PENGUIN_CWD")
                     or os.getcwd()
                 )
+                model_state = self._resolve_opencode_model_state(session_id=session_id)
                 entry = {
                     "info": {
                         "id": message_id,
@@ -5650,10 +6037,8 @@ class PenguinCore:
                         "role": "assistant",
                         "time": {"created": int(time.time() * 1000)},
                         "parentID": "root",
-                        "modelID": getattr(
-                            self.model_config, "model", "penguin-default"
-                        ),
-                        "providerID": getattr(self.model_config, "provider", "penguin"),
+                        "modelID": model_state.get("modelID") or "penguin-default",
+                        "providerID": model_state.get("providerID") or "penguin",
                         "mode": "chat",
                         "agent": "default",
                         "path": {"cwd": fallback_directory, "root": fallback_directory},
@@ -5664,6 +6049,11 @@ class PenguinCore:
                             "reasoning": 0,
                             "cache": {"read": 0, "write": 0},
                         },
+                        **(
+                            {"variant": model_state.get("variant")}
+                            if model_state.get("variant")
+                            else {}
+                        ),
                     },
                     "parts": {},
                     "part_order": [],
@@ -5720,7 +6110,7 @@ class PenguinCore:
             if should_save:
                 manager.save_session(session)
         except Exception:
-            logger.debug("Unable to persist OpenCode transcript event", exc_info=True)
+            logger.warning("Unable to persist OpenCode transcript event", exc_info=True)
 
     # ------------------------------------------------------------------
     # OpenCode TUI Adapter Integration
@@ -5743,8 +6133,16 @@ class PenguinCore:
             current_session = self.conversation_manager.get_current_session()
             session_id = current_session.id if current_session else "unknown"
         adapter = self._get_tui_adapter(session_id)
+        model_state = self._resolve_opencode_model_state(
+            session_id=session_id,
+            model_id=model_id,
+            provider_id=provider_id,
+        )
         message_id, part_id = await adapter.on_stream_start(
-            agent_id, model_id, provider_id
+            agent_id,
+            model_state.get("modelID"),
+            model_state.get("providerID"),
+            model_state.get("variant"),
         )
         self._opencode_message_adapters[message_id] = adapter
         return message_id, part_id
@@ -5863,6 +6261,16 @@ class PenguinCore:
 
     async def _emit_opencode_user_message(self, content: str) -> str:
         """Emit user message in OpenCode format."""
+        return await self._emit_opencode_user_message_with_metadata(content)
+
+    async def _emit_opencode_user_message_with_metadata(
+        self,
+        content: str,
+        *,
+        message_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+    ) -> str:
+        """Emit user message in OpenCode format with stable message metadata."""
         execution_context = get_current_execution_context()
         session_id = None
         if execution_context:
@@ -5873,4 +6281,12 @@ class PenguinCore:
             current_session = self.conversation_manager.get_current_session()
             session_id = current_session.id if current_session else "unknown"
         adapter = self._get_tui_adapter(session_id)
-        return await adapter.on_user_message(content)
+        model_state = self._resolve_opencode_model_state(session_id=session_id)
+        return await adapter.on_user_message_with_metadata(
+            content,
+            message_id=message_id,
+            agent_id=agent_id or "default",
+            model_id=model_state.get("modelID"),
+            provider_id=model_state.get("providerID"),
+            variant=model_state.get("variant"),
+        )

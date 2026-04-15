@@ -73,6 +73,9 @@ eggs/
 node_modules/
 # penguin-web/node_modules/
 
+# Turbo local cache
+penguin-tui/.turbo/
+
 # pytest
 .pytest_cache/
 .hypothesis/
@@ -158,4 +161,3 @@ movie.mp4
 context/docs_cache/**/*
 !context/docs_cache/.gitkeep
 !context/docs_cache/README.md
-

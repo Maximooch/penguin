@@ -67,7 +67,7 @@ def test_tool_manager_get_responses_tools_curated():
     names = set()
     for t in tools_payload:
         if t.get("type") == "function":
-            names.add(t["function"].get("name"))
+            names.add(t.get("name"))
 
     # A few representative curated tools
     assert "write_file" in names
@@ -127,7 +127,7 @@ def test_streaming_interrupt_on_action_tag():
     """
     # Create gateway with interrupt enabled
     config = ModelConfig(
-        model="openai/gpt-4o",
+        model="openai/gpt-5.4-nano",
         provider="openrouter",
         client_preference="openrouter",
         interrupt_on_action=True,
@@ -242,7 +242,7 @@ def test_responses_tools_web_search_included():
     assert len(function_tools) > 0, "Should include function-based tools"
 
     # Verify expected curated tools
-    function_names = {t["function"]["name"] for t in function_tools}
+    function_names = {t["name"] for t in function_tools}
     expected_tools = {
         "read_file",
         "write_file",
@@ -370,7 +370,7 @@ def test_reasoning_config_generation():
 
     # Test 3: Disabled reasoning
     config_disabled = ModelConfig(
-        model="openai/gpt-4o",
+        model="openai/gpt-4.1-mini",
         provider="openrouter",
         client_preference="openrouter",
         reasoning_enabled=False,

@@ -31,7 +31,7 @@ def load_litellm_module(feature: str = "LiteLLM support") -> Any:
 def load_litellm_gateway_class(feature: str = "LiteLLM support") -> Any:
     """Import LiteLLM gateway lazily with a clear missing-extra error."""
     try:
-        module = importlib.import_module("penguin.llm.litellm_gateway")
+        module = importlib.import_module("penguin.llm.adapters.litellm")
         return module.LiteLLMGateway
     except ModuleNotFoundError as exc:
         if exc.name == "litellm":

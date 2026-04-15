@@ -147,6 +147,23 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         })
 
       const args = useArgs()
+      const sessionModel = createMemo(() => {
+        const sessionID = sdk.sessionID
+        const session = sessionID
+          ? (sync.session.get(sessionID) as
+              | {
+                  providerID?: string
+                  modelID?: string
+                }
+              | undefined)
+          : undefined
+        if (!session?.providerID || !session?.modelID) return undefined
+        const candidate = {
+          providerID: session.providerID,
+          modelID: session.modelID,
+        }
+        if (isModelValid(candidate)) return candidate
+      })
       const fallbackModel = createMemo(() => {
         if (args.model) {
           const { providerID, modelID } = Provider.parseModel(args.model)
@@ -156,6 +173,11 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
               modelID,
             }
           }
+        }
+
+        const activeSessionModel = sessionModel()
+        if (activeSessionModel) {
+          return activeSessionModel
         }
 
         if (sync.data.config.model) {
