@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 from contextlib import contextmanager
 
-from .models import Project, Task, TaskStatus, ExecutionRecord, StateTransition
+from .models import Project, Task, TaskPhase, TaskStatus, ExecutionRecord, StateTransition
 from .exceptions import StorageError, ProjectNotFoundError, TaskNotFoundError
 
 logger = logging.getLogger(__name__)
@@ -66,6 +66,8 @@ class ProjectStorage:
                     title TEXT NOT NULL,
                     description TEXT,
                     status TEXT NOT NULL,
+                    phase TEXT DEFAULT 'pending',
+                    phase_started_at TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     priority INTEGER DEFAULT 0,
@@ -76,6 +78,7 @@ class ProjectStorage:
                     due_date TEXT,
                     progress INTEGER DEFAULT 0,
                     metadata TEXT,  -- JSON object
+                    artifact_evidence TEXT,  -- JSON array
                     review_notes TEXT,
                     reviewed_by TEXT,
                     reviewed_at TEXT,
@@ -84,11 +87,21 @@ class ProjectStorage:
                     allowed_tools TEXT,  -- JSON array
                     acceptance_criteria TEXT,  -- JSON array
                     definition_of_done TEXT,
+                    blueprint_id TEXT,
+                    blueprint_source TEXT,
+                    dependency_specs TEXT,
+                    recipe TEXT,
                     FOREIGN KEY (project_id) REFERENCES projects (id) ON DELETE CASCADE,
                     FOREIGN KEY (parent_task_id) REFERENCES tasks (id) ON DELETE CASCADE
                 )
             """)
-            
+            self._ensure_column(conn, "tasks", "phase", "TEXT DEFAULT 'pending'")
+            self._ensure_column(conn, "tasks", "phase_started_at", "TEXT")
+            self._ensure_column(conn, "tasks", "artifact_evidence", "TEXT")
+            self._ensure_column(conn, "tasks", "blueprint_id", "TEXT")
+            self._ensure_column(conn, "tasks", "blueprint_source", "TEXT")
+            self._ensure_column(conn, "tasks", "dependency_specs", "TEXT")
+            self._ensure_column(conn, "tasks", "recipe", "TEXT")
             # Execution records table
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS execution_records (
@@ -149,6 +162,15 @@ class ProjectStorage:
             if conn:
                 conn.close()
     
+    def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+        """Ensure a table column exists for lightweight schema evolution."""
+        existing = {
+            row["name"]
+            for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
     # Project operations
     
     def create_project(self, project: Project) -> None:
@@ -230,158 +252,159 @@ class ProjectStorage:
         """List all projects, optionally filtered by status."""
         query = "SELECT * FROM projects"
         params = []
-        
+
         if status:
             query += " WHERE status = ?"
             params.append(status)
-        
+
         query += " ORDER BY created_at DESC"
-        
+
         with self._get_connection() as conn:
             rows = conn.execute(query, params).fetchall()
             return [self._row_to_project(row) for row in rows]
-    
+
     # Task operations
-    
+
     def create_task(self, task: Task) -> None:
         """Create a new task in the database."""
         with self._get_connection() as conn:
-            # Insert task
             conn.execute("""
                 INSERT INTO tasks (
-                    id, title, description, status, created_at, updated_at,
-                    priority, project_id, parent_task_id, tags, dependencies,
-                    due_date, progress, metadata, review_notes, reviewed_by,
-                    reviewed_at, budget_tokens, budget_minutes, allowed_tools,
-                    acceptance_criteria, definition_of_done
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    id, title, description, status, phase, phase_started_at,
+                    created_at, updated_at, priority, project_id, parent_task_id,
+                    tags, dependencies, due_date, progress, metadata, artifact_evidence,
+                    review_notes, reviewed_by, reviewed_at, budget_tokens,
+                    budget_minutes, allowed_tools, acceptance_criteria,
+                    definition_of_done, blueprint_id, blueprint_source, dependency_specs, recipe
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 task.id, task.title, task.description, task.status.value,
+                task.phase.value, task.phase_started_at,
                 task.created_at, task.updated_at, task.priority,
                 task.project_id, task.parent_task_id,
                 json.dumps(task.tags) if task.tags else None,
                 json.dumps(task.dependencies) if task.dependencies else None,
                 task.due_date, task.progress,
                 json.dumps(task.metadata) if task.metadata else None,
+                json.dumps([artifact.to_dict() for artifact in task.artifact_evidence]) if task.artifact_evidence else None,
                 task.review_notes, task.reviewed_by, task.reviewed_at,
                 task.budget_tokens, task.budget_minutes,
                 json.dumps(task.allowed_tools) if task.allowed_tools else None,
                 json.dumps(task.acceptance_criteria) if task.acceptance_criteria else None,
-                task.definition_of_done
+                task.definition_of_done, task.blueprint_id, task.blueprint_source,
+                json.dumps([spec.to_dict() for spec in task.dependency_specs]) if task.dependency_specs else None,
+                task.recipe
             ))
-            
-            # Insert execution records
+
             for record in task.execution_history:
                 self._insert_execution_record(conn, record)
-            
-            # Insert state transitions
+
             for transition in task.transition_history:
                 self._insert_state_transition(conn, task.id, transition)
-            
+
             conn.commit()
-    
+
     def get_task(self, task_id: str) -> Optional[Task]:
         """Get a task by ID with full execution history."""
         with self._get_connection() as conn:
-            # Get task data
             row = conn.execute(
                 "SELECT * FROM tasks WHERE id = ?", (task_id,)
             ).fetchone()
-            
+
             if not row:
                 return None
-            
-            # Get execution records
+
             execution_rows = conn.execute(
                 "SELECT * FROM execution_records WHERE task_id = ? ORDER BY started_at",
                 (task_id,)
             ).fetchall()
-            
-            # Get state transitions
+
             transition_rows = conn.execute(
                 "SELECT * FROM state_transitions WHERE task_id = ? ORDER BY timestamp",
                 (task_id,)
             ).fetchall()
-            
+
             return self._row_to_task(row, execution_rows, transition_rows)
-    
+
     def get_task_by_title(self, title: str, project_id: Optional[str] = None) -> Optional[Task]:
         """Get a task by title, optionally within a specific project."""
         query = "SELECT * FROM tasks WHERE title = ?"
         params = [title]
-        
+
         if project_id:
             query += " AND project_id = ?"
             params.append(project_id)
-        
+
         with self._get_connection() as conn:
             row = conn.execute(query, params).fetchone()
-            
+
             if not row:
                 return None
-            
-            # Get execution records and transitions
+
             task_id = row["id"]
             execution_rows = conn.execute(
                 "SELECT * FROM execution_records WHERE task_id = ? ORDER BY started_at",
                 (task_id,)
             ).fetchall()
-            
+
             transition_rows = conn.execute(
                 "SELECT * FROM state_transitions WHERE task_id = ? ORDER BY timestamp",
                 (task_id,)
             ).fetchall()
-            
+
             return self._row_to_task(row, execution_rows, transition_rows)
-    
+
     def update_task(self, task: Task) -> None:
         """Update an existing task."""
         with self._get_connection() as conn:
-            # Update task
             conn.execute("""
                 UPDATE tasks SET
-                    title = ?, description = ?, status = ?, updated_at = ?,
-                    priority = ?, parent_task_id = ?, tags = ?, dependencies = ?,
-                    due_date = ?, progress = ?, metadata = ?, review_notes = ?,
+                    title = ?, description = ?, status = ?, phase = ?,
+                    phase_started_at = ?, updated_at = ?, priority = ?,
+                    parent_task_id = ?, tags = ?, dependencies = ?, due_date = ?,
+                    progress = ?, metadata = ?, artifact_evidence = ?, review_notes = ?,
                     reviewed_by = ?, reviewed_at = ?, budget_tokens = ?,
                     budget_minutes = ?, allowed_tools = ?, acceptance_criteria = ?,
-                    definition_of_done = ?
+                    definition_of_done = ?, blueprint_id = ?, blueprint_source = ?,
+                    dependency_specs = ?, recipe = ?
                 WHERE id = ?
             """, (
-                task.title, task.description, task.status.value, task.updated_at,
-                task.priority, task.parent_task_id,
+                task.title, task.description, task.status.value, task.phase.value,
+                task.phase_started_at, task.updated_at, task.priority,
+                task.parent_task_id,
                 json.dumps(task.tags) if task.tags else None,
                 json.dumps(task.dependencies) if task.dependencies else None,
                 task.due_date, task.progress,
                 json.dumps(task.metadata) if task.metadata else None,
+                json.dumps([artifact.to_dict() for artifact in task.artifact_evidence]) if task.artifact_evidence else None,
                 task.review_notes, task.reviewed_by, task.reviewed_at,
                 task.budget_tokens, task.budget_minutes,
                 json.dumps(task.allowed_tools) if task.allowed_tools else None,
                 json.dumps(task.acceptance_criteria) if task.acceptance_criteria else None,
-                task.definition_of_done,
+                task.definition_of_done, task.blueprint_id, task.blueprint_source,
+                json.dumps([spec.to_dict() for spec in task.dependency_specs]) if task.dependency_specs else None,
+                task.recipe,
                 task.id
             ))
-            
-            # Update execution records - delete old ones and insert new ones
+
             conn.execute("DELETE FROM execution_records WHERE task_id = ?", (task.id,))
             for record in task.execution_history:
                 self._insert_execution_record(conn, record)
-            
-            # Update state transitions - delete old ones and insert new ones
+
             conn.execute("DELETE FROM state_transitions WHERE task_id = ?", (task.id,))
             for transition in task.transition_history:
                 self._insert_state_transition(conn, task.id, transition)
-            
+
             conn.commit()
-    
+
     def delete_task(self, task_id: str) -> None:
         """Delete a task and all its execution records."""
         with self._get_connection() as conn:
             conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
             conn.commit()
-    
+
     def list_tasks(
-        self, 
+        self,
         project_id: Optional[str] = None,
         status: Optional[TaskStatus] = None,
         parent_task_id: Optional[str] = None
@@ -389,48 +412,43 @@ class ProjectStorage:
         """List tasks with optional filtering."""
         query = "SELECT * FROM tasks WHERE 1=1"
         params = []
-        
+
         if project_id:
             query += " AND project_id = ?"
             params.append(project_id)
-        
+
         if status:
             query += " AND status = ?"
             params.append(status.value)
-        
+
         if parent_task_id:
             query += " AND parent_task_id = ?"
             params.append(parent_task_id)
-        
+
         query += " ORDER BY created_at DESC"
-        
+
         with self._get_connection() as conn:
             rows = conn.execute(query, params).fetchall()
-            
-            # For efficiency, we'll get tasks without full execution history
-            # Use get_task() if you need the complete execution history
             return [self._row_to_task(row) for row in rows]
-    
+
     def get_active_tasks(self) -> List[Task]:
         """Get all active tasks."""
         return self.list_tasks(status=TaskStatus.ACTIVE)
-    
+
     def get_task_dependencies(self, task_id: str) -> List[Task]:
         """Get all tasks that this task depends on."""
         task = self.get_task(task_id)
         if not task or not task.dependencies:
             return []
-        
+
         with self._get_connection() as conn:
-            # Use parameterized query with proper escaping
-            placeholders = ', '.join(['?'] * len(task.dependencies))
+            placeholders = ", ".join(["?"] * len(task.dependencies))
             query = f"SELECT * FROM tasks WHERE id IN ({placeholders})"
-            
             rows = conn.execute(query, task.dependencies).fetchall()
             return [self._row_to_task(row) for row in rows]
-    
+
     # Helper methods
-    
+
     def _insert_execution_record(self, conn: sqlite3.Connection, record: ExecutionRecord) -> None:
         """Insert an execution record into the database."""
         conn.execute("""
@@ -449,7 +467,7 @@ class ProjectStorage:
             json.dumps(record.execution_context) if record.execution_context else None,
             record.error_details
         ))
-    
+
     def _insert_state_transition(self, conn: sqlite3.Connection, task_id: str, transition: StateTransition) -> None:
         """Insert a state transition into the database."""
         conn.execute("""
@@ -460,7 +478,7 @@ class ProjectStorage:
             task_id, transition.from_state.value, transition.to_state.value,
             transition.timestamp, transition.reason, transition.user_id
         ))
-    
+
     def _row_to_project(self, row: sqlite3.Row) -> Project:
         """Convert a database row to a Project object."""
         return Project(
@@ -480,10 +498,10 @@ class ProjectStorage:
             start_date=row["start_date"],
             due_date=row["due_date"]
         )
-    
+
     def _row_to_task(
-        self, 
-        row: sqlite3.Row, 
+        self,
+        row: sqlite3.Row,
         execution_rows: Optional[List[sqlite3.Row]] = None,
         transition_rows: Optional[List[sqlite3.Row]] = None
     ) -> Task:
@@ -493,6 +511,8 @@ class ProjectStorage:
             title=row["title"],
             description=row["description"] or "",
             status=TaskStatus(row["status"]),
+            phase=TaskPhase(row["phase"]) if row["phase"] else TaskPhase.PENDING,
+            phase_started_at=row["phase_started_at"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             priority=row["priority"],
@@ -503,6 +523,7 @@ class ProjectStorage:
             due_date=row["due_date"],
             progress=row["progress"],
             metadata=json.loads(row["metadata"]) if row["metadata"] else {},
+            artifact_evidence=json.loads(row["artifact_evidence"]) if row["artifact_evidence"] else [],
             review_notes=row["review_notes"],
             reviewed_by=row["reviewed_by"],
             reviewed_at=row["reviewed_at"],
@@ -510,23 +531,25 @@ class ProjectStorage:
             budget_minutes=row["budget_minutes"],
             allowed_tools=json.loads(row["allowed_tools"]) if row["allowed_tools"] else None,
             acceptance_criteria=json.loads(row["acceptance_criteria"]) if row["acceptance_criteria"] else [],
-            definition_of_done=row["definition_of_done"]
+            definition_of_done=row["definition_of_done"],
+            blueprint_id=row["blueprint_id"],
+            blueprint_source=row["blueprint_source"],
+            dependency_specs=json.loads(row["dependency_specs"]) if row["dependency_specs"] else [],
+            recipe=row["recipe"],
         )
-        
-        # Add execution records if provided
+
         if execution_rows:
             task.execution_history = [self._row_to_execution_record(r) for r in execution_rows]
-        
-        # Add state transitions if provided
+
         if transition_rows:
             task.transition_history = [self._row_to_state_transition(r) for r in transition_rows]
-        
+
         return task
-    
+
     def _row_to_execution_record(self, row: sqlite3.Row) -> ExecutionRecord:
         """Convert a database row to an ExecutionRecord object."""
         from .models import ExecutionResult
-        
+
         return ExecutionRecord(
             id=row["id"],
             task_id=row["task_id"],
@@ -534,16 +557,16 @@ class ProjectStorage:
             started_at=row["started_at"],
             completed_at=row["completed_at"],
             result=ExecutionResult(row["result"]) if row["result"] else None,
-            response=row["response"] or "",
-            task_prompt=row["task_prompt"] or "",
+            response=row["response"],
+            task_prompt=row["task_prompt"],
             iterations=row["iterations"],
             max_iterations=row["max_iterations"],
             tokens_used=json.loads(row["tokens_used"]) if row["tokens_used"] else {},
             tools_used=json.loads(row["tools_used"]) if row["tools_used"] else [],
             execution_context=json.loads(row["execution_context"]) if row["execution_context"] else {},
-            error_details=row["error_details"]
+            error_details=row["error_details"],
         )
-    
+
     def _row_to_state_transition(self, row: sqlite3.Row) -> StateTransition:
         """Convert a database row to a StateTransition object."""
         return StateTransition(
@@ -551,5 +574,5 @@ class ProjectStorage:
             to_state=TaskStatus(row["to_state"]),
             timestamp=row["timestamp"],
             reason=row["reason"],
-            user_id=row["user_id"]
-        ) 
+            user_id=row["user_id"],
+        )

@@ -261,27 +261,63 @@ class RunMode:
             task = None
             project_manager = self.core.project_manager
             task_id = context.get("task_id") if context else None
+            project_id = context.get("project_id") if context else None
 
             if task_id:
                 task = await project_manager.get_task_async(task_id)
+                if not task:
+                    error_msg = (
+                        f"Task ID '{task_id}' could not be resolved. "
+                        "Refusing ambiguous title fallback."
+                    )
+                    await self._emit_event(
+                        {
+                            "type": "error",
+                            "source": "runmode_task_setup",
+                            "message": error_msg,
+                        }
+                    )
+                    return {
+                        "status": "error",
+                        "message": error_msg,
+                        "completion_type": "error",
+                    }
 
-            if not task:
-                logger.warning(
-                    f"RunMode could not get task by ID '{task_id}'. "
-                    f"Falling back to global search by title: '{name}'"
-                )
-                # This is the legacy behavior and can be ambiguous across projects
-                # Note: get_task_by_title is also ambiguous and may not be scoped.
-                # A better fallback would be ideal in the future.
-                all_tasks = await project_manager.list_tasks_async()
-                for t in all_tasks:
-                    if t.title.lower() == name.lower():
-                        task = t
-                        break
+            elif not description:
+                candidate_tasks = await project_manager.list_tasks_async(project_id=project_id)
+                matching_tasks = [
+                    t for t in candidate_tasks
+                    if t.title.lower() == name.lower()
+                ]
+
+                if len(matching_tasks) == 1:
+                    task = matching_tasks[0]
+                elif len(matching_tasks) > 1:
+                    scope = f"project '{project_id}'" if project_id else "global scope"
+                    error_msg = (
+                        f"Task title '{name}' is ambiguous in {scope}. "
+                        "Provide task_id explicitly."
+                    )
+                    await self._emit_event(
+                        {
+                            "type": "error",
+                            "source": "runmode_task_setup",
+                            "message": error_msg,
+                        }
+                    )
+                    return {
+                        "status": "error",
+                        "message": error_msg,
+                        "completion_type": "error",
+                    }
 
             # If task still not found and no description given, it's an error
             if not task and not description:
-                error_msg = f"Task '{name}' could not be resolved to a specific record and no fallback description was provided."
+                scope = f"project '{project_id}'" if project_id else "available tasks"
+                error_msg = (
+                    f"Task '{name}' could not be resolved in {scope} and no fallback "
+                    "description was provided."
+                )
                 await self._emit_event(
                     {
                         "type": "error",
@@ -317,21 +353,17 @@ class RunMode:
             task_context = context or {}
             task_result = await self._execute_task(name, description, task_context)
             
-            # If task completed successfully, check if it should be marked as complete
+            # If task execution completed successfully, emit completion events.
+            # Project-managed terminal state transitions belong to the orchestrator,
+            # not RunMode. RunMode reports execution outcome only.
             if task_result.get("status") == "completed":
-                # Handle task completion based on type
-                if task_result.get("completion_type") != "user_specified" and task:
-                    try:
-                        from penguin.project.models import TaskStatus
-                        success = self.core.project_manager.update_task_status(
-                            task.id, 
-                            TaskStatus.COMPLETED
-                        )
-                        if not success:
-                            logger.warning(f"Failed to mark task '{name}' as complete in project manager")
-                    except Exception as e:
-                        logger.error(f"Error marking task '{name}' as complete: {e}")
-                
+                if task:
+                    logger.info(
+                        "RunMode completed execution for project task '%s' without "
+                        "changing terminal project status",
+                        name,
+                    )
+
                 # Emit completion event
                 await self._emit_event({
                     "type": "message",
@@ -345,6 +377,11 @@ class RunMode:
                     "data": {"task_name": name}
                 })
             
+            if isinstance(task_result, dict):
+                task_result.setdefault("task_name", name)
+                if task:
+                    task_result.setdefault("task_id", task.id)
+                    task_result.setdefault("project_id", getattr(task, "project_id", project_id))
             return task_result
 
         except KeyboardInterrupt:
@@ -381,6 +418,133 @@ class RunMode:
         """Clean up run mode state."""
         self._interrupted = False
         self.current_task_name = None
+
+    async def _persist_clarification_request(
+        self,
+        context: Optional[Dict[str, Any]],
+        prompt: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Persist a clarification request to task metadata when possible."""
+        if not context:
+            return None
+
+        project_manager = getattr(self.core, "project_manager", None)
+        if not project_manager:
+            return None
+
+        task_id = context.get("task_id") or context.get("id")
+        if not task_id or task_id == "user_specified":
+            return None
+
+        task = await project_manager.get_task_async(task_id)
+        if not task:
+            return None
+
+        clarification = {
+            "task_id": task.id,
+            "task_status": task.status.value if hasattr(task.status, "value") else str(task.status),
+            "task_phase": task.phase.value if hasattr(task.phase, "value") else str(task.phase),
+            "prompt": prompt,
+            "status": "open",
+            "requested_at": datetime.utcnow().isoformat(),
+        }
+
+        metadata = dict(task.metadata or {})
+        clarification_requests = list(metadata.get("clarification_requests", []))
+        clarification_requests.append(clarification)
+        metadata["clarification_requests"] = clarification_requests
+
+        task.metadata = metadata
+        task.updated_at = datetime.utcnow().isoformat()
+
+        await asyncio.get_event_loop().run_in_executor(
+            None,
+            project_manager.storage.update_task,
+            task,
+        )
+        return clarification
+
+
+    async def resume_with_clarification(
+        self,
+        task_id: str,
+        answer: str,
+        answered_by: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Resume a task by answering its latest open clarification request."""
+        project_manager = getattr(self.core, "project_manager", None)
+        if not project_manager:
+            return {
+                "status": "error",
+                "message": "Project manager not available",
+                "completion_type": "error",
+            }
+
+        task = await project_manager.get_task_async(task_id)
+        if not task:
+            return {
+                "status": "error",
+                "message": f"Task '{task_id}' not found",
+                "completion_type": "error",
+            }
+
+        metadata = dict(task.metadata or {})
+        clarification_requests = list(metadata.get("clarification_requests", []))
+        open_index = None
+        for idx in range(len(clarification_requests) - 1, -1, -1):
+            if clarification_requests[idx].get("status") == "open":
+                open_index = idx
+                break
+
+        if open_index is None:
+            return {
+                "status": "error",
+                "message": f"No open clarification request for task '{task_id}'",
+                "completion_type": "error",
+            }
+
+        clarification = dict(clarification_requests[open_index])
+        clarification["answer"] = answer
+        clarification["answered_by"] = answered_by
+        clarification["answered_at"] = datetime.utcnow().isoformat()
+        clarification["status"] = "answered"
+        clarification_requests[open_index] = clarification
+        metadata["clarification_requests"] = clarification_requests
+
+        task.metadata = metadata
+        task.updated_at = datetime.utcnow().isoformat()
+
+        await asyncio.get_event_loop().run_in_executor(
+            None,
+            project_manager.storage.update_task,
+            task,
+        )
+
+        await self._emit_event({
+            "type": "status",
+            "status_type": "clarification_answered",
+            "data": {
+                "task_id": task.id,
+                "prompt": clarification.get("prompt"),
+                "answer": answer,
+                "answered_by": answered_by,
+            },
+        })
+
+        resumed_context = {
+            "task_id": task.id,
+            "project_id": getattr(task, "project_id", None),
+            "metadata": metadata,
+            "clarification_answer": answer,
+            "clarification_prompt": clarification.get("prompt"),
+            "clarification_answered_by": answered_by,
+        }
+
+        return await self._execute_task(
+            task.title,
+            task.description,
+            resumed_context,
+        )
         logger.debug("Cleaning up run mode state")
         
         # If not in continuous mode, emit end event
@@ -489,6 +653,21 @@ class RunMode:
                     use_dag=use_dag,
                 )
                 if not task_data:
+                    if project_id:
+                        logger.debug(
+                            "No project-scoped tasks available; refusing synthetic drift task"
+                        )
+                        await self._emit_event({
+                            "type": "status",
+                            "status_type": "continuous_mode_idle",
+                            "data": {
+                                "reason": "no_project_tasks_available",
+                                "project_id": project_id,
+                            }
+                        })
+                        self._shutdown_requested = True
+                        break
+
                     logger.debug("No tasks available, determining next step")
                     # Create general task to determine next steps
                     task_data = {
@@ -955,6 +1134,30 @@ class RunMode:
             # Determine completion type
             completion_type = self._determine_completion_type(name, context, result)
             
+            if completion_type == "clarification_needed":
+                prompt = result.get("assistant_response", "")
+                clarification = await self._persist_clarification_request(context, prompt)
+
+                await self._emit_event({
+                    "type": "status",
+                    "status_type": "clarification_needed",
+                    "data": {
+                        "task_name": name,
+                        "task_id": (context or {}).get("task_id") or (context or {}).get("id"),
+                        "prompt": prompt,
+                        "clarification": clarification,
+                    },
+                })
+
+                return {
+                    "status": "waiting_input",
+                    "message": prompt,
+                    "completion_type": completion_type,
+                    "metadata": context.get("metadata", {}) if context else {},
+                    "iterations": result.get("iterations", 0),
+                    "execution_time": result.get("execution_time", 0),
+                }
+
             # Create standardized return format
             return {
                 "status": result.get("status", "unknown"),

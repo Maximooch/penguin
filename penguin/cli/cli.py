@@ -434,11 +434,15 @@ async def _initialize_core_components_globally(
     logger.info("Initializing core components globally...")
     init_start_time = time.time()
 
+    workspace_source = workspace_override or os.environ.get("PENGUIN_WORKSPACE")
+    if workspace_source:
+        _set_cli_workspace_path(workspace_source)
+
     _loaded_config = Config.load_config()  # Use Config object with parsed agent_personas
 
-    effective_workspace = (
-        workspace_override or WORKSPACE_PATH
-    )  # WORKSPACE_PATH from penguin.config
+    effective_workspace = Path(
+        workspace_override or os.environ.get("PENGUIN_WORKSPACE", str(WORKSPACE_PATH))
+    ).expanduser().resolve()
     logger.debug(f"Effective workspace path for global init: {effective_workspace}")
     # Note: PenguinCore itself uses WORKSPACE_PATH from config for ProjectManager.
     # A more direct way to override this in Core would be needed if ProjectManager path needs to change.
@@ -759,6 +763,71 @@ async def _run_interactive_chat():
 _previous_main_callback = app.registered_callback
 
 
+def _set_cli_workspace_path(workspace_path: Union[str, Path]) -> Path:
+    """Normalize and propagate a CLI workspace override before core initialization."""
+    global WORKSPACE_PATH
+
+    resolved_workspace = Path(workspace_path).expanduser().resolve()
+    os.environ["PENGUIN_WORKSPACE"] = str(resolved_workspace)
+    WORKSPACE_PATH = resolved_workspace
+
+    try:
+        import importlib
+
+        config_module = importlib.import_module("penguin.config")
+        config_module.WORKSPACE_PATH = resolved_workspace
+    except Exception:
+        logger.debug("Unable to sync workspace override into penguin.config", exc_info=True)
+
+    return resolved_workspace
+
+
+def _preconfigure_cli_environment(
+    workspace: Optional[Path],
+    project: Optional[str],
+    root: Optional[str],
+) -> Tuple[Optional[Path], Path]:
+    """Normalize root/workspace env hints before config- and core-level initialization."""
+    workspace_source: Union[str, Path] = workspace or os.environ.get(
+        "PENGUIN_WORKSPACE", WORKSPACE_PATH
+    )
+    resolved_workspace = _set_cli_workspace_path(workspace_source)
+
+    current_cwd = Path.cwd().resolve()
+    os.environ["PENGUIN_CWD"] = str(current_cwd)
+    os.environ.pop("PENGUIN_PROJECT_ROOT", None)
+
+    resolved_project_path: Optional[Path] = None
+    if project:
+        candidates = []
+        try:
+            candidates.append(Path(project).expanduser())
+        except Exception:
+            pass
+        candidates.append(resolved_workspace / "projects" / project)
+
+        for candidate in candidates:
+            try:
+                if candidate.exists() and candidate.is_dir():
+                    resolved_project_path = candidate.resolve()
+                    os.environ["PENGUIN_PROJECT_ROOT"] = str(resolved_project_path)
+                    os.environ["PENGUIN_CWD"] = str(resolved_project_path)
+                    logger.info("CLI env: PENGUIN_PROJECT_ROOT=%s", resolved_project_path)
+                    break
+            except Exception:
+                continue
+
+    root_mode = (root or "project").lower()
+    if root_mode in ("project", "workspace"):
+        os.environ["PENGUIN_WRITE_ROOT"] = root_mode
+        if root_mode == "workspace":
+            os.environ["PENGUIN_CWD"] = str(resolved_workspace)
+        elif resolved_project_path is not None:
+            os.environ["PENGUIN_CWD"] = str(resolved_project_path)
+
+    return resolved_project_path, resolved_workspace
+
+
 @app.callback(invoke_without_command=True)
 def main_entry(
     ctx: typer.Context,
@@ -845,42 +914,15 @@ def main_entry(
 
     # Preconfigure environment for root/project overrides so that even
     # early-return paths (e.g. launching the TUI) honour the requested roots.
-    resolved_project_path: Optional[Path] = None
-    if project:
-        # Try as-is, then workspace/projects/<name>
-        candidates = []
-        try:
-            candidates.append(Path(project).expanduser())
-        except Exception:
-            pass
-        candidates.append(Path(WORKSPACE_PATH) / "projects" / project)
-        for candidate in candidates:
-            try:
-                if candidate.exists() and candidate.is_dir():
-                    resolved_project_path = candidate.resolve()
-                    os.environ["PENGUIN_PROJECT_ROOT"] = str(resolved_project_path)
-                    os.environ.setdefault("PENGUIN_CWD", str(resolved_project_path))
-                    logger.info(
-                        "CLI env: PENGUIN_PROJECT_ROOT=%s", resolved_project_path
-                    )
-                    break
-            except Exception:
-                continue
+    resolved_project_path, _resolved_workspace = _preconfigure_cli_environment(
+        workspace=workspace,
+        project=project,
+        root=root,
+    )
 
     if root:
         root_mode = root.lower()
-        if root_mode in ("project", "workspace"):
-            os.environ["PENGUIN_WRITE_ROOT"] = root_mode
-            if root_mode == "workspace":
-                os.environ["PENGUIN_CWD"] = str(WORKSPACE_PATH)
-            elif root_mode == "project" and resolved_project_path is not None:
-                os.environ["PENGUIN_CWD"] = str(resolved_project_path)
-            logger.info(
-                "CLI env: PENGUIN_WRITE_ROOT=%s PENGUIN_CWD=%s",
-                root_mode,
-                os.environ.get("PENGUIN_CWD"),
-            )
-        else:
+        if root_mode not in ("project", "workspace"):
             console.print(
                 f"[yellow]Warning: unknown root '{root}'. Expected 'project' or 'workspace'.[/yellow]"
             )
@@ -2854,10 +2896,12 @@ def task_list(
                 from penguin.project.models import TaskStatus
 
                 try:
-                    status_filter = TaskStatus(status.upper())
+                    normalized_status = status.strip().lower()
+                    status_filter = TaskStatus(normalized_status)
                 except ValueError:
+                    valid_options = ", ".join(task_status.value for task_status in TaskStatus)
                     console.print(
-                        f"[red]Invalid status: {status}. Valid options: pending, running, completed, failed[/red]"
+                        f"[red]Invalid status: {status}. Valid options: {valid_options}[/red]"
                     )
                     raise typer.Exit(code=1)
 
@@ -2898,6 +2942,8 @@ def task_list(
 
             console.print(table)
 
+        except typer.Exit:
+            raise
         except Exception as e:
             console.print(f"[red]Error listing tasks: {e}[/red]")
             raise typer.Exit(code=1)
@@ -2907,7 +2953,7 @@ def task_list(
 
 @task_app.command("start")
 def task_start(task_id: str = typer.Argument(..., help="Task ID to start")):
-    """Start a task (set status to running)"""
+    """Start a task by moving it into the active state."""
 
     async def _async_task_start():
         await _initialize_core_components_globally()
@@ -2936,7 +2982,7 @@ def task_start(task_id: str = typer.Argument(..., help="Task ID to start")):
             # Get updated task
             updated_task = await _core.project_manager.get_task_async(task_id)
 
-            console.print(f"[green]✓ Task '{task.title}' started[/green]")
+            console.print(f"[green]✓ Task '{task.title}' moved to active state[/green]")
             console.print(f"  Status: {updated_task.status.value}")
 
         except Exception as e:
@@ -2948,7 +2994,7 @@ def task_start(task_id: str = typer.Argument(..., help="Task ID to start")):
 
 @task_app.command("complete")
 def task_complete(task_id: str = typer.Argument(..., help="Task ID to complete")):
-    """Complete a task (set status to completed)"""
+    """Approve a task that is pending review and mark it completed."""
 
     async def _async_task_complete():
         await _initialize_core_components_globally()
@@ -2965,18 +3011,20 @@ def task_complete(task_id: str = typer.Argument(..., help="Task ID to complete")
                 console.print(f"[red]Error: Task with ID '{task_id}' not found[/red]")
                 raise typer.Exit(code=1)
 
-            # Use update_task_status method for status changes
-            success = _core.project_manager.update_task_status(
-                task_id, TaskStatus.COMPLETED
-            )
-            if not success:
-                console.print("[red]Failed to complete task[/red]")
+            if task.status == TaskStatus.COMPLETED:
+                updated_task = task
+                console.print(f"[yellow]Task '{task.title}' is already completed[/yellow]")
+            elif task.status == TaskStatus.PENDING_REVIEW:
+                task.approve("cli", notes="Approved via CLI")
+                _core.project_manager.storage.update_task(task)
+                updated_task = await _core.project_manager.get_task_async(task_id)
+            else:
+                console.print(
+                    "[red]Task must be in pending_review before it can be approved[/red]"
+                )
                 raise typer.Exit(code=1)
 
-            # Get updated task
-            updated_task = await _core.project_manager.get_task_async(task_id)
-
-            console.print(f"[green]✓ Task '{task.title}' completed[/green]")
+            console.print(f"[green]✓ Task '{task.title}' approved[/green]")
             console.print(f"  Status: {updated_task.status.value}")
 
         except Exception as e:

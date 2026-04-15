@@ -1788,19 +1788,25 @@ class PenguinCore:
         self,
         session_id: str,
         status_type: str,
+        info: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Emit OpenCode session.status event for a session."""
         sid = session_id.strip() if isinstance(session_id, str) else ""
         if not sid:
             return
+
+        properties: Dict[str, Any] = {
+            "sessionID": sid,
+            "status": {"type": status_type},
+        }
+        if info:
+            properties["info"] = info
+
         await self.event_bus.emit(
             "opencode_event",
             {
                 "type": "session.status",
-                "properties": {
-                    "sessionID": sid,
-                    "status": {"type": status_type},
-                },
+                "properties": properties,
             },
         )
 
@@ -3800,6 +3806,20 @@ class PenguinCore:
         # Emit through unified event bus
         try:
             await self.event_bus.emit(event_type, data)
+
+            if event_type == "status" and isinstance(data, dict):
+                status_type = data.get("status_type")
+                session_id = data.get("session_id") or data.get("conversation_id")
+                if isinstance(status_type, str) and isinstance(session_id, str):
+                    # Clarification status originates as plain UI status events, but SSE clients only
+                    # subscribe to `opencode_event`. Bridge the session-scoped status here so web clients
+                    # see the same waiting/resume truth instead of silently missing it.
+                    if status_type in {"clarification_needed", "clarification_answered"}:
+                        await self._emit_opencode_session_status(
+                            session_id,
+                            status_type,
+                            info=data.get("data") if isinstance(data.get("data"), dict) else None,
+                        )
         except Exception as e:
             logger.error(f"[TUI_ADAPTER] ERROR in event_bus.emit: {e}", exc_info=True)
 

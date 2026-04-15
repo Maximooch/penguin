@@ -9,13 +9,14 @@ Supports the Blueprint template format defined in context/blueprint.template.md.
 import json
 import logging
 import re
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import yaml
 
-from .models import Blueprint, BlueprintItem
+from .models import Blueprint, BlueprintItem, DependencyPolicy, TaskDependency
 
 logger = logging.getLogger(__name__)
 
@@ -23,10 +24,183 @@ logger = logging.getLogger(__name__)
 class BlueprintParseError(Exception):
     """Raised when Blueprint parsing fails."""
     
-    def __init__(self, message: str, source: Optional[str] = None, line: Optional[int] = None):
+    def __init__(
+        self,
+        message: str,
+        source: Optional[str] = None,
+        line: Optional[int] = None,
+        code: Optional[str] = None,
+        suggestion: Optional[str] = None,
+        task_id: Optional[str] = None,
+    ):
         self.source = source
         self.line = line
+        self.code = code
+        self.suggestion = suggestion
+        self.task_id = task_id
         super().__init__(f"{message}" + (f" (at {source}:{line})" if source and line else ""))
+
+
+@dataclass
+class BlueprintDiagnostic:
+    """Structured lint/diagnostic finding for a Blueprint."""
+
+    code: str
+    severity: str
+    message: str
+    source: Optional[str] = None
+    line: Optional[int] = None
+    task_id: Optional[str] = None
+    suggestion: Optional[str] = None
+
+
+@dataclass
+class BlueprintDiagnosticsReport:
+    """Structured diagnostics report for a Blueprint."""
+
+    diagnostics: List[BlueprintDiagnostic] = field(default_factory=list)
+
+    @property
+    def has_errors(self) -> bool:
+        """Return True when the report contains at least one error."""
+        return any(diagnostic.severity == "error" for diagnostic in self.diagnostics)
+
+    @property
+    def has_warnings(self) -> bool:
+        """Return True when the report contains at least one warning."""
+        return any(diagnostic.severity == "warning" for diagnostic in self.diagnostics)
+
+
+class BlueprintLinter:
+    """Post-parse linter for Blueprint structural and authoring diagnostics."""
+
+    def lint(
+        self,
+        blueprint: Blueprint,
+        source: Optional[str] = None,
+    ) -> BlueprintDiagnosticsReport:
+        """Lint a parsed Blueprint and return structured diagnostics."""
+        diagnostics: List[BlueprintDiagnostic] = []
+        tasks_by_id: Dict[str, List[BlueprintItem]] = {}
+
+        for item in blueprint.items:
+            tasks_by_id.setdefault(item.id, []).append(item)
+
+        # Errors: duplicate task IDs
+        for task_id, items in tasks_by_id.items():
+            if len(items) > 1:
+                for item in items[1:]:
+                    diagnostics.append(
+                        BlueprintDiagnostic(
+                            code="BP-LINT-001",
+                            severity="error",
+                            message=f"Duplicate task id {task_id}",
+                            source=item.source_file or source,
+                            line=item.source_line,
+                            task_id=task_id,
+                            suggestion="Use unique task identifiers within a Blueprint.",
+                        )
+                    )
+
+        task_ids = set(tasks_by_id.keys())
+
+        # Errors/warnings: per-task checks
+        for item in blueprint.items:
+            for dep_id in item.depends_on:
+                if dep_id not in task_ids:
+                    diagnostics.append(
+                        BlueprintDiagnostic(
+                            code="BP-LINT-002",
+                            severity="error",
+                            message=f"Task {item.id} depends on missing task {dep_id}",
+                            source=item.source_file or source,
+                            line=item.source_line,
+                            task_id=item.id,
+                            suggestion=f"Add task {dep_id} to the Blueprint or remove it from Depends.",
+                        )
+                    )
+
+            if not item.acceptance_criteria:
+                diagnostics.append(
+                    BlueprintDiagnostic(
+                        code="BP-LINT-101",
+                        severity="warning",
+                        message=f"Task {item.id} has no acceptance criteria",
+                        source=item.source_file or source,
+                        line=item.source_line,
+                        task_id=item.id,
+                        suggestion="Add at least one Acceptance bullet so VERIFY has something concrete to check.",
+                    )
+                )
+
+            if item.estimate is None:
+                diagnostics.append(
+                    BlueprintDiagnostic(
+                        code="BP-LINT-103",
+                        severity="warning",
+                        message=f"Task {item.id} is missing an estimate",
+                        source=item.source_file or source,
+                        line=item.source_line,
+                        task_id=item.id,
+                        suggestion="Add estimate metadata to improve scheduling quality.",
+                    )
+                )
+
+            if any(spec.policy == DependencyPolicy.COMPLETION_REQUIRED for spec in item.dependency_specs):
+                diagnostics.append(
+                    BlueprintDiagnostic(
+                        code="BP-LINT-102",
+                        severity="warning",
+                        message=f"Task {item.id} has redundant explicit completion_required dependency specs",
+                        source=item.source_file or source,
+                        line=item.source_line,
+                        task_id=item.id,
+                        suggestion="Remove explicit completion_required specs unless you need them for clarity.",
+                    )
+                )
+
+        # Errors: cycle detection
+        graph = {
+            item.id: [dep_id for dep_id in item.depends_on if dep_id in task_ids]
+            for item in blueprint.items
+        }
+        visited = set()
+        visiting = set()
+        cycle_path: List[str] = []
+
+        def visit(node: str, stack: List[str]) -> bool:
+            nonlocal cycle_path
+
+            if node in visiting:
+                start = stack.index(node)
+                cycle_path = stack[start:] + [node]
+                return True
+            if node in visited:
+                return False
+
+            visiting.add(node)
+            for dep in graph.get(node, []):
+                if visit(dep, stack + [dep]):
+                    return True
+            visiting.remove(node)
+            visited.add(node)
+            return False
+
+        for task_id in graph:
+            if visit(task_id, [task_id]):
+                diagnostics.append(
+                    BlueprintDiagnostic(
+                        code="BP-LINT-003",
+                        severity="error",
+                        message=f"Dependency cycle detected: {' -> '.join(cycle_path)}",
+                        source=source,
+                        task_id=task_id,
+                        suggestion="Break the cycle so the scheduler can compute a valid frontier.",
+                    )
+                )
+                break
+
+        return BlueprintDiagnosticsReport(diagnostics=diagnostics)
 
 
 class BlueprintParser:
@@ -49,6 +223,10 @@ class BlueprintParser:
     METADATA_KV_PATTERN = re.compile(r"(\w+)\s*=\s*([^,}]+)")
     ACCEPTANCE_PATTERN = re.compile(r"^\s*-\s*Acceptance:\s*(.+)$", re.IGNORECASE)
     DEPENDS_PATTERN = re.compile(r"^\s*-\s*Depends:\s*(.+)$", re.IGNORECASE)
+    DEPENDS_HEADER_PATTERN = re.compile(r"^\s*-\s*Depends:\s*$", re.IGNORECASE)
+    DEPENDENCY_SPECS_HEADER_PATTERN = re.compile(r"^\s*-\s*Dependency\s+Specs:\s*$", re.IGNORECASE)
+    DEPENDENCY_SPEC_ITEM_PATTERN = re.compile(r"^\s*-\s*task_id:\s*(.+)$", re.IGNORECASE)
+    KEY_VALUE_LINE_PATTERN = re.compile(r"^\s*([a-zA-Z_][a-zA-Z0-9_]*):\s*(.+)$")
     RECIPE_PATTERN = re.compile(r"^\s*-\s*Recipe:\s*(.+)$", re.IGNORECASE)
     DESCRIPTION_PATTERN = re.compile(r"^\s*-\s*Description:\s*(.+)$", re.IGNORECASE)
     SECTION_PATTERN = re.compile(r"^##\s+(.+)$", re.MULTILINE)
@@ -185,6 +363,14 @@ class BlueprintParser:
             raise BlueprintParseError(f"Invalid JSON: {e}", source)
         
         return self._build_blueprint_from_dict(data, source)
+
+    def lint_blueprint(
+        self,
+        blueprint: Blueprint,
+        source: Optional[str] = None,
+    ) -> BlueprintDiagnosticsReport:
+        """Run post-parse lint checks against a Blueprint."""
+        return BlueprintLinter().lint(blueprint, source=source)
     
     def _build_blueprint_from_frontmatter(
         self, fm: Dict[str, Any], source: Optional[str]
@@ -273,6 +459,7 @@ class BlueprintParser:
             description=data.get("description", ""),
             acceptance_criteria=data.get("acceptance_criteria", []),
             depends_on=data.get("depends_on", data.get("dependencies", [])),
+            dependency_specs=data.get("dependency_specs", []),
             recipe=data.get("recipe"),
             estimate=data.get("estimate"),
             priority=data.get("priority", "medium"),
@@ -346,7 +533,109 @@ class BlueprintParser:
         lines = content.split("\n")
         current_item: Optional[BlueprintItem] = None
         parent_stack: List[Tuple[int, BlueprintItem]] = []  # (indent, item)
-        
+        active_subsection: Optional[str] = None
+        subsection_indent: Optional[int] = None
+        current_dependency_spec: Optional[Dict[str, str]] = None
+        current_dependency_spec_line: Optional[int] = None
+
+        def finalize_dependency_spec() -> None:
+            nonlocal current_dependency_spec, current_dependency_spec_line
+
+            if not current_item or not current_dependency_spec:
+                current_dependency_spec = None
+                current_dependency_spec_line = None
+                return
+
+            task_id = current_dependency_spec.get("task_id", "").strip().strip("<>")
+            policy = current_dependency_spec.get("policy", "").strip()
+            artifact_key = current_dependency_spec.get("artifact_key")
+
+            if not task_id:
+                raise BlueprintParseError(
+                    "Dependency spec requires task_id",
+                    source,
+                    current_dependency_spec_line,
+                    code="BP-PARSE-007",
+                    suggestion="Add task_id under Dependency Specs.",
+                )
+
+            if not policy:
+                raise BlueprintParseError(
+                    f"Dependency spec for {task_id} requires policy",
+                    source,
+                    current_dependency_spec_line,
+                    code="BP-PARSE-007",
+                    suggestion=f"Add policy under Dependency Specs for task_id <{task_id}>.",
+                    task_id=task_id,
+                )
+
+            valid_policies = {dependency_policy.value for dependency_policy in DependencyPolicy}
+            if policy not in valid_policies:
+                raise BlueprintParseError(
+                    f"Unknown dependency policy '{policy}'",
+                    source,
+                    current_dependency_spec_line,
+                    code="BP-PARSE-003",
+                    suggestion="Use one of: completion_required, review_ready_ok, artifact_ready.",
+                    task_id=task_id,
+                )
+
+            if policy == DependencyPolicy.ARTIFACT_READY.value and not artifact_key:
+                raise BlueprintParseError(
+                    f"artifact_ready dependency for {task_id} requires artifact_key",
+                    source,
+                    current_dependency_spec_line,
+                    code="BP-PARSE-004",
+                    suggestion=f"Add artifact_key under Dependency Specs for task_id <{task_id}>.",
+                    task_id=task_id,
+                )
+
+            if task_id not in current_item.depends_on:
+                raise BlueprintParseError(
+                    f"Dependency spec task_id {task_id} must also appear in Depends",
+                    source,
+                    current_dependency_spec_line,
+                    code="BP-PARSE-005",
+                    suggestion=f"Add <{task_id}> under Depends for this task.",
+                    task_id=task_id,
+                )
+
+            for existing in current_item.dependency_specs:
+                existing_task_id = str(existing.task_id).strip().strip("<>")
+                if existing_task_id != task_id:
+                    continue
+                if (
+                    existing.policy.value != policy
+                    or existing.artifact_key != artifact_key
+                ):
+                    raise BlueprintParseError(
+                        f"conflicting dependency spec for task_id {task_id}",
+                        source,
+                        current_dependency_spec_line,
+                        code="BP-PARSE-006",
+                        suggestion=f"Keep only one dependency spec for task_id <{task_id}>.",
+                        task_id=task_id,
+                    )
+                current_dependency_spec = None
+                current_dependency_spec_line = None
+                return
+
+            spec = TaskDependency(
+                task_id=task_id,
+                policy=policy,
+                artifact_key=artifact_key.strip().strip("\"'") if artifact_key else None,
+            )
+            current_item.dependency_specs.append(spec)
+            current_dependency_spec = None
+            current_dependency_spec_line = None
+
+        def reset_subsection_state() -> None:
+            nonlocal active_subsection, subsection_indent
+
+            finalize_dependency_spec()
+            active_subsection = None
+            subsection_indent = None
+
         for line_num, line in enumerate(lines, start=1):
             # Skip comments and empty lines
             if line.strip().startswith("<!--") or not line.strip():
@@ -354,29 +643,24 @@ class BlueprintParser:
             if line.strip().startswith("-->"):
                 continue
             if line.strip().startswith("<!--"):
-                # Skip until -->
                 continue
-            
-            # Try to match a task line
+
             task_match = self.TASK_LINE_PATTERN.match(line)
             if task_match:
+                reset_subsection_state()
                 indent = len(task_match.group(1))
-                is_checked = task_match.group(2).lower() == "x"
                 ident = task_match.group(3)
                 title = task_match.group(4).strip()
                 metadata_str = task_match.group(5)
-                
-                # Parse inline metadata
+
                 metadata = self._parse_inline_metadata(metadata_str) if metadata_str else {}
-                
-                # Determine parent
+
                 parent_id = None
                 while parent_stack and parent_stack[-1][0] >= indent:
                     parent_stack.pop()
                 if parent_stack:
                     parent_id = parent_stack[-1][1].id
-                
-                # Create item
+
                 item = BlueprintItem(
                     id=metadata.get("id", ident),
                     title=title,
@@ -399,41 +683,85 @@ class BlueprintParser:
                     source_file=source,
                     source_line=line_num,
                 )
-                
+
                 items.append(item)
                 current_item = item
                 parent_stack.append((indent, item))
                 continue
-            
-            # Parse sub-bullets for current item
+
             if current_item:
-                # Acceptance criteria
+                current_indent = len(line) - len(line.lstrip(" "))
+
+                if active_subsection and subsection_indent is not None and current_indent <= subsection_indent:
+                    reset_subsection_state()
+
+                if active_subsection == "depends":
+                    list_match = self.LIST_ITEM_PATTERN.match(line)
+                    if list_match:
+                        dep = list_match.group(1).strip().strip("<>")
+                        if dep and dep not in current_item.depends_on:
+                            current_item.depends_on.append(dep)
+                        continue
+
+                if active_subsection == "dependency_specs":
+                    spec_item_match = self.DEPENDENCY_SPEC_ITEM_PATTERN.match(line)
+                    if spec_item_match:
+                        finalize_dependency_spec()
+                        current_dependency_spec = {
+                            "task_id": spec_item_match.group(1).strip(),
+                        }
+                        current_dependency_spec_line = line_num
+                        continue
+
+                    kv_match = self.KEY_VALUE_LINE_PATTERN.match(line)
+                    if kv_match and current_dependency_spec is not None:
+                        key = kv_match.group(1).strip()
+                        value = kv_match.group(2).strip().strip("\"'")
+                        current_dependency_spec[key] = value
+                        continue
+
                 acc_match = self.ACCEPTANCE_PATTERN.match(line)
                 if acc_match:
+                    reset_subsection_state()
                     current_item.acceptance_criteria.append(acc_match.group(1).strip())
                     continue
-                
-                # Dependencies
+
                 dep_match = self.DEPENDS_PATTERN.match(line)
                 if dep_match:
+                    reset_subsection_state()
                     deps = [d.strip().strip("<>") for d in dep_match.group(1).split(",")]
-                    current_item.depends_on.extend(deps)
+                    current_item.depends_on.extend([dep for dep in deps if dep])
                     continue
-                
-                # Recipe
+
+                dep_header_match = self.DEPENDS_HEADER_PATTERN.match(line)
+                if dep_header_match:
+                    reset_subsection_state()
+                    active_subsection = "depends"
+                    subsection_indent = current_indent
+                    continue
+
+                dep_specs_header_match = self.DEPENDENCY_SPECS_HEADER_PATTERN.match(line)
+                if dep_specs_header_match:
+                    reset_subsection_state()
+                    active_subsection = "dependency_specs"
+                    subsection_indent = current_indent
+                    continue
+
                 recipe_match = self.RECIPE_PATTERN.match(line)
                 if recipe_match:
+                    reset_subsection_state()
                     current_item.recipe = recipe_match.group(1).strip()
                     continue
-                
-                # Description
+
                 desc_match = self.DESCRIPTION_PATTERN.match(line)
                 if desc_match:
+                    reset_subsection_state()
                     current_item.description = desc_match.group(1).strip()
                     continue
-        
+
+        reset_subsection_state()
         return items
-    
+
     def _parse_inline_metadata(self, metadata_str: str) -> Dict[str, str]:
         """Parse inline metadata from {key=value, ...} format."""
         metadata = {}

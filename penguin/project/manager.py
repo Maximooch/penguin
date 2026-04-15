@@ -16,13 +16,16 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import networkx as nx
 
 from .models import (
+    ArtifactEvidence,
     Blueprint,
     BlueprintItem,
+    DependencyPolicy,
     ExecutionRecord,
     ExecutionResult,
     Project,
     StateTransition,
     Task,
+    TaskDependency,
     TaskPhase,
     TaskStatus,
 )
@@ -271,14 +274,16 @@ class ProjectManager:
             scope = f"project '{project_id}'" if project_id else "independent tasks"
             raise ValidationError(f"Task '{title}' already exists in {scope}", field="title")
         
-        # Validate dependencies exist and don't create cycles
-        if dependencies:
-            self._validate_dependencies(dependencies, project_id)
-        
-        # Create task
+        # Create task identity early so dependency validation can reason
+        # about the prospective graph, not just existing rows.
         now = datetime.utcnow().isoformat()
         task_id = self._generate_id(title)
+
+        # Validate dependencies exist and don't create cycles
+        if dependencies:
+            self._validate_dependencies(dependencies, project_id, task_id=task_id)
         
+        # Create task
         task = Task(
             id=task_id,
             title=title.strip(),
@@ -291,6 +296,13 @@ class ProjectManager:
             parent_task_id=parent_task_id,
             tags=tags or [],
             dependencies=dependencies or [],
+            dependency_specs=[
+                TaskDependency(
+                    task_id=dep_id,
+                    policy=DependencyPolicy.COMPLETION_REQUIRED,
+                )
+                for dep_id in (dependencies or [])
+            ],
             due_date=due_date,
             metadata=metadata,
             budget_tokens=budget_tokens,
@@ -369,6 +381,14 @@ class ProjectManager:
         if not task:
             raise TaskNotFoundError(f"Task '{task_id}' not found", task_id)
         
+        if new_status in {TaskStatus.PENDING_REVIEW, TaskStatus.COMPLETED} and task.phase != TaskPhase.DONE:
+            raise StateTransitionError(
+                f"Invalid status/phase combination: cannot set status {new_status.value} while phase is {task.phase.value}",
+                task.status.value,
+                new_status.value,
+                task_id,
+            )
+
         # Attempt transition
         if not task.transition_to(new_status, reason, user_id):
             raise StateTransitionError(
@@ -411,6 +431,105 @@ class ProjectManager:
         """Async version of update_task_status."""
         return await asyncio.get_event_loop().run_in_executor(
             None, self.update_task_status, task_id, new_status, reason, user_id
+        )
+    
+    def update_task_phase(
+        self,
+        task_id: str,
+        new_phase: TaskPhase,
+        reason: Optional[str] = None,
+    ) -> bool:
+        """Update a task's ITUV phase and persist the change."""
+        task = self.storage.get_task(task_id)
+        if not task:
+            raise TaskNotFoundError(f"Task '{task_id}' not found", task_id)
+
+        if new_phase == TaskPhase.DONE and task.status not in {TaskStatus.PENDING_REVIEW, TaskStatus.COMPLETED}:
+            raise StateTransitionError(
+                f"Invalid status/phase combination: cannot set phase {new_phase.value} while status is {task.status.value}",
+                task.phase.value,
+                new_phase.value,
+                task_id,
+            )
+
+        old_phase = task.phase
+        task.set_phase(new_phase, reason)
+        self.storage.update_task(task)
+
+        self._publish_event("task_phase_changed", {
+            "task_id": task.id,
+            "old_phase": old_phase.value,
+            "new_phase": new_phase.value,
+            "reason": reason,
+        })
+
+        logger.info("Task %s phase changed to %s", task_id, new_phase.value)
+        return True
+
+    async def update_task_phase_async(
+        self,
+        task_id: str,
+        new_phase: TaskPhase,
+        reason: Optional[str] = None,
+    ) -> bool:
+        """Async version of update_task_phase."""
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self.update_task_phase, task_id, new_phase, reason
+        )
+    
+    def resolve_task_recipe(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """Resolve a task's declared usage recipe from its blueprint source."""
+        task = self.storage.get_task(task_id)
+        if not task:
+            raise TaskNotFoundError(f"Task '{task_id}' not found", task_id)
+
+        if not task.recipe:
+            return None
+
+        if not task.blueprint_source:
+            raise ValidationError(
+                f"Task '{task.id}' declares recipe '{task.recipe}' but has no blueprint source",
+                field="blueprint_source",
+                value=task.recipe,
+            )
+
+        blueprint_path = Path(task.blueprint_source)
+        if not blueprint_path.is_absolute():
+            blueprint_path = self.workspace_path / blueprint_path
+
+        if not blueprint_path.exists():
+            raise ValidationError(
+                f"Blueprint source not found for task '{task.id}': {blueprint_path}",
+                field="blueprint_source",
+                value=str(blueprint_path),
+            )
+
+        from .blueprint_parser import BlueprintParseError, BlueprintParser
+
+        parser = BlueprintParser(base_path=blueprint_path.parent)
+        try:
+            blueprint = parser.parse_file(blueprint_path)
+        except BlueprintParseError as exc:
+            raise ValidationError(
+                f"Failed to parse blueprint source for task '{task.id}': {exc}",
+                field="blueprint_source",
+                value=str(blueprint_path),
+            ) from exc
+
+        for recipe in blueprint.recipes:
+            if recipe.get("name") == task.recipe:
+                return recipe
+
+        raise ValidationError(
+            f"Recipe '{task.recipe}' not found for task '{task.id}'",
+            field="recipe",
+            value=task.recipe,
+        )
+
+    async def resolve_task_recipe_async(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """Async version of resolve_task_recipe."""
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self.resolve_task_recipe, task_id
         )
     
     def list_tasks(
@@ -544,8 +663,13 @@ class ProjectManager:
         content = f"{text}_{timestamp}_{uuid.uuid4().hex[:8]}"
         return hashlib.sha256(content.encode()).hexdigest()[:16]
     
-    def _validate_dependencies(self, dependencies: List[str], project_id: Optional[str]) -> None:
-        """Validate task dependencies exist and don't create cycles."""
+    def _validate_dependencies(
+        self,
+        dependencies: List[str],
+        project_id: Optional[str],
+        task_id: Optional[str] = None,
+    ) -> None:
+        """Validate task dependencies exist and reject cycles immediately."""
         for dep_id in dependencies:
             dep_task = self.storage.get_task(dep_id)
             if not dep_task:
@@ -554,23 +678,112 @@ class ProjectManager:
             # Ensure dependency is in same project (or both are independent)
             if dep_task.project_id != project_id:
                 raise DependencyError(
-                    f"Dependency task must be in the same project", dep_id
+                    "Dependency task must be in the same project", dep_id
                 )
+
+            if task_id and dep_id == task_id:
+                raise DependencyError(
+                    f"Dependency cycle detected for task {task_id}: self-dependency", dep_id
+                )
+
+        if task_id:
+            self._validate_project_dependency_graph(
+                project_id=project_id,
+                dependency_overrides={task_id: dependencies},
+            )
         
-        # TODO: Implement cycle detection algorithm
-        # For now, we'll skip cycle detection but this should be added
-        logger.debug(f"Validated {len(dependencies)} dependencies")
+        logger.debug("Validated %s dependencies for task %s", len(dependencies), task_id)
+
+    def _validate_project_dependency_graph(
+        self,
+        project_id: Optional[str],
+        dependency_overrides: Optional[Dict[str, List[str]]] = None,
+    ) -> None:
+        """Validate a project dependency graph, including prospective overrides."""
+        dependency_overrides = dependency_overrides or {}
+
+        if project_id is None:
+            tasks = [task for task in self.list_tasks() if task.project_id is None]
+        else:
+            tasks = self.list_tasks(project_id)
+
+        dag = nx.DiGraph()
+        task_map = {task.id: task for task in tasks}
+
+        for override_task_id in dependency_overrides:
+            dag.add_node(override_task_id)
+
+        for task in tasks:
+            dag.add_node(task.id)
+
+        for task in tasks:
+            effective_dependencies = dependency_overrides.get(task.id, task.dependencies)
+            for dep_id in effective_dependencies:
+                dag.add_edge(dep_id, task.id)
+
+        for override_task_id, dependencies in dependency_overrides.items():
+            if override_task_id not in task_map:
+                for dep_id in dependencies:
+                    dag.add_edge(dep_id, override_task_id)
+
+        if not nx.is_directed_acyclic_graph(dag):
+            cycles = list(nx.simple_cycles(dag))
+            raise DependencyError(f"Dependency cycle detected: {cycles[:3]}")
     
+    def _is_dependency_satisfied(
+        self,
+        dependency: TaskDependency,
+        dependency_task: Optional[Task],
+    ) -> bool:
+        """Evaluate whether a dependency edge is satisfied."""
+        if not dependency_task:
+            return False
+
+        if dependency.policy == DependencyPolicy.COMPLETION_REQUIRED:
+            return dependency_task.status == TaskStatus.COMPLETED
+
+        if dependency.policy == DependencyPolicy.REVIEW_READY_OK:
+            return (
+                dependency_task.phase == TaskPhase.DONE
+                and dependency_task.status
+                in {TaskStatus.PENDING_REVIEW, TaskStatus.COMPLETED}
+            )
+
+        if dependency.policy == DependencyPolicy.ARTIFACT_READY:
+            if not dependency.artifact_key:
+                return False
+
+            for artifact in dependency_task.artifact_evidence:
+                # Older storage round-trips and some tests can still surface raw dict evidence.
+                # Normalize defensively here so readiness semantics depend on artifact truth, not on the caller's representation details.
+                if isinstance(artifact, dict):
+                    artifact = ArtifactEvidence.from_dict(artifact)
+
+                if (
+                    artifact.key == dependency.artifact_key
+                    and artifact.valid
+                    and artifact.producer_task_id == dependency.task_id
+                ):
+                    return True
+            return False
+
+        return False
+
     def _is_task_blocked(self, task: Task) -> bool:
         """Check if a task is blocked by incomplete dependencies."""
         if not task.dependencies:
             return False
-        
-        for dep_id in task.dependencies:
-            dep_task = self.storage.get_task(dep_id)
-            if not dep_task or dep_task.status != TaskStatus.COMPLETED:
+
+        dependency_specs = task.dependency_specs or [
+            TaskDependency(task_id=dep_id)
+            for dep_id in task.dependencies
+        ]
+
+        for dependency in dependency_specs:
+            dep_task = self.storage.get_task(dependency.task_id)
+            if not self._is_dependency_satisfied(dependency, dep_task):
                 return True
-        
+
         return False
     
     def _publish_event(self, event_type: str, data: Dict[str, Any]) -> None:
@@ -659,15 +872,19 @@ class ProjectManager:
         for task in tasks:
             if task.status != TaskStatus.ACTIVE:
                 continue
-            
-            # Check all dependencies are completed
+
+            dependency_specs = task.dependency_specs or [
+                TaskDependency(task_id=dep_id)
+                for dep_id in task.dependencies
+            ]
+
             all_deps_done = True
-            for dep_id in task.dependencies:
-                dep_task = task_map.get(dep_id)
-                if not dep_task or dep_task.status != TaskStatus.COMPLETED:
+            for dependency in dependency_specs:
+                dep_task = task_map.get(dependency.task_id)
+                if not self._is_dependency_satisfied(dependency, dep_task):
                     all_deps_done = False
                     break
-            
+
             if all_deps_done:
                 ready.append(task)
         
@@ -902,6 +1119,8 @@ class ProjectManager:
                 skipped.append(item.id)
         
         # Second pass: resolve dependencies
+        dependency_updates: Dict[str, List[str]] = {}
+        dependency_spec_updates: Dict[str, List[TaskDependency]] = {}
         for item in blueprint.items:
             task_id = id_mapping.get(item.id)
             if not task_id:
@@ -913,15 +1132,47 @@ class ProjectManager:
             
             # Resolve dependency IDs
             resolved_deps = []
-            for dep_blueprint_id in item.depends_on:
-                dep_task_id = id_mapping.get(dep_blueprint_id)
+            resolved_specs: List[TaskDependency] = []
+            source_specs = item.dependency_specs or [
+                TaskDependency(task_id=dep_blueprint_id)
+                for dep_blueprint_id in item.depends_on
+            ]
+            for dep_spec in source_specs:
+                dep_task_id = id_mapping.get(dep_spec.task_id)
                 if dep_task_id:
                     resolved_deps.append(dep_task_id)
+                    resolved_specs.append(
+                        TaskDependency(
+                            task_id=dep_task_id,
+                            policy=dep_spec.policy,
+                            artifact_key=dep_spec.artifact_key,
+                        )
+                    )
                 else:
-                    logger.warning(f"Dependency {dep_blueprint_id} not found for task {item.id}")
-            
-            if resolved_deps != task.dependencies:
+                    logger.warning(
+                        f"Dependency {dep_spec.task_id} not found for task {item.id}"
+                    )
+
+            dependency_updates[task.id] = resolved_deps
+            dependency_spec_updates[task.id] = resolved_specs
+
+        self._validate_project_dependency_graph(
+            project_id=project_id,
+            dependency_overrides=dependency_updates,
+        )
+
+        for task_id, resolved_deps in dependency_updates.items():
+            task = self.storage.get_task(task_id)
+            if not task:
+                continue
+
+            resolved_specs = dependency_spec_updates.get(task_id, [])
+            if (
+                resolved_deps != task.dependencies
+                or resolved_specs != task.dependency_specs
+            ):
                 task.dependencies = resolved_deps
+                task.dependency_specs = resolved_specs
                 task.updated_at = datetime.utcnow().isoformat()
                 self.storage.update_task(task)
         
@@ -967,6 +1218,7 @@ class ProjectManager:
             parent_task_id=None,  # Will be set if parent_id is resolved
             tags=item.labels,
             dependencies=[],  # Will be resolved in second pass
+            dependency_specs=[],
             due_date=item.due_date,
             acceptance_criteria=item.acceptance_criteria,
             blueprint_id=item.id,

@@ -14,6 +14,7 @@ from typing import Optional, Dict, Any, List, AsyncGenerator, Callable, Awaitabl
 from penguin import __version__
 from penguin.config import config, Config, _ensure_env_loaded
 from penguin.core import PenguinCore
+from penguin.run_mode import RunMode
 from penguin.llm.api_client import APIClient, ConnectionPoolManager
 from penguin.llm.model_config import ModelConfig
 from penguin.system_prompt import SYSTEM_PROMPT
@@ -526,30 +527,49 @@ class PenguinAPI:
         max_iterations: Optional[int] = None,
         project_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Run a task using the engine.
+        """Run a task through RunMode so programmatic callers get current lifecycle truth.
 
-        Args:
-            task_description: Description of the task to run
-            max_iterations: Maximum number of iterations
-            project_id: Optional project ID to associate the task with
-
-        Returns:
-            Dictionary containing task execution results
+        This keeps the library surface aligned with the web route and backend runtime:
+        clarification-needed and other non-terminal outcomes should survive instead of being flattened into engine-only semantics.
         """
         try:
-            result = await self.core.engine.run_task(
-                task_prompt=task_description,
-                max_iterations=max_iterations,
-                task_context={"project_id": project_id} if project_id else None,
+            run_mode = RunMode(core=self.core, max_iterations=max_iterations or get_engine_max_iterations_default())
+            return await run_mode.start(
+                name=task_description,
+                description=None,
+                context={"project_id": project_id} if project_id else {},
             )
-            return result
         except Exception as e:
             logger.error(f"Error running task: {str(e)}")
             return {
                 "error": str(e),
-                "assistant_response": "",
+                "message": str(e),
                 "iterations": 0,
                 "status": "error",
+                "completion_type": "error",
+            }
+
+    async def resume_with_clarification(
+        self,
+        task_id: str,
+        answer: str,
+        answered_by: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Answer the latest open clarification and resume the task through RunMode."""
+        try:
+            run_mode = RunMode(core=self.core)
+            return await run_mode.resume_with_clarification(
+                task_id=task_id,
+                answer=answer,
+                answered_by=answered_by,
+            )
+        except Exception as e:
+            logger.error(f"Error resuming task clarification: {str(e)}")
+            return {
+                "error": str(e),
+                "message": str(e),
+                "status": "error",
+                "completion_type": "error",
             }
 
     def get_health(self) -> Dict[str, Any]:

@@ -145,6 +145,7 @@ browser = [
 dev = [
     "pytest>=6.0.0",
     "pytest-asyncio>=0.21.0",
+    "hypothesis>=6.0.0",
     "black>=21.0.0",
     "isort>=5.0.0",
     "ruff>=0.1.0",
@@ -162,6 +163,7 @@ test = [
     "pytest>=6.0.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0.0",
+    "hypothesis>=6.0.0",
 ]
 
 # Full installation (everything)
@@ -280,4 +282,5 @@ target-version = "py39"
 dev = [
     "pytest>=8.4.1",
     "pytest-asyncio>=1.1.0",
+    "hypothesis>=6.0.0",
 ]

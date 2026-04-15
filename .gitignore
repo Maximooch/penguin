@@ -78,6 +78,7 @@ penguin-tui/.turbo/
 
 # pytest
 .pytest_cache/
+.hypothesis/
  
 # .venv
 .venv/

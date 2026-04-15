@@ -533,12 +533,11 @@ class NativeBackend(OrchestrationBackend):
             # Update task status if project manager available
             if self._project_manager and task:
                 try:
-                    from penguin.project.models import TaskStatus, TaskPhase
-                    self._project_manager.update_task_status(
-                        task.id,
-                        TaskStatus.COMPLETED,
-                        reason="ITUV workflow completed successfully"
+                    task.mark_pending_review(
+                        "ITUV workflow completed successfully",
+                        reviewer="native",
                     )
+                    self._project_manager.storage.update_task(task)
                 except Exception as e:
                     logger.warning(f"Could not update task status: {e}")
         else:

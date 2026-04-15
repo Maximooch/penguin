@@ -241,6 +241,103 @@ Default behavior should be conservative:
 - successful execution ends at `DONE + PENDING_REVIEW`
 - `COMPLETED` is earned, not assumed
 
+## Dependency Readiness Policy
+
+Dependency edges must have explicit semantics. A bare dependency reference is not enough to describe the strongest system.
+
+### Default Policy
+
+Unless stated otherwise, every dependency uses:
+
+- `completion_required`
+
+This means:
+
+- upstream task must reach `status=COMPLETED`
+- `status=PENDING_REVIEW` does **not** unlock dependents
+- review remains a real gate, not a decorative afterthought
+
+### Supported Dependency Policies
+
+#### `completion_required`
+
+Use when downstream work must not proceed until upstream work is fully approved or trusted-complete.
+
+Unlock condition:
+
+- upstream `status == COMPLETED`
+
+Recommended for:
+
+- infrastructure changes
+- schema and migration work
+- auth, billing, security, orchestration, and state-machine changes
+- tasks where downstream work would amplify a bad upstream assumption
+
+#### `review_ready_ok`
+
+Use when downstream work may begin once upstream execution is done, even if formal approval is still pending.
+
+Unlock condition:
+
+- upstream `status in {PENDING_REVIEW, COMPLETED}`
+- upstream `phase == DONE`
+
+This policy must be opt-in and justified. It should be used sparingly.
+
+Recommended only for lower-risk follow-on work such as:
+
+- docs updates
+- UI polish
+- non-critical refactors
+- downstream tasks that do not cement irreversible decisions
+
+#### `artifact_ready`
+
+Use when downstream work depends on a specific artifact or evidence object rather than full approval.
+
+Unlock condition:
+
+- declared artifact/evidence exists and validates
+- upstream task has not failed terminally
+- artifact contract is explicit and machine-checkable
+
+Examples:
+
+- generated client artifact exists
+- schema snapshot file exists
+- benchmark report artifact exists
+- usage recipe output contains a required evidence key
+
+This policy must never rely on vague human interpretation.
+
+### Trusted Automatic Verification
+
+`trusted_auto_verify` is a completion policy, not a dependency-edge policy.
+
+It answers:
+
+- when `PENDING_REVIEW -> COMPLETED` may happen automatically
+
+It does **not** answer:
+
+- when a dependent task may unlock
+
+If a task uses trusted automatic verification, it may promote itself to `COMPLETED` once strict checks pass. Downstream dependency policies still evaluate against the resulting task status or artifact contract.
+
+### Backward Compatibility Rule
+
+Existing dependency syntax such as:
+
+- `depends_on: [TASK-1, TASK-2]`
+- markdown `- Depends: <TASK-1>, <TASK-2>`
+
+must be interpreted as:
+
+- `completion_required` for every listed dependency
+
+No existing blueprint should silently change meaning during migration.
+
 ## Synthetic Task Contract
 
 Synthetic tasks are allowed only if they are persisted and linked back to project scope.
@@ -316,6 +413,25 @@ This contract should be enforced at the following layers:
 - future fixes and out-of-scope junk backlog
 
 It should not become a second copy of the full contract tables.
+
+## Related Contracts
+
+This state-machine contract works alongside:
+
+- `context/architecture/artifact-evidence-contract.md`
+  - canonical rules for artifact declaration, validation, and `artifact_ready` dependency semantics
+- `context/architecture/blueprint-typed-dependency-syntax-contract.md`
+  - canonical authoring and normalization rules for typed dependency syntax in Blueprints
+- `context/architecture/runmode-project-ituv-system-map.md`
+  - visual map of component boundaries, execution flow, evidence flow, and scheduler interactions
+- `context/architecture/clarification-handling-contract.md`
+  - rules for waiting, resumption, escalation, and truthful execution behavior when clarification is required
+
+Use this file for lifecycle legality and review/completion semantics.
+Use the artifact evidence contract for evidence-bearing dependency unlock rules.
+Use the typed dependency syntax contract for authoring/parser truth.
+Use the system map for architecture orientation.
+Use the clarification contract for human-in-the-loop execution behavior.
 
 ## Relationship to Future Formalization
 

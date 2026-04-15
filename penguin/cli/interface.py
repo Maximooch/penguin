@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 from rich.console import Console  # type: ignore
 
 from penguin.core import PenguinCore
+from penguin.project.models import TaskStatus
 from penguin.system.conversation_menu import ConversationMenu, ConversationSummary
 from penguin.system.state import MessageCategory, parse_iso_datetime
 from penguin.cli.command_registry import CommandRegistry
@@ -821,11 +822,13 @@ class PenguinInterface:
                 if project:
                     # Get task summary for this project
                     project_tasks = await self.core.project_manager.list_tasks_async(project_id=project.id)
+                    # Compare against enum members, not ad-hoc strings.
+                    # The CLI summary should reflect the same lowercase-backed lifecycle truth as the rest of the runtime.
                     task_summary = {
                         "total": len(project_tasks),
-                        "active": len([t for t in project_tasks if t.status.value == "ACTIVE"]),
-                        "completed": len([t for t in project_tasks if t.status.value == "COMPLETED"]),
-                        "failed": len([t for t in project_tasks if t.status.value == "FAILED"])
+                        "active": len([t for t in project_tasks if t.status in {TaskStatus.ACTIVE, TaskStatus.RUNNING}]),
+                        "completed": len([t for t in project_tasks if t.status == TaskStatus.COMPLETED]),
+                        "failed": len([t for t in project_tasks if t.status == TaskStatus.FAILED])
                     }
 
                     return {
@@ -1240,7 +1243,7 @@ class PenguinInterface:
                 "summary": {
                     "total_projects": len(projects),
                     "total_tasks": len(all_tasks),
-                    "active_tasks": len([t for t in all_tasks if t.status.value == "ACTIVE"])
+                    "active_tasks": len([t for t in all_tasks if t.status in {TaskStatus.ACTIVE, TaskStatus.RUNNING}])
                 }
             }
 

@@ -343,6 +343,48 @@ Make project execution deterministic.
 - In continuous mode, when `project_id` is provided, prefer DAG selection only.
 - Limit synthetic `determine_next_step` behavior to explicit exploratory sessions.
 
+### Phase 8: Typed Dependency Policy Semantics
+
+#### Goal
+
+Stop treating every dependency edge as if it means the same thing.
+
+#### Problem
+
+The current system stores dependencies as plain task IDs. That is enough for a weak scheduler and not enough for a strong one.
+
+Without explicit edge policy, the scheduler can only guess:
+
+- whether downstream work must wait for `COMPLETED`
+- whether `PENDING_REVIEW` is enough
+- whether a specific artifact should unlock work
+- whether trusted auto-verification changes readiness
+
+That guesswork should not live in ad hoc `if dep.status == ...` checks.
+
+#### Changes
+
+- Introduce explicit dependency policy semantics with conservative defaults.
+- Support a backward-compatible shorthand where plain dependency IDs mean `completion_required`.
+- Add typed edge support for:
+  - `completion_required`
+  - `review_ready_ok`
+  - `artifact_ready`
+- Keep `trusted_auto_verify` as a completion-promotion policy, not a dependency-edge type.
+- Centralize dependency readiness evaluation in one scheduler helper.
+- Add focused tests proving that:
+  - `completion_required` does not unlock on `PENDING_REVIEW`
+  - `review_ready_ok` does unlock on `PENDING_REVIEW`
+  - existing blueprints preserve old meaning by default
+
+#### Acceptance Criteria
+
+- The contract explicitly defines dependency policy types and default semantics.
+- Existing dependency syntax remains backward-compatible and conservative.
+- Scheduler readiness logic is policy-driven rather than hard-coded to one global meaning.
+- Review gating is preserved by default.
+- Policy exceptions are explicit in blueprint/task data, not inferred.
+
 ## Suggested Execution Order
 
 1. Define the state machine contract.
@@ -352,9 +394,32 @@ Make project execution deterministic.
 5. Wire recipe execution for USE.
 6. Fix task resolution and continuous mode drift.
 7. Add cycle detection on dependency validation.
-8. Remove or repair stale workflow code.
+8. Add typed dependency policy semantics.
+9. Remove or repair stale workflow code.
 
 That order is important. If the state machine contract and completion logic are still wrong, everything else is theater.
+
+## Related Rationale
+
+For dependency-library/tooling choices related to this plan, see:
+
+- `context/rationale/dependency-library-evaluation.md`
+
+For the recommended rollout plan and alternatives for human-friendly typed dependency Blueprint authoring, see:
+
+- `context/tasks/blueprint-typed-dependency-implementation-plan.md`
+
+That note captures the current adopt/defer/reject stance for:
+
+- `networkx`
+- `pydantic`
+- `hypothesis`
+- `transitions`
+- TLA+/bridge tooling
+- migration/runtime type-checking candidates
+
+Use it to avoid re-litigating library choices from scratch while Phase 8 dependency-policy work is still settling.
+
 #### Changes
 
 - Add cycle detection in dependency validation during task create/update.
@@ -400,6 +465,82 @@ That order is important. If the completion logic is still wrong, everything else
 The system should be considered functionally usable when all of the following are true:
 
 - Blueprint tasks can be imported into a project.
+- Dependencies are valid and DAG scheduling selects only ready tasks.
+- RunMode executes only the intended task.
+- A task cannot reach `COMPLETED` or `DONE` without passing TEST, USE when applicable, and VERIFY.
+- Acceptance criteria are checked using explicit evidence.
+- Validation failures are visible and block completion.
+- Continuous mode stays inside project scope unless deliberately placed in exploration mode.
+
+## Minimal Functional Pass vs Production Hardening
+
+This plan is intentionally being executed in two layers:
+
+1. **Minimal functional pass**
+   - make the ITUV path real
+   - remove bypasses
+   - persist the right state
+   - fail closed
+   - prove the core path with focused tests
+
+2. **Production hardening pass**
+   - enforce legal transitions more strictly
+   - harden concurrency and atomicity
+   - improve migrations and repair paths
+   - attach richer evidence to acceptance criteria
+   - improve observability, retries, and recovery
+   - repair stale broad tests and docs drift
+
+That sequencing is deliberate. The current priority is to make the execution path honest before making it exhaustive.
+
+### What “More Production Ready” Means By Phase
+
+#### Phase 1: Completion Ownership
+
+Minimal pass:
+- `RunMode` cannot mark project tasks complete.
+- The orchestrator owns terminal status decisions.
+
+Production hardening:
+- reject any unauthorized direct transition to `COMPLETED`
+- audit all completion call sites
+- require explicit reopen and audit semantics
+- add stronger invalid-transition tests
+
+#### Phase 2: ITUV State Persistence and Transitions
+
+Minimal pass:
+- persist `phase`
+- expose a manager-level phase API
+- move orchestrator through explicit ITUV phases
+
+Production hardening:
+- validate legal phase transitions
+- record or expose phase transition history more explicitly
+- add migration tests for old task rows
+- handle interruption, restart, and resume semantics cleanly
+- prevent invalid `status × phase` combinations from being persisted
+
+#### Phase 3: Validation and Acceptance Evidence
+
+Minimal pass:
+- fail closed on missing `pytest`
+- fail closed on no tests collected
+- return structured evidence
+- surface acceptance criteria and mark whether they are covered or unchecked
+
+Production hardening:
+- classify validation failures by type
+- link individual acceptance criteria to concrete evidence artifacts
+- support richer evaluator types than “tests passed”
+- preserve validation artifacts durably
+- distinguish “tests passed” from “criterion proved”
+
+### Strategic Rule
+
+Do not confuse “minimal” with “sloppy.”
+
+Minimal means one canonical path, explicit invariants, focused tests, and no fake-success behavior. Hardening comes after that spine exists.
 
 ### Future Fixes / Junk Backlog
 
@@ -426,6 +567,13 @@ These items are not required to make the minimum plumbing functional, but they s
 - Potential sync/async misuse in orchestration paths.
   - Some current call sites deserve audit for incorrect async assumptions.
   - That class of bug is easy to miss and annoying to debug.
+- TUI worktree module-resolution instability.
+  - `uv run penguin` in the feature worktree currently fails with a Bun/OpenCode module-resolution error for `@opencode-ai/util/error`.
+  - This appears to be a frontend/sidecar workspace issue, not the current backend ITUV refactor target.
+  - Track it as a future fix unless backend testing becomes blocked on it.
+- Stale workflow pytest coverage.
+  - Some workflow tests currently patch GitManager internals that no longer exist, so they fail before exercising the current orchestration path.
+  - This is test debt and should be repaired, but it is not a blocker for the current Phase 1 backend refactor.
 - Dependencies are valid and DAG scheduling selects only ready tasks.
 ## Recommended First Ticket Set
 
@@ -443,6 +591,19 @@ These items are not required to make the minimum plumbing functional, but they s
 - Structured acceptance-criteria evaluators.
 - Artifact capture for screenshots, API responses, logs, or command output.
 - Rich execution records linked to each ITUV phase.
+- Formal artifact evidence contracts for `artifact_ready` dependency edges.
+
+### Next Recommended Ordering
+
+1. Add Hypothesis/property-based invariant testing for status/phase and dependency-policy semantics.
+2. Define and implement the artifact evidence contract for `artifact_ready`.
+3. Add human-friendly blueprint syntax for typed dependency policies after semantics are stable.
+
+This order is deliberate:
+
+- invariants first, so semantics are stress-tested before expanding capability
+- artifact evidence second, so `artifact_ready` stops being a stub and becomes a real contract
+- blueprint UX third, so authoring syntax does not ossify around unstable semantics
 
 ### Smarter Scheduling
 
@@ -507,3 +668,120 @@ These items are not required to make the minimum plumbing functional, but they s
 ## Final Note
 
 The codebase is closer to “promising scaffolding” than “finished workflow engine”. The good news is that the missing pieces are mostly plumbing and control-flow enforcement, not a full architectural rewrite. The bad news is that until those gates are real, the system can lie about task completion.
+
+## Next Options Worth Discussing
+
+These are the most sensible follow-on options after the current clarification handling, Blueprint diagnostics, and typed dependency work.
+
+### 1. Waiting-Time vs Execution-Time Accounting
+
+**What:** don't charge clarification wait against execution timebox.
+
+**Why:** otherwise agents learn to guess instead of ask.
+
+**Effort:** small — add timestamps and accounting logic.
+
+**When:** soon, but not urgent unless timebox enforcement is live.
+
+### 2. Blocker Escalation After Timeout
+
+**What:** auto-escalate unanswered clarification to blocked state.
+
+**Why:** open clarifications that sit forever poison the scheduler.
+
+**Effort:** medium — needs a threshold policy and state transition.
+
+**When:** after waiting-time accounting exists.
+
+### 3. Deeper Hypothesis / Stateful Coverage
+
+**What:** generated transition sequences, mixed dependency graphs, clarification state invariants.
+
+**Why:** highest confidence multiplier.
+
+**Effort:** medium.
+
+**When:** anytime — especially good before the next major feature push.
+
+### 4. Wire Clarification into CLI/API Surface
+
+**What:** expose `resume_with_clarification` through CLI commands or web API.
+
+**Why:** the capability exists internally but isn't user-accessible yet.
+
+**Effort:** small-medium depending on surface.
+
+**When:** when you want humans to actually use clarification flow.
+
+### 5. Cross-Link Clarification Contract with Implementation
+
+**What:** update `clarification-handling-contract.md` to reference the real code paths.
+
+**Why:** doc cluster stays honest.
+
+**Effort:** tiny.
+
+**When:** now, as a quick cleanup.
+
+### Current Monthly Recommendation
+
+For the current month, the recommended stance is:
+
+- **Defer waiting-time vs execution-time accounting.**
+  - Reason: timebox enforcement is not yet operational enough to justify accounting complexity.
+- **Do not add global timeout-based default assumptions.**
+  - Reason: that would train agents to guess instead of ask and would create silent behavioral drift.
+- **Treat “move on to the next nonblocking task” as a later scheduler enhancement, not as time accounting.**
+  - Reason: releasing a waiting task's execution slot cleanly requires scheduler-visible waiting semantics, not just timestamps.
+
+Practical consequence:
+
+- short-term clarification work should focus on honest waiting, persistence, answer/resume flow, and later user-surface wiring
+- unanswered clarification should eventually either remain waiting or escalate to blocked
+- auto-assume behavior should be considered only if it is explicit, task-scoped, and intentionally configured
+
+This keeps the system conservative while the clarification flow is still maturing.
+
+
+### Verification Hardening: Hypothesis / Stateful Coverage
+
+This belongs in the planning/backlog layer because it is a verification workstream, not a new architecture contract.
+
+**Goal:** increase confidence in the task state machine, dependency-policy semantics, and clarification lifecycle by testing generated state transitions instead of only fixed examples.
+
+**Recommended scope for the next pass:**
+
+- generated `status × phase` transition sequences against the canonical state-machine contract
+- generated dependency graphs covering:
+  - `completion_required`
+  - `review_ready_ok`
+  - `artifact_ready`
+- clarification lifecycle invariants covering:
+  - open clarification does not imply completion
+  - answering clarification does not mutate task phase directly
+  - resume preserves task identity and carries answer context forward
+
+**Why this is valuable:**
+
+- catches edge cases that focused example tests will miss
+- hardens the behavioral contracts already implemented
+- gives confidence before adding more scheduler and user-surface complexity
+
+**Suggested order:**
+
+1. extend current Hypothesis/property-based tests for dependency policy semantics
+2. add stateful transition tests for `TaskStatus` and `TaskPhase`
+3. add clarification lifecycle invariants once waiting/resume semantics settle further
+
+**Do not do yet:**
+
+- broad randomized CLI/API end-to-end fuzzing
+- speculative model-based tests for features that do not yet have stable contracts
+- fairness/liveness claims that belong in TLA+ rather than Hypothesis
+
+**Success criteria:**
+
+- generated tests fail on invalid lifecycle transitions
+- generated tests preserve current dependency-policy guarantees
+- generated tests prove clarification pause/resume semantics do not silently complete or corrupt task state
+

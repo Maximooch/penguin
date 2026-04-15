@@ -393,6 +393,21 @@ class EventManager:
             else:
                 self.cli.display_manager.display_message(f"Clarification needed: {prompt}", "system")
 
+        elif "clarification_answered" in status_type:
+            self.cli.run_mode_active = True
+            answer = data.get("data", {}).get("answer", "Answer recorded")
+            self.cli.run_mode_status = f"Clarification answered: {answer}"
+
+            # Surface the acknowledgement explicitly so the CLI shows the resume step, not just the pause.
+            # Without this, human-in-the-loop flow looks stuck even when RunMode accepted the answer and continued.
+            if self.cli.streaming_display.is_active:
+                self.cli.streaming_display.set_status(self.cli.run_mode_status)
+            else:
+                self.cli.display_manager.display_message(
+                    f"Clarification answered: {answer}",
+                    "system",
+                )
+
     def handle_tool_event(self, event_type: str, data: Dict[str, Any]) -> None:
         """Handle tool execution events.
 

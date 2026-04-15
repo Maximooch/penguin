@@ -12,7 +12,8 @@ from .manager import ProjectManager
 from .task_executor import ProjectTaskExecutor
 from .validation_manager import ValidationManager
 from .git_manager import GitManager
-from .models import TaskStatus
+from .exceptions import ValidationError
+from .models import TaskPhase, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,58 @@ class WorkflowOrchestrator:
         if self._debug_enabled:
             print(f"[WorkflowOrchestrator DEBUG] {message}")
 
+    async def _execute_use_recipe(self, recipe: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute a minimal usage recipe, currently supporting shell steps only."""
+        recipe_name = recipe.get("name", "unnamed")
+        steps = recipe.get("steps", [])
+        if not steps:
+            raise ValidationError(
+                f"Recipe '{recipe_name}' has no executable steps",
+                field="recipe",
+                value=recipe_name,
+            )
+
+        results = []
+        for index, step in enumerate(steps, start=1):
+            if "shell" not in step:
+                step_type = next(iter(step.keys()), "unknown")
+                raise ValidationError(
+                    f"Unsupported recipe step type '{step_type}'",
+                    field="recipe_step",
+                    value=step_type,
+                )
+
+            command = step["shell"]
+            process = await asyncio.create_subprocess_shell(
+                command,
+                cwd=str(self.project_manager.workspace_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120)
+            step_result = {
+                "index": index,
+                "type": "shell",
+                "command": command,
+                "returncode": process.returncode,
+                "stdout": stdout.decode(),
+                "stderr": stderr.decode(),
+            }
+            results.append(step_result)
+
+            if process.returncode != 0:
+                return {
+                    "success": False,
+                    "recipe": recipe_name,
+                    "steps": results,
+                }
+
+        return {
+            "success": True,
+            "recipe": recipe_name,
+            "steps": results,
+        }
+
     async def run_next_task(self, project_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
         Finds the next task, executes it, validates it, and creates a PR.
@@ -77,14 +130,19 @@ class WorkflowOrchestrator:
         workflow_result = {"task_id": task.id, "task_title": task.title}
 
         try:
-            # 1. Mark the task as RUNNING
+            # 1. Mark the task as RUNNING and enter IMPLEMENT
             success = self.project_manager.update_task_status(
                 task.id, TaskStatus.RUNNING
             )
             if not success:
                 raise Exception(f"Failed to update task status to RUNNING")
+            await self.project_manager.update_task_phase_async(
+                task.id,
+                TaskPhase.IMPLEMENT,
+                "Task claimed by orchestrator; starting implementation.",
+            )
             logger.info(f"Task '{task.title}' marked as RUNNING")
-            self._debug("Task status set to RUNNING")
+            self._debug("Task status set to RUNNING and phase set to IMPLEMENT")
 
             # 2. Execute the task
             self._debug("Executing task via ProjectTaskExecutor")
@@ -95,23 +153,14 @@ class WorkflowOrchestrator:
             
             changed_files = exec_result.get("changed_files", [])
 
-            # 3. Check if task is already completed (RunMode may have completed it)
-            # Reload task to get current status
+            # 3. Reload task and validate the post-execution state.
+            # RunMode no longer owns terminal project-task transitions.
             updated_task = self.project_manager.get_task(task.id)
             self._debug(f"Reloaded task after execution: {updated_task!r}")
             if not updated_task:
                 raise Exception(f"Task {task.id} not found after execution")
-                
-            if updated_task.status == TaskStatus.COMPLETED:
-                logger.info(f"Task '{task.title}' already marked as COMPLETED by executor")
-                # Skip validation and PR creation for now - task is already done
-                return {
-                    "task_id": task.id,
-                    "task_title": task.title,
-                    "status": TaskStatus.COMPLETED.name,
-                    "message": "Task already completed by executor"
-                }
-            elif updated_task.status in [TaskStatus.FAILED, TaskStatus.CANCELLED]:
+
+            if updated_task.status in [TaskStatus.FAILED, TaskStatus.CANCELLED]:
                 logger.warning(f"Task '{task.title}' ended with status {updated_task.status.value}")
                 return {
                     "task_id": task.id,
@@ -122,13 +171,14 @@ class WorkflowOrchestrator:
 
             # 4. Only proceed with validation if task is still RUNNING
             if updated_task.status == TaskStatus.RUNNING:
-                # Validate the result
-                await self.project_manager.update_task_status_async(
-                    task.id, TaskStatus.PENDING_REVIEW, "Execution complete, running validation."
+                await self.project_manager.update_task_phase_async(
+                    task.id,
+                    TaskPhase.TEST,
+                    "Implementation finished; running validation checks.",
                 )
                 validation_result = await self.validation_manager.validate_task_completion(task, changed_files)
                 workflow_result["validation"] = validation_result
-                
+
                 if not validation_result.get("validated"):
                     # Validation failed - mark as failed
                     success = self.project_manager.update_task_status(
@@ -143,21 +193,81 @@ class WorkflowOrchestrator:
                         "validation_result": validation_result
                     }
 
+                if getattr(updated_task, "recipe", None):
+                    await self.project_manager.update_task_phase_async(
+                        task.id,
+                        TaskPhase.USE,
+                        "Validation passed; running usage recipe.",
+                    )
+                    try:
+                        resolved_recipe = await self.project_manager.resolve_task_recipe_async(task.id)
+                        use_result = await self._execute_use_recipe(resolved_recipe)
+                        workflow_result["use"] = use_result
+                    except Exception as exc:
+                        success = self.project_manager.update_task_status(
+                            task.id,
+                            TaskStatus.FAILED,
+                            f"Usage recipe failed: {exc}",
+                        )
+                        if not success:
+                            logger.error(f"Failed to update task status to FAILED for task {task.id}")
+                        return {
+                            "task_id": task.id,
+                            "task_title": task.title,
+                            "status": "use_failed",
+                            "final_status": TaskStatus.FAILED.value,
+                            "error": str(exc),
+                        }
+
+                    if not use_result.get("success"):
+                        success = self.project_manager.update_task_status(
+                            task.id,
+                            TaskStatus.FAILED,
+                            "Usage recipe failed.",
+                        )
+                        if not success:
+                            logger.error(f"Failed to update task status to FAILED for task {task.id}")
+                        return {
+                            "task_id": task.id,
+                            "task_title": task.title,
+                            "status": "use_failed",
+                            "final_status": TaskStatus.FAILED.value,
+                            "use_result": use_result,
+                        }
+
+                await self.project_manager.update_task_phase_async(
+                    task.id,
+                    TaskPhase.VERIFY,
+                    "Validation passed; verifying completion artifacts.",
+                )
+
                 # 6. Create PR for validated task
                 self._debug("Creating pull-request for validated task")
                 pr_result = await self.git_manager.create_pr_for_task(task, validation_result)
                 self._debug(f"PR creation result: {pr_result}")
 
-                # 7. Finalize task as COMPLETED
+                await self.project_manager.update_task_phase_async(
+                    task.id,
+                    TaskPhase.DONE,
+                    "Validation succeeded; task is ready for review.",
+                )
+
+                # 7. Move the task into review-owned state.
                 success = self.project_manager.update_task_status(
-                    task.id, TaskStatus.COMPLETED
+                    task.id,
+                    TaskStatus.PENDING_REVIEW,
+                    "Validation passed; awaiting review or trusted automatic completion.",
                 )
                 if not success:
-                    raise Exception(f"Failed to update task status to COMPLETED")
-                logger.info(f"Task '{task.title}' marked as COMPLETED. PR: {pr_result.get('pr_url')}")
+                    raise Exception(f"Failed to update task status to PENDING_REVIEW")
+                logger.info(
+                    "Task '%s' marked as PENDING_REVIEW after validation. PR: %s",
+                    task.title,
+                    pr_result.get('pr_url'),
+                )
 
                 workflow_result['pr_result'] = pr_result
-                workflow_result['final_status'] = 'COMPLETED'
+                workflow_result['final_status'] = TaskStatus.PENDING_REVIEW.value
                 return workflow_result
             else:
                 # Task is in an unexpected state

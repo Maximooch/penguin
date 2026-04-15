@@ -564,6 +564,18 @@ UI Subscribers:
   - Dashboard: Telemetry
 ```
 
+### 4. Web/API Surface Truth
+
+The web/API surface is intentionally being brought back into alignment with backend runtime truth after substantial task/orchestration refactoring.
+
+- Task payloads exposed by the web layer now carry lifecycle truth such as `status`, `phase`, dependency state, artifact evidence, recipe references, and clarification metadata.
+- Project-task execution routes are being moved through `RunMode` instead of direct engine shortcuts so outcomes like `waiting_input` survive to clients instead of being collapsed into misleading terminal states.
+- Clarification answer/resume now has an explicit web route (`POST /api/v1/tasks/{task_id}/clarification/resume`) rather than existing only as an internal runtime capability.
+- SSE/OpenCode event compatibility now includes session-scoped clarification status bridging so web clients can observe `clarification_needed` and `clarification_answered` state instead of silently missing those transitions.
+- The programmatic `PenguinAPI` wrapper is being kept aligned with the web routes so embedded callers and HTTP callers do not receive different lifecycle semantics.
+
+This matters because a technically working route that hides clarification, phase truth, or non-terminal outcomes is still a broken interface. The surface has to tell the same truth as the runtime or users end up debugging documentation-shaped lies.
+
 ## Execution Flow
 
 ### 1. Interactive Chat Mode

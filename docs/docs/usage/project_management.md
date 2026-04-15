@@ -1,6 +1,6 @@
 # Project Management
 
-Penguin v0.2.0 introduces a powerful SQLite-backed project management system that provides robust task tracking, hierarchical organization, and integration with the AI assistant workflow. This guide covers all aspects of managing projects and tasks in Penguin.
+Penguin v0.6.x introduces a powerful SQLite-backed project management system that provides robust task tracking, hierarchical organization, and integration with the AI assistant workflow. This guide covers all aspects of managing projects and tasks in Penguin.
 
 ## Overview
 
@@ -26,7 +26,7 @@ A project is a high-level container for related work with:
 ### Tasks
 Tasks are individual work items with:
 - **Hierarchical structure** (parent/child relationships)
-- **Status tracking** (pending, running, completed, failed, cancelled)
+- **Status tracking** (`active`, `running`, `pending_review`, `completed`, `failed`, `cancelled`, `archived`) plus separate task phases
 - **Dependencies** between tasks
 - **Resource constraints** (token budgets, time limits)
 - **Execution records** with detailed logs
@@ -62,13 +62,15 @@ penguin project task create <PROJECT_ID> "Task title" [--description/-d TEXT]
 # List tasks
 penguin project task list [<PROJECT_ID>] [--status/-s STATUS]
 
-# Start / complete / delete
-penguin project task start <TASK_ID>
-penguin project task complete <TASK_ID>
+# Start / approve / delete
+penguin project task start <TASK_ID>      # moves task into the active state
+penguin project task complete <TASK_ID>   # approves a task that is pending review
 penguin project task delete <TASK_ID> [--force/-f]
 ```
 
-> ⚠️ The above are the **only** task-related CLI commands that exist today.  Everything else in earlier docs (update, show, pause, graphs, bulk ops, etc.) is **planned** and tracked in [future considerations](../advanced/future_considerations.md).
+Task status filters are case-insensitive and follow the current lifecycle values (`active`, `running`, `pending_review`, `completed`, `cancelled`, `failed`, `archived`).
+
+> ⚠️ The above are the **only** task-related CLI commands that exist today. Everything else in earlier docs (update, show, pause, graphs, bulk ops, etc.) is **planned** or internal and should not be treated as a stable public CLI command.
 
 ---
 
@@ -185,7 +187,7 @@ task = pm.create_task(
 )
 
 # Update task status
-pm.update_task_status(task.id, TaskStatus.IN_PROGRESS)
+pm.update_task_status(task.id, TaskStatus.ACTIVE)
 
 # Add execution record
 from penguin.project import ExecutionRecord
@@ -221,29 +223,27 @@ async def main():
 asyncio.run(main())
 ```
 
-## Web Interface (Coming Soon!)
+## Web/API Interface
 
-### Project Dashboard
-Access the web interface at `http://localhost:8000` (requires `penguin-ai[web]`):
+Penguin's web surface is available through `penguin-web` and is no longer a “coming soon” concept.
 
-- **Project Overview**: Visual cards showing all projects with status indicators
-- **Task Board**: Kanban-style board with drag-and-drop task management
-- **Gantt Chart**: Timeline view of project milestones and dependencies
-- **Resource Usage**: Charts showing token consumption and time tracking
+Current web/API behavior includes:
 
-### Real-time Updates
-The web interface provides real-time updates via WebSocket:
+- REST endpoints for project/task access
+- richer task payloads that expose lifecycle truth such as:
+  - `status`
+  - `phase`
+  - dependency fields
+  - artifact evidence
+  - clarification metadata
+- `POST /api/v1/tasks/{task_id}/execute`
+  - routes through `RunMode` so non-terminal outcomes like `waiting_input` survive to clients
+- `POST /api/v1/tasks/{task_id}/clarification/resume`
+  - answers the latest open clarification request and resumes task execution
+- `GET /api/v1/events/sse`
+  - exposes OpenCode-compatible SSE and now includes clarification-related session status visibility
 
-- **Live task status** changes as AI agents work
-- **Progress indicators** for running tasks
-- **Notification system** for task completion/failures
-- **Collaborative editing** for task descriptions and notes
-
-### Workflow Management
-- **Visual dependency editor** for complex task relationships
-- **Automated task creation** from natural language descriptions
-- **Template system** for common project types
-- **Integration hooks** for external tools (GitHub, Jira, etc.)
+The web/API surface is still being audited, but it now reflects current runtime truth much more closely than older docs implied.
 
 ## Advanced Features
 

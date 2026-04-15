@@ -54,6 +54,125 @@ class TaskStatus(Enum):
         }
 
 
+class DependencyPolicy(Enum):
+    """Dependency readiness policy for a task edge."""
+
+    COMPLETION_REQUIRED = "completion_required"
+    REVIEW_READY_OK = "review_ready_ok"
+    ARTIFACT_READY = "artifact_ready"
+
+
+@dataclass
+class TaskDependency:
+    """Typed dependency edge with explicit readiness semantics."""
+
+    task_id: str
+    policy: DependencyPolicy = DependencyPolicy.COMPLETION_REQUIRED
+    artifact_key: Optional[str] = None
+
+    def __post_init__(self):
+        """Normalize dependency policy values."""
+        if isinstance(self.policy, str):
+            self.policy = DependencyPolicy(self.policy)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "task_id": self.task_id,
+            "policy": self.policy.value,
+            "artifact_key": self.artifact_key,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "TaskDependency":
+        """Create TaskDependency from dictionary."""
+        return cls(
+            task_id=data["task_id"],
+            policy=data.get("policy", DependencyPolicy.COMPLETION_REQUIRED.value),
+            artifact_key=data.get("artifact_key"),
+        )
+
+
+@dataclass
+class ArtifactEvidence:
+    """Machine-checkable artifact evidence produced by a task."""
+
+    key: str
+    kind: str
+    path: Optional[str] = None
+    producer_task_id: Optional[str] = None
+    created_at: Optional[str] = None
+    valid: bool = False
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "key": self.key,
+            "kind": self.kind,
+            "path": self.path,
+            "producer_task_id": self.producer_task_id,
+            "created_at": self.created_at,
+            "valid": self.valid,
+            "metadata": self.metadata,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ArtifactEvidence":
+        """Create ArtifactEvidence from dictionary."""
+        return cls(
+            key=data["key"],
+            kind=data["kind"],
+            path=data.get("path"),
+            producer_task_id=data.get("producer_task_id"),
+            created_at=data.get("created_at"),
+            valid=data.get("valid", False),
+            metadata=data.get("metadata", {}),
+        )
+
+
+def _normalize_dependency_fields(
+    task_ids: List[str],
+    dependency_specs: List[Union[TaskDependency, Dict[str, Any], str]],
+) -> tuple[List[str], List[TaskDependency]]:
+    """Normalize plain dependency IDs and typed dependency specs."""
+    normalized_specs: List[TaskDependency] = []
+
+    if dependency_specs:
+        for spec in dependency_specs:
+            if isinstance(spec, TaskDependency):
+                normalized_specs.append(spec)
+            elif isinstance(spec, dict):
+                normalized_specs.append(TaskDependency.from_dict(spec))
+            elif isinstance(spec, str):
+                normalized_specs.append(TaskDependency(task_id=spec))
+            else:
+                raise TypeError(f"Unsupported dependency spec type: {type(spec)!r}")
+        normalized_ids = [spec.task_id for spec in normalized_specs]
+        return normalized_ids, normalized_specs
+
+    normalized_specs = [
+        TaskDependency(task_id=task_id)
+        for task_id in task_ids
+    ]
+    return list(task_ids), normalized_specs
+
+
+def _normalize_artifact_evidence(
+    artifact_evidence: List[Union[ArtifactEvidence, Dict[str, Any]]],
+) -> List[ArtifactEvidence]:
+    """Normalize artifact evidence values."""
+    normalized: List[ArtifactEvidence] = []
+    for artifact in artifact_evidence:
+        if isinstance(artifact, ArtifactEvidence):
+            normalized.append(artifact)
+        elif isinstance(artifact, dict):
+            normalized.append(ArtifactEvidence.from_dict(artifact))
+        else:
+            raise TypeError(f"Unsupported artifact evidence type: {type(artifact)!r}")
+    return normalized
+
+
 class ExecutionResult(Enum):
     """Execution result enumeration."""
     SUCCESS = "success"
@@ -177,6 +296,7 @@ class BlueprintItem:
     
     # Dependencies (DAG edges)
     depends_on: List[str] = field(default_factory=list)
+    dependency_specs: List[TaskDependency] = field(default_factory=list)
     
     # Usage recipe reference (feeds USE gate)
     recipe: Optional[str] = None
@@ -207,14 +327,28 @@ class BlueprintItem:
     # Source tracking
     source_file: Optional[str] = None
     source_line: Optional[int] = None
+
+    def __post_init__(self):
+        """Normalize dependency data after initialization."""
+        self.depends_on, self.dependency_specs = _normalize_dependency_fields(
+            self.depends_on,
+            self.dependency_specs,
+        )
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
-        return to_dict(self)
+        data = to_dict(self)
+        data["dependency_specs"] = [spec.to_dict() for spec in self.dependency_specs]
+        return data
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "BlueprintItem":
         """Create BlueprintItem from dictionary."""
+        if "dependency_specs" in data:
+            data["dependency_specs"] = [
+                TaskDependency.from_dict(spec)
+                for spec in data["dependency_specs"]
+            ]
         return from_dict(cls, data)
     
     def priority_score(self) -> int:
@@ -321,9 +455,11 @@ class Task:
     parent_task_id: Optional[str] = None  # For hierarchical tasks
     tags: List[str] = field(default_factory=list)
     dependencies: List[str] = field(default_factory=list)  # Task IDs that must complete first
+    dependency_specs: List[TaskDependency] = field(default_factory=list)
     due_date: Optional[str] = None
     progress: int = 0  # 0-100 percentage
     metadata: Dict[str, Any] = field(default_factory=dict)
+    artifact_evidence: List[ArtifactEvidence] = field(default_factory=list)
     
     # Review and approval
     review_notes: Optional[str] = None
@@ -379,6 +515,11 @@ class Task:
             self.status = TaskStatus(self.status)
         if isinstance(self.phase, str):
             self.phase = TaskPhase(self.phase)
+        self.dependencies, self.dependency_specs = _normalize_dependency_fields(
+            self.dependencies,
+            self.dependency_specs,
+        )
+        self.artifact_evidence = _normalize_artifact_evidence(self.artifact_evidence)
     
     def can_transition_to(self, new_status: TaskStatus) -> bool:
         """Check if transition to new status is valid."""
@@ -410,10 +551,15 @@ class Task:
         elif new_status == TaskStatus.FAILED:
             # Keep existing progress
             pass
-        elif new_status == TaskStatus.ACTIVE and old_status == TaskStatus.COMPLETED:
-            # Reopening task - reset progress if desired
-            if self.progress == 100:
+        elif new_status == TaskStatus.ACTIVE:
+            if old_status == TaskStatus.COMPLETED and self.progress == 100:
                 self.progress = 90  # Keep most progress but indicate not complete
+
+            # Reopening means the task is schedulable again, so it cannot stay in DONE.
+            # Leaving ACTIVE + DONE around creates a fake "ready but already finished" state that breaks the ITUV contract.
+            if self.phase == TaskPhase.DONE:
+                self.phase = TaskPhase.PENDING
+                self.phase_started_at = datetime.utcnow().isoformat()
         
         return True
     
@@ -425,6 +571,16 @@ class Task:
 
         if self.status == TaskStatus.ACTIVE:
             self.transition_to(TaskStatus.RUNNING, reason="Starting execution")
+
+        if self.status == TaskStatus.RUNNING and self.phase in {
+            TaskPhase.PENDING,
+            TaskPhase.DONE,
+            TaskPhase.BLOCKED,
+        }:
+            # Starting an execution attempt should always put the task back into a real execution phase.
+            # That keeps RUNNING aligned with IMPLEMENT/TEST/USE/VERIFY instead of preserving stale non-executing phases.
+            self.phase = TaskPhase.IMPLEMENT
+            self.phase_started_at = datetime.utcnow().isoformat()
         
         # Create execution record
         record = ExecutionRecord(
@@ -466,13 +622,22 @@ class Task:
         # Update task status based on result
         if result == ExecutionResult.SUCCESS:
             if self.status == TaskStatus.RUNNING:
-                self.transition_to(TaskStatus.COMPLETED, reason="Execution successful")
+                self.phase = TaskPhase.DONE
+                self.phase_started_at = datetime.utcnow().isoformat()
+                self.transition_to(TaskStatus.PENDING_REVIEW, reason="Execution successful; pending review")
         elif result == ExecutionResult.FAILURE:
             if self.status == TaskStatus.RUNNING:
+                # A failed retry must not inherit DONE from an earlier successful attempt.
+                # Resetting back to IMPLEMENT preserves the invariant that DONE only pairs with review-ready or completed states.
+                if self.phase == TaskPhase.DONE:
+                    self.phase = TaskPhase.IMPLEMENT
+                    self.phase_started_at = datetime.utcnow().isoformat()
                 self.transition_to(TaskStatus.FAILED, reason="Execution failed")
     
     def mark_pending_review(self, notes: str, reviewer: Optional[str] = None) -> None:
         """Mark task as pending human review."""
+        self.phase = TaskPhase.DONE
+        self.phase_started_at = datetime.utcnow().isoformat()
         self.transition_to(TaskStatus.PENDING_REVIEW, reason="Pending review")
         self.review_notes = notes
         if reviewer:
@@ -481,6 +646,9 @@ class Task:
     
     def approve(self, reviewer: str, notes: Optional[str] = None) -> None:
         """Approve task completion."""
+        if self.phase != TaskPhase.DONE:
+            self.phase = TaskPhase.DONE
+            self.phase_started_at = datetime.utcnow().isoformat()
         self.transition_to(TaskStatus.COMPLETED, reason="Approved by reviewer", user_id=reviewer)
         self.reviewed_by = reviewer
         self.reviewed_at = datetime.utcnow().isoformat()
@@ -544,6 +712,8 @@ class Task:
         data = to_dict(self)
         data['status'] = self.status.value
         data['phase'] = self.phase.value
+        data['dependency_specs'] = [spec.to_dict() for spec in self.dependency_specs]
+        data['artifact_evidence'] = [artifact.to_dict() for artifact in self.artifact_evidence]
         data['execution_history'] = [r.to_dict() for r in self.execution_history]
         data['transition_history'] = [t.to_dict() for t in self.transition_history]
         return data
@@ -558,6 +728,17 @@ class Task:
         # Handle phase conversion
         if 'phase' in data:
             data['phase'] = TaskPhase(data['phase'])
+
+        # Handle dependency specs
+        if 'dependency_specs' in data:
+            data['dependency_specs'] = [
+                TaskDependency.from_dict(spec) for spec in data['dependency_specs']
+            ]
+        if 'artifact_evidence' in data:
+            data['artifact_evidence'] = [
+                ArtifactEvidence.from_dict(artifact)
+                for artifact in data['artifact_evidence']
+            ]
         
         # Handle execution history
         if 'execution_history' in data:
