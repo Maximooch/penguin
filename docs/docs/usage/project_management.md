@@ -11,7 +11,7 @@ The project management system offers:
 - **Real-time status tracking** with automatic checkpointing
 - **Resource constraints** for budget and time management
 - **EventBus integration** for real-time updates across CLI and web interfaces
-- **Dual sync/async APIs** for flexible integration
+- **CLI, web/API, and Python surfaces** for interacting with the same underlying project/task runtime
 
 ## Core Concepts
 
@@ -34,11 +34,11 @@ Tasks are individual work items with:
 
 ### Dependencies
 Tasks can depend on other tasks with:
-- **Blocking dependencies** - task cannot start until dependencies complete
-- **Soft dependencies** - preferences for execution order
-- **Cross-project dependencies** - tasks can depend on tasks in other projects
+- **Completion-required dependencies** - the default scheduling gate
+- **Typed dependency policies** - Blueprint-driven dependency specs can express stricter semantics such as `artifact_ready`
+- **Structured Blueprint diagnostics** - missing dependencies, duplicate IDs, missing acceptance criteria, and cycles are now surfaced explicitly during Blueprint parse/lint flows
 
-## CLI Usage (Status as of v0.1.x)
+## CLI Usage (Current Public Surface)
 
 ### Implemented Commands
 
@@ -74,154 +74,53 @@ Task status filters are case-insensitive and follow the current lifecycle values
 
 ---
 
-### Blueprint Commands
 
-Blueprints enable spec-driven development where documentation drives task creation:
+### Blueprint / orchestration notes
 
-```bash
-# Sync a blueprint file to create/update tasks
-/blueprint sync context/specs/auth-system.md [project_id]
+Blueprint parsing, dependency DAG construction, diagnostics, recipes, and ITUV orchestration exist in the backend/runtime, but they are **not all exposed as stable first-class CLI commands yet**.
 
-# View blueprint sync status
-/blueprint status <project_id>
-```
+Current truth:
+- Blueprint import/sync and dependency-policy support are runtime/backend capabilities.
+- Structured diagnostics exist for duplicate task IDs, missing dependencies, cycles, missing acceptance criteria, and related authoring issues.
+- Public CLI exposure is intentionally narrower than the backend capability set.
 
-### DAG and Dependency Commands
-
-When tasks are created from blueprints, they form a dependency graph (DAG):
-
-```bash
-# View task dependencies
-/task deps <task_id>
-
-# Export dependency graph (DOT format for Graphviz)
-/task graph <project_id>
-
-# List tasks ready to execute (no pending dependencies)
-/task ready <project_id>
-
-# Get execution frontier (next tasks based on tie-breakers)
-/task frontier <project_id>
-```
-
-### Workflow Commands (ITUV Orchestration)
-
-Execute tasks through the ITUV (Implement, Test, Use, Verify) lifecycle:
-
-```bash
-# Start ITUV workflow for a task
-/workflow start <task_id>
-
-# Check workflow status
-/workflow status <workflow_id>
-
-# Control workflows
-/workflow pause <workflow_id>
-/workflow resume <workflow_id>
-/workflow cancel <workflow_id>
-
-# List workflows
-/workflow list [project_id]
-```
-
-### Planned Extensions (not yet implemented)
-These commands are design-level only.  Attempting to run them will produce a "No such command" error:
-
-* `penguin project show`, `project stats`, `project archive/restore`, export/import
-* `penguin project task update`, `task show`, bulk ops
-* Memory/database/workspace sub-apps
-* Advanced filters (`--tree`, etc.)
-
-Refer to the roadmap for progress.
+Treat older examples of `/blueprint`, `/task graph`, or `/workflow ...` commands as design/history material unless they are explicitly listed in the implemented CLI section above.
 
 ## Python API
 
 ### Basic Project Management
 ```python
-from penguin.project import ProjectManager, TaskStatus
+from pathlib import Path
 
-# Initialize manager
-pm = ProjectManager()
+from penguin.project.manager import ProjectManager
+from penguin.project.models import TaskStatus
 
-# Create project
+workspace = Path("./penguin-workspace")
+pm = ProjectManager(workspace)
+
 project = pm.create_project(
     name="Web Application",
     description="Full-stack web app",
-    workspace="./webapp"
 )
 
-# Create tasks
-task1 = pm.create_task(
-    project_id=project.id,
+task = pm.create_task(
     title="Setup FastAPI backend",
-    description="Initialize FastAPI project with basic structure"
-)
-
-task2 = pm.create_task(
+    description="Initialize FastAPI project with basic structure",
     project_id=project.id,
-    title="Create React frontend",
-    description="Initialize React app with TypeScript",
-    depends_on=[task1.id]  # Depends on backend setup
+    dependencies=[],
+    acceptance_criteria=["Backend scaffold exists"],
 )
 
-# List projects and tasks
 projects = pm.list_projects()
 tasks = pm.list_tasks(project_id=project.id)
-```
-
-### Advanced Task Management
-```python
-from penguin.project import TaskPriority, ResourceConstraints
-
-# Create task with constraints
-task = pm.create_task(
-    project_id=project.id,
-    title="Generate API documentation",
-    description="Create comprehensive API docs",
-    priority=TaskPriority.HIGH,
-    resource_constraints=ResourceConstraints(
-        max_output_tokens=15000,
-        max_duration_minutes=120,
-        allowed_tools=["file_operations", "web_search"]
-    )
-)
-
-# Update task status
 pm.update_task_status(task.id, TaskStatus.ACTIVE)
-
-# Add execution record
-from penguin.project import ExecutionRecord
-record = ExecutionRecord(
-    task_id=task.id,
-    agent_id="gpt-4",
-    tokens_used=1200,
-    duration_seconds=45,
-    status=TaskStatus.COMPLETED,
-    output="API documentation generated successfully"
-)
-pm.add_execution_record(record)
 ```
 
-### Async API
-```python
-import asyncio
-from penguin.project import AsyncProjectManager
-
-async def main():
-    apm = AsyncProjectManager()
-    
-    # All operations available as async
-    project = await apm.create_project("Async Project")
-    tasks = await apm.list_tasks(project_id=project.id)
-    
-    # Batch operations
-    await apm.bulk_update_tasks(
-        task_ids=[1, 2, 3],
-        status=TaskStatus.COMPLETED
-    )
-
-asyncio.run(main())
-```
+### Notes on current Python surface truth
+- `ProjectManager` is the real project/task entry point documented today.
+- Project workspaces are managed under the manager workspace root; `create_project(...)` does **not** currently accept a separate `workspace=` keyword.
+- There is no public `AsyncProjectManager`, `TaskManager`, or `AgentMatcher` API shipped today.
+- Dependency-policy semantics, Blueprint diagnostics, recipes, and clarification-aware task execution exist in the runtime/backend, but the broader Python embedding surface still needs its own dedicated refresh pass.
 
 ## Web/API Interface
 
@@ -247,268 +146,30 @@ The web/API surface is still being audited, but it now reflects current runtime 
 
 ## Advanced Features
 
-### Automated Task Execution
+### Clarification-aware task execution
 ```python
-from penguin import PenguinAgent
-from penguin.project import TaskManager
+from penguin.web.app import PenguinAPI
 
-# Create agent and task manager
-agent = PenguinAgent()
-tm = TaskManager()
+api = PenguinAPI()
+result = await api.run_task("Implement auth flow")
 
-# Execute task with agent
-async def execute_task(task_id):
-    task = tm.get_task(task_id)
-    
-    # Start task
-    tm.update_task_status(task_id, TaskStatus.IN_PROGRESS)
-    
-    try:
-        # Run agent on task
-        result = await agent.run_task(
-            prompt=task.description,
-            max_iterations=task.resource_constraints.max_iterations
-        )
-        
-        # Record completion
-        tm.complete_task(task_id, result=result)
-        
-    except Exception as e:
-        tm.fail_task(task_id, error=str(e))
-
-# Execute pending tasks
-pending_tasks = tm.list_tasks(status=TaskStatus.PENDING)
-for task in pending_tasks:
-    await execute_task(task.id)
+if result.get("status") == "waiting_input":
+    resumed = await api.resume_with_clarification(
+        task_id=result["task_id"],
+        answer="Use rotating refresh tokens",
+        answered_by="human",
+    )
 ```
 
-### Event-Driven Architecture
-```python
-from penguin.project import EventBus, TaskEvent
+This Python embedding surface is usable, but it still has a dedicated follow-up plan because it has not received the same depth of audit/ergonomics cleanup as the CLI and web/API surfaces.
 
-# Subscribe to task events
-def on_task_completed(event: TaskEvent):
-    print(f"Task {event.task_id} completed: {event.data}")
-
-EventBus.subscribe("task.completed", on_task_completed)
-
-# Custom event handlers
-@EventBus.handler("task.started")
-async def send_notification(event):
-    # Send Slack notification, update external systems, etc.
-    pass
-```
-
-### Project Templates
-```yaml
-# project-template.yml
-name: "Web Application Template"
-description: "Standard full-stack web application"
-
-tasks:
-  - title: "Project Setup"
-    description: "Initialize project structure and dependencies"
-    subtasks:
-      - "Create repository"
-      - "Setup CI/CD pipeline"
-      - "Configure development environment"
-  
-  - title: "Backend Development"
-    description: "Implement server-side functionality"
-    depends_on: ["Project Setup"]
-    subtasks:
-      - "Design database schema"
-      - "Implement API endpoints"
-      - "Add authentication"
-      - "Write unit tests"
-  
-  - title: "Frontend Development"
-    description: "Build user interface"
-    depends_on: ["Backend Development"]
-    subtasks:
-      - "Create React components"
-      - "Implement routing"
-      - "Add state management"
-      - "Style with CSS/Tailwind"
-
-constraints:
-  max_duration_days: 30
-  budget_tokens: 100000
-  allowed_tools: ["file_operations", "web_search", "code_execution"]
-```
-
-Load template:
-```bash
-penguin project create-from-template --template web-app-template.yml "My New Project"
-```
+### Additional notes
+Project templates, richer event-driven integrations, and other higher-level orchestration surfaces remain active design/runtime territory. Prefer the explicit CLI and web/API surfaces documented above when you need current public behavior.
 
 ## Database Schema
 
-The project management system uses SQLite with the following key tables:
-
-```sql
--- Projects table
-CREATE TABLE projects (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
-    description TEXT,
-    workspace_path TEXT,
-    status TEXT DEFAULT 'active',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Tasks table
-CREATE TABLE tasks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id INTEGER REFERENCES projects(id),
-    parent_task_id INTEGER REFERENCES tasks(id),
-    title TEXT NOT NULL,
-    description TEXT,
-    status TEXT DEFAULT 'pending',
-    priority TEXT DEFAULT 'medium',
-    assigned_to TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Task dependencies
-CREATE TABLE task_dependencies (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id INTEGER REFERENCES tasks(id),
-    depends_on_task_id INTEGER REFERENCES tasks(id),
-    dependency_type TEXT DEFAULT 'blocking',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Execution records
-CREATE TABLE execution_records (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id INTEGER REFERENCES tasks(id),
-    agent_id TEXT,
-    status TEXT,
-    tokens_used INTEGER,
-    duration_seconds INTEGER,
-    started_at TIMESTAMP,
-    completed_at TIMESTAMP,
-    output TEXT,
-    error_message TEXT
-);
-```
+The project/task storage layer is SQLite-backed, but the exact schema is an implementation detail and may evolve. Prefer the Python and CLI/web surfaces documented above over relying on copied table layouts from older docs.
 
 ## Performance and Scaling
 
-### Database Optimization
-```yaml
-# config.yml
-project:
-  storage:
-    # Enable WAL mode for better concurrency
-    journal_mode: WAL
-    
-    # Optimize for read-heavy workloads
-    synchronous: NORMAL
-    cache_size: 10000
-    
-    # Connection pooling
-    max_connections: 20
-    timeout: 30
-```
-
-### Batch Operations
-```python
-# Efficient bulk task creation
-tasks_data = [
-    {"title": f"Task {i}", "project_id": project_id}
-    for i in range(100)
-]
-pm.bulk_create_tasks(tasks_data)
-
-# Batch status updates
-pm.bulk_update_task_status(
-    task_ids=list(range(1, 101)),
-    status=TaskStatus.COMPLETED
-)
-```
-
-### Memory Management
-```python
-# Use pagination for large datasets
-tasks = pm.list_tasks(
-    project_id=project_id,
-    limit=50,
-    offset=0
-)
-
-# Stream large queries
-for task in pm.stream_tasks(project_id=project_id):
-    process_task(task)
-```
-
-## Best Practices
-
-### Project Organization
-1. **Use clear, descriptive names** for projects and tasks
-2. **Break large tasks into subtasks** for better tracking
-3. **Set realistic resource constraints** to prevent runaway execution
-4. **Use dependencies** to model real workflow constraints
-5. **Regular checkpointing** for long-running tasks
-
-### Task Design
-1. **Atomic tasks** that can be completed independently
-2. **Clear acceptance criteria** in task descriptions
-3. **Appropriate time/token budgets** based on complexity
-4. **Tool restrictions** to prevent unauthorized operations
-5. **Regular status updates** for monitoring progress
-
-### Error Handling
-```python
-from penguin.project import ProjectError, TaskError
-
-try:
-    project = pm.create_project("Test Project")
-except ProjectError as e:
-    logger.error(f"Failed to create project: {e}")
-    
-try:
-    task = pm.start_task(task_id)
-except TaskError as e:
-    logger.error(f"Cannot start task: {e}")
-```
-
-## Troubleshooting
-
-### Common Issues
-
-**Database locked errors:**
-```bash
-# Check for long-running transactions
-penguin project diagnose --check-locks
-
-# Force unlock (use carefully)
-penguin project unlock-database
-```
-
-**Performance issues:**
-```bash
-# Analyze database performance
-penguin project analyze --performance
-
-# Optimize database
-penguin project optimize-database
-
-# Check index usage
-penguin project explain-query "SELECT * FROM tasks WHERE status = 'pending'"
-```
-
-**Circular dependencies:**
-```bash
-# Detect circular dependencies
-penguin task validate-dependencies --all-projects
-
-# Visualize dependency graph
-penguin task graph --project "Web Application" --output deps.svg
-```
-
-For additional support, see the [API Reference](../api_reference/project_api.md) or [GitHub Issues](https://github.com/Maximooch/penguin/issues).
-
+Operational tuning details are still evolving. Treat older examples of WAL toggles, template loaders, or higher-level orchestration helpers as implementation notes rather than stable public APIs unless they are explicitly documented in the current CLI/web/Python sections above.

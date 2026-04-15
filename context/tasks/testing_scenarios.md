@@ -10,6 +10,8 @@ Penguin-mode/OpenCode-TUI workflows.
 - Secondary: inter-agent messaging/channels and delegation behavior.
 - Surfaces: ActionXML parser path, tool-calling path, and API/session event path.
 
+Clarification/task-orchestration scenarios live elsewhere. This document is intentionally about multi/sub-agent behavior, not the newer task clarification / dependency-policy / diagnostic flows.
+
 ## Canonical Tool Surface (Current)
 
 ### ActionXML tags (supported)

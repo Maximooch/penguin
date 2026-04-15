@@ -41,6 +41,14 @@ Key route groups:
 4. `/api/v1/chat/stream` – WebSocket for streaming chat responses
 5. `/api/v1/*` status/session endpoints for path, VCS, formatter, and LSP
 
+### Task / Clarification Surface Truth
+
+The task/project web surface is no longer just legacy CRUD sugar. Current behavior includes:
+- richer task payloads that expose lifecycle truth such as `status`, `phase`, dependencies, dependency specs, artifact evidence, recipe references, and clarification metadata
+- `POST /api/v1/tasks/{task_id}/execute` routing through `RunMode`, so non-terminal outcomes like `waiting_input` survive to clients
+- `POST /api/v1/tasks/{task_id}/clarification/resume` to answer the latest open clarification and resume execution
+- `GET /api/v1/events/sse` including clarification-related session status visibility for compatible clients
+
 For full path details, inspect the live Swagger page or read `penguin/penguin/web/routes.py`.
 
 > Example – list projects:

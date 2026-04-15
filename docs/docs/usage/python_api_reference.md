@@ -1,4 +1,4 @@
-# Penguin Python API Reference (v0.1.x)
+# Penguin Python API Reference
 
 This page documents the **public APIs that ship today**.  Anything not listed here is work-in-progress and tracked in the [future considerations](../advanced/future_considerations.md) roadmap.
 
@@ -28,6 +28,7 @@ print(agent.chat("Hello Penguin!"))
 | `penguin.agent.PenguinAgent` | ✅ | Synchronous wrapper around `PenguinCore` – chat, stream, run_task |
 | `penguin.agent.PenguinAgentAsync` | ✅ | Async variant with identical method names (returning coroutines) |
 | `penguin.project.manager.ProjectManager` | ✅ | SQLite-backed project CRUD and basic task helpers |
+| `penguin.web.app.PenguinAPI` | ✅ | Programmatic wrapper aligned with current RunMode/task clarification truth |
 | `penguin.core.PenguinCore` | ✅ | Low-level orchestrator (conversation, tools, run-mode) |
 | `penguin.tools.ToolManager` | ✅ | Runtime registry & execution of tools |
 
@@ -72,32 +73,58 @@ agent = await PenguinAgentAsync.create()
 
 ---
 
-## ProjectManager
-Basic project / task operations.  All methods are **sync and async** twins (`ProjectManager` / `AsyncProjectManager`).
+## PenguinAPI
 
 ```python
-from penguin.project import ProjectManager, TaskStatus
+from penguin.web.app import PenguinAPI
 
-pm = ProjectManager()
+api = PenguinAPI()
+```
+
+### Methods
+| Method | Description |
+|--------|-------------|
+| `chat(...) -> dict` | Chat through the same backend core used by the web surface. |
+| `run_task(task_description: str, max_iterations: int | None = None, project_id: str | None = None) -> dict` | Run a task through `RunMode`; non-terminal outcomes like `waiting_input` are preserved. |
+| `resume_with_clarification(task_id: str, answer: str, answered_by: str | None = None) -> dict` | Answer the latest open clarification and resume execution through `RunMode`. |
+
+This is the current lightweight Python embedding surface for clarification-aware task execution. A deeper audit/ergonomics pass is intentionally tracked separately because this surface is still thinner and less polished than the CLI and web/API paths.
+
+---
+
+## ProjectManager
+Basic project / task operations. `ProjectManager` is the current documented entry point; earlier references to `AsyncProjectManager` were premature and should not be treated as shipped public API.
+
+```python
+from pathlib import Path
+
+from penguin.project.manager import ProjectManager
+from penguin.project.models import TaskStatus
+
+pm = ProjectManager(Path("./penguin-workspace"))
 project = pm.create_project(name="Demo", description="Example project")
 print("Project id:", project.id)
 
 # Tasks
-task = pm.create_task(project_id=project.id, title="Initial research")
+task = pm.create_task(
+    title="Initial research",
+    description="Map the repository and identify entry points",
+    project_id=project.id,
+)
 pm.update_task_status(task.id, TaskStatus.ACTIVE)
 pm.update_task_status(task.id, TaskStatus.COMPLETED)
 ```
 
 Implemented high-level methods:
-* `create_project(name, description="")`
+* `create_project(name, description="", ...)`
 * `list_projects(status: str | None = None)`
 * `delete_project(project_id)`
-* `create_task(project_id, title, description="", parent_task_id=None, priority=1)`
+* `create_task(title, description, project_id=None, parent_task_id=None, priority=0, ...)`
 * `list_tasks(project_id: str | None = None, status: TaskStatus | None = None)`
 * `update_task_status(task_id, status: TaskStatus)`
 * `delete_task(task_id)`
 
-Anything else (dependency graphs, bulk updates, Gantt charts, etc.) is future work.
+Dependency graphs, Blueprint diagnostics, typed dependency policies, and clarification-aware execution exist deeper in the runtime/backend, but the Python library surface for them is intentionally narrower today. Broader library-surface polish is tracked separately.
 
 ---
 
@@ -138,7 +165,7 @@ def my_tool(**kwargs):
 ---
 
 ## Deprecated / Future APIs
-The following names appeared in earlier documentation but **do not exist in v0.1.x**.  They are tracked on the roadmap and should not be imported yet:
+The following names appeared in earlier documentation but **do not exist in the current public release**. They are tracked on the roadmap and should not be imported yet:
 
 * `BatchProcessor`
 * `PerformanceMonitor`

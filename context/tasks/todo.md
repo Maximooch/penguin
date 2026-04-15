@@ -16,11 +16,11 @@ These are still reasonable to finish inside the current PR because they are
 directly tied to the runtime refactor and would be redundant as a standalone PR.
 
 ### Category: Current PR / Docs Alignment
-- [ ] Update public docs for typed dependencies, diagnostics, and clarification handling
-- [ ] Review `context/process/blueprint.template.md` for typed dependency and diagnostics drift
-- [ ] Review `context/tasks/testing_scenarios.md` for stale scenarios after clarification, diagnostics, and dependency-policy changes
-- [ ] Final docs pass for README / architecture / surface docs so they match current branch truth
-- [ ] PR write-up: summarize what this branch fixed, what it verified, and what is explicitly deferred
+- [x] Update public docs for typed dependencies, diagnostics, and clarification handling
+- [x] Review `context/process/blueprint.template.md` for typed dependency and diagnostics drift
+- [x] Review `context/tasks/testing_scenarios.md` for stale scenarios after clarification, diagnostics, and dependency-policy changes
+- [x] Final docs pass for README / architecture / surface docs so they match current branch truth
+- [x] PR write-up: summarize what this branch fixed, what it verified, and what is explicitly deferred
 
 ## Follow-Up PRs
 
@@ -60,6 +60,23 @@ Reference:
 Reference:
 - `context/tasks/project-bootstrap-workflow.md`
 
+### Category: RunMode UX and Loop Architecture
+
+#### PR: RunMode Commands and Loop Ownership Audit
+- [ ] Audit `--run`, `--247`, and `--continuous` semantics for current truth and usability
+- [ ] Decide whether `--247` remains a public alias, hidden alias, or internal-only compatibility flag
+- [ ] Clarify no-task continuous mode behavior and shutdown/idle semantics
+- [ ] Review `RunMode.start(...)` vs `RunMode.start_continuous(...)` command affordances
+- [ ] Audit loop ownership boundaries between `RunMode` and `Engine`
+- [ ] Decide what should remain in `RunMode` versus what should be unified into engine loop configuration
+- [ ] Reduce duplicated or overlapping termination/progress concepts where safe
+- [ ] Add targeted docs/tests for the final command and loop contract
+
+Reference:
+- `penguin/run_mode.py`
+- `penguin/engine.py`
+- `penguin/cli/cli.py`
+
 ### Category: Verification Hardening
 
 #### PR: Reliability Pass 2
@@ -79,7 +96,8 @@ Reference:
 2. PenguinAPI Surface Refresh
 3. CLI Workspace Semantics and Ergonomics
 4. Project Bootstrap Workflow MVP
-5. Reliability Pass 2
+5. RunMode Commands and Loop Ownership Audit
+6. Reliability Pass 2
 
 ## Notes
 

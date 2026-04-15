@@ -332,6 +332,11 @@ ProjectManager:
   └── Event Integration (progress events)
 ```
 
+Current runtime truth also includes:
+- task lifecycle state split across `status` and `phase`
+- typed dependency policies / artifact evidence carried on task records where relevant
+- clarification-aware execution that can pause in `waiting_input` and resume through `RunMode`, web routes, or `PenguinAPI`
+
 **Task Execution Flow:**
 1. Task created with dependencies
 2. Resources allocated
