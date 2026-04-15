@@ -887,7 +887,63 @@ class OpenAIAdapter(BaseAdapter):
             if parts:
                 items.append({"type": "message", "role": role, "content": parts})
 
-        return items
+        return self._sanitize_codex_input_items(items)
+
+    def _sanitize_codex_input_items(
+        self, items: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Drop malformed replay items that Codex rejects.
+
+        Older transcripts can contain duplicate function-call records or function
+        calls whose tool outputs were truncated away. Keep only function calls
+        that have a matching output later in the replay stream, and drop orphaned
+        outputs that no longer have a call.
+        """
+
+        output_call_ids = {
+            str(item.get("call_id") or "").strip()
+            for item in items
+            if item.get("type") == "function_call_output"
+            and str(item.get("call_id") or "").strip()
+        }
+
+        kept_function_calls: set[str] = set()
+        sanitized: List[Dict[str, Any]] = []
+        dropped_function_calls = 0
+        dropped_outputs = 0
+
+        for item in items:
+            item_type = str(item.get("type") or "").strip()
+            call_id = str(item.get("call_id") or "").strip()
+
+            if item_type == "function_call":
+                if not call_id or call_id not in output_call_ids:
+                    dropped_function_calls += 1
+                    continue
+                if call_id in kept_function_calls:
+                    dropped_function_calls += 1
+                    continue
+                kept_function_calls.add(call_id)
+                sanitized.append(item)
+                continue
+
+            if item_type == "function_call_output":
+                if not call_id or call_id not in kept_function_calls:
+                    dropped_outputs += 1
+                    continue
+                sanitized.append(item)
+                continue
+
+            sanitized.append(item)
+
+        if dropped_function_calls or dropped_outputs:
+            logger.warning(
+                "Sanitized Codex replay items: dropped_function_calls=%s dropped_outputs=%s",
+                dropped_function_calls,
+                dropped_outputs,
+            )
+
+        return sanitized
 
     async def _create_oauth_codex_completion(
         self,

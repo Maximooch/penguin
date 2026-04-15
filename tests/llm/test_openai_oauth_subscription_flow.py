@@ -691,6 +691,137 @@ def test_codex_input_items_synthesize_function_call_from_tool_message_when_neede
     ]
 
 
+def test_codex_input_items_drop_orphaned_function_call_without_output() -> None:
+    model_config = ModelConfig(
+        model="gpt-5.4",
+        provider="openai",
+        client_preference="native",
+        api_key="sk-test",
+    )
+    adapter = OpenAIAdapter(model_config)
+
+    items = adapter._build_codex_input_items(
+        [
+            {
+                "role": "assistant",
+                "content": "Checking git state, then I'll write the roadmap file.",
+                "tool_calls": [
+                    {
+                        "id": "call_orphan",
+                        "type": "function",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": '{"path":"context/todo.md"}',
+                        },
+                    }
+                ],
+            }
+        ]
+    )
+
+    assert items == [
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "output_text",
+                    "text": "Checking git state, then I'll write the roadmap file.",
+                }
+            ],
+        }
+    ]
+
+
+def test_codex_input_items_drop_orphaned_function_call_output_without_call() -> None:
+    model_config = ModelConfig(
+        model="gpt-5.4",
+        provider="openai",
+        client_preference="native",
+        api_key="sk-test",
+    )
+    adapter = OpenAIAdapter(model_config)
+
+    items = adapter._build_codex_input_items(
+        [
+            {
+                "role": "tool",
+                "tool_call_id": "call_output_only",
+                "content": "ok",
+            }
+        ]
+    )
+
+    assert items == []
+
+
+def test_codex_input_items_drop_duplicate_function_call_ids() -> None:
+    model_config = ModelConfig(
+        model="gpt-5.4",
+        provider="openai",
+        client_preference="native",
+        api_key="sk-test",
+    )
+    adapter = OpenAIAdapter(model_config)
+
+    items = adapter._build_codex_input_items(
+        [
+            {
+                "role": "assistant",
+                "content": "First attempt.",
+                "tool_calls": [
+                    {
+                        "id": "call_dup",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path":"README.md"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": "Duplicate metadata from old session.",
+                "tool_calls": [
+                    {
+                        "id": "call_dup",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path":"README.md"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_dup",
+                "name": "read_file",
+                "tool_arguments": '{"path":"README.md"}',
+                "content": "README contents",
+            },
+        ]
+    )
+
+    assert (
+        items.count(
+            {
+                "type": "function_call",
+                "call_id": "call_dup",
+                "name": "read_file",
+                "arguments": '{"path":"README.md"}',
+            }
+        )
+        == 1
+    )
+    assert {
+        "type": "function_call_output",
+        "call_id": "call_dup",
+        "output": "README contents",
+    } in items
+
+
 @pytest.mark.asyncio
 async def test_oauth_request_refreshes_before_codex_call(
     monkeypatch: pytest.MonkeyPatch,
