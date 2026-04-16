@@ -45,27 +45,27 @@ Tasks can depend on other tasks with:
 #### Project
 ```bash
 # Create a project
-penguin project create "My Project" [--description/-d TEXT]
+penguin-cli project create "My Project" [--description/-d TEXT]
 
 # List projects
-penguin project list
+penguin-cli project list
 
 # Delete a project
-penguin project delete <PROJECT_ID> [--force/-f]
+penguin-cli project delete <PROJECT_ID> [--force/-f]
 ```
 
 #### Task (within a project)
 ```bash
 # Create a task
-penguin project task create <PROJECT_ID> "Task title" [--description/-d TEXT]
+penguin-cli project task create <PROJECT_ID> "Task title" [--description/-d TEXT]
 
 # List tasks
-penguin project task list [<PROJECT_ID>] [--status/-s STATUS]
+penguin-cli project task list [<PROJECT_ID>] [--status/-s STATUS]
 
 # Start / approve / delete
-penguin project task start <TASK_ID>      # moves task into the active state
-penguin project task complete <TASK_ID>   # approves a task that is pending review
-penguin project task delete <TASK_ID> [--force/-f]
+penguin-cli project task start <TASK_ID>      # moves task into the active state
+penguin-cli project task complete <TASK_ID>   # approves a task that is pending review
+penguin-cli project task delete <TASK_ID> [--force/-f]
 ```
 
 Task status filters are case-insensitive and follow the current lifecycle values (`active`, `running`, `pending_review`, `completed`, `cancelled`, `failed`, `archived`).

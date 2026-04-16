@@ -1,36 +1,49 @@
 # Penguin CLI – Command Reference (v0.6.x)
 
-Penguin’s CLI supports both traditional sub‑commands (via Typer) and rich in‑chat commands inside the interactive session. This page documents what’s currently implemented and commonly used.
+Penguin now exposes multiple terminal entrypoints on top of the same runtime:
+
+- `penguin` — default launcher for the interactive TUI
+- `ptui` / `penguin-tui` — explicit aliases for the same TUI runtime
+- `penguin-cli` — headless/scriptable CLI for prompts, config, projects, and automation
+
+This page documents the currently implemented command surface and calls out where older docs were too optimistic.
 
 ---
 
 ## Getting help
 ```bash
-# Global help
+# Default launcher help
 penguin --help
 
+# Headless CLI help
+penguin-cli --help
+
 # Help for a specific sub-command
-penguin project --help
-penguin project task --help
-penguin config --help
+penguin-cli project --help
+penguin-cli project task --help
+penguin-cli config --help
 ```
 
 ---
 
 ## Quick start
-### 1. Interactive chat (default)
+### 1. Interactive chat (default TUI)
 ```bash
 # Start an interactive chat session
 penguin
+
+# Equivalent explicit TUI aliases
+ptui
+penguin-tui
 ```
 
 ### 2. One-off prompts (non-interactive)
 ```bash
 # Ask a single question (prints assistant reply and exits)
-penguin -p "Explain async/await in Python"
+penguin-cli -p "Explain async/await in Python"
 
 # Read the prompt from stdin (use "-" as the placeholder)
-echo "Give me a limerick about penguins" | penguin -p -
+echo "Give me a limerick about penguins" | penguin-cli -p -
 ```
 
 The following global flags can be combined with either interactive or non-interactive mode:
@@ -50,47 +63,57 @@ The following global flags can be combined with either interactive or non-intera
 
 ---
 
-## Sub-commands (Typer)
+## Sub-commands (Typer / headless CLI)
+
+Most sub-commands are exposed through `penguin-cli`. If you are scripting Penguin, use that binary instead of assuming the interactive TUI launcher will behave like a classic CLI.
 
 ### `project`
 Project management helpers (backed by `ProjectManager`).
 
 | Command | Summary |
 |---------|---------|
-| `penguin project create <NAME> [--description/-d TEXT]` | Create a new project |
-| `penguin project list` | List existing projects |
-| `penguin project delete <PROJECT_ID> [--force/-f]` | Delete a project |
+| `penguin-cli project create <NAME> [--description/-d TEXT]` | Create a new project using Penguin's managed default workspace |
+| `penguin-cli project create <NAME> --workspace /exact/path` | Create a new project using the exact workspace path you provide |
+| `penguin-cli project list` | List existing projects |
+| `penguin-cli project delete <PROJECT_ID> [--force/-f]` | Delete a project |
+
+Workspace semantics for project creation:
+- `--workspace` uses the **exact provided path**. Penguin does not silently create a child directory under that path.
+- When `--workspace` is omitted, Penguin uses its managed default workspace path.
+- Project creation output distinguishes:
+  - `Workspace (explicit): ...`
+  - `Workspace (default): ...`
+  - `Execution root: ...`
 
 Tasks are namespaced under a project:
 
 | Command | Summary |
 |---------|---------|
-| `penguin project task create <PROJECT_ID> <TITLE>` | Create a task |
-| `penguin project task list [<PROJECT_ID>] [--status/-s STATUS]` | List tasks (optionally filtered) |
-| `penguin project task start <TASK_ID>` | Move task into the **active** state |
-| `penguin project task complete <TASK_ID>` | Approve a task that is **pending review** and mark it completed |
-| `penguin project task delete <TASK_ID> [--force/-f]` | Delete task |
+| `penguin-cli project task create <PROJECT_ID> <TITLE>` | Create a task |
+| `penguin-cli project task list [<PROJECT_ID>] [--status/-s STATUS]` | List tasks (optionally filtered) |
+| `penguin-cli project task start <TASK_ID>` | Move task into the **active** state |
+| `penguin-cli project task complete <TASK_ID>` | Approve a task that is **pending review** and mark it completed |
+| `penguin-cli project task delete <TASK_ID> [--force/-f]` | Delete task |
 
-Status filters are case-insensitive and use the current task lifecycle values: `active`, `running`, `pending_review`, `completed`, `cancelled`, `failed`, and `archived`.
+Status filters are case-insensitive and use the current task lifecycle values: `active`, `running`, `pending_review`, `completed`, `failed`, `blocked`, and `cancelled`.
 
 ### `config`
 Manage the Penguin configuration file and first-run setup wizard.
 
 | Command | What it does |
 |---------|--------------|
-| `penguin config setup`        | Run (or re-run) the interactive setup wizard |
-| `penguin config edit`         | Open the config file in your default editor |
-| `penguin config check`        | Validate that required keys are present |
-| `penguin config test-routing` | Debug provider/model routing logic |
-| `penguin config debug`        | Print an extended diagnostic report |
+| `penguin-cli config setup`        | Run (or re-run) the interactive setup wizard |
+| `penguin-cli config edit`         | Open the config file in your default editor |
+| `penguin-cli config check`        | Validate that required keys are present |
+| `penguin-cli config test-routing` | Debug provider/model routing logic |
+| `penguin-cli config debug`        | Print an extended diagnostic report |
 
 ### Developer utilities
 | Command | Purpose |
 |---------|---------|
-| `penguin perf-test [-i N]` | Benchmark startup time with and without *fast-startup* |
-| `penguin profile [-o FILE] [--view]` | Launch Penguin under `cProfile` and save results |
-| `penguin chat` | Explicit synonym for starting interactive chat (identical to running `penguin` with no arguments) |
-
+| `penguin-cli perf-test [-i N]` | Benchmark startup time with and without *fast-startup* |
+| `penguin-cli profile [-o FILE] [--view]` | Launch Penguin under `cProfile` and save results |
+| `penguin-cli chat` | Explicit synonym for starting interactive chat |
 ---
 
 ## In‑Chat Commands (Interactive Session)
@@ -161,22 +184,26 @@ That keeps the pause/resume loop visible instead of making the CLI look stuck.
 ## Examples
 ```bash
 # Create a project and a task, then start the task
-penguin project create "Demo" -d "Playground project"
+penguin-cli project create "Demo" -d "Playground project"
+
+# Create a project with an explicit exact-path workspace
+penguin-cli project create "Demo" --workspace /tmp/demo-workspace
 
 # List projects and copy the ID from the table
-penguin project list
+penguin-cli project list
 
-# Create and start a task (replace <PROJECT_ID> and <TASK_ID>)
-penguin project task create <PROJECT_ID> "Research llama models"
-penguin project task list <PROJECT_ID>
-penguin project task start <TASK_ID>
+# Create and start a task (replace <PROJECT_ID> and <TASK_ID>).
+# Task commands are namespaced under `project task`, not top-level `task`.
+penguin-cli project task create <PROJECT_ID> "Research llama models"
+penguin-cli project task list <PROJECT_ID>
+penguin-cli project task start <TASK_ID>
 ```
 
 ---
 
 ## Missing features
-Earlier versions of the docs referenced commands such as `penguin memory`, `penguin db`, advanced task dependency graphs, and full web-server management.  These features are **work-in-progress** and are **not** available in the current release.  Attempting to run them will result in a "No such command" error.
+Earlier versions of the docs referenced commands such as `penguin memory`, `penguin db`, advanced task dependency graphs, and full web-server management. These features are **work-in-progress** and are **not** available in the current release. Attempting to run them will result in a "No such command" error.
 ---
 
-*Last updated: November 16, 2025*  
+*Last updated: April 15, 2026*  
 If you find inaccuracies, please open an issue.
