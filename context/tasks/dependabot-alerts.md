@@ -4,13 +4,14 @@
 
 Snapshot captured from `gh api` output provided by the user.
 
-- Total alerts: 140
-- Severity split: 46 high, 80 medium, 14 low
-- Biggest blast radius:
-  - `docs/package-lock.json`: 52 alerts
-  - `docs/yarn.lock`: 52 alerts
+- Initial alert snapshot: 140
+- Current alert snapshot after desktop removal + docs lockfile normalization: ~80
+- Initial severity split: 46 high, 80 medium, 14 low
+- Biggest remaining blast radius:
+  - `docs/yarn.lock`: ~52 alerts
   - `penguin-tui/packages/web/package.json`: 12 alerts
-  - `penguin-tui/packages/desktop/src-tauri/Cargo.lock`: 8 alerts
+  - `examples/agent-visualizer-web/package-lock.json`: 5 alerts
+  - `penguin-tui/packages/opencode/package.json`: 4 alerts
 
 ## Strategy
 
