@@ -58,7 +58,7 @@ Penguin is a modular, event-driven AI software engineering agent that combines a
 
 **Interfaces:**
 - CLI: Typer + Rich + Questionary
-- TUI: Textual
+- TUI: `penguin-tui` sidecar / OpenCode-compatible terminal frontend
 - Web API: FastAPI + Uvicorn + WebSockets + Jinja2
 - Python Client: Direct library import
 
@@ -95,9 +95,9 @@ penguin/
 ├── tools/             # Tool registry and execution
 ├── llm/               # LLM adapters and streaming
 ├── multi/             # Multi-agent coordination
-├── cli/               # Command-line interface
+├── cli/               # Command-line interface and TUI launcher
 ├── web/               # Web API server
-└── tui/               # Terminal UI
+└── penguin-tui/       # OpenCode-derived TUI frontend sidecar
 ```
 
 ### 2. Event-Driven Communication
@@ -128,10 +128,11 @@ Tools and capabilities can be dynamically registered:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                         Interface Layer                              │
+│                         Interface Layer                            │
 ├────────────┬────────────┬────────────┬────────────┬────────────────┤
 │    CLI     │    TUI     │  Web API   │   Python   │   Dashboard    │
-│ (Typer)    │ (Textual)  │ (FastAPI)  │  Client    │   (Telemetry)  │
+│ (Typer)    │ (Launcher/ │ (FastAPI)  │  Client    │   (Telemetry)  │
+│            │ sidecar)   │            │            │                │
 └────────────┴────────────┴────────────┴────────────┴────────────────┘
                                 │
                                 ▼
@@ -320,9 +321,9 @@ APIClient creates stream
 Chunks flow through stream_callback
     ↓
 UI receives real-time updates via:
-  - WebSocket (Web API)
+  - WebSocket / SSE (Web API)
   - Console output (CLI)
-  - Event emission (TUI)
+  - OpenCode-compatible event bridge (`penguin-tui` via `penguin-web`)
     ↓
 Complete response assembled
     ↓
@@ -670,6 +671,18 @@ class ProtocolMessage:
 - Agent state transitions
 - Error rates and types
 
+
+### 4. UI Event Distribution
+
+**Purpose:** Route runtime output to the active frontend surfaces.
+
+**Subscribers:**
+- CLI: Console output
+- TUI: `penguin-tui` via OpenCode-compatible web/SSE events
+- Web: WebSocket/SSE clients
+- Dashboard: Telemetry consumers
+
+The active terminal UI path is the `penguin-tui/` launcher + sidecar flow, not the old in-process Textual UI. The legacy Textual prototype remains optional/deprecated compatibility surface only.
 ---
 
 ## Execution Model
@@ -799,23 +812,16 @@ FROM base as final
 - OpenAPI documentation
 - Embeddable `PenguinAPI` class
 
-### 3. CLI
+### 3. CLI and TUI Launcher
 
-**Typer + Rich:**
-- Interactive commands
+**Typer + Rich + launcher flow:**
+- Interactive/headless commands
 - Setup wizard
 - Progress bars and spinners
-- Colored output
-
-### 4. TUI
-
-**Textual:**
-- Terminal-based interface
-- Real-time updates
-- Keyboard navigation
-- Rich widgets
+- `penguin` / `ptui` / `penguin-tui` launcher path for the OpenCode-compatible terminal frontend
 
 ---
+
 
 ## Appendix
 
@@ -848,9 +854,9 @@ penguin/
 ├── tools/             # Tool registry and execution
 ├── llm/               # LLM adapters and streaming
 ├── multi/             # Multi-agent coordination
-├── cli/               # Command-line interface
+├── cli/               # Command-line interface and TUI launcher
 ├── web/               # Web API server
-├── tui/               # Terminal UI
+├── penguin-tui/       # OpenCode-derived TUI frontend sidecar
 ├── utils/             # Utilities
 └── context/           # Documentation and notes
 ```

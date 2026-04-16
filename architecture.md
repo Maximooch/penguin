@@ -26,31 +26,31 @@ Penguin is a sophisticated AI coding assistant built on a modular, event-driven 
 - **Multi-Agent Orchestration**: Support for multiple specialized agents working in coordination
 
 ## System Architecture
-
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         Interface Layer                              │
+┌────────────────────────────────────────────────────────────────────┐
+│                         Interface Layer                            │
 ├────────────┬────────────┬────────────┬────────────┬────────────────┤
 │    CLI     │    TUI     │  Web API   │   Python   │   Dashboard    │
-│ (Typer)    │ (Textual)  │ (FastAPI)  │  Client    │   (Telemetry)  │
+│ (Typer)    │ (Launcher/ │ (FastAPI)  │  Client    │   (Telemetry)  │
+│            │ sidecar)   │            │            │                │
 └────────────┴────────────┴────────────┴────────────┴────────────────┘
-                                │
+	                            │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                          PenguinCore                                │
-│  ┌──────────────────────────────────────────────────────────────┐  │
-│  │ • Event Bus & MessageBus                                     │  │
-│  │ • UI Event Emission                                          │  │
-│  │ • Progress Callbacks                                         │  │
-│  │ • Runtime Configuration                                      │  │
-│  └──────────────────────────────────────────────────────────────┘  │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │ • Event Bus & MessageBus                                     │   │
+│  │ • UI Event Emission                                          │   │
+│  │ • Progress Callbacks                                         │   │
+│  │ • Runtime Configuration                                      │   │
+│  └──────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────┘
                                 │
         ┌───────────────────────┼───────────────────────┐
         ▼                       ▼                       ▼
 ┌──────────────┐     ┌──────────────────┐     ┌──────────────────┐
 │    Engine    │     │  Conversation    │     │   Tool Manager   │
-│              │◄────┤    Manager       │────► │                  │
+│              │◄────┤    Manager       │────► │                 │
 │ • Run Loop   │     │ • Sessions       │     │ • Registry       │
 │ • Agents     │     │ • Context Window │     │ • Execution      │
 │ • Stop Conds │     │ • Checkpoints    │     │ • Plugin Loader  │
@@ -67,8 +67,8 @@ Penguin is a sophisticated AI coding assistant built on a modular, event-driven 
 └──────────────┘     └──────────────────┘     └──────────────────┘
         │
         ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                      LLM Adapters (llm/adapters/)                │
+┌────────────────────────────────────────────────────────────────┐
+│                      LLM Adapters (llm/adapters/)              │
 ├──────────┬──────────┬──────────┬──────────┬────────────────────┤
 │  OpenAI  │Anthropic │  Gemini  │  Ollama  │ LiteLLM/OpenRouter │
 └──────────┴──────────┴──────────┴──────────┴────────────────────┘
@@ -226,9 +226,9 @@ APIClient creates stream
 Chunks flow through stream_callback
     ↓
 UI receives real-time updates via:
-  - WebSocket (Web API)
+  - WebSocket / SSE (Web API)
   - Console output (CLI)
-  - Event emission (TUI)
+  - OpenCode-compatible event bridge (`penguin-tui` via `penguin-web`)
     ↓
 Complete response assembled
     ↓
@@ -564,10 +564,12 @@ Event Bus dispatch
     ↓
 UI Subscribers:
   - CLI: Console output
-  - TUI: Textual widgets
+  - TUI: `penguin-tui` via OpenCode-compatible web/SSE events
   - Web: WebSocket broadcast
   - Dashboard: Telemetry
 ```
+
+The current terminal UI path is the `penguin-tui/` sidecar and launcher flow, not the old in-process Textual UI. The legacy Textual prototype remains optional/deprecated compatibility surface only.
 
 ### 4. Web/API Surface Truth
 
@@ -580,6 +582,18 @@ The web/API surface is intentionally being brought back into alignment with back
 - The programmatic `PenguinAPI` wrapper is being kept aligned with the web routes so embedded callers and HTTP callers do not receive different lifecycle semantics.
 
 This matters because a technically working route that hides clarification, phase truth, or non-terminal outcomes is still a broken interface. The surface has to tell the same truth as the runtime or users end up debugging documentation-shaped lies.
+
+## TUI Runtime Notes
+
+The current TUI architecture is split across the Python runtime and the `penguin-tui/` sidecar:
+
+- `penguin` dispatches to the TUI launcher by default unless the invocation clearly targets headless CLI commands.
+- `ptui` and `penguin-tui` are direct aliases for the TUI launcher entrypoint.
+- In a source checkout, the launcher prefers local `penguin-tui/packages/opencode` sources.
+- Outside a source checkout, the launcher resolves or downloads a cached sidecar binary under `~/.cache/penguin/tui`.
+- The launcher talks to `penguin-web`, auto-starting a local server when needed.
+
+This matters because the TUI is no longer a Python widget tree embedded inside the runtime. It is a separate frontend path backed by the same Penguin web/core services.
 
 ## Execution Flow
 
