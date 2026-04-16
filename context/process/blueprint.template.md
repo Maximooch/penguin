@@ -97,7 +97,12 @@ Rules:
 2) Indent subtasks by two spaces beneath their parent; importer treats them as child tasks.
 3) Use one or more "Acceptance:" bullets under a task for criteria (feeds VERIFY gate).
 4) Use a "Depends:" bullet listing upstream task idents (comma-separated) for DAG edges.
-5) Use a "Recipe:" bullet to reference a usage recipe by name (feeds USE gate).
+5) If you need typed dependency behavior, add a `Dependency Specs:` subsection with one entry per dependency, e.g.:
+   - `- task_id: <KEY-1>`
+     `  policy: artifact_ready`
+     `  artifact_key: client_bundle`
+6) Use a "Recipe:" bullet to reference a usage recipe by name (feeds USE gate).
+7) Expect structured Blueprint diagnostics/linting to flag missing acceptance criteria, missing dependencies, duplicate task IDs, and dependency cycles.
 -->
 
 - [ ] <KEY-1> Short, actionable task title {estimate=2, priority=medium, labels=backend, effort=2, value=4}
@@ -110,6 +115,10 @@ Rules:
 - [ ] <KEY-2> Another task title {estimate=3, priority=high, labels=api,security, assignees=@you, agent_role=implementer, skills=python,fastapi}
   - Acceptance: ...
   - Depends: <KEY-1>
+  - Dependency Specs:
+    - task_id: <KEY-1>
+      policy: artifact_ready
+      artifact_key: auth_openapi
   - Recipe: auth-flow
   - Description: ...
   

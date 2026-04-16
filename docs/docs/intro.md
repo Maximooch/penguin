@@ -36,41 +36,46 @@ Welcome to the documentation for Penguin! Penguin v0.4.0 is a modular, extensibl
 
 ### Installation Options
 
-**Default Installation (includes CLI tools):**
+**Recommended Installation (default runtime):**
 ```bash
+uv tool install penguin-ai
+
+# Alternative
 pip install penguin-ai
 ```
 
-**With Web Interface:**
+**Compatibility aliases / optional extras:**
 ```bash
-pip install penguin-ai[web]
-```
-
-**Minimal Installation (library only):**
-```bash
-pip install penguin-ai[minimal]
+pip install "penguin-ai[web]"         # compatibility alias; base install already includes web runtime
+pip install "penguin-ai[tui]"         # compatibility alias; base install already includes TUI runtime
+pip install "penguin-ai[legacy_tui]"  # old Textual prototype / experimental UI
+pip install "penguin-ai[minimal]"     # library-only footprint
 ```
 
 ### Basic Usage
 
-**Command Line Interface:**
+**Terminal Interfaces:**
 ```bash
-# Interactive chat
+# Default terminal UI
 penguin
 
-# Direct commands
-penguin "Write a hello world script"
+# Explicit TUI aliases
+ptui
+penguin-tui
 
-# Project management
-penguin project create "My Project"
-penguin task create "Implement authentication"
+# Headless/scriptable CLI
+penguin-cli -p "Write a hello world script"
+
+# Project management via CLI
+penguin-cli project create "My Project"
+penguin-cli project task create <PROJECT_ID> "Implement authentication"
 ```
 
-Tip: Inside the interactive chat, type `/help` to see in‑chat commands for models, streaming, checkpoints, context files, and Run Mode. See also: Usage → CLI Commands.
+Tip: Inside the interactive chat, type `/help` to see in-chat commands for models, streaming, checkpoints, context files, and Run Mode. See also: Usage → CLI Commands.
 
 **Web Interface:**
 ```bash
-# Start web server (requires [web] extra)
+# Start web server (already included in the base install)
 penguin-web
 ```
 

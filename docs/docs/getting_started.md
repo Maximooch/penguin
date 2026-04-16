@@ -12,23 +12,29 @@ Welcome! This guide will get you up and running with Penguin v0.4.0, featuring a
 
 ### Core Installation
 ```bash
-pip install penguin-ai            # CLI + Python API
+uv tool install penguin-ai        # recommended: installs the main CLI/TUI entrypoints
+
+# Alternative: plain pip still works
+pip install penguin-ai            # Python package + CLI/TUI + web runtime
 ```
 
 ### Feature-Rich Installation
 ```bash
-pip install "penguin-ai[full]"   # All features including web interface
+pip install "penguin-ai[all]"    # Optional extras for memory/browser/legacy UI features
 ```
 
 ### Installation Options
-* `pip install "penguin-ai[web]"` – adds FastAPI server with web interface
+* `pip install "penguin-ai[web]"` – compatibility alias; base install already includes the web runtime
+* `pip install "penguin-ai[tui]"` – compatibility alias; base install already includes the OpenCode-style TUI launcher
+* `pip install "penguin-ai[legacy_tui]"` – installs the older Textual prototype / experimental UI
 * `pip install "penguin-ai[minimal]"` – lightweight library-only installation
 * `pip install "penguin-ai[dev]"` – development dependencies for contributors
 
 ### What's Included
 
 **Core Features:**
-- Enhanced CLI interface with TUI (`penguin` command)
+- Interactive TUI launcher via `penguin`, `ptui`, or `penguin-tui`
+- Headless/scriptable CLI via `penguin-cli`
 - Python API for programmatic use
 - Advanced conversation management with checkpoints
 - Real-time streaming with event-driven architecture
@@ -36,23 +42,19 @@ pip install "penguin-ai[full]"   # All features including web interface
 - Enhanced token management with category-based budgets
 - Runtime model switching capabilities
 
-**Optional Features:**
-- Web interface with REST API (`penguin-web`)
-- Performance monitoring and diagnostics
-- Comprehensive error handling and recovery
-- Fast startup optimization
-
 ## 2. Verify Installation
 ```bash
 penguin --version     # prints version string
-penguin --help        # shows CLI options
+penguin --help        # shows the default launcher options
+ptui --help           # direct TUI alias
+penguin-cli --help    # headless/scriptable CLI entrypoint
 ```
 
 ### Check Configuration
 ```bash
-penguin config check  # validates required keys are present
-penguin config debug  # prints extended diagnostic info
-penguin config edit   # open the config file in your editor
+penguin-cli config check  # validates required keys are present
+penguin config debug      # prints extended diagnostic info
+penguin config edit       # open the config file in your editor
 ```
 
 ---
@@ -61,14 +63,16 @@ penguin config edit   # open the config file in your editor
 
 ### Enhanced Interactive Chat
 ```bash
-penguin               # opens advanced TUI with real-time streaming
-penguin --no-tui      # CLI mode without graphical interface
+penguin               # launches the default terminal UI
+ptui                  # same TUI, explicit alias
+penguin-tui           # same TUI, explicit alias matching the split runtime naming
 ```
 
-### Streaming and Checkpoint Features
+Use `penguin-cli` for non-interactive automation and scripts:
+
 ```bash
-penguin -p "Help me debug this Python function"  # one-off prompt
-# penguin chat                                     # explicit synonym for interactive chat
+penguin-cli -p "Help me debug this Python function"  # one-off prompt
+penguin-cli chat                                     # explicit synonym for interactive chat
 ```
 
 <!-- TODO: Checkpointing command support -->
@@ -79,24 +83,32 @@ Model subcommands are not yet exposed via CLI. Use defaults in config for now.
 ### Advanced Project & Task Management
 ```bash
 # Create a project
-penguin project create "AI Assistant Demo" -d "Demonstrating new features"
+penguin-cli project create "AI Assistant Demo" -d "Demonstrating new features"
 
 # List projects (note the ID from the table)
-penguin project list
+penguin-cli project list
 
 # Create a task for that project (replace <PROJECT_ID>)
-penguin project task create <PROJECT_ID> "Implement streaming chat"
+penguin-cli project task create <PROJECT_ID> "Implement streaming chat"
 
 # View tasks (optionally filtered by project)
-penguin project task list [<PROJECT_ID>]
+penguin-cli project task list [<PROJECT_ID>]
 ```
 
 ### Enhanced Web Interface (optional)
 ```bash
-pip install "penguin-ai[web]"
-penguin-web   # Enhanced web interface at http://localhost:8000
+pip install "penguin-ai[web]"   # compatibility alias; base install already includes this runtime
+penguin-web                      # Enhanced web interface at http://localhost:8000
 # API docs at http://localhost:8000/api/docs
 ```
+
+### TUI Runtime Notes
+
+The terminal UI now lives in the OpenCode-derived `penguin-tui/` workspace inside this repository.
+
+- In a source checkout, Penguin prefers local `penguin-tui/packages/opencode` sources.
+- Outside a source checkout, it can bootstrap a cached sidecar binary under `~/.cache/penguin/tui`.
+- Advanced overrides: `PENGUIN_OPENCODE_DIR`, `PENGUIN_TUI_BIN_PATH`, and `PENGUIN_TUI_RELEASE_URL`.
 
 ### Programmatic API with Streaming
 ```python
@@ -221,15 +233,15 @@ memory:
 - [Event System](advanced/events.md) - Working with the event-driven architecture
 
 ### Troubleshooting
-
 **Common Issues:**
 
 1. **Command not found**: Ensure you installed with `pip install penguin-ai`, not the minimal option
-2. **Web interface not starting**: Install with `pip install "penguin-ai[web]"` and check port 8000
+2. **Web interface not starting**: Base install already includes the runtime; `pip install "penguin-ai[web]"` is only a compatibility alias. Then check port 8000.
 3. **API errors**: Verify API keys and use `penguin config debug` for configuration issues
 4. **Streaming not working**: Ensure your model supports streaming and check client preference settings
 5. **Checkpoint errors**: Check disk space and file permissions for the workspace directory
 6. **Performance issues**: Try `fast_startup=true` in config or use `penguin profile` / `penguin perf-test` for profiling
+7. **TUI bootstrap problems**: If sidecar download or source auto-detection fails, set `PENGUIN_OPENCODE_DIR` or `PENGUIN_TUI_BIN_PATH` explicitly.
 
 ### Getting Help
 

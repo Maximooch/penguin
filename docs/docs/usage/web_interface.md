@@ -1,12 +1,18 @@
-# Web Interface / API Server Guide (v0.1.x)
+# Web Interface / API Server Guide (v0.6.x)
 
-Penguin currently includes a **FastAPI-based HTTP server** that exposes core functionality (projects, tasks, chat) as a REST/WS API.  A rich graphical UI is planned (see [future considerations](../advanced/future_considerations.md)), but not available yet.
+Penguin ships with a **FastAPI-based HTTP server** that exposes core functionality (projects, tasks, chat, SSE/WS streaming) as a REST/WS API. That server is also the backend surface used by the OpenCode-derived terminal UI that now lives in the repository's `penguin-tui/` workspace.
 
 ---
 
 ## Installation
 ```bash
-# Install Penguin with web extras
+# Recommended: base install already includes the web runtime
+uv tool install penguin-ai
+
+# Alternative: plain pip
+pip install penguin-ai
+
+# Compatibility alias for older install docs
 pip install "penguin-ai[web]"
 ```
 
@@ -19,7 +25,7 @@ penguin-web
 penguin-web --host 0.0.0.0 --port 9000
 ```
 
-The command is a thin wrapper around `penguin.web.app:app` (FastAPI) using `uvicorn`.
+The command is a thin wrapper around `penguin.web.server:main`, which serves the FastAPI app used by both API consumers and the modern TUI bridge.
 
 Optional flags:
 | Flag | Description |
@@ -40,6 +46,14 @@ Key route groups:
 3. `/api/v1/chat/message` – Chat endpoint (POST message, returns assistant reply)
 4. `/api/v1/chat/stream` – WebSocket for streaming chat responses
 5. `/api/v1/*` status/session endpoints for path, VCS, formatter, and LSP
+
+### Task / Clarification Surface Truth
+
+The task/project web surface is no longer just legacy CRUD sugar. Current behavior includes:
+- richer task payloads that expose lifecycle truth such as `status`, `phase`, dependencies, dependency specs, artifact evidence, recipe references, and clarification metadata
+- `POST /api/v1/tasks/{task_id}/execute` routing through `RunMode`, so non-terminal outcomes like `waiting_input` survive to clients
+- `POST /api/v1/tasks/{task_id}/clarification/resume` to answer the latest open clarification and resume execution
+- `GET /api/v1/events/sse` including clarification-related session status visibility for compatible clients
 
 For full path details, inspect the live Swagger page or read `penguin/penguin/web/routes.py`.
 
