@@ -234,12 +234,12 @@ Read more:
 
 ## Version Highlights
 
-### v0.6.2.2
+### v0.6.3
 
-- Canonical file editing now centers on `read_file`, `write_file`, `patch_file`, and `patch_files`.
-- JSON-first edit payloads, generated prompt docs, and centralized compatibility aliases keep parser, tools, and UI metadata aligned.
-- File edit validation, multifile permissions/rollback, overwrite behavior, and diff output consistency are materially more reliable.
-- OpenCode-compatible Penguin TUI flow remains backed by Penguin web/core.
+- Expanded native OpenAI / Codex integration, including stronger Responses API handling and OAuth-backed Codex response support.
+- Improved OpenAI-compatible provider support and model/runtime normalization for native and gateway flows.
+- Better handling of tool-only OpenAI/Codex turns and Responses-style tool calls in the runtime loop.
+- Continued runtime/docs alignment work across task clarification, dependency-policy, and public surface verification.
 
 ## Documentation
 
