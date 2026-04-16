@@ -39,17 +39,10 @@
           opencode = pkgs.callPackage ./nix/opencode.nix {
             inherit node_modules;
           };
-          desktop = pkgs.callPackage ./nix/desktop.nix {
-            inherit opencode;
-          };
         in
         {
           default = opencode;
-          inherit opencode desktop;
-          # Updater derivation with fakeHash - build fails and reveals correct hash
-          node_modules_updater = node_modules.override {
-            hash = pkgs.lib.fakeHash;
-          };
+          inherit opencode;
         }
       );
     };

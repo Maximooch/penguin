@@ -8,20 +8,18 @@ Prevent blocking storage writes and runaway persisted size
 
 Large payloads (base64 images, terminal buffers) are currently persisted inside key-value stores:
 
-- web: `localStorage` (sync, blocks the main thread)
-- desktop: Tauri Store-backed async storage files (still expensive when values are huge)
+- app/web: `localStorage` (sync, blocks the main thread)
 
-We’ll introduce size-aware persistence policies plus a dedicated “blob store” for large/binary data (IndexedDB on web; separate files on desktop). Prompt/history state will persist only lightweight references to blobs and load them on demand.
+We’ll introduce size-aware persistence policies plus a dedicated blob storage strategy for large/binary data. Prompt/history state will persist only lightweight references to blobs and load them on demand.
 
 ---
 
 ### Goals
 
 - Stop persisting image `dataUrl` blobs inside web `localStorage`
-- Stop persisting image `dataUrl` blobs inside desktop store `.dat` files
 - Store image payloads out-of-band (blob store) and load lazily when needed (e.g. when restoring a history item)
 - Prevent terminal buffer persistence from exceeding safe size limits
-- Keep persistence behavior predictable across web (sync) and desktop (async)
+- Keep persistence behavior predictable across app/web surfaces
 - Provide escape hatches via flags and per-key size caps
 
 ---
@@ -36,8 +34,7 @@ We’ll introduce size-aware persistence policies plus a dedicated “blob store
 
 ### Current state
 
-- `packages/app/src/utils/persist.ts` uses `localStorage` (sync) on web and async storage only on desktop.
-- Desktop storage is implemented via `@tauri-apps/plugin-store` and writes to named `.dat` files (see `packages/desktop/src/index.tsx`). Large values bloat these files and increase flush costs.
+- `packages/app/src/utils/persist.ts` uses `localStorage` (sync) for persisted state.
 - Prompt history persists under `Persist.global("prompt-history")` (`packages/app/src/components/prompt-input.tsx`) and can include image parts (`dataUrl`).
 - Prompt draft persistence uses `packages/app/src/context/prompt.tsx` and can also include image parts (`dataUrl`).
 - Terminal buffer is serialized in `packages/app/src/components/terminal.tsx` and persisted in `packages/app/src/context/terminal.tsx`.
@@ -55,17 +52,13 @@ In `packages/app/src/utils/persist.ts`, add policy hooks for each persisted key:
 - `transformIn` / `transformOut` for lossy persistence (e.g. strip or refactor fields)
 - `onOversize` strategy: `drop`, `truncate`, or `migrateToBlobRef`
 
-This protects both:
-
-- web (`localStorage` is sync)
-- desktop (async, but still expensive to store/flush giant values)
+This protects app/web persistence paths where `localStorage` is synchronous and expensive for oversized values.
 
 #### 2) Add a dedicated blob store for large data
 
 Introduce a small blob-store abstraction used by the app layer:
 
-- web backend: IndexedDB (store `Blob` values keyed by `id`)
-- desktop backend: filesystem directory under the app data directory (store one file per blob)
+- backend: IndexedDB or another non-`localStorage` store keyed by blob `id`
 
 Store _references_ to blobs inside the persisted JSON instead of the blob contents.
 
@@ -108,9 +101,7 @@ Persistence rules:
   - `put(id, bytes|Blob)`
   - `get(id)`
   - `remove(id)`
-- Extend the `Platform` interface (`packages/app/src/context/platform.tsx`) with optional blob methods, or provide a default web implementation and override on desktop:
-  - web: implement via IndexedDB
-  - desktop: implement via filesystem files (requires adding a Tauri fs plugin or `invoke` wrappers)
+- Extend the `Platform` interface (`packages/app/src/context/platform.tsx`) with optional blob methods, or provide a default implementation for current app/web surfaces.
 
 3. Update prompt history + prompt draft persistence to use blob refs
 
@@ -119,7 +110,7 @@ Persistence rules:
   - Prompt draft: `packages/app/src/context/prompt.tsx`
 - Ensure “apply history prompt” hydrates image blobs only when applying the prompt (not during background load).
 
-4. One-time migration for existing persisted base64 images
+4. Add migration for legacy persisted entries
 
 - On read, detect legacy persisted image parts that include `dataUrl`.
 - If a `dataUrl` is found:
@@ -153,14 +144,12 @@ Start with TTL-based cleanup (simpler, fewer cross-store dependencies), then con
 - Image parts:
   - treat missing `dataUrl` as “not hydrated yet”
   - treat missing `blobID` (legacy) as “not persisted” or “needs migration”
-- Desktop:
-  - blob files should be namespaced (e.g. `opencode/blobs/<blobID>`) to avoid collisions
 
 ---
 
 ### Risk + mitigations
 
-- Risk: blob store is unavailable (IndexedDB disabled, desktop fs permissions).
+- Risk: blob store is unavailable (IndexedDB disabled or storage quota issues).
   - Mitigation: keep base state functional; persist prompts without image payloads and show a clear placeholder.
 - Risk: lazy hydration introduces edge cases when submitting.
   - Mitigation: add a pre-submit “ensure images hydrated” step; if hydration fails, block submission with a clear error or submit without images.
@@ -175,10 +164,10 @@ Start with TTL-based cleanup (simpler, fewer cross-store dependencies), then con
 
 - Unit-level:
   - size estimation + policy enforcement in `persist.ts`
-  - blob store put/get/remove round trips (web + desktop backends)
+  - blob store put/get/remove round trips for the chosen backend
 - Manual scenarios:
   - attach multiple images, reload, and confirm:
-    - KV store files do not balloon
+    - persisted key-value state does not balloon
     - images can be restored when selecting history items
   - open terminal with large output and confirm reload restores bounded snapshot quickly
   - confirm prompt draft persistence still works in `packages/app/src/context/prompt.tsx`
@@ -188,7 +177,7 @@ Start with TTL-based cleanup (simpler, fewer cross-store dependencies), then con
 ### Rollout plan
 
 - Phase 1: ship with `persist.payloadLimits` off; log oversize detections in dev.
-- Phase 2: enable image blob refs behind `persist.imageBlobs` (web + desktop).
+- Phase 2: enable image blob refs behind `persist.imageBlobs`.
 - Phase 3: enable terminal truncation and enforce hard caps for known hot keys.
 - Phase 4: enable blob cleanup behind `persist.blobGc` (TTL first).
 - Provide quick kill switches by disabling each flag independently.
@@ -198,9 +187,6 @@ Start with TTL-based cleanup (simpler, fewer cross-store dependencies), then con
 ### Open questions
 
 - What should the canonical persisted image schema be (`blobID` field name, placeholder shape, etc.)?
-- Desktop implementation detail:
-  - add `@tauri-apps/plugin-fs` vs custom `invoke()` commands for blob read/write?
-  - where should blob files live (appDataDir) and what retention policy is acceptable?
-- Web implementation detail:
+- Web/app implementation detail:
   - do we store `Blob` directly in IndexedDB, or store base64 strings?
 - Should prompt-history images be retained indefinitely, or only for the last `MAX_HISTORY` entries?
