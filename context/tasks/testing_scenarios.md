@@ -12,6 +12,8 @@ Penguin-mode/OpenCode-TUI workflows.
 
 Clarification/task-orchestration scenarios live elsewhere. This document is intentionally about multi/sub-agent behavior, not the newer task clarification / dependency-policy / diagnostic flows.
 
+CLI workspace-semantics and bootstrap ergonomics scenarios also live elsewhere; those should be tracked with the dedicated CLI ergonomics / bootstrap workflow plans rather than mixed into this multi-agent pack.
+
 ## Canonical Tool Surface (Current)
 
 ### ActionXML tags (supported)

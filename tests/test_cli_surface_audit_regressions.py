@@ -1,11 +1,11 @@
 from datetime import datetime
 import importlib
 import os
-
-import click
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+import click
+from click.testing import CliRunner
 import pytest
 
 from penguin.cli.event_manager import EventManager
@@ -67,7 +67,11 @@ async def test_project_status_summary_counts_lowercase_task_status_values():
 
 def test_event_manager_surfaces_clarification_answered_status():
     display_manager = SimpleNamespace(display_message=Mock())
-    streaming_display = SimpleNamespace(is_active=False, set_status=Mock(), clear_status=Mock())
+    streaming_display = SimpleNamespace(
+        is_active=False,
+        set_status=Mock(),
+        clear_status=Mock(),
+    )
     streaming_manager = SimpleNamespace(
         finalize_streaming=Mock(),
         _active_stream_id=None,
@@ -111,9 +115,9 @@ def test_task_list_accepts_uppercase_status_filter_and_shows_real_options():
         )
     )
 
-    with patch.object(cli_module, "_initialize_core_components_globally", AsyncMock()), \
-         patch.object(cli_module, "_core", core), \
-         patch.object(cli_module, "console") as console_mock:
+    with patch.object(cli_module, "_initialize_core_components_globally", AsyncMock()), patch.object(
+        cli_module, "_core", core
+    ), patch.object(cli_module, "console") as console_mock:
         cli_module.task_list(project_id="project-1", status="RUNNING")
 
     core.project_manager.list_tasks_async.assert_awaited_once()
@@ -121,12 +125,14 @@ def test_task_list_accepts_uppercase_status_filter_and_shows_real_options():
     assert kwargs["project_id"] == "project-1"
     assert kwargs["status"] == TaskStatus.RUNNING
     assert not console_mock.print.call_args_list or all(
-        "Invalid status" not in str(call.args[0]) for call in console_mock.print.call_args_list if call.args
+        "Invalid status" not in str(call.args[0])
+        for call in console_mock.print.call_args_list
+        if call.args
     )
 
-    with patch.object(cli_module, "_initialize_core_components_globally", AsyncMock()), \
-         patch.object(cli_module, "_core", core), \
-         patch.object(cli_module, "console") as console_mock:
+    with patch.object(cli_module, "_initialize_core_components_globally", AsyncMock()), patch.object(
+        cli_module, "_core", core
+    ), patch.object(cli_module, "console") as console_mock:
         with pytest.raises(click.exceptions.Exit):
             cli_module.task_list(project_id=None, status="not-a-status")
 
@@ -147,9 +153,9 @@ def test_task_start_reports_active_state_honestly():
         )
     )
 
-    with patch.object(cli_module, "_initialize_core_components_globally", AsyncMock()), \
-         patch.object(cli_module, "_core", core), \
-         patch.object(cli_module, "console") as console_mock:
+    with patch.object(cli_module, "_initialize_core_components_globally", AsyncMock()), patch.object(
+        cli_module, "_core", core
+    ), patch.object(cli_module, "console") as console_mock:
         cli_module.task_start("task-1")
 
     printed = " ".join(str(call.args[0]) for call in console_mock.print.call_args_list if call.args)
@@ -170,9 +176,9 @@ def test_task_complete_docstring_and_message_reflect_review_approval():
         )
     )
 
-    with patch.object(cli_module, "_initialize_core_components_globally", AsyncMock()), \
-         patch.object(cli_module, "_core", core), \
-         patch.object(cli_module, "console") as console_mock:
+    with patch.object(cli_module, "_initialize_core_components_globally", AsyncMock()), patch.object(
+        cli_module, "_core", core
+    ), patch.object(cli_module, "console") as console_mock:
         cli_module.task_complete("task-1")
 
     printed = " ".join(str(call.args[0]) for call in console_mock.print.call_args_list if call.args)
@@ -217,4 +223,86 @@ def test_preconfigure_cli_environment_clears_stale_root_hints(tmp_path, monkeypa
     finally:
         cli_module.WORKSPACE_PATH = original_cli_workspace
         config_module.WORKSPACE_PATH = original_config_workspace
+
+
+def test_project_create_honors_explicit_workspace_path(tmp_path):
+    from penguin.cli import cli as cli_module
+
+    explicit_workspace = (tmp_path / "explicit-workspace").resolve()
+    project = Project(
+        id="project-1",
+        name="Project 1",
+        description="Project description",
+        created_at=datetime.utcnow().isoformat(),
+        updated_at=datetime.utcnow().isoformat(),
+        status="active",
+        workspace_path=explicit_workspace,
+        context_path=explicit_workspace / "context",
+    )
+    core = SimpleNamespace(
+        project_manager=SimpleNamespace(
+            create_project_async=AsyncMock(return_value=project),
+        )
+    )
+
+    with patch.object(cli_module, "_initialize_core_components_globally", AsyncMock()), patch.object(
+        cli_module, "_core", core
+    ), patch.dict(os.environ, {"PENGUIN_CWD": str(tmp_path / "repo-root")}, clear=False), patch.object(
+        cli_module, "console"
+    ) as console_mock:
+        cli_module.project_create(
+            name="Project 1",
+            description="Project description",
+            workspace_path=str(explicit_workspace),
+        )
+
+    core.project_manager.create_project_async.assert_awaited_once()
+    _, kwargs = core.project_manager.create_project_async.await_args
+    assert kwargs["workspace_path"] == explicit_workspace
+
+    printed = " ".join(str(call.args[0]) for call in console_mock.print.call_args_list if call.args)
+    assert "Workspace (explicit):" in printed
+    assert str(explicit_workspace) in printed
+    assert "Execution root:" in printed
+
+
+def test_project_create_reports_default_workspace_honestly(tmp_path):
+    from penguin.cli import cli as cli_module
+
+    default_workspace = (tmp_path / "managed-root" / "projects" / "project-1").resolve()
+    project = Project(
+        id="project-1",
+        name="Project 1",
+        description="Project description",
+        created_at=datetime.utcnow().isoformat(),
+        updated_at=datetime.utcnow().isoformat(),
+        status="active",
+        workspace_path=default_workspace,
+        context_path=default_workspace / "context",
+    )
+    core = SimpleNamespace(
+        project_manager=SimpleNamespace(
+            create_project_async=AsyncMock(return_value=project),
+        )
+    )
+
+    with patch.object(cli_module, "_initialize_core_components_globally", AsyncMock()), patch.object(
+        cli_module, "_core", core
+    ), patch.dict(os.environ, {"PENGUIN_CWD": str(tmp_path / "repo-root")}, clear=False), patch.object(
+        cli_module, "console"
+    ) as console_mock:
+        cli_module.project_create(
+            name="Project 1",
+            description="Project description",
+            workspace_path=None,
+        )
+
+    _, kwargs = core.project_manager.create_project_async.await_args
+    assert kwargs["workspace_path"] is None
+
+    printed = " ".join(str(call.args[0]) for call in console_mock.print.call_args_list if call.args)
+    assert "Workspace (default):" in printed
+    assert str(default_workspace) in printed
+    assert "Execution root:" in printed
+
 

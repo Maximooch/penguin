@@ -2574,7 +2574,7 @@ def project_create(
         None, "--workspace", "-w", help="Project workspace path"
     ),
 ):
-    """Create a new project"""
+    """Create a new project. `--workspace` uses the exact provided path."""
 
     async def _async_project_create():
         console.print(f"[bold cyan]🐧 Creating project:[/bold cyan] {name}")
@@ -2587,17 +2587,27 @@ def project_create(
             raise typer.Exit(code=1)
 
         try:
-            # Note: workspace_path is managed internally by ProjectManager
+            resolved_workspace = None
+            if workspace_path:
+                resolved_workspace = Path(workspace_path).expanduser().resolve()
+
             project = await _core.project_manager.create_project_async(
-                name=name, description=description or f"Project: {name}"
+                name=name,
+                description=description or f"Project: {name}",
+                workspace_path=resolved_workspace,
             )
 
             console.print("[green]✓ Project created successfully![/green]")
             console.print(f"  ID: {project.id}")
             console.print(f"  Name: {project.name}")
             console.print(f"  Description: {project.description}")
-            if project.workspace_path:
-                console.print(f"  Workspace: {project.workspace_path}")
+            if resolved_workspace:
+                console.print(f"  Workspace (explicit): {resolved_workspace}")
+            elif project.workspace_path:
+                console.print(f"  Workspace (default): {project.workspace_path}")
+            current_root = os.environ.get("PENGUIN_CWD")
+            if current_root:
+                console.print(f"  Execution root: {current_root}")
 
         except Exception as e:
             console.print(f"[red]Error creating project: {e}[/red]")
@@ -2875,7 +2885,7 @@ def task_list(
         None,
         "--status",
         "-s",
-        help="Filter by status (pending, running, completed, failed)",
+        help="Filter by status (active, running, pending_review, completed, failed, blocked, cancelled)",
     ),
 ):
     """List tasks, optionally filtered by project or status"""

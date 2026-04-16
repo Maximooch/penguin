@@ -173,3 +173,15 @@ The project/task storage layer is SQLite-backed, but the exact schema is an impl
 ## Performance and Scaling
 
 Operational tuning details are still evolving. Treat older examples of WAL toggles, template loaders, or higher-level orchestration helpers as implementation notes rather than stable public APIs unless they are explicitly documented in the current CLI/web/Python sections above.
+
+
+## Workspace Semantics
+
+- `--workspace` uses the **exact provided path**. Penguin does not silently create a child directory under that path.
+- When `--workspace` is omitted, Penguin uses its managed default workspace path.
+- Project creation output now distinguishes:
+  - `Workspace (explicit): ...`
+  - `Workspace (default): ...`
+  - `Execution root: ...`
+
+This separation is intentional: the execution root and the stored project workspace are related concepts, but they are not the same thing.

@@ -92,12 +92,13 @@ class ProjectManager:
     # ==================== Project Operations ====================
     
     def create_project(
-        self, 
-        name: str, 
+        self,
+        name: str,
         description: str,
         tags: Optional[List[str]] = None,
         budget_tokens: Optional[int] = None,
         budget_minutes: Optional[int] = None,
+        workspace_path: Optional[Union[str, Path]] = None,
         **metadata
     ) -> Project:
         """Create a new project.
@@ -129,7 +130,11 @@ class ProjectManager:
         project_id = self._generate_id(name)
         
         # Set up workspace paths
-        workspace_path = self.workspace_path / "projects" / project_id
+        if workspace_path is not None:
+            explicit_workspace_path = Path(workspace_path).expanduser().resolve()
+            workspace_path = explicit_workspace_path
+        else:
+            workspace_path = self.workspace_path / "projects" / project_id
         context_path = workspace_path / "context"
         
         project = Project(
@@ -163,12 +168,13 @@ class ProjectManager:
         return project
     
     async def create_project_async(
-        self, 
-        name: str, 
+        self,
+        name: str,
         description: str,
         tags: Optional[List[str]] = None,
         budget_tokens: Optional[int] = None,
         budget_minutes: Optional[int] = None,
+        workspace_path: Optional[Union[str, Path]] = None,
         **metadata
     ) -> Project:
         """Async version of create_project."""
@@ -179,6 +185,7 @@ class ProjectManager:
                 tags=tags,
                 budget_tokens=budget_tokens,
                 budget_minutes=budget_minutes,
+                workspace_path=workspace_path,
                 **metadata
             )
         return await asyncio.get_event_loop().run_in_executor(None, _create_project)
