@@ -31,6 +31,9 @@
     "@docusaurus/types": "^3.10.0",
     "typescript": "~5.5.2"
   },
+  "resolutions": {
+    "mermaid": "11.6.0"
+  },
   "browserslist": {
     "production": [
       ">0.5%",
