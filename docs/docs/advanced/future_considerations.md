@@ -186,6 +186,25 @@ flowchart TD
 - Tailored resource suggestions for team members
 - Skill development tracking and integration with project planning
 
+
+## Web Server and Deployment Hardening Roadmap
+
+Some web-surface hardening now exists, but several follow-up items are intentionally still future work:
+
+- **Browser-friendly WebSocket auth**
+  - current backend behavior is secure, but browser UX still needs a cleaner strategy such as short-lived WS tickets or cookie/session auth
+- **Shared webhook replay cache**
+  - current GitHub webhook replay defense is process-local only
+  - multi-instance deployments will need Redis or equivalent shared state
+- **Rate limiting and quotas**
+  - request throttling, auth brute-force protection, and per-user/per-route quotas are still missing
+- **Keyring-backed local credential storage**
+  - environment variables are the preferred default now
+  - optional local keyring support remains a future convenience feature for desktop users
+- **Frontend rewrite alignment**
+  - the legacy dashboard/static surface should be replaced, not incrementally polished forever
+  - frontend auth, upload UX, and streaming contracts should be designed around the hardened backend instead of relying on old shortcuts
+
 ## Error Recovery and Safety
 
 ```mermaid

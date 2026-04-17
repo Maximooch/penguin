@@ -538,3 +538,31 @@ Then check logs:
 tail -f .penguin/permission_audit.log | jq .
 ```
 
+## Web Server Hardening Notes
+
+### Provider Credential Precedence
+
+Penguin now prefers **operator-managed environment variables** for provider credentials.
+Legacy plaintext JSON credential files remain a compatibility fallback only.
+
+Precedence order:
+1. Environment variables (recommended for CI, containers, servers, and headless usage)
+2. Legacy local JSON credential store (deprecated fallback)
+3. Future local-only secret backends such as OS keyring integrations may be added later
+
+Important notes:
+- Environment variables are the recommended default because they work consistently across platforms and deployment targets.
+- The legacy JSON provider credential store is still readable for compatibility, but Penguin emits warnings when it is used.
+- Plaintext credential persistence should not be treated as the primary security posture for production deployments.
+
+### GitHub Webhook Replay Defense
+
+Penguin's GitHub webhook endpoint now rejects duplicate `X-GitHub-Delivery` IDs using a process-local in-memory TTL cache.
+
+When HTTP auth is enabled, the webhook route must also be intentionally exposed (for example via `PENGUIN_PUBLIC_ENDPOINTS=/api/v1/integrations/github/webhook`) or otherwise fronted by an authenticated relay, because GitHub will not send Penguin API keys.
+
+This is effective for a **single-process / single-instance deployment**.
+It is **not sufficient for multi-instance deployments** because delivery IDs are not shared across processes or hosts.
+
+For horizontally scaled deployments, move replay tracking to shared state such as Redis or another low-latency shared cache.
+

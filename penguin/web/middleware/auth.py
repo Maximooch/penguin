@@ -6,10 +6,11 @@ and other external clients.
 
 import logging
 import os
-from typing import Optional, Callable, Awaitable
+from typing import Any, Optional
 from datetime import datetime, timedelta
 
-from fastapi import Request, HTTPException, status
+from fastapi import HTTPException, Request, WebSocket, WebSocketException, status
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.base import BaseHTTPMiddleware
 import jwt
@@ -69,7 +70,7 @@ class AuthConfig:
             "/api/redoc",
             "/api/openapi.json",
             "/api/v1/health",
-            "/static",
+            "/static/",
         }
 
         # Load additional public endpoints from environment
@@ -79,12 +80,87 @@ class AuthConfig:
 
         return public
 
+    @property
+    def public_endpoint_prefixes(self) -> set[str]:
+        """Return public endpoints that should be treated as prefixes."""
+        return {path for path in self.public_endpoints if path.endswith("/") and path != "/"}
+
+    @property
+    def public_endpoint_exact_matches(self) -> set[str]:
+        """Return public endpoints that require exact path matches."""
+        return self.public_endpoints - self.public_endpoint_prefixes
+
     def is_public_endpoint(self, path: str) -> bool:
         """Check if an endpoint is public (doesn't require auth)."""
-        for public_path in self.public_endpoints:
-            if path.startswith(public_path):
-                return True
+        if path in self.public_endpoint_exact_matches:
+            return True
+
+        return any(path.startswith(prefix) for prefix in self.public_endpoint_prefixes)
+
+
+# Public-endpoint matching convention:
+# - entries ending with "/" (except "/" itself) are treated as prefix matches
+# - all other entries require exact path equality
+# `is_public_endpoint()` checks exact matches first, then falls back to prefix matching.
+
+def extract_api_key(connection: Any) -> Optional[str]:
+    """Extract API key from request or websocket headers."""
+    headers = connection.headers
+
+    api_key = headers.get("X-API-Key")
+    if api_key:
+        return api_key
+
+    link_key = headers.get("X-Link-API-Key")
+    if link_key:
+        return link_key
+
+    return None
+
+
+def extract_bearer_token(connection: Any) -> Optional[str]:
+    """Extract Bearer token from Authorization header."""
+    auth_header = connection.headers.get("Authorization")
+    if not auth_header:
+        return None
+
+    parts = auth_header.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return None
+
+    return parts[1]
+
+
+def validate_api_key(api_key: str, config: AuthConfig) -> bool:
+    """Validate an API key against configured keys."""
+    if not api_key:
         return False
+    return api_key in config.api_keys
+
+
+def validate_jwt(token: str, config: AuthConfig) -> dict:
+    """Validate and decode a JWT token using the provided config."""
+    if not config.jwt_secret:
+        raise AuthenticationError("JWT authentication not configured")
+
+    try:
+        claims = jwt.decode(
+            token,
+            config.jwt_secret,
+            algorithms=[config.jwt_algorithm]
+        )
+
+        if "exp" in claims:
+            exp_timestamp = claims["exp"]
+            if datetime.utcfromtimestamp(exp_timestamp) < datetime.utcnow():
+                raise AuthenticationError("Token has expired")
+
+        return claims
+
+    except jwt.ExpiredSignatureError:
+        raise AuthenticationError("Token has expired")
+    except jwt.InvalidTokenError as e:
+        raise AuthenticationError(f"Invalid token: {str(e)}")
 
 
 class AuthenticationMiddleware(BaseHTTPMiddleware):
@@ -105,136 +181,67 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         try:
-            # Attempt to authenticate the request
             auth_result = await self._authenticate_request(request)
-
-            # Add auth info to request state
-            request.state.authenticated = True
-            request.state.auth_method = auth_result["method"]
-            request.state.auth_subject = auth_result.get("subject", "unknown")
-            request.state.auth_metadata = auth_result.get("metadata", {})
-
-            # Process request
-            response = await call_next(request)
-            return response
-
         except AuthenticationError as e:
             logger.warning(f"Authentication failed for {request.url.path}: {str(e)}")
-            raise HTTPException(
+            return JSONResponse(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail={
-                    "error": {
-                        "code": "AUTHENTICATION_FAILED",
-                        "message": str(e),
-                        "recoverable": False,
-                        "suggested_action": "check_credentials"
+                content={
+                    "detail": {
+                        "error": {
+                            "code": "AUTHENTICATION_FAILED",
+                            "message": str(e),
+                            "recoverable": False,
+                            "suggested_action": "check_credentials",
+                        }
                     }
                 },
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        except Exception as e:
-            logger.error(f"Unexpected error in authentication: {str(e)}")
-            raise HTTPException(
+        except Exception:
+            logger.exception("Unexpected error in authentication")
+            return JSONResponse(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail={
-                    "error": {
-                        "code": "AUTHENTICATION_ERROR",
-                        "message": "Internal authentication error",
-                        "recoverable": True,
-                        "suggested_action": "retry"
+                content={
+                    "detail": {
+                        "error": {
+                            "code": "AUTHENTICATION_ERROR",
+                            "message": "Internal authentication error",
+                            "recoverable": True,
+                            "suggested_action": "retry",
+                        }
                     }
-                }
+                },
             )
+
+        # Add auth info to request state
+        request.state.authenticated = True
+        request.state.auth_method = auth_result["method"]
+        request.state.auth_subject = auth_result.get("subject", "unknown")
+        request.state.auth_metadata = auth_result.get("metadata", {})
+
+        return await call_next(request)
 
     async def _authenticate_request(self, request: Request) -> dict:
         """Authenticate a request using available methods."""
-        # Try API key authentication first (faster)
-        api_key = self._extract_api_key(request)
-        if api_key and self._validate_api_key(api_key):
+        api_key = extract_api_key(request)
+        if api_key and validate_api_key(api_key, self.config):
             return {
                 "method": "api_key",
                 "subject": "api_client",
                 "metadata": {"key_prefix": api_key[:8] + "..."}
             }
 
-        # Try JWT authentication
-        token = self._extract_bearer_token(request)
+        token = extract_bearer_token(request)
         if token:
-            claims = self._validate_jwt(token)
+            claims = validate_jwt(token, self.config)
             return {
                 "method": "jwt",
                 "subject": claims.get("sub", "unknown"),
                 "metadata": claims
             }
 
-        # No valid authentication found
         raise AuthenticationError("No valid authentication credentials provided")
-
-    def _extract_api_key(self, request: Request) -> Optional[str]:
-        """Extract API key from request headers."""
-        # Check X-API-Key header
-        api_key = request.headers.get("X-API-Key")
-        if api_key:
-            return api_key
-
-        # Check X-Link-API-Key header (Link-specific)
-        link_key = request.headers.get("X-Link-API-Key")
-        if link_key:
-            return link_key
-
-        # Check query parameter (less secure, but supported)
-        api_key_param = request.query_params.get("api_key")
-        if api_key_param:
-            logger.warning("API key provided via query parameter (insecure)")
-            return api_key_param
-
-        return None
-
-    def _extract_bearer_token(self, request: Request) -> Optional[str]:
-        """Extract Bearer token from Authorization header."""
-        auth_header = request.headers.get("Authorization")
-        if not auth_header:
-            return None
-
-        parts = auth_header.split()
-        if len(parts) != 2 or parts[0].lower() != "bearer":
-            return None
-
-        return parts[1]
-
-    def _validate_api_key(self, api_key: str) -> bool:
-        """Validate an API key."""
-        if not api_key:
-            return False
-
-        # Check against configured keys
-        return api_key in self.config.api_keys
-
-    def _validate_jwt(self, token: str) -> dict:
-        """Validate and decode a JWT token."""
-        if not self.config.jwt_secret:
-            raise AuthenticationError("JWT authentication not configured")
-
-        try:
-            # Decode and validate token
-            claims = jwt.decode(
-                token,
-                self.config.jwt_secret,
-                algorithms=[self.config.jwt_algorithm]
-            )
-
-            # Check expiration
-            if "exp" in claims:
-                exp_timestamp = claims["exp"]
-                if datetime.utcfromtimestamp(exp_timestamp) < datetime.utcnow():
-                    raise AuthenticationError("Token has expired")
-
-            return claims
-
-        except jwt.ExpiredSignatureError:
-            raise AuthenticationError("Token has expired")
-        except jwt.InvalidTokenError as e:
-            raise AuthenticationError(f"Invalid token: {str(e)}")
 
     def create_jwt(self, subject: str, metadata: Optional[dict] = None) -> str:
         """Create a JWT token for a subject.
@@ -301,3 +308,55 @@ async def require_auth(
         "subject": request.state.auth_subject,
         "metadata": request.state.auth_metadata
     }
+
+
+def authenticate_connection(
+    connection: Any,
+    config: Optional[AuthConfig] = None,
+) -> dict:
+    """Authenticate an HTTP or WebSocket connection using shared auth rules."""
+    auth_config = config or AuthConfig()
+
+    api_key = extract_api_key(connection)
+    if api_key and validate_api_key(api_key, auth_config):
+        return {
+            "method": "api_key",
+            "subject": "api_client",
+            "metadata": {"key_prefix": api_key[:8] + "..."},
+        }
+
+    token = extract_bearer_token(connection)
+    if token:
+        claims = validate_jwt(token, auth_config)
+        return {
+            "method": "jwt",
+            "subject": claims.get("sub", "unknown"),
+            "metadata": claims,
+        }
+
+    raise AuthenticationError("No valid authentication credentials provided")
+
+
+async def require_websocket_auth(
+    websocket: WebSocket,
+    config: Optional[AuthConfig] = None,
+) -> dict:
+    """Authenticate a WebSocket connection before accept()."""
+    auth_config = config or AuthConfig()
+    if not auth_config.auth_enabled or auth_config.is_public_endpoint(websocket.url.path):
+        return {"method": "anonymous", "subject": "public", "metadata": {}}
+
+    try:
+        auth_result = authenticate_connection(websocket, auth_config)
+    except AuthenticationError as exc:
+        logger.warning("WebSocket authentication failed for %s: %s", websocket.url.path, exc)
+        raise WebSocketException(
+            code=status.WS_1008_POLICY_VIOLATION,
+            reason=str(exc),
+        ) from exc
+
+    websocket.state.authenticated = True
+    websocket.state.auth_method = auth_result["method"]
+    websocket.state.auth_subject = auth_result.get("subject", "unknown")
+    websocket.state.auth_metadata = auth_result.get("metadata", {})
+    return auth_result

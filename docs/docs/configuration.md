@@ -4,7 +4,7 @@ sidebar_position: 3
 
 # Configuring Penguin AI Assistant
 
-Penguin AI Assistant v0.2.0 can be configured through environment variables and YAML configuration files. This guide explains all available options for core functionality, project management, web interface, and advanced features.
+Penguin can be configured through environment variables and YAML configuration files. This guide explains current options for core functionality, project management, the web server, and advanced features.
 
 Simpliest way is to just do `penguin config setup`
 
@@ -84,10 +84,21 @@ PENGUIN_WRITE_ROOT=project                     # Initial execution mode (project
 # Task Management
 TASK_COMPLETION_PHRASE=TASK_COMPLETED
 
-# Web Interface (if using penguin-ai[web])
-WEB_HOST=localhost
-WEB_PORT=8000
-WEB_DEBUG=false
+# Web server
+HOST=127.0.0.1
+PORT=9000
+DEBUG=false
+
+# Web auth and exposure controls
+PENGUIN_AUTH_ENABLED=true
+PENGUIN_API_KEYS=replace-me
+PENGUIN_JWT_SECRET=replace-me
+PENGUIN_PUBLIC_ENDPOINTS=/api/v1/integrations/github/webhook
+PENGUIN_CORS_ORIGINS=https://penguin.example.com
+PENGUIN_ALLOW_INSECURE_NO_AUTH=false
+PENGUIN_MAX_UPLOAD_BYTES=10737418240
+PENGUIN_GITHUB_WEBHOOK_DELIVERY_TTL_SECONDS=600
+GITHUB_WEBHOOK_SECRET=replace-me
 
 # Project Management
 PROJECT_AUTO_CHECKPOINT=true
@@ -98,6 +109,51 @@ MEMORY_PROVIDER=sqlite
 MEMORY_STORAGE_PATH=./memory
 EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
 ```
+
+## Web Server Configuration Notes
+
+The web server now has explicit startup and auth hardening behavior that operators should understand:
+
+- `PENGUIN_AUTH_ENABLED` protects HTTP and protected WebSocket endpoints
+- `PENGUIN_API_KEYS` defines accepted header-based API keys
+- `PENGUIN_PUBLIC_ENDPOINTS` exposes additional routes without auth when needed
+- `PENGUIN_ALLOW_INSECURE_NO_AUTH=true` bypasses the startup block on non-local bind without auth
+- `PENGUIN_CORS_ORIGINS` should be set explicitly for exposed deployments
+- `PENGUIN_MAX_UPLOAD_BYTES` controls the server-side upload cap
+- `PENGUIN_GITHUB_WEBHOOK_DELIVERY_TTL_SECONDS` controls the in-memory replay-defense TTL
+
+### Recommended deployment defaults
+
+#### Local development
+
+```bash
+PENGUIN_AUTH_ENABLED=false
+HOST=127.0.0.1
+PORT=9000
+```
+
+#### Exposed deployment
+
+```bash
+PENGUIN_AUTH_ENABLED=true
+PENGUIN_API_KEYS=replace-me
+PENGUIN_CORS_ORIGINS=https://penguin.example.com
+HOST=0.0.0.0
+PORT=9000
+```
+
+#### GitHub webhooks with auth enabled
+
+```bash
+PENGUIN_AUTH_ENABLED=true
+PENGUIN_API_KEYS=replace-me
+PENGUIN_PUBLIC_ENDPOINTS=/api/v1/integrations/github/webhook
+GITHUB_WEBHOOK_SECRET=replace-me
+HOST=0.0.0.0
+PORT=9000
+```
+
+Environment variables are now the preferred credential path for provider secrets in headless/server/container usage. Legacy plaintext JSON credential persistence remains compatibility fallback only.
 
 ### 2. YAML Configuration File
 

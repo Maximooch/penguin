@@ -3,12 +3,16 @@
 Handles GitHub webhook events for @Penguin mentions, PR events, and issue events.
 """
 
+from __future__ import annotations
+
 import asyncio
 import hashlib
 import hmac
 import logging
 import os
 import re
+import time
+from threading import RLock
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Request, HTTPException, BackgroundTasks
@@ -21,6 +25,60 @@ from penguin.constants import DEFAULT_PATCH_TRUNCATION_LIMIT
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/integrations/github", tags=["integrations"])
+
+
+_DEFAULT_DELIVERY_CACHE_TTL_SECONDS = 10 * 60
+_DELIVERY_CACHE_TTL_ENV = "PENGUIN_GITHUB_WEBHOOK_DELIVERY_TTL_SECONDS"
+_DELIVERY_CACHE_LOCK = RLock()
+_SEEN_DELIVERY_IDS: dict[str, float] = {}
+
+
+def _delivery_cache_ttl_seconds() -> float:
+    raw = os.getenv(
+        _DELIVERY_CACHE_TTL_ENV,
+        str(_DEFAULT_DELIVERY_CACHE_TTL_SECONDS),
+    ).strip()
+    try:
+        ttl = float(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid %s=%r; using default %s seconds",
+            _DELIVERY_CACHE_TTL_ENV,
+            raw,
+            _DEFAULT_DELIVERY_CACHE_TTL_SECONDS,
+        )
+        return float(_DEFAULT_DELIVERY_CACHE_TTL_SECONDS)
+    return max(ttl, 0.0)
+
+
+def remember_github_delivery(delivery_id: str, *, now: float | None = None) -> bool:
+    """Return True when delivery is new, False when it is blank or a replay."""
+    normalized = delivery_id.strip()
+    if not normalized:
+        return False
+
+    current_time = now if isinstance(now, (int, float)) else time.monotonic()
+    ttl_seconds = _delivery_cache_ttl_seconds()
+    with _DELIVERY_CACHE_LOCK:
+        expired = [
+            seen_id
+            for seen_id, seen_at in _SEEN_DELIVERY_IDS.items()
+            if current_time - seen_at > ttl_seconds
+        ]
+        for seen_id in expired:
+            _SEEN_DELIVERY_IDS.pop(seen_id, None)
+
+        if normalized in _SEEN_DELIVERY_IDS:
+            return False
+
+        _SEEN_DELIVERY_IDS[normalized] = current_time
+        return True
+
+
+def reset_github_delivery_cache() -> None:
+    """Reset the in-memory replay cache. Intended for tests."""
+    with _DELIVERY_CACHE_LOCK:
+        _SEEN_DELIVERY_IDS.clear()
 
 
 async def post_github_comment(repo_name: str, issue_number: int, comment_body: str) -> bool:
@@ -616,6 +674,11 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
         logger.error(f"Failed to parse webhook payload: {e}")
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
+    delivery_id = request.headers.get("X-GitHub-Delivery", "").strip()
+    if not delivery_id:
+        logger.warning("Missing X-GitHub-Delivery header")
+        raise HTTPException(status_code=400, detail="Missing delivery id")
+
     # Get event type
     event_type = request.headers.get("X-GitHub-Event", "unknown")
     logger.info(f"Received GitHub webhook: {event_type}")
@@ -638,6 +701,10 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
     if allowed_repo and repo_name and repo_name != allowed_repo:
         logger.warning(f"Webhook from unauthorized repo: {repo_name} (allowed: {allowed_repo})")
         raise HTTPException(status_code=403, detail="Unauthorized repository")
+
+    if not remember_github_delivery(delivery_id):
+        logger.warning("Rejected replayed GitHub delivery: %s", delivery_id)
+        raise HTTPException(status_code=409, detail="Duplicate delivery")
 
     # Route event to appropriate handler
     # Process in background to avoid timeout

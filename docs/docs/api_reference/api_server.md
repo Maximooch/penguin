@@ -45,7 +45,12 @@ def create_app() -> FastAPI:
 
     # Configure CORS with environment-based origins
     origins_env = os.getenv("PENGUIN_CORS_ORIGINS", "").strip()
-    origins_list = [o.strip() for o in origins_env.split(",") if o.strip()] or ["*"]
+    origins_list = [o.strip() for o in origins_env.split(",") if o.strip()] or [
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        "http://localhost:9000",
+        "http://127.0.0.1:9000",
+    ]
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins_list,
@@ -70,6 +75,15 @@ def create_app() -> FastAPI:
 
     return app
 ```
+
+### Startup and CORS Hardening
+
+Current server behavior is slightly stricter than older examples on this page:
+
+- if `PENGUIN_CORS_ORIGINS` is unset, Penguin now uses a small localhost-only development allowlist instead of `"*"`
+- if the server binds to a non-local interface such as `0.0.0.0` while auth is disabled, startup is blocked unless `PENGUIN_ALLOW_INSECURE_NO_AUTH=true` is set explicitly
+
+That startup check exists to reduce accidental exposure of an unauthenticated development server.
 
 ### Core Instance Management
 
@@ -203,8 +217,16 @@ Process a chat message with optional conversation support, multi-modal capabilit
 
 Stream chat responses in real-time with support for reasoning models and multiple agents.
 
+**Authentication note:**
+- when web auth is enabled, protected WebSocket routes now enforce authentication during the handshake before `accept()`
+- header-based API key or bearer-token auth is supported only for clients that can send auth headers as part of the WebSocket handshake
+- native browser `WebSocket(...)` clients cannot attach arbitrary `Authorization` or `X-API-Key` headers, so the example below only works for public routes or routes intentionally exposed via `PENGUIN_PUBLIC_ENDPOINTS`
+- query-string API key auth is not supported
+- for authenticated connections, use a server-side or Node-based WebSocket client that can set headers, or introduce an authenticated upgrade/ticket flow in front of the browser client
+
 **Connection:**
 ```javascript
+// Works for public or intentionally exposed routes only.
 const ws = new WebSocket('ws://localhost:8000/api/v1/chat/stream');
 ```
 
@@ -536,7 +558,7 @@ Register an existing agent with a coordinator role.
 
 Penguin includes built-in GitHub webhook support for automated workflows.
 
-#### POST `/api/v1/github/webhook`
+#### POST `/api/v1/integrations/github/webhook`
 
 Receive GitHub webhook events (configured in GitHub repository settings).
 
@@ -1194,6 +1216,29 @@ Get comprehensive model and system capabilities.
 
 ### Security & Permissions
 
+The web server now has active auth controls instead of relying entirely on network trust.
+
+**Current behavior:**
+- protected HTTP routes can require API-key or JWT authentication
+- protected WebSocket routes require explicit auth checks before connection acceptance
+- query-parameter API keys are not accepted
+- additional unauthenticated routes can be exposed intentionally with `PENGUIN_PUBLIC_ENDPOINTS`
+
+**Default public routes include:**
+- `/`
+- `/api/docs`
+- `/api/redoc`
+- `/api/openapi.json`
+- `/api/v1/health`
+- `/static/...`
+
+**GitHub webhook note:**
+When global auth is enabled, GitHub webhook delivery usually requires either:
+- exposing `/api/v1/integrations/github/webhook` through `PENGUIN_PUBLIC_ENDPOINTS`, or
+- placing Penguin behind a relay/gateway that handles the trust boundary
+
+GitHub will not send Penguin API keys on webhook delivery.
+
 Penguin provides security endpoints for managing permissions, approvals, and audit logs.
 
 :::note Migration Status
@@ -1372,6 +1417,12 @@ After approval/denial:
 ### File Upload and Multi-Modal Support
 
 #### POST `/api/v1/upload`
+
+**Security notes:**
+- this endpoint is currently restricted to image uploads
+- empty uploads are rejected
+- server-side size enforcement is controlled by `PENGUIN_MAX_UPLOAD_BYTES`
+- partially written files are removed if validation fails
 
 Upload files (primarily images) for use in conversations.
 
@@ -1585,7 +1636,7 @@ By default, the server runs on port 8000 and provides:
 - **Web UI**: http://localhost:8000/
 - **API Documentation (Swagger)**: http://localhost:8000/api/docs
 - **API Documentation (ReDoc)**: http://localhost:8000/api/redoc
-- **GitHub Webhook**: http://localhost:8000/api/v1/github/webhook
+- **GitHub Webhook**: http://localhost:8000/api/v1/integrations/github/webhook
 - **WebSocket Events**: ws://localhost:8000/api/v1/events/ws
 - **WebSocket Chat**: ws://localhost:8000/api/v1/chat/stream
 

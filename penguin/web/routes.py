@@ -24,6 +24,7 @@ import mimetypes
 import os
 from pathlib import Path
 import re
+from contextlib import suppress
 import shutil
 import tempfile
 import time
@@ -32,6 +33,7 @@ import uuid
 from urllib.parse import unquote, urlparse
 import websockets
 import httpx
+from PIL import Image, UnidentifiedImageError
 
 from penguin.config import WORKSPACE_PATH
 from penguin.core import PenguinCore
@@ -73,6 +75,7 @@ from penguin.web.services.session_view import (
 from penguin.web.services.session_fork import fork_session
 from penguin.web.services.session_revert import revert_session, unrevert_session
 from penguin.web.services.session_summary import summarize_session_title
+from penguin.web.middleware.auth import require_websocket_auth
 from penguin.web.services.system_status import (
     get_formatter_status,
     get_lsp_status,
@@ -156,6 +159,64 @@ def _serialize_task_payload(task: Any, *, include_metadata: bool = True) -> Dict
 
 
 MAX_IMAGES_PER_REQUEST = 10
+DEFAULT_MAX_UPLOAD_BYTES = 10 * 1024 * 1024 * 1024
+ALLOWED_UPLOAD_CONTENT_TYPES = {
+    "image/gif",
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+}
+ALLOWED_UPLOAD_EXTENSIONS = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
+VALIDATED_UPLOAD_IMAGE_FORMATS = {
+    "GIF": ("image/gif", {".gif"}),
+    "JPEG": ("image/jpeg", {".jpeg", ".jpg"}),
+    "PNG": ("image/png", {".png"}),
+    "WEBP": ("image/webp", {".webp"}),
+}
+
+
+def _max_upload_bytes() -> int:
+    """Return the configured upload size limit in bytes."""
+    return int(os.getenv("PENGUIN_MAX_UPLOAD_BYTES", str(DEFAULT_MAX_UPLOAD_BYTES)))
+
+
+def _validate_saved_upload_image(
+    file_path: Path,
+    *,
+    declared_content_type: str,
+    declared_extension: str,
+) -> str:
+    """Validate a saved upload against actual image bytes on disk."""
+    try:
+        with Image.open(file_path) as image:
+            detected_format = (image.format or "").upper()
+            image.verify()
+    except (UnidentifiedImageError, OSError, SyntaxError, ValueError) as exc:
+        raise HTTPException(
+            status_code=415,
+            detail="Uploaded file is not a valid supported image.",
+        ) from exc
+
+    detected = VALIDATED_UPLOAD_IMAGE_FORMATS.get(detected_format)
+    if detected is None:
+        raise HTTPException(
+            status_code=415,
+            detail="Unsupported image format. Allowed formats: GIF, JPEG, PNG, WEBP.",
+        )
+
+    detected_content_type, valid_extensions = detected
+    if declared_content_type != detected_content_type:
+        raise HTTPException(
+            status_code=415,
+            detail="Uploaded file content does not match declared MIME type.",
+        )
+    if declared_extension not in valid_extensions:
+        raise HTTPException(
+            status_code=415,
+            detail="Uploaded file content does not match the file extension.",
+        )
+    return detected_content_type
+
 
 _FIND_FILE_CACHE_TTL_SECONDS = 5.0
 _FIND_FILE_CACHE_MAX_DIRECTORIES = 16
@@ -2079,6 +2140,7 @@ async def events_ws(websocket: WebSocket, core: PenguinCore = Depends(get_core))
       - include_ui: 'true'|'false' (default 'true')
       - include_bus: 'true'|'false' (default 'true')
     """
+    await require_websocket_auth(websocket)
     await websocket.accept()
     params = websocket.query_params
     agent_filter = params.get("agent_id")
@@ -2296,6 +2358,7 @@ async def telemetry_ws(
     websocket: WebSocket,
     core: PenguinCore = Depends(get_core),
 ):
+    await require_websocket_auth(websocket)
     await websocket.accept()
     params = websocket.query_params
     agent_filter = params.get("agent_id")
@@ -3816,6 +3879,7 @@ async def handle_chat_message(
 @router.websocket("/api/v1/chat/stream")
 async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core)):
     """Stream chat responses in real-time using a queue."""
+    await require_websocket_auth(websocket)
     await websocket.accept()
     _setup_approval_websocket_callbacks()
     _setup_question_event_callbacks()
@@ -5596,28 +5660,71 @@ async def load_context_file(
 async def upload_file(
     file: UploadFile = File(...), core: PenguinCore = Depends(get_core)
 ):
-    """Upload a file (primarily images) to be used in conversations."""
+    """Upload an image file to be used in conversations."""
+    file_path: Path | None = None
     try:
-        # Create uploads directory if it doesn't exist
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="Filename is required")
+
+        content_type = (file.content_type or "").lower()
+        if content_type not in ALLOWED_UPLOAD_CONTENT_TYPES:
+            raise HTTPException(
+                status_code=415,
+                detail="Unsupported media type. Allowed types: GIF, JPEG, PNG, WEBP.",
+            )
+
+        extension = Path(file.filename).suffix.lower()
+        if extension not in ALLOWED_UPLOAD_EXTENSIONS:
+            raise HTTPException(
+                status_code=415,
+                detail="Unsupported file extension. Allowed extensions: .gif, .jpeg, .jpg, .png, .webp.",
+            )
+
         uploads_dir = Path(WORKSPACE_PATH) / "uploads"
         uploads_dir.mkdir(exist_ok=True)
 
-        # Generate a unique filename
-        file_extension = file.filename.split(".")[-1] if "." in file.filename else ""
-        unique_filename = f"{uuid.uuid4()}.{file_extension}"
+        unique_filename = f"{uuid.uuid4()}{extension}"
         file_path = uploads_dir / unique_filename
+        max_upload_bytes = _max_upload_bytes()
+        bytes_written = 0
 
-        # Save the file
         with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                bytes_written += len(chunk)
+                if bytes_written > max_upload_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File exceeds upload size limit of {max_upload_bytes} bytes",
+                    )
+                buffer.write(chunk)
 
-        # Return the path that can be referenced in future requests
+        if bytes_written == 0:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+        validated_content_type = _validate_saved_upload_image(
+            file_path,
+            declared_content_type=content_type,
+            declared_extension=extension,
+        )
+
         return {
             "path": str(file_path),
             "filename": file.filename,
-            "content_type": file.content_type,
+            "content_type": validated_content_type,
+            "size_bytes": bytes_written,
         }
+    except HTTPException:
+        if file_path and file_path.exists():
+            with suppress(FileNotFoundError):
+                file_path.unlink()
+        raise
     except Exception as e:
+        if file_path and file_path.exists():
+            with suppress(FileNotFoundError):
+                file_path.unlink()
         logger.error(f"Error uploading file: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error uploading file: {str(e)}")
 
@@ -5673,6 +5780,7 @@ async def get_capabilities(core: PenguinCore = Depends(get_core)):
 @router.websocket("/api/v1/tasks/stream")
 async def stream_task(websocket: WebSocket, core: PenguinCore = Depends(get_core)):
     """Stream run mode task execution events in real-time."""
+    await require_websocket_auth(websocket)
     await websocket.accept()
     task_execution = None
     run_mode_callback_task = None

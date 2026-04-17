@@ -33,6 +33,13 @@ logger = logging.getLogger(__name__)
 # Global core instance for reuse
 _core_instance: Optional[PenguinCore] = None
 
+DEFAULT_DEV_CORS_ORIGINS = [
+    "http://127.0.0.1:8000",
+    "http://localhost:8000",
+    "http://127.0.0.1:9000",
+    "http://localhost:9000",
+]
+
 
 def get_or_create_core() -> PenguinCore:
     """Get the global core instance or create it if it doesn't exist."""
@@ -180,7 +187,7 @@ def create_app() -> "FastAPI":
 
     # Configure CORS
     origins_env = os.getenv("PENGUIN_CORS_ORIGINS", "").strip()
-    origins_list = [o.strip() for o in origins_env.split(",") if o.strip()] or ["*"]
+    origins_list = [o.strip() for o in origins_env.split(",") if o.strip()] or DEFAULT_DEV_CORS_ORIGINS
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins_list,
