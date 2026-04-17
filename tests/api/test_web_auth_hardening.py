@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,6 +17,7 @@ from penguin.web.middleware.auth import (
     require_websocket_auth,
 )
 from penguin.web.routes import ALLOWED_UPLOAD_CONTENT_TYPES, router
+from penguin.web.services import provider_credentials as provider_credentials_service
 
 
 @pytest.fixture(autouse=True)
@@ -26,6 +28,19 @@ def clear_auth_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PENGUIN_AUTH_ENABLED", raising=False)
     monkeypatch.delenv("PENGUIN_CORS_ORIGINS", raising=False)
     monkeypatch.delenv("PENGUIN_MAX_UPLOAD_BYTES", raising=False)
+    monkeypatch.delenv("PENGUIN_PROVIDER_CREDENTIALS_STORE", raising=False)
+    monkeypatch.delenv("PENGUIN_PROVIDER_AUTH_STORE", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    monkeypatch.delenv("OPENAI_OAUTH_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_OAUTH_REFRESH_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_OAUTH_EXPIRES_AT_MS", raising=False)
+    monkeypatch.delenv("OPENAI_ACCOUNT_ID", raising=False)
+    provider_credentials_service._WARNED_LEGACY_PATHS.clear()
 
 
 @pytest.fixture
@@ -206,6 +221,41 @@ def test_upload_accepts_supported_image(
     assert payload["content_type"] in ALLOWED_UPLOAD_CONTENT_TYPES
     assert payload["size_bytes"] == 7
     assert Path(payload["path"]).exists()
+
+
+def test_provider_credentials_prefer_environment_over_legacy_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store_path = tmp_path / "providers.json"
+    store_path.write_text(
+        json.dumps({"version": 1, "providers": {"openai": {"type": "api", "key": "file-key"}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PENGUIN_PROVIDER_CREDENTIALS_STORE", str(store_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "env-key")
+
+    records = provider_credentials_service.get_provider_credentials()
+
+    assert records["openai"]["type"] == "api"
+    assert records["openai"]["key"] == "env-key"
+
+
+def test_provider_credentials_warn_on_legacy_store_usage(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store_path = tmp_path / "providers.json"
+    store_path.write_text(
+        json.dumps({"version": 1, "providers": {"anthropic": {"type": "api", "key": "file-key"}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PENGUIN_PROVIDER_CREDENTIALS_STORE", str(store_path))
+
+    with pytest.warns(UserWarning, match="plaintext JSON store"):
+        records = provider_credentials_service.get_provider_credentials()
+
+    assert records["anthropic"]["key"] == "file-key"
 
 
 def test_http_auth_returns_401_without_credentials(

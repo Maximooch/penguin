@@ -54,9 +54,11 @@ Close the highest-risk web security gaps in Penguin's HTTP and WebSocket surface
 - Add tests for oversized and disallowed uploads.
 
 ### P2: Follow-up items
-- Replay defense for GitHub webhook deliveries.
-- Secret-store backend for provider credentials.
-- Docs updates for hardened deployment profile.
+- Replay defense for GitHub webhook deliveries using a process-local TTL cache.
+- Document the replay-cache limitation for multi-instance deployments.
+- Prefer operator-managed environment variables for provider credentials.
+- Keep legacy plaintext JSON only as a compatibility fallback with loud warnings.
+- Document credential precedence and deprecate plaintext persistence as the primary path.
 
 ## Verification
 - Use the dedicated worktree only.
@@ -72,6 +74,7 @@ Close the highest-risk web security gaps in Penguin's HTTP and WebSocket surface
 - No unrelated behavior churn.
 
 ## Notes
-This should likely be split into at least two commits:
+This should likely be split into at least three commits:
 1. auth correctness + WS auth
 2. startup/upload hardening
+3. webhook replay defense + credential precedence/docs

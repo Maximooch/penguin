@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import time
+import warnings
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -28,6 +29,13 @@ _PLACEHOLDER_API_KEYS = {
     "placeholder",
     "test",
 }
+
+
+_LEGACY_STORE_WARNING = (
+    "Provider credentials loaded from legacy plaintext JSON store. Prefer environment "
+    "variables for headless/server deployments; plaintext persistence is deprecated."
+)
+_WARNED_LEGACY_PATHS: set[Path] = set()
 
 
 def _default_store_path() -> Path:
@@ -56,6 +64,15 @@ def _legacy_store_path() -> Path:
     if legacy:
         return Path(legacy).expanduser().resolve()
     return _legacy_default_store_path()
+
+
+def _warn_legacy_store_usage(path: Path) -> None:
+    resolved = path.expanduser().resolve()
+    if resolved in _WARNED_LEGACY_PATHS:
+        return
+    _WARNED_LEGACY_PATHS.add(resolved)
+    logger.warning("%s path=%s", _LEGACY_STORE_WARNING, resolved)
+    warnings.warn(_LEGACY_STORE_WARNING, UserWarning, stacklevel=2)
 
 
 def _ensure_parent(path: Path) -> None:
@@ -95,6 +112,8 @@ def _load_store() -> dict[str, Any]:
 
     providers = primary.get("providers")
     if isinstance(providers, dict) and providers:
+        if path != _default_store_path() or os.getenv(_STORE_ENV) or os.getenv(_LEGACY_STORE_ENV):
+            _warn_legacy_store_usage(path)
         return primary
 
     if path == _default_store_path():
@@ -103,6 +122,7 @@ def _load_store() -> dict[str, Any]:
             legacy_payload = _read_store(legacy_path)
             legacy_providers = legacy_payload.get("providers")
             if isinstance(legacy_providers, dict) and legacy_providers:
+                _warn_legacy_store_usage(legacy_path)
                 return legacy_payload
 
     return primary
@@ -173,16 +193,30 @@ def _sanitize_record(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def get_provider_credentials() -> dict[str, dict[str, Any]]:
-    """Return provider credential records."""
+    """Return provider credential records with env values taking precedence."""
     with _CREDENTIALS_LOCK:
         providers = _load_store().get("providers")
-        if not isinstance(providers, dict):
-            return {}
-        return {
+        records = {
             str(key): value
             for key, value in providers.items()
             if isinstance(key, str) and isinstance(value, dict)
-        }
+        } if isinstance(providers, dict) else {}
+
+        merged = dict(records)
+        provider_ids = set(records.keys())
+        provider_ids.update({
+            "openai",
+            "openrouter",
+            "anthropic",
+            "google",
+            "ollama",
+        })
+
+        for provider_id in provider_ids:
+            env_record = _credential_record_from_environment(provider_id)
+            if env_record is not None:
+                merged[provider_id] = env_record
+        return merged
 
 
 def get_provider_credential(provider_id: str) -> dict[str, Any] | None:
@@ -274,6 +308,41 @@ def _provider_env_candidates(provider_id: str) -> list[str]:
     if pid:
         return [f"{pid.upper()}_API_KEY"]
     return []
+
+
+def _credential_record_from_environment(provider_id: str) -> dict[str, Any] | None:
+    pid = provider_id.strip().lower()
+    if not pid:
+        return None
+
+    if pid == "openai":
+        access = os.getenv("OPENAI_OAUTH_ACCESS_TOKEN", "").strip()
+        refresh = os.getenv("OPENAI_OAUTH_REFRESH_TOKEN", "").strip()
+        expires_raw = os.getenv("OPENAI_OAUTH_EXPIRES_AT_MS", "").strip()
+        if access and refresh and expires_raw:
+            try:
+                expires = int(expires_raw)
+            except ValueError:
+                logger.warning(
+                    "Ignoring OPENAI OAuth environment credentials due to invalid expiry"
+                )
+            else:
+                record: dict[str, Any] = {
+                    "type": "oauth",
+                    "access": access,
+                    "refresh": refresh,
+                    "expires": expires,
+                }
+                account_id = os.getenv("OPENAI_ACCOUNT_ID", "").strip()
+                if account_id:
+                    record["accountId"] = account_id
+                return record
+
+    for env_name in _provider_env_candidates(pid):
+        value = os.getenv(env_name, "").strip()
+        if value and not _is_placeholder_api_key(value):
+            return {"type": "api", "key": value}
+    return None
 
 
 def _is_placeholder_api_key(value: Any) -> bool:
