@@ -65,6 +65,9 @@ It does not explain:
 - product language is weaker than runtime reality
 - `--247` is catchy but not self-explanatory
 
+**Direction:**
+`--247` should remain a public first-class flag. Its meaning should be clarified as: Penguin keeps working continuously until the current work is considered done.
+
 ### 3. `RunMode` clearly owns the outer orchestration loop
 Observed in `penguin/run_mode.py` and supported by `penguin/core.py:3264-3315`.
 
@@ -134,6 +137,12 @@ There are really two continuous-mode contracts today:
 
 That distinction should be made explicit.
 
+**Direction:**
+The exploratory/no-project path should remain for now, but it should be documented more honestly as:
+- we do not have a fully explicit plan yet
+- Penguin will determine next steps as it goes
+- Penguin should document progress and judgment calls in journal/context artifacts when appropriate
+
 ### 7. Clarification ownership is split, but currently coherent
 Confirmed by:
 - `tests/test_runmode_clarification_handling.py`
@@ -198,27 +207,40 @@ The first cleanup should be wording/contract truth, not refactoring loop ownersh
 - idle/time-limit/shutdown wording behavior
 - consistency between `Engine.run_task(...)` and `_iteration_loop(...)`
 - direct contract tests that compare single-task mode vs continuous mode outcomes
+- blueprint-defined time-limit behavior versus generic manual limits
 
 ## Open Questions
 
 ### Public Command Questions
-- Should `--247` remain a public first-class flag, or become a hidden alias for `--continuous`?
 - Should future autonomous execution move toward a dedicated command namespace later (for example, `penguin run ...`)?
 - Should top-level flags remain supported for compatibility even if a new namespace is added?
 
 ### Continuous-Mode Contract Questions
 - What should the public docs say about continuous mode when no explicit task is given?
-- Is synthetic `determine_next_step` still acceptable public behavior outside project scope, or should it require explicit opt-in later?
 - Should project-scoped continuous mode surface a clearer idle/no-ready-task summary instead of generic completion wording?
+- How should blueprint-defined time limits interact with CLI `--time-limit` and idle shutdown behavior?
+- Should time-limit wording distinguish between:
+  - explicit CLI/user-imposed limit
+  - blueprint/task-defined limit
+  - idle/no-work shutdown
 
 ### Ownership Questions
 - Should `RunMode` remain the long-term owner of outer continuous orchestration? Current evidence says yes.
-- Should `Engine.run_task(...)` be reduced into a thinner wrapper over `_iteration_loop(...)`? Probably yes, but only after test backpressure improves.
+- Should `Engine.run_task(...)` be reduced into a thinner wrapper over `_iteration_loop(...)`? Yes, but it should be treated as a follow-up cleanup unless a small, test-backed simplification clearly fits within the first PR.
 - Should clarification waiting/resume remain anchored at RunMode/task orchestration? Current evidence says yes.
 
 ### Status / Termination Questions
 - Which layer should own final user-facing wording for idle exit, time-limit exit, clarification pause, and continuous shutdown?
 - Should review/pending-review remain a task/orchestration-only concept and stay out of Engine? Current evidence says yes.
+
+## Decisions Made After Audit Review
+
+- `--247` stays public. It is part of the Penguin product language and should mean: Penguin keeps working continuously until the current work is considered done.
+- The exploratory no-task continuous mode stays for now. It should be documented honestly as opportunistic/autonomous continuation rather than pretending a fully explicit plan already exists.
+- `RunMode` remains the owner of outer orchestration.
+- Clarification waiting/resume remains anchored in `RunMode` / task orchestration.
+- `Engine.run_task(...)` should become thinner over time, especially around the task-step loop, but deeper cleanup should follow contract-truth work rather than lead it.
+- Time-limit behavior deserves explicit review, especially when limits are defined in project/blueprint/task metadata rather than only via CLI flags.
 
 ## Recommended First PR Scope
 
@@ -243,6 +265,7 @@ Because the current problems are more semantic than structural:
   - no-task behavior
   - time-limit behavior
   - idle/shutdown behavior
+- explicitly review how blueprint/task-defined time limits surface versus plain CLI `--time-limit`
 - add/strengthen CLI and RunMode tests for those contracts
 
 #### Out of Scope
@@ -250,6 +273,10 @@ Because the current problems are more semantic than structural:
 - introducing a new `runmode`/`run` command namespace
 - rewriting `cli.py`
 - removing exploratory fallback behavior entirely
+
+#### Maybe In Scope If It Stays Surgical
+- small, test-backed simplification in `Engine.run_task(...)` where the task-step loop is obviously duplicative with `_iteration_loop(...)`
+- only if it reduces risk without broadening the PR into architectural churn
 
 #### Files Likely Involved
 - `penguin/cli/cli.py`
@@ -263,6 +290,8 @@ Because the current problems are more semantic than structural:
 - explicit assertions for no-task project-scoped continuous mode behavior
 - explicit assertions for no-task non-project exploratory fallback behavior
 - explicit assertions for idle vs clarification vs completed messaging distinctions
+- assertions for explicit CLI `--time-limit` wording/behavior
+- assertions for blueprint/task-defined time-limit behavior where that contract already exists
 
 ## Mapped Change Buckets Needed Later
 
@@ -270,6 +299,7 @@ Because the current problems are more semantic than structural:
 - runmode command truth
 - continuous-mode semantics
 - idle/shutdown/time-limit wording
+- blueprint-defined time-limit wording and precedence rules
 - clarification visibility contract
 
 ### Bucket B: CLI Semantics
@@ -285,7 +315,7 @@ Because the current problems are more semantic than structural:
 ### Bucket D: Engine Loop Cleanup
 - reduce duplication between `run_task(...)` and `_iteration_loop(...)`
 - unify termination semantics where safe
-- make loop/event behavior easier to reason about
+- make task-step loop/event behavior easier to reason about
 
 ### Bucket E: Tests / Verification
 - CLI runmode help/output tests
@@ -312,6 +342,8 @@ Start with a small PR that makes the public runmode contract honest:
 - what `--run` means
 - what `--continuous` / `--247` mean
 - what happens with no task
+- how exploratory no-task behavior should be explained and journaled
+- how explicit versus blueprint-defined time limits should be surfaced
 - how clarification/idle/shutdown states are surfaced
 
 Once that contract is explicit and test-backed, the deeper `RunMode` vs `Engine` cleanup becomes much less dangerous.
