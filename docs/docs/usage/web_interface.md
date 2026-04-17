@@ -1,91 +1,214 @@
 # Web Interface / API Server Guide (v0.6.x)
 
-Penguin ships with a **FastAPI-based HTTP server** that exposes core functionality (projects, tasks, chat, SSE/WS streaming) as a REST/WS API. That server is also the backend surface used by the OpenCode-derived terminal UI that now lives in the repository's `penguin-tui/` workspace.
+Penguin ships with a **FastAPI-based HTTP server** that exposes chat, projects, tasks, SSE/WS streaming, uploads, and integration routes. That server is also the backend surface used by the OpenCode-derived terminal UI in `penguin-tui/`.
+
+This page focuses on **how to run and expose the web server safely**.
 
 ---
 
-## Installation
-```bash
-# Recommended: base install already includes the web runtime
-uv tool install penguin-ai
-
-# Alternative: plain pip
-pip install penguin-ai
-
-# Compatibility alias for older install docs
-pip install "penguin-ai[web]"
-```
-
 ## Starting the server
+
 ```bash
-# Default → http://localhost:8000
+# Local development
 penguin-web
 
-# Custom host/port
+# Explicit host/port
+penguin-web --host 127.0.0.1 --port 9000
+
+# Exposed host (requires auth unless explicitly overridden)
 penguin-web --host 0.0.0.0 --port 9000
 ```
 
-The command is a thin wrapper around `penguin.web.server:main`, which serves the FastAPI app used by both API consumers and the modern TUI bridge.
+The command is a thin wrapper around `penguin.web.server:main`.
 
 Optional flags:
+
 | Flag | Description |
 |------|-------------|
-| `--debug` | Enable reload & verbose logging |
-| `--workers N` | Run with a process pool (production) |
+| `--debug` | Enable reload and verbose logging |
+| `--workers N` | Run with a process pool |
 
 ---
 
-## API Overview
-The OpenAPI / Swagger UI is served at:
-```
-GET http://<host>:<port>/docs
-```
-Key route groups:
-1. `/api/v1/projects` – CRUD for projects
-2. `/api/v1/tasks` – CRUD & execution for tasks
-3. `/api/v1/chat/message` – Chat endpoint (POST message, returns assistant reply)
-4. `/api/v1/chat/stream` – WebSocket for streaming chat responses
-5. `/api/v1/*` status/session endpoints for path, VCS, formatter, and LSP
+## Current Security Posture
 
-### Task / Clarification Surface Truth
+The web server is no longer “wide open unless you remember to harden it later.” Current behavior:
 
-The task/project web surface is no longer just legacy CRUD sugar. Current behavior includes:
-- richer task payloads that expose lifecycle truth such as `status`, `phase`, dependencies, dependency specs, artifact evidence, recipe references, and clarification metadata
-- `POST /api/v1/tasks/{task_id}/execute` routing through `RunMode`, so non-terminal outcomes like `waiting_input` survive to clients
-- `POST /api/v1/tasks/{task_id}/clarification/resume` to answer the latest open clarification and resume execution
-- `GET /api/v1/events/sse` including clarification-related session status visibility for compatible clients
+- protected HTTP routes can require API-key or JWT auth
+- protected WebSocket routes also require auth before `accept()`
+- query-string API keys are not accepted
+- CORS no longer defaults to `*`
+- non-local bind without auth is blocked at startup unless explicitly overridden
+- upload handling is restricted to image MIME types/extensions
+- GitHub webhook replay defense rejects duplicate `X-GitHub-Delivery` IDs within a process-local TTL window
 
-For full path details, inspect the live Swagger page or read `penguin/penguin/web/routes.py`.
+### Public routes
 
-> Example – list projects:
-> ```bash
-> curl http://localhost:8000/api/v1/projects
-> ```
+Some routes remain public by design, including:
 
-### Session + Directory Isolation
+- `/`
+- `/api/docs`
+- `/api/redoc`
+- `/api/openapi.json`
+- `/api/v1/health`
+- `/static/...`
 
-For OpenCode-compatible multi-session workflows, chat requests support:
-- `session_id` and/or `conversation_id`
-- `directory` (repo root for tool execution)
-
-Behavior:
-- The first valid directory bound to a session is immutable by default.
-- Rebinding a session to a different directory returns `409`.
-- Invalid directories return `400`.
-- Request execution is context-scoped so parallel sessions can run safely across different repos.
+Additional public routes can be exposed explicitly with `PENGUIN_PUBLIC_ENDPOINTS`.
 
 ---
 
 ## Authentication
-Authentication is **not** yet implemented.  The server should only be exposed on trusted networks.
+
+Authentication is controlled by `PENGUIN_AUTH_ENABLED`.
+
+When enabled, protected routes accept:
+
+- `X-API-Key: <key>`
+- `X-Link-API-Key: <key>`
+- `Authorization: Bearer <jwt>`
+
+### Example: authenticated HTTP request
+
+```bash
+curl http://127.0.0.1:9000/api/v1/capabilities \
+  -H "X-API-Key: your-key"
+```
+
+### Example: unauthenticated request
+
+```bash
+curl http://127.0.0.1:9000/api/v1/capabilities
+```
+
+That now returns `401 Unauthorized`, not a misleading `500`.
+
+### WebSocket auth
+
+Protected WebSocket endpoints must authenticate during connection setup.
+
+Important constraint: browser JavaScript cannot cleanly set arbitrary custom WebSocket headers in the same way as backend clients. That means browser-facing WS auth ergonomics are still a design concern for the future UI rewrite.
+
+For now:
+- backend clients should use headers
+- browser-facing improvements likely need short-lived WS tickets or cookie/session auth later
+
+---
+
+## Startup Hardening
+
+If you bind Penguin to a non-local interface such as `0.0.0.0` while auth is disabled, startup is blocked by default.
+
+This prevents the easiest “accidentally exposed dev server on the internet” failure mode.
+
+Override only if you really mean it:
+
+```bash
+PENGUIN_ALLOW_INSECURE_NO_AUTH=true penguin-web --host 0.0.0.0 --port 9000
+```
+
+That override exists for edge cases, not because it is a good idea.
+
+---
+
+## CORS Behavior
+
+If `PENGUIN_CORS_ORIGINS` is unset, Penguin now defaults to a small development allowlist instead of wildcard origins.
+
+Default dev origins:
+
+- `http://localhost:8000`
+- `http://127.0.0.1:8000`
+- `http://localhost:9000`
+- `http://127.0.0.1:9000`
+
+Set an explicit allowlist for real deployments:
+
+```bash
+PENGUIN_CORS_ORIGINS=https://penguin.example.com,https://admin.example.com
+```
+
+---
+
+## Upload Behavior
+
+`POST /api/v1/upload` is currently intended for image-style uploads.
+
+Current behavior:
+- image MIME types/extensions only
+- empty uploads rejected
+- size limit enforced server-side
+- max size controlled by `PENGUIN_MAX_UPLOAD_BYTES`
+
+Example:
+
+```bash
+curl -X POST http://127.0.0.1:9000/api/v1/upload \
+  -H "X-API-Key: your-key" \
+  -F "file=@screenshot.png;type=image/png"
+```
+
+If you need generic large-object upload semantics later, that should be designed explicitly instead of pretending this endpoint is already that.
+
+---
+
+## GitHub Webhooks Under Auth
+
+GitHub does not send Penguin API keys.
+
+So if global Penguin auth is enabled, the webhook route must either:
+
+1. be explicitly exposed as public, or
+2. sit behind a relay/gateway that handles the trust boundary
+
+Example:
+
+```bash
+PENGUIN_AUTH_ENABLED=true \
+PENGUIN_PUBLIC_ENDPOINTS=/api/v1/integrations/github/webhook \
+penguin-web --host 127.0.0.1 --port 9000
+```
+
+Penguin still verifies the webhook HMAC signature and now also rejects replayed delivery IDs, but the route has to be reachable first.
+
+---
+
+## Recommended Deployment Profiles
+
+### Local development
+
+```bash
+PENGUIN_AUTH_ENABLED=false
+penguin-web --host 127.0.0.1 --port 9000
+```
+
+### Hardened exposed deployment
+
+```bash
+PENGUIN_AUTH_ENABLED=true
+PENGUIN_API_KEYS=replace-me
+PENGUIN_CORS_ORIGINS=https://penguin.example.com
+penguin-web --host 0.0.0.0 --port 9000
+```
+
+### GitHub webhook with auth enabled
+
+```bash
+PENGUIN_AUTH_ENABLED=true
+PENGUIN_API_KEYS=replace-me
+PENGUIN_PUBLIC_ENDPOINTS=/api/v1/integrations/github/webhook
+GITHUB_WEBHOOK_SECRET=replace-me
+penguin-web --host 0.0.0.0 --port 9000
+```
 
 ---
 
 ## Known Limitations
-* No HTML UI – interaction is via REST/WS or the CLI.  
-* Auth/RBAC, CORS, and HTTPS termination are future work.  
-* API surface may change without notice until v1.0.
+
+- The legacy dashboard/static UI is not the strategic frontend path and should not be treated as a polished product surface.
+- WebSocket auth is correct, but browser-native auth ergonomics still need a better long-term design.
+- GitHub webhook replay defense is process-local only; multi-instance deployments need shared replay state.
+- Rate limiting and per-user/per-route quotas are still future work.
 
 ---
 
-*Last updated: February 16th 2026* 
+*Last updated: April 16, 2026*

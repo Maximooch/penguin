@@ -71,6 +71,15 @@ def create_app() -> FastAPI:
     return app
 ```
 
+### Startup and CORS Hardening
+
+Current server behavior is slightly stricter than older examples on this page:
+
+- if `PENGUIN_CORS_ORIGINS` is unset, Penguin now uses a small localhost-only development allowlist instead of `"*"`
+- if the server binds to a non-local interface such as `0.0.0.0` while auth is disabled, startup is blocked unless `PENGUIN_ALLOW_INSECURE_NO_AUTH=true` is set explicitly
+
+That startup check exists to reduce accidental exposure of an unauthenticated development server.
+
 ### Core Instance Management
 
 The server uses a global core instance pattern for efficient resource usage:
@@ -202,6 +211,11 @@ Process a chat message with optional conversation support, multi-modal capabilit
 #### WebSocket `/api/v1/chat/stream`
 
 Stream chat responses in real-time with support for reasoning models and multiple agents.
+
+**Authentication note:**
+- when web auth is enabled, protected WebSocket routes now enforce authentication during the handshake before `accept()`
+- header-based API key or bearer-token auth is supported for clients that can send them
+- query-string API key auth is not supported
 
 **Connection:**
 ```javascript
@@ -1194,6 +1208,29 @@ Get comprehensive model and system capabilities.
 
 ### Security & Permissions
 
+The web server now has active auth controls instead of relying entirely on network trust.
+
+**Current behavior:**
+- protected HTTP routes can require API-key or JWT authentication
+- protected WebSocket routes require explicit auth checks before connection acceptance
+- query-parameter API keys are not accepted
+- additional unauthenticated routes can be exposed intentionally with `PENGUIN_PUBLIC_ENDPOINTS`
+
+**Default public routes include:**
+- `/`
+- `/api/docs`
+- `/api/redoc`
+- `/api/openapi.json`
+- `/api/v1/health`
+- `/static/...`
+
+**GitHub webhook note:**
+When global auth is enabled, GitHub webhook delivery usually requires either:
+- exposing `/api/v1/integrations/github/webhook` through `PENGUIN_PUBLIC_ENDPOINTS`, or
+- placing Penguin behind a relay/gateway that handles the trust boundary
+
+GitHub will not send Penguin API keys on webhook delivery.
+
 Penguin provides security endpoints for managing permissions, approvals, and audit logs.
 
 :::note Migration Status
@@ -1372,6 +1409,12 @@ After approval/denial:
 ### File Upload and Multi-Modal Support
 
 #### POST `/api/v1/upload`
+
+**Security notes:**
+- this endpoint is currently restricted to image uploads
+- empty uploads are rejected
+- server-side size enforcement is controlled by `PENGUIN_MAX_UPLOAD_BYTES`
+- partially written files are removed if validation fails
 
 Upload files (primarily images) for use in conversations.
 
