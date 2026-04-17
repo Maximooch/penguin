@@ -1,5 +1,6 @@
 from datetime import datetime
 import importlib
+import asyncio
 import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -306,3 +307,63 @@ def test_project_create_reports_default_workspace_honestly(tmp_path):
     assert "Execution root:" in printed
 
 
+
+
+def test_runmode_help_text_reflects_continuous_mode_truth():
+    from click.testing import CliRunner
+    from penguin.cli.cli import app
+    from typer.main import get_command
+
+    runner = CliRunner()
+    result = runner.invoke(get_command(app), ["--help"], prog_name="penguin")
+
+    assert result.exit_code == 0
+    assert "24/7 mode" in result.stdout
+    assert "ready frontier" in result.stdout
+    assert "determine next steps" in result.stdout
+    assert "does not imply blueprint/task-defined time limits" in result.stdout
+
+
+def test_handle_run_mode_reports_waiting_input_honestly():
+    from penguin.cli import cli as cli_module
+
+    core = SimpleNamespace(
+        current_runmode_status_summary="Awaiting user clarification.",
+        start_run_mode=AsyncMock(return_value=None),
+    )
+
+    with patch.object(cli_module, "_core", core), patch.object(cli_module, "console") as console_mock:
+        asyncio.run(cli_module._handle_run_mode(task_name="Task", description=None, continuous=False, time_limit=None))
+
+    printed = " ".join(str(call.args[0]) for call in console_mock.print.call_args_list if call.args)
+    assert "waiting for clarification/input" in printed.lower()
+
+
+def test_handle_run_mode_reports_time_limit_honestly():
+    from penguin.cli import cli as cli_module
+
+    core = SimpleNamespace(
+        current_runmode_status_summary="RunMode stopped because the explicit time limit was reached.",
+        start_run_mode=AsyncMock(return_value=None),
+    )
+
+    with patch.object(cli_module, "_core", core), patch.object(cli_module, "console") as console_mock:
+        asyncio.run(cli_module._handle_run_mode(task_name="Task", description=None, continuous=True, time_limit=5))
+
+    printed = " ".join(str(call.args[0]) for call in console_mock.print.call_args_list if call.args)
+    assert "stopped due to time limit" in printed.lower()
+
+
+def test_handle_run_mode_reports_idle_honestly():
+    from penguin.cli import cli as cli_module
+
+    core = SimpleNamespace(
+        current_runmode_status_summary="RunMode stopped because no ready work remained.",
+        start_run_mode=AsyncMock(return_value=None),
+    )
+
+    with patch.object(cli_module, "_core", core), patch.object(cli_module, "console") as console_mock:
+        asyncio.run(cli_module._handle_run_mode(task_name=None, description=None, continuous=True, time_limit=None))
+
+    printed = " ".join(str(call.args[0]) for call in console_mock.print.call_args_list if call.args)
+    assert "no ready work remained" in printed.lower()

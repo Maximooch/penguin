@@ -851,18 +851,18 @@ def main_entry(
         None, "--resume", help="Resume a specific conversation by its session ID."
     ),
     run_task: Optional[str] = typer.Option(
-        None, "--run", help="Run a specific task or project in autonomous mode."
+        None, "--run", help="Start autonomous execution for a specific task or project target."
     ),
     continuous: bool = typer.Option(
         False,
         "--247",
         "--continuous",
-        help="Run in continuous mode until manually stopped.",
+        help="Run continuously (24/7 mode). Project-scoped runs work the ready frontier and may stop honestly when no tasks are ready; non-project runs may continue exploratorily by determining next steps.",
     ),
     time_limit: Optional[int] = typer.Option(
         None,
         "--time-limit",
-        help="Time limit in minutes for task/continuous execution.",
+        help="Cap run duration in minutes when explicitly provided here. This does not imply blueprint/task-defined time limits are surfaced in the CLI yet.",
     ),
     task_description: Optional[str] = typer.Option(
         None,
@@ -1345,7 +1345,28 @@ async def _handle_run_mode(
                 ui_update_callback_for_cli=ui_update_callback,
             )
 
-        console.print("[green]Run mode execution completed.[/green]")
+        status_summary = getattr(_core, "current_runmode_status_summary", "") or ""
+        status_summary_lower = status_summary.lower()
+
+        if "clarification" in status_summary_lower or "awaiting input" in status_summary_lower:
+            console.print(
+                f"[yellow]Run mode is waiting for clarification/input.[/yellow] {status_summary}"
+            )
+        elif (
+            "time limit" in status_summary_lower
+            or "time_limit" in status_summary_lower
+        ):
+            console.print(f"[yellow]Run mode stopped due to time limit.[/yellow] {status_summary}")
+        elif (
+            "idle" in status_summary_lower
+            or "no ready task" in status_summary_lower
+            or "no ready work remained" in status_summary_lower
+        ):
+            console.print(f"[yellow]Run mode stopped because no ready work remained.[/yellow] {status_summary}")
+        elif status_summary:
+            console.print(f"[green]Run mode finished.[/green] {status_summary}")
+        else:
+            console.print("[green]Run mode finished.[/green]")
 
     except Exception as e:
         logger.error(f"Error in run mode execution: {e}", exc_info=True)
