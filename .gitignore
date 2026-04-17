@@ -161,3 +161,8 @@ movie.mp4
 context/docs_cache/**/*
 !context/docs_cache/.gitkeep
 !context/docs_cache/README.md
+
+# Local temp/test artifacts
+.tmp/
+pytest-current
+projects.db

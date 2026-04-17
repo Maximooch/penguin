@@ -47,6 +47,15 @@ Key route groups:
 4. `/api/v1/chat/stream` – WebSocket for streaming chat responses
 5. `/api/v1/*` status/session endpoints for path, VCS, formatter, and LSP
 
+### RunMode / Task Execution Truth
+
+RunMode-backed execution semantics are richer than a simple success/fail response. Current shared truth includes:
+- clarification/waiting-input outcomes are non-terminal
+- explicit runmode time limits are a separate concept from blueprint/task/project timing fields
+- project-scoped autonomous execution may stop honestly when no ready work remains
+
+This page is not yet the full home for RunMode contract details, but it should not imply simpler behavior than the runtime actually has.
+
 ### Task / Clarification Surface Truth
 
 The task/project web surface is no longer just legacy CRUD sugar. Current behavior includes:

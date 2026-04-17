@@ -138,10 +138,33 @@ web/API surface when that can be done without turning the PR into a redesign.
   - stopped by time limit
 
 ### Phase 3: Time-Limit Truth Cleanup
-- [ ] Audit where CLI `--time-limit` is actually enforced today
-- [ ] Audit whether blueprint/task-defined time limits already surface into runtime behavior
-- [ ] If blueprint/task-defined limits are already active, distinguish their messaging from explicit CLI time limits
-- [ ] If blueprint/task-defined limits are not yet surfaced here, document that honestly rather than implying full support
+- [x] Audit where CLI `--time-limit` is actually enforced today
+- [x] Audit whether blueprint/task-defined time limits already surface into runtime behavior
+- [x] Conclude whether blueprint/task-defined limits should be distinguished from explicit CLI time limits in this PR
+- [x] Record the honest wording/documentation constraint for this surface
+
+#### Phase 3 Findings
+- CLI `--time-limit` is passed through `penguin/cli/cli.py` -> `PenguinCore.start_run_mode(...)` -> `RunMode(..., time_limit=...)`.
+- Actual enforcement of `time_limit` happens in `RunMode.start_continuous(...)`:
+  - the continuous loop checks elapsed wall-clock time against `self.time_limit`
+  - emits `status_type="time_limit_reached"`
+  - initiates graceful shutdown
+- Single-task `RunMode.start(...)` currently receives/displayes `time_limit` through the CLI path, but there is no equivalent per-task wall-clock enforcement in the single-task loop.
+- Web/API and `api_client.py` also pass a `time_limit` through to `start_run_mode`, so this truth is shared across surfaces.
+- Blueprint/task/project timing-related fields do exist, but they are separate concepts today:
+  - `budget_minutes` on `Project` / `Task`
+  - `phase_timebox_sec` on Blueprint / ITUV workflow config
+  - orchestration backend `phase_timeouts`
+- Those timing fields are **not** the same as the runmode CLI `--time-limit` contract, and they are not currently surfaced as equivalent limits in the runmode CLI.
+
+#### Phase 3 Direction
+- For this PR, keep the runmode CLI help/output honest:
+  - `--time-limit` is an explicit CLI-supplied cap on run duration
+  - do **not** imply that blueprint/task/project-defined timing fields are surfaced into the runmode CLI contract yet
+- If later work wants unified time-limit semantics, that should be a separate follow-up that explicitly reconciles:
+  - RunMode wall-clock limits
+  - task/project budgets
+  - ITUV/orchestration phase timeouts
 
 ### Phase 4: Tests
 - [ ] Add/refresh tests for CLI help text covering:
@@ -156,11 +179,11 @@ web/API surface when that can be done without turning the PR into a redesign.
 - [ ] Keep tests focused on contract truth, not internal implementation details
 
 ### Phase 5: Docs Alignment (CLI + shared runtime truth)
-- [ ] Update `docs/docs/usage/automode.md` to reflect current continuous-mode truth
-- [ ] Update `docs/docs/usage/cli_commands.md` for runmode flag truth
-- [ ] Ensure docs explain the two continuous-mode contracts clearly
-- [ ] Ensure docs do not imply that all continuous behavior is project/DAG-driven when it is not
-- [ ] Ensure docs mention clarification wait/resume outcomes where relevant
+- [x] Update `docs/docs/usage/automode.md` to reflect current continuous-mode truth
+- [x] Update `docs/docs/usage/cli_commands.md` for runmode flag truth
+- [x] Ensure docs explain the two continuous-mode contracts clearly
+- [x] Ensure docs do not imply that all continuous behavior is project/DAG-driven when it is not
+- [x] Ensure docs mention clarification wait/resume outcomes where relevant
 
 ### Phase 6: Web/API Surface Truth Pass (later in this PR if still manageable)
 - [ ] Audit whether web/API task execution surfaces distinguish:
