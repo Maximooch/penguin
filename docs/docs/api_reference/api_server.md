@@ -219,11 +219,14 @@ Stream chat responses in real-time with support for reasoning models and multipl
 
 **Authentication note:**
 - when web auth is enabled, protected WebSocket routes now enforce authentication during the handshake before `accept()`
-- header-based API key or bearer-token auth is supported for clients that can send them
+- header-based API key or bearer-token auth is supported only for clients that can send auth headers as part of the WebSocket handshake
+- native browser `WebSocket(...)` clients cannot attach arbitrary `Authorization` or `X-API-Key` headers, so the example below only works for public routes or routes intentionally exposed via `PENGUIN_PUBLIC_ENDPOINTS`
 - query-string API key auth is not supported
+- for authenticated connections, use a server-side or Node-based WebSocket client that can set headers, or introduce an authenticated upgrade/ticket flow in front of the browser client
 
 **Connection:**
 ```javascript
+// Works for public or intentionally exposed routes only.
 const ws = new WebSocket('ws://localhost:8000/api/v1/chat/stream');
 ```
 
