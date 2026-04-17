@@ -50,6 +50,31 @@ def test_main_defaults_to_localhost_without_auth(monkeypatch, capsys):
     assert calls[0][1]["host"] == "127.0.0.1"
 
 
+def test_main_prints_startup_token_when_auth_bootstrap_enabled(monkeypatch, capsys):
+    calls = []
+    app = object()
+
+    fake_uvicorn = types.SimpleNamespace(
+        run=lambda *args, **kwargs: calls.append((args, kwargs))
+    )
+    monkeypatch.setitem(sys.modules, "uvicorn", fake_uvicorn)
+    monkeypatch.setattr(server, "create_app_factory", lambda: app)
+    monkeypatch.delenv("HOST", raising=False)
+    monkeypatch.setenv("PORT", "9000")
+    monkeypatch.setenv("DEBUG", "false")
+    monkeypatch.setenv("PENGUIN_AUTH_ENABLED", "true")
+    monkeypatch.delenv("PENGUIN_API_KEYS", raising=False)
+    monkeypatch.delenv("PENGUIN_AUTH_STARTUP_TOKEN", raising=False)
+
+    assert server.main() == 0
+
+    output = capsys.readouterr().out
+    assert "Local Penguin authorization is enabled." in output
+    assert "http://127.0.0.1:9000/api/v1/auth/session" in output
+    assert "Startup token:" in output
+    assert calls[0][0][0] is app
+
+
 def test_start_server_non_debug_uses_app_instance(monkeypatch):
     calls = []
     app = object()

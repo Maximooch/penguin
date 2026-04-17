@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import warnings
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +17,7 @@ from penguin.web.middleware.auth import (
     AuthConfig,
     AuthenticationError,
     authenticate_connection,
+    get_startup_auth_token,
     require_websocket_auth,
 )
 from penguin.web.routes import ALLOWED_UPLOAD_CONTENT_TYPES, router
@@ -30,6 +32,8 @@ def clear_auth_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PENGUIN_AUTH_ENABLED", raising=False)
     monkeypatch.delenv("PENGUIN_CORS_ORIGINS", raising=False)
     monkeypatch.delenv("PENGUIN_MAX_UPLOAD_BYTES", raising=False)
+    monkeypatch.delenv("PENGUIN_AUTH_STARTUP_TOKEN", raising=False)
+    monkeypatch.delenv("PENGUIN_SESSION_SECRET", raising=False)
     monkeypatch.delenv("PENGUIN_PROVIDER_CREDENTIALS_STORE", raising=False)
     monkeypatch.delenv("PENGUIN_PROVIDER_AUTH_STORE", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -70,6 +74,20 @@ def test_authenticate_connection_rejects_query_param_api_keys(
 
     with pytest.raises(AuthenticationError, match="No valid authentication"):
         authenticate_connection(connection, auth_config)
+
+
+def test_startup_auth_token_generated_only_without_configured_api_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PENGUIN_AUTH_ENABLED", "true")
+
+    token = get_startup_auth_token(AuthConfig())
+
+    assert token
+    assert os.environ["PENGUIN_AUTH_STARTUP_TOKEN"] == token
+
+    monkeypatch.setenv("PENGUIN_API_KEYS", "configured-key")
+    assert get_startup_auth_token(AuthConfig()) is None
 
 
 @pytest.mark.asyncio
@@ -160,7 +178,9 @@ def test_chat_stream_websocket_rejects_query_param_api_key(
     assert exc_info.value.code == 1008
 
 
-def test_default_cors_origins_do_not_use_wildcard(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_default_cors_origins_do_not_use_wildcard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from penguin.web.app import DEFAULT_DEV_CORS_ORIGINS, create_app
 
     app = create_app()
@@ -237,7 +257,9 @@ def test_provider_credentials_prefer_environment_over_legacy_file(
 ) -> None:
     store_path = tmp_path / "providers.json"
     store_path.write_text(
-        json.dumps({"version": 1, "providers": {"openai": {"type": "api", "key": "file-key"}}}),
+        json.dumps(
+            {"version": 1, "providers": {"openai": {"type": "api", "key": "file-key"}}}
+        ),
         encoding="utf-8",
     )
     monkeypatch.setenv("PENGUIN_PROVIDER_CREDENTIALS_STORE", str(store_path))
@@ -255,7 +277,12 @@ def test_provider_credentials_warn_on_legacy_store_usage(
 ) -> None:
     store_path = tmp_path / "provider_auth.json"
     store_path.write_text(
-        json.dumps({"version": 1, "providers": {"anthropic": {"type": "api", "key": "file-key"}}}),
+        json.dumps(
+            {
+                "version": 1,
+                "providers": {"anthropic": {"type": "api", "key": "file-key"}},
+            }
+        ),
         encoding="utf-8",
     )
     monkeypatch.setenv("PENGUIN_PROVIDER_AUTH_STORE", str(store_path))
@@ -307,7 +334,12 @@ def test_provider_credentials_custom_store_path_does_not_warn(
 ) -> None:
     store_path = tmp_path / "providers.json"
     store_path.write_text(
-        json.dumps({"version": 1, "providers": {"anthropic": {"type": "api", "key": "file-key"}}}),
+        json.dumps(
+            {
+                "version": 1,
+                "providers": {"anthropic": {"type": "api", "key": "file-key"}},
+            }
+        ),
         encoding="utf-8",
     )
     monkeypatch.setenv("PENGUIN_PROVIDER_CREDENTIALS_STORE", str(store_path))
@@ -349,3 +381,78 @@ def test_http_auth_does_not_mask_downstream_exceptions(
 
     assert response.status_code == 500
     assert "AUTHENTICATION_ERROR" not in response.text
+
+
+@pytest.fixture
+def local_auth_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
+    from penguin.web.middleware.auth import AuthenticationMiddleware
+
+    monkeypatch.setenv("PENGUIN_AUTH_ENABLED", "true")
+    app = FastAPI()
+    app.add_middleware(AuthenticationMiddleware, config=AuthConfig())
+    app.include_router(router)
+    return app
+
+
+def test_auth_session_endpoint_accepts_startup_token_and_sets_cookie(
+    local_auth_app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PENGUIN_AUTH_STARTUP_TOKEN", "startup-token-123")
+    client = TestClient(local_auth_app, base_url="http://127.0.0.1:9000")
+
+    response = client.post(
+        "/api/v1/auth/session",
+        json={"token": "startup-token-123"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["authenticated"] is True
+    assert response.json()["method"] == "startup_token"
+    assert "penguin_session=" in response.headers["set-cookie"]
+    assert "HttpOnly" in response.headers["set-cookie"]
+    assert "SameSite=lax" in response.headers["set-cookie"]
+
+
+def test_auth_session_endpoint_accepts_configured_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from penguin.web.middleware.auth import AuthenticationMiddleware
+
+    monkeypatch.setenv("PENGUIN_AUTH_ENABLED", "true")
+    monkeypatch.setenv("PENGUIN_API_KEYS", "configured-key")
+    app = FastAPI()
+    app.add_middleware(AuthenticationMiddleware, config=AuthConfig())
+    app.include_router(router)
+    client = TestClient(app, base_url="http://127.0.0.1:9000")
+
+    response = client.post(
+        "/api/v1/auth/session",
+        json={"token": "configured-key"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["method"] == "api_key"
+    assert "penguin_session=" in response.headers["set-cookie"]
+
+
+def test_auth_session_endpoint_is_public_but_rejects_invalid_token(
+    local_auth_app: FastAPI,
+) -> None:
+    client = TestClient(local_auth_app, base_url="http://127.0.0.1:9000")
+
+    response = client.post("/api/v1/auth/session", json={"token": "bad-token"})
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid local authorization token"
+
+
+def test_auth_logout_clears_cookie(local_auth_app: FastAPI) -> None:
+    client = TestClient(local_auth_app, base_url="http://127.0.0.1:9000")
+
+    response = client.post("/api/v1/auth/logout")
+
+    assert response.status_code == 200
+    assert response.json() == {"authenticated": False}
+    assert "penguin_session=" in response.headers["set-cookie"]
+    assert "Max-Age=0" in response.headers["set-cookie"]

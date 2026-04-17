@@ -77,6 +77,26 @@ def _print_startup_banner(host: str, port: int) -> None:
     print(f"\033[96mAPI documentation: http://{display_host}:{port}/api/docs\033[0m\n")
 
 
+def _print_local_auth_bootstrap_banner(host: str, port: int) -> None:
+    """Print one-time local authorization instructions when bootstrap auth is enabled."""
+    try:
+        from .middleware.auth import AuthConfig, get_startup_auth_token
+    except ImportError:
+        return
+
+    auth_config = AuthConfig()
+    startup_token = get_startup_auth_token(auth_config)
+    if not startup_token:
+        return
+
+    display_host = _display_host(host)
+    print("\033[93mLocal Penguin authorization is enabled.\033[0m")
+    print(
+        f"\033[93mRedeem the startup token at http://{display_host}:{port}/api/v1/auth/session\033[0m"
+    )
+    print(f"\033[93mStartup token: {startup_token}\033[0m\n")
+
+
 def main():
     """Entry point for the web server."""
     try:
@@ -102,6 +122,7 @@ def main():
         return 1
 
     _print_startup_banner(host, port)
+    _print_local_auth_bootstrap_banner(host, port)
 
     if debug:
         uvicorn.run(
