@@ -98,6 +98,71 @@ class AuthConfig:
         return any(path.startswith(prefix) for prefix in self.public_endpoint_prefixes)
 
 
+# Public-endpoint matching convention:
+# - entries ending with "/" (except "/" itself) are treated as prefix matches
+# - all other entries require exact path equality
+# `is_public_endpoint()` checks exact matches first, then falls back to prefix matching.
+
+def extract_api_key(connection: Any) -> Optional[str]:
+    """Extract API key from request or websocket headers."""
+    headers = connection.headers
+
+    api_key = headers.get("X-API-Key")
+    if api_key:
+        return api_key
+
+    link_key = headers.get("X-Link-API-Key")
+    if link_key:
+        return link_key
+
+    return None
+
+
+def extract_bearer_token(connection: Any) -> Optional[str]:
+    """Extract Bearer token from Authorization header."""
+    auth_header = connection.headers.get("Authorization")
+    if not auth_header:
+        return None
+
+    parts = auth_header.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return None
+
+    return parts[1]
+
+
+def validate_api_key(api_key: str, config: AuthConfig) -> bool:
+    """Validate an API key against configured keys."""
+    if not api_key:
+        return False
+    return api_key in config.api_keys
+
+
+def validate_jwt(token: str, config: AuthConfig) -> dict:
+    """Validate and decode a JWT token using the provided config."""
+    if not config.jwt_secret:
+        raise AuthenticationError("JWT authentication not configured")
+
+    try:
+        claims = jwt.decode(
+            token,
+            config.jwt_secret,
+            algorithms=[config.jwt_algorithm]
+        )
+
+        if "exp" in claims:
+            exp_timestamp = claims["exp"]
+            if datetime.utcfromtimestamp(exp_timestamp) < datetime.utcnow():
+                raise AuthenticationError("Token has expired")
+
+        return claims
+
+    except jwt.ExpiredSignatureError:
+        raise AuthenticationError("Token has expired")
+    except jwt.InvalidTokenError as e:
+        raise AuthenticationError(f"Invalid token: {str(e)}")
+
+
 class AuthenticationMiddleware(BaseHTTPMiddleware):
     """Middleware for authenticating API requests."""
 
@@ -133,8 +198,8 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
                 },
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        except Exception as e:
-            logger.error(f"Unexpected error in authentication: {str(e)}")
+        except Exception:
+            logger.exception("Unexpected error in authentication")
             return JSONResponse(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 content={
@@ -159,89 +224,24 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
 
     async def _authenticate_request(self, request: Request) -> dict:
         """Authenticate a request using available methods."""
-        # Try API key authentication first (faster)
-        api_key = self._extract_api_key(request)
-        if api_key and self._validate_api_key(api_key):
+        api_key = extract_api_key(request)
+        if api_key and validate_api_key(api_key, self.config):
             return {
                 "method": "api_key",
                 "subject": "api_client",
                 "metadata": {"key_prefix": api_key[:8] + "..."}
             }
 
-        # Try JWT authentication
-        token = self._extract_bearer_token(request)
+        token = extract_bearer_token(request)
         if token:
-            claims = self._validate_jwt(token)
+            claims = validate_jwt(token, self.config)
             return {
                 "method": "jwt",
                 "subject": claims.get("sub", "unknown"),
                 "metadata": claims
             }
 
-        # No valid authentication found
         raise AuthenticationError("No valid authentication credentials provided")
-
-    def _extract_api_key(self, connection: Any) -> Optional[str]:
-        """Extract API key from request or websocket headers."""
-        headers = connection.headers
-
-        # Check X-API-Key header
-        api_key = headers.get("X-API-Key")
-        if api_key:
-            return api_key
-
-        # Check X-Link-API-Key header (Link-specific)
-        link_key = headers.get("X-Link-API-Key")
-        if link_key:
-            return link_key
-
-        return None
-
-    def _extract_bearer_token(self, connection: Any) -> Optional[str]:
-        """Extract Bearer token from Authorization header."""
-        auth_header = connection.headers.get("Authorization")
-        if not auth_header:
-            return None
-
-        parts = auth_header.split()
-        if len(parts) != 2 or parts[0].lower() != "bearer":
-            return None
-
-        return parts[1]
-
-    def _validate_api_key(self, api_key: str) -> bool:
-        """Validate an API key."""
-        if not api_key:
-            return False
-
-        # Check against configured keys
-        return api_key in self.config.api_keys
-
-    def _validate_jwt(self, token: str) -> dict:
-        """Validate and decode a JWT token."""
-        if not self.config.jwt_secret:
-            raise AuthenticationError("JWT authentication not configured")
-
-        try:
-            # Decode and validate token
-            claims = jwt.decode(
-                token,
-                self.config.jwt_secret,
-                algorithms=[self.config.jwt_algorithm]
-            )
-
-            # Check expiration
-            if "exp" in claims:
-                exp_timestamp = claims["exp"]
-                if datetime.utcfromtimestamp(exp_timestamp) < datetime.utcnow():
-                    raise AuthenticationError("Token has expired")
-
-            return claims
-
-        except jwt.ExpiredSignatureError:
-            raise AuthenticationError("Token has expired")
-        except jwt.InvalidTokenError as e:
-            raise AuthenticationError(f"Invalid token: {str(e)}")
 
     def create_jwt(self, subject: str, metadata: Optional[dict] = None) -> str:
         """Create a JWT token for a subject.
@@ -316,19 +316,18 @@ def authenticate_connection(
 ) -> dict:
     """Authenticate an HTTP or WebSocket connection using shared auth rules."""
     auth_config = config or AuthConfig()
-    middleware = AuthenticationMiddleware(app=lambda scope, receive, send: None, config=auth_config)
 
-    api_key = middleware._extract_api_key(connection)
-    if api_key and middleware._validate_api_key(api_key):
+    api_key = extract_api_key(connection)
+    if api_key and validate_api_key(api_key, auth_config):
         return {
             "method": "api_key",
             "subject": "api_client",
             "metadata": {"key_prefix": api_key[:8] + "..."},
         }
 
-    token = middleware._extract_bearer_token(connection)
+    token = extract_bearer_token(connection)
     if token:
-        claims = middleware._validate_jwt(token)
+        claims = validate_jwt(token, auth_config)
         return {
             "method": "jwt",
             "subject": claims.get("sub", "unknown"),

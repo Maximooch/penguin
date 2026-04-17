@@ -45,7 +45,12 @@ def create_app() -> FastAPI:
 
     # Configure CORS with environment-based origins
     origins_env = os.getenv("PENGUIN_CORS_ORIGINS", "").strip()
-    origins_list = [o.strip() for o in origins_env.split(",") if o.strip()] or ["*"]
+    origins_list = [o.strip() for o in origins_env.split(",") if o.strip()] or [
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        "http://localhost:9000",
+        "http://127.0.0.1:9000",
+    ]
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins_list,

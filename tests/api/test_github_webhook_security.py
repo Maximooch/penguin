@@ -29,10 +29,13 @@ def clear_webhook_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def webhook_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", "super-secret")
     monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    original_core = getattr(github_router, "core", None)
     github_router.core = SimpleNamespace()
     app = FastAPI()
     app.include_router(github_router)
-    return TestClient(app)
+    with TestClient(app) as client:
+        yield client
+    github_router.core = original_core
 
 
 def _signature(secret: str, payload: bytes) -> str:
@@ -53,6 +56,7 @@ def _payload_bytes() -> bytes:
 def test_remember_github_delivery_rejects_replay(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PENGUIN_GITHUB_WEBHOOK_DELIVERY_TTL_SECONDS", "60")
 
+    assert remember_github_delivery("", now=100.0) is False
     assert remember_github_delivery("delivery-1", now=100.0) is True
     assert remember_github_delivery("delivery-1", now=120.0) is False
     assert remember_github_delivery("delivery-1", now=161.0) is True
@@ -106,6 +110,7 @@ def test_github_webhook_transient_failure_does_not_poison_delivery(
 ) -> None:
     monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", "super-secret")
     monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    original_core = getattr(github_router, "core", None)
     github_router.core = None
     app = FastAPI()
     app.include_router(github_router)
@@ -132,4 +137,5 @@ def test_github_webhook_transient_failure_does_not_poison_delivery(
         data=payload,
         headers=headers,
     )
+    github_router.core = original_core
     assert second.status_code == 200

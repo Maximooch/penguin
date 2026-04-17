@@ -410,9 +410,6 @@ def apply_credentials_to_environment(
         if pid == "openai":
             os.environ["OPENAI_API_KEY"] = key
             return
-        if pid == "ollama":
-            os.environ["OLLAMA_HOST"] = key
-            return
 
         os.environ[f"{pid.upper()}_API_KEY"] = key
         return

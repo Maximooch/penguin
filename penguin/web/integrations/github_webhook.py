@@ -52,10 +52,10 @@ def _delivery_cache_ttl_seconds() -> float:
 
 
 def remember_github_delivery(delivery_id: str, *, now: float | None = None) -> bool:
-    """Return True when delivery is new, False when it is a replay."""
+    """Return True when delivery is new, False when it is blank or a replay."""
     normalized = delivery_id.strip()
     if not normalized:
-        return True
+        return False
 
     current_time = now if isinstance(now, (int, float)) else time.monotonic()
     ttl_seconds = _delivery_cache_ttl_seconds()
