@@ -550,7 +550,7 @@ Register an existing agent with a coordinator role.
 
 Penguin includes built-in GitHub webhook support for automated workflows.
 
-#### POST `/api/v1/github/webhook`
+#### POST `/api/v1/integrations/github/webhook`
 
 Receive GitHub webhook events (configured in GitHub repository settings).
 
@@ -1628,7 +1628,7 @@ By default, the server runs on port 8000 and provides:
 - **Web UI**: http://localhost:8000/
 - **API Documentation (Swagger)**: http://localhost:8000/api/docs
 - **API Documentation (ReDoc)**: http://localhost:8000/api/redoc
-- **GitHub Webhook**: http://localhost:8000/api/v1/github/webhook
+- **GitHub Webhook**: http://localhost:8000/api/v1/integrations/github/webhook
 - **WebSocket Events**: ws://localhost:8000/api/v1/events/ws
 - **WebSocket Chat**: ws://localhost:8000/api/v1/chat/stream
 

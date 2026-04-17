@@ -33,6 +33,7 @@ import uuid
 from urllib.parse import unquote, urlparse
 import websockets
 import httpx
+from PIL import Image, UnidentifiedImageError
 
 from penguin.config import WORKSPACE_PATH
 from penguin.core import PenguinCore
@@ -166,11 +167,55 @@ ALLOWED_UPLOAD_CONTENT_TYPES = {
     "image/webp",
 }
 ALLOWED_UPLOAD_EXTENSIONS = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
+VALIDATED_UPLOAD_IMAGE_FORMATS = {
+    "GIF": ("image/gif", {".gif"}),
+    "JPEG": ("image/jpeg", {".jpeg", ".jpg"}),
+    "PNG": ("image/png", {".png"}),
+    "WEBP": ("image/webp", {".webp"}),
+}
 
 
 def _max_upload_bytes() -> int:
     """Return the configured upload size limit in bytes."""
     return int(os.getenv("PENGUIN_MAX_UPLOAD_BYTES", str(DEFAULT_MAX_UPLOAD_BYTES)))
+
+
+def _validate_saved_upload_image(
+    file_path: Path,
+    *,
+    declared_content_type: str,
+    declared_extension: str,
+) -> str:
+    """Validate a saved upload against actual image bytes on disk."""
+    try:
+        with Image.open(file_path) as image:
+            detected_format = (image.format or "").upper()
+            image.verify()
+    except (UnidentifiedImageError, OSError, SyntaxError, ValueError) as exc:
+        raise HTTPException(
+            status_code=415,
+            detail="Uploaded file is not a valid supported image.",
+        ) from exc
+
+    detected = VALIDATED_UPLOAD_IMAGE_FORMATS.get(detected_format)
+    if detected is None:
+        raise HTTPException(
+            status_code=415,
+            detail="Unsupported image format. Allowed formats: GIF, JPEG, PNG, WEBP.",
+        )
+
+    detected_content_type, valid_extensions = detected
+    if declared_content_type != detected_content_type:
+        raise HTTPException(
+            status_code=415,
+            detail="Uploaded file content does not match declared MIME type.",
+        )
+    if declared_extension not in valid_extensions:
+        raise HTTPException(
+            status_code=415,
+            detail="Uploaded file content does not match the file extension.",
+        )
+    return detected_content_type
 
 
 _FIND_FILE_CACHE_TTL_SECONDS = 5.0
@@ -5616,6 +5661,7 @@ async def upload_file(
     file: UploadFile = File(...), core: PenguinCore = Depends(get_core)
 ):
     """Upload an image file to be used in conversations."""
+    file_path: Path | None = None
     try:
         if not file.filename:
             raise HTTPException(status_code=400, detail="Filename is required")
@@ -5658,18 +5704,27 @@ async def upload_file(
         if bytes_written == 0:
             raise HTTPException(status_code=400, detail="Uploaded file is empty")
 
+        validated_content_type = _validate_saved_upload_image(
+            file_path,
+            declared_content_type=content_type,
+            declared_extension=extension,
+        )
+
         return {
             "path": str(file_path),
             "filename": file.filename,
-            "content_type": content_type,
+            "content_type": validated_content_type,
             "size_bytes": bytes_written,
         }
     except HTTPException:
-        if 'file_path' in locals() and file_path.exists():
+        if file_path and file_path.exists():
             with suppress(FileNotFoundError):
                 file_path.unlink()
         raise
     except Exception as e:
+        if file_path and file_path.exists():
+            with suppress(FileNotFoundError):
+                file_path.unlink()
         logger.error(f"Error uploading file: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error uploading file: {str(e)}")
 

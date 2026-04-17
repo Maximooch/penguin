@@ -116,19 +116,7 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         try:
-            # Attempt to authenticate the request
             auth_result = await self._authenticate_request(request)
-
-            # Add auth info to request state
-            request.state.authenticated = True
-            request.state.auth_method = auth_result["method"]
-            request.state.auth_subject = auth_result.get("subject", "unknown")
-            request.state.auth_metadata = auth_result.get("metadata", {})
-
-            # Process request
-            response = await call_next(request)
-            return response
-
         except AuthenticationError as e:
             logger.warning(f"Authentication failed for {request.url.path}: {str(e)}")
             return JSONResponse(
@@ -160,6 +148,14 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
                     }
                 },
             )
+
+        # Add auth info to request state
+        request.state.authenticated = True
+        request.state.auth_method = auth_result["method"]
+        request.state.auth_subject = auth_result.get("subject", "unknown")
+        request.state.auth_metadata = auth_result.get("metadata", {})
+
+        return await call_next(request)
 
     async def _authenticate_request(self, request: Request) -> dict:
         """Authenticate a request using available methods."""

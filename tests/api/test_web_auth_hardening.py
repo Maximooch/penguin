@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import io
 import json
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 from fastapi import FastAPI, WebSocketException
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
@@ -201,6 +203,12 @@ def test_upload_rejects_oversized_file(monkeypatch: pytest.MonkeyPatch) -> None:
     assert response.status_code == 413
 
 
+def _png_1x1_bytes() -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (1, 1), color=(255, 0, 0)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
 def test_upload_accepts_supported_image(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -213,13 +221,13 @@ def test_upload_accepts_supported_image(
 
     response = client.post(
         "/api/v1/upload",
-        files={"file": ("image.png", io.BytesIO(b"pngdata"), "image/png")},
+        files={"file": ("image.png", io.BytesIO(_png_1x1_bytes()), "image/png")},
     )
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["content_type"] in ALLOWED_UPLOAD_CONTENT_TYPES
-    assert payload["size_bytes"] == 7
+    assert payload["size_bytes"] == len(_png_1x1_bytes())
     assert Path(payload["path"]).exists()
 
 
@@ -245,12 +253,12 @@ def test_provider_credentials_warn_on_legacy_store_usage(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    store_path = tmp_path / "providers.json"
+    store_path = tmp_path / "provider_auth.json"
     store_path.write_text(
         json.dumps({"version": 1, "providers": {"anthropic": {"type": "api", "key": "file-key"}}}),
         encoding="utf-8",
     )
-    monkeypatch.setenv("PENGUIN_PROVIDER_CREDENTIALS_STORE", str(store_path))
+    monkeypatch.setenv("PENGUIN_PROVIDER_AUTH_STORE", str(store_path))
 
     with pytest.warns(UserWarning, match="plaintext JSON store"):
         records = provider_credentials_service.get_provider_credentials()
@@ -271,3 +279,73 @@ def test_http_auth_returns_401_without_credentials(
 
     assert response.status_code == 401
     assert response.json()["detail"]["error"]["code"] == "AUTHENTICATION_FAILED"
+
+
+def test_upload_rejects_spoofed_image_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr("penguin.web.routes.WORKSPACE_PATH", str(tmp_path))
+    router.core = SimpleNamespace()
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/upload",
+        files={"file": ("fake.png", io.BytesIO(b"not-a-real-image"), "image/png")},
+    )
+
+    assert response.status_code == 415
+    uploads_dir = tmp_path / "uploads"
+    assert not uploads_dir.exists() or list(uploads_dir.iterdir()) == []
+
+
+def test_provider_credentials_custom_store_path_does_not_warn(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store_path = tmp_path / "providers.json"
+    store_path.write_text(
+        json.dumps({"version": 1, "providers": {"anthropic": {"type": "api", "key": "file-key"}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PENGUIN_PROVIDER_CREDENTIALS_STORE", str(store_path))
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        records = provider_credentials_service.get_provider_credentials()
+
+    assert records["anthropic"]["key"] == "file-key"
+    assert not caught
+
+
+def test_provider_credentials_do_not_treat_ollama_host_as_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+
+    records = provider_credentials_service.get_provider_credentials()
+
+    assert "ollama" not in records
+
+
+def test_http_auth_does_not_mask_downstream_exceptions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PENGUIN_AUTH_ENABLED", "true")
+    monkeypatch.setenv("PENGUIN_API_KEYS", "http-test-key")
+
+    from penguin.web.app import create_app
+
+    app = create_app()
+
+    @app.get("/boom")
+    async def boom():
+        raise RuntimeError("boom")
+
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.get("/boom", headers={"X-API-Key": "http-test-key"})
+
+    assert response.status_code == 500
+    assert "AUTHENTICATION_ERROR" not in response.text

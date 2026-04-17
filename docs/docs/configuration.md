@@ -85,9 +85,9 @@ PENGUIN_WRITE_ROOT=project                     # Initial execution mode (project
 TASK_COMPLETION_PHRASE=TASK_COMPLETED
 
 # Web server
-WEB_HOST=127.0.0.1
-WEB_PORT=9000
-WEB_DEBUG=false
+HOST=127.0.0.1
+PORT=9000
+DEBUG=false
 
 # Web auth and exposure controls
 PENGUIN_AUTH_ENABLED=true
@@ -128,8 +128,8 @@ The web server now has explicit startup and auth hardening behavior that operato
 
 ```bash
 PENGUIN_AUTH_ENABLED=false
-WEB_HOST=127.0.0.1
-WEB_PORT=9000
+HOST=127.0.0.1
+PORT=9000
 ```
 
 #### Exposed deployment
@@ -138,8 +138,8 @@ WEB_PORT=9000
 PENGUIN_AUTH_ENABLED=true
 PENGUIN_API_KEYS=replace-me
 PENGUIN_CORS_ORIGINS=https://penguin.example.com
-WEB_HOST=0.0.0.0
-WEB_PORT=9000
+HOST=0.0.0.0
+PORT=9000
 ```
 
 #### GitHub webhooks with auth enabled
@@ -149,8 +149,8 @@ PENGUIN_AUTH_ENABLED=true
 PENGUIN_API_KEYS=replace-me
 PENGUIN_PUBLIC_ENDPOINTS=/api/v1/integrations/github/webhook
 GITHUB_WEBHOOK_SECRET=replace-me
-WEB_HOST=0.0.0.0
-WEB_PORT=9000
+HOST=0.0.0.0
+PORT=9000
 ```
 
 Environment variables are now the preferred credential path for provider secrets in headless/server/container usage. Legacy plaintext JSON credential persistence remains compatibility fallback only.

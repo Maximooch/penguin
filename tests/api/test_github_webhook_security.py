@@ -99,3 +99,37 @@ def test_github_webhook_requires_delivery_id(webhook_client: TestClient) -> None
 
     assert response.status_code == 400
     assert response.json()["detail"] == "Missing delivery id"
+
+
+def test_github_webhook_transient_failure_does_not_poison_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", "super-secret")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    github_router.core = None
+    app = FastAPI()
+    app.include_router(github_router)
+    client = TestClient(app)
+
+    payload = _payload_bytes()
+    headers = {
+        "X-Hub-Signature-256": _signature("super-secret", payload),
+        "X-GitHub-Event": "ping",
+        "X-GitHub-Delivery": "delivery-transient",
+        "Content-Type": "application/json",
+    }
+
+    first = client.post(
+        "/api/v1/integrations/github/webhook",
+        data=payload,
+        headers=headers,
+    )
+    assert first.status_code == 500
+
+    github_router.core = SimpleNamespace()
+    second = client.post(
+        "/api/v1/integrations/github/webhook",
+        data=payload,
+        headers=headers,
+    )
+    assert second.status_code == 200

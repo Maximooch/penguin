@@ -678,9 +678,6 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
     if not delivery_id:
         logger.warning("Missing X-GitHub-Delivery header")
         raise HTTPException(status_code=400, detail="Missing delivery id")
-    if not remember_github_delivery(delivery_id):
-        logger.warning("Rejected replayed GitHub delivery: %s", delivery_id)
-        raise HTTPException(status_code=409, detail="Duplicate delivery")
 
     # Get event type
     event_type = request.headers.get("X-GitHub-Event", "unknown")
@@ -704,6 +701,10 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
     if allowed_repo and repo_name and repo_name != allowed_repo:
         logger.warning(f"Webhook from unauthorized repo: {repo_name} (allowed: {allowed_repo})")
         raise HTTPException(status_code=403, detail="Unauthorized repository")
+
+    if not remember_github_delivery(delivery_id):
+        logger.warning("Rejected replayed GitHub delivery: %s", delivery_id)
+        raise HTTPException(status_code=409, detail="Duplicate delivery")
 
     # Route event to appropriate handler
     # Process in background to avoid timeout

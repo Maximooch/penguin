@@ -112,7 +112,7 @@ def _load_store() -> dict[str, Any]:
 
     providers = primary.get("providers")
     if isinstance(providers, dict) and providers:
-        if path != _default_store_path() or os.getenv(_STORE_ENV) or os.getenv(_LEGACY_STORE_ENV):
+        if os.getenv(_LEGACY_STORE_ENV) or path == _legacy_default_store_path():
             _warn_legacy_store_usage(path)
         return primary
 
@@ -209,7 +209,6 @@ def get_provider_credentials() -> dict[str, dict[str, Any]]:
             "openrouter",
             "anthropic",
             "google",
-            "ollama",
         })
 
         for provider_id in provider_ids:
@@ -301,7 +300,6 @@ def _provider_env_candidates(provider_id: str) -> list[str]:
         "openai": ["OPENAI_API_KEY"],
         "anthropic": ["ANTHROPIC_API_KEY"],
         "google": ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
-        "ollama": ["OLLAMA_HOST"],
     }
     if pid in mapping:
         return mapping[pid]
@@ -313,6 +311,9 @@ def _provider_env_candidates(provider_id: str) -> list[str]:
 def _credential_record_from_environment(provider_id: str) -> dict[str, Any] | None:
     pid = provider_id.strip().lower()
     if not pid:
+        return None
+
+    if pid == "ollama":
         return None
 
     if pid == "openai":
@@ -394,6 +395,8 @@ def apply_credentials_to_environment(
     )
 
     if auth_type == "api":
+        if pid == "ollama":
+            return
         key = credential_record.get("key")
         if not isinstance(key, str) or not key:
             return
@@ -406,6 +409,9 @@ def apply_credentials_to_environment(
             return
         if pid == "openai":
             os.environ["OPENAI_API_KEY"] = key
+            return
+        if pid == "ollama":
+            os.environ["OLLAMA_HOST"] = key
             return
 
         os.environ[f"{pid.upper()}_API_KEY"] = key
