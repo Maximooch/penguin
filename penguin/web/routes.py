@@ -73,6 +73,7 @@ from penguin.web.services.session_view import (
 from penguin.web.services.session_fork import fork_session
 from penguin.web.services.session_revert import revert_session, unrevert_session
 from penguin.web.services.session_summary import summarize_session_title
+from penguin.web.middleware.auth import require_websocket_auth
 from penguin.web.services.system_status import (
     get_formatter_status,
     get_lsp_status,
@@ -2079,6 +2080,7 @@ async def events_ws(websocket: WebSocket, core: PenguinCore = Depends(get_core))
       - include_ui: 'true'|'false' (default 'true')
       - include_bus: 'true'|'false' (default 'true')
     """
+    await require_websocket_auth(websocket)
     await websocket.accept()
     params = websocket.query_params
     agent_filter = params.get("agent_id")
@@ -2296,6 +2298,7 @@ async def telemetry_ws(
     websocket: WebSocket,
     core: PenguinCore = Depends(get_core),
 ):
+    await require_websocket_auth(websocket)
     await websocket.accept()
     params = websocket.query_params
     agent_filter = params.get("agent_id")
@@ -3816,6 +3819,7 @@ async def handle_chat_message(
 @router.websocket("/api/v1/chat/stream")
 async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core)):
     """Stream chat responses in real-time using a queue."""
+    await require_websocket_auth(websocket)
     await websocket.accept()
     _setup_approval_websocket_callbacks()
     _setup_question_event_callbacks()
@@ -5673,6 +5677,7 @@ async def get_capabilities(core: PenguinCore = Depends(get_core)):
 @router.websocket("/api/v1/tasks/stream")
 async def stream_task(websocket: WebSocket, core: PenguinCore = Depends(get_core)):
     """Stream run mode task execution events in real-time."""
+    await require_websocket_auth(websocket)
     await websocket.accept()
     task_execution = None
     run_mode_callback_task = None
