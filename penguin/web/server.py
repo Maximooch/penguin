@@ -6,8 +6,49 @@ It uses the app factory from app.py to create and configure the FastAPI applicat
 
 import logging
 import os
+from ipaddress import ip_address
 
 logger = logging.getLogger(__name__)
+
+LOCAL_ONLY_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def _is_local_host(host: str) -> bool:
+    """Return whether the bind host is limited to local access."""
+    normalized = (host or "").strip().lower()
+    if normalized in LOCAL_ONLY_HOSTS:
+        return True
+    try:
+        return ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def validate_startup_security(host: str) -> None:
+    """Fail fast for insecure broad-bind deployments unless explicitly allowed."""
+    if _is_local_host(host):
+        return
+
+    auth_enabled = os.environ.get("PENGUIN_AUTH_ENABLED", "false").lower() == "true"
+    if auth_enabled:
+        return
+
+    allow_insecure = (
+        os.environ.get("PENGUIN_ALLOW_INSECURE_NO_AUTH", "false").lower() == "true"
+    )
+    if allow_insecure:
+        logger.warning(
+            "Starting Penguin web server without auth on non-local host %s because "
+            "PENGUIN_ALLOW_INSECURE_NO_AUTH=true",
+            host,
+        )
+        return
+
+    raise RuntimeError(
+        "Refusing to bind Penguin web server to a non-local host without authentication. "
+        "Set PENGUIN_AUTH_ENABLED=true or explicitly override with "
+        "PENGUIN_ALLOW_INSECURE_NO_AUTH=true."
+    )
 
 
 def create_app_factory():
@@ -53,6 +94,7 @@ def main():
     debug = os.environ.get("DEBUG", "false").lower() == "true"
 
     try:
+        validate_startup_security(host)
         if debug:
             create_app_factory()
             app = None
@@ -94,6 +136,7 @@ def start_server(host: str = "0.0.0.0", port: int = 8000, debug: bool = False):
             "Web dependencies not available. Install with: pip install penguin-ai[web]"
         ) from exc
 
+    validate_startup_security(host)
     if debug:
         uvicorn.run(
             "penguin.web.server:create_app_factory",

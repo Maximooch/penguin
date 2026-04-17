@@ -24,6 +24,7 @@ import mimetypes
 import os
 from pathlib import Path
 import re
+from contextlib import suppress
 import shutil
 import tempfile
 import time
@@ -157,6 +158,20 @@ def _serialize_task_payload(task: Any, *, include_metadata: bool = True) -> Dict
 
 
 MAX_IMAGES_PER_REQUEST = 10
+DEFAULT_MAX_UPLOAD_BYTES = 10 * 1024 * 1024 * 1024
+ALLOWED_UPLOAD_CONTENT_TYPES = {
+    "image/gif",
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+}
+ALLOWED_UPLOAD_EXTENSIONS = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
+
+
+def _max_upload_bytes() -> int:
+    """Return the configured upload size limit in bytes."""
+    return int(os.getenv("PENGUIN_MAX_UPLOAD_BYTES", str(DEFAULT_MAX_UPLOAD_BYTES)))
+
 
 _FIND_FILE_CACHE_TTL_SECONDS = 5.0
 _FIND_FILE_CACHE_MAX_DIRECTORIES = 16
@@ -5600,27 +5615,60 @@ async def load_context_file(
 async def upload_file(
     file: UploadFile = File(...), core: PenguinCore = Depends(get_core)
 ):
-    """Upload a file (primarily images) to be used in conversations."""
+    """Upload an image file to be used in conversations."""
     try:
-        # Create uploads directory if it doesn't exist
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="Filename is required")
+
+        content_type = (file.content_type or "").lower()
+        if content_type not in ALLOWED_UPLOAD_CONTENT_TYPES:
+            raise HTTPException(
+                status_code=415,
+                detail="Unsupported media type. Allowed types: GIF, JPEG, PNG, WEBP.",
+            )
+
+        extension = Path(file.filename).suffix.lower()
+        if extension not in ALLOWED_UPLOAD_EXTENSIONS:
+            raise HTTPException(
+                status_code=415,
+                detail="Unsupported file extension. Allowed extensions: .gif, .jpeg, .jpg, .png, .webp.",
+            )
+
         uploads_dir = Path(WORKSPACE_PATH) / "uploads"
         uploads_dir.mkdir(exist_ok=True)
 
-        # Generate a unique filename
-        file_extension = file.filename.split(".")[-1] if "." in file.filename else ""
-        unique_filename = f"{uuid.uuid4()}.{file_extension}"
+        unique_filename = f"{uuid.uuid4()}{extension}"
         file_path = uploads_dir / unique_filename
+        max_upload_bytes = _max_upload_bytes()
+        bytes_written = 0
 
-        # Save the file
         with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                bytes_written += len(chunk)
+                if bytes_written > max_upload_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File exceeds upload size limit of {max_upload_bytes} bytes",
+                    )
+                buffer.write(chunk)
 
-        # Return the path that can be referenced in future requests
+        if bytes_written == 0:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
         return {
             "path": str(file_path),
             "filename": file.filename,
-            "content_type": file.content_type,
+            "content_type": content_type,
+            "size_bytes": bytes_written,
         }
+    except HTTPException:
+        if 'file_path' in locals() and file_path.exists():
+            with suppress(FileNotFoundError):
+                file_path.unlink()
+        raise
     except Exception as e:
         logger.error(f"Error uploading file: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error uploading file: {str(e)}")
