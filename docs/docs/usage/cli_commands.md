@@ -56,9 +56,9 @@ The following global flags can be combined with either interactive or non-intera
 | `--fast-startup`        | Skip memory indexing for faster launch |
 | `--continue/-c`         | Continue the most recent conversation in interactive mode |
 | `--resume <SESSION_ID>` | Resume a specific saved conversation |
-| `--run <TASK_NAME>`     | Execute a task in autonomous **Run Mode** |
-| `--247 / --continuous`  | Keep Run Mode running continuously until interrupted |
-| `--time-limit <MIN>`    | Set a time limit for run-mode |
+| `--run <TASK_NAME>`     | Start autonomous execution for a specific task/project target |
+| `--247 / --continuous`  | Run continuously (24/7 mode); project-scoped runs work the ready frontier, while non-project runs may continue exploratorily |
+| `--time-limit <MIN>`    | Set an explicit CLI-supplied cap on RunMode duration |
 | `--version/-V`          | Print Penguin version and exit |
 
 ---
@@ -170,10 +170,15 @@ Additional context management commands:
 
 ### Run Mode (Autonomous Execution)
 ```text
-/run task "Name" [description]           # Run a specific task
-/run continuous ["Name" [description]]   # Continuous Run Mode (alias: --247)
+/run task "Name" [description]           # Start autonomous execution for a specific task target
+/run continuous ["Name" [description]]   # Continuous Run Mode (public product-language alias: --247)
 /run stop                                # Stop current Run Mode execution (if supported)
 ```
+
+Current truth for continuous mode:
+- project-scoped runs work the ready frontier and may stop honestly when no tasks are ready
+- non-project runs may continue exploratorily by determining next steps
+- `--time-limit` currently represents an explicit CLI-supplied run cap; it should not be read as proof that blueprint/task-defined timing fields are fully surfaced through this CLI
 
 When Run Mode needs human input, the interactive CLI now surfaces both:
 - `clarification_needed` status

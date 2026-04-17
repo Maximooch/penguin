@@ -4452,15 +4452,23 @@ class PenguinCore:
                     status_type == "run_mode_ended"
                     or status_type == "shutdown_completed"
                 ):
-                    self.current_runmode_status_summary = "RunMode ended."
+                    self.current_runmode_status_summary = status_data.get("summary", "RunMode ended.")
                 elif (
                     status_type == "clarification_needed"
                     or status_type == "clarification_needed_eventbus"
                 ):
-                    self.current_runmode_status_summary = "Awaiting user clarification."
-                elif status_type == "awaiting_user_input_after_task":
-                    self.current_runmode_status_summary = (
-                        "Task complete. Awaiting input."
+                    self.current_runmode_status_summary = status_data.get("summary", "Awaiting user clarification.")
+                elif status_type == "time_limit_reached":
+                    self.current_runmode_status_summary = status_data.get(
+                        "summary", "RunMode stopped because the explicit time limit was reached."
+                    )
+                elif status_type == "idle_no_ready_tasks":
+                    self.current_runmode_status_summary = status_data.get(
+                        "summary", "RunMode stopped because no ready work remained."
+                    )
+                elif status_type == "exploratory_continuation":
+                    self.current_runmode_status_summary = status_data.get(
+                        "summary", "RunMode is continuing exploratorily by determining next steps."
                     )
 
             # Handle error events

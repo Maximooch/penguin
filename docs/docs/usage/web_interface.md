@@ -80,11 +80,16 @@ curl http://127.0.0.1:9000/api/v1/capabilities \
 curl http://127.0.0.1:9000/api/v1/capabilities
 ```
 
-That now returns `401 Unauthorized`, not a misleading `500`.
+### RunMode / Task Execution Truth
 
-### WebSocket auth
+RunMode-backed execution semantics are richer than a simple success/fail response. Current shared truth includes:
+- clarification/waiting-input outcomes are non-terminal
+- explicit runmode time limits are a separate concept from blueprint/task/project timing fields
+- project-scoped autonomous execution may stop honestly when no ready work remains
 
-Protected WebSocket endpoints must authenticate during connection setup.
+This page is not yet the full home for RunMode contract details, but it should not imply simpler behavior than the runtime actually has.
+
+### Task / Clarification Surface Truth
 
 Important constraint: browser JavaScript cannot cleanly set arbitrary custom WebSocket headers in the same way as backend clients. That means browser-facing WS auth ergonomics are still a design concern for the future UI rewrite.
 
