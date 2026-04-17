@@ -10,6 +10,7 @@ from ipaddress import ip_address
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_HOST = "127.0.0.1"
 LOCAL_ONLY_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
@@ -72,12 +73,8 @@ def _print_startup_banner(host: str, port: int) -> None:
     """Print startup information using the actual configured address."""
     display_host = _display_host(host)
     print("\n\033[96m=== Penguin AI Server ===\033[0m")
-    print(
-        f"\033[96mVisit http://{display_host}:{port} to start using Penguin!\033[0m"
-    )
-    print(
-        f"\033[96mAPI documentation: http://{display_host}:{port}/api/docs\033[0m\n"
-    )
+    print(f"\033[96mVisit http://{display_host}:{port} to start using Penguin!\033[0m")
+    print(f"\033[96mAPI documentation: http://{display_host}:{port}/api/docs\033[0m\n")
 
 
 def main():
@@ -89,15 +86,15 @@ def main():
         print("Install with: pip install penguin-ai[web]")
         return 1
 
-    host = os.environ.get("HOST", "0.0.0.0")
+    host = os.environ.get("HOST", DEFAULT_HOST)
     port = int(os.environ.get("PORT", 8000))
     debug = os.environ.get("DEBUG", "false").lower() == "true"
+    app = None
 
     try:
         validate_startup_security(host)
         if debug:
             create_app_factory()
-            app = None
         else:
             app = create_app_factory()
     except Exception as e:
@@ -115,13 +112,17 @@ def main():
             reload=True,
             factory=True,
         )
-    else:
-        uvicorn.run(app, host=host, port=port, log_level="info", reload=False)
+        return 0
+
+    if app is None:
+        return 1
+
+    uvicorn.run(app, host=host, port=port, log_level="info", reload=False)
 
     return 0
 
 
-def start_server(host: str = "0.0.0.0", port: int = 8000, debug: bool = False):
+def start_server(host: str = DEFAULT_HOST, port: int = 8000, debug: bool = False):
     """Start the web server programmatically.
 
     Args:

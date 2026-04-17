@@ -27,6 +27,29 @@ def test_main_debug_uses_reload_safe_import_string(monkeypatch, capsys):
     assert calls[0][1]["port"] == 8080
 
 
+def test_main_defaults_to_localhost_without_auth(monkeypatch, capsys):
+    calls = []
+    app = object()
+
+    fake_uvicorn = types.SimpleNamespace(
+        run=lambda *args, **kwargs: calls.append((args, kwargs))
+    )
+    monkeypatch.setitem(sys.modules, "uvicorn", fake_uvicorn)
+    monkeypatch.setattr(server, "create_app_factory", lambda: app)
+    monkeypatch.delenv("HOST", raising=False)
+    monkeypatch.setenv("PORT", "8000")
+    monkeypatch.setenv("DEBUG", "false")
+    monkeypatch.delenv("PENGUIN_AUTH_ENABLED", raising=False)
+    monkeypatch.delenv("PENGUIN_ALLOW_INSECURE_NO_AUTH", raising=False)
+
+    assert server.main() == 0
+
+    output = capsys.readouterr().out
+    assert "http://127.0.0.1:8000" in output
+    assert calls[0][0][0] is app
+    assert calls[0][1]["host"] == "127.0.0.1"
+
+
 def test_start_server_non_debug_uses_app_instance(monkeypatch):
     calls = []
     app = object()
@@ -43,6 +66,23 @@ def test_start_server_non_debug_uses_app_instance(monkeypatch):
     assert calls[0][1]["host"] == "127.0.0.1"
     assert calls[0][1]["port"] == 9000
     assert calls[0][1]["reload"] is False
+
+
+def test_start_server_defaults_to_localhost(monkeypatch):
+    calls = []
+    app = object()
+
+    fake_uvicorn = types.SimpleNamespace(
+        run=lambda *args, **kwargs: calls.append((args, kwargs))
+    )
+    monkeypatch.setitem(sys.modules, "uvicorn", fake_uvicorn)
+    monkeypatch.setattr(server, "create_app_factory", lambda: app)
+
+    server.start_server(port=9000, debug=False)
+
+    assert calls[0][0][0] is app
+    assert calls[0][1]["host"] == "127.0.0.1"
+    assert calls[0][1]["port"] == 9000
 
 
 def test_validate_startup_security_allows_local_without_auth(monkeypatch):
