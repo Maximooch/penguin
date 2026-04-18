@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import os
@@ -21,6 +22,7 @@ from penguin.web.middleware.auth import (
     require_websocket_auth,
 )
 from penguin.web.routes import ALLOWED_UPLOAD_CONTENT_TYPES, router
+from penguin.web.sse_events import router as sse_router, set_core_instance
 from penguin.web.services import provider_credentials as provider_credentials_service
 
 
@@ -388,9 +390,34 @@ def local_auth_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     from penguin.web.middleware.auth import AuthenticationMiddleware
 
     monkeypatch.setenv("PENGUIN_AUTH_ENABLED", "true")
+    router.core = SimpleNamespace(
+        conversation_manager=SimpleNamespace(current_agent_id=None)
+    )
+    app = FastAPI()
+
+    @app.get("/protected")
+    async def protected() -> dict[str, bool]:
+        return {"ok": True}
+
+    app.add_middleware(AuthenticationMiddleware, config=AuthConfig())
+    app.include_router(router)
+    return app
+
+
+@pytest.fixture
+def local_auth_sse_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
+    from penguin.web.middleware.auth import AuthenticationMiddleware
+
+    monkeypatch.setenv("PENGUIN_AUTH_ENABLED", "true")
+    event_bus = SimpleNamespace(
+        subscribe=lambda *args, **kwargs: None,
+        unsubscribe=lambda *args, **kwargs: None,
+    )
+    set_core_instance(SimpleNamespace(event_bus=event_bus))
     app = FastAPI()
     app.add_middleware(AuthenticationMiddleware, config=AuthConfig())
     app.include_router(router)
+    app.include_router(sse_router)
     return app
 
 
@@ -456,3 +483,104 @@ def test_auth_logout_clears_cookie(local_auth_app: FastAPI) -> None:
     assert response.json() == {"authenticated": False}
     assert "penguin_session=" in response.headers["set-cookie"]
     assert "Max-Age=0" in response.headers["set-cookie"]
+
+
+def test_http_protected_endpoint_accepts_session_cookie(
+    local_auth_app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PENGUIN_AUTH_STARTUP_TOKEN", "startup-token-123")
+    client = TestClient(local_auth_app, base_url="http://127.0.0.1:9000")
+
+    auth_response = client.post(
+        "/api/v1/auth/session",
+        json={"token": "startup-token-123"},
+    )
+    assert auth_response.status_code == 200
+
+    response = client.get("/protected")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_sse_endpoint_accepts_session_cookie(
+    local_auth_sse_app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PENGUIN_AUTH_STARTUP_TOKEN", "startup-token-123")
+    client = TestClient(local_auth_sse_app, base_url="http://127.0.0.1:9000")
+
+    auth_response = client.post(
+        "/api/v1/auth/session",
+        json={"token": "startup-token-123"},
+    )
+    assert auth_response.status_code == 200
+
+    cookie_header = (
+        auth_response.headers["set-cookie"].split(";", 1)[0].encode("latin-1")
+    )
+    messages: list[dict[str, object]] = []
+    request_sent = False
+
+    async def receive() -> dict[str, object]:
+        nonlocal request_sent
+        if not request_sent:
+            request_sent = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await asyncio.sleep(0)
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict[str, object]) -> None:
+        messages.append(message)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": "/api/v1/events/sse",
+        "raw_path": b"/api/v1/events/sse",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"cookie", cookie_header)],
+        "client": ("127.0.0.1", 9000),
+        "server": ("127.0.0.1", 9000),
+        "state": {},
+    }
+
+    await local_auth_sse_app(scope, receive, send)
+
+    assert any(
+        message.get("type") == "http.response.start" and message.get("status") == 200
+        for message in messages
+    )
+    body = b"".join(
+        message.get("body", b"")
+        for message in messages
+        if message.get("type") == "http.response.body"
+    )
+    assert b"server.connected" in body
+
+
+def test_websocket_accepts_session_cookie(
+    local_auth_app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PENGUIN_AUTH_STARTUP_TOKEN", "startup-token-123")
+    client = TestClient(local_auth_app, base_url="http://127.0.0.1:9000")
+
+    auth_response = client.post(
+        "/api/v1/auth/session",
+        json={"token": "startup-token-123"},
+    )
+    assert auth_response.status_code == 200
+    cookie_header = auth_response.headers["set-cookie"].split(";", 1)[0]
+
+    with client.websocket_connect(
+        "/api/v1/events/ws",
+        headers={"Cookie": cookie_header},
+    ) as websocket:
+        assert websocket is not None

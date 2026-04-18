@@ -7,6 +7,7 @@ startup-token-to-cookie bootstrap flow for local browser sessions.
 import logging
 import os
 import secrets
+from http.cookies import SimpleCookie
 from typing import Any, Optional
 from datetime import datetime, timedelta
 from ipaddress import ip_address
@@ -323,6 +324,34 @@ def extract_bearer_token(connection: Any) -> Optional[str]:
     return parts[1]
 
 
+def extract_session_cookie(
+    connection: Any,
+    config: Optional[AuthConfig] = None,
+) -> Optional[str]:
+    """Extract the Penguin session cookie from an HTTP or WebSocket connection."""
+    auth_config = config or AuthConfig()
+
+    cookies = getattr(connection, "cookies", None)
+    if cookies is not None:
+        try:
+            session_cookie = cookies.get(auth_config.session_cookie_name)
+        except Exception:
+            session_cookie = None
+        if session_cookie:
+            return session_cookie
+
+    cookie_header = connection.headers.get("cookie") or connection.headers.get("Cookie")
+    if not cookie_header:
+        return None
+
+    parsed = SimpleCookie()
+    parsed.load(cookie_header)
+    morsel = parsed.get(auth_config.session_cookie_name)
+    if morsel is None:
+        return None
+    return morsel.value
+
+
 def validate_api_key(api_key: str, config: AuthConfig) -> bool:
     """Validate an API key against configured keys."""
     if not api_key:
@@ -412,24 +441,7 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
 
     async def _authenticate_request(self, request: Request) -> dict:
         """Authenticate a request using available methods."""
-        api_key = extract_api_key(request)
-        if api_key and validate_api_key(api_key, self.config):
-            return {
-                "method": "api_key",
-                "subject": "api_client",
-                "metadata": {"key_prefix": api_key[:8] + "..."},
-            }
-
-        token = extract_bearer_token(request)
-        if token:
-            claims = validate_jwt(token, self.config)
-            return {
-                "method": "jwt",
-                "subject": claims.get("sub", "unknown"),
-                "metadata": claims,
-            }
-
-        raise AuthenticationError("No valid authentication credentials provided")
+        return authenticate_connection(request, self.config)
 
     def create_jwt(self, subject: str, metadata: Optional[dict] = None) -> str:
         """Create a JWT token for a subject.
@@ -516,6 +528,15 @@ def authenticate_connection(
         claims = validate_jwt(token, auth_config)
         return {
             "method": "jwt",
+            "subject": claims.get("sub", "unknown"),
+            "metadata": claims,
+        }
+
+    session_token = extract_session_cookie(connection, auth_config)
+    if session_token:
+        claims = validate_session_token(session_token, auth_config)
+        return {
+            "method": "session",
             "subject": claims.get("sub", "unknown"),
             "metadata": claims,
         }
