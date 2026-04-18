@@ -289,7 +289,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       usageRefreshInFlight.add(sessionID)
       usageRefreshAt.set(sessionID, now)
       const url = new URL(`/session/${encodeURIComponent(sessionID)}`, sdk.url)
-      fetch(url)
+      sdk.fetch(url)
         .then((res) => (res.ok ? res.json() : undefined))
         .then((data) => {
           const usage = parseUsage(data)
@@ -671,7 +671,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             if (normalizedScoped && normalizedBase && normalizedScoped !== normalizedBase) break
             const url = new URL("/lsp", sdk.url)
             url.searchParams.set("directory", scopedDirectory)
-            fetch(url)
+            sdk.fetch(url)
               .then((res) => (res.ok ? res.json() : []))
               .then((data) => setStore("lsp", reconcile(Array.isArray(data) ? data : [])))
               .catch(() => undefined)
@@ -771,23 +771,23 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         })
         const [providersData, providerListData, configData, providerAuthData, sessionsData, roster] = await Promise.all(
           [
-            fetch(new URL("/config/providers", sdk.url))
+            sdk.fetch(new URL("/config/providers", sdk.url))
               .then((res) => (res.ok ? res.json() : undefined))
               .catch(() => undefined),
-            fetch(new URL("/provider", sdk.url))
+            sdk.fetch(new URL("/provider", sdk.url))
               .then((res) => (res.ok ? res.json() : undefined))
               .catch(() => undefined),
-            fetch(new URL("/config", sdk.url))
+            sdk.fetch(new URL("/config", sdk.url))
               .then((res) => (res.ok ? res.json() : undefined))
               .catch(() => undefined),
-            fetch(new URL("/provider/auth", sdk.url))
+            sdk.fetch(new URL("/provider/auth", sdk.url))
               .then((res) => (res.ok ? res.json() : undefined))
               .catch(() => undefined),
-            fetch(sessionsUrl)
+            sdk.fetch(sessionsUrl)
               .then((res) => (res.ok ? res.json() : undefined))
               .then((data) => (Array.isArray(data) ? data : []))
               .catch(() => []),
-            fetch(new URL("/api/v1/agents", sdk.url))
+            sdk.fetch(new URL("/api/v1/agents", sdk.url))
               .then((res) => (res.ok ? res.json() : undefined))
               .then((data) => (Array.isArray(data) ? data : []))
               .catch(() => []),
@@ -1005,16 +1005,16 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         }
 
         await Promise.all([
-          fetch(systemUrl("/lsp"))
+          sdk.fetch(systemUrl("/lsp"))
             .then((res) => (res.ok ? res.json() : []))
             .catch(() => []),
-          fetch(systemUrl("/formatter"))
+          sdk.fetch(systemUrl("/formatter"))
             .then((res) => (res.ok ? res.json() : []))
             .catch(() => []),
-          fetch(systemUrl("/vcs"))
+          sdk.fetch(systemUrl("/vcs"))
             .then((res) => (res.ok ? res.json() : undefined))
             .catch(() => undefined),
-          fetch(systemUrl("/path"))
+          sdk.fetch(systemUrl("/path"))
             .then((res) => (res.ok ? res.json() : undefined))
             .catch(() => undefined),
         ]).then((result) => {

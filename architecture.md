@@ -591,7 +591,7 @@ The current TUI architecture is split across the Python runtime and the `penguin
 - `ptui` and `penguin-tui` are direct aliases for the TUI launcher entrypoint.
 - In a source checkout, the launcher prefers local `penguin-tui/packages/opencode` sources.
 - Outside a source checkout, the launcher resolves or downloads a cached sidecar binary under `~/.cache/penguin/tui`.
-- The launcher talks to `penguin-web`, auto-starting a local server when needed.
+- The launcher talks to `penguin-web`, auto-starting a local server at `http://127.0.0.1:9000` when needed unless an explicit `--url` or `PENGUIN_WEB_URL` override is provided.
 
 This matters because the TUI is no longer a Python widget tree embedded inside the runtime. It is a separate frontend path backed by the same Penguin web/core services.
 

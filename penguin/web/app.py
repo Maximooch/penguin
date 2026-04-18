@@ -32,6 +32,10 @@ logger = logging.getLogger(__name__)
 
 # Global core instance for reuse
 _core_instance: Optional[PenguinCore] = None
+NO_CACHE_HEADERS = {
+    "Cache-Control": "no-store, max-age=0",
+    "Pragma": "no-cache",
+}
 
 DEFAULT_DEV_CORS_ORIGINS = [
     "http://127.0.0.1:8000",
@@ -187,7 +191,9 @@ def create_app() -> "FastAPI":
 
     # Configure CORS
     origins_env = os.getenv("PENGUIN_CORS_ORIGINS", "").strip()
-    origins_list = [o.strip() for o in origins_env.split(",") if o.strip()] or DEFAULT_DEV_CORS_ORIGINS
+    origins_list = [
+        o.strip() for o in origins_env.split(",") if o.strip()
+    ] or DEFAULT_DEV_CORS_ORIGINS
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins_list,
@@ -278,16 +284,32 @@ def create_app() -> "FastAPI":
             """Serve the main web UI."""
             index_path = static_dir / "index.html"
             if index_path.exists():
-                return FileResponse(str(index_path))
+                return FileResponse(str(index_path), headers=NO_CACHE_HEADERS)
             return {"message": "Penguin API is running. Web UI not found."}
+
+        @app.get("/chat")
+        async def read_chat():
+            """Serve the legacy chat UI at a stable explicit path."""
+            index_path = static_dir / "index.html"
+            if index_path.exists():
+                return FileResponse(str(index_path), headers=NO_CACHE_HEADERS)
+            return {"message": "Penguin chat UI not found."}
 
         @app.get("/dashboard")
         async def read_dashboard():
             """Serve the dashboard UI."""
             dashboard_path = static_dir / "dashboard.html"
             if dashboard_path.exists():
-                return FileResponse(str(dashboard_path))
+                return FileResponse(str(dashboard_path), headers=NO_CACHE_HEADERS)
             return {"message": "Dashboard not found."}
+
+        @app.get("/authorize")
+        async def read_authorize():
+            """Serve the lightweight local authorization UI."""
+            authorize_path = static_dir / "authorize.html"
+            if authorize_path.exists():
+                return FileResponse(str(authorize_path), headers=NO_CACHE_HEADERS)
+            return {"message": "Authorization UI not found."}
     else:
 
         @app.get("/")
@@ -540,7 +562,10 @@ class PenguinAPI:
         clarification-needed and other non-terminal outcomes should survive instead of being flattened into engine-only semantics.
         """
         try:
-            run_mode = RunMode(core=self.core, max_iterations=max_iterations or get_engine_max_iterations_default())
+            run_mode = RunMode(
+                core=self.core,
+                max_iterations=max_iterations or get_engine_max_iterations_default(),
+            )
             return await run_mode.start(
                 name=task_description,
                 description=None,

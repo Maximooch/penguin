@@ -171,7 +171,7 @@ export function Prompt(props: PromptProps) {
 
   function persistAgentMode(sessionID: string, nextMode: "build" | "plan") {
     const modeUrl = new URL(`/session/${encodeURIComponent(sessionID)}`, sdk.url)
-    fetch(modeUrl, {
+    sdk.fetch(modeUrl, {
       method: "PATCH",
       headers: {
         "Content-Type": "application/json",
@@ -657,7 +657,7 @@ export function Prompt(props: PromptProps) {
           sync.session.get(props.sessionID ?? sdk.sessionID ?? "")?.directory ?? process.cwd()
         const createUrl = new URL("/session", sdk.url)
         createUrl.searchParams.set("directory", directory)
-        const created = await fetch(createUrl, {
+        const created = await sdk.fetch(createUrl, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -865,7 +865,7 @@ export function Prompt(props: PromptProps) {
       setStore("pending", true)
       setStore("pendingSeenBusy", false)
       const url = new URL("/api/v1/chat/message", sdk.url)
-      fetch(url, {
+      sdk.fetch(url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

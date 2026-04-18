@@ -14,6 +14,7 @@ from fastapi import (
     Query,
 )  # type: ignore
 from pydantic import BaseModel  # type: ignore
+from fastapi.responses import PlainTextResponse
 from dataclasses import asdict  # type: ignore
 from datetime import datetime  # type: ignore
 from collections import OrderedDict
@@ -3251,6 +3252,27 @@ async def api_auth_session(
         }
     except AuthenticationError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+
+@router.get("/api/v1/auth/session", response_class=PlainTextResponse)
+async def api_auth_session_info() -> str:
+    """Explain how to exchange a local startup token for a browser session."""
+    auth_config = AuthConfig()
+    if not auth_config.auth_enabled:
+        return (
+            "Penguin local session auth is not enabled for this server.\n"
+            "Protected local startup is the default: uv run penguin-web\n"
+            "To keep auth disabled intentionally: PENGUIN_AUTH_ENABLED=false uv run penguin-web\n"
+        )
+
+    return (
+        "Penguin local session bootstrap endpoint.\n"
+        'Use POST /api/v1/auth/session with JSON body: {"token": "<startup token>"}.\n'
+        "Use the startup token printed by penguin-web, or a configured API key if one is set.\n"
+        "TUI/CLI local sessions authenticate automatically.\n"
+        "CI/headless should prefer PENGUIN_API_KEYS plus X-API-Key header auth.\n"
+        "To run local-only without auth: PENGUIN_AUTH_ENABLED=false uv run penguin-web\n"
+    )
 
 
 @router.post("/api/v1/auth/logout")

@@ -19,6 +19,8 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.base import BaseHTTPMiddleware
 import jwt
 
+from penguin.local_auth import is_web_auth_enabled
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_SESSION_COOKIE_NAME = "penguin_session"
@@ -28,6 +30,8 @@ DEFAULT_SESSION_EXPIRATION_SECONDS = 12 * 60 * 60
 STARTUP_TOKEN_ENV = "PENGUIN_AUTH_STARTUP_TOKEN"
 SESSION_SECRET_ENV = "PENGUIN_SESSION_SECRET"
 _AUTH_SECRET_LOCK = Lock()
+_AUTH_WARNING_LOCK = Lock()
+_SEEN_AUTH_FAILURES: set[tuple[str, str]] = set()
 
 # Security scheme for Bearer token
 security = HTTPBearer(auto_error=False)
@@ -58,7 +62,7 @@ class AuthConfig:
         )
 
         # General auth settings
-        self.auth_enabled = os.getenv("PENGUIN_AUTH_ENABLED", "false").lower() == "true"
+        self.auth_enabled = is_web_auth_enabled()
         self.public_endpoints = self._load_public_endpoints()
         self.session_cookie_name = os.getenv(
             "PENGUIN_SESSION_COOKIE_NAME", DEFAULT_SESSION_COOKIE_NAME
@@ -98,12 +102,19 @@ class AuthConfig:
         """Load endpoints that don't require authentication."""
         public = {
             "/",
+            "/authorize",
+            "/chat",
+            "/dashboard",
+            "/openapi.json",
             "/api/docs",
             "/api/redoc",
             "/api/openapi.json",
             "/api/v1/health",
             "/api/v1/auth/session",
             "/api/v1/auth/logout",
+            "/favicon.ico",
+            "/apple-touch-icon.png",
+            "/apple-touch-icon-precomposed.png",
             "/static/",
         }
 
@@ -296,6 +307,48 @@ def build_session_cookie_settings(
     }
 
 
+def build_auth_remediation(config: Optional[AuthConfig] = None) -> str:
+    """Return a concise remediation message for unauthorized local requests."""
+    auth_config = config or AuthConfig()
+    if auth_config.requires_startup_token:
+        return (
+            "Use the startup token in an X-API-Key header or authenticate via "
+            "POST /api/v1/auth/session, or "
+            "restart local-only without auth using PENGUIN_AUTH_ENABLED=false uv run penguin-web."
+        )
+
+    return (
+        "Provide an X-API-Key or Authorization header, or create a local session at "
+        "POST /api/v1/auth/session."
+    )
+
+
+def build_unauthorized_message(config: Optional[AuthConfig] = None) -> str:
+    """Return the user-facing unauthorized message for protected Penguin routes."""
+    return f"This Penguin instance is protected. {build_auth_remediation(config)}"
+
+
+def log_auth_failure_once(
+    transport: str, path: str, config: Optional[AuthConfig] = None
+) -> None:
+    """Warn once per transport/path pair to avoid repeated auth log spam."""
+    key = (transport, path)
+    with _AUTH_WARNING_LOCK:
+        first_failure = key not in _SEEN_AUTH_FAILURES
+        if first_failure:
+            _SEEN_AUTH_FAILURES.add(key)
+
+    if first_failure:
+        logger.warning(
+            "Unauthorized %s request to %s. %s",
+            transport,
+            path,
+            build_auth_remediation(config),
+        )
+    else:
+        logger.debug("Unauthorized %s request to %s", transport, path)
+
+
 def extract_api_key(connection: Any) -> Optional[str]:
     """Extract API key from request or websocket headers."""
     headers = connection.headers
@@ -359,6 +412,18 @@ def validate_api_key(api_key: str, config: AuthConfig) -> bool:
     return any(secrets.compare_digest(api_key, key) for key in config.api_keys)
 
 
+def validate_startup_token(token: str, config: AuthConfig) -> bool:
+    """Validate the process-local startup token for local non-browser clients."""
+    if not config.requires_startup_token or not token:
+        return False
+
+    startup_token = get_startup_auth_token(config)
+    if not startup_token:
+        return False
+
+    return secrets.compare_digest(token, startup_token)
+
+
 def validate_jwt(token: str, config: AuthConfig) -> dict:
     """Validate and decode a JWT token using the provided config."""
     if not config.jwt_secret:
@@ -399,17 +464,17 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
 
         try:
             auth_result = await self._authenticate_request(request)
-        except AuthenticationError as e:
-            logger.warning(f"Authentication failed for {request.url.path}: {str(e)}")
+        except AuthenticationError:
+            log_auth_failure_once("http", request.url.path, self.config)
             return JSONResponse(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 content={
                     "detail": {
                         "error": {
                             "code": "AUTHENTICATION_FAILED",
-                            "message": str(e),
+                            "message": build_unauthorized_message(self.config),
                             "recoverable": False,
-                            "suggested_action": "check_credentials",
+                            "suggested_action": build_auth_remediation(self.config),
                         }
                     }
                 },
@@ -516,12 +581,20 @@ def authenticate_connection(
     auth_config = config or AuthConfig()
 
     api_key = extract_api_key(connection)
-    if api_key and validate_api_key(api_key, auth_config):
-        return {
-            "method": "api_key",
-            "subject": "api_client",
-            "metadata": {"key_prefix": api_key[:8] + "..."},
-        }
+    if api_key:
+        if validate_api_key(api_key, auth_config):
+            return {
+                "method": "api_key",
+                "subject": "api_client",
+                "metadata": {"key_prefix": api_key[:8] + "..."},
+            }
+
+        if validate_startup_token(api_key, auth_config):
+            return {
+                "method": "startup_token",
+                "subject": "local_bootstrap",
+                "metadata": {"interactive": False},
+            }
 
     token = extract_bearer_token(connection)
     if token:
@@ -558,12 +631,10 @@ async def require_websocket_auth(
     try:
         auth_result = authenticate_connection(websocket, auth_config)
     except AuthenticationError as exc:
-        logger.warning(
-            "WebSocket authentication failed for %s: %s", websocket.url.path, exc
-        )
+        log_auth_failure_once("websocket", websocket.url.path, auth_config)
         raise WebSocketException(
             code=status.WS_1008_POLICY_VIOLATION,
-            reason=str(exc),
+            reason=build_unauthorized_message(auth_config),
         ) from exc
 
     websocket.state.authenticated = True

@@ -8,6 +8,12 @@ export type EventSource = {
   on: (handler: (event: Event) => void) => () => void
 }
 
+function getPenguinAuthHeaders() {
+  const token = process.env.PENGUIN_LOCAL_AUTH_TOKEN ?? process.env.PENGUIN_AUTH_STARTUP_TOKEN
+  if (!token) return
+  return { "X-API-Key": token }
+}
+
 export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
   name: "SDK",
   init: (props: {
@@ -19,11 +25,23 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     sessionID?: string
   }) => {
     const abort = new AbortController()
+    const headers = props.penguin ? getPenguinAuthHeaders() : undefined
+    const request = ((input: RequestInfo | URL, init?: RequestInit) => {
+      const base = props.fetch ?? fetch
+      const next = new Request(input, init)
+      if (headers) {
+        for (const [key, value] of Object.entries(headers)) {
+          next.headers.set(key, value)
+        }
+      }
+      return base(next)
+    }) as typeof fetch
     const sdk = createOpencodeClient({
       baseUrl: props.url,
       signal: abort.signal,
       directory: props.directory,
-      fetch: props.fetch,
+      fetch: request,
+      headers,
     })
     const penguin = !!props.penguin
     const route = useRoute()
@@ -106,7 +124,7 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       streamAbort = new AbortController()
       const currentStreamAbort = streamAbort
 
-      const reader = await (props.fetch ?? fetch)(base, {
+      const reader = await request(base, {
         signal: currentStreamAbort.signal,
         headers: {
           Accept: "text/event-stream",
@@ -204,6 +222,7 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     return {
       client: sdk,
       event: emitter,
+      fetch: request,
       url: props.url,
       directory: props.directory,
       penguin,

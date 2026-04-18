@@ -80,7 +80,10 @@ def test_installed_penguin_version_falls_back_to_package_version(
 
     monkeypatch.setattr(opencode_launcher.importlib.metadata, "version", _missing)
 
-    assert opencode_launcher._installed_penguin_version() == "0.6.2.2"
+    assert (
+        opencode_launcher._installed_penguin_version()
+        == opencode_launcher.PENGUIN_VERSION
+    )
 
 
 def test_binary_supports_url_mode_from_help_output(
@@ -124,7 +127,7 @@ def test_build_command_uses_sidecar_when_local_source_missing(
 
     cmd, cwd = opencode_launcher._build_opencode_command(
         project_dir,
-        "http://localhost:8000",
+        "http://127.0.0.1:9000",
         ["--foo", "bar"],
         use_global_opencode=False,
     )
@@ -156,7 +159,7 @@ def test_build_command_rejects_incompatible_sidecar_without_url_option(
     with pytest.raises(RuntimeError) as exc:
         opencode_launcher._build_opencode_command(
             project_dir,
-            "http://localhost:8000",
+            "http://127.0.0.1:9000",
             [],
             use_global_opencode=False,
         )
@@ -189,7 +192,7 @@ def test_build_command_uses_global_attach_mode_when_requested(
 
     cmd, cwd = opencode_launcher._build_opencode_command(
         project_dir,
-        "http://localhost:8000",
+        "http://127.0.0.1:9000",
         ["--session", "abc123"],
         use_global_opencode=True,
     )
@@ -198,7 +201,7 @@ def test_build_command_uses_global_attach_mode_when_requested(
     assert cmd == [
         global_bin,
         "attach",
-        "http://localhost:8000",
+        "http://127.0.0.1:9000",
         "--dir",
         str(project_dir),
         "--session",
@@ -224,7 +227,7 @@ def test_build_command_error_surfaces_sidecar_bootstrap_detail(
     with pytest.raises(RuntimeError) as exc:
         opencode_launcher._build_opencode_command(
             project_dir,
-            "http://localhost:8000",
+            "http://127.0.0.1:9000",
             [],
             use_global_opencode=False,
         )
@@ -535,8 +538,191 @@ def test_main_autostarts_web_and_preserves_project_directory_env(
         assert env_map["PENGUIN_PROJECT_ROOT"] == str(project_dir)
         assert env_map["PENGUIN_WRITE_ROOT"] == "project"
         assert env_map["PWD"] == str(project_dir)
-        assert env_map["PENGUIN_WEB_URL"] == "http://localhost:8000"
+        assert env_map["PENGUIN_WEB_URL"] == "http://127.0.0.1:9000"
     assert stop_calls == [fake_proc]
+
+
+def test_parse_args_defaults_to_local_web_port_9000(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PENGUIN_WEB_URL", raising=False)
+
+    args, extra = opencode_launcher._parse_args([])
+
+    assert args.url == "http://127.0.0.1:9000"
+    assert extra == []
+
+
+def test_prepare_local_auth_env_seeds_shared_startup_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    env: dict[str, str] = {}
+    monkeypatch.setenv("PENGUIN_LOCAL_AUTH_CACHE_DIR", str(tmp_path))
+
+    opencode_launcher._prepare_local_auth_env(
+        "http://127.0.0.1:9000", env, server_running=False
+    )
+
+    assert env["PENGUIN_AUTH_STARTUP_TOKEN"]
+    assert env["PENGUIN_LOCAL_AUTH_TOKEN"] == env["PENGUIN_AUTH_STARTUP_TOKEN"]
+
+
+def test_prepare_local_auth_env_preserves_existing_api_keys() -> None:
+    env = {
+        "PENGUIN_AUTH_ENABLED": "true",
+        "PENGUIN_API_KEYS": "configured-key",
+    }
+
+    opencode_launcher._prepare_local_auth_env(
+        "http://127.0.0.1:9000", env, server_running=False
+    )
+
+    assert "PENGUIN_AUTH_STARTUP_TOKEN" not in env
+    assert "PENGUIN_LOCAL_AUTH_TOKEN" not in env
+
+
+def test_prepare_local_auth_env_respects_explicit_auth_disable() -> None:
+    env = {"PENGUIN_AUTH_ENABLED": "false"}
+
+    opencode_launcher._prepare_local_auth_env(
+        "http://127.0.0.1:9000", env, server_running=False
+    )
+
+    assert "PENGUIN_AUTH_STARTUP_TOKEN" not in env
+    assert "PENGUIN_LOCAL_AUTH_TOKEN" not in env
+
+
+def test_prepare_local_auth_env_reads_existing_local_token_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    env: dict[str, str] = {}
+    monkeypatch.setenv("PENGUIN_LOCAL_AUTH_CACHE_DIR", str(tmp_path))
+    token_file = tmp_path / "127.0.0.1-9000.token"
+    token_file.write_text("existing-token", encoding="utf-8")
+
+    opencode_launcher._prepare_local_auth_env(
+        "http://127.0.0.1:9000", env, server_running=True
+    )
+
+    assert env["PENGUIN_LOCAL_AUTH_TOKEN"] == "existing-token"
+    assert "PENGUIN_AUTH_STARTUP_TOKEN" not in env
+
+
+def test_main_reuses_cached_local_auth_token_for_running_server(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "sandbox"
+    project_dir.mkdir()
+    cache_dir = tmp_path / "auth-cache"
+    cache_dir.mkdir()
+    (cache_dir / "127.0.0.1-9000.token").write_text("cached-token", encoding="utf-8")
+    captured_run_env: dict[str, str] = {}
+
+    monkeypatch.setenv("PENGUIN_LOCAL_AUTH_CACHE_DIR", str(cache_dir))
+    monkeypatch.delenv("PENGUIN_AUTH_ENABLED", raising=False)
+    monkeypatch.delenv("PENGUIN_API_KEYS", raising=False)
+    monkeypatch.delenv("PENGUIN_AUTH_STARTUP_TOKEN", raising=False)
+    monkeypatch.delenv("PENGUIN_LOCAL_AUTH_TOKEN", raising=False)
+    monkeypatch.setattr(
+        opencode_launcher, "_is_server_running", lambda *args, **kwargs: True
+    )
+    monkeypatch.setattr(opencode_launcher, "_is_local_url", lambda base_url: True)
+    monkeypatch.setattr(
+        opencode_launcher,
+        "_build_opencode_command",
+        lambda *args, **kwargs: (["opencode", str(project_dir)], None),
+    )
+
+    def _run(cmd: list[str], cwd: Path | None, env: dict[str, str]):
+        del cmd, cwd
+        captured_run_env.update(env)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(opencode_launcher.subprocess, "run", _run)
+
+    exit_code = opencode_launcher.main([str(project_dir)])
+
+    assert exit_code == 0
+    assert captured_run_env["PENGUIN_LOCAL_AUTH_TOKEN"] == "cached-token"
+
+
+def test_prepare_local_auth_env_does_not_invent_token_for_running_server(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    env: dict[str, str] = {"PENGUIN_AUTH_ENABLED": "true"}
+    monkeypatch.setenv("PENGUIN_LOCAL_AUTH_CACHE_DIR", str(tmp_path))
+
+    opencode_launcher._prepare_local_auth_env(
+        "http://127.0.0.1:9000", env, server_running=True
+    )
+
+    assert "PENGUIN_LOCAL_AUTH_TOKEN" not in env
+    assert "PENGUIN_AUTH_STARTUP_TOKEN" not in env
+
+
+def test_main_shares_startup_token_with_autostarted_local_auth_server(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "sandbox"
+    project_dir.mkdir()
+
+    fake_proc = _FakeProcess(running=True)
+    captured_start_env: dict[str, str] = {}
+    captured_run_env: dict[str, str] = {}
+
+    monkeypatch.setenv("PENGUIN_LOCAL_AUTH_CACHE_DIR", str(tmp_path / "auth-cache"))
+    monkeypatch.setenv("PENGUIN_AUTH_ENABLED", "true")
+    monkeypatch.delenv("PENGUIN_API_KEYS", raising=False)
+    monkeypatch.delenv("PENGUIN_AUTH_STARTUP_TOKEN", raising=False)
+    monkeypatch.delenv("PENGUIN_LOCAL_AUTH_TOKEN", raising=False)
+    monkeypatch.setattr(
+        opencode_launcher.atexit, "register", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        opencode_launcher, "_is_server_running", lambda *args, **kwargs: False
+    )
+    monkeypatch.setattr(opencode_launcher, "_is_local_url", lambda base_url: True)
+    monkeypatch.setattr(
+        opencode_launcher, "_ensure_web_runtime_available", lambda: None
+    )
+
+    def _start(base_url: str, env: dict[str, str]) -> _FakeProcess:
+        del base_url
+        captured_start_env.update(env)
+        return fake_proc
+
+    monkeypatch.setattr(opencode_launcher, "_start_web_server", _start)
+    monkeypatch.setattr(
+        opencode_launcher, "_wait_for_server", lambda *args, **kwargs: True
+    )
+    monkeypatch.setattr(
+        opencode_launcher,
+        "_build_opencode_command",
+        lambda *args, **kwargs: (["opencode", str(project_dir)], None),
+    )
+
+    def _run(cmd: list[str], cwd: Path | None, env: dict[str, str]):
+        del cmd, cwd
+        captured_run_env.update(env)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(opencode_launcher.subprocess, "run", _run)
+    monkeypatch.setattr(opencode_launcher, "_stop_process", lambda proc: None)
+
+    exit_code = opencode_launcher.main([str(project_dir)])
+
+    assert exit_code == 0
+    assert captured_start_env["PENGUIN_AUTH_STARTUP_TOKEN"]
+    assert (
+        captured_start_env["PENGUIN_LOCAL_AUTH_TOKEN"]
+        == captured_start_env["PENGUIN_AUTH_STARTUP_TOKEN"]
+    )
+    assert (
+        captured_run_env["PENGUIN_LOCAL_AUTH_TOKEN"]
+        == captured_start_env["PENGUIN_AUTH_STARTUP_TOKEN"]
+    )
 
 
 def test_main_returns_error_when_autostart_health_never_recovers(

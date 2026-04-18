@@ -38,20 +38,26 @@ DEFAULT_MAX_CONTEXT_IMAGES = int(os.getenv("PENGUIN_MAX_CONTEXT_IMAGES", "5"))
 DEFAULT_SESSION_LIST_LIMIT = int(os.getenv("PENGUIN_SESSION_LIST_LIMIT", "100000"))
 
 # Session manager message limits
-DEFAULT_MAX_MESSAGES_PER_SESSION = int(os.getenv("PENGUIN_MAX_MESSAGES_PER_SESSION", "5000"))
+DEFAULT_MAX_MESSAGES_PER_SESSION = int(
+    os.getenv("PENGUIN_MAX_MESSAGES_PER_SESSION", "5000")
+)
 DEFAULT_MAX_TOTAL_MESSAGES = int(os.getenv("PENGUIN_MAX_TOTAL_MESSAGES", "100000"))
 
 # Memory/chunk size limits
 DEFAULT_MAX_CHUNK_SIZE = int(os.getenv("PENGUIN_MAX_CHUNK_SIZE", "8000"))
 
 # File size threshold for skipping in delegate explore
-DEFAULT_LARGE_FILE_THRESHOLD_BYTES = int(os.getenv("PENGUIN_LARGE_FILE_THRESHOLD_BYTES", "100000"))
+DEFAULT_LARGE_FILE_THRESHOLD_BYTES = int(
+    os.getenv("PENGUIN_LARGE_FILE_THRESHOLD_BYTES", "100000")
+)
 
 # Web/API server defaults
-DEFAULT_WEB_PORT = int(os.getenv("PENGUIN_WEB_PORT", "8000"))
+DEFAULT_WEB_PORT = int(os.getenv("PENGUIN_WEB_PORT", "9000"))
 
 # Patch truncation limit for webhooks
-DEFAULT_PATCH_TRUNCATION_LIMIT = int(os.getenv("PENGUIN_PATCH_TRUNCATION_LIMIT", "5000"))
+DEFAULT_PATCH_TRUNCATION_LIMIT = int(
+    os.getenv("PENGUIN_PATCH_TRUNCATION_LIMIT", "5000")
+)
 
 
 def _coerce_int(value: Any, default: int) -> int:
@@ -87,7 +93,10 @@ def get_default_max_history_tokens() -> int:
     This should generally be derived from model context window, but several call
     paths still need a stable fallback.
     """
-    return _coerce_int(os.getenv("PENGUIN_MAX_HISTORY_TOKENS", DEFAULT_MAX_HISTORY_TOKENS), DEFAULT_MAX_HISTORY_TOKENS)
+    return _coerce_int(
+        os.getenv("PENGUIN_MAX_HISTORY_TOKENS", DEFAULT_MAX_HISTORY_TOKENS),
+        DEFAULT_MAX_HISTORY_TOKENS,
+    )
 
 
 def get_default_context_window_emergency_fallback_tokens() -> int:

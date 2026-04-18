@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import logging
 import os
 import warnings
 from pathlib import Path
@@ -60,7 +61,13 @@ def auth_config(monkeypatch: pytest.MonkeyPatch) -> AuthConfig:
 
 def test_public_endpoint_root_is_exact_match_only(auth_config: AuthConfig) -> None:
     assert auth_config.is_public_endpoint("/") is True
+    assert auth_config.is_public_endpoint("/authorize") is True
+    assert auth_config.is_public_endpoint("/chat") is True
+    assert auth_config.is_public_endpoint("/dashboard") is True
+    assert auth_config.is_public_endpoint("/openapi.json") is True
     assert auth_config.is_public_endpoint("/api/v1/health") is True
+    assert auth_config.is_public_endpoint("/favicon.ico") is True
+    assert auth_config.is_public_endpoint("/apple-touch-icon.png") is True
     assert auth_config.is_public_endpoint("/api/v1/capabilities") is False
     assert auth_config.is_public_endpoint("/static/index.html") is True
     assert auth_config.is_public_endpoint("/static-assets") is False
@@ -76,6 +83,22 @@ def test_authenticate_connection_rejects_query_param_api_keys(
 
     with pytest.raises(AuthenticationError, match="No valid authentication"):
         authenticate_connection(connection, auth_config)
+
+
+def test_authenticate_connection_accepts_startup_token_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PENGUIN_AUTH_ENABLED", "true")
+    monkeypatch.setenv("PENGUIN_AUTH_STARTUP_TOKEN", "startup-token-123")
+    connection = SimpleNamespace(
+        headers={"X-API-Key": "startup-token-123"},
+        query_params={},
+    )
+
+    result = authenticate_connection(connection, AuthConfig())
+
+    assert result["method"] == "startup_token"
+    assert result["subject"] == "local_bootstrap"
 
 
 def test_startup_auth_token_generated_only_without_configured_api_keys(
@@ -127,6 +150,7 @@ async def test_require_websocket_auth_rejects_missing_credentials(
         await require_websocket_auth(websocket)
 
     assert exc_info.value.code == 1008
+    assert "This Penguin instance is protected." in exc_info.value.reason
 
 
 @pytest.fixture
@@ -307,7 +331,149 @@ def test_http_auth_returns_401_without_credentials(
     response = client.get("/api/v1/capabilities")
 
     assert response.status_code == 401
-    assert response.json()["detail"]["error"]["code"] == "AUTHENTICATION_FAILED"
+    error = response.json()["detail"]["error"]
+    assert error["code"] == "AUTHENTICATION_FAILED"
+    assert "This Penguin instance is protected." in error["message"]
+    assert "POST /api/v1/auth/session" in error["suggested_action"]
+
+
+def test_http_auth_logs_warning_once_per_path(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("PENGUIN_AUTH_ENABLED", "true")
+    monkeypatch.setenv("PENGUIN_API_KEYS", "http-test-key")
+
+    from penguin.web.app import create_app
+    from penguin.web.middleware.auth import _SEEN_AUTH_FAILURES
+
+    _SEEN_AUTH_FAILURES.clear()
+    client = TestClient(create_app())
+
+    with caplog.at_level(logging.DEBUG, logger="penguin.web.middleware.auth"):
+        first = client.get("/api/v1/capabilities")
+        second = client.get("/api/v1/capabilities")
+
+    assert first.status_code == 401
+    assert second.status_code == 401
+    warning_records = [
+        record for record in caplog.records if record.levelno == logging.WARNING
+    ]
+    assert len(warning_records) == 1
+    assert "POST /api/v1/auth/session" in warning_records[0].message
+
+
+def test_openapi_schema_remains_public_when_auth_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PENGUIN_AUTH_ENABLED", "true")
+    monkeypatch.setenv("PENGUIN_API_KEYS", "http-test-key")
+
+    from penguin.web.app import create_app
+
+    client = TestClient(create_app())
+    response = client.get("/openapi.json")
+
+    assert response.status_code == 200
+    assert response.json()["openapi"].startswith("3.")
+
+
+def test_browser_icon_requests_are_not_authenticated_when_auth_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PENGUIN_AUTH_ENABLED", "true")
+    monkeypatch.setenv("PENGUIN_API_KEYS", "http-test-key")
+
+    from penguin.web.app import create_app
+
+    client = TestClient(create_app())
+    response = client.get("/favicon.ico")
+
+    assert response.status_code == 404
+
+
+def test_root_chat_dashboard_and_authorize_html_disable_caching() -> None:
+    from penguin.web.app import create_app
+
+    client = TestClient(create_app())
+
+    root = client.get("/")
+    chat = client.get("/chat")
+    dashboard = client.get("/dashboard")
+    authorize = client.get("/authorize")
+
+    assert root.status_code == 200
+    assert root.headers["cache-control"] == "no-store, max-age=0"
+    assert root.headers["pragma"] == "no-cache"
+    assert chat.status_code == 200
+    assert chat.headers["cache-control"] == "no-store, max-age=0"
+    assert chat.headers["pragma"] == "no-cache"
+    assert dashboard.status_code == 200
+    assert dashboard.headers["cache-control"] == "no-store, max-age=0"
+    assert dashboard.headers["pragma"] == "no-cache"
+    assert authorize.status_code == 200
+    assert authorize.headers["cache-control"] == "no-store, max-age=0"
+    assert authorize.headers["pragma"] == "no-cache"
+
+
+def test_authorize_page_loads_when_auth_is_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PENGUIN_AUTH_ENABLED", "true")
+
+    from penguin.web.app import create_app
+
+    client = TestClient(create_app())
+    response = client.get("/authorize")
+
+    assert response.status_code == 200
+    assert "Authorize this browser" in response.text
+
+
+def test_chat_ui_includes_fragment_bootstrap_and_local_auth_gate() -> None:
+    index_path = (
+        Path(__file__).resolve().parents[2]
+        / "penguin"
+        / "web"
+        / "static"
+        / "index.html"
+    )
+    content = index_path.read_text()
+
+    assert "local_token" in content
+    assert "/api/v1/auth/session" in content
+    assert "Authorize this browser" in content
+
+
+def test_dashboard_ui_includes_fragment_bootstrap_and_local_auth_gate() -> None:
+    dashboard_path = (
+        Path(__file__).resolve().parents[2]
+        / "penguin"
+        / "web"
+        / "static"
+        / "dashboard.html"
+    )
+    content = dashboard_path.read_text()
+
+    assert "local_token" in content
+    assert "/api/v1/auth/session" in content
+    assert "Authorize this browser" in content
+
+
+def test_authorize_ui_includes_fragment_bootstrap_and_navigation_links() -> None:
+    authorize_path = (
+        Path(__file__).resolve().parents[2]
+        / "penguin"
+        / "web"
+        / "static"
+        / "authorize.html"
+    )
+    content = authorize_path.read_text()
+
+    assert "local_token" in content
+    assert "/api/v1/auth/session" in content
+    assert "/chat" in content
+    assert "/dashboard" in content
 
 
 def test_upload_rejects_spoofed_image_bytes(
@@ -439,6 +605,18 @@ def test_auth_session_endpoint_accepts_startup_token_and_sets_cookie(
     assert "penguin_session=" in response.headers["set-cookie"]
     assert "HttpOnly" in response.headers["set-cookie"]
     assert "SameSite=lax" in response.headers["set-cookie"]
+
+
+def test_auth_session_get_returns_bootstrap_instructions(
+    local_auth_app: FastAPI,
+) -> None:
+    client = TestClient(local_auth_app, base_url="http://127.0.0.1:9000")
+
+    response = client.get("/api/v1/auth/session")
+
+    assert response.status_code == 200
+    assert "Use POST /api/v1/auth/session" in response.text
+    assert "startup token printed by penguin-web" in response.text
 
 
 def test_auth_session_endpoint_accepts_configured_api_key(
