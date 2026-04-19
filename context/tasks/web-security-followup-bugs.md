@@ -5,15 +5,17 @@ Branch: `refactor-web-security-overhaul`
 
 ## Verified Bugs
 
-### High risk
-- Startup-token auth is not scoped tightly enough to loopback peers in `penguin/web/middleware/auth.py`.
-- Auth-failure suppression uses an unbounded in-memory set keyed by raw paths in `penguin/web/middleware/auth.py`.
-- `PORT` parsing in `penguin/web/server.py` can fail with an uncontrolled `ValueError` on malformed input.
-- Local auth token cache writes in `penguin/web/server.py` can abort startup if the filesystem write fails.
+### Fixed high risk
+- Startup-token auth is now scoped to loopback peers in `penguin/web/middleware/auth.py`.
+- Auth-failure suppression is now bounded and path-normalized in `penguin/web/middleware/auth.py`.
+- `PORT` parsing in `penguin/web/server.py` now fails with a controlled startup error path.
+- Local auth token cache writes in `penguin/web/server.py` are now non-fatal.
 
-### Medium risk
-- `task.phase` serialization in `penguin/web/routes.py` can raise `AttributeError` for tasks without a `phase` attribute.
+### Remaining security-relevant
 - The browser auth bootstrap fragment in `penguin/web/static/authorize.html` is only cleared after a successful auth POST.
+
+### Remaining medium risk / reliability
+- `task.phase` serialization in `penguin/web/routes.py` can raise `AttributeError` for tasks without a `phase` attribute.
 - Dashboard websocket reconnect timers in `penguin/web/static/dashboard.html` are not cleaned up on unmount.
 - Chat websocket auth-close handling in `penguin/web/static/index.html` can leave pending send state hanging.
 - TUI prompt send path in `penguin-tui/packages/opencode/src/cli/cmd/tui/component/prompt/index.tsx` only clears pending state on network exceptions, not non-2xx responses.
@@ -31,6 +33,5 @@ Branch: `refactor-web-security-overhaul`
 - Package/static asset relocation discussion for `dashboard.html`.
 
 ## Current Focus
-1. Loopback-only startup-token acceptance.
-2. Bounded auth-failure cache.
-3. Safe startup parsing and cache-write failure handling.
+1. Clear bootstrap fragments before the auth network call.
+2. Defer lower-priority reliability and cleanup items until after the security-sensitive auth flow is settled.

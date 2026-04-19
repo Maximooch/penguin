@@ -54,7 +54,9 @@ def clear_auth_env(monkeypatch: pytest.MonkeyPatch) -> None:
     provider_credentials_service._WARNED_LEGACY_PATHS.clear()
 
 
-def _loopback_client(app: FastAPI, base_url: str = "http://127.0.0.1:9000") -> TestClient:
+def _loopback_client(
+    app: FastAPI, base_url: str = "http://127.0.0.1:9000"
+) -> TestClient:
     return TestClient(app, base_url=base_url, client=("127.0.0.1", 50000))
 
 
@@ -534,6 +536,21 @@ def test_authorize_ui_includes_fragment_bootstrap_and_navigation_links() -> None
     assert "/api/v1/auth/session" in content
     assert "/chat" in content
     assert "/dashboard" in content
+
+
+def test_authorize_ui_clears_fragment_before_auth_request() -> None:
+    authorize_path = (
+        Path(__file__).resolve().parents[2]
+        / "penguin"
+        / "web"
+        / "static"
+        / "authorize.html"
+    )
+    content = authorize_path.read_text()
+
+    clear_idx = content.index("clearBootstrapFragment()")
+    fetch_idx = content.index("await fetch('/api/v1/auth/session'")
+    assert clear_idx < fetch_idx
 
 
 def test_upload_rejects_spoofed_image_bytes(

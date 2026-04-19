@@ -295,6 +295,7 @@
 
             setWorking(true)
             setStatus('Authorizing local browser session...')
+            clearBootstrapFragment()
 
             try {
                 const response = await fetch('/api/v1/auth/session', {
@@ -312,7 +313,6 @@
                     return false
                 }
 
-                clearBootstrapFragment()
                 setAuthorized()
                 return true
             } catch (error) {
