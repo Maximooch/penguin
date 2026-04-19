@@ -885,6 +885,8 @@ export function Prompt(props: PromptProps) {
       })
         .then(async (res) => {
           if (res.ok) return
+          // TODO: Reset emitted session busy state here too, not just pending flags,
+          // so a failed send cannot leave the session visually stuck as busy.
           setStore("pending", false)
           setStore("pendingSeenBusy", false)
           const details = await res.text().catch(() => "")
@@ -895,7 +897,9 @@ export function Prompt(props: PromptProps) {
               : `Failed to send message (${res.status})`,
           })
         })
-        .catch(() => {
+        .catch((err) => {
+          // TODO: Surface transport-layer failures with a toast and reset the
+          // session busy state, not only the pending flags.
           setStore("pending", false)
           setStore("pendingSeenBusy", false)
         })

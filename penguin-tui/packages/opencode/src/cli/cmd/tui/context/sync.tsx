@@ -773,6 +773,8 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           sdk.fetch(path).then(async (res) => {
             if (res.ok) return res.json().catch(() => undefined)
             const details = await res.text().catch(() => "")
+            // TODO: Revisit whether some bootstrap endpoints should degrade to local
+            // fallbacks instead of failing the whole sync flow on non-2xx responses.
             throw new Error(
               details
                 ? `Bootstrap request failed (${res.status}): ${details}`
