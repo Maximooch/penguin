@@ -13,12 +13,14 @@ import pytest
 from PIL import Image
 from fastapi import FastAPI, WebSocketException
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 from starlette.websockets import WebSocketDisconnect
 
 from penguin.web.middleware.auth import (
     AuthConfig,
     AuthenticationError,
     authenticate_connection,
+    build_session_cookie_settings,
     get_startup_auth_token,
     require_websocket_auth,
 )
@@ -50,6 +52,10 @@ def clear_auth_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENAI_OAUTH_EXPIRES_AT_MS", raising=False)
     monkeypatch.delenv("OPENAI_ACCOUNT_ID", raising=False)
     provider_credentials_service._WARNED_LEGACY_PATHS.clear()
+
+
+def _loopback_client(app: FastAPI, base_url: str = "http://127.0.0.1:9000") -> TestClient:
+    return TestClient(app, base_url=base_url, client=("127.0.0.1", 50000))
 
 
 @pytest.fixture
@@ -91,6 +97,7 @@ def test_authenticate_connection_accepts_startup_token_header(
     monkeypatch.setenv("PENGUIN_AUTH_ENABLED", "true")
     monkeypatch.setenv("PENGUIN_AUTH_STARTUP_TOKEN", "startup-token-123")
     connection = SimpleNamespace(
+        client=SimpleNamespace(host="127.0.0.1"),
         headers={"X-API-Key": "startup-token-123"},
         query_params={},
     )
@@ -99,6 +106,44 @@ def test_authenticate_connection_accepts_startup_token_header(
 
     assert result["method"] == "startup_token"
     assert result["subject"] == "local_bootstrap"
+
+
+def test_authenticate_connection_rejects_startup_token_from_non_loopback_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PENGUIN_AUTH_ENABLED", "true")
+    monkeypatch.setenv("PENGUIN_AUTH_STARTUP_TOKEN", "startup-token-123")
+    connection = SimpleNamespace(
+        client=SimpleNamespace(host="203.0.113.25"),
+        headers={"X-API-Key": "startup-token-123"},
+        query_params={},
+    )
+
+    with pytest.raises(AuthenticationError, match="No valid authentication"):
+        authenticate_connection(connection, AuthConfig())
+
+
+def test_build_session_cookie_settings_rejects_non_loopback_http_client() -> None:
+    request = Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": "/api/v1/auth/session",
+            "raw_path": b"/api/v1/auth/session",
+            "query_string": b"",
+            "headers": [],
+            "client": ("203.0.113.25", 9000),
+            "server": ("127.0.0.1", 9000),
+        }
+    )
+
+    with pytest.raises(
+        AuthenticationError,
+        match="Browser session cookies are only issued for loopback hosts or HTTPS origins",
+    ):
+        build_session_cookie_settings(request, AuthConfig())
 
 
 def test_startup_auth_token_generated_only_without_configured_api_keys(
@@ -363,6 +408,21 @@ def test_http_auth_logs_warning_once_per_path(
     assert "POST /api/v1/auth/session" in warning_records[0].message
 
 
+def test_auth_failure_cache_is_bounded_and_normalized() -> None:
+    from penguin.web.middleware.auth import (
+        _AUTH_FAILURE_CACHE_LIMIT,
+        _SEEN_AUTH_FAILURES,
+        log_auth_failure_once,
+    )
+
+    _SEEN_AUTH_FAILURES.clear()
+    for idx in range(_AUTH_FAILURE_CACHE_LIMIT * 2):
+        log_auth_failure_once("http", f"/session/session_{idx}")
+
+    assert len(_SEEN_AUTH_FAILURES) == 1
+    assert ("http", "/session/:id") in _SEEN_AUTH_FAILURES
+
+
 def test_openapi_schema_remains_public_when_auth_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -592,7 +652,7 @@ def test_auth_session_endpoint_accepts_startup_token_and_sets_cookie(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("PENGUIN_AUTH_STARTUP_TOKEN", "startup-token-123")
-    client = TestClient(local_auth_app, base_url="http://127.0.0.1:9000")
+    client = _loopback_client(local_auth_app)
 
     response = client.post(
         "/api/v1/auth/session",
@@ -610,7 +670,7 @@ def test_auth_session_endpoint_accepts_startup_token_and_sets_cookie(
 def test_auth_session_get_returns_bootstrap_instructions(
     local_auth_app: FastAPI,
 ) -> None:
-    client = TestClient(local_auth_app, base_url="http://127.0.0.1:9000")
+    client = _loopback_client(local_auth_app)
 
     response = client.get("/api/v1/auth/session")
 
@@ -629,7 +689,7 @@ def test_auth_session_endpoint_accepts_configured_api_key(
     app = FastAPI()
     app.add_middleware(AuthenticationMiddleware, config=AuthConfig())
     app.include_router(router)
-    client = TestClient(app, base_url="http://127.0.0.1:9000")
+    client = _loopback_client(app)
 
     response = client.post(
         "/api/v1/auth/session",
@@ -644,7 +704,7 @@ def test_auth_session_endpoint_accepts_configured_api_key(
 def test_auth_session_endpoint_is_public_but_rejects_invalid_token(
     local_auth_app: FastAPI,
 ) -> None:
-    client = TestClient(local_auth_app, base_url="http://127.0.0.1:9000")
+    client = _loopback_client(local_auth_app)
 
     response = client.post("/api/v1/auth/session", json={"token": "bad-token"})
 
@@ -653,7 +713,7 @@ def test_auth_session_endpoint_is_public_but_rejects_invalid_token(
 
 
 def test_auth_logout_clears_cookie(local_auth_app: FastAPI) -> None:
-    client = TestClient(local_auth_app, base_url="http://127.0.0.1:9000")
+    client = _loopback_client(local_auth_app)
 
     response = client.post("/api/v1/auth/logout")
 
@@ -668,7 +728,7 @@ def test_http_protected_endpoint_accepts_session_cookie(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("PENGUIN_AUTH_STARTUP_TOKEN", "startup-token-123")
-    client = TestClient(local_auth_app, base_url="http://127.0.0.1:9000")
+    client = _loopback_client(local_auth_app)
 
     auth_response = client.post(
         "/api/v1/auth/session",
@@ -688,7 +748,7 @@ async def test_sse_endpoint_accepts_session_cookie(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("PENGUIN_AUTH_STARTUP_TOKEN", "startup-token-123")
-    client = TestClient(local_auth_sse_app, base_url="http://127.0.0.1:9000")
+    client = _loopback_client(local_auth_sse_app)
 
     auth_response = client.post(
         "/api/v1/auth/session",
@@ -748,7 +808,7 @@ def test_websocket_accepts_session_cookie(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("PENGUIN_AUTH_STARTUP_TOKEN", "startup-token-123")
-    client = TestClient(local_auth_app, base_url="http://127.0.0.1:9000")
+    client = _loopback_client(local_auth_app)
 
     auth_response = client.post(
         "/api/v1/auth/session",

@@ -1,5 +1,6 @@
 import sys
 import types
+import logging
 
 from penguin.web import server
 
@@ -142,6 +143,51 @@ def test_main_writes_local_auth_token_cache_when_bootstrap_enabled(
     capsys.readouterr()
     assert (tmp_path / "127.0.0.1-9000.token").read_text() == "cached-startup-token"
     assert calls[0][0][0] is app
+
+
+def test_main_continues_when_local_auth_token_cache_write_fails(
+    monkeypatch, capsys, caplog
+):
+    calls = []
+    app = object()
+
+    fake_uvicorn = types.SimpleNamespace(
+        run=lambda *args, **kwargs: calls.append((args, kwargs))
+    )
+    monkeypatch.setitem(sys.modules, "uvicorn", fake_uvicorn)
+    monkeypatch.setattr(server, "create_app_factory", lambda: app)
+    monkeypatch.setattr(
+        server,
+        "write_local_auth_token",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    monkeypatch.delenv("HOST", raising=False)
+    monkeypatch.setenv("PORT", "9000")
+    monkeypatch.setenv("DEBUG", "false")
+    monkeypatch.setenv("PENGUIN_AUTH_ENABLED", "true")
+    monkeypatch.delenv("PENGUIN_API_KEYS", raising=False)
+    monkeypatch.setenv("PENGUIN_AUTH_STARTUP_TOKEN", "cached-startup-token")
+
+    with caplog.at_level(logging.WARNING, logger="penguin.web.server"):
+        assert server.main() == 0
+
+    output = capsys.readouterr().out
+    assert "http://127.0.0.1:9000/authorize#local_token=" in output
+    assert any(
+        "Failed to write local auth token cache" in x.message for x in caplog.records
+    )
+    assert calls[0][0][0] is app
+
+
+def test_main_returns_error_for_invalid_port(monkeypatch, capsys):
+    monkeypatch.delenv("HOST", raising=False)
+    monkeypatch.setenv("PORT", "not-a-port")
+    monkeypatch.setenv("DEBUG", "false")
+
+    assert server.main() == 1
+
+    output = capsys.readouterr().out
+    assert "Invalid PORT value 'not-a-port'" in output
 
 
 def test_start_server_non_debug_uses_app_instance(monkeypatch):

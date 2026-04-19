@@ -73,6 +73,17 @@ def _display_host(host: str) -> str:
     return "localhost" if host in {"0.0.0.0", "::", ""} else host
 
 
+def _resolve_port() -> int:
+    """Parse the configured web port with a controlled error path."""
+    raw = os.environ.get("PORT", str(DEFAULT_WEB_PORT))
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Invalid PORT value {raw!r}. Set PORT to an integer port number."
+        ) from exc
+
+
 def _print_startup_banner(host: str, port: int) -> None:
     """Print startup information using the actual configured address."""
     display_host = _display_host(host)
@@ -122,7 +133,15 @@ def _print_local_auth_bootstrap_banner(host: str, port: int) -> None:
     display_host = _display_host(host)
     print("\033[93mPenguin local web auth is enabled.\033[0m")
     if startup_token:
-        write_local_auth_token(startup_token, host=host, port=port)
+        try:
+            write_local_auth_token(startup_token, host=host, port=port)
+        except Exception as exc:
+            logger.warning(
+                "Failed to write local auth token cache for %s:%s: %s",
+                host,
+                port,
+                exc,
+            )
         bootstrap_url = f"http://{display_host}:{port}/authorize#local_token={quote(startup_token, safe='')}"
         print(
             "\033[93mBrowser/dashboard only: open this local authorization URL once for this browser.\033[0m"
@@ -152,11 +171,10 @@ def main():
         return 1
 
     host = os.environ.get("HOST", DEFAULT_HOST)
-    port = int(os.environ.get("PORT", DEFAULT_WEB_PORT))
-    debug = os.environ.get("DEBUG", "false").lower() == "true"
-    app = None
-
     try:
+        port = _resolve_port()
+        debug = os.environ.get("DEBUG", "false").lower() == "true"
+        app = None
         validate_startup_security(host)
         if debug:
             create_app_factory()

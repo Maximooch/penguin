@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Authentication middleware and local session helpers for Penguin web API.
 
 Supports API key and JWT authentication for external clients plus a
@@ -7,11 +9,13 @@ startup-token-to-cookie bootstrap flow for local browser sessions.
 import logging
 import os
 import secrets
-from http.cookies import SimpleCookie
-from typing import Any, Optional
+from collections import OrderedDict
 from datetime import datetime, timedelta
+from http.cookies import SimpleCookie
 from ipaddress import ip_address
+import re
 from threading import Lock
+from typing import Any, Optional
 
 from fastapi import HTTPException, Request, WebSocket, WebSocketException, status
 from fastapi.responses import JSONResponse
@@ -31,7 +35,11 @@ STARTUP_TOKEN_ENV = "PENGUIN_AUTH_STARTUP_TOKEN"
 SESSION_SECRET_ENV = "PENGUIN_SESSION_SECRET"
 _AUTH_SECRET_LOCK = Lock()
 _AUTH_WARNING_LOCK = Lock()
-_SEEN_AUTH_FAILURES: set[tuple[str, str]] = set()
+_AUTH_FAILURE_CACHE_LIMIT = 256
+_DYNAMIC_PATH_SEGMENT = re.compile(
+    r"^(?:[0-9]+|[0-9a-fA-F-]{8,}|session_[A-Za-z0-9_:-]+|msg_[A-Za-z0-9_:-]+|task_[A-Za-z0-9_:-]+)$"
+)
+_SEEN_AUTH_FAILURES: "OrderedDict[tuple[str, str], None]" = OrderedDict()
 
 # Security scheme for Bearer token
 security = HTTPBearer(auto_error=False)
@@ -175,6 +183,37 @@ def _is_loopback_host(host: str) -> bool:
         return False
 
 
+def _connection_host(connection: Any) -> str | None:
+    """Return the peer host for an HTTP or WebSocket connection."""
+    client = getattr(connection, "client", None)
+    if client is None:
+        return None
+    if isinstance(client, (tuple, list)):
+        return str(client[0]) if client else None
+    host = getattr(client, "host", None)
+    return str(host) if host else None
+
+
+def _is_loopback_peer(connection: Any) -> bool:
+    """Return whether the peer connected from a loopback address."""
+    host = _connection_host(connection)
+    return _is_loopback_host(host or "") if host else False
+
+
+def _normalize_auth_failure_path(path: str) -> str:
+    """Bucket dynamic paths so auth-failure suppression stays bounded."""
+    normalized = (path or "/").split("?", 1)[0].strip() or "/"
+    if normalized == "/":
+        return normalized
+
+    parts = [
+        ":id" if _DYNAMIC_PATH_SEGMENT.match(part) else part
+        for part in normalized.split("/")
+        if part
+    ]
+    return "/" + "/".join(parts)
+
+
 def _load_or_create_secret(env_name: str, *, bytes_length: int) -> str:
     """Load an auth secret from env or create one for this process tree."""
     value = os.getenv(env_name, "").strip()
@@ -213,6 +252,7 @@ def get_session_secret(config: Optional[AuthConfig] = None) -> str:
 def authenticate_local_session_token(
     token: str,
     config: Optional[AuthConfig] = None,
+    connection: Any = None,
 ) -> dict:
     """Authenticate a token exchanged for a local browser session."""
     auth_config = config or AuthConfig()
@@ -222,6 +262,10 @@ def authenticate_local_session_token(
 
     startup_token = get_startup_auth_token(auth_config)
     if startup_token and secrets.compare_digest(candidate, startup_token):
+        if not _is_loopback_peer(connection):
+            raise AuthenticationError(
+                "Local startup token is only valid from loopback clients"
+            )
         return {
             "method": "startup_token",
             "subject": "local_bootstrap",
@@ -290,7 +334,7 @@ def build_session_cookie_settings(
 ) -> dict[str, Any]:
     """Build safe cookie settings for Penguin local browser sessions."""
     auth_config = config or AuthConfig()
-    host = (request.url.hostname or "").strip().lower()
+    host = (_connection_host(request) or "").strip().lower()
     secure = request.url.scheme == "https"
     if not secure and not _is_loopback_host(host):
         raise AuthenticationError(
@@ -332,11 +376,13 @@ def log_auth_failure_once(
     transport: str, path: str, config: Optional[AuthConfig] = None
 ) -> None:
     """Warn once per transport/path pair to avoid repeated auth log spam."""
-    key = (transport, path)
+    key = (transport, _normalize_auth_failure_path(path))
     with _AUTH_WARNING_LOCK:
         first_failure = key not in _SEEN_AUTH_FAILURES
         if first_failure:
-            _SEEN_AUTH_FAILURES.add(key)
+            _SEEN_AUTH_FAILURES[key] = None
+            while len(_SEEN_AUTH_FAILURES) > _AUTH_FAILURE_CACHE_LIMIT:
+                _SEEN_AUTH_FAILURES.popitem(last=False)
 
     if first_failure:
         logger.warning(
@@ -412,9 +458,13 @@ def validate_api_key(api_key: str, config: AuthConfig) -> bool:
     return any(secrets.compare_digest(api_key, key) for key in config.api_keys)
 
 
-def validate_startup_token(token: str, config: AuthConfig) -> bool:
+def validate_startup_token(
+    token: str, config: AuthConfig, connection: Any = None
+) -> bool:
     """Validate the process-local startup token for local non-browser clients."""
     if not config.requires_startup_token or not token:
+        return False
+    if not _is_loopback_peer(connection):
         return False
 
     startup_token = get_startup_auth_token(config)
@@ -589,7 +639,7 @@ def authenticate_connection(
                 "metadata": {"key_prefix": api_key[:8] + "..."},
             }
 
-        if validate_startup_token(api_key, auth_config):
+        if validate_startup_token(api_key, auth_config, connection):
             return {
                 "method": "startup_token",
                 "subject": "local_bootstrap",

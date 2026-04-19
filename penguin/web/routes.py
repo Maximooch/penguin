@@ -3233,7 +3233,7 @@ async def api_auth_session(
         )
 
     try:
-        auth_result = authenticate_local_session_token(body.token, auth_config)
+        auth_result = authenticate_local_session_token(body.token, auth_config, request)
         session_token = create_session_token(
             auth_result.get("subject", "unknown"),
             auth_method=auth_result["method"],
