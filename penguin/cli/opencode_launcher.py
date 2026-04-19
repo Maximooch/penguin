@@ -13,6 +13,7 @@ import importlib.metadata
 import json
 import os
 import platform
+import secrets
 import shutil
 import subprocess
 import sys
@@ -27,10 +28,17 @@ from urllib.parse import urlparse, urlunparse
 from urllib.request import Request, urlopen
 
 from .._version import __version__ as PENGUIN_VERSION
+from ..constants import DEFAULT_WEB_PORT
+from ..local_auth import (
+    is_web_auth_enabled,
+    read_local_auth_token,
+    write_local_auth_token,
+)
 
 LOCAL_HOSTS = {"", "localhost", "127.0.0.1", "0.0.0.0", "::1"}
 DEFAULT_TUI_RELEASE_API_ROOT = "https://api.github.com/repos/Maximooch/penguin/releases"
 DEFAULT_TUI_RELEASE_URL = f"{DEFAULT_TUI_RELEASE_API_ROOT}/latest"
+DEFAULT_WEB_URL = f"http://127.0.0.1:{DEFAULT_WEB_PORT}"
 _URL_MODE_CAP_CACHE: dict[str, bool] = {}
 
 
@@ -231,12 +239,62 @@ def _stop_process(proc: subprocess.Popen[str] | None) -> None:
     if proc.poll() is not None:
         return
 
-    proc.terminate()
+    try:
+        proc.terminate()
+    except ProcessLookupError:
+        return
+
     try:
         proc.wait(timeout=5)
+    except KeyboardInterrupt:
+        return
     except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=5)
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            return
+        try:
+            proc.wait(timeout=5)
+        except (KeyboardInterrupt, ProcessLookupError):
+            return
+
+
+def _prepare_local_auth_env(
+    base_url: str,
+    env: dict[str, str],
+    *,
+    server_running: bool,
+) -> None:
+    """Seed auth env so local TUI sessions can reuse local bootstrap auth."""
+    if not _is_local_url(base_url):
+        return
+    if env.get("PENGUIN_API_KEYS", "").strip():
+        return
+
+    auth_mode = env.get("PENGUIN_AUTH_ENABLED", "").strip().lower()
+    if auth_mode in {"0", "false", "no", "off"}:
+        return
+
+    token = env.get("PENGUIN_LOCAL_AUTH_TOKEN", "").strip()
+    if not token:
+        token = env.get("PENGUIN_AUTH_STARTUP_TOKEN", "").strip()
+    if not token:
+        token = read_local_auth_token(base_url) or ""
+
+    if token:
+        env.setdefault("PENGUIN_LOCAL_AUTH_TOKEN", token)
+        return
+
+    auth_enabled = is_web_auth_enabled(env)
+    if server_running or not auth_enabled:
+        return
+
+    if not token:
+        token = secrets.token_urlsafe(24)
+        env["PENGUIN_AUTH_STARTUP_TOKEN"] = token
+        write_local_auth_token(token, base_url)
+
+    env.setdefault("PENGUIN_LOCAL_AUTH_TOKEN", token)
 
 
 def _find_local_opencode_dir() -> Path | None:
@@ -803,7 +861,7 @@ def _parse_args(
     )
     parser.add_argument(
         "--url",
-        default=os.getenv("PENGUIN_WEB_URL", "http://localhost:8000"),
+        default=os.getenv("PENGUIN_WEB_URL", DEFAULT_WEB_URL),
         help="Penguin web base URL (default: %(default)s).",
     )
     parser.add_argument(
@@ -858,11 +916,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Force it to the requested target project when launched via uvx/tool shims.
     env["PWD"] = str(project_dir)
 
+    server_running = _is_server_running(base_url)
+    _prepare_local_auth_env(base_url, env, server_running=server_running)
+
     server_proc: subprocess.Popen[str] | None = None
     cleanup_registered = False
 
     should_try_web_start = _is_local_url(base_url) and not args.no_web_autostart
-    if not _is_server_running(base_url):
+    if not server_running:
         if should_try_web_start:
             try:
                 _ensure_web_runtime_available()

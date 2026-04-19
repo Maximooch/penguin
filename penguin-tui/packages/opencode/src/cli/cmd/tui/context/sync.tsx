@@ -289,7 +289,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       usageRefreshInFlight.add(sessionID)
       usageRefreshAt.set(sessionID, now)
       const url = new URL(`/session/${encodeURIComponent(sessionID)}`, sdk.url)
-      fetch(url)
+      sdk.fetch(url)
         .then((res) => (res.ok ? res.json() : undefined))
         .then((data) => {
           const usage = parseUsage(data)
@@ -671,7 +671,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             if (normalizedScoped && normalizedBase && normalizedScoped !== normalizedBase) break
             const url = new URL("/lsp", sdk.url)
             url.searchParams.set("directory", scopedDirectory)
-            fetch(url)
+            sdk.fetch(url)
               .then((res) => (res.ok ? res.json() : []))
               .then((data) => setStore("lsp", reconcile(Array.isArray(data) ? data : [])))
               .catch(() => undefined)
@@ -769,25 +769,29 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           url.searchParams.set("limit", "50")
           return url
         })
+        const bootstrap = (path: string | URL) =>
+          sdk.fetch(path).then(async (res) => {
+            if (res.ok) return res.json().catch(() => undefined)
+            const details = await res.text().catch(() => "")
+            // TODO: Revisit whether some bootstrap endpoints should degrade to local
+            // fallbacks instead of failing the whole sync flow on non-2xx responses.
+            throw new Error(
+              details
+                ? `Bootstrap request failed (${res.status}): ${details}`
+                : `Bootstrap request failed (${res.status})`,
+            )
+          })
         const [providersData, providerListData, configData, providerAuthData, sessionsData, roster] = await Promise.all(
           [
-            fetch(new URL("/config/providers", sdk.url))
-              .then((res) => (res.ok ? res.json() : undefined))
-              .catch(() => undefined),
-            fetch(new URL("/provider", sdk.url))
-              .then((res) => (res.ok ? res.json() : undefined))
-              .catch(() => undefined),
-            fetch(new URL("/config", sdk.url))
-              .then((res) => (res.ok ? res.json() : undefined))
-              .catch(() => undefined),
-            fetch(new URL("/provider/auth", sdk.url))
-              .then((res) => (res.ok ? res.json() : undefined))
-              .catch(() => undefined),
-            fetch(sessionsUrl)
+            bootstrap(new URL("/config/providers", sdk.url)),
+            bootstrap(new URL("/provider", sdk.url)),
+            bootstrap(new URL("/config", sdk.url)),
+            bootstrap(new URL("/provider/auth", sdk.url)),
+            sdk.fetch(sessionsUrl)
               .then((res) => (res.ok ? res.json() : undefined))
               .then((data) => (Array.isArray(data) ? data : []))
               .catch(() => []),
-            fetch(new URL("/api/v1/agents", sdk.url))
+            sdk.fetch(new URL("/api/v1/agents", sdk.url))
               .then((res) => (res.ok ? res.json() : undefined))
               .then((data) => (Array.isArray(data) ? data : []))
               .catch(() => []),
@@ -1005,18 +1009,10 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         }
 
         await Promise.all([
-          fetch(systemUrl("/lsp"))
-            .then((res) => (res.ok ? res.json() : []))
-            .catch(() => []),
-          fetch(systemUrl("/formatter"))
-            .then((res) => (res.ok ? res.json() : []))
-            .catch(() => []),
-          fetch(systemUrl("/vcs"))
-            .then((res) => (res.ok ? res.json() : undefined))
-            .catch(() => undefined),
-          fetch(systemUrl("/path"))
-            .then((res) => (res.ok ? res.json() : undefined))
-            .catch(() => undefined),
+          bootstrap(systemUrl("/lsp")),
+          bootstrap(systemUrl("/formatter")),
+          bootstrap(systemUrl("/vcs")),
+          bootstrap(systemUrl("/path")),
         ]).then((result) => {
           const lsp = result[0]
           const formatter = result[1]

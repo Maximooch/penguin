@@ -171,7 +171,7 @@ export function Prompt(props: PromptProps) {
 
   function persistAgentMode(sessionID: string, nextMode: "build" | "plan") {
     const modeUrl = new URL(`/session/${encodeURIComponent(sessionID)}`, sdk.url)
-    fetch(modeUrl, {
+    sdk.fetch(modeUrl, {
       method: "PATCH",
       headers: {
         "Content-Type": "application/json",
@@ -657,7 +657,7 @@ export function Prompt(props: PromptProps) {
           sync.session.get(props.sessionID ?? sdk.sessionID ?? "")?.directory ?? process.cwd()
         const createUrl = new URL("/session", sdk.url)
         createUrl.searchParams.set("directory", directory)
-        const created = await fetch(createUrl, {
+        const created = await sdk.fetch(createUrl, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -865,7 +865,7 @@ export function Prompt(props: PromptProps) {
       setStore("pending", true)
       setStore("pendingSeenBusy", false)
       const url = new URL("/api/v1/chat/message", sdk.url)
-      fetch(url, {
+      sdk.fetch(url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -882,10 +882,27 @@ export function Prompt(props: PromptProps) {
           client_message_id: messageID,
           parts: nonTextParts,
         }),
-      }).catch(() => {
-        setStore("pending", false)
-        setStore("pendingSeenBusy", false)
       })
+        .then(async (res) => {
+          if (res.ok) return
+          // TODO: Reset emitted session busy state here too, not just pending flags,
+          // so a failed send cannot leave the session visually stuck as busy.
+          setStore("pending", false)
+          setStore("pendingSeenBusy", false)
+          const details = await res.text().catch(() => "")
+          toast.show({
+            variant: "error",
+            message: details
+              ? `Failed to send message: ${details}`
+              : `Failed to send message (${res.status})`,
+          })
+        })
+        .catch((err) => {
+          // TODO: Surface transport-layer failures with a toast and reset the
+          // session busy state, not only the pending flags.
+          setStore("pending", false)
+          setStore("pendingSeenBusy", false)
+        })
       return
     }
 

@@ -6,12 +6,15 @@ from fastapi import (
     WebSocketDisconnect,
     HTTPException,
     BackgroundTasks,
+    Request,
+    Response,
     UploadFile,
     File,
     Form,
     Query,
 )  # type: ignore
 from pydantic import BaseModel  # type: ignore
+from fastapi.responses import PlainTextResponse
 from dataclasses import asdict  # type: ignore
 from datetime import datetime  # type: ignore
 from collections import OrderedDict
@@ -75,7 +78,14 @@ from penguin.web.services.session_view import (
 from penguin.web.services.session_fork import fork_session
 from penguin.web.services.session_revert import revert_session, unrevert_session
 from penguin.web.services.session_summary import summarize_session_title
-from penguin.web.middleware.auth import require_websocket_auth
+from penguin.web.middleware.auth import (
+    AuthenticationError,
+    AuthConfig,
+    authenticate_local_session_token,
+    build_session_cookie_settings,
+    create_session_token,
+    require_websocket_auth,
+)
 from penguin.web.services.system_status import (
     get_formatter_status,
     get_lsp_status,
@@ -121,7 +131,9 @@ def _format_error_response(error: Exception, status_code: int = 500) -> HTTPExce
         )
 
 
-def _serialize_task_payload(task: Any, *, include_metadata: bool = True) -> Dict[str, Any]:
+def _serialize_task_payload(
+    task: Any, *, include_metadata: bool = True
+) -> Dict[str, Any]:
     """Serialize a task for web responses without flattening new runtime state away."""
     # Keep this centralized so task payload fixes land in one place instead of drifting across routes.
     # The web surface should expose current lifecycle truth, including phase and clarification state, not just legacy status fields.
@@ -142,7 +154,9 @@ def _serialize_task_payload(task: Any, *, include_metadata: bool = True) -> Dict
         "title": task.title,
         "description": task.description,
         "status": task.status.value if hasattr(task.status, "value") else task.status,
-        "phase": task.phase.value if hasattr(task.phase, "value") else getattr(task, "phase", None),
+        "phase": task.phase.value
+        if hasattr(task.phase, "value")
+        else getattr(task, "phase", None),
         "priority": getattr(task, "priority", None),
         "parent_task_id": getattr(task, "parent_task_id", None),
         "dependencies": list(getattr(task, "dependencies", []) or []),
@@ -2100,6 +2114,10 @@ class AgentDelegateRequest(BaseModel):
     parent: Optional[str] = None
 
 
+class LocalAuthSessionRequest(BaseModel):
+    token: str
+
+
 class MessageEnvelope(BaseModel):
     recipient: str
     content: Any
@@ -3198,6 +3216,74 @@ async def api_provider_list(core: PenguinCore = Depends(get_core)):
 async def api_provider_auth(core: PenguinCore = Depends(get_core)):
     """Alias for OpenCode-compatible provider auth methods endpoint."""
     return await opencode_provider_auth(core=core)
+
+
+@router.post("/api/v1/auth/session")
+async def api_auth_session(
+    body: LocalAuthSessionRequest,
+    request: Request,
+    response: Response,
+):
+    """Exchange a local bootstrap token or configured API key for a browser session."""
+    auth_config = AuthConfig()
+    if not auth_config.auth_enabled:
+        raise HTTPException(
+            status_code=400,
+            detail="Penguin local session auth is not enabled for this server.",
+        )
+
+    try:
+        auth_result = authenticate_local_session_token(body.token, auth_config, request)
+        session_token = create_session_token(
+            auth_result.get("subject", "unknown"),
+            auth_method=auth_result["method"],
+            config=auth_config,
+            metadata=auth_result.get("metadata", {}),
+        )
+        response.set_cookie(
+            key=auth_config.session_cookie_name,
+            value=session_token,
+            **build_session_cookie_settings(request, auth_config),
+        )
+        return {
+            "authenticated": True,
+            "method": auth_result["method"],
+            "subject": auth_result.get("subject", "unknown"),
+        }
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+
+@router.get("/api/v1/auth/session", response_class=PlainTextResponse)
+async def api_auth_session_info() -> str:
+    """Explain how to exchange a local startup token for a browser session."""
+    auth_config = AuthConfig()
+    if not auth_config.auth_enabled:
+        return (
+            "Penguin local session auth is not enabled for this server.\n"
+            "Protected local startup is the default: uv run penguin-web\n"
+            "To keep auth disabled intentionally: PENGUIN_AUTH_ENABLED=false uv run penguin-web\n"
+        )
+
+    return (
+        "Penguin local session bootstrap endpoint.\n"
+        'Use POST /api/v1/auth/session with JSON body: {"token": "<startup token>"}.\n'
+        "Use the startup token printed by penguin-web, or a configured API key if one is set.\n"
+        "TUI/CLI local sessions authenticate automatically.\n"
+        "CI/headless should prefer PENGUIN_API_KEYS plus X-API-Key header auth.\n"
+        "To run local-only without auth: PENGUIN_AUTH_ENABLED=false uv run penguin-web\n"
+    )
+
+
+@router.post("/api/v1/auth/logout")
+async def api_auth_logout(response: Response):
+    """Clear the local Penguin browser session cookie."""
+    auth_config = AuthConfig()
+    response.delete_cookie(
+        key=auth_config.session_cookie_name,
+        path=auth_config.session_cookie_path,
+    )
+    return {"authenticated": False}
 
 
 @router.put("/api/v1/auth/{providerID}")
@@ -4577,10 +4663,7 @@ async def get_project(project_id: str, core: PenguinCore = Depends(get_core)):
             "workspace_path": project.workspace_path,
             "created_at": project.created_at if project.created_at else None,
             "updated_at": project.updated_at if project.updated_at else None,
-            "tasks": [
-                _serialize_task_payload(task)
-                for task in tasks
-            ],
+            "tasks": [_serialize_task_payload(task) for task in tasks],
         }
     except HTTPException:
         raise
@@ -4635,7 +4718,9 @@ async def list_tasks(
                 normalized_status = status.strip().lower()
                 status_filter = TaskStatus(normalized_status)
             except ValueError:
-                valid_options = ", ".join(task_status.value for task_status in TaskStatus)
+                valid_options = ", ".join(
+                    task_status.value for task_status in TaskStatus
+                )
                 raise HTTPException(
                     status_code=400,
                     detail=f"Invalid status: {status}. Valid options: {valid_options}",
@@ -4645,12 +4730,7 @@ async def list_tasks(
             project_id=project_id, status=status_filter
         )
 
-        return {
-            "tasks": [
-                _serialize_task_payload(task)
-                for task in tasks
-            ]
-        }
+        return {"tasks": [_serialize_task_payload(task) for task in tasks]}
     except HTTPException:
         raise
     except Exception as e:
@@ -4695,7 +4775,6 @@ async def resume_task_clarification(
         task = await core.project_manager.get_task_async(task_id)
         if not task:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-
 
         run_mode = RunMode(core=core)
         result = await run_mode.resume_with_clarification(

@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Authorize Penguin</title>
+    <style>
+        :root {
+            --background: 224 71% 4%;
+            --foreground: 213 31% 91%;
+            --primary: 210 40% 98%;
+            --primary-foreground: 222.2 47.4% 1.2%;
+            --muted: 223 47% 11%;
+            --muted-foreground: 215.4 16.3% 56.9%;
+            --border: 216 34% 17%;
+            --accent: 217 91% 60%;
+            --radius: 0.75rem;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background:
+                radial-gradient(circle at top, rgba(59, 130, 246, 0.16), transparent 35%),
+                linear-gradient(180deg, hsl(var(--background)), #020617 60%);
+            color: hsl(var(--foreground));
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 1.5rem;
+        }
+
+        .shell {
+            width: min(100%, 42rem);
+            background: rgba(15, 23, 42, 0.92);
+            border: 1px solid hsl(var(--border));
+            border-radius: calc(var(--radius) * 1.25);
+            box-shadow: 0 28px 80px rgba(0, 0, 0, 0.45);
+            overflow: hidden;
+        }
+
+        .hero {
+            padding: 1.5rem;
+            border-bottom: 1px solid hsl(var(--border));
+            background: linear-gradient(135deg, rgba(59, 130, 246, 0.12), rgba(16, 185, 129, 0.06));
+        }
+
+        .eyebrow {
+            font-size: 0.72rem;
+            letter-spacing: 0.2em;
+            text-transform: uppercase;
+            color: hsl(var(--muted-foreground));
+            margin-bottom: 0.75rem;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: clamp(2rem, 4vw, 2.75rem);
+            line-height: 1.05;
+        }
+
+        .subhead {
+            margin-top: 0.75rem;
+            color: hsl(var(--muted-foreground));
+            line-height: 1.6;
+            font-size: 1rem;
+        }
+
+        .content {
+            padding: 1.5rem;
+            display: grid;
+            gap: 1rem;
+        }
+
+        .panel {
+            background: rgba(15, 23, 42, 0.82);
+            border: 1px solid hsl(var(--border));
+            border-radius: var(--radius);
+            padding: 1rem;
+        }
+
+        .status {
+            font-size: 0.95rem;
+            line-height: 1.55;
+            color: hsl(var(--foreground));
+        }
+
+        .muted {
+            color: hsl(var(--muted-foreground));
+        }
+
+        .input {
+            width: 100%;
+            border-radius: var(--radius);
+            border: 1px solid hsl(var(--border));
+            background: rgba(2, 6, 23, 0.92);
+            color: hsl(var(--foreground));
+            padding: 0.9rem 1rem;
+            font-size: 1rem;
+        }
+
+        .input:focus {
+            outline: none;
+            border-color: hsl(var(--accent));
+            box-shadow: 0 0 0 1px hsl(var(--accent));
+        }
+
+        .actions {
+            display: flex;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }
+
+        .button {
+            border: 0;
+            border-radius: var(--radius);
+            background: hsl(var(--primary));
+            color: hsl(var(--primary-foreground));
+            padding: 0.85rem 1.25rem;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .button.secondary {
+            background: transparent;
+            color: hsl(var(--foreground));
+            border: 1px solid hsl(var(--border));
+        }
+
+        .button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .links {
+            display: none;
+            grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+            gap: 0.75rem;
+        }
+
+        .links.visible {
+            display: grid;
+        }
+
+        .link-card {
+            border: 1px solid hsl(var(--border));
+            border-radius: var(--radius);
+            padding: 1rem;
+            text-decoration: none;
+            color: inherit;
+            background: rgba(2, 6, 23, 0.82);
+        }
+
+        .link-card strong {
+            display: block;
+            margin-bottom: 0.35rem;
+        }
+
+        .progress {
+            height: 0.5rem;
+            border-radius: 999px;
+            overflow: hidden;
+            background: rgba(148, 163, 184, 0.14);
+        }
+
+        .progress > span {
+            display: block;
+            height: 100%;
+            width: 66%;
+            background: linear-gradient(90deg, #3b82f6, #10b981);
+            animation: shimmer 1.2s ease-in-out infinite;
+        }
+
+        @keyframes shimmer {
+            0%, 100% { opacity: 0.7; transform: scaleX(0.97); }
+            50% { opacity: 1; transform: scaleX(1); }
+        }
+    </style>
+</head>
+<body>
+    <main class="shell">
+        <section class="hero">
+            <div class="eyebrow">Protected Local Penguin</div>
+            <h1>Authorize this browser</h1>
+            <p class="subhead">
+                Penguin is running locally with protection enabled. Authorize this browser once and Penguin will set a local session cookie for the dashboard and browser tools.
+            </p>
+        </section>
+
+        <section class="content">
+            <div class="panel" id="status-panel">
+                <p class="status" id="status-text">Paste the startup token printed by <code>penguin-web</code>, or open the full authorization URL from the terminal.</p>
+            </div>
+
+            <div class="panel" id="form-panel">
+                <label class="muted" for="token-input">Startup token</label>
+                <div style="height: 0.5rem"></div>
+                <input id="token-input" class="input" type="password" autocomplete="off" spellcheck="false" placeholder="Paste local startup token" />
+                <div style="height: 1rem"></div>
+                <div class="actions">
+                    <button class="button" id="authorize-button">Authorize browser</button>
+                    <a class="button secondary" href="/api/docs">Open API docs</a>
+                </div>
+            </div>
+
+            <div class="panel" id="working-panel" hidden>
+                <p class="status">Authorizing local browser session...</p>
+                <div style="height: 0.75rem"></div>
+                <div class="progress"><span></span></div>
+            </div>
+
+            <div class="links" id="authorized-links">
+                <a class="link-card" href="/chat">
+                    <strong>Open Chat</strong>
+                    <span class="muted">Use the legacy local chat UI.</span>
+                </a>
+                <a class="link-card" href="/dashboard">
+                    <strong>Open Dashboard</strong>
+                    <span class="muted">View local telemetry and engine state.</span>
+                </a>
+            </div>
+
+            <p class="muted" style="margin: 0; font-size: 0.86rem;">
+                This is local instance authorization, not a Penguin account login. For headless and CI flows, prefer configured <code>PENGUIN_API_KEYS</code>.
+            </p>
+        </section>
+    </main>
+
+    <script>
+        const statusText = document.getElementById('status-text')
+        const formPanel = document.getElementById('form-panel')
+        const workingPanel = document.getElementById('working-panel')
+        const authorizedLinks = document.getElementById('authorized-links')
+        const tokenInput = document.getElementById('token-input')
+        const authorizeButton = document.getElementById('authorize-button')
+
+        const setStatus = (message) => {
+            statusText.textContent = message
+        }
+
+        const setWorking = (active) => {
+            formPanel.hidden = active
+            workingPanel.hidden = !active
+        }
+
+        const setAuthorized = () => {
+            setWorking(false)
+            authorizedLinks.classList.add('visible')
+            setStatus('This browser is authorized. Open Chat or Dashboard below.')
+        }
+
+        const clearBootstrapFragment = () => {
+            if (!window.location.hash) return
+            history.replaceState(null, '', `${window.location.pathname}${window.location.search}`)
+        }
+
+        const getBootstrapToken = () => {
+            const hash = window.location.hash.startsWith('#')
+                ? window.location.hash.slice(1)
+                : window.location.hash
+            if (!hash) return ''
+            const params = new URLSearchParams(hash)
+            return params.get('local_token') || ''
+        }
+
+        const parseError = async (response) => {
+            try {
+                const data = await response.clone().json()
+                return data?.detail?.error?.message || data?.detail || response.statusText
+            } catch {
+                try {
+                    return await response.clone().text() || response.statusText
+                } catch {
+                    return response.statusText
+                }
+            }
+        }
+
+        const authorize = async (token) => {
+            const value = (token || '').trim()
+            if (!value) {
+                setStatus('Paste the startup token printed by penguin-web to authorize this browser.')
+                return false
+            }
+
+            setWorking(true)
+            setStatus('Authorizing local browser session...')
+            clearBootstrapFragment()
+
+            try {
+                const response = await fetch('/api/v1/auth/session', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ token: value })
+                })
+
+                if (!response.ok) {
+                    setWorking(false)
+                    setStatus(await parseError(response))
+                    return false
+                }
+
+                setAuthorized()
+                return true
+            } catch (error) {
+                setWorking(false)
+                setStatus(error?.message || 'Failed to authorize this browser.')
+                return false
+            }
+        }
+
+        const checkExistingSession = async () => {
+            try {
+                const response = await fetch('/api/v1/capabilities', { credentials: 'same-origin' })
+                if (response.ok) {
+                    setAuthorized()
+                    return true
+                }
+            } catch {
+                // Ignore and fall back to auth form.
+            }
+            return false
+        }
+
+        authorizeButton.addEventListener('click', () => authorize(tokenInput.value))
+        tokenInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault()
+                authorize(tokenInput.value)
+            }
+        })
+
+        ;(async () => {
+            const bootstrapToken = getBootstrapToken()
+            if (bootstrapToken) {
+                tokenInput.value = bootstrapToken
+                await authorize(bootstrapToken)
+                return
+            }
+
+            if (await checkExistingSession()) {
+                return
+            }
+
+            tokenInput.focus()
+        })()
+    </script>
+</body>
+</html>

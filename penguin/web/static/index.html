@@ -215,10 +215,93 @@
             margin-top: 0.5rem;
             border-radius: var(--radius);
         }
+
+        .auth-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(2, 6, 23, 0.9);
+            backdrop-filter: blur(6px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 1.5rem;
+            z-index: 60;
+        }
+
+        .auth-card {
+            width: min(100%, 30rem);
+            background-color: hsl(var(--muted));
+            border: 1px solid hsl(var(--border));
+            border-radius: calc(var(--radius) * 1.5);
+            padding: 1.5rem;
+            box-shadow: 0 24px 48px rgba(0, 0, 0, 0.35);
+        }
+
+        .auth-input {
+            width: 100%;
+            background-color: hsl(var(--background));
+            border: 1px solid hsl(var(--border));
+            color: hsl(var(--foreground));
+            border-radius: var(--radius);
+            padding: 0.75rem 1rem;
+        }
+
+        .auth-input:focus {
+            outline: none;
+            border-color: hsl(var(--primary));
+            box-shadow: 0 0 0 1px hsl(var(--primary));
+        }
+
+        [v-cloak] {
+            display: none;
+        }
     </style>
 </head>
 <body>
     <div id="app" class="h-screen flex" v-cloak>
+        <div v-if="authRequired || authBusy" class="auth-overlay">
+            <div class="auth-card space-y-4">
+                <div class="text-xs uppercase tracking-[0.2em] text-muted-foreground">Protected Local Penguin</div>
+                <div>
+                    <h2 class="text-2xl font-semibold">Authorize this browser</h2>
+                    <p class="mt-2 text-sm text-muted-foreground">
+                        {{ authStatus || 'Paste the startup token printed by penguin-web. Penguin will exchange it for a local session cookie and reload automatically.' }}
+                    </p>
+                </div>
+
+                <div v-if="!authBusy" class="space-y-3">
+                    <label class="block text-sm font-medium text-muted-foreground" for="auth-token-input">Startup token</label>
+                    <input
+                        id="auth-token-input"
+                        v-model="authToken"
+                        @keydown.enter.prevent="submitAuthToken()"
+                        type="password"
+                        autocomplete="off"
+                        spellcheck="false"
+                        placeholder="Paste local startup token"
+                        class="auth-input"
+                    />
+                    <button
+                        @click="submitAuthToken()"
+                        :disabled="!authToken.trim()"
+                        class="button w-full"
+                    >
+                        Authorize browser
+                    </button>
+                    <p class="text-xs text-muted-foreground">
+                        This protects the local dashboard only. No Penguin account is required.
+                    </p>
+                </div>
+
+                <div v-else class="space-y-2">
+                    <div class="text-sm text-foreground">Authorizing local browser session...</div>
+                    <div class="progress-bar-bg">
+                        <div class="progress-bar w-2/3"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Sidebar -->
         <div class="w-80 sidebar flex flex-col">
             <div class="p-4 border-b border-border">
@@ -344,6 +427,113 @@
                 const uploadedImage = ref(null)
                 const imagePath = ref(null)
                 const supportsImages = ref(false)
+                const authRequired = ref(false)
+                const authBusy = ref(false)
+                const authToken = ref('')
+                const authStatus = ref('')
+
+                const defaultAuthMessage = 'This local Penguin instance is protected. Paste the startup token printed by penguin-web to authorize this browser.'
+
+                const setAuthRequired = (message) => {
+                    authRequired.value = true
+                    authBusy.value = false
+                    authStatus.value = message || defaultAuthMessage
+                    isTyping.value = false
+                    streamProgress.value = null
+                    if (ws.value && ws.value.readyState !== WebSocket.CLOSED && ws.value.readyState !== WebSocket.CLOSING) {
+                        ws.value.close()
+                    }
+                }
+
+                const parseAuthError = async (response) => {
+                    try {
+                        const data = await response.clone().json()
+                        return data?.detail?.error?.message || data?.detail || response.statusText
+                    } catch {
+                        try {
+                            const text = await response.clone().text()
+                            return text || response.statusText
+                        } catch {
+                            return response.statusText
+                        }
+                    }
+                }
+
+                const consumeBootstrapToken = () => {
+                    const hash = window.location.hash.startsWith('#')
+                        ? window.location.hash.slice(1)
+                        : window.location.hash
+                    if (!hash) return ''
+                    const params = new URLSearchParams(hash)
+                    const token = params.get('local_token') || ''
+                    if (!token) return ''
+                    history.replaceState(null, '', `${window.location.pathname}${window.location.search}`)
+                    return token
+                }
+
+                const requireAuthorizedResponse = async (response) => {
+                    if (response.status !== 401) {
+                        return response
+                    }
+
+                    setAuthRequired(await parseAuthError(response))
+                    throw new Error('Penguin browser authorization required')
+                }
+
+                const fetchAuthorizedJson = async (url, init = {}) => {
+                    const response = await requireAuthorizedResponse(await fetch(url, init))
+                    if (!response.ok) {
+                        throw new Error(`Request failed: ${response.status}`)
+                    }
+                    return response.json()
+                }
+
+                const submitAuthToken = async (providedToken = authToken.value) => {
+                    const token = (providedToken || '').trim()
+                    if (!token) {
+                        setAuthRequired(defaultAuthMessage)
+                        return false
+                    }
+
+                    authRequired.value = true
+                    authBusy.value = true
+                    authToken.value = token
+                    authStatus.value = 'Authorizing this browser...'
+
+                    try {
+                        const response = await fetch('/api/v1/auth/session', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            credentials: 'same-origin',
+                            body: JSON.stringify({ token })
+                        })
+
+                        if (!response.ok) {
+                            setAuthRequired(await parseAuthError(response))
+                            return false
+                        }
+
+                        authToken.value = ''
+                        window.location.replace(`${window.location.pathname}${window.location.search}`)
+                        return true
+                    } catch (err) {
+                        setAuthRequired(err?.message || 'Failed to authorize this browser')
+                        return false
+                    }
+                }
+
+                const bootstrapBrowserAuth = async () => {
+                    const bootstrapToken = consumeBootstrapToken()
+                    if (!bootstrapToken) {
+                        return true
+                    }
+
+                    authToken.value = bootstrapToken
+                    await submitAuthToken(bootstrapToken)
+                    return false
+                }
 
                 const scrollToBottom = async () => {
                     await nextTick()
@@ -354,19 +544,19 @@
 
                 const refreshConversations = async () => {
                     try {
-                        const response = await fetch('/api/v1/conversations')
-                        const data = await response.json()
+                        const data = await fetchAuthorizedJson('/api/v1/conversations')
                         conversations.value = data.conversations
                     } catch (error) {
-                        console.error('Error fetching conversations:', error)
+                        if (!authRequired.value) {
+                            console.error('Error fetching conversations:', error)
+                        }
                     }
                 }
 
                 const selectConversation = async (id) => {
                     selectedConversationId.value = id
                     try {
-                        const response = await fetch(`/api/v1/conversations/${id}`)
-                        const data = await response.json()
+                        const data = await fetchAuthorizedJson(`/api/v1/conversations/${id}`)
                         
                         // Check if data has messages directly or nested under 'messages'
                         const messageList = data.messages || (data.messages && Array.isArray(data.messages)) 
@@ -384,19 +574,20 @@
                         
                         await scrollToBottom()
                     } catch (error) {
-                        console.error('Error loading conversation:', error)
+                        if (!authRequired.value) {
+                            console.error('Error loading conversation:', error)
+                        }
                     }
                 }
 
                 const startNewConversation = async () => {
                     try {
-                        const response = await fetch('/api/v1/conversations/create', {
+                        const data = await fetchAuthorizedJson('/api/v1/conversations/create', {
                             method: 'POST',
                             headers: {
                                 'Content-Type': 'application/json'
                             }
                         });
-                        const data = await response.json();
                         selectedConversationId.value = data.conversation_id;
                         
                         // Clear existing messages
@@ -442,6 +633,10 @@
                 }
 
                 const connectWebSocket = () => {
+                    if (authRequired.value || authBusy.value) {
+                        return;
+                    }
+
                     if (ws.value && ws.value.readyState === WebSocket.OPEN) {
                         ws.value.close();
                     }
@@ -518,7 +713,11 @@
                         isTyping.value = false;
                     };
                     
-                    ws.value.onclose = () => {
+                    ws.value.onclose = (event) => {
+                        if (event.code === 1008) {
+                            setAuthRequired(event.reason || defaultAuthMessage);
+                            return;
+                        }
                         console.log('WebSocket closed');
                     };
                 };
@@ -628,10 +827,10 @@
                         const formData = new FormData();
                         formData.append('file', file);
                         
-                        const response = await fetch('/api/v1/upload', {
+                        const response = await requireAuthorizedResponse(await fetch('/api/v1/upload', {
                             method: 'POST',
                             body: formData
-                        });
+                        }));
                         
                         if (response.ok) {
                             const data = await response.json();
@@ -653,24 +852,28 @@
                 // Check if model supports images
                 const checkImageSupport = async () => {
                     try {
-                        const response = await fetch('/api/v1/capabilities');
-                        if (response.ok) {
-                            const data = await response.json();
-                            supportsImages.value = data.vision_enabled || false;
-                        }
+                        const data = await fetchAuthorizedJson('/api/v1/capabilities');
+                        supportsImages.value = data.vision_enabled || false;
                     } catch (error) {
-                        console.error('Error checking image support:', error);
-                        // Assume no support on error
-                        supportsImages.value = false;
+                        if (!authRequired.value) {
+                            console.error('Error checking image support:', error);
+                            supportsImages.value = false;
+                        }
                     }
                 };
 
                 // Initialize
                 onMounted(async () => {
+                    if (!await bootstrapBrowserAuth()) {
+                        return;
+                    }
                     await checkImageSupport();
-                    connectWebSocket();
+                    if (authRequired.value) return;
                     await refreshConversations();
+                    if (authRequired.value) return;
                     await startNewConversation();
+                    if (authRequired.value) return;
+                    connectWebSocket();
                     autoResize();
                 });
 
@@ -694,7 +897,12 @@
                     streamProgress,
                     uploadedImage,
                     handleFileUpload,
-                    supportsImages
+                    supportsImages,
+                    authRequired,
+                    authBusy,
+                    authToken,
+                    authStatus,
+                    submitAuthToken
                 }
             }
         }).mount('#app')

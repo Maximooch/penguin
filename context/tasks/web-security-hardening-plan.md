@@ -20,6 +20,67 @@ Close the highest-risk web security gaps in Penguin's HTTP and WebSocket surface
 4. Server startup posture is permissive by default when bound broadly.
 5. Upload endpoint lacks size/type/quota controls.
 
+## Reference Comparison
+
+### Codex precedent
+- Codex avoids exposing a local network listener by default and prefers `stdio` transports for rich clients.
+- When Codex exposes a websocket listener, loopback listeners are treated as the normal local path.
+- Non-loopback listeners require explicit token-based auth configuration.
+- For browser-driven OAuth callbacks, Codex binds to `127.0.0.1` by default and only broadens bind scope when explicitly configured.
+- Longer-lived credentials are stored in secure OS-backed storage.
+
+### OpenCode precedent
+- OpenCode defaults to `127.0.0.1` and prefers a local dev port, with fallback if that port is unavailable.
+- OpenCode permits a local/browser-accessible HTTP server as a first-class workflow.
+- Server auth is optional and implemented with simple HTTP Basic Auth when `OPENCODE_SERVER_PASSWORD` is set.
+- OpenCode warns loudly when the server is started without auth.
+- CORS is restricted to local origins, Tauri origins, and an explicit allowlist.
+
+## Penguin Recommendation Matrix
+
+### Safe defaults
+- Default bind host should remain loopback-only: `127.0.0.1`.
+- Default port should move to `9000` to reduce generic-port collisions and match repo guidance.
+- Penguin should never default to `0.0.0.0`.
+
+### Auth model
+- Penguin should not introduce local Penguin accounts.
+- When auth is enabled, Penguin should issue a startup capability token and exchange it once at a local auth endpoint.
+- For local browser/dashboard use, Penguin should offer a one-click bootstrap path instead of requiring manual endpoint calls.
+- The printed local authorization URL should carry the startup token in a URL fragment, not a query parameter, so the token is not sent in request logs or reused as transport auth.
+- The browser dashboard should exchange that token immediately at the local auth endpoint and discard it after the session cookie is set.
+- The auth endpoint should set an `HttpOnly` session cookie for same-origin browser use.
+- Header auth should remain supported for TUI, CLI, and external clients.
+
+### Browser compatibility
+- Cookie-backed sessions are the recommended browser path because cookies work across normal HTTP, SSE, and WebSocket flows.
+- If Penguin prints a browser bootstrap URL, the token should be placed in the fragment portion of the URL, for example `http://127.0.0.1:9000/#local_token=...`.
+- Do not reintroduce query-string auth for SSE or WebSocket compatibility.
+- Avoid relying on custom request headers for browser `EventSource` or browser-created `WebSocket` auth.
+- Browser users should never need to manually use `curl`, devtools, or raw HTTP calls during the normal local authorization flow.
+
+### Broad bind policy
+- Non-loopback binds should remain blocked unless auth is enabled or an explicit insecure override is set.
+- Startup messaging should make the safe local path obvious and make insecure overrides feel deliberate.
+
+### UX guidance
+- If Penguin is started without auth, emit a clear warning that the local server is unsecured.
+- If Penguin is started with auth enabled for local dashboard use, print a one-click local authorization URL in the console.
+- If Penguin rejects an unauthorized browser/client request, return a short remediation message describing the safe auth flow and the explicit no-auth local-only override.
+- Unauthorized browser/dashboard clients should show a minimal local authorization screen and pause background retries until authorization succeeds.
+- Successful browser authorization should automatically establish the session cookie and resume or reload the dashboard without requiring manual retry steps.
+- Manual token redemption via raw endpoint calls should remain only as a debugging fallback, not the intended user workflow.
+- Avoid repeated noisy auth failures in logs when a single warning plus 401/1008 response is sufficient.
+
+## Recommended Follow-up Implementation
+- Add startup-token generation when `PENGUIN_AUTH_ENABLED=true` and no explicit API keys are configured.
+- Print a local authorization URL that embeds the startup token in a URL fragment for browser/dashboard bootstrap.
+- Add `POST /api/v1/auth/session` to redeem the startup token or configured API key for a signed session cookie.
+- Add `POST /api/v1/auth/logout` to clear the session cookie.
+- Extend HTTP, SSE, and WebSocket auth checks to accept the signed session cookie.
+- Add a minimal local authorization dashboard flow that exchanges the startup token automatically instead of requiring manual endpoint calls.
+- Update local verification and docs to prefer `http://127.0.0.1:9000`.
+
 ## Execution Plan
 
 ### P0: Authentication correctness
@@ -60,6 +121,63 @@ Close the highest-risk web security gaps in Penguin's HTTP and WebSocket surface
 - Keep legacy plaintext JSON only as a compatibility fallback with loud warnings.
 - Document credential precedence and deprecate plaintext persistence as the primary path.
 
+### P3: Local browser session auth
+- Add startup capability-token generation when `PENGUIN_AUTH_ENABLED=true` and no configured API key is present.
+- Print a one-time local authorization message that includes a browser-friendly bootstrap URL.
+- The printed browser bootstrap URL should carry the token in a fragment, not a query parameter.
+- Add `POST /api/v1/auth/session` to exchange a startup token or configured API key for a signed `HttpOnly` session cookie.
+- Add `POST /api/v1/auth/logout` to clear the session cookie.
+- Ensure session cookies are loopback-safe and use conservative defaults for expiry, `SameSite`, and path.
+
+### P4: Cookie auth integration across transports
+- Extend HTTP auth middleware to accept the signed session cookie alongside header auth.
+- Extend SSE auth checks to accept the signed session cookie.
+- Extend protected WebSocket auth guards to accept the signed session cookie during handshake.
+- Add focused tests proving cookie-authenticated HTTP, SSE, and WebSocket flows succeed.
+- Keep query-string auth disabled.
+
+### P5: Defaults and startup UX
+- Move the default web port to `9000`.
+- Keep the default bind host at `127.0.0.1`.
+- Update startup banners, server messages, and docs to consistently point users at `http://127.0.0.1:9000`.
+- Add a clear warning when Penguin is intentionally started without auth.
+- Add concise remediation text for unauthorized browser/local requests instead of repeated noisy log spam.
+
+### P6: Browser-client polish
+- Add a minimal protected-dashboard authorization screen for local browser clients.
+- If the browser is opened via the printed authorization URL, automatically extract the fragment token, redeem it, clear the fragment, and continue loading.
+- If the dashboard is opened without a token or valid cookie, show the protected local authorization UI instead of looping on repeated `401`s.
+- Avoid building a Penguin account/login concept; keep the flow framed as local instance authorization.
+- Add regression coverage for:
+  - opening the printed authorization URL
+  - automatic token redemption
+  - cookie establishment
+  - dashboard recovery after authorization
+  - unauthorized dashboard state without retry storms
+
+### P7: TUI, packaging, and architecture alignment
+- Audit `penguin-tui` and launcher flows to ensure they can authenticate cleanly against an auth-enabled local `penguin-web` instance.
+- Keep header-based auth support for TUI/CLI-sidecar flows even after browser cookie auth is added.
+- Decide whether the TUI should redeem a startup token directly, reuse configured API keys, or delegate local authorization through the launcher.
+- TUI and CLI local flows must not depend on a browser authorization step.
+- Launcher-managed local TUI sessions should receive bootstrap auth automatically when using auth-enabled local `penguin-web`.
+- Headless and CI flows should rely on configured API keys, not startup-token copy/paste.
+- Update any TUI/server startup assumptions to prefer `http://127.0.0.1:9000`.
+- Update `pyproject.toml` script/runtime expectations if default port, auth messaging, or launcher assumptions change.
+- Update `architecture.md` so the documented TUI/web topology and local security model match runtime truth.
+
+### P8: Documentation and operator guidance
+- Update README and web/TUI docs to describe the secure local-default posture.
+- Document the default host/port, the startup-token flow, and the explicit insecure override paths.
+- Document the browser/dashboard auth flow as a one-click local authorization URL plus automatic cookie bootstrap.
+- Document that manual `POST /api/v1/auth/session` redemption is a debugging fallback only.
+- Document TUI/CLI local auth as automatic header-based bootstrap.
+- Document CI/headless auth with `PENGUIN_API_KEYS` as the primary automation path.
+- Document how browser, TUI, CLI, and external clients authenticate against a protected local Penguin instance.
+- Document the difference between local instance authorization and user-account authentication.
+- Add operator guidance for non-loopback deployments, including the requirement for explicit auth.
+- Ensure examples, troubleshooting steps, and startup output snippets consistently use `127.0.0.1:9000`.
+
 ## Verification
 - Use the dedicated worktree only.
 - Prefer local web verification on port `9000` per `AGENTS.md`.
@@ -74,7 +192,11 @@ Close the highest-risk web security gaps in Penguin's HTTP and WebSocket surface
 - No unrelated behavior churn.
 
 ## Notes
-This should likely be split into at least three commits:
+This should likely be split into at least seven commits:
 1. auth correctness + WS auth
 2. startup/upload hardening
 3. webhook replay defense + credential precedence/docs
+4. startup token + session cookie auth
+5. default port/startup UX/docs polish
+6. TUI/launcher + packaging alignment
+7. architecture/docs final pass

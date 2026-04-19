@@ -1,13 +1,21 @@
-"""Authentication middleware for Penguin web API.
+from __future__ import annotations
 
-Supports both API key and JWT token authentication for Link integration
-and other external clients.
+"""Authentication middleware and local session helpers for Penguin web API.
+
+Supports API key and JWT authentication for external clients plus a
+startup-token-to-cookie bootstrap flow for local browser sessions.
 """
 
 import logging
 import os
-from typing import Any, Optional
+import secrets
+from collections import OrderedDict
 from datetime import datetime, timedelta
+from http.cookies import SimpleCookie
+from ipaddress import ip_address
+import re
+from threading import Lock
+from typing import Any, Optional
 
 from fastapi import HTTPException, Request, WebSocket, WebSocketException, status
 from fastapi.responses import JSONResponse
@@ -15,7 +23,23 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.base import BaseHTTPMiddleware
 import jwt
 
+from penguin.local_auth import is_web_auth_enabled
+
 logger = logging.getLogger(__name__)
+
+DEFAULT_SESSION_COOKIE_NAME = "penguin_session"
+DEFAULT_SESSION_COOKIE_PATH = "/"
+DEFAULT_SESSION_COOKIE_SAMESITE = "lax"
+DEFAULT_SESSION_EXPIRATION_SECONDS = 12 * 60 * 60
+STARTUP_TOKEN_ENV = "PENGUIN_AUTH_STARTUP_TOKEN"
+SESSION_SECRET_ENV = "PENGUIN_SESSION_SECRET"
+_AUTH_SECRET_LOCK = Lock()
+_AUTH_WARNING_LOCK = Lock()
+_AUTH_FAILURE_CACHE_LIMIT = 256
+_DYNAMIC_PATH_SEGMENT = re.compile(
+    r"^(?:[0-9]+|[0-9a-fA-F-]{8,}|session_[A-Za-z0-9_:-]+|msg_[A-Za-z0-9_:-]+|task_[A-Za-z0-9_:-]+)$"
+)
+_SEEN_AUTH_FAILURES: "OrderedDict[tuple[str, str], None]" = OrderedDict()
 
 # Security scheme for Bearer token
 security = HTTPBearer(auto_error=False)
@@ -23,6 +47,7 @@ security = HTTPBearer(auto_error=False)
 
 class AuthenticationError(Exception):
     """Raised when authentication fails."""
+
     pass
 
 
@@ -40,11 +65,30 @@ class AuthConfig:
 
         # Link-specific configuration
         self.link_api_key = os.getenv("LINK_API_KEY")
-        self.link_auth_required = os.getenv("PENGUIN_LINK_AUTH_REQUIRED", "false").lower() == "true"
+        self.link_auth_required = (
+            os.getenv("PENGUIN_LINK_AUTH_REQUIRED", "false").lower() == "true"
+        )
 
         # General auth settings
-        self.auth_enabled = os.getenv("PENGUIN_AUTH_ENABLED", "false").lower() == "true"
+        self.auth_enabled = is_web_auth_enabled()
         self.public_endpoints = self._load_public_endpoints()
+        self.session_cookie_name = os.getenv(
+            "PENGUIN_SESSION_COOKIE_NAME", DEFAULT_SESSION_COOKIE_NAME
+        )
+        self.session_cookie_path = os.getenv(
+            "PENGUIN_SESSION_COOKIE_PATH", DEFAULT_SESSION_COOKIE_PATH
+        )
+        self.session_cookie_samesite = _normalize_samesite(
+            os.getenv(
+                "PENGUIN_SESSION_COOKIE_SAMESITE", DEFAULT_SESSION_COOKIE_SAMESITE
+            )
+        )
+        self.session_expiration_seconds = int(
+            os.getenv(
+                "PENGUIN_SESSION_EXPIRATION_SECONDS",
+                str(DEFAULT_SESSION_EXPIRATION_SECONDS),
+            )
+        )
 
     def _load_api_keys(self) -> set:
         """Load valid API keys from environment."""
@@ -66,10 +110,19 @@ class AuthConfig:
         """Load endpoints that don't require authentication."""
         public = {
             "/",
+            "/authorize",
+            "/chat",
+            "/dashboard",
+            "/openapi.json",
             "/api/docs",
             "/api/redoc",
             "/api/openapi.json",
             "/api/v1/health",
+            "/api/v1/auth/session",
+            "/api/v1/auth/logout",
+            "/favicon.ico",
+            "/apple-touch-icon.png",
+            "/apple-touch-icon-precomposed.png",
             "/static/",
         }
 
@@ -83,7 +136,9 @@ class AuthConfig:
     @property
     def public_endpoint_prefixes(self) -> set[str]:
         """Return public endpoints that should be treated as prefixes."""
-        return {path for path in self.public_endpoints if path.endswith("/") and path != "/"}
+        return {
+            path for path in self.public_endpoints if path.endswith("/") and path != "/"
+        }
 
     @property
     def public_endpoint_exact_matches(self) -> set[str]:
@@ -97,11 +152,248 @@ class AuthConfig:
 
         return any(path.startswith(prefix) for prefix in self.public_endpoint_prefixes)
 
+    @property
+    def requires_startup_token(self) -> bool:
+        """Return whether local bootstrap token auth should be enabled."""
+        return self.auth_enabled and not self.api_keys
+
 
 # Public-endpoint matching convention:
 # - entries ending with "/" (except "/" itself) are treated as prefix matches
 # - all other entries require exact path equality
 # `is_public_endpoint()` checks exact matches first, then falls back to prefix matching.
+
+
+def _normalize_samesite(value: str) -> str:
+    """Return a valid cookie SameSite value."""
+    normalized = (value or "").strip().lower()
+    if normalized in {"lax", "strict", "none"}:
+        return normalized
+    return DEFAULT_SESSION_COOKIE_SAMESITE
+
+
+def _is_loopback_host(host: str) -> bool:
+    """Return whether the provided host resolves to loopback."""
+    normalized = (host or "").strip().lower()
+    if normalized in {"127.0.0.1", "localhost", "::1"}:
+        return True
+    try:
+        return ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def _connection_host(connection: Any) -> str | None:
+    """Return the peer host for an HTTP or WebSocket connection."""
+    client = getattr(connection, "client", None)
+    if client is None:
+        return None
+    if isinstance(client, (tuple, list)):
+        return str(client[0]) if client else None
+    host = getattr(client, "host", None)
+    return str(host) if host else None
+
+
+def _is_loopback_peer(connection: Any) -> bool:
+    """Return whether the peer connected from a loopback address."""
+    host = _connection_host(connection)
+    return _is_loopback_host(host or "") if host else False
+
+
+def _normalize_auth_failure_path(path: str) -> str:
+    """Bucket dynamic paths so auth-failure suppression stays bounded."""
+    normalized = (path or "/").split("?", 1)[0].strip() or "/"
+    if normalized == "/":
+        return normalized
+
+    parts = [
+        ":id" if _DYNAMIC_PATH_SEGMENT.match(part) else part
+        for part in normalized.split("/")
+        if part
+    ]
+    return "/" + "/".join(parts)
+
+
+def _load_or_create_secret(env_name: str, *, bytes_length: int) -> str:
+    """Load an auth secret from env or create one for this process tree."""
+    value = os.getenv(env_name, "").strip()
+    if value:
+        return value
+
+    with _AUTH_SECRET_LOCK:
+        value = os.getenv(env_name, "").strip()
+        if value:
+            return value
+
+        generated = secrets.token_urlsafe(bytes_length)
+        os.environ[env_name] = generated
+        return generated
+
+
+def get_startup_auth_token(config: Optional[AuthConfig] = None) -> Optional[str]:
+    """Return the loopback bootstrap token when auth needs local browser bootstrap."""
+    auth_config = config or AuthConfig()
+    if not auth_config.requires_startup_token:
+        return None
+    return _load_or_create_secret(STARTUP_TOKEN_ENV, bytes_length=24)
+
+
+def get_session_secret(config: Optional[AuthConfig] = None) -> str:
+    """Return the signing secret used for Penguin browser session cookies."""
+    auth_config = config or AuthConfig()
+    explicit_secret = os.getenv(SESSION_SECRET_ENV, "").strip()
+    if explicit_secret:
+        return explicit_secret
+    if auth_config.jwt_secret:
+        return auth_config.jwt_secret
+    return _load_or_create_secret(SESSION_SECRET_ENV, bytes_length=32)
+
+
+def authenticate_local_session_token(
+    token: str,
+    config: Optional[AuthConfig] = None,
+    connection: Any = None,
+) -> dict:
+    """Authenticate a token exchanged for a local browser session."""
+    auth_config = config or AuthConfig()
+    candidate = (token or "").strip()
+    if not candidate:
+        raise AuthenticationError("Local authorization token is required")
+
+    startup_token = get_startup_auth_token(auth_config)
+    if startup_token and secrets.compare_digest(candidate, startup_token):
+        if not _is_loopback_peer(connection):
+            raise AuthenticationError(
+                "Local startup token is only valid from loopback clients"
+            )
+        return {
+            "method": "startup_token",
+            "subject": "local_bootstrap",
+            "metadata": {"interactive": True},
+        }
+
+    if validate_api_key(candidate, auth_config):
+        return {
+            "method": "api_key",
+            "subject": "api_client",
+            "metadata": {"key_prefix": candidate[:8] + "..."},
+        }
+
+    raise AuthenticationError("Invalid local authorization token")
+
+
+def create_session_token(
+    subject: str,
+    *,
+    auth_method: str,
+    config: Optional[AuthConfig] = None,
+    metadata: Optional[dict] = None,
+) -> str:
+    """Create a signed browser session token for Penguin local auth."""
+    auth_config = config or AuthConfig()
+    issued_at = datetime.utcnow()
+    claims = {
+        "sub": subject,
+        "type": "session",
+        "auth_method": auth_method,
+        "iat": issued_at,
+        "exp": issued_at + timedelta(seconds=auth_config.session_expiration_seconds),
+    }
+    if metadata:
+        claims["metadata"] = metadata
+
+    return jwt.encode(
+        claims,
+        get_session_secret(auth_config),
+        algorithm=auth_config.jwt_algorithm,
+    )
+
+
+def validate_session_token(token: str, config: Optional[AuthConfig] = None) -> dict:
+    """Validate a signed Penguin browser session token."""
+    auth_config = config or AuthConfig()
+    try:
+        claims = jwt.decode(
+            token,
+            get_session_secret(auth_config),
+            algorithms=[auth_config.jwt_algorithm],
+        )
+    except jwt.ExpiredSignatureError as exc:
+        raise AuthenticationError("Session has expired") from exc
+    except jwt.InvalidTokenError as exc:
+        raise AuthenticationError(f"Invalid session token: {exc}") from exc
+
+    if claims.get("type") != "session":
+        raise AuthenticationError("Invalid session token type")
+    return claims
+
+
+def build_session_cookie_settings(
+    request: Request,
+    config: Optional[AuthConfig] = None,
+) -> dict[str, Any]:
+    """Build safe cookie settings for Penguin local browser sessions."""
+    auth_config = config or AuthConfig()
+    host = (_connection_host(request) or "").strip().lower()
+    secure = request.url.scheme == "https"
+    if not secure and not _is_loopback_host(host):
+        raise AuthenticationError(
+            "Browser session cookies are only issued for loopback hosts or HTTPS origins"
+        )
+
+    return {
+        "expires": auth_config.session_expiration_seconds,
+        "httponly": True,
+        "max_age": auth_config.session_expiration_seconds,
+        "path": auth_config.session_cookie_path,
+        "samesite": auth_config.session_cookie_samesite,
+        "secure": secure,
+    }
+
+
+def build_auth_remediation(config: Optional[AuthConfig] = None) -> str:
+    """Return a concise remediation message for unauthorized local requests."""
+    auth_config = config or AuthConfig()
+    if auth_config.requires_startup_token:
+        return (
+            "Use the startup token in an X-API-Key header or authenticate via "
+            "POST /api/v1/auth/session, or "
+            "restart local-only without auth using PENGUIN_AUTH_ENABLED=false uv run penguin-web."
+        )
+
+    return (
+        "Provide an X-API-Key or Authorization header, or create a local session at "
+        "POST /api/v1/auth/session."
+    )
+
+
+def build_unauthorized_message(config: Optional[AuthConfig] = None) -> str:
+    """Return the user-facing unauthorized message for protected Penguin routes."""
+    return f"This Penguin instance is protected. {build_auth_remediation(config)}"
+
+
+def log_auth_failure_once(
+    transport: str, path: str, config: Optional[AuthConfig] = None
+) -> None:
+    """Warn once per transport/path pair to avoid repeated auth log spam."""
+    key = (transport, _normalize_auth_failure_path(path))
+    with _AUTH_WARNING_LOCK:
+        first_failure = key not in _SEEN_AUTH_FAILURES
+        if first_failure:
+            _SEEN_AUTH_FAILURES[key] = None
+            while len(_SEEN_AUTH_FAILURES) > _AUTH_FAILURE_CACHE_LIMIT:
+                _SEEN_AUTH_FAILURES.popitem(last=False)
+
+    if first_failure:
+        logger.warning(
+            "Unauthorized %s request to %s. %s",
+            transport,
+            path,
+            build_auth_remediation(config),
+        )
+    else:
+        logger.debug("Unauthorized %s request to %s", transport, path)
+
 
 def extract_api_key(connection: Any) -> Optional[str]:
     """Extract API key from request or websocket headers."""
@@ -131,11 +423,55 @@ def extract_bearer_token(connection: Any) -> Optional[str]:
     return parts[1]
 
 
+def extract_session_cookie(
+    connection: Any,
+    config: Optional[AuthConfig] = None,
+) -> Optional[str]:
+    """Extract the Penguin session cookie from an HTTP or WebSocket connection."""
+    auth_config = config or AuthConfig()
+
+    cookies = getattr(connection, "cookies", None)
+    if cookies is not None:
+        try:
+            session_cookie = cookies.get(auth_config.session_cookie_name)
+        except Exception:
+            session_cookie = None
+        if session_cookie:
+            return session_cookie
+
+    cookie_header = connection.headers.get("cookie") or connection.headers.get("Cookie")
+    if not cookie_header:
+        return None
+
+    parsed = SimpleCookie()
+    parsed.load(cookie_header)
+    morsel = parsed.get(auth_config.session_cookie_name)
+    if morsel is None:
+        return None
+    return morsel.value
+
+
 def validate_api_key(api_key: str, config: AuthConfig) -> bool:
     """Validate an API key against configured keys."""
     if not api_key:
         return False
-    return api_key in config.api_keys
+    return any(secrets.compare_digest(api_key, key) for key in config.api_keys)
+
+
+def validate_startup_token(
+    token: str, config: AuthConfig, connection: Any = None
+) -> bool:
+    """Validate the process-local startup token for local non-browser clients."""
+    if not config.requires_startup_token or not token:
+        return False
+    if not _is_loopback_peer(connection):
+        return False
+
+    startup_token = get_startup_auth_token(config)
+    if not startup_token:
+        return False
+
+    return secrets.compare_digest(token, startup_token)
 
 
 def validate_jwt(token: str, config: AuthConfig) -> dict:
@@ -144,11 +480,7 @@ def validate_jwt(token: str, config: AuthConfig) -> dict:
         raise AuthenticationError("JWT authentication not configured")
 
     try:
-        claims = jwt.decode(
-            token,
-            config.jwt_secret,
-            algorithms=[config.jwt_algorithm]
-        )
+        claims = jwt.decode(token, config.jwt_secret, algorithms=[config.jwt_algorithm])
 
         if "exp" in claims:
             exp_timestamp = claims["exp"]
@@ -182,17 +514,17 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
 
         try:
             auth_result = await self._authenticate_request(request)
-        except AuthenticationError as e:
-            logger.warning(f"Authentication failed for {request.url.path}: {str(e)}")
+        except AuthenticationError:
+            log_auth_failure_once("http", request.url.path, self.config)
             return JSONResponse(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 content={
                     "detail": {
                         "error": {
                             "code": "AUTHENTICATION_FAILED",
-                            "message": str(e),
+                            "message": build_unauthorized_message(self.config),
                             "recoverable": False,
-                            "suggested_action": "check_credentials",
+                            "suggested_action": build_auth_remediation(self.config),
                         }
                     }
                 },
@@ -224,24 +556,7 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
 
     async def _authenticate_request(self, request: Request) -> dict:
         """Authenticate a request using available methods."""
-        api_key = extract_api_key(request)
-        if api_key and validate_api_key(api_key, self.config):
-            return {
-                "method": "api_key",
-                "subject": "api_client",
-                "metadata": {"key_prefix": api_key[:8] + "..."}
-            }
-
-        token = extract_bearer_token(request)
-        if token:
-            claims = validate_jwt(token, self.config)
-            return {
-                "method": "jwt",
-                "subject": claims.get("sub", "unknown"),
-                "metadata": claims
-            }
-
-        raise AuthenticationError("No valid authentication credentials provided")
+        return authenticate_connection(request, self.config)
 
     def create_jwt(self, subject: str, metadata: Optional[dict] = None) -> str:
         """Create a JWT token for a subject.
@@ -260,7 +575,8 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
         claims = {
             "sub": subject,
             "iat": datetime.utcnow(),
-            "exp": datetime.utcnow() + timedelta(hours=self.config.jwt_expiration_hours)
+            "exp": datetime.utcnow()
+            + timedelta(hours=self.config.jwt_expiration_hours),
         }
 
         # Add metadata
@@ -269,9 +585,7 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
 
         # Encode token
         token = jwt.encode(
-            claims,
-            self.config.jwt_secret,
-            algorithm=self.config.jwt_algorithm
+            claims, self.config.jwt_secret, algorithm=self.config.jwt_algorithm
         )
 
         return token
@@ -279,8 +593,7 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
 
 # Dependency for route-level auth
 async def require_auth(
-    request: Request,
-    credentials: Optional[HTTPAuthorizationCredentials] = None
+    request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None
 ) -> dict:
     """FastAPI dependency for requiring authentication.
 
@@ -297,7 +610,7 @@ async def require_auth(
                     "code": "AUTHENTICATION_REQUIRED",
                     "message": "Authentication required for this endpoint",
                     "recoverable": False,
-                    "suggested_action": "provide_credentials"
+                    "suggested_action": "provide_credentials",
                 }
             },
             headers={"WWW-Authenticate": "Bearer"},
@@ -306,7 +619,7 @@ async def require_auth(
     return {
         "method": request.state.auth_method,
         "subject": request.state.auth_subject,
-        "metadata": request.state.auth_metadata
+        "metadata": request.state.auth_metadata,
     }
 
 
@@ -318,18 +631,35 @@ def authenticate_connection(
     auth_config = config or AuthConfig()
 
     api_key = extract_api_key(connection)
-    if api_key and validate_api_key(api_key, auth_config):
-        return {
-            "method": "api_key",
-            "subject": "api_client",
-            "metadata": {"key_prefix": api_key[:8] + "..."},
-        }
+    if api_key:
+        if validate_api_key(api_key, auth_config):
+            return {
+                "method": "api_key",
+                "subject": "api_client",
+                "metadata": {"key_prefix": api_key[:8] + "..."},
+            }
+
+        if validate_startup_token(api_key, auth_config, connection):
+            return {
+                "method": "startup_token",
+                "subject": "local_bootstrap",
+                "metadata": {"interactive": False},
+            }
 
     token = extract_bearer_token(connection)
     if token:
         claims = validate_jwt(token, auth_config)
         return {
             "method": "jwt",
+            "subject": claims.get("sub", "unknown"),
+            "metadata": claims,
+        }
+
+    session_token = extract_session_cookie(connection, auth_config)
+    if session_token:
+        claims = validate_session_token(session_token, auth_config)
+        return {
+            "method": "session",
             "subject": claims.get("sub", "unknown"),
             "metadata": claims,
         }
@@ -343,16 +673,18 @@ async def require_websocket_auth(
 ) -> dict:
     """Authenticate a WebSocket connection before accept()."""
     auth_config = config or AuthConfig()
-    if not auth_config.auth_enabled or auth_config.is_public_endpoint(websocket.url.path):
+    if not auth_config.auth_enabled or auth_config.is_public_endpoint(
+        websocket.url.path
+    ):
         return {"method": "anonymous", "subject": "public", "metadata": {}}
 
     try:
         auth_result = authenticate_connection(websocket, auth_config)
     except AuthenticationError as exc:
-        logger.warning("WebSocket authentication failed for %s: %s", websocket.url.path, exc)
+        log_auth_failure_once("websocket", websocket.url.path, auth_config)
         raise WebSocketException(
             code=status.WS_1008_POLICY_VIOLATION,
-            reason=str(exc),
+            reason=build_unauthorized_message(auth_config),
         ) from exc
 
     websocket.state.authenticated = True

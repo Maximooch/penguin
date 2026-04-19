@@ -119,7 +119,7 @@ export const TuiThreadCommand = cmd({
       return piped ? piped + "\n" + args.prompt : args.prompt
     })
 
-    const base = args.url ?? process.env.PENGUIN_WEB_URL ?? "http://localhost:8000"
+    const base = args.url ?? process.env.PENGUIN_WEB_URL ?? "http://127.0.0.1:9000"
     const sessionID = args.session
     const url = base
     const customFetch = undefined
