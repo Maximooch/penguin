@@ -769,20 +769,22 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           url.searchParams.set("limit", "50")
           return url
         })
+        const bootstrap = (path: string | URL) =>
+          sdk.fetch(path).then(async (res) => {
+            if (res.ok) return res.json().catch(() => undefined)
+            const details = await res.text().catch(() => "")
+            throw new Error(
+              details
+                ? `Bootstrap request failed (${res.status}): ${details}`
+                : `Bootstrap request failed (${res.status})`,
+            )
+          })
         const [providersData, providerListData, configData, providerAuthData, sessionsData, roster] = await Promise.all(
           [
-            sdk.fetch(new URL("/config/providers", sdk.url))
-              .then((res) => (res.ok ? res.json() : undefined))
-              .catch(() => undefined),
-            sdk.fetch(new URL("/provider", sdk.url))
-              .then((res) => (res.ok ? res.json() : undefined))
-              .catch(() => undefined),
-            sdk.fetch(new URL("/config", sdk.url))
-              .then((res) => (res.ok ? res.json() : undefined))
-              .catch(() => undefined),
-            sdk.fetch(new URL("/provider/auth", sdk.url))
-              .then((res) => (res.ok ? res.json() : undefined))
-              .catch(() => undefined),
+            bootstrap(new URL("/config/providers", sdk.url)),
+            bootstrap(new URL("/provider", sdk.url)),
+            bootstrap(new URL("/config", sdk.url)),
+            bootstrap(new URL("/provider/auth", sdk.url)),
             sdk.fetch(sessionsUrl)
               .then((res) => (res.ok ? res.json() : undefined))
               .then((data) => (Array.isArray(data) ? data : []))
@@ -1005,18 +1007,10 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         }
 
         await Promise.all([
-          sdk.fetch(systemUrl("/lsp"))
-            .then((res) => (res.ok ? res.json() : []))
-            .catch(() => []),
-          sdk.fetch(systemUrl("/formatter"))
-            .then((res) => (res.ok ? res.json() : []))
-            .catch(() => []),
-          sdk.fetch(systemUrl("/vcs"))
-            .then((res) => (res.ok ? res.json() : undefined))
-            .catch(() => undefined),
-          sdk.fetch(systemUrl("/path"))
-            .then((res) => (res.ok ? res.json() : undefined))
-            .catch(() => undefined),
+          bootstrap(systemUrl("/lsp")),
+          bootstrap(systemUrl("/formatter")),
+          bootstrap(systemUrl("/vcs")),
+          bootstrap(systemUrl("/path")),
         ]).then((result) => {
           const lsp = result[0]
           const formatter = result[1]

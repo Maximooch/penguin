@@ -882,10 +882,23 @@ export function Prompt(props: PromptProps) {
           client_message_id: messageID,
           parts: nonTextParts,
         }),
-      }).catch(() => {
-        setStore("pending", false)
-        setStore("pendingSeenBusy", false)
       })
+        .then(async (res) => {
+          if (res.ok) return
+          setStore("pending", false)
+          setStore("pendingSeenBusy", false)
+          const details = await res.text().catch(() => "")
+          toast.show({
+            variant: "error",
+            message: details
+              ? `Failed to send message: ${details}`
+              : `Failed to send message (${res.status})`,
+          })
+        })
+        .catch(() => {
+          setStore("pending", false)
+          setStore("pendingSeenBusy", false)
+        })
       return
     }
 
