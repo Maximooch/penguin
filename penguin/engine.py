@@ -144,11 +144,19 @@ class LoopState:
     last_response_hash: Optional[int] = None
     repeat_count: int = 0
 
+    # Empty tool-only iteration tracking
+    empty_tool_only_count: int = 0
+    last_tool_only_signature: Optional[int] = None
+    repeated_tool_only_count: int = 0
+
     def reset(self) -> None:
         """Reset state for a new run."""
         self.empty_response_count = 0
         self.last_response_hash = None
         self.repeat_count = 0
+        self.empty_tool_only_count = 0
+        self.last_tool_only_signature = None
+        self.repeated_tool_only_count = 0
 
     def check_repeated(self, response: str) -> bool:
         """Check if response is repeated, return True if should break.
@@ -184,6 +192,59 @@ class LoopState:
             should_break = False
 
         return is_empty_or_trivial, should_break
+
+    def check_empty_tool_only(
+        self,
+        response: str,
+        iteration_results: List[Dict[str, Any]],
+        *,
+        placeholder: str = "[Empty response from model]",
+        repeat_threshold: int = 3,
+    ) -> Tuple[bool, Optional[str]]:
+        """Track empty tool-only iterations and detect pathological loops."""
+        stripped_response = (response or "").strip()
+        is_empty_tool_only = bool(iteration_results) and (
+            not stripped_response or stripped_response == placeholder
+        )
+
+        if not is_empty_tool_only:
+            self.empty_tool_only_count = 0
+            self.last_tool_only_signature = None
+            self.repeated_tool_only_count = 0
+            return False, None
+
+        self.empty_tool_only_count += 1
+        signature = hash(
+            tuple(
+                (
+                    str(result.get("action") or "").strip(),
+                    str(result.get("status") or "").strip(),
+                    str(result.get("result") or "")[:200],
+                )
+                for result in iteration_results
+                if isinstance(result, dict)
+            )
+        )
+
+        if signature == self.last_tool_only_signature:
+            self.repeated_tool_only_count += 1
+        else:
+            self.last_tool_only_signature = signature
+            self.repeated_tool_only_count = 1
+
+        if self.repeated_tool_only_count >= repeat_threshold:
+            return True, "repeated_empty_tool_only_iterations"
+
+        return False, None
+
+
+_EMPTY_RESPONSE_PLACEHOLDER = "[Empty response from model]"
+_TOOL_ONLY_STALL_NOTES = {
+    "repeated_empty_tool_only_iterations": (
+        "Stopping because empty tool-only turns are repeating the same tool outputs; "
+        "this is probably a stale loop rather than forward progress."
+    ),
+}
 
 
 @dataclass
@@ -957,6 +1018,21 @@ class Engine:
             - completion_status: Status string if breaking, None otherwise
         """
         stripped_response = (last_response or "").strip()
+        loop_state = self._get_loop_state()
+
+        tool_only_break, tool_only_reason = loop_state.check_empty_tool_only(
+            last_response,
+            iteration_results,
+        )
+        if tool_only_break:
+            logger.warning(
+                "[WALLET_GUARD] Breaking %s: %s after %s consecutive empty tool-only iterations (repeated_signature=%s)",
+                mode,
+                tool_only_reason,
+                loop_state.empty_tool_only_count,
+                loop_state.repeated_tool_only_count,
+            )
+            return True, tool_only_reason
 
         # Check for no-action completion (models that don't use CodeAct format)
         if not iteration_results and last_response:
@@ -978,7 +1054,6 @@ class Engine:
         # Tool-only turns are valid for providers like OpenAI/Codex. Treat an
         # empty assistant transcript as in-progress work rather than a loop.
         if iteration_results and not stripped_response:
-            loop_state = self._get_loop_state()
             loop_state.empty_response_count = 0
             loop_state.repeat_count = 0
             loop_state.last_response_hash = None
@@ -992,7 +1067,6 @@ class Engine:
             return True, "implicit_completion" if mode == "task" else None
 
         # Check for repeated/looping responses
-        loop_state = self._get_loop_state()
         if loop_state.check_repeated(last_response):
             logger.warning(
                 f"[WALLET_GUARD] Breaking {mode}: response repeated {loop_state.repeat_count} times"
@@ -1032,6 +1106,83 @@ class Engine:
             return True, "implicit_completion" if mode == "task" else None
 
         return False, None
+
+    def _suppress_empty_tool_only_placeholder(
+        self,
+        cm: ConversationManager,
+        assistant_response: str,
+        iteration_results: List[Dict[str, Any]],
+    ) -> str:
+        """Remove generic empty placeholders for valid tool-only turns."""
+        if not iteration_results or assistant_response != _EMPTY_RESPONSE_PLACEHOLDER:
+            return assistant_response
+
+        try:
+            conversation = getattr(cm, "conversation", None)
+            session = getattr(conversation, "session", None)
+            messages = getattr(session, "messages", None)
+            last_message = messages[-1] if isinstance(messages, list) and messages else None
+            if (
+                last_message is not None
+                and getattr(last_message, "role", None) == "assistant"
+                and getattr(last_message, "content", None) == assistant_response
+            ):
+                messages.pop()
+                if hasattr(conversation, "_modified"):
+                    conversation._modified = True
+                if getattr(conversation, "session_manager", None) and getattr(session, "id", None):
+                    try:
+                        conversation.session_manager.mark_session_modified(session.id)
+                    except Exception:
+                        logger.debug(
+                            "Failed to mark session modified after suppressing empty tool-only placeholder",
+                            exc_info=True,
+                        )
+                logger.info(
+                    "Suppressed generic empty-response placeholder for valid tool-only turn"
+                )
+        except Exception:
+            logger.debug(
+                "Failed to suppress empty tool-only placeholder",
+                exc_info=True,
+            )
+        return ""
+
+    def _build_tool_only_stall_note(self, status: Optional[str]) -> str:
+        """Return a user-facing explanation for stalled tool-only loops."""
+        if not isinstance(status, str):
+            return ""
+        return _TOOL_ONLY_STALL_NOTES.get(status, "")
+
+    async def _record_tool_only_stall_note(
+        self,
+        cm: ConversationManager,
+        status: Optional[str],
+    ) -> str:
+        """Persist a clearer terminal note for stalled tool-only loops."""
+        note = self._build_tool_only_stall_note(status)
+        if not note:
+            return ""
+
+        try:
+            session_messages = (
+                cm.conversation.session.messages
+                if hasattr(cm.conversation, "session")
+                else []
+            )
+            last_msg = session_messages[-1] if session_messages else None
+            already_added = (
+                last_msg
+                and getattr(last_msg, "role", None) == "assistant"
+                and getattr(last_msg, "content", None) == note
+            )
+        except Exception:
+            already_added = False
+
+        if not already_added:
+            cm.conversation.add_assistant_message(note)
+            await self._save_conversation(cm, async_save=True)
+        return note
 
     def _looks_like_malformed_action_output(self, response: str) -> bool:
         """Return whether text looks like a partial or malformed tool call."""
@@ -1169,6 +1320,11 @@ class Engine:
                 usage_data = response_data.get("usage")
                 if isinstance(usage_data, dict) and usage_data:
                     latest_usage = usage_data
+                last_response = self._suppress_empty_tool_only_placeholder(
+                    cm,
+                    last_response,
+                    iteration_results,
+                )
 
                 logger.debug(
                     f"[LOOP DEBUG] {config.mode} iter {self.current_iteration}: "
@@ -1290,6 +1446,11 @@ class Engine:
                     last_response, iteration_results, mode=config.mode
                 )
                 if should_break:
+                    if guard_status in _TOOL_ONLY_STALL_NOTES:
+                        last_response = await self._record_tool_only_stall_note(
+                            cm,
+                            guard_status,
+                        )
                     completion_status = guard_status or "implicit_completion"
                     break
 
@@ -1576,6 +1737,11 @@ class Engine:
                 usage_data = response_data.get("usage")
                 if isinstance(usage_data, dict) and usage_data:
                     latest_usage = usage_data
+                last_response = self._suppress_empty_tool_only_placeholder(
+                    cm,
+                    last_response,
+                    iteration_results,
+                )
 
                 # Debug: Log response length and action count to help diagnose loops
                 logger.debug(
@@ -1636,10 +1802,17 @@ class Engine:
                     continue
 
                 # WALLET_GUARD: Consolidated termination checks
-                should_break, _ = self._check_wallet_guard_termination(
+                should_break, guard_status = self._check_wallet_guard_termination(
                     last_response, iteration_results, mode="response"
                 )
                 if should_break:
+                    if guard_status:
+                        final_status = guard_status
+                    if guard_status in _TOOL_ONLY_STALL_NOTES:
+                        last_response = await self._record_tool_only_stall_note(
+                            cm,
+                            guard_status,
+                        )
                     break
 
             # Determine final status

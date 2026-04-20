@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test"
 import type { Message, Part, Session } from "@opencode-ai/sdk/v2"
 import {
-  compareMessagesByCreated,
   hydrateSessionSnapshot,
   mergeHydratedMessages,
   type SessionHydrationClient,
+  upsertPenguinMessage,
 } from "../../../src/cli/cmd/tui/context/session-hydration"
 
 const session: Session = {
@@ -282,26 +282,66 @@ describe("sync hydration", () => {
     expect(merged.map((item) => item.id)).toEqual(["msg_server_old", "msg_local_2"])
   })
 
-  test("sorts live messages by creation time instead of arrival order", () => {
-    const laterUser: Message = {
-      id: "msg_user_2",
-      sessionID: "ses_reopen",
-      role: "user",
-      agent: "build",
-      model: { providerID: "openrouter", modelID: "openai/gpt-5-mini" },
+  test("preserves hydrated transcript order even when timestamps disagree", () => {
+    const hydratedUser: Message = {
+      ...user,
+      id: "msg_user_skewed",
       time: { created: 20 },
     }
-    const earlierAssistant: Message = {
+    const hydratedAssistant: Message = {
       ...assistant,
-      id: "msg_assistant_0",
+      id: "msg_assistant_skewed",
       time: { created: 10, completed: 11 },
     }
 
-    const sorted = [laterUser, earlierAssistant].sort(compareMessagesByCreated)
+    const merged = mergeHydratedMessages(
+      undefined,
+      [
+        { info: hydratedUser, parts },
+        { info: hydratedAssistant, parts: [] },
+      ],
+      {},
+    )
 
-    expect(sorted.map((item) => item.id)).toEqual([
-      "msg_assistant_0",
-      "msg_user_2",
+    expect(merged.map((item) => item.id)).toEqual([
+      "msg_user_skewed",
+      "msg_assistant_skewed",
     ])
+  })
+
+  test("appends new live penguin messages instead of reordering by timestamp", () => {
+    const optimistic = {
+      ...user,
+      id: "msg_local_user",
+      time: { created: 20 },
+    }
+    const streamed = {
+      ...assistant,
+      id: "msg_streamed_assistant",
+      time: { created: 10, completed: 11 },
+    }
+
+    const merged = upsertPenguinMessage([optimistic], streamed)
+
+    expect(merged.map((item) => item.id)).toEqual([
+      "msg_local_user",
+      "msg_streamed_assistant",
+    ])
+  })
+
+  test("replaces existing live penguin messages in place", () => {
+    const first = {
+      ...assistant,
+      id: "msg_streamed_assistant",
+      time: { created: 10 },
+    }
+    const updated = {
+      ...first,
+      time: { created: 10, completed: 11 },
+    }
+
+    const merged = upsertPenguinMessage([user, first], updated)
+
+    expect(merged).toEqual([user, updated])
   })
 })

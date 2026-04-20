@@ -46,7 +46,9 @@ def _log_error(message: str, *args: Any, exc_info: bool = False) -> None:
 # Connection Pool Management for Parallel LLM Calls
 # ==============================================================================
 
-
+# TODO: review max_keepalive_connections and max_connections defaults based on expected concurrency and provider limits. 
+# These seem like magic numbers and might need tuning based on real-world usage patterns and provider guidelines.
+# Much less configurable than the old connection pool, but also much simpler. We can always add more config options later if needed.
 class ConnectionPoolConfig:
     """Configuration for HTTP connection pools."""
 

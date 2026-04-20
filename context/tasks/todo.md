@@ -144,6 +144,11 @@ Reference:
 - [ ] Larger `RunMode` / `Engine` loop cleanup beyond the surgical command-truth slice
 - [ ] Unify time-limit semantics across RunMode, task/project budgets, and ITUV phase timeouts
 - [ ] Deeper web/API surface truth pass if not included in the current runmode truth PR
+- [ ] `penguin/llm` Responses/Codex follow-up refactor: preserve more structured Responses semantics end-to-end so OpenAI/Codex tool-only turns rely less on engine-side empty-loop heuristics and more on first-class tool/result/response state
+
+Reference:
+- `context/tasks/web-and-tui-bugfix.md`
+- `context/tasks/tui-opencode-fork-alignment-plan.md`
 
 ---
 

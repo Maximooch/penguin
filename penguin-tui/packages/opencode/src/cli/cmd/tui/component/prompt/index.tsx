@@ -33,6 +33,7 @@ import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
 import { useTextareaKeybindings } from "../textarea-keybindings"
 import { exitSession } from "../../util/exit"
+import { formatPenguinPromptFailure, recoverPenguinPromptFailure } from "./penguin-send"
 
 export type PromptProps = {
   sessionID?: string
@@ -864,6 +865,16 @@ export function Prompt(props: PromptProps) {
       }
       setStore("pending", true)
       setStore("pendingSeenBusy", false)
+      const recover = () => {
+        recoverPenguinPromptFailure({
+          sessionID,
+          clear: () => {
+            setStore("pending", false)
+            setStore("pendingSeenBusy", false)
+          },
+          emit: sdk.event.emit,
+        })
+      }
       const url = new URL("/api/v1/chat/message", sdk.url)
       sdk.fetch(url, {
         method: "POST",
@@ -885,23 +896,22 @@ export function Prompt(props: PromptProps) {
       })
         .then(async (res) => {
           if (res.ok) return
-          // TODO: Reset emitted session busy state here too, not just pending flags,
-          // so a failed send cannot leave the session visually stuck as busy.
-          setStore("pending", false)
-          setStore("pendingSeenBusy", false)
           const details = await res.text().catch(() => "")
+          recover()
           toast.show({
             variant: "error",
-            message: details
-              ? `Failed to send message: ${details}`
-              : `Failed to send message (${res.status})`,
+            message: formatPenguinPromptFailure({
+              status: res.status,
+              details,
+            }),
           })
         })
         .catch((err) => {
-          // TODO: Surface transport-layer failures with a toast and reset the
-          // session busy state, not only the pending flags.
-          setStore("pending", false)
-          setStore("pendingSeenBusy", false)
+          recover()
+          toast.show({
+            variant: "error",
+            message: formatPenguinPromptFailure({ error: err }),
+          })
         })
       return
     }

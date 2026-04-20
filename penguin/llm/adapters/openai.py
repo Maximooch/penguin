@@ -2194,6 +2194,11 @@ class OpenAIAdapter(BaseAdapter):
             role = m.get("role", "user")
             content = m.get("content", "")
             msg_parts: List[Dict[str, Any]] = []
+            text_part_type = (
+                "output_text"
+                if str(role).strip().lower() == "assistant"
+                else "input_text"
+            )
 
             if isinstance(content, list):
                 for item in content:
@@ -2212,12 +2217,12 @@ class OpenAIAdapter(BaseAdapter):
                     elif isinstance(item, dict) and item.get("type") == "text":
                         txt = str(item.get("text", ""))
                         if txt:
-                            msg_parts.append({"type": "input_text", "text": txt})
+                            msg_parts.append({"type": text_part_type, "text": txt})
                     else:
-                        msg_parts.append({"type": "input_text", "text": str(item)})
+                        msg_parts.append({"type": text_part_type, "text": str(item)})
             else:
                 if str(content):
-                    msg_parts.append({"type": "input_text", "text": str(content)})
+                    msg_parts.append({"type": text_part_type, "text": str(content)})
 
             if msg_parts:
                 input_items.append(

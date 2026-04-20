@@ -33,10 +33,11 @@ import { Log } from "@/util/log"
 import { iife } from "@/util/iife"
 import type { Path } from "@opencode-ai/sdk"
 import {
-  compareMessagesByCreated,
   hydrateSessionSnapshot,
   mergeHydratedMessages,
+  upsertPenguinMessage,
 } from "./session-hydration"
+import { fetchBootstrapJson } from "./sync-bootstrap"
 import { expandSessionSearchResults, removeSessionRecord, upsertSessionRecord } from "../util/session-family"
 
 type SessionUsage = {
@@ -521,33 +522,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             break
           }
           if (sdk.penguin) {
-            const match = messages.findIndex((item) => item.id === normalized.id)
-            if (match !== -1) {
-              setStore(
-                "message",
-                normalized.sessionID,
-                produce((draft) => {
-                  draft.splice(match, 1, normalized)
-                  draft.sort(compareMessagesByCreated)
-                }),
-              )
-              if (
-                normalized.role === "assistant" &&
-                typeof normalized.time === "object" &&
-                !!normalized.time?.completed
-              ) {
-                refreshSessionUsage(normalized.sessionID)
-              }
-              break
-            }
-            setStore(
-              "message",
-              normalized.sessionID,
-              produce((draft) => {
-                draft.push(normalized)
-                draft.sort(compareMessagesByCreated)
-              }),
-            )
+            setStore("message", normalized.sessionID, upsertPenguinMessage(messages, normalized))
             const updated = store.message[normalized.sessionID]
             if (updated.length > 100) {
               const oldest = updated[0]
@@ -769,24 +744,32 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           url.searchParams.set("limit", "50")
           return url
         })
-        const bootstrap = (path: string | URL) =>
-          sdk.fetch(path).then(async (res) => {
-            if (res.ok) return res.json().catch(() => undefined)
-            const details = await res.text().catch(() => "")
-            // TODO: Revisit whether some bootstrap endpoints should degrade to local
-            // fallbacks instead of failing the whole sync flow on non-2xx responses.
-            throw new Error(
-              details
-                ? `Bootstrap request failed (${res.status}): ${details}`
-                : `Bootstrap request failed (${res.status})`,
-            )
-          })
         const [providersData, providerListData, configData, providerAuthData, sessionsData, roster] = await Promise.all(
           [
-            bootstrap(new URL("/config/providers", sdk.url)),
-            bootstrap(new URL("/provider", sdk.url)),
-            bootstrap(new URL("/config", sdk.url)),
-            bootstrap(new URL("/provider/auth", sdk.url)),
+            fetchBootstrapJson({
+              fetch: sdk.fetch,
+              path: new URL("/config/providers", sdk.url),
+              endpoint: "/config/providers",
+              fallback: undefined,
+            }),
+            fetchBootstrapJson({
+              fetch: sdk.fetch,
+              path: new URL("/provider", sdk.url),
+              endpoint: "/provider",
+              fallback: undefined,
+            }),
+            fetchBootstrapJson({
+              fetch: sdk.fetch,
+              path: new URL("/config", sdk.url),
+              endpoint: "/config",
+              fallback: undefined,
+            }),
+            fetchBootstrapJson({
+              fetch: sdk.fetch,
+              path: new URL("/provider/auth", sdk.url),
+              endpoint: "/provider/auth",
+              fallback: undefined,
+            }),
             sdk.fetch(sessionsUrl)
               .then((res) => (res.ok ? res.json() : undefined))
               .then((data) => (Array.isArray(data) ? data : []))
@@ -1009,10 +992,30 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         }
 
         await Promise.all([
-          bootstrap(systemUrl("/lsp")),
-          bootstrap(systemUrl("/formatter")),
-          bootstrap(systemUrl("/vcs")),
-          bootstrap(systemUrl("/path")),
+          fetchBootstrapJson({
+            fetch: sdk.fetch,
+            path: systemUrl("/lsp"),
+            endpoint: "/lsp",
+            fallback: [] as LspStatus[],
+          }),
+          fetchBootstrapJson({
+            fetch: sdk.fetch,
+            path: systemUrl("/formatter"),
+            endpoint: "/formatter",
+            fallback: [] as FormatterStatus[],
+          }),
+          fetchBootstrapJson({
+            fetch: sdk.fetch,
+            path: systemUrl("/vcs"),
+            endpoint: "/vcs",
+            fallback: undefined,
+          }),
+          fetchBootstrapJson({
+            fetch: sdk.fetch,
+            path: systemUrl("/path"),
+            endpoint: "/path",
+            fallback: undefined,
+          }),
         ]).then((result) => {
           const lsp = result[0]
           const formatter = result[1]

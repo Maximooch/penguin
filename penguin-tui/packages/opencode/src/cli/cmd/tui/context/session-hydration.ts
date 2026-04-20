@@ -49,6 +49,13 @@ export function compareMessagesByCreated(left: Message, right: Message): number 
   return left.id.localeCompare(right.id)
 }
 
+export function upsertPenguinMessage(existing: Message[] | undefined, incoming: Message): Message[] {
+  if (!Array.isArray(existing) || existing.length === 0) return [incoming]
+  const match = existing.findIndex((item) => item.id === incoming.id)
+  if (match === -1) return [...existing, incoming]
+  return existing.map((item, index) => (index === match ? incoming : item))
+}
+
 function normalizeText(value: string): string {
   return value.replace(/\s+/g, " ").trim().toLowerCase()
 }
@@ -100,9 +107,7 @@ export function mergeHydratedMessages(
 
   if (preserved.length === 0) return incoming
 
-  const merged = [...incoming, ...preserved]
-  merged.sort(compareMessagesByCreated)
-  return merged
+  return [...incoming, ...preserved.toSorted(compareMessagesByCreated)]
 }
 
 function withFallback<T>(request: Promise<{ data?: T }>, fallback: T): Promise<T> {
