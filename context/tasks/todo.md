@@ -154,6 +154,70 @@ Reference:
 - `context/tasks/web-and-tui-bugfix.md`
 - `context/tasks/tui-opencode-fork-alignment-plan.md`
 
+### PR: Core Runtime Decomposition Pass
+**Reason deferred:** high leverage for long-term reliability, but too invasive to mix with current command/bootstrap work
+
+- [ ] Extract RunMode/session-status bridging concerns out of `core.py`
+- [ ] Isolate streaming finalization / UI event normalization from general core orchestration
+- [ ] Reduce `current_runmode_status_summary` / `_handle_run_mode_event` coupling where tests protect behavior
+- [ ] Identify a stable services/helpers split for `core.py` before moving larger blocks
+- [ ] Add regression coverage around any extracted event/status bridge behavior
+
+Reference:
+- `penguin/core.py`
+- `context/tasks/runmode-command-loop-audit.md`
+
+### PR: Project Orchestration Hardening
+**Reason deferred:** high-value reliability work, especially in `penguin/project`, but should follow the current truth/UX passes
+
+- [ ] Audit `workflow_orchestrator.py` against current RunMode / ITUV truth and remove stale assumptions
+- [ ] Replace `print()`-based orchestrator debug paths with logging / structured diagnostics
+- [ ] Harden `ProjectTaskExecutor` so it does not collapse nuanced RunMode outcomes into generic executor success
+- [ ] Re-check status/phase transitions through `manager.py`, `workflow_orchestrator.py`, and `models.py` for contradictions
+- [ ] Add explicit regression tests for pending-review handoff, orchestration failure paths, and recipe/use gating
+
+Reference:
+- `penguin/project/workflow_orchestrator.py`
+- `penguin/project/task_executor.py`
+- `penguin/project/manager.py`
+- `penguin/project/models.py`
+
+### PR: Validation / VERIFY Maturity Pass
+**Reason deferred:** current validation is improved but still pytest-centric and too narrow for higher-trust project automation
+
+- [ ] Expand `ValidationManager` evidence beyond pytest exit codes and loose acceptance-criteria coverage
+- [ ] Distinguish test evidence, usage-recipe evidence, and explicit verification artifacts more cleanly
+- [ ] Tighten acceptance-criteria evaluation so "covered_by_test_evidence" is not the only meaningful success mode
+- [ ] Add tests for no-tests-found, timeout, missing-pytest, and mixed evidence scenarios at the orchestration layer
+- [ ] Decide which VERIFY semantics should stay MVP-simple vs move into a later TLA+/formal verification track
+
+Reference:
+- `penguin/project/validation_manager.py`
+- `context/tasks/penguin_tla.md`
+
+### PR: Legacy Workflow Surface Cleanup
+**Reason deferred:** stale or parallel execution surfaces can quietly undermine the newer runtime truth if left unaudited
+
+- [ ] Audit `dream_workflow.py` and any remaining alternate task/workflow entry points for stale constructor/runtime assumptions
+- [ ] Deprecate or remove dead workflow surfaces that are no longer the real execution path
+- [ ] Add a short architecture note documenting the authoritative runtime/orchestration paths
+
+Reference:
+- `penguin/project/dream_workflow.py`
+- `architecture.md`
+
+### PR: Engine Loop Cleanup Follow-On
+**Reason deferred:** `run_task()` thin-wrapper refactor reduces risk, but broader engine-loop cleanup still remains
+
+- [ ] Review remaining divergence between `run_response(...)` and `_iteration_loop(...)`
+- [ ] Identify whether any task-mode result shaping should move fully into `LoopConfig` or helper functions
+- [ ] Add coverage around message-callback/tool-output semantics and completion callbacks if further cleanup lands
+- [ ] Remove any now-dead task-loop code left behind by the thin-wrapper refactor
+
+Reference:
+- `penguin/engine.py`
+- `tests/test_engine_run_task_thin_wrapper.py`
+
 ---
 
 ## Strategic Read (April 17, 2026)
