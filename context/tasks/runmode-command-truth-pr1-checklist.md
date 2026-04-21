@@ -186,15 +186,48 @@ web/API surface when that can be done without turning the PR into a redesign.
 - [x] Ensure docs mention clarification wait/resume outcomes where relevant
 
 ### Phase 6: Web/API Surface Truth Pass (later in this PR if still manageable)
-- [ ] Audit whether web/API task execution surfaces distinguish:
+- [x] Audit whether web/API task execution surfaces distinguish:
   - completed
   - waiting for clarification / `waiting_input`
   - idle / no ready task
   - stopped by time limit
+- [x] Re-evaluate that audit after the recent web auth/security hardening work
+- [ ] Verify that protected HTTP task-execution routes preserve the same RunMode truth under the new local auth/session model
+- [ ] Verify that protected clarification-resume routes preserve the same RunMode truth under the new local auth/session model
+- [ ] Verify that protected SSE/session-status streams preserve clarification/session status truth under the new local auth/session model
+- [ ] Verify whether idle / no-ready-work outcomes survive web/API surfaces honestly
+- [ ] Verify whether explicit time-limit stop outcomes survive web/API surfaces honestly
 - [ ] If web/API wording or payload summaries are weaker than RunMode truth, patch them surgically
 - [ ] Update `docs/docs/usage/web_interface.md` if web/API runmode/task-execution wording changes
 - [ ] Add or refresh targeted web/API tests only where needed to preserve the same outcome truth
 - [ ] Do not redesign SSE/event schemas here unless a tiny compatibility fix is required
+
+#### Phase 6 Findings
+- Clarification / `waiting_input` truth is already reasonably strong on the web surface:
+  - task execution routes preserve `result` payloads from `RunMode.start(...)`
+  - clarification resume routes preserve `result` payloads from `RunMode.resume_with_clarification(...)`
+  - task serialization preserves `status`, `phase`, dependencies, artifact evidence, recipe references, and clarification metadata
+  - SSE status tests already verify clarification-related session status events
+- The recent web auth/security PRs materially change the Phase 6 bar:
+  - local web auth is now enabled by default
+  - local browser/TUI bootstrap now relies on startup-token -> signed-session-cookie flow
+  - HTTP, SSE, and WebSocket/session flows now depend on the protected transport path working consistently
+- That means Phase 6 is no longer only a payload-shape audit. It is now an auth-aware surface-truth audit.
+- Current under-proven areas:
+  - idle / no-ready-work truth on authenticated web/API surfaces
+  - explicit `time_limit_reached` truth on authenticated web/API surfaces
+  - whether auth/bootstrap/session continuity degrades or suppresses these non-terminal runtime states in practice
+
+#### Phase 6 Direction
+- Do not redesign web routes just because auth got more complex.
+- First add/extend tests that prove whether the current protected transport path preserves RunMode truth.
+- Prioritize proof in this order:
+  1. authenticated HTTP execute/clarification truth
+  2. authenticated SSE session/status truth
+  3. authenticated idle / no-ready-work truth
+  4. authenticated time-limit-stop truth
+- If the existing protected routes already preserve truth, keep changes minimal and mostly documentation/test-oriented.
+- If the auth layer or route layer collapses these states, patch surgically at the route/service boundary rather than widening the PR into a general web refactor.
 
 ### Phase 7: Optional Micro-Cleanup Only If Safe
 - [ ] Evaluate whether there is one tiny, test-backed simplification in `Engine.run_task(...)` that can be included safely

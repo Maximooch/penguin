@@ -182,3 +182,98 @@ async def test_sse_streams_clarification_session_status_events(tmp_path: Path):
 
     await stream.aclose()
 
+
+
+
+@pytest.mark.asyncio
+async def test_sse_streams_time_limit_session_status_events(tmp_path: Path):
+    from penguin.core import PenguinCore
+
+    event_bus = _EventBus()
+    runtime = SimpleNamespace(
+        workspace_root=str(tmp_path),
+        project_root=str(tmp_path),
+        active_root=str(tmp_path),
+    )
+    core = PenguinCore.__new__(PenguinCore)
+    core.event_bus = event_bus
+    core.runtime_config = runtime
+    core._opencode_session_directories = {}
+    core._current_conversation_id = "session_one"
+    core.conversation_manager = SimpleNamespace(current_agent_id="default")
+    set_core_instance(core)
+
+    response = await events_sse(
+        session_id="session_one",
+        conversation_id=None,
+        agent_id=None,
+        directory=str(tmp_path),
+    )
+    stream = response.body_iterator
+
+    _ = _parse_sse(await stream.__anext__())
+
+    await PenguinCore.emit_ui_event(
+        core,
+        "status",
+        {
+            "status_type": "time_limit_reached",
+            "data": {
+                "summary": "RunMode stopped because the explicit time limit was reached.",
+            },
+        },
+    )
+
+    time_limit_event = _parse_sse(await asyncio.wait_for(stream.__anext__(), timeout=0.25))
+    assert time_limit_event["type"] == "session.status"
+    assert time_limit_event["properties"]["sessionID"] == "session_one"
+    assert time_limit_event["properties"]["status"]["type"] == "time_limit_reached"
+
+    await stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sse_streams_idle_no_ready_task_status_events(tmp_path: Path):
+    from penguin.core import PenguinCore
+
+    event_bus = _EventBus()
+    runtime = SimpleNamespace(
+        workspace_root=str(tmp_path),
+        project_root=str(tmp_path),
+        active_root=str(tmp_path),
+    )
+    core = PenguinCore.__new__(PenguinCore)
+    core.event_bus = event_bus
+    core.runtime_config = runtime
+    core._opencode_session_directories = {}
+    core._current_conversation_id = "session_one"
+    core.conversation_manager = SimpleNamespace(current_agent_id="default")
+    set_core_instance(core)
+
+    response = await events_sse(
+        session_id="session_one",
+        conversation_id=None,
+        agent_id=None,
+        directory=str(tmp_path),
+    )
+    stream = response.body_iterator
+
+    _ = _parse_sse(await stream.__anext__())
+
+    await PenguinCore.emit_ui_event(
+        core,
+        "status",
+        {
+            "status_type": "idle_no_ready_tasks",
+            "data": {
+                "summary": "RunMode stopped because no ready work remained.",
+            },
+        },
+    )
+
+    idle_event = _parse_sse(await asyncio.wait_for(stream.__anext__(), timeout=0.25))
+    assert idle_event["type"] == "session.status"
+    assert idle_event["properties"]["sessionID"] == "session_one"
+    assert idle_event["properties"]["status"]["type"] == "idle_no_ready_tasks"
+
+    await stream.aclose()

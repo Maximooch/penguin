@@ -3811,10 +3811,15 @@ class PenguinCore:
                 status_type = data.get("status_type")
                 session_id = data.get("session_id") or data.get("conversation_id")
                 if isinstance(status_type, str) and isinstance(session_id, str):
-                    # Clarification status originates as plain UI status events, but SSE clients only
-                    # subscribe to `opencode_event`. Bridge the session-scoped status here so web clients
-                    # see the same waiting/resume truth instead of silently missing it.
-                    if status_type in {"clarification_needed", "clarification_answered"}:
+                    # SSE clients subscribe to `opencode_event`, so bridge session-scoped RunMode
+                    # status truth here for the statuses the web surface needs to preserve.
+                    bridgeable_statuses = {
+                        "clarification_needed",
+                        "clarification_answered",
+                        "time_limit_reached",
+                        "idle_no_ready_tasks",
+                    }
+                    if status_type in bridgeable_statuses:
                         await self._emit_opencode_session_status(
                             session_id,
                             status_type,

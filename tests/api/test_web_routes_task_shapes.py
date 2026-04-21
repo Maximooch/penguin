@@ -268,3 +268,86 @@ async def test_execute_task_from_project_preserves_waiting_input_truth():
     assert response["task"]["status"] == updated_task.status.value
     assert response["task"]["phase"] == updated_task.phase.value
 
+
+
+
+@pytest.mark.asyncio
+async def test_execute_task_from_project_preserves_time_limit_truth():
+    task = make_task()
+    task.status = TaskStatus.ACTIVE
+    task.phase = TaskPhase.IMPLEMENT
+    updated_task = make_task()
+    updated_task.status = TaskStatus.RUNNING
+    updated_task.phase = TaskPhase.IMPLEMENT
+
+    core = SimpleNamespace(
+        project_manager=SimpleNamespace(
+            get_task_async=AsyncMock(side_effect=[task, updated_task]),
+        ),
+        engine=SimpleNamespace(),
+    )
+
+    run_mode_instance = SimpleNamespace(
+        start=AsyncMock(
+            return_value={
+                "status": "stopped",
+                "message": "RunMode stopped because the explicit time limit was reached.",
+                "completion_type": "time_limit_reached",
+                "task_id": "task-1",
+                "project_id": "project-1",
+            }
+        )
+    )
+
+    from unittest.mock import patch
+    from penguin.web.routes import execute_task_from_project
+
+    with patch("penguin.web.routes.RunMode", return_value=run_mode_instance):
+        response = await execute_task_from_project("task-1", core=core)
+
+    assert response["task_id"] == "task-1"
+    assert response["result"]["status"] == "stopped"
+    assert response["result"]["completion_type"] == "time_limit_reached"
+    assert "time limit" in response["result"]["message"].lower()
+    assert response["task"]["status"] == updated_task.status.value
+
+
+@pytest.mark.asyncio
+async def test_execute_task_from_project_preserves_idle_no_ready_work_truth():
+    task = make_task()
+    task.status = TaskStatus.ACTIVE
+    task.phase = TaskPhase.IMPLEMENT
+    updated_task = make_task()
+    updated_task.status = TaskStatus.ACTIVE
+    updated_task.phase = TaskPhase.PENDING
+
+    core = SimpleNamespace(
+        project_manager=SimpleNamespace(
+            get_task_async=AsyncMock(side_effect=[task, updated_task]),
+        ),
+        engine=SimpleNamespace(),
+    )
+
+    run_mode_instance = SimpleNamespace(
+        start=AsyncMock(
+            return_value={
+                "status": "idle",
+                "message": "RunMode stopped because no ready work remained.",
+                "completion_type": "idle_no_ready_tasks",
+                "task_id": "task-1",
+                "project_id": "project-1",
+            }
+        )
+    )
+
+    from unittest.mock import patch
+    from penguin.web.routes import execute_task_from_project
+
+    with patch("penguin.web.routes.RunMode", return_value=run_mode_instance):
+        response = await execute_task_from_project("task-1", core=core)
+
+    assert response["task_id"] == "task-1"
+    assert response["result"]["status"] == "idle"
+    assert response["result"]["completion_type"] == "idle_no_ready_tasks"
+    assert "no ready work remained" in response["result"]["message"].lower()
+    assert response["task"]["phase"] == updated_task.phase.value

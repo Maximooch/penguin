@@ -57,7 +57,7 @@ Reference:
 - `context/tasks/cli-workspace-semantics-pr1-checklist.md`
 
 ### PR: RunMode Commands and Loop Ownership Audit / Command Truth
-**Status:** audit done, Phase 1/3/5 done, Phase 2 mostly in, not fully closed yet
+**Status:** audit done, Phases 1/2/3/5/6 materially done, closeout decision pending
 
 Completed in this thread:
 - [x] Audit `--run`, `--247`, and `--continuous` semantics for current truth and usability
@@ -67,15 +67,19 @@ Completed in this thread:
 - [x] Record completed findings, open questions, and recommended first PR scope
 - [x] Create exact PR1 checklist for command-truth cleanup
 - [x] Complete Phase 1 contract-definition pass
+- [x] Land Phase 2 CLI help/output truth changes materially
 - [x] Complete Phase 3 time-limit truth investigation
 - [x] Complete Phase 5 docs alignment for RunMode truth
-- [x] Land most Phase 2 CLI help/output truth changes
+- [x] Complete Phase 6 web/API truth slice
+  - explicit route-shape coverage for `waiting_input`, `time_limit_reached`, and `idle_no_ready_tasks`
+  - SSE/session-status coverage for clarification, time-limit, and idle/no-ready-work truth
+  - `PenguinCore.emit_ui_event(...)` bridge widened for those statuses
 
 Still remaining in this workstream:
-- [ ] Finish Phase 2 test cleanup / closeout cleanly
+- [ ] Clean up the one non-critical brittle CLI help-text assertion or explicitly defer it
 - [ ] Decide whether any tiny `Engine.run_task(...)` cleanup belongs in this PR or should be deferred
-- [ ] Decide whether to include the later web/API truth pass in the same PR or defer it
-- [ ] Commit/push the remaining checklist/docs/ignore cleanup if not already bundled
+- [ ] Decide whether a full auth-bootstrap end-to-end confirmation is needed now or can be deferred
+- [ ] Commit/push the remaining Phase 6 + checklist changes if not already bundled
 
 Reference:
 - `context/tasks/runmode-command-loop-audit.md`
