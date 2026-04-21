@@ -10,7 +10,7 @@ remains test‑friendly and avoids hidden globals.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import uuid
 import asyncio
 import copy
@@ -1438,7 +1438,8 @@ class Engine:
                     and not termination_detected
                 ):
                     logger.info(
-                        f"Completion phrase detected in {config.mode} loop output without explicit action."
+                        "Completion phrase detected in %s loop output without explicit action.",
+                        config.mode,
                     )
                     completion_status = (
                         "pending_review" if config.mode == "task" else config.default_completion_status
@@ -1979,7 +1980,7 @@ class Engine:
 
             task_metadata = {
                 "id": task_id
-                or f"task_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex}",
+                or f"task_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex}",
                 "name": task_name or "Unnamed Task",
                 "context": task_context or {},
                 "max_iterations": max_iters,
@@ -1992,15 +1993,23 @@ class Engine:
                 all_completion_phrases.extend(completion_phrases)
 
             async def task_message_callback_wrapper(
-                chunk: str, message_type: str, *args: Any, **kwargs: Any
+                chunk: str,
+                message_type: str,
+                action_name: Optional[str] = None,
             ) -> None:
                 if message_callback:
                     await message_callback(chunk, message_type)
 
             async def task_stream_adapter(
-                chunk: str, message_type: str = "assistant"
+                chunk: str,
+                message_type: str = "assistant",
+                action_name: Optional[str] = None,
             ) -> None:
-                await task_message_callback_wrapper(chunk, message_type)
+                await task_message_callback_wrapper(
+                    chunk,
+                    message_type,
+                    action_name=action_name,
+                )
 
             config = LoopConfig(
                 mode="task",

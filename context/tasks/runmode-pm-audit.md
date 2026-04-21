@@ -32,6 +32,7 @@ This note captures a skeptical execution-path review across the RunMode / Engine
 ## Verified Findings
 
 ### What looks solid enough right now
+
 - `RunMode` is still the correct outer orchestration layer.
   - task resolution
   - continuous mode
@@ -45,6 +46,7 @@ This note captures a skeptical execution-path review across the RunMode / Engine
   - SSE/session-status truth now covers clarification, time-limit, and idle/no-ready-work
 
 ### Highest-risk areas still in the stack
+
 - `penguin/core.py`
   - status/event bridging still relies heavily on summary strings and centralized coordination state
   - `start_run_mode(...)` cleanup/failure-path behavior deserves another pass
@@ -59,6 +61,7 @@ This note captures a skeptical execution-path review across the RunMode / Engine
 ## Engine-Specific Review Notes
 
 ### Thin-wrapper refactor conclusion
+
 The `run_task(...)` thin-wrapper refactor was the right move.
 
 It reduced real duplication between:
@@ -68,6 +71,7 @@ It reduced real duplication between:
 That duplication was an Engine-vs-Engine problem, not a RunMode-vs-Engine boundary problem.
 
 ### Additional verified issues fixed during review
+
 - task-mode stream callback contract now matches provider/runtime expectations
 - `_CURRENT_ENGINE_RUN_STATE` cleanup is now broader and safer
 - task completion phrases are now propagated into loop config and checked centrally
@@ -77,9 +81,11 @@ That duplication was an Engine-vs-Engine problem, not a RunMode-vs-Engine bounda
 ## Project / PM Review Notes
 
 ### Main concern
-The next likely trust failures are more likely to come from `penguin/project` than from the newly-thinned `run_task(...)` path.
+
+The next trust failures are more likely to originate from `penguin/project` rather than from the newly-thinned `run_task(...)` path.
 
 ### Why
+
 `penguin/project` still concentrates too much policy in a few places:
 - `manager.py`
 - `workflow_orchestrator.py`
