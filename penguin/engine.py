@@ -1861,27 +1861,11 @@ class Engine:
         """
         Multi-step reasoning loop with comprehensive task handling.
 
-        Args:
-            task_prompt: The prompt for the task
-            image_paths: Optional list of image paths for multi-modal inputs
-            max_iterations: Maximum number of iterations (overrides settings default)
-            task_context: Additional context for the task (metadata, environment, etc.)
-            task_id: Optional task ID for tracking and events
-            task_name: Optional task name for display and logging
-            completion_phrases: Additional completion phrases to check for
-            on_completion: Optional callback when task completes
-            enable_events: Whether to publish events (defaults to True)
-            message_callback: Optional callback to display messages during execution (message, type)
-
-        Returns:
-            Dictionary with task execution results including:
-            - assistant_response: The final response from the assistant
-            - iterations: Number of iterations performed
-            - status: Task status (completed, iterations_exceeded, stopped)
-            - action_results: Results of any actions executed
+        This is task-mode setup + delegation into the unified `_iteration_loop(...)`.
+        Task-specific behavior is carried through `LoopConfig` and task metadata,
+        while the shared iteration mechanics stay centralized in one place.
         """
         max_iters = max_iterations or self.settings.max_iterations_default
-        # Select agent and prepare its conversation
         selected, lite_output = await self._resolve_agent(
             agent_id=agent_id,
             agent_role=agent_role,
@@ -1911,261 +1895,46 @@ class Engine:
         if telemetry is not None:
             await telemetry.record_task(self.current_agent_id, task_name)
 
-        # Prepare task metadata
         task_metadata = {
             "id": task_id or f"task_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}",
             "name": task_name or "Unnamed Task",
             "context": task_context or {},
             "max_iterations": max_iters,
             "start_time": self.start_time.isoformat(),
+            "prompt": task_prompt,
         }
 
-        # Get standard and custom completion phrases
         standard_phrase = TASK_COMPLETION_PHRASE
         all_completion_phrases = [standard_phrase]
         if completion_phrases:
             all_completion_phrases.extend(completion_phrases)
 
-        # Store action results from all iterations
-        all_action_results = []
-
-        # Reset loop state for this run
-        self._get_loop_state().reset()
-
-        # Publish task start event if EventBus is available
-        if enable_events:
-            try:
-                from penguin.utils.events import EventBus, TaskEvent
-
-                event_bus = EventBus.get_instance()
-                await event_bus.publish(
-                    TaskEvent.STARTED.value,
-                    {
-                        "task_id": task_metadata["id"],
-                        "task_name": task_metadata["name"],
-                        "task_prompt": task_prompt,
-                        "max_iterations": max_iters,
-                        "context": task_context,
-                        "message_type": "status",
-                    },
-                )
-            except (ImportError, AttributeError):
-                # EventBus not available yet, continue with normal operation
-                logger.warning(
-                    "EventBus not available, continuing without event publishing"
-                )
-
-        last_response = ""
-        latest_usage: Dict[str, Any] = {}
-        completion_status = "iterations_exceeded"  # Default status
+        config = LoopConfig(
+            mode="task",
+            termination_action="finish_task",
+            streaming=self.settings.streaming_default,
+            stream_callback=message_callback if message_callback else None,
+            manage_streaming_state=False,
+            async_save=True,
+            enable_events=enable_events,
+            task_metadata=task_metadata,
+            message_callback=message_callback,
+            default_completion_status="iterations_exceeded",
+        )
 
         try:
-            # Main execution loop
-            while self.current_iteration < max_iters:
-                self.current_iteration += 1
-                logger.debug("Engine iteration %s (run_task)", self.current_iteration)
+            result = await self._iteration_loop(cm, config, max_iters)
+            result["task"] = task_metadata
 
-                # Check for external stop conditions
-                if await self._check_stop():
-                    completion_status = "stopped"
-                    break
-
-                # Execute LLM step with streaming support
-                response_data = await self._llm_step(
-                    tools_enabled=True,
-                    streaming=self.settings.streaming_default,
-                    stream_callback=message_callback if message_callback else None,
-                    agent_id=self.current_agent_id,
-                )
-
-                last_response = response_data.get("assistant_response", "")
-                iteration_results = response_data.get("action_results", [])
-                usage_data = response_data.get("usage")
-                if isinstance(usage_data, dict) and usage_data:
-                    latest_usage = usage_data
-
-                # Collect action results
-                if iteration_results:
-                    all_action_results.extend(iteration_results)
-
-                    # Display action results via callback
-                    if message_callback:
-                        for tool_result_info in iteration_results:
-                            if isinstance(tool_result_info, dict):
-                                action_name = tool_result_info.get(
-                                    "action", "UnknownAction"
-                                )
-                                result_str = tool_result_info.get("result", "")
-                                status = tool_result_info.get("status", "completed")
-
-                                callback_message_type = (
-                                    "tool_result"
-                                    if status == "completed"
-                                    else "tool_error"
-                                )
-                                await message_callback(
-                                    result_str,
-                                    callback_message_type,
-                                    action_name=action_name,
-                                )
-                            else:
-                                await message_callback(
-                                    str(tool_result_info), "system_output"
-                                )
-
-                # Publish progress event
-                if enable_events:
-                    try:
-                        from penguin.utils.events import EventBus, TaskEvent
-
-                        event_bus = EventBus.get_instance()
-                        await event_bus.publish(
-                            TaskEvent.PROGRESSED.value,
-                            {
-                                "task_id": task_metadata["id"],
-                                "task_name": task_metadata["name"],
-                                "iteration": self.current_iteration,
-                                "max_iterations": max_iters,
-                                "response": last_response,
-                                "progress": min(
-                                    100, int(100 * self.current_iteration / max_iters)
-                                ),
-                                "message_type": "status",
-                            },
-                        )
-                    except (ImportError, AttributeError):
-                        logger.debug("EventBus not available for progress event")
-
-                # CRITICAL FIX: Persist conversation after each iteration using async save
-                cm, _, _, _ = self._resolve_components(self.current_agent_id)
-                await self._save_conversation(cm, async_save=True)
-
-                # Check for task completion via finish_task tool call (primary)
-                finish_task_called = False
-                finish_status = "done"  # Default status
-                for tool_result in iteration_results:
-                    if isinstance(tool_result, dict):
-                        action_name = tool_result.get("action", "")
-                        if action_name in ("finish_task", "task_completed"):
-                            finish_task_called = True
-                            # Extract status from machine-readable marker [FINISH_STATUS:xxx]
-                            # This avoids false positives from user summaries containing words like "blocked"
-                            result_output = tool_result.get("result", "")
-                            status_match = re.search(
-                                r"\[FINISH_STATUS:(\w+)\]", result_output
-                            )
-                            if status_match:
-                                finish_status = status_match.group(1)
-                            break
-
-                if finish_task_called:
-                    # Task goes to PENDING_REVIEW, not COMPLETED
-                    # Human must approve to mark COMPLETED
-                    completion_status = "pending_review"
-                    logger.info(
-                        f"Task completion signal detected via 'finish_task' tool (status: {finish_status}). Marking for human review."
-                    )
-
-                    # Publish completion event (task is pending review, not fully completed)
-                    if enable_events:
-                        try:
-                            from penguin.utils.events import EventBus, TaskEvent
-
-                            event_bus = EventBus.get_instance()
-                            await event_bus.publish(
-                                TaskEvent.COMPLETED.value,
-                                {
-                                    "task_id": task_metadata["id"],
-                                    "task_name": task_metadata["name"],
-                                    "response": last_response,
-                                    "iteration": self.current_iteration,
-                                    "max_iterations": max_iters,
-                                    "context": task_context,
-                                    "finish_status": finish_status,
-                                    "requires_review": True,
-                                    "message_type": "status",
-                                },
-                            )
-                        except (ImportError, AttributeError):
-                            logger.debug("EventBus not available for completion event")
-                    break
-
-                if not iteration_results and self._queue_malformed_action_repair_note(
-                    cm,
-                    last_response,
-                    mode="task",
-                ):
-                    await self._save_conversation(cm, async_save=True)
-                    if message_callback:
-                        await message_callback(
-                            "Assistant returned malformed tool syntax; requesting a repair turn.",
-                            "system_output",
-                        )
-                    continue
-
-                # WALLET_GUARD: Consolidated termination checks
-                should_break, guard_status = self._check_wallet_guard_termination(
-                    last_response, iteration_results, mode="task"
-                )
-                if should_break:
-                    completion_status = guard_status or "implicit_completion"
-                    break
-
-        except LLMEmptyResponseError as e:
-            logger.warning(f"LLM returned empty response during task: {e}")
-            completion_status = "llm_empty_response_error"
-            if message_callback:
-                await message_callback(f"LLM Empty Response: {str(e)}", "error")
-
-        except Exception as e:
-            # Handle any execution errors
-            logger.error(f"Error executing task: {str(e)}")
-            completion_status = "error"
-
-            # Call message callback if provided
-            if message_callback:
-                await message_callback(f"Error executing task: {str(e)}", "error")
-
-            # Publish error event
-            if enable_events:
+            if on_completion:
                 try:
-                    from penguin.utils.events import EventBus, TaskEvent
+                    await on_completion(result)
+                except Exception as e:
+                    logger.error(f"Error in completion callback: {str(e)}")
 
-                    event_bus = EventBus.get_instance()
-                    await event_bus.publish(
-                        TaskEvent.FAILED.value,
-                        {
-                            "task_id": task_metadata["id"],
-                            "task_name": task_metadata["name"],
-                            "error": str(e),
-                            "iteration": self.current_iteration,
-                            "max_iterations": max_iters,
-                            "message_type": "status",
-                        },
-                    )
-                except (ImportError, AttributeError):
-                    logger.debug("EventBus not available for error event")
-
-        # Prepare result structure
-        result = {
-            "assistant_response": last_response,
-            "iterations": self.current_iteration,
-            "status": completion_status,
-            "action_results": all_action_results,
-            "usage": latest_usage,
-            "task": task_metadata,
-            "execution_time": (datetime.utcnow() - self.start_time).total_seconds(),
-        }
-
-        # Call completion callback if provided
-        if on_completion:
-            try:
-                await on_completion(result)
-            except Exception as e:
-                logger.error(f"Error in completion callback: {str(e)}")
-
-        _CURRENT_ENGINE_RUN_STATE.reset(token)
-        return result
+            return result
+        finally:
+            _CURRENT_ENGINE_RUN_STATE.reset(token)
 
     async def _execute_lite_agent(
         self,
