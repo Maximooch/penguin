@@ -113,3 +113,33 @@ But it did reinforce that the next serious reliability work should focus on:
 - `penguin/project`
 - `core.py` event/status bridging
 - validation maturity
+
+
+## Surgical Edit Checklist
+
+### 1. `penguin/project/task_executor.py`
+- [x] Stop flattening nuanced RunMode outcomes into a coarse top-level `status="success"`.
+- [x] Derive or expose explicit runmode outcome fields (for example `run_mode_status` and `run_mode_completion_type`).
+- [x] Preserve `run_mode_result` exactly as returned.
+- [x] Add focused tests for `waiting_input`, `pending_review`, and executor error handling.
+
+### 2. `penguin/core.py`
+- [x] Harden `start_run_mode(...)` cleanup/failure-path behavior.
+- [x] Avoid referencing partially-initialized `run_mode` state unsafely in `finally`.
+- [x] Keep `_runmode_active`, `_runmode_stream_callback`, `_ui_update_callback`, and `_continuous_mode` cleanup honest on early failure.
+- [x] Add failure-path tests if practical.
+
+### 3. `penguin/project/workflow_orchestrator.py`
+- [x] Remove `print()` debug usage and replace with logging.
+- [x] Review phase/status transitions for flattening or misleading summaries.
+- [x] Keep `PENDING_REVIEW` / verify semantics explicit.
+
+### 4. `penguin/project/validation_manager.py`
+- [x] Verify current fail-closed behavior still holds.
+- [x] Identify where evidence/results are still too pytest-centric.
+- [x] Defer broader VERIFY redesign unless a clearly surgical fix appears.
+
+### 5. Follow-up discipline
+- [ ] Prefer adapter-truth fixes over broad refactors.
+- [ ] Add tests before widening scope.
+- [ ] Treat `penguin/project` as the highest-risk area for future trust failures.

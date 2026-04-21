@@ -42,16 +42,12 @@ class WorkflowOrchestrator:
         self.git_manager = git_manager
         logger.info("WorkflowOrchestrator initialized.")
 
-        # -----------------------------------------------------------------
-        # Simple debug helper – for now we just use print() so that the
-        # messages are always visible even if logging isn't configured.
-        # -----------------------------------------------------------------
         self._debug_enabled = True
 
     def _debug(self, message: str) -> None:
-        """Print a debug message if debugging is enabled."""
+        """Log a debug message if debugging is enabled."""
         if self._debug_enabled:
-            print(f"[WorkflowOrchestrator DEBUG] {message}")
+            logger.debug("[WorkflowOrchestrator DEBUG] %s", message)
 
     async def _execute_use_recipe(self, recipe: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a minimal usage recipe, currently supporting shell steps only."""
@@ -148,9 +144,34 @@ class WorkflowOrchestrator:
             self._debug("Executing task via ProjectTaskExecutor")
             exec_result = await self.task_executor.execute_task(task)
             self._debug(f"Execution result: {exec_result}")
-            if exec_result["status"] == "error":
+            executor_status = exec_result.get("status")
+            if (
+                executor_status is None
+                or not isinstance(executor_status, str)
+                or executor_status.strip() == ""
+            ):
+                raise ValueError(
+                    f"Malformed executor result for task {task.id} ({task.title}): {exec_result!r}"
+                )
+            if executor_status == "error":
                 raise Exception(f"Task execution failed: {exec_result['message']}")
-            
+
+            if executor_status not in {"completed", "pending_review", "success"}:
+                logger.info(
+                    "Task '%s' returned non-terminal executor status '%s'; leaving workflow in RUNNING.",
+                    task.title,
+                    executor_status,
+                )
+                return {
+                    "task_id": task.id,
+                    "task_title": task.title,
+                    "status": executor_status,
+                    "message": exec_result.get("message", "Task execution returned a non-terminal status."),
+                    "run_mode_completion_type": exec_result.get("run_mode_completion_type"),
+                    "run_mode_result": exec_result.get("run_mode_result"),
+                    "final_status": TaskStatus.RUNNING.value,
+                }
+
             changed_files = exec_result.get("changed_files", [])
 
             # 3. Reload task and validate the post-execution state.

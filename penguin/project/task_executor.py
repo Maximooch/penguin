@@ -68,9 +68,20 @@ class ProjectTaskExecutor:
             changed_by_task = list(set(final_changed_files) - set(initial_changed_files))
             logger.info(f"Task '{task.title}' modified {len(changed_by_task)} files.")
 
+            run_mode_status = run_result.get("status", "unknown") if isinstance(run_result, dict) else "unknown"
+            run_mode_completion_type = (
+                run_result.get("completion_type") if isinstance(run_result, dict) else None
+            )
+            message = (
+                f"Task execution returned RunMode status '{run_mode_status}'."
+                if run_mode_status != "unknown"
+                else "Task execution returned a non-dict RunMode result."
+            )
             return {
-                "status": "success",
-                "message": "Task execution completed by RunMode.",
+                "status": run_mode_status,
+                "message": message,
+                "run_mode_status": run_mode_status,
+                "run_mode_completion_type": run_mode_completion_type,
                 "run_mode_result": run_result,
                 "changed_files": changed_by_task,
             }
