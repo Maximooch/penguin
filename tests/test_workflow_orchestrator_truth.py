@@ -87,3 +87,36 @@ async def test_orchestrator_returns_executor_error_without_revalidation():
     assert result["final_status"] == "FAILED"
     validation_manager.validate_task_completion.assert_not_called()
     git_manager.create_pr_for_task.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_raises_on_malformed_executor_status():
+    task = SimpleNamespace(
+        id="task-1",
+        title="Task 1",
+        recipe=None,
+    )
+    project_manager = MagicMock()
+    project_manager.get_next_task_async = AsyncMock(return_value=task)
+    project_manager.update_task_status = MagicMock(return_value=True)
+    project_manager.update_task_phase_async = AsyncMock()
+    project_manager.get_task = MagicMock(return_value=SimpleNamespace(status=TaskStatus.RUNNING))
+
+    task_executor = SimpleNamespace(
+        execute_task=AsyncMock(return_value={"status": "", "message": "bad payload"})
+    )
+    validation_manager = SimpleNamespace(validate_task_completion=AsyncMock())
+    git_manager = SimpleNamespace(create_pr_for_task=AsyncMock())
+    orchestrator = WorkflowOrchestrator(
+        project_manager=project_manager,
+        task_executor=task_executor,
+        validation_manager=validation_manager,
+        git_manager=git_manager,
+    )
+
+    result = await orchestrator.run_next_task(project_id="project-1")
+
+    assert result["final_status"] == "FAILED"
+    assert "Malformed executor result" in result["error"]
+    validation_manager.validate_task_completion.assert_not_called()
+    git_manager.create_pr_for_task.assert_not_called()

@@ -145,6 +145,14 @@ class WorkflowOrchestrator:
             exec_result = await self.task_executor.execute_task(task)
             self._debug(f"Execution result: {exec_result}")
             executor_status = exec_result.get("status")
+            if (
+                executor_status is None
+                or not isinstance(executor_status, str)
+                or executor_status.strip() == ""
+            ):
+                raise ValueError(
+                    f"Malformed executor result for task {task.id} ({task.title}): {exec_result!r}"
+                )
             if executor_status == "error":
                 raise Exception(f"Task execution failed: {exec_result['message']}")
 
