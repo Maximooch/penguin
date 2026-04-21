@@ -32,7 +32,6 @@ from ..constants import DEFAULT_WEB_PORT
 from ..local_auth import (
     is_web_auth_enabled,
     read_local_auth_token,
-    write_local_auth_token,
 )
 
 LOCAL_HOSTS = {"", "localhost", "127.0.0.1", "0.0.0.0", "::1"}
@@ -277,9 +276,9 @@ def _prepare_local_auth_env(
 
     token = env.get("PENGUIN_LOCAL_AUTH_TOKEN", "").strip()
     if not token:
-        token = env.get("PENGUIN_AUTH_STARTUP_TOKEN", "").strip()
-    if not token:
         token = read_local_auth_token(base_url) or ""
+    if not token:
+        token = env.get("PENGUIN_AUTH_STARTUP_TOKEN", "").strip()
 
     if token:
         env.setdefault("PENGUIN_LOCAL_AUTH_TOKEN", token)
@@ -292,9 +291,24 @@ def _prepare_local_auth_env(
     if not token:
         token = secrets.token_urlsafe(24)
         env["PENGUIN_AUTH_STARTUP_TOKEN"] = token
-        write_local_auth_token(token, base_url)
 
     env.setdefault("PENGUIN_LOCAL_AUTH_TOKEN", token)
+
+
+def _sync_local_auth_env_from_cache(base_url: str, env: dict[str, str]) -> None:
+    """Refresh the launcher auth env from the running server token cache."""
+    if not _is_local_url(base_url):
+        return
+    if env.get("PENGUIN_API_KEYS", "").strip():
+        return
+
+    auth_mode = env.get("PENGUIN_AUTH_ENABLED", "").strip().lower()
+    if auth_mode in {"0", "false", "no", "off"}:
+        return
+
+    token = read_local_auth_token(base_url) or ""
+    if token:
+        env["PENGUIN_LOCAL_AUTH_TOKEN"] = token
 
 
 def _find_local_opencode_dir() -> Path | None:
@@ -959,6 +973,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "Warning: URL is non-local and not reachable; skipping auto-start.",
                 file=sys.stderr,
             )
+
+    _sync_local_auth_env_from_cache(base_url, env)
 
     try:
         opencode_cmd, opencode_cwd = _build_opencode_command(
