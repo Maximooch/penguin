@@ -3295,6 +3295,7 @@ class PenguinCore:
         # Initialize status
         self.current_runmode_status_summary = "Starting RunMode..."
 
+        run_mode = None
         try:
             run_mode = RunMode(
                 self,  # core instance
@@ -3349,7 +3350,9 @@ class PenguinCore:
             self._ui_update_callback = None
 
             # Ensure state is cleaned up if run mode was not continuous or if continuous mode exited
-            if hasattr(run_mode, "continuous_mode") and not run_mode.continuous_mode:
+            if run_mode is None:
+                self._continuous_mode = False
+            elif hasattr(run_mode, "continuous_mode") and not run_mode.continuous_mode:
                 self._continuous_mode = False
 
             logger.info(
