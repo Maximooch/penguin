@@ -34,6 +34,14 @@ import { useKV } from "../../context/kv"
 import { useTextareaKeybindings } from "../textarea-keybindings"
 import { exitSession } from "../../util/exit"
 import { formatPenguinPromptFailure, recoverPenguinPromptFailure } from "./penguin-send"
+import {
+  createOptimisticPenguinEvents,
+  createPenguinSession,
+  parsePenguinPromptCommand,
+  persistPenguinAgentMode,
+  postPenguinPrompt,
+  resolvePenguinSessionID,
+} from "./penguin-runtime"
 
 export type PromptProps = {
   sessionID?: string
@@ -171,14 +179,12 @@ export function Prompt(props: PromptProps) {
   })
 
   function persistAgentMode(sessionID: string, nextMode: "build" | "plan") {
-    const modeUrl = new URL(`/session/${encodeURIComponent(sessionID)}`, sdk.url)
-    sdk.fetch(modeUrl, {
-      method: "PATCH",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ agent_mode: nextMode }),
-    }).catch(() => undefined)
+    void persistPenguinAgentMode({
+      fetch: sdk.fetch,
+      url: sdk.url,
+      sessionID,
+      mode: nextMode,
+    })
   }
 
   function applyAgentMode(nextMode: "build" | "plan", options?: { notify?: boolean; sessionID?: string }) {
@@ -625,14 +631,6 @@ export function Prompt(props: PromptProps) {
   ])
 
   async function submit() {
-    const resolveSessionID = (value: unknown): string | undefined => {
-      if (typeof value === "string" && value.trim()) return value.trim()
-      if (!value || typeof value !== "object") return undefined
-      const record = value as Record<string, unknown>
-      if (typeof record.id === "string" && record.id.trim()) return record.id.trim()
-      return resolveSessionID(record.data)
-    }
-
     if (props.disabled) return
     if (autocomplete?.visible) return
     if (!store.prompt.input) return
@@ -656,41 +654,19 @@ export function Prompt(props: PromptProps) {
       if (sdk.penguin) {
         const directory =
           sync.session.get(props.sessionID ?? sdk.sessionID ?? "")?.directory ?? process.cwd()
-        const createUrl = new URL("/session", sdk.url)
-        createUrl.searchParams.set("directory", directory)
-        const created = await sdk.fetch(createUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            agent_mode: agentMode(),
-            providerID: selectedModel.providerID,
-            modelID: selectedModel.modelID,
-            variant,
-          }),
-        }).then(async (res) => {
-          if (!res.ok) {
-            const details = await res.text().catch(() => "")
-            throw new Error(
-              details
-                ? `Session create failed (${res.status}): ${details}`
-                : `Session create failed (${res.status})`,
-            )
-          }
-          return res.json().catch(() => undefined)
+        return createPenguinSession({
+          fetch: sdk.fetch,
+          url: sdk.url,
+          directory,
+          agentMode: agentMode(),
+          providerID: selectedModel.providerID,
+          modelID: selectedModel.modelID,
+          variant,
         })
-        const createdID = resolveSessionID(created)
-        if (createdID) return createdID
-        const details =
-          created && typeof created === "object"
-            ? `response keys: ${Object.keys(created as Record<string, unknown>).join(",") || "none"}`
-            : `response type: ${typeof created}`
-        throw new Error(`Session create returned empty id (${details})`)
       }
 
       return await sdk.client.session.create({}).then((result) => {
-        const id = resolveSessionID(result)
+        const id = resolvePenguinSessionID(result)
         if (id) return id
         throw new Error("Session create returned empty id")
       })
@@ -739,23 +715,18 @@ export function Prompt(props: PromptProps) {
     const nonTextParts = store.prompt.parts.filter((part) => part.type !== "text")
 
     if (sdk.penguin) {
-      const firstLine = inputText.split("\n", 1)[0].trim()
-      const firstToken = firstLine.split(/\s+/, 1)[0] ?? ""
-      const penguinCommand = /^\/[a-z_][a-z0-9_-]*$/i.test(firstToken)
+      const penguinCommand = parsePenguinPromptCommand(inputText)
       if (penguinCommand) {
-        const name = firstToken.slice(1)
-        const showConfig = name === "config" || name === "settings"
-        const keepDialog = showConfig
-        if (showConfig) {
+        if (penguinCommand.keepDialog) {
           dialog.replace(() => <DialogSettings directory={directory} sessionID={sessionID} />)
-        } else if (name === "tool_details") {
+        } else if (penguinCommand.name === "tool_details") {
           const next = !kv.get("tool_details_visibility", true)
           kv.set("tool_details_visibility", next)
-        } else if (name === "thinking") {
+        } else if (penguinCommand.name === "thinking") {
           const next = !kv.get("thinking_visibility", true)
           kv.set("thinking_visibility", next)
-        } else {
-          toast.show({ variant: "warning", message: `Unknown command: /${name}` })
+        } else if (!penguinCommand.known) {
+          toast.show({ variant: "warning", message: `Unknown command: /${penguinCommand.name}` })
         }
         history.append({
           ...store.prompt,
@@ -769,7 +740,7 @@ export function Prompt(props: PromptProps) {
           parts: [],
         })
         setStore("extmarkToPartIndex", new Map())
-        if (!keepDialog) {
+        if (!penguinCommand.keepDialog) {
           dialog.clear()
         }
         if (!input.isDestroyed) {
@@ -792,46 +763,18 @@ export function Prompt(props: PromptProps) {
         }
         return
       }
-      const now = Date.now()
-      const user = {
-        id: messageID,
-        sessionID,
-        role: "user" as const,
-        time: {
-          created: now,
-        },
-        agent: agent.name,
-        model: {
-          providerID: selectedModel.providerID,
-          modelID: selectedModel.modelID,
-        },
-      }
-      const part = {
-        id: sdk.penguin ? gen.next("part") : Identifier.ascending("part"),
+      const optimisticEvents = createOptimisticPenguinEvents({
         sessionID,
         messageID,
-        type: "text" as const,
-        text: inputText,
-        time: {
-          start: now,
-          end: now,
-        },
-      }
-      sdk.event.emit("message.updated", {
-        type: "message.updated",
-        properties: { info: user },
+        partID: gen.next("part"),
+        inputText,
+        agentName: agent.name,
+        providerID: selectedModel.providerID,
+        modelID: selectedModel.modelID,
       })
-      sdk.event.emit("message.part.updated", {
-        type: "message.part.updated",
-        properties: { part, delta: inputText },
-      })
-      sdk.event.emit("session.status", {
-        type: "session.status",
-        properties: {
-          sessionID,
-          status: { type: "busy" as const },
-        },
-      })
+      sdk.event.emit(optimisticEvents.message.type, optimisticEvents.message)
+      sdk.event.emit(optimisticEvents.part.type, optimisticEvents.part)
+      sdk.event.emit(optimisticEvents.status.type, optimisticEvents.status)
       history.append({
         ...store.prompt,
         mode: currentMode,
@@ -875,24 +818,19 @@ export function Prompt(props: PromptProps) {
           emit: sdk.event.emit,
         })
       }
-      const url = new URL("/api/v1/chat/message", sdk.url)
-      sdk.fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          text: inputText,
-          model: `${selectedModel.providerID}/${selectedModel.modelID}`,
-          session_id: sessionID,
-          agent_id: agent.name,
-          agent_mode: agentMode(),
-          directory,
-          streaming: true,
-          variant,
-          client_message_id: messageID,
-          parts: nonTextParts,
-        }),
+      postPenguinPrompt({
+        fetch: sdk.fetch,
+        url: sdk.url,
+        text: inputText,
+        providerID: selectedModel.providerID,
+        modelID: selectedModel.modelID,
+        sessionID,
+        agentName: agent.name,
+        agentMode: agentMode(),
+        directory,
+        variant,
+        clientMessageID: messageID,
+        parts: nonTextParts,
       })
         .then(async (res) => {
           if (res.ok) return

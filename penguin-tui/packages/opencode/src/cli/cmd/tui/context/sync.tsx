@@ -2,7 +2,6 @@ import type {
   Message,
   Agent,
   Provider,
-  Session,
   Part,
   Config,
   Todo,
@@ -18,8 +17,6 @@ import type {
   ProviderAuthMethod,
   VcsInfo,
 } from "@opencode-ai/sdk/v2"
-import fs from "fs"
-import path from "path"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { useSDK } from "@tui/context/sdk"
 import { Binary } from "@opencode-ai/util/binary"
@@ -30,63 +27,24 @@ import { useArgs } from "./args"
 import { useRoute } from "./route"
 import { batch, onMount } from "solid-js"
 import { Log } from "@/util/log"
-import { iife } from "@/util/iife"
 import type { Path } from "@opencode-ai/sdk"
 import {
   hydrateSessionSnapshot,
   mergeHydratedMessages,
   upsertPenguinMessage,
 } from "./session-hydration"
-import { fetchBootstrapJson } from "./sync-bootstrap"
 import { expandSessionSearchResults, removeSessionRecord, upsertSessionRecord } from "../util/session-family"
-
-type SessionUsage = {
-  current_total_tokens: number
-  max_context_window_tokens: number | null
-  available_tokens: number
-  percentage: number | null
-  truncations: {
-    total_truncations: number
-    messages_removed: number
-    tokens_freed: number
-  }
-}
-
-type PenguinSession = Session & {
-  agent_mode?: string
-  agent_id?: string
-  parent_agent_id?: string
-  providerID?: string
-  modelID?: string
-  variant?: string
-}
-
-const parseUsage = (raw: unknown): SessionUsage | undefined => {
-  if (typeof raw !== "object" || !raw) return undefined
-  const root = raw as Record<string, unknown>
-  const usage = typeof root.usage === "object" && root.usage ? (root.usage as Record<string, unknown>) : root
-
-  const current = usage.current_total_tokens
-  if (typeof current !== "number") return undefined
-
-  const max = usage.max_context_window_tokens
-  const available = usage.available_tokens
-  const percentage = usage.percentage
-  const trunc =
-    typeof usage.truncations === "object" && usage.truncations ? (usage.truncations as Record<string, unknown>) : {}
-
-  return {
-    current_total_tokens: current,
-    max_context_window_tokens: typeof max === "number" ? max : null,
-    available_tokens: typeof available === "number" ? available : 0,
-    percentage: typeof percentage === "number" ? percentage : null,
-    truncations: {
-      total_truncations: typeof trunc.total_truncations === "number" ? trunc.total_truncations : 0,
-      messages_removed: typeof trunc.messages_removed === "number" ? trunc.messages_removed : 0,
-      tokens_freed: typeof trunc.tokens_freed === "number" ? trunc.tokens_freed : 0,
-    },
-  }
-}
+import {
+  bootstrapPenguinState,
+  fetchPenguinSessionUsage,
+  getPenguinEventDirectory,
+  getPenguinEventSessionID,
+  normalizePenguinDirectory,
+  parsePenguinSessionUsage,
+  shouldProcessPenguinEvent,
+  type PenguinSession,
+  type SessionUsage,
+} from "./penguin-sync"
 
 export const { use: useSync, provider: SyncProvider } = createSimpleContext({
   name: "Sync",
@@ -180,30 +138,6 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       setStore("session", reconcile(removeSessionRecord(store.session, sessionID)))
     }
 
-    const normalizeDirectory = (value?: string) => {
-      if (!value || typeof value !== "string") return undefined
-      const trimmed = value.trim()
-      if (!trimmed) return undefined
-      const resolved = iife(() => {
-        try {
-          if (fs.realpathSync.native) return fs.realpathSync.native(trimmed)
-        } catch {
-          // no-op
-        }
-        try {
-          return fs.realpathSync(trimmed)
-        } catch {
-          // no-op
-        }
-        try {
-          return path.resolve(trimmed)
-        } catch {
-          return trimmed
-        }
-      })
-      return resolved.replace(/\\/g, "/")
-    }
-
     const resolveDirectory = (sessionID?: string) => {
       if (sessionID) {
         const session = store.session.find((item) => item.id === sessionID)
@@ -214,65 +148,12 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       return process.cwd()
     }
 
-    const appDirectory = () => normalizeDirectory(resolveDirectory())
+    const appDirectory = () => normalizePenguinDirectory(resolveDirectory())
 
     const sessionDirectory = (sessionID?: string) => {
       if (!sessionID) return undefined
       const session = store.session.find((item) => item.id === sessionID)
-      return normalizeDirectory(session?.directory)
-    }
-
-    const eventSessionID = (event: { properties: unknown }) => {
-      const props = event.properties
-      if (!props || typeof props !== "object") return undefined
-      const root = props as Record<string, unknown>
-      const direct = root.sessionID ?? root.session_id ?? root.conversation_id
-      if (typeof direct === "string" && direct) return direct
-      const info = root.info
-      if (info && typeof info === "object") {
-        const infoSession =
-          (info as Record<string, unknown>).sessionID ??
-          (info as Record<string, unknown>).session_id ??
-          (info as Record<string, unknown>).conversation_id
-        if (typeof infoSession === "string" && infoSession) return infoSession
-      }
-      const part = root.part
-      if (part && typeof part === "object") {
-        const partSession =
-          (part as Record<string, unknown>).sessionID ??
-          (part as Record<string, unknown>).session_id ??
-          (part as Record<string, unknown>).conversation_id
-        if (typeof partSession === "string" && partSession) return partSession
-      }
-      return undefined
-    }
-
-    const eventDirectory = (event: { properties: unknown }) => {
-      const props = event.properties
-      if (!props || typeof props !== "object") return undefined
-      const root = props as Record<string, unknown>
-      if (typeof root.directory === "string" && root.directory) return root.directory
-      const info = root.info
-      if (info && typeof info === "object") {
-        const infoRoot = info as Record<string, unknown>
-        if (typeof infoRoot.directory === "string" && infoRoot.directory) return infoRoot.directory
-        const pathRoot = infoRoot.path
-        if (pathRoot && typeof pathRoot === "object") {
-          const cwd = (pathRoot as Record<string, unknown>).cwd
-          if (typeof cwd === "string" && cwd) return cwd
-        }
-      }
-      const pathRoot = root.path
-      if (pathRoot && typeof pathRoot === "object") {
-        const cwd = (pathRoot as Record<string, unknown>).cwd
-        if (typeof cwd === "string" && cwd) return cwd
-      }
-      const part = root.part
-      if (part && typeof part === "object") {
-        const partRoot = part as Record<string, unknown>
-        if (typeof partRoot.directory === "string" && partRoot.directory) return partRoot.directory
-      }
-      return undefined
+      return normalizePenguinDirectory(session?.directory)
     }
 
     const usageRefreshInFlight = new Set<string>()
@@ -289,11 +170,12 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       if (usageRefreshInFlight.has(sessionID) || now - last < 400) return
       usageRefreshInFlight.add(sessionID)
       usageRefreshAt.set(sessionID, now)
-      const url = new URL(`/session/${encodeURIComponent(sessionID)}`, sdk.url)
-      sdk.fetch(url)
-        .then((res) => (res.ok ? res.json() : undefined))
-        .then((data) => {
-          const usage = parseUsage(data)
+      fetchPenguinSessionUsage({
+        fetch: sdk.fetch,
+        url: sdk.url,
+        sessionID,
+      })
+        .then((usage) => {
           if (!usage) return
           setStore("session_usage", sessionID, reconcile(usage))
         })
@@ -320,7 +202,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             if (match.found) draft.session[match.index] = hydrated.session
             if (!match.found) draft.session.splice(match.index, 0, hydrated.session)
           }
-          const usage = parseUsage(hydrated.session)
+          const usage = parsePenguinSessionUsage(hydrated.session)
           if (usage) draft.session_usage[sessionID] = usage
           draft.todo[sessionID] = hydrated.todo
           draft.message[sessionID] = sdk.penguin
@@ -338,42 +220,16 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     sdk.event.listen((e) => {
       const event = e.details
       if (sdk.penguin) {
-        const sid = eventSessionID(event)
-        const dir = normalizeDirectory(eventDirectory(event))
-        const baseDir = appDirectory()
         const activeSessionID = route.data.type === "session" ? route.data.sessionID : undefined
-        if (activeSessionID) {
-          if (sid && sid !== activeSessionID) return
-          const activeDir = sessionDirectory(activeSessionID) ?? baseDir
-          if (!sid) {
-            if (dir && activeDir && dir !== activeDir) return
-            if (
-              !dir &&
-              (event.type === "lsp.updated" ||
-                event.type === "lsp.client.diagnostics" ||
-                event.type === "vcs.branch.updated")
-            ) {
-              return
-            }
-          }
-        } else {
-          if (sid) {
-            const sidDir = sessionDirectory(sid)
-            if (sidDir && baseDir && sidDir !== baseDir) return
-            if (!sidDir && dir && baseDir && dir !== baseDir) return
-          }
-          if (!sid) {
-            if (dir && baseDir && dir !== baseDir) return
-            if (
-              !dir &&
-              (event.type === "lsp.updated" ||
-                event.type === "lsp.client.diagnostics" ||
-                event.type === "vcs.branch.updated")
-            ) {
-              return
-            }
-          }
-        }
+        if (
+          !shouldProcessPenguinEvent({
+            event,
+            activeSessionID,
+            appDirectory: appDirectory(),
+            sessionDirectory,
+          })
+        )
+          return
       }
       switch (event.type) {
         case "server.instance.disposed":
@@ -638,9 +494,8 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
 
         case "lsp.updated": {
           if (sdk.penguin) {
-            const sid = eventSessionID(event)
-            const scopedDirectory = eventDirectory(event) ?? resolveDirectory(sid)
-            const normalizedScoped = normalizeDirectory(scopedDirectory)
+            const scopedDirectory = getPenguinEventDirectory(event) ?? resolveDirectory(getPenguinEventSessionID(event))
+            const normalizedScoped = normalizePenguinDirectory(scopedDirectory)
             const normalizedBase = appDirectory()
             if (!scopedDirectory) break
             if (normalizedScoped && normalizedBase && normalizedScoped !== normalizedBase) break
@@ -670,363 +525,28 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       console.log("bootstrapping")
       if (sdk.penguin) {
         fullSyncedSessions.clear()
-        const now = Date.now()
-        const stamp = (value?: string) => {
-          const time = value ? Date.parse(value) : NaN
-          return Number.isFinite(time) ? time : now
-        }
-        const unwrap = (value: unknown) => {
-          if (!value || typeof value !== "object") return value
-          const record = value as Record<string, unknown>
-          if (!("data" in record)) return value
-          const keys = Object.keys(record)
-          const wrapper = keys.every((key) => key === "data" || key === "meta")
-          return wrapper ? record.data : value
-        }
-        const model = {
-          id: "penguin-default",
-          providerID: "penguin",
-          api: {
-            id: "penguin-web",
-            url: sdk.url,
-            npm: "penguin",
-          },
-          name: "Penguin Default",
-          capabilities: {
-            temperature: true,
-            reasoning: true,
-            attachment: false,
-            toolcall: false,
-            input: {
-              text: true,
-              audio: false,
-              image: false,
-              video: false,
-              pdf: false,
-            },
-            output: {
-              text: true,
-              audio: false,
-              image: false,
-              video: false,
-              pdf: false,
-            },
-            interleaved: false,
-          },
-          cost: {
-            input: 0,
-            output: 0,
-            cache: { read: 0, write: 0 },
-          },
-          limit: {
-            context: 100000,
-            output: 4096,
-          },
-          status: "beta" as const,
-          options: {},
-          headers: {},
-          release_date: new Date(now).toISOString(),
-        }
-        const provider = {
-          id: "penguin",
-          name: "Penguin",
-          source: "custom" as const,
-          env: [],
-          options: {},
-          models: {
-            [model.id]: model,
-          },
-        }
         const directory = store.path.directory || sdk.directory || process.cwd()
-        const sessionsUrl = iife(() => {
-          const url = new URL("/session", sdk.url)
-          url.searchParams.set("directory", directory)
-          url.searchParams.set("limit", "50")
-          return url
+        const bootstrapState = await bootstrapPenguinState({
+          fetch: sdk.fetch,
+          url: sdk.url,
+          directory,
         })
-        const [providersData, providerListData, configData, providerAuthData, sessionsData, roster] = await Promise.all(
-          [
-            fetchBootstrapJson({
-              fetch: sdk.fetch,
-              path: new URL("/config/providers", sdk.url),
-              endpoint: "/config/providers",
-              fallback: undefined,
-            }),
-            fetchBootstrapJson({
-              fetch: sdk.fetch,
-              path: new URL("/provider", sdk.url),
-              endpoint: "/provider",
-              fallback: undefined,
-            }),
-            fetchBootstrapJson({
-              fetch: sdk.fetch,
-              path: new URL("/config", sdk.url),
-              endpoint: "/config",
-              fallback: undefined,
-            }),
-            fetchBootstrapJson({
-              fetch: sdk.fetch,
-              path: new URL("/provider/auth", sdk.url),
-              endpoint: "/provider/auth",
-              fallback: undefined,
-            }),
-            sdk.fetch(sessionsUrl)
-              .then((res) => (res.ok ? res.json() : undefined))
-              .then((data) => (Array.isArray(data) ? data : []))
-              .catch(() => []),
-            sdk.fetch(new URL("/api/v1/agents", sdk.url))
-              .then((res) => (res.ok ? res.json() : undefined))
-              .then((data) => (Array.isArray(data) ? data : []))
-              .catch(() => []),
-          ],
-        )
-        const list = sessionsData
-        const providersPayload = unwrap(providersData) as Record<string, unknown> | undefined
-        const providerListPayload = unwrap(providerListData) as Record<string, unknown> | undefined
-        const configPayload = unwrap(configData)
-        const providerAuthPayload = unwrap(providerAuthData)
-
-        const providers = Array.isArray(providersPayload?.providers) ? providersPayload.providers : [provider]
-        const providerDefault =
-          providersPayload && typeof providersPayload.default === "object" && providersPayload.default
-            ? (providersPayload.default as Record<string, string>)
-            : { [provider.id]: model.id }
-        const providerNext =
-          providerListPayload &&
-          Array.isArray(providerListPayload.all) &&
-          providerListPayload.default &&
-          Array.isArray(providerListPayload.connected)
-            ? (providerListPayload as ProviderListResponse)
-            : {
-                all: [
-                  {
-                    id: provider.id,
-                    name: provider.name,
-                    env: provider.env,
-                    models: {
-                      [model.id]: {
-                        id: model.id,
-                        name: model.name,
-                        release_date: model.release_date,
-                        attachment: model.capabilities.attachment,
-                        reasoning: model.capabilities.reasoning,
-                        temperature: model.capabilities.temperature,
-                        tool_call: model.capabilities.toolcall,
-                        limit: model.limit,
-                        status: model.status,
-                        options: {},
-                      },
-                    },
-                  },
-                ],
-                default: { [provider.id]: model.id },
-                connected: [provider.id],
-              }
-        const providerAuth =
-          providerAuthPayload && typeof providerAuthPayload === "object"
-            ? (providerAuthPayload as Record<string, ProviderAuthMethod[]>)
-            : {}
-        const config = configPayload && typeof configPayload === "object" ? configPayload : { share: "disabled" }
-        const mapped: PenguinSession[] = list.map((item: { [key: string]: unknown }) => {
-          const sid = typeof item.id === "string" ? item.id : crypto.randomUUID()
-          const title = typeof item.title === "string" ? item.title : `Session ${sid.slice(-8)}`
-          const time = item.time
-          const created =
-            typeof time === "object" && time && "created" in time && typeof time.created === "number"
-              ? time.created
-              : stamp(typeof item.created_at === "string" ? item.created_at : undefined)
-          const updated =
-            typeof time === "object" && time && "updated" in time && typeof time.updated === "number"
-              ? time.updated
-              : stamp(typeof item.last_active === "string" ? item.last_active : undefined)
-          const directoryValue = typeof item.directory === "string" ? item.directory : directory
-          const payload: PenguinSession = {
-            id: sid,
-            slug: typeof item.slug === "string" ? item.slug : sid,
-            projectID: typeof item.projectID === "string" ? item.projectID : "penguin",
-            directory: directoryValue,
-            title,
-            version: typeof item.version === "string" ? item.version : "penguin",
-            time: {
-              created,
-              updated,
-            },
-          }
-          const parentID = typeof item.parentID === "string" ? item.parentID : undefined
-          if (parentID) payload.parentID = parentID
-          const permission = Array.isArray(item.permission) ? item.permission : undefined
-          if (permission) payload.permission = permission as Session["permission"]
-          const share = item.share
-          if (share && typeof share === "object" && typeof (share as { url?: unknown }).url === "string") {
-            payload.share = { url: (share as { url: string }).url }
-          }
-          const summary = item.summary
-          if (summary && typeof summary === "object") {
-            const source = summary as Record<string, unknown>
-            if (
-              typeof source.additions === "number" &&
-              typeof source.deletions === "number" &&
-              typeof source.files === "number"
-            ) {
-              payload.summary = {
-                additions: source.additions,
-                deletions: source.deletions,
-                files: source.files,
-                diffs: Array.isArray(source.diffs)
-                  ? (source.diffs as Session["summary"] extends { diffs?: infer T } ? T : never)
-                  : undefined,
-              }
-            }
-          }
-          const revert = item.revert
-          if (
-            revert &&
-            typeof revert === "object" &&
-            typeof (revert as { messageID?: unknown }).messageID === "string"
-          ) {
-            const source = revert as Record<string, unknown>
-            payload.revert = {
-              messageID: String(source.messageID),
-              ...(typeof source.partID === "string" ? { partID: source.partID } : {}),
-              ...(typeof source.snapshot === "string" ? { snapshot: source.snapshot } : {}),
-              ...(typeof source.diff === "string" ? { diff: source.diff } : {}),
-            }
-          }
-          const sessionMode = typeof item.agent_mode === "string" ? item.agent_mode : undefined
-          if (sessionMode) {
-            payload.agent_mode = sessionMode
-          }
-          const providerID = typeof item.providerID === "string" ? item.providerID : undefined
-          if (providerID) payload.providerID = providerID
-          const modelID = typeof item.modelID === "string" ? item.modelID : undefined
-          if (modelID) payload.modelID = modelID
-          const variant = typeof item.variant === "string" ? item.variant : undefined
-          if (variant) payload.variant = variant
-          const agentID = typeof item.agent_id === "string" ? item.agent_id : undefined
-          if (agentID) payload.agent_id = agentID
-          const parentAgentID = typeof item.parent_agent_id === "string" ? item.parent_agent_id : undefined
-          if (parentAgentID) payload.parent_agent_id = parentAgentID
-          return payload
-        })
-        const usage = list.reduce(
-          (acc: Record<string, SessionUsage>, item: { [key: string]: unknown }) => {
-            const sid = typeof item.id === "string" ? item.id : ""
-            if (!sid) return acc
-            const next = parseUsage(item)
-            if (!next) return acc
-            acc[sid] = next
-            return acc
-          },
-          {} as Record<string, SessionUsage>,
-        )
-        const session: PenguinSession[] = mapped
-        const baseAgent = {
-          name: "penguin",
-          mode: "primary" as const,
-          permission: [],
-          options: {},
-        }
-        const agent = roster
-          .map((item: { [key: string]: unknown }) => {
-            const name = typeof item.id === "string" ? item.id : ""
-            if (!name) return undefined
-            const mode = item.is_sub_agent === true ? ("subagent" as const) : ("primary" as const)
-            const hidden = item.hidden === true
-            const permission = Array.isArray(item.permission) ? item.permission : []
-            const rawOptions = item.options
-            const options =
-              rawOptions && typeof rawOptions === "object"
-                ? ({ ...rawOptions } as Record<string, unknown>)
-                : ({} as Record<string, unknown>)
-            const sessionMode = typeof item.agent_mode === "string" ? item.agent_mode : undefined
-            if (sessionMode && !options.agent_mode) options.agent_mode = sessionMode
-            return {
-              name,
-              mode,
-              hidden,
-              permission,
-              options,
-            }
-          })
-          .filter((item) => !!item)
-        const command = [
-          {
-            name: "config",
-            description: "Show configuration sources",
-            template: "/config",
-            hints: [],
-          },
-          {
-            name: "tool_details",
-            description: "Toggle tool detail visibility",
-            template: "/tool_details",
-            hints: [],
-          },
-          {
-            name: "thinking",
-            description: "Toggle reasoning visibility",
-            template: "/thinking",
-            hints: [],
-          },
-        ]
-        const status = Object.fromEntries(session.map((item: PenguinSession) => [item.id, { type: "idle" as const }]))
         batch(() => {
-          setStore("provider", reconcile(providers))
-          setStore("provider_default", reconcile(providerDefault))
-          setStore("provider_next", reconcile(providerNext))
-          setStore("provider_auth", reconcile(providerAuth))
-          setStore("agent", reconcile(agent.length ? agent : [baseAgent]))
-          setStore("command", reconcile(command))
-          setStore("config", reconcile(config))
-          setStore("session", reconcile(session))
-          setStore("session_usage", reconcile(usage))
-          setStore("session_status", reconcile(status))
-          setStore("path", reconcile({ home: "", state: "", config: "", worktree: "", directory }))
+          setStore("provider", reconcile(bootstrapState.provider))
+          setStore("provider_default", reconcile(bootstrapState.provider_default))
+          setStore("provider_next", reconcile(bootstrapState.provider_next))
+          setStore("provider_auth", reconcile(bootstrapState.provider_auth))
+          setStore("agent", reconcile(bootstrapState.agent))
+          setStore("command", reconcile(bootstrapState.command))
+          setStore("config", reconcile(bootstrapState.config))
+          setStore("session", reconcile(bootstrapState.session))
+          setStore("session_usage", reconcile(bootstrapState.session_usage))
+          setStore("session_status", reconcile(bootstrapState.session_status))
+          setStore("lsp", reconcile(bootstrapState.lsp))
+          setStore("formatter", reconcile(bootstrapState.formatter))
+          if (bootstrapState.vcs) setStore("vcs", reconcile(bootstrapState.vcs))
+          setStore("path", reconcile(bootstrapState.path))
           setStore("status", "complete")
-        })
-
-        const systemUrl = (pathname: string) => {
-          const url = new URL(pathname, sdk.url)
-          url.searchParams.set("directory", directory)
-          return url
-        }
-
-        await Promise.all([
-          fetchBootstrapJson({
-            fetch: sdk.fetch,
-            path: systemUrl("/lsp"),
-            endpoint: "/lsp",
-            fallback: [] as LspStatus[],
-          }),
-          fetchBootstrapJson({
-            fetch: sdk.fetch,
-            path: systemUrl("/formatter"),
-            endpoint: "/formatter",
-            fallback: [] as FormatterStatus[],
-          }),
-          fetchBootstrapJson({
-            fetch: sdk.fetch,
-            path: systemUrl("/vcs"),
-            endpoint: "/vcs",
-            fallback: undefined,
-          }),
-          fetchBootstrapJson({
-            fetch: sdk.fetch,
-            path: systemUrl("/path"),
-            endpoint: "/path",
-            fallback: undefined,
-          }),
-        ]).then((result) => {
-          const lsp = result[0]
-          const formatter = result[1]
-          const vcs = result[2]
-          const path = result[3]
-          batch(() => {
-            setStore("lsp", reconcile(Array.isArray(lsp) ? lsp : []))
-            setStore("formatter", reconcile(Array.isArray(formatter) ? formatter : []))
-            if (vcs) setStore("vcs", reconcile(vcs))
-            if (path) setStore("path", reconcile(path))
-          })
         })
         const activeSessionID = route.data.type === "session" ? route.data.sessionID : undefined
         if (activeSessionID && (refreshActive || store.session.some((item) => item.id === activeSessionID))) {
