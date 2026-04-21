@@ -2585,6 +2585,113 @@ def agent_info(
 
 
 # Project Management Commands
+@project_app.command("init")
+def project_init(
+    name: str = typer.Argument(..., help="Project name"),
+    blueprint_path: Optional[Path] = typer.Option(
+        None,
+        "--blueprint",
+        help="Path to a Blueprint file to parse and sync during initialization.",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+    ),
+    description: Optional[str] = typer.Option(
+        None, "--description", "-d", help="Project description"
+    ),
+    workspace_path: Optional[str] = typer.Option(
+        None, "--workspace", "-w", help="Project workspace path"
+    ),
+):
+    """Initialize a project and optionally sync a Blueprint into it."""
+
+    async def _async_project_init():
+        console.print(f"[bold cyan]🐧 Initializing project:[/bold cyan] {name}")
+
+        await _initialize_core_components_globally()
+
+        if not _core or not _core.project_manager:
+            console.print("[red]Error: Project manager not available[/red]")
+            raise typer.Exit(code=1)
+
+        resolved_workspace = None
+        if workspace_path:
+            resolved_workspace = Path(workspace_path).expanduser().resolve()
+
+        project = None
+        try:
+            project = await _core.project_manager.create_project_async(
+                name=name,
+                description=description or f"Project: {name}",
+                workspace_path=resolved_workspace,
+            )
+
+            console.print("[green]✓ Project initialized successfully![/green]")
+            console.print(f"  ID: {project.id}")
+            console.print(f"  Name: {project.name}")
+            console.print(f"  Description: {project.description}")
+            if resolved_workspace:
+                console.print(f"  Workspace (explicit): {resolved_workspace}")
+            elif project.workspace_path:
+                console.print(f"  Workspace (default): {project.workspace_path}")
+
+            if blueprint_path is None:
+                return
+
+            from penguin.project.blueprint_parser import BlueprintParseError, BlueprintParser
+
+            parser = BlueprintParser(base_path=blueprint_path.parent)
+            blueprint = parser.parse_file(blueprint_path)
+            diagnostics = parser.lint_blueprint(blueprint, source=str(blueprint_path))
+            if diagnostics.has_errors:
+                if project is not None:
+                    await _delete_project_and_tasks_async(project.id)
+                console.print("[red]Blueprint validation failed. Project initialization rolled back.[/red]")
+                for diagnostic in diagnostics.diagnostics:
+                    prefix = diagnostic.severity.upper()
+                    location = f" ({diagnostic.source}:{diagnostic.line})" if diagnostic.source and diagnostic.line else ""
+                    console.print(f"  - [{prefix}] {diagnostic.message}{location}")
+                raise typer.Exit(code=1)
+
+            sync_result = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: _core.project_manager.sync_blueprint(
+                    blueprint,
+                    project_id=project.id,
+                    create_missing=True,
+                    update_existing=True,
+                ),
+            )
+            ready_tasks = await _core.project_manager.get_ready_tasks_async(project.id)
+
+            console.print(f"  Blueprint: {blueprint_path}")
+            console.print(f"  Tasks created: {len(sync_result.get('created', []))}")
+            console.print(f"  Tasks updated: {len(sync_result.get('updated', []))}")
+            console.print(f"  Tasks skipped: {len(sync_result.get('skipped', []))}")
+            console.print(f"  Ready tasks: {len(ready_tasks)}")
+            if diagnostics.has_warnings:
+                console.print("[yellow]Blueprint warnings:[/yellow]")
+                for diagnostic in diagnostics.diagnostics:
+                    if diagnostic.severity == 'warning':
+                        console.print(f"  - {diagnostic.message}")
+
+        except BlueprintParseError as exc:
+            if project is not None:
+                await _delete_project_and_tasks_async(project.id)
+            console.print(f"[red]Blueprint parse failed: {exc}[/red]")
+            raise typer.Exit(code=1)
+        except typer.Exit:
+            raise
+        except Exception as e:
+            if project is not None and blueprint_path is not None:
+                await _delete_project_and_tasks_async(project.id)
+            console.print(f"[red]Error initializing project: {e}[/red]")
+            raise typer.Exit(code=1)
+
+    asyncio.run(_async_project_init())
+
+
 @project_app.command("create")
 def project_create(
     name: str = typer.Argument(..., help="Project name"),
@@ -2694,6 +2801,43 @@ def project_list():
     asyncio.run(_async_project_list())
 
 
+
+
+def _resolve_project_identifier_or_exit(project_identifier: str):
+    """Resolve a project by exact ID or unique exact name, failing honestly otherwise."""
+    assert _core is not None and _core.project_manager is not None
+
+    project = _core.project_manager.get_project(project_identifier)
+    if project:
+        return project
+
+    exact_name_match = _core.project_manager.get_project_by_name(project_identifier)
+    if exact_name_match:
+        return exact_name_match
+
+    projects = _core.project_manager.list_projects()
+    matching_by_name = [p for p in projects if p.name == project_identifier]
+    if len(matching_by_name) > 1:
+        console.print(
+            f"[red]Ambiguous project name '{project_identifier}'. Use the project ID instead.[/red]"
+        )
+        raise typer.Exit(code=1)
+
+    console.print(
+        f"[red]Project '{project_identifier}' was not found by exact ID or exact name.[/red]"
+    )
+    raise typer.Exit(code=1)
+
+
+async def _delete_project_and_tasks_async(project_id: str) -> None:
+    """Delete a project and all of its tasks for honest rollback/cleanup paths."""
+    assert _core is not None and _core.project_manager is not None
+
+    tasks = await _core.project_manager.list_tasks_async(project_id=project_id)
+    for task in tasks:
+        _core.project_manager.storage.delete_task(task.id)
+    _core.project_manager.storage.delete_project(project_id)
+
 @project_app.command("delete")
 def project_delete(
     project_id: str = typer.Argument(..., help="Project ID to delete"),
@@ -2743,6 +2887,61 @@ def project_delete(
             raise typer.Exit(code=1)
 
     asyncio.run(_async_project_delete())
+
+
+@project_app.command("start")
+def project_start(
+    project_identifier: str = typer.Argument(..., help="Project ID or exact project name"),
+    continuous: bool = typer.Option(
+        True,
+        "--continuous/--no-continuous",
+        help="Run against the ready frontier continuously or execute one task selection.",
+    ),
+    time_limit: Optional[int] = typer.Option(
+        None,
+        "--time-limit",
+        help="Explicit run limit in minutes for this project start invocation.",
+    ),
+):
+    """Start project execution using the existing RunMode truth path."""
+
+    async def _async_project_start():
+        await _initialize_core_components_globally()
+
+        if not _core or not _core.project_manager:
+            console.print("[red]Error: Project manager not available[/red]")
+            raise typer.Exit(code=1)
+
+        project = _resolve_project_identifier_or_exit(project_identifier)
+        tasks = await _core.project_manager.list_tasks_async(project_id=project.id)
+        if not tasks:
+            console.print(
+                f"[red]Project '{project.name}' has no tasks. Initialize or import a Blueprint first.[/red]"
+            )
+            raise typer.Exit(code=1)
+
+        ready_tasks = await _core.project_manager.get_ready_tasks_async(project.id)
+        if not ready_tasks:
+            console.print(
+                f"[red]Project '{project.name}' has no ready tasks to execute.[/red]"
+            )
+            raise typer.Exit(code=1)
+
+        console.print(f"[bold blue]Starting project:[/bold blue] {project.name} ({project.id})")
+        console.print(f"  Mode: {'continuous' if continuous else 'single-selection'}")
+        console.print(f"  Ready tasks: {len(ready_tasks)}")
+        console.print(f"  First ready task: {ready_tasks[0].title}")
+
+        await _core.start_run_mode(
+            name=project.name,
+            description=project.description,
+            context={"project_id": project.id},
+            continuous=continuous,
+            time_limit=time_limit,
+            mode_type="project",
+        )
+
+    asyncio.run(_async_project_start())
 
 
 @project_app.command("run")
