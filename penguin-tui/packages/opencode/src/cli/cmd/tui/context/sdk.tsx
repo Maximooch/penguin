@@ -3,15 +3,10 @@ import { createSimpleContext } from "./helper"
 import { createGlobalEmitter } from "@solid-primitives/event-bus"
 import { batch, createEffect, onCleanup, onMount } from "solid-js"
 import { useRoute } from "./route"
+import { getPenguinAuthHeaders } from "./penguin-auth"
 
 export type EventSource = {
   on: (handler: (event: Event) => void) => () => void
-}
-
-function getPenguinAuthHeaders() {
-  const token = process.env.PENGUIN_LOCAL_AUTH_TOKEN ?? process.env.PENGUIN_AUTH_STARTUP_TOKEN
-  if (!token) return
-  return { "X-API-Key": token }
 }
 
 export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
