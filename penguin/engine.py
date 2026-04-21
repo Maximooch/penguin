@@ -107,9 +107,12 @@ class LoopConfig:
     # Termination signal - which action name triggers explicit completion
     termination_action: str  # "finish_response" or "finish_task"
 
+    # Termination phrases for non-action completion hints when applicable
+    completion_phrases: Optional[List[str]] = None
+
     # Streaming configuration
     streaming: bool = True
-    stream_callback: Optional[Callable[[str, str], Awaitable[None]]] = None
+    stream_callback: Optional[Callable[[str], None]] = None
 
     # Whether to reset/finalize streaming state between iterations
     manage_streaming_state: bool = False
@@ -122,11 +125,10 @@ class LoopConfig:
     task_metadata: Optional[Dict[str, Any]] = None
 
     # Message callback for tool results (run_task mode)
-    message_callback: Optional[Callable] = None
+    message_callback: Optional[Callable[..., Awaitable[None]]] = None
 
     # Default completion status when loop ends without explicit signal
     default_completion_status: str = "completed"
-
 
 @dataclass
 class LoopState:
@@ -1428,6 +1430,20 @@ class Engine:
                         f"Preview: {last_response[:100]}..."
                     )
 
+                if (
+                    last_response
+                    and config.completion_phrases
+                    and any(phrase in last_response for phrase in config.completion_phrases)
+                    and not termination_detected
+                ):
+                    logger.info(
+                        f"Completion phrase detected in {config.mode} loop output without explicit action."
+                    )
+                    completion_status = (
+                        "pending_review" if config.mode == "task" else config.default_completion_status
+                    )
+                    break
+
                 if not iteration_results and self._queue_malformed_action_repair_note(
                     cm,
                     last_response,
@@ -1888,41 +1904,45 @@ class Engine:
         self.current_iteration = 0
         self.start_time = datetime.utcnow()
 
-        cm, _api, _tm, _ae = self._resolve_components(self.current_agent_id)
-        cm.conversation.prepare_conversation(task_prompt, image_paths=image_paths)
-
-        telemetry = getattr(self, "telemetry", None)
-        if telemetry is not None:
-            await telemetry.record_task(self.current_agent_id, task_name)
-
-        task_metadata = {
-            "id": task_id or f"task_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}",
-            "name": task_name or "Unnamed Task",
-            "context": task_context or {},
-            "max_iterations": max_iters,
-            "start_time": self.start_time.isoformat(),
-            "prompt": task_prompt,
-        }
-
-        standard_phrase = TASK_COMPLETION_PHRASE
-        all_completion_phrases = [standard_phrase]
-        if completion_phrases:
-            all_completion_phrases.extend(completion_phrases)
-
-        config = LoopConfig(
-            mode="task",
-            termination_action="finish_task",
-            streaming=self.settings.streaming_default,
-            stream_callback=message_callback if message_callback else None,
-            manage_streaming_state=False,
-            async_save=True,
-            enable_events=enable_events,
-            task_metadata=task_metadata,
-            message_callback=message_callback,
-            default_completion_status="iterations_exceeded",
-        )
-
         try:
+            cm, _api, _tm, _ae = self._resolve_components(self.current_agent_id)
+            cm.conversation.prepare_conversation(task_prompt, image_paths=image_paths)
+
+            telemetry = getattr(self, "telemetry", None)
+            if telemetry is not None:
+                await telemetry.record_task(self.current_agent_id, task_name)
+
+            task_metadata = {
+                "id": task_id or f"task_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}",
+                "name": task_name or "Unnamed Task",
+                "context": task_context or {},
+                "max_iterations": max_iters,
+                "start_time": self.start_time.isoformat(),
+                "prompt": task_prompt,
+            }
+
+            all_completion_phrases = [TASK_COMPLETION_PHRASE]
+            if completion_phrases:
+                all_completion_phrases.extend(completion_phrases)
+
+            async def task_stream_adapter(chunk: str) -> None:
+                if message_callback:
+                    await message_callback(chunk, "assistant")
+
+            config = LoopConfig(
+                mode="task",
+                termination_action="finish_task",
+                completion_phrases=all_completion_phrases,
+                streaming=self.settings.streaming_default,
+                stream_callback=task_stream_adapter if message_callback else None,
+                manage_streaming_state=False,
+                async_save=True,
+                enable_events=enable_events,
+                task_metadata=task_metadata,
+                message_callback=message_callback,
+                default_completion_status="iterations_exceeded",
+            )
+
             result = await self._iteration_loop(cm, config, max_iters)
             result["task"] = task_metadata
 
