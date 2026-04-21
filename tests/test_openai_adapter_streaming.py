@@ -150,6 +150,10 @@ async def test_openai_adapter_streaming_ignores_stream_options(
     """Ensure Chat Completions `stream_options` is not forwarded to Responses API."""
     monkeypatch.delenv("OPENAI_OAUTH_ACCESS_TOKEN", raising=False)
     monkeypatch.delenv("OPENAI_ACCOUNT_ID", raising=False)
+    monkeypatch.setattr(
+        "penguin.llm.adapters.openai.get_provider_credential",
+        lambda _provider_id: None,
+    )
 
     model_config = ModelConfig(
         model="gpt-5.2",
@@ -178,6 +182,10 @@ async def test_openai_adapter_streaming_emits_callback_for_final_only_text(
 ) -> None:
     monkeypatch.delenv("OPENAI_OAUTH_ACCESS_TOKEN", raising=False)
     monkeypatch.delenv("OPENAI_ACCOUNT_ID", raising=False)
+    monkeypatch.setattr(
+        "penguin.llm.adapters.openai.get_provider_credential",
+        lambda _provider_id: None,
+    )
 
     model_config = ModelConfig(
         model="gpt-5.2",
@@ -211,6 +219,10 @@ async def test_openai_adapter_streaming_maps_reasoning_summary_to_reasoning_chun
 ) -> None:
     monkeypatch.delenv("OPENAI_OAUTH_ACCESS_TOKEN", raising=False)
     monkeypatch.delenv("OPENAI_ACCOUNT_ID", raising=False)
+    monkeypatch.setattr(
+        "penguin.llm.adapters.openai.get_provider_credential",
+        lambda _provider_id: None,
+    )
 
     model_config = ModelConfig(
         model="gpt-5.4",
@@ -242,7 +254,7 @@ async def test_openai_adapter_streaming_maps_reasoning_summary_to_reasoning_chun
     assert adapter.client.responses.last_stream_kwargs is not None
     reasoning = adapter.client.responses.last_stream_kwargs.get("reasoning")
     assert isinstance(reasoning, dict)
-    assert reasoning.get("summary") == "concise"
+    assert reasoning.get("summary") == "auto"
 
 
 def test_openai_adapter_uses_oauth_access_token_when_api_key_missing(
@@ -288,6 +300,10 @@ async def test_openai_adapter_streaming_captures_function_calls_without_leaking_
 ) -> None:
     monkeypatch.delenv("OPENAI_OAUTH_ACCESS_TOKEN", raising=False)
     monkeypatch.delenv("OPENAI_ACCOUNT_ID", raising=False)
+    monkeypatch.setattr(
+        "penguin.llm.adapters.openai.get_provider_credential",
+        lambda _provider_id: None,
+    )
 
     model_config = ModelConfig(
         model="gpt-5.4",

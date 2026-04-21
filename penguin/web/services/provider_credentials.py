@@ -214,6 +214,17 @@ def get_provider_credentials() -> dict[str, dict[str, Any]]:
         for provider_id in provider_ids:
             env_record = _credential_record_from_environment(provider_id)
             if env_record is not None:
+                stored = records.get(provider_id)
+                if (
+                    provider_id == "openai"
+                    and isinstance(stored, dict)
+                    and stored.get("type") == "oauth"
+                    and env_record.get("type") == "api"
+                ):
+                    logger.info(
+                        "Preserving stored OpenAI OAuth credentials over environment API key"
+                    )
+                    continue
                 merged[provider_id] = env_record
         return merged
 
@@ -416,9 +427,15 @@ def apply_credentials_to_environment(
 
     if auth_type == "oauth" and pid == "openai":
         access = credential_record.get("access")
+        refresh = credential_record.get("refresh")
+        expires = credential_record.get("expires")
         account_id = credential_record.get("accountId")
         if isinstance(access, str) and access:
             os.environ["OPENAI_OAUTH_ACCESS_TOKEN"] = access
+        if isinstance(refresh, str) and refresh:
+            os.environ["OPENAI_OAUTH_REFRESH_TOKEN"] = refresh
+        if isinstance(expires, int):
+            os.environ["OPENAI_OAUTH_EXPIRES_AT_MS"] = str(expires)
         if isinstance(account_id, str) and account_id:
             os.environ["OPENAI_ACCOUNT_ID"] = account_id
 

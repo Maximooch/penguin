@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import logging
 from typing import Any
 
 import pytest
@@ -63,6 +64,83 @@ class _FakeStreamContext:
     async def __aexit__(self, exc_type, exc, tb) -> bool:  # type: ignore[no-untyped-def]
         del exc_type, exc, tb
         return False
+
+
+@pytest.mark.asyncio
+async def test_oauth_request_uses_stored_record_without_env_access(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.delenv("OPENAI_OAUTH_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_OAUTH_REFRESH_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_OAUTH_EXPIRES_AT_MS", raising=False)
+    monkeypatch.delenv("OPENAI_ACCOUNT_ID", raising=False)
+    monkeypatch.setattr("penguin.llm.adapters.openai.AsyncOpenAI", _SDKClient)
+    monkeypatch.setattr(
+        "penguin.llm.adapters.openai.get_provider_credential",
+        lambda provider_id: {
+            "type": "oauth",
+            "access": "stored-oauth-access",
+            "refresh": "stored-oauth-refresh",
+            "expires": 9_999_999_999_000,
+            "accountId": "acct-store",
+        }
+        if provider_id == "openai"
+        else None,
+    )
+
+    seen: dict[str, Any] = {}
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout: float) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self) -> _FakeAsyncClient:
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> bool:  # type: ignore[no-untyped-def]
+            del exc_type, exc, tb
+            return False
+
+        def stream(self, method: str, url: str, headers=None, json=None):  # type: ignore[no-untyped-def]
+            del method, url
+            seen["auth"] = dict(headers or {}).get("Authorization")
+            seen["account"] = dict(headers or {}).get("ChatGPT-Account-Id")
+            response = _FakeResponse(
+                200,
+                lines=[
+                    'data: {"type":"response.output_text.delta","delta":"stored-oauth-answer"}',
+                    "data: [DONE]",
+                ],
+            )
+            return _FakeStreamContext(response)
+
+    monkeypatch.setattr(
+        "penguin.llm.adapters.openai.httpx.AsyncClient", _FakeAsyncClient
+    )
+
+    model_config = ModelConfig(
+        model="gpt-5.4",
+        provider="openai",
+        client_preference="native",
+        api_key="sk-test",
+        streaming_enabled=False,
+    )
+    adapter = OpenAIAdapter(model_config)
+
+    with caplog.at_level(logging.INFO):
+        result = await adapter.get_response(
+            [{"role": "user", "content": "hello from stored oauth"}],
+            stream=False,
+        )
+
+    assert result == "stored-oauth-answer"
+    assert seen["auth"] == "Bearer stored-oauth-access"
+    assert seen["account"] == "acct-store"
+    assert os.environ["OPENAI_OAUTH_ACCESS_TOKEN"] == "stored-oauth-access"
+    assert os.environ["OPENAI_ACCOUNT_ID"] == "acct-store"
+    assert "openai.oauth.resolve source=store_oauth" in caplog.text
+    assert "openai.request.route route=oauth_codex" in caplog.text
 
 
 @pytest.mark.asyncio

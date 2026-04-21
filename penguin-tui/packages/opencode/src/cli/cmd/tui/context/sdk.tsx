@@ -55,6 +55,7 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     let timer: Timer | undefined
     let last = 0
     let streamAbort: AbortController | undefined
+    const auth = { denied: false }
 
     const flush = () => {
       if (queue.length === 0) return
@@ -124,14 +125,22 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       streamAbort = new AbortController()
       const currentStreamAbort = streamAbort
 
-      const reader = await request(base, {
+      const res = await request(base, {
         signal: currentStreamAbort.signal,
         headers: {
           Accept: "text/event-stream",
         },
       })
-        .then((res) => res.body)
-        .then((body) => body?.getReader())
+
+      if (!res.ok) {
+        if (res.status === 401) {
+          auth.denied = true
+          console.error("Penguin SSE unauthorized; restart the TUI to refresh local auth")
+        }
+        return
+      }
+
+      const reader = res.body?.getReader()
 
       if (!reader) return
 
@@ -165,6 +174,7 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     createEffect(() => {
       if (!penguin) return
       sessionID()
+      auth.denied = false
       streamAbort?.abort()
     })
 
@@ -179,13 +189,13 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       if (penguin) {
         const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
         while (true) {
-          if (abort.signal.aborted) break
+          if (abort.signal.aborted || auth.denied) break
           await streamPenguin().catch(() => {})
           if (timer) clearTimeout(timer)
           if (queue.length > 0) {
             flush()
           }
-          if (abort.signal.aborted) break
+          if (abort.signal.aborted || auth.denied) break
           await wait(250)
         }
         return

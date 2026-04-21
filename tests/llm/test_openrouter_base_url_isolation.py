@@ -15,7 +15,7 @@ def test_openrouter_gateway_ignores_openai_base_url(monkeypatch) -> None:
             self.base_url = base_url
             self.api_key = api_key
 
-    monkeypatch.setattr("penguin.llm.openrouter_gateway.AsyncOpenAI", _Client)
+    monkeypatch.setattr("penguin.llm.adapters.openrouter.AsyncOpenAI", _Client)
 
     model_config = ModelConfig(
         model="z-ai/glm-5-turbo",
@@ -38,7 +38,7 @@ def test_openrouter_gateway_honors_openrouter_specific_base_url(monkeypatch) -> 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-fixture")
 
     monkeypatch.setattr(
-        "penguin.llm.openrouter_gateway.AsyncOpenAI",
+        "penguin.llm.adapters.openrouter.AsyncOpenAI",
         lambda *, base_url, api_key: SimpleNamespace(
             base_url=base_url,
             api_key=api_key,

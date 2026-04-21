@@ -62,6 +62,8 @@ def test_credentials_reads_legacy_store_when_primary_missing(
 
 def test_apply_oauth_credentials_updates_openai_runtime(monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_OAUTH_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_OAUTH_REFRESH_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_OAUTH_EXPIRES_AT_MS", raising=False)
     monkeypatch.delenv("OPENAI_ACCOUNT_ID", raising=False)
 
     core = SimpleNamespace(
@@ -80,6 +82,8 @@ def test_apply_oauth_credentials_updates_openai_runtime(monkeypatch) -> None:
     )
 
     assert os.environ["OPENAI_OAUTH_ACCESS_TOKEN"] == "oauth-access-token"
+    assert os.environ["OPENAI_OAUTH_REFRESH_TOKEN"] == "oauth-refresh-token"
+    assert os.environ["OPENAI_OAUTH_EXPIRES_AT_MS"] == "1700000000000"
     assert os.environ["OPENAI_ACCOUNT_ID"] == "acct_987"
     assert core.model_config.api_key == "oauth-access-token"
 
@@ -114,6 +118,35 @@ def test_oauth_record_refresh_window_helpers() -> None:
         )
         is True
     )
+
+
+def test_openai_stored_oauth_beats_environment_api_key(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("PENGUIN_PROVIDER_CREDENTIALS_STORE", raising=False)
+    monkeypatch.delenv("PENGUIN_PROVIDER_AUTH_STORE", raising=False)
+    monkeypatch.delenv("OPENAI_OAUTH_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_OAUTH_REFRESH_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_OAUTH_EXPIRES_AT_MS", raising=False)
+    monkeypatch.delenv("OPENAI_ACCOUNT_ID", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env-openai")
+
+    provider_credentials.set_provider_credential(
+        "openai",
+        {
+            "type": "oauth",
+            "access": "oauth-access",
+            "refresh": "oauth-refresh",
+            "expires": 1_900_000_000_000,
+            "accountId": "acct-123",
+        },
+    )
+
+    record = provider_credentials.get_provider_credential("openai")
+
+    assert record is not None
+    assert record["type"] == "oauth"
+    assert record["access"] == "oauth-access"
+    assert "key" not in record
 
 
 def test_placeholder_api_record_is_not_treated_as_connected(monkeypatch) -> None:

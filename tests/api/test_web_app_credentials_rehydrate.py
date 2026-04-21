@@ -48,6 +48,8 @@ def test_rehydrate_provider_credentials_applies_all_valid_records(monkeypatch) -
 def test_prime_provider_credentials_environment_sets_env(monkeypatch) -> None:
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_OAUTH_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_OAUTH_REFRESH_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_OAUTH_EXPIRES_AT_MS", raising=False)
     monkeypatch.delenv("OPENAI_ACCOUNT_ID", raising=False)
     monkeypatch.setattr(
         web_app,
@@ -68,6 +70,8 @@ def test_prime_provider_credentials_environment_sets_env(monkeypatch) -> None:
 
     assert os.environ["OPENROUTER_API_KEY"] == "sk-or-v1-fixture"
     assert os.environ["OPENAI_OAUTH_ACCESS_TOKEN"] == "oauth-access"
+    assert os.environ["OPENAI_OAUTH_REFRESH_TOKEN"] == "oauth-refresh"
+    assert os.environ["OPENAI_OAUTH_EXPIRES_AT_MS"] == "9999999999000"
     assert os.environ["OPENAI_ACCOUNT_ID"] == "acct-123"
 
 

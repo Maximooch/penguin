@@ -813,8 +813,8 @@ class OpenRouterGateway:
         """
         Reformat conversation to be compatible with OpenAI SDK while preserving all content.
 
-        This aggressively converts all tool calling to plain text format to avoid
-        OpenAI SDK 1.99+ tool call validation errors, while preserving all message content.
+        Preserve valid tool continuity for OpenRouter while repairing obviously
+        malformed tool context that can trigger SDK validation errors.
         """
         reformatted_messages = []
 
@@ -843,41 +843,66 @@ class OpenRouterGateway:
 
                 reformatted_message["content"] = content
 
-            # AGGRESSIVE FIX: Convert ALL tool calling to plain text to avoid validation errors
-            # This prevents the "No tool call found" error by not sending tool call formats at all
-
             if message.get("role") == "assistant" and "tool_calls" in message:
-                # Convert assistant message with tool_calls to plain assistant message
-                self.logger.debug(
-                    f"Converting assistant message with tool_calls to plain text"
+                tool_calls = message.get("tool_calls")
+                valid_tool_calls = isinstance(tool_calls, list) and all(
+                    isinstance(tool_call, dict)
+                    and isinstance(tool_call.get("function"), dict)
+                    and str(tool_call.get("id") or "").strip()
+                    and str(tool_call.get("function", {}).get("name") or "").strip()
+                    for tool_call in tool_calls
                 )
-                # Remove tool_calls field and keep content as-is (it already has the action tags)
-                reformatted_message = {
-                    "role": "assistant",
-                    "content": message.get("content", ""),
-                }
-                # Copy other fields but exclude tool_calls
-                for key, value in message.items():
-                    if key not in ["role", "content", "tool_calls"]:
-                        reformatted_message[key] = value
+                if valid_tool_calls:
+                    self.logger.debug(
+                        "Preserving assistant tool_calls for OpenRouter continuity"
+                    )
+                    reformatted_message = {
+                        "role": "assistant",
+                        "content": message.get("content", ""),
+                        "tool_calls": tool_calls,
+                    }
+                    for key, value in message.items():
+                        if key not in ["role", "content", "tool_calls"]:
+                            reformatted_message[key] = value
+                else:
+                    self.logger.debug(
+                        "Flattening malformed assistant tool_calls to plain text"
+                    )
+                    reformatted_message = {
+                        "role": "assistant",
+                        "content": message.get("content", ""),
+                    }
+                    for key, value in message.items():
+                        if key not in ["role", "content", "tool_calls"]:
+                            reformatted_message[key] = value
 
             elif message.get("role") == "tool":
-                # Convert tool messages to user role (standard pattern for tool results)
-                # Using user role prevents the model from echoing the format as its own output
-                self.logger.debug(f"Converting tool result message to user message")
-                reformatted_message = {
-                    "role": "user",
-                    "content": message.get("content", ""),
-                }
-                # Copy other fields but exclude tool_call_id
-                for key, value in message.items():
-                    if key not in ["role", "content", "tool_call_id"]:
-                        reformatted_message[key] = value
+                tool_call_id = str(message.get("tool_call_id") or "").strip()
+                if tool_call_id:
+                    self.logger.debug(
+                        "Preserving tool message with tool_call_id for OpenRouter continuity"
+                    )
+                    reformatted_message = {
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "content": message.get("content", ""),
+                    }
+                else:
+                    self.logger.debug(
+                        "Flattening malformed tool message without tool_call_id"
+                    )
+                    reformatted_message = {
+                        "role": "user",
+                        "content": message.get("content", ""),
+                    }
+                    for key, value in message.items():
+                        if key not in ["role", "content", "tool_call_id"]:
+                            reformatted_message[key] = value
 
             reformatted_messages.append(reformatted_message)
 
         self.logger.debug(
-            f"Reformatted conversation: {len(messages)} messages processed, all tool calling converted to plain text"
+            f"Reformatted conversation: {len(messages)} messages processed for OpenRouter compatibility"
         )
         return reformatted_messages
 
