@@ -1888,14 +1888,65 @@ class Engine:
         api_client_override: Optional[Any] = None,
         model_config_override: Optional[Any] = None,
     ) -> Dict[str, Any]:
-        """
-        Multi-step reasoning loop with comprehensive task handling.
+        """Run a task-oriented reasoning loop using the shared iteration engine.
 
-        This is task-mode setup + delegation into the unified `_iteration_loop(...)`.
-        Task-specific behavior is carried through `LoopConfig` and task metadata,
-        while the shared iteration mechanics stay centralized in one place.
+        This method performs task-mode setup, prepares task_metadata, builds a
+        task-mode LoopConfig, and delegates the actual loop mechanics to
+        `_iteration_loop(...)`.
+
+        Args:
+            task_prompt: The prompt describing the task to execute.
+            image_paths: Optional image inputs for multimodal task execution.
+            max_iterations: Maximum iterations for the task loop. If ``None``,
+                ``self.settings.max_iterations_default`` is used.
+            task_context: Optional task-scoped metadata/context.
+            task_id: Optional explicit task identifier. If omitted, a generated
+                fallback identifier is used.
+            task_name: Optional human-readable task name.
+            completion_phrases: Optional additional completion phrases checked by
+                `_iteration_loop(...)` through ``LoopConfig.completion_phrases``.
+            on_completion: Optional async callback invoked with the final result.
+            enable_events: Whether task progress/completion events should be
+                published.
+            message_callback: Optional async callback for streamed assistant/tool
+                output. The public callback contract is ``(chunk, message_type)``.
+            agent_id: Optional explicit agent id override.
+            agent_role: Optional agent role for agent resolution.
+            api_client_override: Optional API client override for the resolved run.
+            model_config_override: Optional model config override for the resolved
+                run.
+
+        Returns:
+            A dictionary containing the final assistant response, iteration count,
+            action results, status, execution time, and attached ``task`` metadata.
+            Task-mode success typically resolves to ``pending_review`` after an
+            explicit task finish signal or equivalent completion phrase.
+
+        Raises:
+            Exception: Propagates agent resolution, component preparation,
+                `_iteration_loop(...)`, and ``on_completion`` callback failures.
+
+        Examples:
+            ```python
+            result = await engine.run_task(
+                task_prompt="Implement the feature",
+                task_name="Feature Work",
+            )
+
+            async def callback(chunk: str, message_type: str):
+                print(message_type, chunk)
+
+            result = await engine.run_task(
+                task_prompt="Investigate the bug",
+                message_callback=callback,
+            )
+            ```
         """
-        max_iters = max_iterations or self.settings.max_iterations_default
+        max_iters = (
+            max_iterations
+            if max_iterations is not None
+            else self.settings.max_iterations_default
+        )
         selected, lite_output = await self._resolve_agent(
             agent_id=agent_id,
             agent_role=agent_role,
@@ -1940,11 +1991,16 @@ class Engine:
             if completion_phrases:
                 all_completion_phrases.extend(completion_phrases)
 
-            async def task_stream_adapter(
-                chunk: str, message_type: str = "assistant"
+            async def task_message_callback_wrapper(
+                chunk: str, message_type: str, *args: Any, **kwargs: Any
             ) -> None:
                 if message_callback:
                     await message_callback(chunk, message_type)
+
+            async def task_stream_adapter(
+                chunk: str, message_type: str = "assistant"
+            ) -> None:
+                await task_message_callback_wrapper(chunk, message_type)
 
             config = LoopConfig(
                 mode="task",
@@ -1956,7 +2012,9 @@ class Engine:
                 async_save=True,
                 enable_events=enable_events,
                 task_metadata=task_metadata,
-                message_callback=message_callback,
+                message_callback=(
+                    task_message_callback_wrapper if message_callback else None
+                ),
                 default_completion_status="iterations_exceeded",
             )
 
@@ -1966,8 +2024,9 @@ class Engine:
             if on_completion:
                 try:
                     await on_completion(result)
-                except Exception as e:
-                    logger.error(f"Error in completion callback: {str(e)}")
+                except Exception:
+                    logger.exception("Error in completion callback")
+                    raise
 
             return result
         finally:
