@@ -11,6 +11,7 @@ remains test‑friendly and avoids hidden globals.
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+import uuid
 import asyncio
 import copy
 from contextlib import contextmanager
@@ -1442,6 +1443,19 @@ class Engine:
                     completion_status = (
                         "pending_review" if config.mode == "task" else config.default_completion_status
                     )
+                    if config.mode == "task" and config.enable_events and config.task_metadata:
+                        await self._publish_task_event(
+                            "COMPLETED",
+                            config.task_metadata,
+                            {
+                                "response": last_response,
+                                "iteration": self.current_iteration,
+                                "max_iterations": max_iterations,
+                                "completion_status": completion_status,
+                                "finish_status": "completion_phrase",
+                                "requires_review": True,
+                            },
+                        )
                     break
 
                 if not iteration_results and self._queue_malformed_action_repair_note(
@@ -1913,7 +1927,8 @@ class Engine:
                 await telemetry.record_task(self.current_agent_id, task_name)
 
             task_metadata = {
-                "id": task_id or f"task_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}",
+                "id": task_id
+                or f"task_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex}",
                 "name": task_name or "Unnamed Task",
                 "context": task_context or {},
                 "max_iterations": max_iters,
@@ -1925,9 +1940,11 @@ class Engine:
             if completion_phrases:
                 all_completion_phrases.extend(completion_phrases)
 
-            async def task_stream_adapter(chunk: str) -> None:
+            async def task_stream_adapter(
+                chunk: str, message_type: str = "assistant"
+            ) -> None:
                 if message_callback:
-                    await message_callback(chunk, "assistant")
+                    await message_callback(chunk, message_type)
 
             config = LoopConfig(
                 mode="task",
