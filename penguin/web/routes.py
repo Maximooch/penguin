@@ -92,6 +92,10 @@ from penguin.web.services.system_status import (
     get_path_info,
     get_vcs_info,
 )
+from penguin.web.services.projects import (
+    initialize_project_from_blueprint,
+    start_project_execution,
+)
 from penguin.web.services.opencode_provider import (
     apply_auth_to_runtime,
     build_config_payload,
@@ -4573,6 +4577,19 @@ class ProjectUpdateRequest(BaseModel):
     status: Optional[str] = None
 
 
+class ProjectInitRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+    workspace_path: Optional[str] = None
+    blueprint_path: Optional[str] = None
+
+
+class ProjectStartRequest(BaseModel):
+    project_identifier: str
+    continuous: bool = True
+    time_limit: Optional[int] = None
+
+
 class TaskCreateRequest(BaseModel):
     project_id: str
     title: str
@@ -4640,6 +4657,33 @@ async def list_projects(core: PenguinCore = Depends(get_core)):
     except Exception as e:
         logger.error(f"Error listing projects: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/v1/projects/init")
+async def init_project(
+    request: ProjectInitRequest, core: PenguinCore = Depends(get_core)
+):
+    """Initialize a project and optionally sync a Blueprint into it."""
+    return await initialize_project_from_blueprint(
+        core=core,
+        name=request.name,
+        description=request.description,
+        workspace_path=request.workspace_path,
+        blueprint_path=request.blueprint_path,
+    )
+
+
+@router.post("/api/v1/projects/start")
+async def start_project(
+    request: ProjectStartRequest, core: PenguinCore = Depends(get_core)
+):
+    """Start project execution through the real RunMode path."""
+    return await start_project_execution(
+        core=core,
+        project_identifier=request.project_identifier,
+        continuous=request.continuous,
+        time_limit=request.time_limit,
+    )
 
 
 @router.get("/api/v1/projects/{project_id}")

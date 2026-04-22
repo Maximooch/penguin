@@ -754,6 +754,48 @@ export function Prompt(props: PromptProps) {
         } else if (name === "thinking") {
           const next = !kv.get("thinking_visibility", true)
           kv.set("thinking_visibility", next)
+        } else if (name === "project-init") {
+          const args = firstLine.slice(firstToken.length).trim()
+          const parts = args.match(/(?:[^\s"]+|"[^"]*")+/g) ?? []
+          const normalized = parts.map((part) => part.replace(/^"|"$/g, ""))
+          const projectName = normalized[0]
+          const blueprintIndex = normalized.indexOf("--blueprint")
+          const blueprintPath = blueprintIndex >= 0 ? normalized[blueprintIndex + 1] : undefined
+          if (!projectName) {
+            toast.show({ variant: "warning", message: "Usage: /project-init <name> [--blueprint <path>]" })
+          } else {
+            const response = await sdk.fetch(new URL('/api/v1/projects/init', sdk.url), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: projectName, blueprint_path: blueprintPath, workspace_path: directory }),
+            })
+            if (!response.ok) {
+              const detail = await response.text().catch(() => 'project init failed')
+              toast.show({ variant: 'error', message: `Project init failed: ${detail}` })
+            } else {
+              const payload = await response.json()
+              toast.show({ variant: 'success', message: `Project initialized: ${payload.project?.name ?? projectName}` })
+            }
+          }
+        } else if (name === "project-start") {
+          const args = firstLine.slice(firstToken.length).trim()
+          const projectIdentifier = args.trim().replace(/^"|"$/g, "")
+          if (!projectIdentifier) {
+            toast.show({ variant: "warning", message: "Usage: /project-start <project-id-or-name>" })
+          } else {
+            const response = await sdk.fetch(new URL('/api/v1/projects/start', sdk.url), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ project_identifier: projectIdentifier, continuous: true }),
+            })
+            if (!response.ok) {
+              const detail = await response.text().catch(() => 'project start failed')
+              toast.show({ variant: 'error', message: `Project start failed: ${detail}` })
+            } else {
+              const payload = await response.json()
+              toast.show({ variant: 'success', message: `Project started: ${payload.project?.name ?? projectIdentifier}` })
+            }
+          }
         } else {
           toast.show({ variant: "warning", message: `Unknown command: /${name}` })
         }

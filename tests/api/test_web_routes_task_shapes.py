@@ -1,6 +1,6 @@
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import HTTPException
@@ -351,3 +351,76 @@ async def test_execute_task_from_project_preserves_idle_no_ready_work_truth():
     assert response["result"]["completion_type"] == "idle_no_ready_tasks"
     assert "no ready work remained" in response["result"]["message"].lower()
     assert response["task"]["phase"] == updated_task.phase.value
+
+
+
+@pytest.mark.asyncio
+async def test_init_project_from_blueprint_reports_counts(tmp_path):
+    from unittest.mock import Mock, patch
+    from penguin.web.routes import ProjectInitRequest, init_project
+
+    blueprint_path = tmp_path / "example.md"
+    blueprint_path.write_text("# Example")
+    project = make_project()
+    task = make_task()
+    blueprint = SimpleNamespace(title="Example", overview="desc")
+    diagnostics = SimpleNamespace(has_errors=False, has_warnings=False, diagnostics=[])
+    parser = SimpleNamespace(
+        parse_file=Mock(return_value=blueprint),
+        lint_blueprint=Mock(return_value=diagnostics),
+    )
+    core = SimpleNamespace(
+        project_manager=SimpleNamespace(
+            create_project_async=AsyncMock(return_value=project),
+            sync_blueprint=Mock(return_value={"created": ["A"], "updated": ["B"], "skipped": []}),
+            get_ready_tasks_async=AsyncMock(return_value=[task]),
+            list_tasks=Mock(return_value=[]),
+            storage=SimpleNamespace(delete_task=Mock(), delete_project=Mock()),
+        )
+    )
+
+    with patch("penguin.web.services.projects.BlueprintParser", return_value=parser):
+        response = await init_project(
+            ProjectInitRequest(
+                name="Example",
+                description="Example project",
+                workspace_path=str(tmp_path / "workspace"),
+                blueprint_path=str(blueprint_path),
+            ),
+            core=core,
+        )
+
+    assert response["project"]["id"] == project.id
+    assert response["blueprint"]["tasks_created"] == 1
+    assert response["blueprint"]["tasks_updated"] == 1
+    assert response["blueprint"]["ready_tasks"] == 1
+
+
+@pytest.mark.asyncio
+async def test_start_project_routes_through_runmode_project_context():
+    from penguin.web.routes import ProjectStartRequest, start_project
+
+    project = make_project()
+    ready_task = make_task()
+    core = SimpleNamespace(
+        project_manager=SimpleNamespace(
+            get_project=Mock(return_value=project),
+            get_project_by_name=Mock(return_value=None),
+            list_projects=Mock(return_value=[project]),
+            list_tasks_async=AsyncMock(return_value=[ready_task]),
+            get_ready_tasks_async=AsyncMock(return_value=[ready_task]),
+        ),
+        start_run_mode=AsyncMock(return_value={"status": "completed", "completion_type": "success"}),
+    )
+
+    response = await start_project(
+        ProjectStartRequest(project_identifier=project.id, continuous=True, time_limit=20),
+        core=core,
+    )
+
+    core.start_run_mode.assert_awaited_once()
+    _, kwargs = core.start_run_mode.await_args
+    assert kwargs["context"] == {"project_id": project.id}
+    assert kwargs["mode_type"] == "project"
+    assert response["execution"]["ready_tasks"] == 1
+    assert response["execution"]["result"]["status"] == "completed"
