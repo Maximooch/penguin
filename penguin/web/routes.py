@@ -93,7 +93,9 @@ from penguin.web.services.system_status import (
     get_vcs_info,
 )
 from penguin.web.services.projects import (
+    delete_project_with_tasks,
     initialize_project_from_blueprint,
+    run_project_workflow,
     start_project_execution,
 )
 from penguin.web.services.opencode_provider import (
@@ -4590,6 +4592,13 @@ class ProjectStartRequest(BaseModel):
     time_limit: Optional[int] = None
 
 
+class ProjectRunRequest(BaseModel):
+    spec_path: Optional[str] = None
+    markdown_content: Optional[str] = None
+    continuous: bool = True
+    time_limit: Optional[int] = None
+
+
 class TaskCreateRequest(BaseModel):
     project_id: str
     title: str
@@ -4686,6 +4695,20 @@ async def start_project(
     )
 
 
+@router.post("/api/v1/projects/run")
+async def run_project(
+    request: ProjectRunRequest, core: PenguinCore = Depends(get_core)
+):
+    """Parse a project spec and immediately start the resulting project workflow."""
+    return await run_project_workflow(
+        core=core,
+        spec_path=request.spec_path,
+        markdown_content=request.markdown_content,
+        continuous=request.continuous,
+        time_limit=request.time_limit,
+    )
+
+
 @router.get("/api/v1/projects/{project_id}")
 async def get_project(project_id: str, core: PenguinCore = Depends(get_core)):
     """Get a specific project by ID."""
@@ -4720,9 +4743,10 @@ async def get_project(project_id: str, core: PenguinCore = Depends(get_core)):
 # @router.put("/api/v1/projects/{project_id}")
 # async def update_project(...):
 
-# Temporarily disabled - delete_project method not implemented in ProjectManager
-# @router.delete("/api/v1/projects/{project_id}")
-# async def delete_project(...):
+@router.delete("/api/v1/projects/{project_id}")
+async def delete_project(project_id: str, core: PenguinCore = Depends(get_core)):
+    """Delete a project and its tasks."""
+    return await delete_project_with_tasks(core=core, project_id=project_id)
 
 
 # Task Management Endpoints
@@ -4803,9 +4827,24 @@ async def get_task(task_id: str, core: PenguinCore = Depends(get_core)):
 # @router.put("/api/v1/tasks/{task_id}")
 # async def update_task(...):
 
-# Temporarily disabled - delete_task method not implemented in ProjectManager
-# @router.delete("/api/v1/tasks/{task_id}")
-# async def delete_task(...):
+@router.delete("/api/v1/tasks/{task_id}")
+async def delete_task(task_id: str, core: PenguinCore = Depends(get_core)):
+    """Delete a task by ID."""
+    try:
+        task = await core.project_manager.get_task_async(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+        core.project_manager.storage.delete_task(task_id)
+        return {
+            "task": _serialize_task_payload(task),
+            "message": f"Task '{task.title}' deleted successfully.",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting task: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/api/v1/tasks/{task_id}/clarification/resume")

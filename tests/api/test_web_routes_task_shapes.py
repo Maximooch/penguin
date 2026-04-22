@@ -609,3 +609,116 @@ async def test_start_project_routes_through_runmode_project_context():
     assert kwargs["mode_type"] == "project"
     assert response["execution"]["ready_tasks"] == 1
     assert response["execution"]["result"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_delete_project_returns_deleted_task_count():
+    from penguin.web.routes import delete_project
+
+    project = make_project()
+    tasks = [make_task('task-1'), make_task('task-2')]
+    storage = SimpleNamespace(delete_task=Mock(), delete_project=Mock())
+    core = SimpleNamespace(
+        project_manager=SimpleNamespace(
+            get_project_async=AsyncMock(return_value=project),
+            list_tasks_async=AsyncMock(return_value=tasks),
+            list_tasks=Mock(return_value=tasks),
+            storage=storage,
+        )
+    )
+
+    response = await delete_project('project-1', core=core)
+
+    assert response['project']['id'] == project.id
+    assert response['deleted_tasks'] == 2
+    assert 'deleted successfully' in response['message'].lower()
+    assert storage.delete_task.call_count == 2
+    storage.delete_project.assert_called_once_with(project.id)
+
+
+@pytest.mark.asyncio
+async def test_delete_task_returns_deleted_task_payload():
+    from penguin.web.routes import delete_task
+
+    task = make_task()
+    storage = SimpleNamespace(delete_task=Mock())
+    core = SimpleNamespace(
+        project_manager=SimpleNamespace(
+            get_task_async=AsyncMock(return_value=task),
+            storage=storage,
+        )
+    )
+
+    response = await delete_task('task-1', core=core)
+
+    assert response['task']['id'] == task.id
+    assert response['task']['phase'] == task.phase.value
+    assert 'deleted successfully' in response['message'].lower()
+    storage.delete_task.assert_called_once_with(task.id)
+
+
+@pytest.mark.asyncio
+async def test_run_project_requires_source_input():
+    from penguin.web.routes import ProjectRunRequest, run_project
+
+    core = SimpleNamespace(project_manager=SimpleNamespace())
+
+    with pytest.raises(HTTPException) as exc_info:
+        await run_project(ProjectRunRequest(), core=core)
+
+    assert exc_info.value.status_code == 400
+    assert 'spec_path or markdown_content' in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_run_project_from_inline_markdown_parses_then_starts_project():
+    from unittest.mock import patch
+    from penguin.web.routes import ProjectRunRequest, run_project
+
+    parse_result = {
+        'status': 'success',
+        'message': 'ok',
+        'creation_result': {
+            'project': {'id': 'project-1', 'name': 'Example'},
+            'tasks_created': 2,
+        },
+    }
+    execution_result = {
+        'project': {'id': 'project-1', 'name': 'Example'},
+        'execution': {'mode': 'continuous', 'ready_tasks': 1, 'result': {'status': 'completed'}},
+    }
+    core = SimpleNamespace(project_manager=SimpleNamespace())
+
+    with patch('penguin.web.services.projects.parse_project_specification_from_markdown', AsyncMock(return_value=parse_result)) as parse_mock, patch('penguin.web.services.projects.start_project_execution', AsyncMock(return_value=execution_result)) as start_mock:
+        response = await run_project(
+            ProjectRunRequest(markdown_content='# Demo\n\n## Tasks\n- One', continuous=True, time_limit=15),
+            core=core,
+        )
+
+    parse_mock.assert_awaited_once()
+    start_mock.assert_awaited_once_with(
+        core=core,
+        project_identifier='project-1',
+        continuous=True,
+        time_limit=15,
+    )
+    assert response['source'] == 'inline_markdown'
+    assert response['parse']['creation_result']['project']['id'] == 'project-1'
+    assert response['execution']['execution']['result']['status'] == 'completed'
+
+
+@pytest.mark.asyncio
+async def test_run_project_reports_parse_failures_as_400():
+    from unittest.mock import patch
+    from penguin.web.routes import ProjectRunRequest, run_project
+
+    parse_result = {'status': 'error', 'message': 'No tasks found'}
+    core = SimpleNamespace(project_manager=SimpleNamespace())
+
+    with patch('penguin.web.services.projects.parse_project_specification_from_markdown', AsyncMock(return_value=parse_result)):
+        with pytest.raises(HTTPException) as exc_info:
+            await run_project(ProjectRunRequest(markdown_content='# Empty'), core=core)
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail['message'] == 'No tasks found'
+    assert exc_info.value.detail['source'] == 'inline_markdown'
