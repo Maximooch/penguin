@@ -5,6 +5,32 @@ import logging
 from penguin.web import server
 
 
+def test_resolve_runtime_settings_prefers_cli_args(monkeypatch):
+    monkeypatch.setenv("HOST", "0.0.0.0")
+    monkeypatch.setenv("PORT", "9000")
+    monkeypatch.setenv("DEBUG", "false")
+
+    host, port, debug = server._resolve_runtime_settings(
+        ["--host", "127.0.0.1", "--port", "8080", "--debug"]
+    )
+
+    assert host == "127.0.0.1"
+    assert port == 8080
+    assert debug is True
+
+
+def test_resolve_runtime_settings_uses_env_fallback(monkeypatch):
+    monkeypatch.setenv("HOST", "0.0.0.0")
+    monkeypatch.setenv("PORT", "7777")
+    monkeypatch.setenv("DEBUG", "true")
+
+    host, port, debug = server._resolve_runtime_settings([])
+
+    assert host == "0.0.0.0"
+    assert port == 7777
+    assert debug is True
+
+
 def test_main_debug_uses_reload_safe_import_string(monkeypatch, capsys):
     calls = []
 
@@ -15,10 +41,10 @@ def test_main_debug_uses_reload_safe_import_string(monkeypatch, capsys):
     monkeypatch.setattr(server, "create_app_factory", lambda: object())
     monkeypatch.setenv("HOST", "0.0.0.0")
     monkeypatch.setenv("PORT", "8080")
-    monkeypatch.setenv("DEBUG", "true")
+    monkeypatch.setenv("DEBUG", "false")
     monkeypatch.setenv("PENGUIN_AUTH_ENABLED", "true")
 
-    assert server.main() == 0
+    assert server.main(["--debug"]) == 0
 
     output = capsys.readouterr().out
     assert "http://localhost:8080" in output
