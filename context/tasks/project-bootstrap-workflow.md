@@ -316,18 +316,29 @@ A first version of this workflow is good enough when:
 
 ## File-Level Implementation Checklist
 
-### Current TUI Bugfix Scope
+### Completed Bootstrap / Runtime Hardening
 
-This checklist covers the current `penguin-tui` bug where local/project commands can
-accidentally create and navigate into a new session when submitted from home.
+#### `penguin/web/server.py`
+- [x] Make `penguin-web --host <HOST> --port <PORT>` actually work
+- [x] Keep env-based `HOST` / `PORT` overrides working
+- [x] Ensure startup path resolves a truthful bound host/port configuration
 
-This is intentionally narrower than the broader bootstrap workflow UX.
-The immediate fix is:
-- parse command intent before session creation
-- execute local/project commands without chat/session bootstrap
-- preserve current chat behavior for real prompts
+#### `penguin/web/services/projects.py`
+- [x] Treat malformed / effectively empty Blueprint imports as honest bootstrap failures with rollback
+- [x] Preserve rollback behavior for lint-error cases like duplicate task IDs and dependency cycles
+- [x] Keep response payloads explicit about why initialization failed
+- [x] Preserve current real RunMode wiring for actual `project start` execution
 
-### Files
+#### `penguin/project/blueprint_parser.py`
+- [x] Tighten malformed frontmatter / underspecified Blueprint shape handling
+- [x] Reject clearly broken Blueprint roots, task collections, and task entries instead of degrading into empty successful imports
+
+#### `tests/` bootstrap/runtime coverage
+- [x] Add regression tests for malformed Blueprint rollback
+- [x] Add regression tests for empty/no-task Blueprint rollback
+- [x] Add deterministic tests for successful `project start` request/response shape with mocked or controlled runtime execution
+
+### Completed TUI Bugfix Slice
 
 #### `penguin-tui/packages/opencode/src/cli/cmd/tui/component/prompt/index.tsx`
 - [x] Move Penguin local/project command detection ahead of session creation in `submit()`
@@ -351,18 +362,144 @@ The immediate fix is:
 - [x] Add parser/submit regression tests for Penguin local/project commands
 - [x] Assert home-screen local/project commands do **not** require session bootstrap
 - [x] Assert home-screen local/project commands do **not** trigger session navigation
-- [ ] Assert project commands route to the correct backend endpoints
 - [x] Assert both dashed and spaced forms parse equivalently
 
-### Explicit Non-Goals For This Patch
-- [x] Do **not** require command-palette discoverability in the same bugfix commit
-- [x] Do **not** redesign project feedback/UI beyond current minimal success/error reporting
-- [x] Do **not** broaden this into a general TUI command-architecture rewrite
+### Remaining Work For A Full Bootstrap/TUI PR
 
-### Acceptance Criteria For This TUI Slice
-- [x] From home, `/project init ...` does not create a session
-- [x] From home, `/project start ...` does not create a session
-- [x] From home, `/settings`, `/config`, `/thinking`, and `/tool_details` do not create a session
+This branch is no longer just a kernel/runtime hardening slice. If the PR is going to claim that project bootstrap works for users, the TUI surface has to expose and prove the feature honestly.
+
+#### `penguin-tui/packages/opencode/src/cli/cmd/tui/component/prompt/index.tsx`
+- [ ] Add first-class command palette/discoverability entries for project bootstrap actions instead of relying on hidden slash-command knowledge alone
+- [ ] Ensure project command execution emits user-visible success/failure feedback that is explicit enough to be believable in normal use
+- [ ] Decide whether project-command success should also refresh relevant project/session state in-place, not just show a toast
+
+#### `penguin-tui/packages/opencode/src/cli/cmd/tui/component/prompt/penguin-local-command.ts`
+- [ ] Keep project command parsing as the single source of truth for both slash submission and any command-palette/project-action entrypoint
+- [ ] Avoid introducing duplicated syntax rules between prompt submit flow and palette actions
+- [ ] If palette actions prefill prompts instead of directly executing, document that as an intentional UX choice
+
+#### `penguin-tui/packages/opencode/test/cli/tui/`
+- [ ] Assert project commands route to the correct backend endpoints from the real submit path
+- [ ] Assert both dashed and spaced forms route equivalently through the submit path
+- [ ] Assert success/failure feedback is surfaced for project init/start command execution
+- [ ] Keep no-session-bootstrap and no-navigation guarantees intact while adding discoverability coverage
+
+#### `docs/docs/usage/web_interface.md`
+- [ ] Reconcile docs with the now-fixed `penguin-web --host/--port` CLI behavior
+- [ ] Keep the `9000` default/runtime-port guidance explicit while making alternate-port testing guidance honest
+
+#### `AGENTS.md`
+- [ ] Reconcile the temporary “prefer env vars because CLI flags are inaccurate” note with the now-fixed server behavior
+- [ ] Keep the warning that `9000` is Penguin's primary/default runtime port and should not be casually hijacked for ad hoc verification
+
+#### Merged-Branch Verification
+- [ ] Re-run the relevant TUI tests on the merged `project-bootstrap-workflow` branch
+- [ ] Re-run `bun run typecheck` for `penguin-tui`
+- [ ] Re-run targeted Python/web/bootstrap tests on the merged branch:
+  - [ ] `pytest tests/test_web_server.py -q`
+  - [ ] `pytest tests/test_blueprint_linter.py -q`
+  - [ ] `pytest tests/api/test_web_routes_task_shapes.py -q`
+
+### Next Phase: Full Web/API + TUI Parity Checklist
+
+This is the remaining implementation map for a **full feature/system overhaul PR**.
+The order matters. Backend parity comes before TUI parity, because the TUI cannot honestly expose commands that the web/API does not support.
+
+#### Step 1A — Project Web/API Parity
+
+##### `penguin/web/routes.py`
+- [ ] Add a real web route for project create.
+- [ ] Add a real web route for project delete.
+- [ ] Add a real web route for project run.
+- [ ] Keep existing project routes (`list`, `get`, `init`, `start`) aligned with the same request/response conventions.
+- [ ] Ensure route naming and HTTP verbs are honest and resource-shaped where practical.
+
+##### `penguin/web/services/projects.py`
+- [ ] Extract or add service functions for project create/delete/run so route handlers stay thin.
+- [ ] Keep project start on the real RunMode truth path.
+- [ ] Make delete semantics explicit and safe.
+- [ ] Make run semantics explicit instead of letting them remain fuzzy CLI-only behavior.
+- [ ] Normalize success/error payload shape across create/init/start/run/delete.
+
+##### project request/response schema location(s)
+- [ ] Add or update request models for project create/delete/run.
+- [ ] Keep response payloads explicit enough for TUI feedback.
+- [ ] Avoid creating route-only ad hoc payloads that drift from service truth.
+
+#### Step 1B — Task Web/API Parity
+
+##### `penguin/web/routes.py`
+- [ ] Add honest task routes for create/list/start/complete/delete if they are missing or incomplete.
+- [ ] Keep task routes aligned with current task lifecycle truth (`status`, `phase`, review state, clarification where relevant).
+- [ ] Prefer resource-shaped route conventions over scattered RPC-style naming where practical.
+
+##### `penguin/web/services/tasks.py` or `penguin/web/services/projects.py`
+- [ ] Put task business logic in services, not route bodies.
+- [ ] Keep task start/complete semantics aligned with current project/task lifecycle rules.
+- [ ] Ensure delete behavior is explicit and tested.
+- [ ] Keep payload shapes consistent with the project/task APIs already exposed elsewhere.
+
+##### task request/response schema location(s)
+- [ ] Add or update request models for task create/start/complete/delete.
+- [ ] Ensure list responses expose enough task truth for the TUI to render believable feedback.
+
+#### Step 2 — Audit and Define `project run` vs `project start`
+
+##### `penguin/cli/cli.py`
+- [ ] Audit the exact current behavior of `project run` versus `project start`.
+- [ ] Document whether `run` is a bootstrap/workflow macro and `start` is the RunMode execution path.
+- [ ] Identify any stale assumptions or overlapping semantics that would make the web/TUI surface confusing.
+
+##### `penguin/project/` runtime/orchestration files
+- [ ] Trace which subsystems each command actually hits (`RunMode`, workflow orchestrator, spec parser, validation, task executor).
+- [ ] Decide whether `project run` deserves a first-class web/TUI surface or should remain a more advanced/API-facing operation.
+- [ ] Record the distinction in this doc once confirmed.
+
+#### Step 3 — Expand the TUI Surface to Match the Real Backend
+
+##### `penguin-tui/packages/opencode/src/cli/cmd/tui/component/prompt/index.tsx`
+- [ ] Add discoverable project commands for the full backend-supported project surface.
+- [ ] Keep `project start` as the primary user-facing execution UX.
+- [ ] Add discoverable task commands once task web/API parity exists.
+- [ ] Keep prefill-vs-direct-execution behavior intentional and consistent with upstream OpenCode patterns.
+- [ ] Ensure success/failure feedback is explicit enough to be believable for users.
+
+##### `penguin-tui/packages/opencode/src/cli/cmd/tui/component/prompt/penguin-local-command.ts`
+- [ ] Extend the parser to cover all backend-supported project commands.
+- [ ] Extend the parser to cover all backend-supported task commands.
+- [ ] Keep this file the single source of truth for slash command parsing and aliases.
+- [ ] Avoid drift between command palette entries and submit-path parsing.
+
+#### Step 4 — Strong Backend + TUI Tests
+
+##### `tests/api/`
+- [ ] Add route/service coverage for project create/delete/run.
+- [ ] Add route/service coverage for task create/list/start/complete/delete.
+- [ ] Add deterministic tests for any non-trivial RunMode-backed project/task operation.
+- [ ] Keep error/precondition coverage honest, especially for ambiguous identifiers and missing resources.
+
+##### `penguin-tui/packages/opencode/test/cli/tui/`
+- [ ] Add submit-path tests proving each exposed project command hits the correct backend endpoint.
+- [ ] Add submit-path tests proving each exposed task command hits the correct backend endpoint.
+- [ ] Keep no-session-bootstrap and no-navigation guarantees for local/project/task commands from home.
+- [ ] Assert visible success/failure feedback for command execution.
+- [ ] Keep both dashed and spaced aliases covered where supported.
+
+#### Step 5 — Final Docs / Branch Verification / PR Readiness
+
+##### `docs/docs/usage/web_interface.md`
+- [ ] Reconcile the docs with the final web/API project/task command surface.
+- [ ] Keep the `9000` default/runtime-port guidance explicit.
+
+##### `AGENTS.md`
+- [ ] Reconcile temporary notes with the now-fixed server CLI behavior.
+- [ ] Keep the warning about not casually hijacking `9000` for ad hoc testing.
+
+##### merged branch verification
+- [ ] Re-run the relevant TUI tests on the merged `project-bootstrap-workflow` branch.
+- [ ] Re-run `bun run typecheck` for `penguin-tui`.
+- [ ] Re-run targeted Python/web/bootstrap/project/task tests on the merged branch.
+- [ ] Open the PR only after the exposed TUI commands correspond to real backend support.
 
 - `context/tasks/cli-surface-audit.md`
   - CLI surface drift and immediate correctness fixes

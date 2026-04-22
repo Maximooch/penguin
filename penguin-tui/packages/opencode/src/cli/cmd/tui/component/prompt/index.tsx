@@ -258,6 +258,17 @@ export function Prompt(props: PromptProps) {
   })
 
   command.register(() => {
+    const prefillPrompt = (text: string) => {
+      input.extmarks.clear()
+      input.setText(text)
+      setStore("prompt", { input: text, parts: [] })
+      setStore("extmarkToPartIndex", new Map())
+      input.gotoBufferEnd()
+      input.focus()
+      input.getLayoutNode().markDirty()
+      renderer.requestRender()
+    }
+
     return [
       {
         title: "Clear prompt",
@@ -302,6 +313,38 @@ export function Prompt(props: PromptProps) {
         enabled: sdk.penguin && store.mode === "normal",
         onSelect: () => {
           cycleAgentMode()
+        },
+      },
+      {
+        title: "Initialize project from Blueprint",
+        description: "Prefill a project init command for Penguin bootstrap workflows",
+        value: "project.init.prefill",
+        category: "Project",
+        suggested: sdk.penguin,
+        enabled: sdk.penguin,
+        slash: {
+          name: "project-init",
+          aliases: ["project init"],
+        },
+        onSelect: (dialog) => {
+          prefillPrompt('/project init "Project Name" --blueprint ./blueprint.md')
+          dialog.clear()
+        },
+      },
+      {
+        title: "Start project execution",
+        description: "Prefill a project start command for continuous project execution",
+        value: "project.start.prefill",
+        category: "Project",
+        suggested: sdk.penguin,
+        enabled: sdk.penguin,
+        slash: {
+          name: "project-start",
+          aliases: ["project start"],
+        },
+        onSelect: (dialog) => {
+          prefillPrompt('/project start "Project Name"')
+          dialog.clear()
         },
       },
       {
