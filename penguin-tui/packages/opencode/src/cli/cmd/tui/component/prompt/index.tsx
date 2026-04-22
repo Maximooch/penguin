@@ -34,6 +34,7 @@ import { useKV } from "../../context/kv"
 import { useTextareaKeybindings } from "../textarea-keybindings"
 import { exitSession } from "../../util/exit"
 import { formatPenguinPromptFailure, recoverPenguinPromptFailure } from "./penguin-send"
+import { parsePenguinLocalCommand } from "./penguin-local-command"
 
 export type PromptProps = {
   sessionID?: string
@@ -649,13 +650,107 @@ export function Prompt(props: PromptProps) {
     const currentMode = store.mode
     const variant = local.model.variant.current()
     const agent = local.agent.current()
+    const getActiveDirectory = (activeSessionID?: string) => {
+      return (
+        (activeSessionID ? sync.session.get(activeSessionID)?.directory : undefined) ||
+        sync.session.get(props.sessionID ?? sdk.sessionID ?? "")?.directory ||
+        sync.data.path.directory ||
+        sdk.directory ||
+        process.cwd()
+      )
+    }
+    const clearPromptState = (options?: { keepDialog?: boolean }) => {
+      history.append({
+        ...store.prompt,
+        mode: currentMode,
+      })
+      if (!input.isDestroyed) {
+        input.extmarks.clear()
+      }
+      setStore("prompt", {
+        input: "",
+        parts: [],
+      })
+      setStore("extmarkToPartIndex", new Map())
+      if (!options?.keepDialog) {
+        dialog.clear()
+      }
+      if (!input.isDestroyed) {
+        input.clear()
+        input.setText("")
+        input.getLayoutNode().markDirty()
+        renderer.requestRender()
+      }
+      queueMicrotask(() => {
+        setStore("prompt", "input", "")
+      })
+    }
+    const localCommand = sdk.penguin ? parsePenguinLocalCommand(store.prompt.input) : null
+    const initialDirectory = getActiveDirectory(props.sessionID ?? sdk.sessionID)
+
+    if (sdk.penguin && localCommand) {
+      const commandSessionID = props.sessionID ?? sdk.sessionID
+      const keepDialog = localCommand.kind === "config" || localCommand.kind === "settings"
+
+      if (localCommand.kind === "config" || localCommand.kind === "settings") {
+        dialog.replace(() => <DialogSettings directory={initialDirectory} sessionID={commandSessionID} />)
+      } else if (localCommand.kind === "tool_details") {
+        const next = !kv.get("tool_details_visibility", true)
+        kv.set("tool_details_visibility", next)
+      } else if (localCommand.kind === "thinking") {
+        const next = !kv.get("thinking_visibility", true)
+        kv.set("thinking_visibility", next)
+      } else if (localCommand.kind === "project_init") {
+        if (!localCommand.projectName) {
+          toast.show({ variant: "warning", message: "Usage: /project init <name> [--blueprint <path>]" })
+        } else {
+          const response = await sdk.fetch(new URL('/api/v1/projects/init', sdk.url), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              name: localCommand.projectName,
+              blueprint_path: localCommand.blueprintPath,
+              workspace_path: initialDirectory,
+            }),
+          })
+          if (!response.ok) {
+            const detail = await response.text().catch(() => 'project init failed')
+            toast.show({ variant: 'error', message: `Project init failed: ${detail}` })
+          } else {
+            const payload = await response.json()
+            toast.show({ variant: 'success', message: `Project initialized: ${payload.project?.name ?? localCommand.projectName}` })
+          }
+        }
+      } else if (localCommand.kind === "project_start") {
+        if (!localCommand.projectIdentifier) {
+          toast.show({ variant: "warning", message: "Usage: /project start <project-id-or-name>" })
+        } else {
+          const response = await sdk.fetch(new URL('/api/v1/projects/start', sdk.url), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ project_identifier: localCommand.projectIdentifier, continuous: true }),
+          })
+          if (!response.ok) {
+            const detail = await response.text().catch(() => 'project start failed')
+            toast.show({ variant: 'error', message: `Project start failed: ${detail}` })
+          } else {
+            const payload = await response.json()
+            toast.show({ variant: 'success', message: `Project started: ${payload.project?.name ?? localCommand.projectIdentifier}` })
+          }
+        }
+      }
+
+      clearPromptState({ keepDialog })
+      props.onSubmit?.()
+      return
+    }
+
     const sessionID = await iife(async () => {
       if (props.sessionID) return props.sessionID
       if (sdk.sessionID) return sdk.sessionID
 
       if (sdk.penguin) {
-        const directory =
-          sync.session.get(props.sessionID ?? sdk.sessionID ?? "")?.directory ?? process.cwd()
+        const directory = initialDirectory
         const createUrl = new URL("/session", sdk.url)
         createUrl.searchParams.set("directory", directory)
         const created = await sdk.fetch(createUrl, {
@@ -708,6 +803,8 @@ export function Prompt(props: PromptProps) {
     const directory =
       sync.session.get(sessionID)?.directory ||
       sync.session.get(props.sessionID ?? "")?.directory ||
+      sync.data.path.directory ||
+      sdk.directory ||
       process.cwd()
     const messageID = sdk.penguin ? gen.next("msg") : Identifier.ascending("message")
     let inputText = store.prompt.input
@@ -739,101 +836,6 @@ export function Prompt(props: PromptProps) {
     const nonTextParts = store.prompt.parts.filter((part) => part.type !== "text")
 
     if (sdk.penguin) {
-      const firstLine = inputText.split("\n", 1)[0].trim()
-      const firstToken = firstLine.split(/\s+/, 1)[0] ?? ""
-      const penguinCommand = /^\/[a-z_][a-z0-9_-]*$/i.test(firstToken)
-      if (penguinCommand) {
-        const name = firstToken.slice(1)
-        const showConfig = name === "config" || name === "settings"
-        const keepDialog = showConfig
-        if (showConfig) {
-          dialog.replace(() => <DialogSettings directory={directory} sessionID={sessionID} />)
-        } else if (name === "tool_details") {
-          const next = !kv.get("tool_details_visibility", true)
-          kv.set("tool_details_visibility", next)
-        } else if (name === "thinking") {
-          const next = !kv.get("thinking_visibility", true)
-          kv.set("thinking_visibility", next)
-        } else if (name === "project-init") {
-          const args = firstLine.slice(firstToken.length).trim()
-          const parts = args.match(/(?:[^\s"]+|"[^"]*")+/g) ?? []
-          const normalized = parts.map((part) => part.replace(/^"|"$/g, ""))
-          const projectName = normalized[0]
-          const blueprintIndex = normalized.indexOf("--blueprint")
-          const blueprintPath = blueprintIndex >= 0 ? normalized[blueprintIndex + 1] : undefined
-          if (!projectName) {
-            toast.show({ variant: "warning", message: "Usage: /project-init <name> [--blueprint <path>]" })
-          } else {
-            const response = await sdk.fetch(new URL('/api/v1/projects/init', sdk.url), {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ name: projectName, blueprint_path: blueprintPath, workspace_path: directory }),
-            })
-            if (!response.ok) {
-              const detail = await response.text().catch(() => 'project init failed')
-              toast.show({ variant: 'error', message: `Project init failed: ${detail}` })
-            } else {
-              const payload = await response.json()
-              toast.show({ variant: 'success', message: `Project initialized: ${payload.project?.name ?? projectName}` })
-            }
-          }
-        } else if (name === "project-start") {
-          const args = firstLine.slice(firstToken.length).trim()
-          const projectIdentifier = args.trim().replace(/^"|"$/g, "")
-          if (!projectIdentifier) {
-            toast.show({ variant: "warning", message: "Usage: /project-start <project-id-or-name>" })
-          } else {
-            const response = await sdk.fetch(new URL('/api/v1/projects/start', sdk.url), {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ project_identifier: projectIdentifier, continuous: true }),
-            })
-            if (!response.ok) {
-              const detail = await response.text().catch(() => 'project start failed')
-              toast.show({ variant: 'error', message: `Project start failed: ${detail}` })
-            } else {
-              const payload = await response.json()
-              toast.show({ variant: 'success', message: `Project started: ${payload.project?.name ?? projectIdentifier}` })
-            }
-          }
-        } else {
-          toast.show({ variant: "warning", message: `Unknown command: /${name}` })
-        }
-        history.append({
-          ...store.prompt,
-          mode: currentMode,
-        })
-        if (!input.isDestroyed) {
-          input.extmarks.clear()
-        }
-        setStore("prompt", {
-          input: "",
-          parts: [],
-        })
-        setStore("extmarkToPartIndex", new Map())
-        if (!keepDialog) {
-          dialog.clear()
-        }
-        if (!input.isDestroyed) {
-          input.clear()
-          input.setText("")
-          input.getLayoutNode().markDirty()
-          renderer.requestRender()
-        }
-        queueMicrotask(() => {
-          setStore("prompt", "input", "")
-        })
-        props.onSubmit?.()
-        if (shouldNavigate) {
-          setTimeout(() => {
-            route.navigate({
-              type: "session",
-              sessionID,
-            })
-          }, 0)
-        }
-        return
-      }
       const now = Date.now()
       const user = {
         id: messageID,

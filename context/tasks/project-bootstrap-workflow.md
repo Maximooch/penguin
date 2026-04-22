@@ -235,7 +235,134 @@ A first version of this workflow is good enough when:
 - clarification and non-terminal states are surfaced honestly
 - ambiguous name resolution does not silently pick the wrong project
 
-## Relationship to Other Files
+## April 21, 2026 E2E Findings
+
+### What Was Verified
+- `POST /api/v1/projects/init` succeeds for a valid Blueprint and reports imported task counts plus `ready_tasks`.
+- `POST /api/v1/projects/init` fails with `400` and rolls back for at least some real lint-error cases:
+  - dependency cycles
+  - duplicate task IDs
+- `POST /api/v1/projects/start` precondition failures work on the web surface:
+  - unknown project identifier returns `404`
+  - project with no tasks returns `400`
+
+### What Broke or Drifted
+- The documented `penguin-web --host ... --port ...` examples are currently misleading for local verification.
+  - In practice, the server entrypoint reads `HOST` / `PORT` from env in `penguin/web/server.py`.
+  - Passing `--port 8080` still bound the server to port `9000` during E2E verification.
+- Blueprint validation is currently weaker than this workflow doc implies.
+  - A Blueprint with missing acceptance criteria only produced a warning, not a rollback.
+  - That behavior may be acceptable, but it means “invalid Blueprint” currently means “lint errors,” not “any lint issue.”
+- The parse/import path is still too permissive.
+  - An intentionally broken/minimal Blueprint returned `200` and created an effectively empty project instead of failing and rolling back.
+  - That violates the intended “fail honestly” bootstrap contract.
+- Full success-path `project start` E2E is not currently deterministic in a live environment.
+  - The route does call the real RunMode path.
+  - But successful execution depends on real model/runtime behavior, so the HTTP call can hang until client timeout without a controlled provider or test-mode runtime.
+
+### Interpretation
+- `project init` is partially honest today, but not fully.
+- `project start` is honestly wired into real runtime truth, but it still lacks a deterministic verification story for success-path web E2E.
+- The web server docs and runtime contract have drifted on host/port invocation behavior.
+
+### Surgical Fix Targets
+- Tighten Blueprint bootstrap failure semantics so malformed / effectively empty imports fail and roll back.
+- Clarify and/or fix `penguin-web` host/port CLI behavior so docs match runtime truth.
+- Add a deterministic `project start` verification path that does not depend on an uncontrolled live model run.
+
+## File-Level Fix Checklist
+
+### Web Server CLI / Docs Truth
+
+#### `penguin/web/server.py`
+- [ ] Make `penguin-web --host <HOST> --port <PORT>` actually work, or explicitly remove/avoid pretending those flags exist.
+- [ ] Keep env-based `HOST` / `PORT` overrides working.
+- [ ] Ensure startup banner prints the true bound host/port.
+
+#### `docs/docs/usage/web_interface.md`
+- [ ] Update startup examples so they match the real server invocation contract.
+- [ ] If env vars remain the source of truth, document that explicitly instead of implying CLI arg parsing.
+
+#### `AGENTS.md`
+- [ ] Note that current docs treat `9000` as the primary Penguin web server port.
+- [ ] Note that local verification on alternate ports should currently prefer env vars (`HOST` / `PORT`) unless/until CLI flag parsing is fixed.
+
+### Project Bootstrap Failure Semantics
+
+#### `penguin/web/services/projects.py`
+- [ ] Treat malformed / effectively empty Blueprint imports as honest bootstrap failures with rollback.
+- [ ] Preserve current rollback behavior for lint-error cases like duplicate task IDs and dependency cycles.
+- [ ] Decide and document whether warning-only Blueprints are allowed to initialize projects or should fail under stricter bootstrap rules.
+- [ ] Keep response payloads explicit about why initialization failed.
+
+#### `penguin/project/blueprint_parser.py`
+- [ ] Check whether malformed frontmatter / underspecified Blueprint shapes are being parsed too permissively.
+- [ ] Tighten parser or diagnostics so clearly broken Blueprint files do not silently degrade into empty successful imports.
+
+#### `tests/` web/bootstrap coverage
+- [ ] Add regression tests for malformed Blueprint rollback.
+- [ ] Add regression tests for empty/no-task Blueprint rollback if that is the intended contract.
+- [ ] Keep duplicate-ID and dependency-cycle rollback coverage.
+
+### Deterministic `project start` Verification
+
+#### `penguin/web/services/projects.py`
+- [ ] Preserve current real RunMode wiring for actual execution.
+- [ ] Consider a controlled verification seam for tests so success-path web checks do not depend on a live provider call.
+
+#### `tests/` web/project-start coverage
+- [ ] Add deterministic tests for successful `project start` request/response shape with mocked or controlled runtime execution.
+- [ ] Keep precondition coverage for missing project and no-task project failures.
+
+## File-Level Implementation Checklist
+
+### Current TUI Bugfix Scope
+
+This checklist covers the current `penguin-tui` bug where local/project commands can
+accidentally create and navigate into a new session when submitted from home.
+
+This is intentionally narrower than the broader bootstrap workflow UX.
+The immediate fix is:
+- parse command intent before session creation
+- execute local/project commands without chat/session bootstrap
+- preserve current chat behavior for real prompts
+
+### Files
+
+#### `penguin-tui/packages/opencode/src/cli/cmd/tui/component/prompt/index.tsx`
+- [x] Move Penguin local/project command detection ahead of session creation in `submit()`
+- [x] Stop creating a session for local/project commands when no `props.sessionID` or `sdk.sessionID` exists
+- [x] Stop session navigation for local/project commands executed from home
+- [x] Keep current chat/session behavior unchanged for real prompts
+- [x] Keep command-history append behavior only as an intentional command-path choice
+- [x] Resolve command directory from current app/workspace state or existing session, not from a freshly created session
+- [x] Support both dashed and spaced forms:
+  - [x] `/project-init <name> [--blueprint <path>]`
+  - [x] `/project-start <project-id-or-name>`
+  - [x] `/project init <name> [--blueprint <path>]`
+  - [x] `/project start <project-id-or-name>`
+
+#### `penguin-tui/packages/opencode/src/cli/cmd/tui/component/prompt/` helper module(s)
+- [x] Extract one small parser/helper as the single source of truth for Penguin local/project command syntax
+- [x] Avoid duplicating command parsing logic between prompt execution paths
+- [x] Keep helper scope tight: classify command intent and parsed args only
+
+#### `penguin-tui/packages/opencode/test/cli/tui/`
+- [x] Add parser/submit regression tests for Penguin local/project commands
+- [x] Assert home-screen local/project commands do **not** require session bootstrap
+- [x] Assert home-screen local/project commands do **not** trigger session navigation
+- [ ] Assert project commands route to the correct backend endpoints
+- [x] Assert both dashed and spaced forms parse equivalently
+
+### Explicit Non-Goals For This Patch
+- [x] Do **not** require command-palette discoverability in the same bugfix commit
+- [x] Do **not** redesign project feedback/UI beyond current minimal success/error reporting
+- [x] Do **not** broaden this into a general TUI command-architecture rewrite
+
+### Acceptance Criteria For This TUI Slice
+- [x] From home, `/project init ...` does not create a session
+- [x] From home, `/project start ...` does not create a session
+- [x] From home, `/settings`, `/config`, `/thinking`, and `/tool_details` do not create a session
 
 - `context/tasks/cli-surface-audit.md`
   - CLI surface drift and immediate correctness fixes
