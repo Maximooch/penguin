@@ -486,6 +486,102 @@ async def test_init_project_from_blueprint_wraps_parse_failures_as_structured_de
 
 
 @pytest.mark.asyncio
+async def test_start_project_returns_exact_execution_summary_from_runmode_result():
+    from penguin.web.routes import ProjectStartRequest, start_project
+
+    project = make_project()
+    project.name = "Bootstrap Project"
+    project.description = "Bootstrap Description"
+    first_ready = make_task("task-ready-1")
+    first_ready.title = "First Ready Task"
+    second_ready = make_task("task-ready-2")
+    second_ready.title = "Second Ready Task"
+    runmode_result = {
+        "status": "waiting_input",
+        "message": "Need deployment target",
+        "completion_type": "clarification_needed",
+        "project_id": project.id,
+        "task_id": first_ready.id,
+    }
+    core = SimpleNamespace(
+        project_manager=SimpleNamespace(
+            get_project=Mock(return_value=project),
+            get_project_by_name=Mock(return_value=None),
+            list_projects=Mock(return_value=[project]),
+            list_tasks_async=AsyncMock(return_value=[first_ready, second_ready]),
+            get_ready_tasks_async=AsyncMock(return_value=[first_ready, second_ready]),
+        ),
+        start_run_mode=AsyncMock(return_value=runmode_result),
+    )
+
+    response = await start_project(
+        ProjectStartRequest(
+            project_identifier=project.id,
+            continuous=True,
+            time_limit=30,
+        ),
+        core=core,
+    )
+
+    core.start_run_mode.assert_awaited_once_with(
+        name=project.name,
+        description=project.description,
+        context={"project_id": project.id},
+        continuous=True,
+        time_limit=30,
+        mode_type="project",
+    )
+    assert response["project"]["id"] == project.id
+    assert response["execution"] == {
+        "mode": "continuous",
+        "time_limit": 30,
+        "ready_tasks": 2,
+        "first_ready_task": "First Ready Task",
+        "result": runmode_result,
+    }
+
+
+@pytest.mark.asyncio
+async def test_start_project_by_exact_name_uses_same_project_runmode_path():
+    from penguin.web.routes import ProjectStartRequest, start_project
+
+    project = make_project()
+    project.name = "Exact Name Match"
+    ready_task = make_task("task-ready-name")
+    ready_task.title = "Named Ready Task"
+    core = SimpleNamespace(
+        project_manager=SimpleNamespace(
+            get_project=Mock(return_value=None),
+            get_project_by_name=Mock(return_value=project),
+            list_projects=Mock(return_value=[project]),
+            list_tasks_async=AsyncMock(return_value=[ready_task]),
+            get_ready_tasks_async=AsyncMock(return_value=[ready_task]),
+        ),
+        start_run_mode=AsyncMock(
+            return_value={
+                "status": "idle",
+                "completion_type": "idle_no_ready_tasks",
+                "message": "RunMode stopped because no ready work remained.",
+            }
+        ),
+    )
+
+    response = await start_project(
+        ProjectStartRequest(
+            project_identifier=project.name,
+            continuous=True,
+            time_limit=None,
+        ),
+        core=core,
+    )
+
+    core.project_manager.get_project.assert_called_once_with(project.name)
+    core.project_manager.get_project_by_name.assert_called_once_with(project.name)
+    assert response["project"]["name"] == project.name
+    assert response["execution"]["first_ready_task"] == "Named Ready Task"
+    assert response["execution"]["result"]["completion_type"] == "idle_no_ready_tasks"
+
+@pytest.mark.asyncio
 async def test_start_project_routes_through_runmode_project_context():
     from penguin.web.routes import ProjectStartRequest, start_project
 

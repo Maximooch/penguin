@@ -311,7 +311,7 @@ A first version of this workflow is good enough when:
 - [ ] Consider a controlled verification seam for tests so success-path web checks do not depend on a live provider call.
 
 #### `tests/` web/project-start coverage
-- [ ] Add deterministic tests for successful `project start` request/response shape with mocked or controlled runtime execution.
+- [x] Add deterministic tests for successful `project start` request/response shape with mocked or controlled runtime execution.
 - [ ] Keep precondition coverage for missing project and no-task project failures.
 
 ## File-Level Implementation Checklist
