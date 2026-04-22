@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from penguin.engine import Engine, LoopState
+from penguin.llm.runtime import execute_pending_tool_call
 
 
 def test_prepare_responses_tools_enables_openai_native_tools() -> None:
@@ -70,6 +71,53 @@ async def test_call_llm_with_retry_skips_retry_when_tool_call_pending() -> None:
 
     assert result == ""
     assert api_client.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_finish_response_tool_call_is_not_persisted_or_emitted() -> None:
+    class _Handler:
+        def __init__(self) -> None:
+            self._tool_call = {
+                "name": "finish_response",
+                "arguments": "{}",
+                "call_id": "call_finish_response",
+            }
+
+        def get_and_clear_last_tool_call(self):
+            result = self._tool_call
+            self._tool_call = None
+            return result
+
+    persisted: list[dict[str, object]] = []
+    started: list[dict[str, object]] = []
+    completed: list[dict[str, object]] = []
+    timeline: list[dict[str, object]] = []
+
+    result = await execute_pending_tool_call(
+        api_client=SimpleNamespace(
+            client_handler=_Handler(),
+            model_config=SimpleNamespace(provider="openai", model="gpt-5.4"),
+        ),
+        tool_manager=SimpleNamespace(
+            execute_tool=lambda tool_name, tool_args: "Response complete."
+        ),
+        persist_action_result=lambda action_result, tool_context: persisted.append(
+            {"action_result": action_result, "tool_context": tool_context}
+        ),
+        emit_action_start=lambda payload: started.append(payload),
+        emit_action_result=lambda payload: completed.append(payload),
+        emit_tool_timeline=lambda payload: timeline.append(payload),
+    )
+
+    assert result == {
+        "action": "finish_response",
+        "result": "Response complete.",
+        "status": "completed",
+    }
+    assert persisted == []
+    assert started == []
+    assert completed == []
+    assert timeline == []
 
 
 def test_wallet_guard_does_not_break_on_tool_only_empty_iteration() -> None:

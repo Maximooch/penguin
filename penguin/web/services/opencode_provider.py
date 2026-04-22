@@ -394,12 +394,12 @@ def _config_model_payload(
             isinstance(conf.get("reasoning"), dict) and conf["reasoning"].get("enabled")
         )
     )
+    variants = _model_variants_payload(provider_id, model_id, True)
+    reasoning_supported = reasoning_enabled or bool(variants)
     name = conf.get("name") or conf.get("model") or model_id
     release_date = conf.get("release_date")
     if not isinstance(release_date, str) or not release_date.strip():
         release_date = "1970-01-01T00:00:00+00:00"
-
-    variants = _model_variants_payload(provider_id, model_id, reasoning_enabled)
 
     payload = {
         "id": model_id,
@@ -412,7 +412,7 @@ def _config_model_payload(
         },
         "capabilities": {
             "temperature": True,
-            "reasoning": reasoning_enabled,
+            "reasoning": reasoning_supported,
             "attachment": bool(conf.get("vision_enabled", False)),
             "toolcall": True,
             "input": {
@@ -458,18 +458,18 @@ def _provider_list_model_payload(
             isinstance(conf.get("reasoning"), dict) and conf["reasoning"].get("enabled")
         )
     )
+    variants = _model_variants_payload(provider_id, model_id, True)
+    reasoning_supported = reasoning_enabled or bool(variants)
     release_date = conf.get("release_date")
     if not isinstance(release_date, str) or not release_date.strip():
         release_date = "1970-01-01T00:00:00+00:00"
-
-    variants = _model_variants_payload(provider_id, model_id, reasoning_enabled)
 
     payload = {
         "id": model_id,
         "name": conf.get("name") or conf.get("model") or model_id,
         "release_date": release_date,
         "attachment": bool(conf.get("vision_enabled", False)),
-        "reasoning": reasoning_enabled,
+        "reasoning": reasoning_supported,
         "temperature": True,
         "tool_call": True,
         "limit": {

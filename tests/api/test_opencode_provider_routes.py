@@ -616,6 +616,62 @@ async def test_provider_filters_hide_disabled_models_dev_providers(
 
 
 @pytest.mark.asyncio
+async def test_native_openai_config_model_exposes_reasoning_variants_without_enable_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core = _Core(tmp_path)
+    core.config.model_configs = {
+        "openai/gpt-5.4": {
+            "provider": "openai",
+            "model": "gpt-5.4",
+            "max_output_tokens": 8192,
+            "context_window": 128000,
+        }
+    }
+    core.model_config.provider = "openai"
+    core.model_config.client_preference = "native"
+    core._current_model = {
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "client_preference": "native",
+        "max_output_tokens": 8192,
+        "context_window": 128000,
+    }
+    typed_core = cast(Any, core)
+
+    monkeypatch.setattr(provider_service, "models_dev_provider_models", lambda *_: {})
+
+    providers_payload = await opencode_config_providers(core=typed_core)
+    openai = next(
+        item for item in providers_payload["providers"] if item["id"] == "openai"
+    )
+    assert openai["models"]["gpt-5.4"]["capabilities"]["reasoning"] is True
+    assert set(openai["models"]["gpt-5.4"]["variants"].keys()) == {
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+    }
+
+    provider_payload = await opencode_provider_list(core=typed_core)
+    openai_provider = next(
+        item for item in provider_payload["all"] if item["id"] == "openai"
+    )
+    assert openai_provider["models"]["gpt-5.4"]["reasoning"] is True
+    assert set(openai_provider["models"]["gpt-5.4"]["variants"].keys()) == {
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+    }
+
+
+@pytest.mark.asyncio
 async def test_auth_set_and_remove_round_trip(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

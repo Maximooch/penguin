@@ -969,10 +969,10 @@ def _restore_reasoning_variant_override(
 
 
 def _resolve_include_reasoning(value: Optional[Any]) -> bool:
-    """Default reasoning visibility to on unless explicitly disabled."""
+    """Default reasoning visibility to off unless explicitly enabled."""
 
     if value is None:
-        return True
+        return False
     return bool(value)
 
 

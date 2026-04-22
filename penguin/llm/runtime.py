@@ -284,6 +284,7 @@ async def execute_pending_tool_call(
 
     tool_name = str(tool_info.get("name") or "").strip()
     raw_args = tool_info.get("arguments") or "{}"
+    suppress_ui_artifacts = tool_name == "finish_response"
     tool_call_id = (
         tool_info.get("call_id")
         or tool_info.get("tool_call_id")
@@ -310,7 +311,7 @@ async def execute_pending_tool_call(
         "source": "responses_tool_call",
     }
 
-    if emit_action_start is not None:
+    if emit_action_start is not None and not suppress_ui_artifacts:
         await emit_action_start(
             {
                 "id": tool_call_id,
@@ -328,15 +329,16 @@ async def execute_pending_tool_call(
             "result": str(output if output is not None else ""),
             "status": "completed",
         }
-        persist_action_result(
-            action_result,
-            {
-                "tool_call_id": tool_call_id,
-                "tool_arguments": raw_args if isinstance(raw_args, str) else None,
-            },
-        )
+        if not suppress_ui_artifacts:
+            persist_action_result(
+                action_result,
+                {
+                    "tool_call_id": tool_call_id,
+                    "tool_arguments": raw_args if isinstance(raw_args, str) else None,
+                },
+            )
 
-        if emit_action_result is not None:
+        if emit_action_result is not None and not suppress_ui_artifacts:
             await emit_action_result(
                 {
                     "id": tool_call_id,
@@ -346,7 +348,7 @@ async def execute_pending_tool_call(
                     "metadata": event_metadata,
                 }
             )
-        if emit_tool_timeline is not None:
+        if emit_tool_timeline is not None and not suppress_ui_artifacts:
             await emit_tool_timeline(action_result)
         return action_result
     except Exception as exc:

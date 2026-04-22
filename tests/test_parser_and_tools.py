@@ -75,6 +75,8 @@ def test_tool_manager_get_responses_tools_curated():
     assert "patch_file" in names
     assert "patch_files" in names
     assert "execute_command" in names
+    assert "finish_response" in names
+    assert "finish_task" in names
 
     # Built-in web_search should be included as a non-function tool descriptor
     assert any(t.get("type") == "web_search" for t in tools_payload)

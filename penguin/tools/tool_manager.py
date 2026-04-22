@@ -1931,6 +1931,8 @@ class ToolManager:
             "code_execution",
             "execute_command",
             "grep_search",
+            "finish_response",
+            "finish_task",
         ]
         allowed = {
             self._canonical_tool_name(name)
