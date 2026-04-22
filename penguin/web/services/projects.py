@@ -7,7 +7,12 @@ from typing import Any, Dict, Optional
 from fastapi import HTTPException
 
 from penguin.core import PenguinCore
-from penguin.project.blueprint_parser import BlueprintParseError, BlueprintParser
+from penguin.project.blueprint_parser import (
+    BlueprintDiagnostic,
+    BlueprintDiagnosticsReport,
+    BlueprintParseError,
+    BlueprintParser,
+)
 
 
 def _delete_project_and_tasks(core: PenguinCore, project_id: str) -> None:
@@ -16,6 +21,42 @@ def _delete_project_and_tasks(core: PenguinCore, project_id: str) -> None:
     for task in tasks:
         core.project_manager.storage.delete_task(task.id)
     core.project_manager.storage.delete_project(project_id)
+
+
+def _serialize_diagnostic(diagnostic: BlueprintDiagnostic) -> Dict[str, Any]:
+    """Return a JSON-safe diagnostic payload."""
+    if hasattr(diagnostic, "to_dict"):
+        return diagnostic.to_dict()
+    return dict(diagnostic.__dict__)
+
+
+def _bootstrap_failure_detail(
+    message: str,
+    diagnostics: Optional[BlueprintDiagnosticsReport] = None,
+) -> Dict[str, Any]:
+    """Build a consistent rollback response payload."""
+    detail: Dict[str, Any] = {"message": message}
+    if diagnostics is not None:
+        detail["diagnostics"] = [
+            _serialize_diagnostic(diagnostic)
+            for diagnostic in diagnostics.diagnostics
+        ]
+    return detail
+
+
+def _build_empty_blueprint_report(source: str) -> BlueprintDiagnosticsReport:
+    """Return an error report for effectively empty Blueprint imports."""
+    return BlueprintDiagnosticsReport(
+        diagnostics=[
+            BlueprintDiagnostic(
+                code="BP-LINT-004",
+                severity="error",
+                message="Blueprint does not define any importable tasks.",
+                source=source,
+                suggestion="Add at least one task under the Tasks section before initializing a project.",
+            )
+        ]
+    )
 
 
 def resolve_project_identifier(core: PenguinCore, project_identifier: str):
@@ -81,10 +122,21 @@ async def initialize_project_from_blueprint(
             _delete_project_and_tasks(core, project.id)
             raise HTTPException(
                 status_code=400,
-                detail={
-                    "message": "Blueprint validation failed. Project initialization rolled back.",
-                    "diagnostics": [d.to_dict() if hasattr(d, 'to_dict') else d.__dict__ for d in diagnostics.diagnostics],
-                },
+                detail=_bootstrap_failure_detail(
+                    "Blueprint validation failed. Project initialization rolled back.",
+                    diagnostics,
+                ),
+            )
+
+        if not blueprint.items:
+            empty_report = _build_empty_blueprint_report(str(blueprint_file))
+            _delete_project_and_tasks(core, project.id)
+            raise HTTPException(
+                status_code=400,
+                detail=_bootstrap_failure_detail(
+                    "Blueprint import produced no tasks. Project initialization rolled back.",
+                    empty_report,
+                ),
             )
 
         sync_result = await asyncio.get_event_loop().run_in_executor(
@@ -104,15 +156,20 @@ async def initialize_project_from_blueprint(
             "tasks_skipped": len(sync_result.get("skipped", [])),
             "ready_tasks": len(ready_tasks),
             "warnings": [
-                d.to_dict() if hasattr(d, 'to_dict') else d.__dict__
-                for d in diagnostics.diagnostics
-                if getattr(d, 'severity', None) == 'warning'
+                _serialize_diagnostic(diagnostic)
+                for diagnostic in diagnostics.diagnostics
+                if getattr(diagnostic, "severity", None) == "warning"
             ],
         }
         return response
     except BlueprintParseError as exc:
         _delete_project_and_tasks(core, project.id)
-        raise HTTPException(status_code=400, detail=f"Blueprint parse failed: {exc}") from exc
+        raise HTTPException(
+            status_code=400,
+            detail=_bootstrap_failure_detail(
+                f"Blueprint parse failed: {exc}",
+            ),
+        ) from exc
     except HTTPException:
         raise
     except Exception as exc:

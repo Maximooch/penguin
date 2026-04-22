@@ -279,11 +279,21 @@ class BlueprintParser:
         Returns:
             Parsed Blueprint object.
         """
+        stripped = content.lstrip()
+        if stripped.startswith("---") and not self.FRONTMATTER_PATTERN.match(stripped):
+            raise BlueprintParseError(
+                "Unclosed YAML frontmatter block",
+                source,
+                line=1,
+                code="BP-PARSE-008",
+                suggestion="Terminate the opening --- block with a closing --- line before the markdown body.",
+            )
+
         # Extract frontmatter
         frontmatter = {}
-        body = content
+        body = stripped
         
-        fm_match = self.FRONTMATTER_PATTERN.match(content)
+        fm_match = self.FRONTMATTER_PATTERN.match(stripped)
         if fm_match:
             try:
                 frontmatter = yaml.safe_load(fm_match.group(1)) or {}
@@ -376,6 +386,16 @@ class BlueprintParser:
         self, fm: Dict[str, Any], source: Optional[str]
     ) -> Blueprint:
         """Build a Blueprint object from frontmatter data."""
+        if fm is None:
+            fm = {}
+        if not isinstance(fm, dict):
+            raise BlueprintParseError(
+                "Blueprint frontmatter must be a YAML mapping/object",
+                source,
+                code="BP-PARSE-009",
+                suggestion="Use key/value pairs in the frontmatter block instead of a list or scalar.",
+            )
+
         # Extract ITUV settings
         ituv = fm.get("ituv", {})
         agent_defaults = fm.get("agent_defaults", {})
@@ -408,10 +428,31 @@ class BlueprintParser:
         self, data: Dict[str, Any], source: Optional[str]
     ) -> Blueprint:
         """Build a Blueprint from a dictionary (YAML/JSON)."""
+        if data is None:
+            data = {}
+        if not isinstance(data, dict):
+            raise BlueprintParseError(
+                "Blueprint document root must be a mapping/object",
+                source,
+                code="BP-PARSE-010",
+                suggestion="Use a top-level object with fields like title, project_key, and tasks/items.",
+            )
+
         # Handle items/tasks
+        items_data = data.get("items", data.get("tasks", []))
+        if items_data is None:
+            items_data = []
+        if not isinstance(items_data, list):
+            raise BlueprintParseError(
+                "Blueprint tasks/items must be a list",
+                source,
+                code="BP-PARSE-011",
+                suggestion="Use a YAML/JSON list for tasks/items, with one task mapping per entry.",
+            )
+
         items = []
-        for item_data in data.get("items", data.get("tasks", [])):
-            items.append(self._build_item_from_dict(item_data, source))
+        for index, item_data in enumerate(items_data, start=1):
+            items.append(self._build_item_from_dict(item_data, source, index))
         
         ituv = data.get("ituv", {})
         agent_defaults = data.get("agent_defaults", {})
@@ -450,9 +491,18 @@ class BlueprintParser:
         )
     
     def _build_item_from_dict(
-        self, data: Dict[str, Any], source: Optional[str]
+        self, data: Dict[str, Any], source: Optional[str], index: Optional[int] = None
     ) -> BlueprintItem:
         """Build a BlueprintItem from a dictionary."""
+        if not isinstance(data, dict):
+            location = f" at index {index}" if index is not None else ""
+            raise BlueprintParseError(
+                f"Blueprint task entry{location} must be a mapping/object",
+                source,
+                code="BP-PARSE-012",
+                suggestion="Each task entry must be an object with fields like id, title, and description.",
+            )
+
         return BlueprintItem(
             id=data.get("id", ""),
             title=data.get("title", ""),

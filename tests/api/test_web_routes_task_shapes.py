@@ -363,7 +363,7 @@ async def test_init_project_from_blueprint_reports_counts(tmp_path):
     blueprint_path.write_text("# Example")
     project = make_project()
     task = make_task()
-    blueprint = SimpleNamespace(title="Example", overview="desc")
+    blueprint = SimpleNamespace(title="Example", overview="desc", items=[SimpleNamespace(id="A")])
     diagnostics = SimpleNamespace(has_errors=False, has_warnings=False, diagnostics=[])
     parser = SimpleNamespace(
         parse_file=Mock(return_value=blueprint),
@@ -394,6 +394,95 @@ async def test_init_project_from_blueprint_reports_counts(tmp_path):
     assert response["blueprint"]["tasks_created"] == 1
     assert response["blueprint"]["tasks_updated"] == 1
     assert response["blueprint"]["ready_tasks"] == 1
+
+
+@pytest.mark.asyncio
+async def test_init_project_from_blueprint_rolls_back_empty_import(tmp_path):
+    from unittest.mock import Mock, patch
+    from penguin.web.routes import ProjectInitRequest, init_project
+
+    blueprint_path = tmp_path / "empty.md"
+    blueprint_path.write_text("# Empty")
+    project = make_project()
+    empty_blueprint = SimpleNamespace(title="Empty", overview="desc", items=[])
+    diagnostics = SimpleNamespace(has_errors=False, has_warnings=False, diagnostics=[])
+    parser = SimpleNamespace(
+        parse_file=Mock(return_value=empty_blueprint),
+        lint_blueprint=Mock(return_value=diagnostics),
+    )
+    storage = SimpleNamespace(delete_task=Mock(), delete_project=Mock())
+    core = SimpleNamespace(
+        project_manager=SimpleNamespace(
+            create_project_async=AsyncMock(return_value=project),
+            sync_blueprint=Mock(),
+            get_ready_tasks_async=AsyncMock(return_value=[]),
+            list_tasks=Mock(return_value=[]),
+            storage=storage,
+        )
+    )
+
+    with patch("penguin.web.services.projects.BlueprintParser", return_value=parser):
+        with pytest.raises(HTTPException) as exc_info:
+            await init_project(
+                ProjectInitRequest(
+                    name="Empty",
+                    description="Empty project",
+                    workspace_path=str(tmp_path / "workspace"),
+                    blueprint_path=str(blueprint_path),
+                ),
+                core=core,
+            )
+
+    assert exc_info.value.status_code == 400
+    detail = exc_info.value.detail
+    assert detail["message"] == "Blueprint import produced no tasks. Project initialization rolled back."
+    assert detail["diagnostics"][0]["code"] == "BP-LINT-004"
+    core.project_manager.sync_blueprint.assert_not_called()
+    storage.delete_project.assert_called_once_with(project.id)
+
+
+@pytest.mark.asyncio
+async def test_init_project_from_blueprint_wraps_parse_failures_as_structured_detail(tmp_path):
+    from unittest.mock import patch
+    from penguin.project.blueprint_parser import BlueprintParseError
+    from penguin.web.routes import ProjectInitRequest, init_project
+
+    blueprint_path = tmp_path / "broken.md"
+    blueprint_path.write_text("---\nnot: valid")
+    project = make_project()
+    storage = SimpleNamespace(delete_task=Mock(), delete_project=Mock())
+    parser = SimpleNamespace(
+        parse_file=Mock(side_effect=BlueprintParseError("bad frontmatter", source=str(blueprint_path))),
+        lint_blueprint=Mock(),
+    )
+    core = SimpleNamespace(
+        project_manager=SimpleNamespace(
+            create_project_async=AsyncMock(return_value=project),
+            sync_blueprint=Mock(),
+            get_ready_tasks_async=AsyncMock(return_value=[]),
+            list_tasks=Mock(return_value=[]),
+            storage=storage,
+        )
+    )
+
+    with patch("penguin.web.services.projects.BlueprintParser", return_value=parser):
+        with pytest.raises(HTTPException) as exc_info:
+            await init_project(
+                ProjectInitRequest(
+                    name="Broken",
+                    description="Broken project",
+                    workspace_path=str(tmp_path / "workspace"),
+                    blueprint_path=str(blueprint_path),
+                ),
+                core=core,
+            )
+
+    assert exc_info.value.status_code == 400
+    detail = exc_info.value.detail
+    assert detail["message"].startswith("Blueprint parse failed:")
+    assert "bad frontmatter" in detail["message"]
+    storage.delete_project.assert_called_once_with(project.id)
+    core.project_manager.sync_blueprint.assert_not_called()
 
 
 @pytest.mark.asyncio

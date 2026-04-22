@@ -4,9 +4,12 @@ This module provides the main entry point for running the Penguin web server.
 It uses the app factory from app.py to create and configure the FastAPI application.
 """
 
+import argparse
 import logging
 import os
+import sys
 from ipaddress import ip_address
+from typing import Optional, Sequence
 from urllib.parse import quote
 
 from penguin.constants import DEFAULT_WEB_PORT
@@ -82,6 +85,36 @@ def _resolve_port() -> int:
         raise RuntimeError(
             f"Invalid PORT value {raw!r}. Set PORT to an integer port number."
         ) from exc
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    """Build CLI parser for the web server entrypoint."""
+    parser = argparse.ArgumentParser(prog="penguin-web")
+    parser.add_argument("--host", help="Bind host override")
+    parser.add_argument("--port", type=int, help="Bind port override")
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug mode with uvicorn reload",
+    )
+    return parser
+
+
+def _resolve_runtime_settings(argv: Optional[Sequence[str]] = None) -> tuple[str, int, bool]:
+    """Resolve host/port/debug from CLI args first, then env vars."""
+    parser = _build_arg_parser()
+    args = parser.parse_args(list(argv) if argv is not None else [])
+
+    host = args.host or os.environ.get("HOST", DEFAULT_HOST)
+
+    if args.port is not None:
+        port = args.port
+    else:
+        port = _resolve_port()
+
+    env_debug = os.environ.get("DEBUG", "false").lower() == "true"
+    debug = args.debug or env_debug
+    return host, port, debug
 
 
 def _print_startup_banner(host: str, port: int) -> None:
@@ -161,7 +194,7 @@ def _print_local_auth_bootstrap_banner(host: str, port: int) -> None:
     )
 
 
-def main():
+def main(argv: Optional[Sequence[str]] = None):
     """Entry point for the web server."""
     try:
         import uvicorn
@@ -170,10 +203,8 @@ def main():
         print("Install with: pip install penguin-ai[web]")
         return 1
 
-    host = os.environ.get("HOST", DEFAULT_HOST)
     try:
-        port = _resolve_port()
-        debug = os.environ.get("DEBUG", "false").lower() == "true"
+        host, port, debug = _resolve_runtime_settings(argv)
         app = None
         validate_startup_security(host)
         if debug:
@@ -244,4 +275,4 @@ def start_server(
 
 
 if __name__ == "__main__":
-    exit(main())
+    exit(main(sys.argv[1:]))
