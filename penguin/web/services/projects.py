@@ -4,6 +4,8 @@ import asyncio
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from penguin.config import GITHUB_REPOSITORY, WORKSPACE_PATH
+
 from fastapi import HTTPException
 
 from penguin.core import PenguinCore
@@ -13,6 +15,11 @@ from penguin.project.blueprint_parser import (
     BlueprintParseError,
     BlueprintParser,
 )
+from penguin.project.git_manager import GitManager
+from penguin.project.spec_parser import parse_project_specification_from_markdown
+from penguin.project.task_executor import ProjectTaskExecutor
+from penguin.project.validation_manager import ValidationManager
+from penguin.project.workflow_orchestrator import WorkflowOrchestrator
 
 
 def _delete_project_and_tasks(core: PenguinCore, project_id: str) -> None:
@@ -223,4 +230,88 @@ async def start_project_execution(
             "first_ready_task": ready_tasks[0].title if ready_tasks else None,
             "result": result,
         },
+    }
+
+
+async def delete_project_with_tasks(*, core: PenguinCore, project_id: str) -> Dict[str, Any]:
+    """Delete a project and its tasks, returning a truthful summary."""
+    project = await core.project_manager.get_project_async(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+
+    tasks = await core.project_manager.list_tasks_async(project_id=project.id)
+    _delete_project_and_tasks(core, project.id)
+
+    return {
+        "project": {
+            "id": project.id,
+            "name": project.name,
+            "description": project.description,
+            "status": project.status,
+        },
+        "deleted_tasks": len(tasks),
+        "message": f"Project '{project.name}' deleted successfully.",
+    }
+
+
+async def run_project_workflow(
+    *,
+    core: PenguinCore,
+    spec_path: Optional[str],
+    markdown_content: Optional[str],
+    continuous: bool,
+    time_limit: Optional[int],
+) -> Dict[str, Any]:
+    """Parse a project spec into tasks, then start the resulting project."""
+    has_spec_path = bool(spec_path and spec_path.strip())
+    has_markdown_content = bool(markdown_content and markdown_content.strip())
+    if not has_spec_path and not has_markdown_content:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide either spec_path or markdown_content to run a project workflow.",
+        )
+
+    if has_markdown_content:
+        markdown_source = str(markdown_content)
+        source_label = "inline_markdown"
+    else:
+        spec_file = Path(str(spec_path)).expanduser().resolve()
+        if not spec_file.exists() or not spec_file.is_file():
+            raise HTTPException(status_code=404, detail=f"Spec file '{spec_path}' was not found.")
+        markdown_source = spec_file.read_text()
+        source_label = str(spec_file)
+
+    parse_result = await parse_project_specification_from_markdown(
+        markdown_content=markdown_source,
+        project_manager=core.project_manager,
+    )
+    if parse_result.get("status") != "success":
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": parse_result.get("message", "Project spec parsing failed."),
+                "source": source_label,
+            },
+        )
+
+    creation_result = parse_result.get("creation_result") or {}
+    project_payload = creation_result.get("project") or {}
+    project_id = project_payload.get("id")
+    if not project_id:
+        raise HTTPException(
+            status_code=500,
+            detail="Project run parse result did not include a created project ID.",
+        )
+
+    execution = await start_project_execution(
+        core=core,
+        project_identifier=project_id,
+        continuous=continuous,
+        time_limit=time_limit,
+    )
+
+    return {
+        "source": source_label,
+        "parse": parse_result,
+        "execution": execution,
     }
