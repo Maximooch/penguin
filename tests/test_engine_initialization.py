@@ -148,6 +148,47 @@ async def test_call_llm_with_retry_skips_non_stream_retry_after_streamed_chunks(
     assert api_client.get_response.await_count == 1
 
 
+@pytest.mark.asyncio
+async def test_call_llm_with_retry_replays_non_stream_retry_into_stream_callback() -> (
+    None
+):
+    engine = Engine(
+        EngineSettings(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+    )
+
+    streamed: list[tuple[str, str]] = []
+
+    async def _fake_get_response(messages, stream=None, stream_callback=None, **kwargs):
+        del messages, stream_callback, kwargs
+        if stream:
+            return ""
+        return "fallback answer"
+
+    api_client = SimpleNamespace(
+        get_response=AsyncMock(side_effect=_fake_get_response),
+        client_handler=SimpleNamespace(),
+    )
+
+    async def _collector(chunk: str, message_type: str = "assistant") -> None:
+        streamed.append((chunk, message_type))
+
+    result = await engine._call_llm_with_retry(
+        cast(Any, api_client),
+        [{"role": "user", "content": "hi"}],
+        streaming=True,
+        stream_callback=_collector,
+        extra_kwargs={},
+    )
+
+    assert result == "fallback answer"
+    assert streamed == [("fallback answer", "assistant")]
+    assert api_client.get_response.await_count == 2
+
+
 def test_scoped_conversation_manager_clones_default_agent_session() -> None:
     base_session = SimpleNamespace(id="session-a", messages=[])
     conversation = SimpleNamespace(

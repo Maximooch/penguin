@@ -119,6 +119,112 @@ Recommended rule:
 
 That keeps the nice UX without turning project selection into roulette.
 
+
+## Canonical Contract Summary
+
+This section is the current recommended mental model for how Blueprint, project bootstrap, project execution, and ITUV ownership should fit together.
+
+### Blueprint Ownership
+
+The Blueprint is a **declarative work specification**.
+It should define:
+- project/task metadata
+- dependencies / DAG shape
+- acceptance criteria
+- recipes for the USE gate
+- ITUV defaults and timeboxes
+- routing hints / skills / required tools where relevant
+
+The Blueprint should **not** be treated as the live execution engine.
+Its job is to describe the work graph, not to execute it.
+
+### PM-System Ownership
+
+Once a Blueprint is imported, the source of truth should become the **project/task management system**.
+That runtime/project state should own:
+- projects
+- tasks / subtasks
+- dependencies
+- readiness / frontier selection
+- task status
+- task phase
+- clarification state
+- artifacts / evidence / validation outputs
+
+In other words:
+- Blueprint declares the intended work graph
+- the PM system holds the live operational truth
+
+### `project init` Contract
+
+`project init` should:
+- create the project shell
+- parse/import Blueprint or spec input
+- sync tasks and dependencies into the PM system
+- validate import honesty
+- fail/rollback on malformed, empty, or invalid imports
+
+`project init` should **not** start execution.
+
+Mental model:
+> Prepare the work graph.
+
+### `project start` Contract
+
+`project start` should:
+- resolve an **existing project**
+- inspect the ready frontier from PM-system state
+- execute against the real project/runtime truth path
+- preserve clarification / waiting / time-limit / no-ready-work truth
+- use the stored project/task graph rather than reparsing the Blueprint
+
+`project start` should be the **primary user-facing execution command** in the TUI.
+
+Mental model:
+> Run this existing project.
+
+### `project run` Status
+
+Current understanding after the audit:
+- `project run` is historically broader and more ambiguous than `project start`
+- the old CLI path appears to combine spec parsing, project creation, and a heavier orchestration/validation workflow
+- that path is currently drifted enough that it should not be treated as the clean parity target for this PR
+
+For this PR, `project run` should be treated as **legacy / deferred** unless and until it is repaired and redefined around a crisp cross-surface contract.
+
+The current preferred product flow is:
+1. `project init`
+2. `project start`
+
+### ITUV Ownership
+
+ITUV should be understood as split across declaration and execution:
+- Blueprint declares ITUV intent, defaults, recipes, and acceptance expectations
+- the PM/runtime system enforces and records ITUV transitions in live execution
+
+That means ITUV does **not** live only in the Blueprint.
+It becomes meaningful when the project/task lifecycle is instantiated in the PM system and advanced through runtime execution.
+
+### Recommended Product Flow
+
+The cleanest user-facing story is:
+
+1. author or choose a Blueprint/spec
+2. run `project init`
+3. inspect the created project/tasks if needed
+4. run `project start`
+5. observe clarification / waiting / review / completion truth from the runtime
+
+This keeps import/bootstrap concerns separate from execution concerns and reduces command overlap.
+
+### Implication for This PR
+
+For the current PR, the highest-leverage target is:
+- make `project init` excellent
+- make `project start` excellent
+- make web/API/TUI parity excellent around those two commands
+- defer treating `project run` as a first-class user-facing command until its contract is repaired and made consistent
+
 ## Why This Workflow Matters
 
 This workflow is compelling because it compresses a lot of power into a tiny command surface:
@@ -445,15 +551,33 @@ The order matters. Backend parity comes before TUI parity, because the TUI canno
 
 #### Step 2 — Audit and Define `project run` vs `project start`
 
+**Clarified framing:**
+- The goal is **not** to make web/API or TUI intentionally weaker than the CLI.
+- The goal is to achieve **true parity** across CLI, web/API, TUI, and Link where practical.
+- `project start` is already a relatively clear contract: run an **existing project** through the current RunMode/project execution truth path.
+- `project run` is the confusing one. The open question is **not** whether web/API should get it; web/API should. The question is whether `project run` should mean the **same thing everywhere**, and if so, what that thing exactly is.
+- The current risk is semantic drift:
+  - CLI `project run` still looks like a heavier orchestration/workflow macro involving spec parsing, task-by-task orchestration, validation, and PR creation.
+  - The new web route currently behaves more like **spec/bootstrap + start**.
+- That mismatch is not acceptable long-term if parity is the goal.
+
 ##### `penguin/cli/cli.py`
 - [ ] Audit the exact current behavior of `project run` versus `project start`.
-- [ ] Document whether `run` is a bootstrap/workflow macro and `start` is the RunMode execution path.
-- [ ] Identify any stale assumptions or overlapping semantics that would make the web/TUI surface confusing.
+- [ ] Confirm whether `run` is currently a broader project/workflow macro while `start` is the RunMode execution path.
+- [ ] Identify stale assumptions or overlapping semantics that would make the web/TUI/Link surface confusing.
 
 ##### `penguin/project/` runtime/orchestration files
-- [ ] Trace which subsystems each command actually hits (`RunMode`, workflow orchestrator, spec parser, validation, task executor).
-- [ ] Decide whether `project run` deserves a first-class web/TUI surface or should remain a more advanced/API-facing operation.
-- [ ] Record the distinction in this doc once confirmed.
+- [ ] Trace which subsystems each command actually hits (`RunMode`, workflow orchestrator, spec parser, validation, task executor, git/PR path).
+- [ ] Decide what the authoritative cross-surface contract should be for `project run`.
+- [ ] If parity is the goal, either:
+  - [ ] lift the web/API `project run` surface up to the real CLI/kernel behavior, or
+  - [ ] intentionally simplify/redefine CLI `project run` so all surfaces converge on the same truth.
+- [ ] Record the distinction and decision in this doc once confirmed.
+
+##### Product / Surface Constraint
+- [ ] Keep `project start` as the primary user-facing execution UX in the TUI.
+- [ ] Still give web/API full access to `project run` if the kernel supports it.
+- [ ] Do **not** ship two verbs with fuzzy overlap across surfaces. If both verbs exist, users and APIs must be able to rely on a crisp distinction.
 
 #### Step 3 — Expand the TUI Surface to Match the Real Backend
 

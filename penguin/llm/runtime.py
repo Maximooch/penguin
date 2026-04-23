@@ -201,6 +201,7 @@ async def call_with_retry(
     """Call provider once, retrying one time for empty non-tool responses."""
 
     streamed_assistant_chunk = False
+    replayed_retry_response = False
 
     async def _tracked_stream_callback(
         chunk: str, message_type: str = "assistant"
@@ -235,6 +236,14 @@ async def call_with_retry(
         if handler_has_pending_tool_call(api_client):
             return assistant_response or ""
         assistant_response = await api_client.get_response(messages, stream=False)
+        if (
+            streaming
+            and stream_callback
+            and assistant_response
+            and assistant_response.strip()
+        ):
+            await _tracked_stream_callback(assistant_response, "assistant")
+            replayed_retry_response = True
 
     if not assistant_response or not assistant_response.strip():
         if handler_has_pending_tool_call(api_client):
@@ -253,6 +262,16 @@ async def call_with_retry(
             handler=getattr(api_client, "client_handler", None),
         )
         raise LLMEmptyResponseError(diagnostics["user_message"])
+
+    if (
+        streaming
+        and stream_callback
+        and assistant_response
+        and assistant_response.strip()
+        and not streamed_assistant_chunk
+        and not replayed_retry_response
+    ):
+        await _tracked_stream_callback(assistant_response, "assistant")
 
     return assistant_response
 

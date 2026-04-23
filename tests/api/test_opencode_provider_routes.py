@@ -568,6 +568,132 @@ async def test_models_dev_catalog_expands_openai_and_anthropic_payloads(
 
 
 @pytest.mark.asyncio
+async def test_openai_oauth_catalog_replaces_static_openai_models(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = cast(Any, getattr(provider_catalog, "_OPENAI_CODEX_MODELS_CACHE"))
+    cache["fetched_at"] = 0.0
+    cache["cache_key"] = ""
+    cache["models"] = {}
+
+    class _CodexModelsResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return {
+                "models": [
+                    {
+                        "slug": "gpt-5.5",
+                        "display_name": "GPT-5.5",
+                        "visibility": "list",
+                        "priority": 1,
+                        "context_window": 272000,
+                        "max_context_window": 1000000,
+                        "input_modalities": ["text", "image"],
+                        "supported_reasoning_levels": [{"effort": "xhigh"}],
+                    },
+                    {
+                        "slug": "gpt-5.3-codex",
+                        "display_name": "gpt-5.3-codex",
+                        "visibility": "list",
+                        "priority": 6,
+                        "context_window": 272000,
+                        "max_context_window": 272000,
+                        "input_modalities": ["text", "image"],
+                        "supported_reasoning_levels": [{"effort": "medium"}],
+                    },
+                    {
+                        "slug": "gpt-5.4",
+                        "display_name": "gpt-5.4",
+                        "visibility": "list",
+                        "priority": 2,
+                        "context_window": 272000,
+                        "max_context_window": 1000000,
+                        "input_modalities": ["text", "image"],
+                        "supported_reasoning_levels": [{"effort": "xhigh"}],
+                    },
+                    {
+                        "slug": "codex-auto-review",
+                        "display_name": "Codex Auto Review",
+                        "visibility": "hide",
+                        "priority": 29,
+                    },
+                ]
+            }
+
+    class _CodexModelsClient:
+        def __init__(self, timeout: float) -> None:
+            self.timeout = timeout
+
+        def __enter__(self) -> _CodexModelsClient:
+            return self
+
+        def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+            del exc_type, exc, tb
+            return False
+
+        def get(
+            self,
+            url: str,
+            headers: dict[str, str],
+            params: dict[str, str],
+        ) -> _CodexModelsResponse:
+            assert url.endswith("/backend-api/codex/models")
+            assert headers["Authorization"] == "Bearer access-token"
+            assert headers["ChatGPT-Account-ID"] == "acct_123"
+            assert params["client_version"] == "1.0.0"
+            return _CodexModelsResponse()
+
+    monkeypatch.setattr(provider_catalog.httpx, "Client", _CodexModelsClient)
+    monkeypatch.setattr(provider_service, "models_dev_provider_models", lambda *_: {})
+    monkeypatch.setattr(
+        provider_service,
+        "get_provider_credentials",
+        lambda: {
+            "openai": {
+                "type": "oauth",
+                "access": "access-token",
+                "refresh": "refresh-token",
+                "expires": int(time.time() * 1000) + 3600000,
+                "accountId": "acct_123",
+            }
+        },
+    )
+
+    core = _Core(tmp_path)
+    typed_core = cast(Any, core)
+
+    providers_payload = await opencode_config_providers(core=typed_core)
+    openai = next(
+        item for item in providers_payload["providers"] if item["id"] == "openai"
+    )
+
+    assert list(openai["models"].keys()) == [
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.3-codex",
+    ]
+    assert "gpt-5" not in openai["models"]
+    assert "codex-auto-review" not in openai["models"]
+    assert providers_payload["default"]["openai"] == "gpt-5.5"
+    assert openai["models"]["gpt-5.5"]["capabilities"]["attachment"] is True
+    assert openai["models"]["gpt-5.5"]["capabilities"]["reasoning"] is True
+
+    provider_payload = await opencode_provider_list(core=typed_core)
+    openai_provider = next(
+        item for item in provider_payload["all"] if item["id"] == "openai"
+    )
+    assert list(openai_provider["models"].keys()) == [
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.3-codex",
+    ]
+    assert provider_payload["default"]["openai"] == "gpt-5.5"
+
+
+@pytest.mark.asyncio
 async def test_provider_filters_hide_disabled_models_dev_providers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -90,6 +90,56 @@ async def test_api_client_surfaces_concise_error_with_upstream_diagnostic_id(
 
 
 @pytest.mark.asyncio
+async def test_api_client_surfaces_codex_chatgpt_model_availability_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FailingAdapter:
+        async def get_response(self, *args: Any, **kwargs: Any) -> str:
+            del args, kwargs
+            error = build_llm_error(
+                message=(
+                    "OpenAI OAuth Codex stream_request failed "
+                    "(diag_id=oaoc_badmodel, status=400)"
+                ),
+                provider="openai",
+                model="gpt-5.5",
+                status_code=400,
+                provider_data={
+                    "diag_id": "oaoc_badmodel",
+                    "detail": (
+                        "The 'gpt-5.5' model is not supported when using "
+                        "Codex with a ChatGPT account."
+                    ),
+                },
+            )
+            raise LLMProviderError(error)
+
+    def _get_adapter(provider_id: str, model_config: ModelConfig) -> _FailingAdapter:
+        del provider_id, model_config
+        return _FailingAdapter()
+
+    monkeypatch.setattr(api_client_module, "get_adapter", _get_adapter)
+
+    cfg = ModelConfig(
+        model="gpt-5.5",
+        provider="openai",
+        client_preference="native",
+        api_key="test-key",
+    )
+    client = APIClient(cfg)
+
+    result = await client.get_response(
+        [{"role": "user", "content": "hello"}],
+        stream=False,
+    )
+
+    assert result == (
+        "Error: Selected model is not available through ChatGPT-backed Codex "
+        "auth. Diagnostic ID: oaoc_badmodel."
+    )
+
+
+@pytest.mark.asyncio
 async def test_api_client_generates_diagnostic_id_when_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

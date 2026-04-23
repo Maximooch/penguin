@@ -732,6 +732,8 @@ class OpenAIAdapter(BaseAdapter):
             raise RuntimeError(
                 "OpenAI OAuth Codex model resolution failed: model id is empty"
             )
+        if value.upper().startswith("GPT-"):
+            value = value.lower()
         return value, False
 
     def _extract_codex_text_content(self, content: Any) -> str:
@@ -1553,6 +1555,7 @@ class OpenAIAdapter(BaseAdapter):
                 "trace": trace or {},
                 "stage": stage,
                 "model_fallback": model_fallback,
+                "detail": detail,
             },
         )
         self._set_last_error(llm_error)

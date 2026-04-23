@@ -23,6 +23,7 @@ from penguin.web.services.provider_auth import (
 )
 from penguin.web.services.provider_catalog import (
     canonical_model_id,
+    codex_oauth_provider_models,
     collect_provider_models,
     current_model_string,
     env_connected_provider_ids,
@@ -381,6 +382,37 @@ def _merge_models_dev_catalog_models(
     return merged
 
 
+def _merge_openai_codex_catalog_models(
+    provider_models: dict[str, dict[str, dict[str, Any]]],
+    auth_records: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    openai_record = auth_records.get("openai")
+    discovered = codex_oauth_provider_models(openai_record)
+    openai_models = discovered.get("openai")
+    if not openai_models:
+        return provider_models
+
+    merged: dict[str, dict[str, dict[str, Any]]] = {
+        provider_id: dict(models) for provider_id, models in provider_models.items()
+    }
+    merged["openai"] = dict(openai_models)
+    return merged
+
+
+def _model_priority(conf: dict[str, Any]) -> int:
+    try:
+        priority = int(conf.get("priority"))
+    except Exception:
+        return 1_000_000
+    return priority if priority >= 0 else 1_000_000
+
+
+def _sorted_model_items(
+    models: dict[str, dict[str, Any]],
+) -> list[tuple[str, dict[str, Any]]]:
+    return sorted(models.items(), key=lambda item: (_model_priority(item[1]), item[0]))
+
+
 def _config_model_payload(
     model_id: str,
     provider_id: str,
@@ -623,6 +655,7 @@ def build_config_providers_payload(core: Any) -> dict[str, Any]:
         config_provider_models,
         auth_records,
     )
+    provider_models = _merge_openai_codex_catalog_models(provider_models, auth_records)
 
     current_model = (
         core.get_current_model() if hasattr(core, "get_current_model") else None
@@ -645,6 +678,7 @@ def build_config_providers_payload(core: Any) -> dict[str, Any]:
         provider_set.add(current_provider)
 
     provider_models = _merge_models_dev_catalog_models(provider_models)
+    provider_models = _merge_openai_codex_catalog_models(provider_models, auth_records)
     provider_set.update(provider_models.keys())
 
     for provider_id in sorted(provider_set):
@@ -653,7 +687,7 @@ def build_config_providers_payload(core: Any) -> dict[str, Any]:
         models = provider_models.get(provider_id, {})
         mapped_models = {
             model_id: _config_model_payload(model_id, provider_id, conf)
-            for model_id, conf in sorted(models.items(), key=lambda item: item[0])
+            for model_id, conf in _sorted_model_items(models)
         }
         source = "config"
         config_models = config_provider_models.get(provider_id, {})
@@ -699,6 +733,7 @@ def build_provider_list_payload(core: Any) -> dict[str, Any]:
         config_provider_models,
         auth_records,
     )
+    provider_models = _merge_openai_codex_catalog_models(provider_models, auth_records)
 
     all_providers: list[dict[str, Any]] = []
     default: dict[str, str] = {}
@@ -728,6 +763,7 @@ def build_provider_list_payload(core: Any) -> dict[str, Any]:
         provider_set.add(current_provider)
 
     provider_models = _merge_models_dev_catalog_models(provider_models)
+    provider_models = _merge_openai_codex_catalog_models(provider_models, auth_records)
     provider_set.update(provider_models.keys())
 
     for provider_id in sorted(provider_set):
@@ -736,7 +772,7 @@ def build_provider_list_payload(core: Any) -> dict[str, Any]:
         models = provider_models.get(provider_id, {})
         mapped_models = {
             model_id: _provider_list_model_payload(model_id, provider_id, conf)
-            for model_id, conf in sorted(models.items(), key=lambda item: item[0])
+            for model_id, conf in _sorted_model_items(models)
         }
         api_url, api_npm = provider_api(provider_id)
         all_providers.append(
