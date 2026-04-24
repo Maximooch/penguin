@@ -316,6 +316,22 @@ export function Prompt(props: PromptProps) {
         },
       },
       {
+        title: "Create project",
+        description: "Prefill a project create command",
+        value: "project.create.prefill",
+        category: "Project",
+        suggested: sdk.penguin,
+        enabled: sdk.penguin,
+        slash: {
+          name: "project-create",
+          aliases: ["project create"],
+        },
+        onSelect: (dialog) => {
+          prefillPrompt('/project create "Project Name" --description "Project description"')
+          dialog.clear()
+        },
+      },
+      {
         title: "Initialize project from Blueprint",
         description: "Prefill a project init command for Penguin bootstrap workflows",
         value: "project.init.prefill",
@@ -332,6 +348,38 @@ export function Prompt(props: PromptProps) {
         },
       },
       {
+        title: "List projects",
+        description: "Prefill a project list command",
+        value: "project.list.prefill",
+        category: "Project",
+        suggested: sdk.penguin,
+        enabled: sdk.penguin,
+        slash: {
+          name: "project-list",
+          aliases: ["project list"],
+        },
+        onSelect: (dialog) => {
+          prefillPrompt('/project list')
+          dialog.clear()
+        },
+      },
+      {
+        title: "Show project",
+        description: "Prefill a project show command",
+        value: "project.show.prefill",
+        category: "Project",
+        suggested: sdk.penguin,
+        enabled: sdk.penguin,
+        slash: {
+          name: "project-show",
+          aliases: ["project show", "project get"],
+        },
+        onSelect: (dialog) => {
+          prefillPrompt('/project show "Project ID"')
+          dialog.clear()
+        },
+      },
+      {
         title: "Start project execution",
         description: "Prefill a project start command for continuous project execution",
         value: "project.start.prefill",
@@ -344,6 +392,150 @@ export function Prompt(props: PromptProps) {
         },
         onSelect: (dialog) => {
           prefillPrompt('/project start "Project Name"')
+          dialog.clear()
+        },
+      },
+      {
+        title: "Delete project",
+        description: "Prefill a project delete command",
+        value: "project.delete.prefill",
+        category: "Project",
+        suggested: sdk.penguin,
+        enabled: sdk.penguin,
+        slash: {
+          name: "project-delete",
+          aliases: ["project delete"],
+        },
+        onSelect: (dialog) => {
+          prefillPrompt('/project delete "Project ID"')
+          dialog.clear()
+        },
+      },
+      {
+        title: "Create task",
+        description: "Prefill a task create command",
+        value: "task.create.prefill",
+        category: "Task",
+        suggested: sdk.penguin,
+        enabled: sdk.penguin,
+        slash: {
+          name: "task-create",
+          aliases: ["task create"],
+        },
+        onSelect: (dialog) => {
+          prefillPrompt('/task create "Project ID" "Task title"')
+          dialog.clear()
+        },
+      },
+      {
+        title: "List tasks",
+        description: "Prefill a task list command",
+        value: "task.list.prefill",
+        category: "Task",
+        suggested: sdk.penguin,
+        enabled: sdk.penguin,
+        slash: {
+          name: "task-list",
+          aliases: ["task list"],
+        },
+        onSelect: (dialog) => {
+          prefillPrompt('/task list')
+          dialog.clear()
+        },
+      },
+      {
+        title: "Show task",
+        description: "Prefill a task show command",
+        value: "task.show.prefill",
+        category: "Task",
+        suggested: sdk.penguin,
+        enabled: sdk.penguin,
+        slash: {
+          name: "task-show",
+          aliases: ["task show", "task get"],
+        },
+        onSelect: (dialog) => {
+          prefillPrompt('/task show "Task ID"')
+          dialog.clear()
+        },
+      },
+      {
+        title: "Start task",
+        description: "Prefill a task start command",
+        value: "task.start.prefill",
+        category: "Task",
+        suggested: sdk.penguin,
+        enabled: sdk.penguin,
+        slash: {
+          name: "task-start",
+          aliases: ["task start"],
+        },
+        onSelect: (dialog) => {
+          prefillPrompt('/task start "Task ID"')
+          dialog.clear()
+        },
+      },
+      {
+        title: "Complete task",
+        description: "Prefill a task complete command",
+        value: "task.complete.prefill",
+        category: "Task",
+        suggested: sdk.penguin,
+        enabled: sdk.penguin,
+        slash: {
+          name: "task-complete",
+          aliases: ["task complete"],
+        },
+        onSelect: (dialog) => {
+          prefillPrompt('/task complete "Task ID"')
+          dialog.clear()
+        },
+      },
+      {
+        title: "Execute task",
+        description: "Prefill a task execute command",
+        value: "task.execute.prefill",
+        category: "Task",
+        suggested: sdk.penguin,
+        enabled: sdk.penguin,
+        slash: {
+          name: "task-execute",
+          aliases: ["task execute"],
+        },
+        onSelect: (dialog) => {
+          prefillPrompt('/task execute "Task ID"')
+          dialog.clear()
+        },
+      },
+      {
+        title: "Delete task",
+        description: "Prefill a task delete command",
+        value: "task.delete.prefill",
+        category: "Task",
+        suggested: sdk.penguin,
+        enabled: sdk.penguin,
+        slash: {
+          name: "task-delete",
+          aliases: ["task delete"],
+        },
+        onSelect: (dialog) => {
+          prefillPrompt('/task delete "Task ID"')
+          dialog.clear()
+        },
+      },
+      {
+        title: "Resume task clarification",
+        description: "Prefill a task clarification resume command",
+        value: "task.resume.prefill",
+        category: "Task",
+        suggested: sdk.penguin,
+        enabled: sdk.penguin,
+        slash: {
+          name: "task-resume",
+          aliases: ["task resume", "task clarification resume"],
+        },
+        onSelect: (dialog) => {
+          prefillPrompt('/task resume "Task ID" "Clarification answer"')
           dialog.clear()
         },
       },
@@ -731,56 +923,160 @@ export function Prompt(props: PromptProps) {
     const localCommand = sdk.penguin ? parsePenguinLocalCommand(store.prompt.input) : null
     const initialDirectory = getActiveDirectory(props.sessionID ?? sdk.sessionID)
 
+    const fetchPenguinCommand = async (path: string, init?: RequestInit) => {
+      const response = await sdk.fetch(new URL(path, sdk.url), init)
+      if (!response.ok) {
+        const detail = await response.text().catch(() => `${path} failed`)
+        throw new Error(detail)
+      }
+      return response.json()
+    }
+
+    const requireArg = (value: string | undefined, usage: string): string | undefined => {
+      if (value) return value
+      toast.show({ variant: "warning", message: `Usage: ${usage}` })
+      return undefined
+    }
+
     if (sdk.penguin && localCommand) {
       const commandSessionID = props.sessionID ?? sdk.sessionID
       const keepDialog = localCommand.kind === "config" || localCommand.kind === "settings"
 
-      if (localCommand.kind === "config" || localCommand.kind === "settings") {
-        dialog.replace(() => <DialogSettings directory={initialDirectory} sessionID={commandSessionID} />)
-      } else if (localCommand.kind === "tool_details") {
-        const next = !kv.get("tool_details_visibility", true)
-        kv.set("tool_details_visibility", next)
-      } else if (localCommand.kind === "thinking") {
-        const next = !kv.get("thinking_visibility", true)
-        kv.set("thinking_visibility", next)
-      } else if (localCommand.kind === "project_init") {
-        if (!localCommand.projectName) {
-          toast.show({ variant: "warning", message: "Usage: /project init <name> [--blueprint <path>]" })
-        } else {
-          const response = await sdk.fetch(new URL('/api/v1/projects/init', sdk.url), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              name: localCommand.projectName,
-              blueprint_path: localCommand.blueprintPath,
-              workspace_path: initialDirectory,
-            }),
-          })
-          if (!response.ok) {
-            const detail = await response.text().catch(() => 'project init failed')
-            toast.show({ variant: 'error', message: `Project init failed: ${detail}` })
-          } else {
-            const payload = await response.json()
-            toast.show({ variant: 'success', message: `Project initialized: ${payload.project?.name ?? localCommand.projectName}` })
+      try {
+        if (localCommand.kind === "config" || localCommand.kind === "settings") {
+          dialog.replace(() => <DialogSettings directory={initialDirectory} sessionID={commandSessionID} />)
+        } else if (localCommand.kind === "tool_details") {
+          const next = !kv.get("tool_details_visibility", true)
+          kv.set("tool_details_visibility", next)
+          toast.show({ variant: "success", message: `Tool details ${next ? "shown" : "hidden"}` })
+        } else if (localCommand.kind === "thinking") {
+          const next = !kv.get("thinking_visibility", true)
+          kv.set("thinking_visibility", next)
+          toast.show({ variant: "success", message: `Thinking ${next ? "shown" : "hidden"}` })
+        } else if (localCommand.kind === "project_create") {
+          const projectName = requireArg(localCommand.projectName, '/project create <name> [--description <text>] [--workspace <path>]')
+          if (projectName) {
+            const payload = await fetchPenguinCommand('/api/v1/projects', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                name: projectName,
+                description: localCommand.description,
+                workspace_path: localCommand.workspacePath ?? initialDirectory,
+              }),
+            })
+            toast.show({ variant: 'success', message: `Project created: ${payload.name ?? projectName}` })
+          }
+        } else if (localCommand.kind === "project_init") {
+          const projectName = requireArg(localCommand.projectName, "/project init <name> [--blueprint <path>]")
+          if (projectName) {
+            const payload = await fetchPenguinCommand('/api/v1/projects/init', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                name: projectName,
+                blueprint_path: localCommand.blueprintPath,
+                workspace_path: initialDirectory,
+              }),
+            })
+            const blueprint = payload.blueprint
+            const taskSummary = blueprint ? ` (${blueprint.tasks_created ?? 0} created, ${blueprint.tasks_updated ?? 0} updated)` : ''
+            toast.show({ variant: 'success', message: `Project initialized: ${payload.project?.name ?? projectName}${taskSummary}` })
+          }
+        } else if (localCommand.kind === "project_list") {
+          const payload = await fetchPenguinCommand('/api/v1/projects')
+          toast.show({ variant: 'success', message: `Projects: ${payload.projects?.length ?? 0}` })
+        } else if (localCommand.kind === "project_show") {
+          const projectIdentifier = requireArg(localCommand.projectIdentifier, "/project show <project-id>")
+          if (projectIdentifier) {
+            const payload = await fetchPenguinCommand(`/api/v1/projects/${encodeURIComponent(projectIdentifier)}`)
+            toast.show({ variant: 'success', message: `Project: ${payload.name ?? projectIdentifier} (${payload.tasks?.length ?? 0} tasks)` })
+          }
+        } else if (localCommand.kind === "project_delete") {
+          const projectIdentifier = requireArg(localCommand.projectIdentifier, "/project delete <project-id>")
+          if (projectIdentifier) {
+            const payload = await fetchPenguinCommand(`/api/v1/projects/${encodeURIComponent(projectIdentifier)}`, { method: 'DELETE' })
+            toast.show({ variant: 'success', message: payload.message ?? `Project deleted: ${projectIdentifier}` })
+          }
+        } else if (localCommand.kind === "project_start") {
+          const projectIdentifier = requireArg(localCommand.projectIdentifier, "/project start <project-id-or-name>")
+          if (projectIdentifier) {
+            const payload = await fetchPenguinCommand('/api/v1/projects/start', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ project_identifier: projectIdentifier, continuous: true }),
+            })
+            toast.show({ variant: 'success', message: `Project started: ${payload.project?.name ?? projectIdentifier}` })
+          }
+        } else if (localCommand.kind === "task_create") {
+          const projectId = requireArg(localCommand.projectId, '/task create <project-id> <title>')
+          const title = requireArg(localCommand.title, '/task create <project-id> <title>')
+          if (projectId && title) {
+            const payload = await fetchPenguinCommand('/api/v1/tasks', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                project_id: projectId,
+                title,
+                description: localCommand.description,
+                parent_task_id: localCommand.parentTaskId,
+                priority: localCommand.priority,
+              }),
+            })
+            toast.show({ variant: 'success', message: `Task created: ${payload.title ?? title}` })
+          }
+        } else if (localCommand.kind === "task_list") {
+          const url = new URL('/api/v1/tasks', sdk.url)
+          if (localCommand.projectId) url.searchParams.set('project_id', localCommand.projectId)
+          if (localCommand.status) url.searchParams.set('status', localCommand.status)
+          const response = await sdk.fetch(url)
+          if (!response.ok) throw new Error(await response.text().catch(() => 'task list failed'))
+          const payload = await response.json()
+          toast.show({ variant: 'success', message: `Tasks: ${payload.tasks?.length ?? 0}` })
+        } else if (localCommand.kind === "task_show") {
+          const taskId = requireArg(localCommand.taskId, "/task show <task-id>")
+          if (taskId) {
+            const payload = await fetchPenguinCommand(`/api/v1/tasks/${encodeURIComponent(taskId)}`)
+            toast.show({ variant: 'success', message: `Task: ${payload.title ?? taskId} (${payload.status ?? 'unknown'})` })
+          }
+        } else if (localCommand.kind === "task_start") {
+          const taskId = requireArg(localCommand.taskId, "/task start <task-id>")
+          if (taskId) {
+            const payload = await fetchPenguinCommand(`/api/v1/tasks/${encodeURIComponent(taskId)}/start`, { method: 'POST' })
+            toast.show({ variant: 'success', message: payload.message ?? `Task started: ${taskId}` })
+          }
+        } else if (localCommand.kind === "task_complete") {
+          const taskId = requireArg(localCommand.taskId, "/task complete <task-id>")
+          if (taskId) {
+            const payload = await fetchPenguinCommand(`/api/v1/tasks/${encodeURIComponent(taskId)}/complete`, { method: 'POST' })
+            toast.show({ variant: 'success', message: payload.message ?? `Task completed: ${taskId}` })
+          }
+        } else if (localCommand.kind === "task_execute") {
+          const taskId = requireArg(localCommand.taskId, "/task execute <task-id>")
+          if (taskId) {
+            const payload = await fetchPenguinCommand(`/api/v1/tasks/${encodeURIComponent(taskId)}/execute`, { method: 'POST' })
+            toast.show({ variant: 'success', message: `Task execution started: ${payload.task?.title ?? taskId}` })
+          }
+        } else if (localCommand.kind === "task_delete") {
+          const taskId = requireArg(localCommand.taskId, "/task delete <task-id>")
+          if (taskId) {
+            const payload = await fetchPenguinCommand(`/api/v1/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE' })
+            toast.show({ variant: 'success', message: payload.message ?? `Task deleted: ${taskId}` })
+          }
+        } else if (localCommand.kind === "task_clarification_resume") {
+          const taskId = requireArg(localCommand.taskId, '/task resume <task-id> <answer>')
+          const answer = requireArg(localCommand.answer, '/task resume <task-id> <answer>')
+          if (taskId && answer) {
+            const payload = await fetchPenguinCommand(`/api/v1/tasks/${encodeURIComponent(taskId)}/clarification/resume`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ answer, answered_by: 'tui' }),
+            })
+            toast.show({ variant: 'success', message: `Clarification resumed: ${payload.task?.title ?? taskId}` })
           }
         }
-      } else if (localCommand.kind === "project_start") {
-        if (!localCommand.projectIdentifier) {
-          toast.show({ variant: "warning", message: "Usage: /project start <project-id-or-name>" })
-        } else {
-          const response = await sdk.fetch(new URL('/api/v1/projects/start', sdk.url), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ project_identifier: localCommand.projectIdentifier, continuous: true }),
-          })
-          if (!response.ok) {
-            const detail = await response.text().catch(() => 'project start failed')
-            toast.show({ variant: 'error', message: `Project start failed: ${detail}` })
-          } else {
-            const payload = await response.json()
-            toast.show({ variant: 'success', message: `Project started: ${payload.project?.name ?? localCommand.projectIdentifier}` })
-          }
-        }
+      } catch (error) {
+        toast.show({ variant: 'error', message: error instanceof Error ? error.message : String(error) })
       }
 
       clearPromptState({ keepDialog })

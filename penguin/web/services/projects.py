@@ -262,7 +262,12 @@ async def run_project_workflow(
     continuous: bool,
     time_limit: Optional[int],
 ) -> Dict[str, Any]:
-    """Parse a project spec into tasks, then start the resulting project."""
+    """Parse a project spec into tasks, then start the resulting project.
+
+    This is intentionally provisional. The preferred product flow is explicit
+    `project init` followed by `project start` until legacy `project run`
+    semantics are repaired into a crisp cross-surface contract.
+    """
     has_spec_path = bool(spec_path and spec_path.strip())
     has_markdown_content = bool(markdown_content and markdown_content.strip())
     if not has_spec_path and not has_markdown_content:

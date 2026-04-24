@@ -575,24 +575,25 @@ The order matters. Backend parity comes before TUI parity, because the TUI canno
 - [ ] Record the distinction and decision in this doc once confirmed.
 
 ##### Product / Surface Constraint
-- [ ] Keep `project start` as the primary user-facing execution UX in the TUI.
-- [ ] Still give web/API full access to `project run` if the kernel supports it.
+- [x] Keep `project start` as the primary user-facing execution UX in the TUI.
+- [x] Keep `project run` out of the TUI for this PR while its cross-surface contract remains legacy/deferred.
+- [x] Add provisional comments around the web/API `project run` route so it is not mistaken for the preferred TUI/product path.
 - [ ] Do **not** ship two verbs with fuzzy overlap across surfaces. If both verbs exist, users and APIs must be able to rely on a crisp distinction.
 
 #### Step 3 — Expand the TUI Surface to Match the Real Backend
 
 ##### `penguin-tui/packages/opencode/src/cli/cmd/tui/component/prompt/index.tsx`
-- [ ] Add discoverable project commands for the full backend-supported project surface.
-- [ ] Keep `project start` as the primary user-facing execution UX.
-- [ ] Add discoverable task commands once task web/API parity exists.
-- [ ] Keep prefill-vs-direct-execution behavior intentional and consistent with upstream OpenCode patterns.
-- [ ] Ensure success/failure feedback is explicit enough to be believable for users.
+- [x] Add discoverable project commands for the backend-supported project surface, excluding deferred `project run`.
+- [x] Keep `project start` as the primary user-facing execution UX.
+- [x] Add discoverable task commands once task web/API parity exists.
+- [x] Keep prefill-vs-direct-execution behavior intentional and consistent with upstream OpenCode patterns.
+- [x] Ensure success/failure feedback is explicit enough to be believable for users.
 
 ##### `penguin-tui/packages/opencode/src/cli/cmd/tui/component/prompt/penguin-local-command.ts`
-- [ ] Extend the parser to cover all backend-supported project commands.
-- [ ] Extend the parser to cover all backend-supported task commands.
-- [ ] Keep this file the single source of truth for slash command parsing and aliases.
-- [ ] Avoid drift between command palette entries and submit-path parsing.
+- [x] Extend the parser to cover all backend-supported project commands, excluding deferred `project run`.
+- [x] Extend the parser to cover all backend-supported task commands.
+- [x] Keep this file the single source of truth for slash command parsing and aliases.
+- [x] Avoid drift between command palette entries and submit-path parsing.
 
 #### Step 4 — Strong Backend + TUI Tests
 

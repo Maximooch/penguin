@@ -24,6 +24,18 @@ describe("penguin local command parser", () => {
     })
   })
 
+  test("parses project create/list/show/delete forms", () => {
+    expect(parsePenguinLocalCommand('/project create "Auth Rewrite" --description "Rewrite auth" --workspace ./auth')).toEqual({
+      kind: "project_create",
+      projectName: "Auth Rewrite",
+      description: "Rewrite auth",
+      workspacePath: "./auth",
+    })
+    expect(parsePenguinLocalCommand('/project list')).toEqual({ kind: "project_list" })
+    expect(parsePenguinLocalCommand('/project show project-1')).toEqual({ kind: "project_show", projectIdentifier: "project-1" })
+    expect(parsePenguinLocalCommand('/project delete project-1')).toEqual({ kind: "project_delete", projectIdentifier: "project-1" })
+  })
+
   test("parses dashed and spaced project start forms equivalently", () => {
     expect(parsePenguinLocalCommand('/project-start "Auth Rewrite"')).toEqual({
       kind: "project_start",
@@ -32,6 +44,36 @@ describe("penguin local command parser", () => {
     expect(parsePenguinLocalCommand('/project start "Auth Rewrite"')).toEqual({
       kind: "project_start",
       projectIdentifier: "Auth Rewrite",
+    })
+  })
+
+  test("does not parse deferred project run command", () => {
+    expect(parsePenguinLocalCommand('/project run ./blueprint.md')).toBeNull()
+  })
+
+  test("parses task command forms", () => {
+    expect(parsePenguinLocalCommand('/task create project-1 "Write tests" --description "Add regression tests" --parent parent-1 --priority 3')).toEqual({
+      kind: "task_create",
+      projectId: "project-1",
+      title: "Write tests",
+      description: "Add regression tests",
+      parentTaskId: "parent-1",
+      priority: 3,
+    })
+    expect(parsePenguinLocalCommand('/task list project-1 --status active')).toEqual({
+      kind: "task_list",
+      projectId: "project-1",
+      status: "active",
+    })
+    expect(parsePenguinLocalCommand('/task show task-1')).toEqual({ kind: "task_show", taskId: "task-1" })
+    expect(parsePenguinLocalCommand('/task start task-1')).toEqual({ kind: "task_start", taskId: "task-1" })
+    expect(parsePenguinLocalCommand('/task complete task-1')).toEqual({ kind: "task_complete", taskId: "task-1" })
+    expect(parsePenguinLocalCommand('/task execute task-1')).toEqual({ kind: "task_execute", taskId: "task-1" })
+    expect(parsePenguinLocalCommand('/task delete task-1')).toEqual({ kind: "task_delete", taskId: "task-1" })
+    expect(parsePenguinLocalCommand('/task resume task-1 "Use Postgres"')).toEqual({
+      kind: "task_clarification_resume",
+      taskId: "task-1",
+      answer: "Use Postgres",
     })
   })
 
@@ -55,6 +97,17 @@ describe("penguin prompt classification", () => {
         kind: "project_init",
         projectName: "Demo",
         blueprintPath: "./demo.md",
+      },
+    })
+  })
+
+  test("classifies task commands as local commands", () => {
+    expect(classifyPenguinPromptInput('/task list project-1')).toEqual({
+      kind: "local_command",
+      command: {
+        kind: "task_list",
+        projectId: "project-1",
+        status: undefined,
       },
     })
   })

@@ -4695,6 +4695,9 @@ async def start_project(
     )
 
 
+# NOTE: `project run` is kept as a provisional web/API compatibility surface.
+# The current product/TUI path should prefer explicit `project init` + `project start`
+# until the legacy CLI/kernel `run` contract is repaired and made consistent across surfaces.
 @router.post("/api/v1/projects/run")
 async def run_project(
     request: ProjectRunRequest, core: PenguinCore = Depends(get_core)
