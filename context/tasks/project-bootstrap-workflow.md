@@ -635,6 +635,23 @@ The order matters. Backend parity comes before TUI parity, because the TUI canno
 - `context/tasks/penguin-capability-bar.md`
   - higher-level quality bar for what “done” should mean
 
+
+### April 24, 2026 TUI Live Verification Findings
+
+Live TUI verification exposed two integration bugs that parser/route tests did not catch:
+
+- Execution commands such as `/project start ...` were treated like harmless local commands.
+  - They returned only toast feedback and did not create/navigate to a visible TUI session.
+  - Correct behavior: execution commands should create/reuse a session, navigate to it when launched from home, and run asynchronously so streaming/status can become visible.
+- Project/task execution requests were not carrying the TUI workspace directory/session into the backend RunMode path.
+  - The backend therefore executed from the Penguin repo/server working directory instead of the TUI directory.
+  - Correct behavior: TUI sends `session_id` and `directory`; web routes scope execution with `ExecutionContext`; project-scoped continuous RunMode must pass `project_id` and not synthesize a user task from the project name.
+
+Fix direction:
+- Keep non-execution project/task commands sessionless: create/list/show/delete/init.
+- Treat execution commands as session-backed: project start, task execute, task clarification resume.
+- Keep `project run` deferred from TUI until its contract is repaired.
+
 ## Bottom Line
 
 The point of `project init` + `project start` is not to hide complexity for its own sake.

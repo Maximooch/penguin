@@ -82,7 +82,7 @@ describe("penguin HTTP local command runtime", () => {
     expect(response.records[0]).toEqual({
       url: "http://127.0.0.1:9010/api/v1/projects/start",
       method: "POST",
-      body: { project_identifier: "Demo", continuous: true },
+      body: { project_identifier: "Demo", continuous: true, directory: "/tmp/workspace" },
     })
 
     response = await run({ kind: "project_delete", projectIdentifier: "project-1" }, { message: "deleted" })
@@ -136,7 +136,7 @@ describe("penguin HTTP local command runtime", () => {
     expect(response.records[0]).toEqual({
       url: "http://127.0.0.1:9010/api/v1/tasks/task-1/clarification/resume",
       method: "POST",
-      body: { answer: "Use Postgres", answered_by: "tui" },
+      body: { answer: "Use Postgres", answered_by: "tui", directory: "/tmp/workspace" },
     })
   })
 

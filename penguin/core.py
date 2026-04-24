@@ -3306,9 +3306,15 @@ class PenguinCore:
             self._continuous_mode = continuous
 
             if continuous:
-                # RunMode's start_continuous will manage its internal continuous_mode flag
+                # RunMode's start_continuous will manage its internal continuous_mode flag.
+                # Project-scoped continuous execution must select from the ready frontier;
+                # passing the project name as a task name creates a synthetic user task and
+                # drifts out of project scope.
+                project_id = (context or {}).get("project_id") if mode_type == "project" else None
                 await run_mode.start_continuous(
-                    specified_task_name=name, task_description=description
+                    specified_task_name=None if project_id else name,
+                    task_description=None if project_id else description,
+                    project_id=project_id,
                 )
             else:
                 await run_mode.start(

@@ -35,7 +35,11 @@ import { useTextareaKeybindings } from "../textarea-keybindings"
 import { exitSession } from "../../util/exit"
 import { formatPenguinPromptFailure, recoverPenguinPromptFailure } from "./penguin-send"
 import { parsePenguinLocalCommand } from "./penguin-local-command"
-import { executePenguinHttpLocalCommand, isPenguinHttpLocalCommand } from "./penguin-local-command-runtime"
+import {
+  executePenguinHttpLocalCommand,
+  isPenguinHttpLocalCommand,
+  penguinHttpLocalCommandNeedsSession,
+} from "./penguin-local-command-runtime"
 
 export type PromptProps = {
   sessionID?: string
@@ -923,10 +927,66 @@ export function Prompt(props: PromptProps) {
     }
     const localCommand = sdk.penguin ? parsePenguinLocalCommand(store.prompt.input) : null
     const initialDirectory = getActiveDirectory(props.sessionID ?? sdk.sessionID)
+    const ensureSessionID = async () => {
+      return await iife(async () => {
+        if (props.sessionID) return props.sessionID
+        if (sdk.sessionID) return sdk.sessionID
+
+        if (sdk.penguin) {
+          const createUrl = new URL("/session", sdk.url)
+          createUrl.searchParams.set("directory", initialDirectory)
+          const created = await sdk.fetch(createUrl, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              agent_mode: agentMode(),
+              providerID: selectedModel.providerID,
+              modelID: selectedModel.modelID,
+              variant,
+            }),
+          }).then(async (res) => {
+            if (!res.ok) {
+              const details = await res.text().catch(() => "")
+              throw new Error(
+                details
+                  ? `Session create failed (${res.status}): ${details}`
+                  : `Session create failed (${res.status})`,
+              )
+            }
+            return res.json().catch(() => undefined)
+          })
+          const createdID = resolveSessionID(created)
+          if (createdID) return createdID
+          const details =
+            created && typeof created === "object"
+              ? `response keys: ${Object.keys(created as Record<string, unknown>).join(",") || "none"}`
+              : `response type: ${typeof created}`
+          throw new Error(`Session create returned empty id (${details})`)
+        }
+
+        return await sdk.client.session.create({}).then((result) => {
+          const id = resolveSessionID(result)
+          if (id) return id
+          throw new Error("Session create returned empty id")
+        })
+      }).catch((e) => {
+        const msg = e instanceof Error ? e.message : String(e)
+        toast.show({
+          variant: "error",
+          message: `Failed to start session: ${msg}`,
+        })
+        return undefined
+      })
+    }
 
     if (sdk.penguin && localCommand) {
-      const commandSessionID = props.sessionID ?? sdk.sessionID
+      const commandNeedsSession = isPenguinHttpLocalCommand(localCommand) && penguinHttpLocalCommandNeedsSession(localCommand)
+      const commandSessionID = commandNeedsSession ? await ensureSessionID() : props.sessionID ?? sdk.sessionID
       const keepDialog = localCommand.kind === "config" || localCommand.kind === "settings"
+
+      if (commandNeedsSession && !commandSessionID) return
 
       try {
         if (localCommand.kind === "config" || localCommand.kind === "settings") {
@@ -940,76 +1000,49 @@ export function Prompt(props: PromptProps) {
           kv.set("thinking_visibility", next)
           toast.show({ variant: "success", message: `Thinking ${next ? "shown" : "hidden"}` })
         } else if (isPenguinHttpLocalCommand(localCommand)) {
-          const result = await executePenguinHttpLocalCommand({
+          const runCommand = () => executePenguinHttpLocalCommand({
             command: localCommand,
             fetch: sdk.fetch,
             baseUrl: sdk.url,
             directory: initialDirectory,
+            sessionID: commandSessionID,
           })
+
+          if (commandNeedsSession) {
+            clearPromptState({ keepDialog })
+            props.onSubmit?.()
+            setStore("pending", true)
+            setStore("pendingSeenBusy", false)
+            if (!props.sessionID && commandSessionID) {
+              setTimeout(() => {
+                route.navigate({ type: "session", sessionID: commandSessionID })
+              }, 0)
+            }
+            void runCommand()
+              .then((result) => toast.show(result))
+              .catch((error) => {
+                toast.show({ variant: "error", message: error instanceof Error ? error.message : String(error) })
+              })
+              .finally(() => {
+                setStore("pending", false)
+                setStore("pendingSeenBusy", false)
+              })
+            return
+          }
+
+          const result = await runCommand()
           toast.show(result)
         }
       } catch (error) {
-        toast.show({ variant: 'error', message: error instanceof Error ? error.message : String(error) })
+        toast.show({ variant: "error", message: error instanceof Error ? error.message : String(error) })
       }
-
 
       clearPromptState({ keepDialog })
       props.onSubmit?.()
       return
     }
 
-    const sessionID = await iife(async () => {
-      if (props.sessionID) return props.sessionID
-      if (sdk.sessionID) return sdk.sessionID
-
-      if (sdk.penguin) {
-        const directory = initialDirectory
-        const createUrl = new URL("/session", sdk.url)
-        createUrl.searchParams.set("directory", directory)
-        const created = await sdk.fetch(createUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            agent_mode: agentMode(),
-            providerID: selectedModel.providerID,
-            modelID: selectedModel.modelID,
-            variant,
-          }),
-        }).then(async (res) => {
-          if (!res.ok) {
-            const details = await res.text().catch(() => "")
-            throw new Error(
-              details
-                ? `Session create failed (${res.status}): ${details}`
-                : `Session create failed (${res.status})`,
-            )
-          }
-          return res.json().catch(() => undefined)
-        })
-        const createdID = resolveSessionID(created)
-        if (createdID) return createdID
-        const details =
-          created && typeof created === "object"
-            ? `response keys: ${Object.keys(created as Record<string, unknown>).join(",") || "none"}`
-            : `response type: ${typeof created}`
-        throw new Error(`Session create returned empty id (${details})`)
-      }
-
-      return await sdk.client.session.create({}).then((result) => {
-        const id = resolveSessionID(result)
-        if (id) return id
-        throw new Error("Session create returned empty id")
-      })
-    }).catch((e) => {
-      const msg = e instanceof Error ? e.message : String(e)
-      toast.show({
-        variant: "error",
-        message: `Failed to start session: ${msg}`,
-      })
-      return undefined
-    })
+    const sessionID = await ensureSessionID()
     if (!sessionID) return
     const shouldNavigate = sdk.penguin && !props.sessionID
     if (input.isDestroyed) return

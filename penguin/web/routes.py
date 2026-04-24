@@ -49,6 +49,7 @@ from penguin.llm.runtime import (
     resolve_reasoning_payload,
 )
 from penguin.run_mode import RunMode
+from penguin.system.execution_context import ExecutionContext, execution_context_scope, normalize_directory
 from penguin import __version__
 from penguin.constants import get_engine_max_iterations_default
 from penguin.utils.events import EventBus as UtilsEventBus
@@ -4590,6 +4591,8 @@ class ProjectStartRequest(BaseModel):
     project_identifier: str
     continuous: bool = True
     time_limit: Optional[int] = None
+    session_id: Optional[str] = None
+    directory: Optional[str] = None
 
 
 class ProjectRunRequest(BaseModel):
@@ -4597,6 +4600,8 @@ class ProjectRunRequest(BaseModel):
     markdown_content: Optional[str] = None
     continuous: bool = True
     time_limit: Optional[int] = None
+    session_id: Optional[str] = None
+    directory: Optional[str] = None
 
 
 class TaskCreateRequest(BaseModel):
@@ -4610,6 +4615,8 @@ class TaskCreateRequest(BaseModel):
 class ClarificationAnswerRequest(BaseModel):
     answer: str
     answered_by: Optional[str] = None
+    session_id: Optional[str] = None
+    directory: Optional[str] = None
 
 
 class TaskUpdateRequest(BaseModel):
@@ -4617,6 +4624,11 @@ class TaskUpdateRequest(BaseModel):
     description: Optional[str] = None
     status: Optional[str] = None
     priority: Optional[int] = None
+
+
+class TaskExecutionRequest(BaseModel):
+    session_id: Optional[str] = None
+    directory: Optional[str] = None
 
 
 # Project Management Endpoints
@@ -4692,6 +4704,8 @@ async def start_project(
         project_identifier=request.project_identifier,
         continuous=request.continuous,
         time_limit=request.time_limit,
+        session_id=request.session_id,
+        directory=request.directory,
     )
 
 
@@ -4709,6 +4723,8 @@ async def run_project(
         markdown_content=request.markdown_content,
         continuous=request.continuous,
         time_limit=request.time_limit,
+        session_id=request.session_id,
+        directory=request.directory,
     )
 
 
@@ -4862,12 +4878,28 @@ async def resume_task_clarification(
         if not task:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-        run_mode = RunMode(core=core)
-        result = await run_mode.resume_with_clarification(
-            task_id=task_id,
-            answer=request.answer,
-            answered_by=request.answered_by,
+        project = None
+        if task.project_id and hasattr(core.project_manager, "get_project_async"):
+            project = await core.project_manager.get_project_async(task.project_id)
+        resolved_directory = normalize_directory(request.directory) or normalize_directory(
+            getattr(project, "workspace_path", None)
         )
+        execution_context = ExecutionContext(
+            session_id=request.session_id,
+            conversation_id=request.session_id,
+            directory=resolved_directory,
+            project_root=resolved_directory,
+            workspace_root=resolved_directory,
+            request_id=f"task-resume:{task_id}",
+        )
+
+        run_mode = RunMode(core=core)
+        with execution_context_scope(execution_context):
+            result = await run_mode.resume_with_clarification(
+                task_id=task_id,
+                answer=request.answer,
+                answered_by=request.answered_by,
+            )
 
         updated_task = await core.project_manager.get_task_async(task_id)
         response_task = updated_task or task
@@ -4967,7 +4999,9 @@ async def complete_task(task_id: str, core: PenguinCore = Depends(get_core)):
 
 @router.post("/api/v1/tasks/{task_id}/execute")
 async def execute_task_from_project(
-    task_id: str, core: PenguinCore = Depends(get_core)
+    task_id: str,
+    request: Optional[TaskExecutionRequest] = None,
+    core: PenguinCore = Depends(get_core),
 ):
     """Execute a task using RunMode so web responses preserve current lifecycle truth."""
     try:
@@ -4980,18 +5014,38 @@ async def execute_task_from_project(
                 status_code=503, detail="Engine layer not available for task execution"
             )
 
+        payload = request or TaskExecutionRequest()
+        project = None
+        if task.project_id and hasattr(core.project_manager, "get_project_async"):
+            project = await core.project_manager.get_project_async(task.project_id)
+        resolved_directory = normalize_directory(payload.directory) or normalize_directory(
+            getattr(project, "workspace_path", None)
+        )
+        execution_context = ExecutionContext(
+            session_id=payload.session_id,
+            conversation_id=payload.session_id,
+            directory=resolved_directory,
+            project_root=resolved_directory,
+            workspace_root=resolved_directory,
+            request_id=f"task-execute:{task_id}",
+        )
+
         # Route project execution through RunMode so clarification-needed and other
         # non-terminal outcomes survive instead of being collapsed into fake failure/completion states.
         run_mode = RunMode(core=core)
-        result = await run_mode.start(
-            name=task.title,
-            description=task.description,
-            context={
-                "task_id": task_id,
-                "project_id": task.project_id,
-                "priority": task.priority,
-            },
-        )
+        with execution_context_scope(execution_context):
+            result = await run_mode.start(
+                name=task.title,
+                description=task.description,
+                context={
+                    "task_id": task_id,
+                    "project_id": task.project_id,
+                    "priority": task.priority,
+                    "session_id": payload.session_id,
+                    "conversation_id": payload.session_id,
+                    "directory": resolved_directory,
+                },
+            )
 
         updated_task = await core.project_manager.get_task_async(task_id)
         response_task = updated_task or task

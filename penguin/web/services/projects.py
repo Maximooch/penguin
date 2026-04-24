@@ -9,6 +9,11 @@ from penguin.config import GITHUB_REPOSITORY, WORKSPACE_PATH
 from fastapi import HTTPException
 
 from penguin.core import PenguinCore
+from penguin.system.execution_context import (
+    ExecutionContext,
+    execution_context_scope,
+    normalize_directory,
+)
 from penguin.project.blueprint_parser import (
     BlueprintDiagnostic,
     BlueprintDiagnosticsReport,
@@ -190,6 +195,8 @@ async def start_project_execution(
     project_identifier: str,
     continuous: bool,
     time_limit: Optional[int],
+    session_id: Optional[str] = None,
+    directory: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Start project-scoped execution through the real RunMode path."""
     project = resolve_project_identifier(core, project_identifier)
@@ -207,14 +214,30 @@ async def start_project_execution(
             detail=f"Project '{project.name}' has no ready tasks to execute.",
         )
 
-    result = await core.start_run_mode(
-        name=project.name,
-        description=project.description,
-        context={"project_id": project.id},
-        continuous=continuous,
-        time_limit=time_limit,
-        mode_type="project",
+    resolved_directory = normalize_directory(directory) or normalize_directory(project.workspace_path)
+    execution_context = ExecutionContext(
+        session_id=session_id,
+        conversation_id=session_id,
+        directory=resolved_directory,
+        project_root=resolved_directory,
+        workspace_root=resolved_directory,
+        request_id=f"project-start:{project.id}",
     )
+
+    with execution_context_scope(execution_context):
+        result = await core.start_run_mode(
+            name=project.name,
+            description=project.description,
+            context={
+                "project_id": project.id,
+                "session_id": session_id,
+                "conversation_id": session_id,
+                "directory": resolved_directory,
+            },
+            continuous=continuous,
+            time_limit=time_limit,
+            mode_type="project",
+        )
 
     return {
         "project": {
@@ -229,6 +252,8 @@ async def start_project_execution(
             "ready_tasks": len(ready_tasks),
             "first_ready_task": ready_tasks[0].title if ready_tasks else None,
             "result": result,
+            "session_id": session_id,
+            "directory": resolved_directory,
         },
     }
 
@@ -261,6 +286,8 @@ async def run_project_workflow(
     markdown_content: Optional[str],
     continuous: bool,
     time_limit: Optional[int],
+    session_id: Optional[str] = None,
+    directory: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Parse a project spec into tasks, then start the resulting project.
 
@@ -313,6 +340,8 @@ async def run_project_workflow(
         project_identifier=project_id,
         continuous=continuous,
         time_limit=time_limit,
+        session_id=session_id,
+        directory=directory,
     )
 
     return {

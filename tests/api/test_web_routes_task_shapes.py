@@ -526,7 +526,7 @@ async def test_start_project_returns_exact_execution_summary_from_runmode_result
     core.start_run_mode.assert_awaited_once_with(
         name=project.name,
         description=project.description,
-        context={"project_id": project.id},
+        context={"project_id": project.id, "session_id": None, "conversation_id": None, "directory": None},
         continuous=True,
         time_limit=30,
         mode_type="project",
@@ -538,7 +538,46 @@ async def test_start_project_returns_exact_execution_summary_from_runmode_result
         "ready_tasks": 2,
         "first_ready_task": "First Ready Task",
         "result": runmode_result,
+        "session_id": None,
+        "directory": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_start_project_threads_session_and_directory_into_runmode(tmp_path):
+    from penguin.web.routes import ProjectStartRequest, start_project
+
+    project = make_project()
+    project.workspace_path = str(tmp_path / "fallback")
+    ready_task = make_task("task-ready")
+    core = SimpleNamespace(
+        project_manager=SimpleNamespace(
+            get_project=Mock(return_value=project),
+            get_project_by_name=Mock(return_value=None),
+            list_projects=Mock(return_value=[project]),
+            list_tasks_async=AsyncMock(return_value=[ready_task]),
+            get_ready_tasks_async=AsyncMock(return_value=[ready_task]),
+        ),
+        start_run_mode=AsyncMock(return_value={"status": "started"}),
+    )
+
+    response = await start_project(
+        ProjectStartRequest(
+            project_identifier=project.id,
+            continuous=True,
+            session_id="session-test",
+            directory=str(tmp_path),
+        ),
+        core=core,
+    )
+
+    core.start_run_mode.assert_awaited_once()
+    call = core.start_run_mode.await_args.kwargs
+    assert call["context"]["project_id"] == project.id
+    assert call["context"]["session_id"] == "session-test"
+    assert call["context"]["directory"] == str(tmp_path.resolve())
+    assert response["execution"]["session_id"] == "session-test"
+    assert response["execution"]["directory"] == str(tmp_path.resolve())
 
 
 @pytest.mark.asyncio
@@ -605,7 +644,7 @@ async def test_start_project_routes_through_runmode_project_context():
 
     core.start_run_mode.assert_awaited_once()
     _, kwargs = core.start_run_mode.await_args
-    assert kwargs["context"] == {"project_id": project.id}
+    assert kwargs["context"] == {"project_id": project.id, "session_id": None, "conversation_id": None, "directory": None}
     assert kwargs["mode_type"] == "project"
     assert response["execution"]["ready_tasks"] == 1
     assert response["execution"]["result"]["status"] == "completed"
@@ -701,6 +740,8 @@ async def test_run_project_from_inline_markdown_parses_then_starts_project():
         project_identifier='project-1',
         continuous=True,
         time_limit=15,
+        session_id=None,
+        directory=None,
     )
     assert response['source'] == 'inline_markdown'
     assert response['parse']['creation_result']['project']['id'] == 'project-1'

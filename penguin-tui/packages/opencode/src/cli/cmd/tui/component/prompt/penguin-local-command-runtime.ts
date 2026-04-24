@@ -25,6 +25,14 @@ export type PenguinCommandResult = {
   message: string
 }
 
+export function penguinHttpLocalCommandNeedsSession(command: PenguinLocalCommand): boolean {
+  return (
+    command.kind === "project_start" ||
+    command.kind === "task_execute" ||
+    command.kind === "task_clarification_resume"
+  )
+}
+
 export function isPenguinHttpLocalCommand(command: PenguinLocalCommand): command is PenguinHttpCommand {
   return command.kind.startsWith("project_") || command.kind.startsWith("task_")
 }
@@ -60,8 +68,9 @@ export async function executePenguinHttpLocalCommand(options: {
   fetch: PenguinLocalCommandFetch
   baseUrl: string | URL
   directory: string
+  sessionID?: string
 }): Promise<PenguinCommandResult> {
-  const { command, fetch, baseUrl, directory } = options
+  const { command, fetch, baseUrl, directory, sessionID } = options
 
   if (command.kind === "project_create") {
     const projectName = requireArg(command.projectName, "/project create <name> [--description <text>] [--workspace <path>]")
@@ -127,7 +136,12 @@ export async function executePenguinHttpLocalCommand(options: {
       await fetchJson(fetch, baseUrl, "/api/v1/projects/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ project_identifier: projectIdentifier, continuous: true }),
+        body: JSON.stringify({
+          project_identifier: projectIdentifier,
+          continuous: true,
+          session_id: sessionID,
+          directory,
+        }),
       }),
     )
     return { variant: "success", message: `Project started: ${objectPayload(payload.project).name ?? projectIdentifier}` }
@@ -187,7 +201,13 @@ export async function executePenguinHttpLocalCommand(options: {
   if (command.kind === "task_execute") {
     const taskId = requireArg(command.taskId, "/task execute <task-id>")
     if (!taskId) return usage("/task execute <task-id>")
-    const payload = objectPayload(await fetchJson(fetch, baseUrl, `/api/v1/tasks/${encodeURIComponent(taskId)}/execute`, { method: "POST" }))
+    const payload = objectPayload(
+      await fetchJson(fetch, baseUrl, `/api/v1/tasks/${encodeURIComponent(taskId)}/execute`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionID, directory }),
+      }),
+    )
     return { variant: "success", message: `Task execution started: ${objectPayload(payload.task).title ?? taskId}` }
   }
 
@@ -205,7 +225,7 @@ export async function executePenguinHttpLocalCommand(options: {
     await fetchJson(fetch, baseUrl, `/api/v1/tasks/${encodeURIComponent(taskId)}/clarification/resume`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ answer, answered_by: "tui" }),
+      body: JSON.stringify({ answer, answered_by: "tui", session_id: sessionID, directory }),
     }),
   )
   return { variant: "success", message: `Clarification resumed: ${objectPayload(payload.task).title ?? taskId}` }
