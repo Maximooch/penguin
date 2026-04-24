@@ -604,10 +604,10 @@ The order matters. Backend parity comes before TUI parity, because the TUI canno
 - [ ] Keep error/precondition coverage honest, especially for ambiguous identifiers and missing resources.
 
 ##### `penguin-tui/packages/opencode/test/cli/tui/`
-- [ ] Add submit-path tests proving each exposed project command hits the correct backend endpoint.
-- [ ] Add submit-path tests proving each exposed task command hits the correct backend endpoint.
+- [x] Add submit-path/runtime-helper tests proving each exposed project command hits the correct backend endpoint.
+- [x] Add submit-path/runtime-helper tests proving each exposed task command hits the correct backend endpoint.
 - [ ] Keep no-session-bootstrap and no-navigation guarantees for local/project/task commands from home.
-- [ ] Assert visible success/failure feedback for command execution.
+- [x] Assert visible success/failure feedback for command execution through command-result coverage.
 - [ ] Keep both dashed and spaced aliases covered where supported.
 
 #### Step 5 — Final Docs / Branch Verification / PR Readiness

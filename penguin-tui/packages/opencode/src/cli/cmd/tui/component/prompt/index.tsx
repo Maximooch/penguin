@@ -35,6 +35,7 @@ import { useTextareaKeybindings } from "../textarea-keybindings"
 import { exitSession } from "../../util/exit"
 import { formatPenguinPromptFailure, recoverPenguinPromptFailure } from "./penguin-send"
 import { parsePenguinLocalCommand } from "./penguin-local-command"
+import { executePenguinHttpLocalCommand, isPenguinHttpLocalCommand } from "./penguin-local-command-runtime"
 
 export type PromptProps = {
   sessionID?: string
@@ -923,21 +924,6 @@ export function Prompt(props: PromptProps) {
     const localCommand = sdk.penguin ? parsePenguinLocalCommand(store.prompt.input) : null
     const initialDirectory = getActiveDirectory(props.sessionID ?? sdk.sessionID)
 
-    const fetchPenguinCommand = async (path: string, init?: RequestInit) => {
-      const response = await sdk.fetch(new URL(path, sdk.url), init)
-      if (!response.ok) {
-        const detail = await response.text().catch(() => `${path} failed`)
-        throw new Error(detail)
-      }
-      return response.json()
-    }
-
-    const requireArg = (value: string | undefined, usage: string): string | undefined => {
-      if (value) return value
-      toast.show({ variant: "warning", message: `Usage: ${usage}` })
-      return undefined
-    }
-
     if (sdk.penguin && localCommand) {
       const commandSessionID = props.sessionID ?? sdk.sessionID
       const keepDialog = localCommand.kind === "config" || localCommand.kind === "settings"
@@ -953,131 +939,19 @@ export function Prompt(props: PromptProps) {
           const next = !kv.get("thinking_visibility", true)
           kv.set("thinking_visibility", next)
           toast.show({ variant: "success", message: `Thinking ${next ? "shown" : "hidden"}` })
-        } else if (localCommand.kind === "project_create") {
-          const projectName = requireArg(localCommand.projectName, '/project create <name> [--description <text>] [--workspace <path>]')
-          if (projectName) {
-            const payload = await fetchPenguinCommand('/api/v1/projects', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                name: projectName,
-                description: localCommand.description,
-                workspace_path: localCommand.workspacePath ?? initialDirectory,
-              }),
-            })
-            toast.show({ variant: 'success', message: `Project created: ${payload.name ?? projectName}` })
-          }
-        } else if (localCommand.kind === "project_init") {
-          const projectName = requireArg(localCommand.projectName, "/project init <name> [--blueprint <path>]")
-          if (projectName) {
-            const payload = await fetchPenguinCommand('/api/v1/projects/init', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                name: projectName,
-                blueprint_path: localCommand.blueprintPath,
-                workspace_path: initialDirectory,
-              }),
-            })
-            const blueprint = payload.blueprint
-            const taskSummary = blueprint ? ` (${blueprint.tasks_created ?? 0} created, ${blueprint.tasks_updated ?? 0} updated)` : ''
-            toast.show({ variant: 'success', message: `Project initialized: ${payload.project?.name ?? projectName}${taskSummary}` })
-          }
-        } else if (localCommand.kind === "project_list") {
-          const payload = await fetchPenguinCommand('/api/v1/projects')
-          toast.show({ variant: 'success', message: `Projects: ${payload.projects?.length ?? 0}` })
-        } else if (localCommand.kind === "project_show") {
-          const projectIdentifier = requireArg(localCommand.projectIdentifier, "/project show <project-id>")
-          if (projectIdentifier) {
-            const payload = await fetchPenguinCommand(`/api/v1/projects/${encodeURIComponent(projectIdentifier)}`)
-            toast.show({ variant: 'success', message: `Project: ${payload.name ?? projectIdentifier} (${payload.tasks?.length ?? 0} tasks)` })
-          }
-        } else if (localCommand.kind === "project_delete") {
-          const projectIdentifier = requireArg(localCommand.projectIdentifier, "/project delete <project-id>")
-          if (projectIdentifier) {
-            const payload = await fetchPenguinCommand(`/api/v1/projects/${encodeURIComponent(projectIdentifier)}`, { method: 'DELETE' })
-            toast.show({ variant: 'success', message: payload.message ?? `Project deleted: ${projectIdentifier}` })
-          }
-        } else if (localCommand.kind === "project_start") {
-          const projectIdentifier = requireArg(localCommand.projectIdentifier, "/project start <project-id-or-name>")
-          if (projectIdentifier) {
-            const payload = await fetchPenguinCommand('/api/v1/projects/start', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ project_identifier: projectIdentifier, continuous: true }),
-            })
-            toast.show({ variant: 'success', message: `Project started: ${payload.project?.name ?? projectIdentifier}` })
-          }
-        } else if (localCommand.kind === "task_create") {
-          const projectId = requireArg(localCommand.projectId, '/task create <project-id> <title>')
-          const title = requireArg(localCommand.title, '/task create <project-id> <title>')
-          if (projectId && title) {
-            const payload = await fetchPenguinCommand('/api/v1/tasks', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                project_id: projectId,
-                title,
-                description: localCommand.description,
-                parent_task_id: localCommand.parentTaskId,
-                priority: localCommand.priority,
-              }),
-            })
-            toast.show({ variant: 'success', message: `Task created: ${payload.title ?? title}` })
-          }
-        } else if (localCommand.kind === "task_list") {
-          const url = new URL('/api/v1/tasks', sdk.url)
-          if (localCommand.projectId) url.searchParams.set('project_id', localCommand.projectId)
-          if (localCommand.status) url.searchParams.set('status', localCommand.status)
-          const response = await sdk.fetch(url)
-          if (!response.ok) throw new Error(await response.text().catch(() => 'task list failed'))
-          const payload = await response.json()
-          toast.show({ variant: 'success', message: `Tasks: ${payload.tasks?.length ?? 0}` })
-        } else if (localCommand.kind === "task_show") {
-          const taskId = requireArg(localCommand.taskId, "/task show <task-id>")
-          if (taskId) {
-            const payload = await fetchPenguinCommand(`/api/v1/tasks/${encodeURIComponent(taskId)}`)
-            toast.show({ variant: 'success', message: `Task: ${payload.title ?? taskId} (${payload.status ?? 'unknown'})` })
-          }
-        } else if (localCommand.kind === "task_start") {
-          const taskId = requireArg(localCommand.taskId, "/task start <task-id>")
-          if (taskId) {
-            const payload = await fetchPenguinCommand(`/api/v1/tasks/${encodeURIComponent(taskId)}/start`, { method: 'POST' })
-            toast.show({ variant: 'success', message: payload.message ?? `Task started: ${taskId}` })
-          }
-        } else if (localCommand.kind === "task_complete") {
-          const taskId = requireArg(localCommand.taskId, "/task complete <task-id>")
-          if (taskId) {
-            const payload = await fetchPenguinCommand(`/api/v1/tasks/${encodeURIComponent(taskId)}/complete`, { method: 'POST' })
-            toast.show({ variant: 'success', message: payload.message ?? `Task completed: ${taskId}` })
-          }
-        } else if (localCommand.kind === "task_execute") {
-          const taskId = requireArg(localCommand.taskId, "/task execute <task-id>")
-          if (taskId) {
-            const payload = await fetchPenguinCommand(`/api/v1/tasks/${encodeURIComponent(taskId)}/execute`, { method: 'POST' })
-            toast.show({ variant: 'success', message: `Task execution started: ${payload.task?.title ?? taskId}` })
-          }
-        } else if (localCommand.kind === "task_delete") {
-          const taskId = requireArg(localCommand.taskId, "/task delete <task-id>")
-          if (taskId) {
-            const payload = await fetchPenguinCommand(`/api/v1/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE' })
-            toast.show({ variant: 'success', message: payload.message ?? `Task deleted: ${taskId}` })
-          }
-        } else if (localCommand.kind === "task_clarification_resume") {
-          const taskId = requireArg(localCommand.taskId, '/task resume <task-id> <answer>')
-          const answer = requireArg(localCommand.answer, '/task resume <task-id> <answer>')
-          if (taskId && answer) {
-            const payload = await fetchPenguinCommand(`/api/v1/tasks/${encodeURIComponent(taskId)}/clarification/resume`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ answer, answered_by: 'tui' }),
-            })
-            toast.show({ variant: 'success', message: `Clarification resumed: ${payload.task?.title ?? taskId}` })
-          }
+        } else if (isPenguinHttpLocalCommand(localCommand)) {
+          const result = await executePenguinHttpLocalCommand({
+            command: localCommand,
+            fetch: sdk.fetch,
+            baseUrl: sdk.url,
+            directory: initialDirectory,
+          })
+          toast.show(result)
         }
       } catch (error) {
         toast.show({ variant: 'error', message: error instanceof Error ? error.message : String(error) })
       }
+
 
       clearPromptState({ keepDialog })
       props.onSubmit?.()
