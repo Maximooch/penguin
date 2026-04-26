@@ -1,0 +1,236 @@
+{
+  "$schema": "https://opencode.ai/theme.json",
+  "defs": {
+    "tuxBlack": "#05070C",
+    "antarctic": "#07111F",
+    "deepIce": "#0F1B2D",
+    "icePanel": "#17263A",
+    "iceEdge": "#2B405B",
+    "snow": "#F4FBFF",
+    "frost": "#BDEBFF",
+    "glacier": "#38BDF8",
+    "coldBlue": "#0284C7",
+    "beak": "#FFB020",
+    "beakDeep": "#F97316",
+    "flipper": "#8B5CF6",
+    "krill": "#FB5C7A",
+    "aurora": "#4ADE80",
+    "iceMuted": "#9DB4C8",
+    "lightSnow": "#F8FCFF",
+    "lightPanel": "#EAF7FC",
+    "lightElement": "#D7EEF7",
+    "lightText": "#09111F",
+    "lightMuted": "#52677A"
+  },
+  "theme": {
+    "primary": {
+      "dark": "beak",
+      "light": "coldBlue"
+    },
+    "secondary": {
+      "dark": "glacier",
+      "light": "#0369A1"
+    },
+    "accent": {
+      "dark": "frost",
+      "light": "beakDeep"
+    },
+    "error": {
+      "dark": "krill",
+      "light": "#D9043D"
+    },
+    "warning": {
+      "dark": "beak",
+      "light": "#B45309"
+    },
+    "success": {
+      "dark": "aurora",
+      "light": "#047857"
+    },
+    "info": {
+      "dark": "glacier",
+      "light": "#0284C7"
+    },
+    "text": {
+      "dark": "snow",
+      "light": "lightText"
+    },
+    "textMuted": {
+      "dark": "iceMuted",
+      "light": "lightMuted"
+    },
+    "selectedListItemText": {
+      "dark": "tuxBlack",
+      "light": "lightSnow"
+    },
+    "background": {
+      "dark": "tuxBlack",
+      "light": "lightSnow"
+    },
+    "backgroundPanel": {
+      "dark": "antarctic",
+      "light": "lightPanel"
+    },
+    "backgroundElement": {
+      "dark": "deepIce",
+      "light": "lightElement"
+    },
+    "backgroundMenu": {
+      "dark": "icePanel",
+      "light": "#CCEAF5"
+    },
+    "border": {
+      "dark": "iceEdge",
+      "light": "#9FC9DA"
+    },
+    "borderActive": {
+      "dark": "beak",
+      "light": "coldBlue"
+    },
+    "borderSubtle": {
+      "dark": "#20324A",
+      "light": "#BCD5E2"
+    },
+    "diffAdded": {
+      "dark": "aurora",
+      "light": "#047857"
+    },
+    "diffRemoved": {
+      "dark": "krill",
+      "light": "#BE123C"
+    },
+    "diffContext": {
+      "dark": "iceMuted",
+      "light": "lightMuted"
+    },
+    "diffHunkHeader": {
+      "dark": "glacier",
+      "light": "#0369A1"
+    },
+    "diffHighlightAdded": {
+      "dark": "#86EFAC",
+      "light": "#059669"
+    },
+    "diffHighlightRemoved": {
+      "dark": "#FDA4AF",
+      "light": "#E11D48"
+    },
+    "diffAddedBg": {
+      "dark": "#0A2D22",
+      "light": "#DCFCE7"
+    },
+    "diffRemovedBg": {
+      "dark": "#34121C",
+      "light": "#FFE4E6"
+    },
+    "diffContextBg": {
+      "dark": "antarctic",
+      "light": "#F1F8FC"
+    },
+    "diffLineNumber": {
+      "dark": "#647A90",
+      "light": "#8197A8"
+    },
+    "diffAddedLineNumberBg": {
+      "dark": "#09231B",
+      "light": "#BBF7D0"
+    },
+    "diffRemovedLineNumberBg": {
+      "dark": "#2A1018",
+      "light": "#FECDD3"
+    },
+    "markdownText": {
+      "dark": "snow",
+      "light": "lightText"
+    },
+    "markdownHeading": {
+      "dark": "beak",
+      "light": "coldBlue"
+    },
+    "markdownLink": {
+      "dark": "glacier",
+      "light": "#0369A1"
+    },
+    "markdownLinkText": {
+      "dark": "frost",
+      "light": "#0284C7"
+    },
+    "markdownCode": {
+      "dark": "aurora",
+      "light": "#047857"
+    },
+    "markdownBlockQuote": {
+      "dark": "beak",
+      "light": "#B45309"
+    },
+    "markdownEmph": {
+      "dark": "frost",
+      "light": "#0369A1"
+    },
+    "markdownStrong": {
+      "dark": "beak",
+      "light": "#B45309"
+    },
+    "markdownHorizontalRule": {
+      "dark": "iceEdge",
+      "light": "#9FC9DA"
+    },
+    "markdownListItem": {
+      "dark": "beak",
+      "light": "coldBlue"
+    },
+    "markdownListEnumeration": {
+      "dark": "glacier",
+      "light": "#0369A1"
+    },
+    "markdownImage": {
+      "dark": "flipper",
+      "light": "#7C3AED"
+    },
+    "markdownImageText": {
+      "dark": "iceMuted",
+      "light": "lightMuted"
+    },
+    "markdownCodeBlock": {
+      "dark": "snow",
+      "light": "lightText"
+    },
+    "syntaxComment": {
+      "dark": "iceMuted",
+      "light": "lightMuted"
+    },
+    "syntaxKeyword": {
+      "dark": "beak",
+      "light": "coldBlue"
+    },
+    "syntaxFunction": {
+      "dark": "glacier",
+      "light": "#0369A1"
+    },
+    "syntaxVariable": {
+      "dark": "snow",
+      "light": "lightText"
+    },
+    "syntaxString": {
+      "dark": "aurora",
+      "light": "#047857"
+    },
+    "syntaxNumber": {
+      "dark": "#FFD166",
+      "light": "#B45309"
+    },
+    "syntaxType": {
+      "dark": "flipper",
+      "light": "#7C3AED"
+    },
+    "syntaxOperator": {
+      "dark": "krill",
+      "light": "#BE123C"
+    },
+    "syntaxPunctuation": {
+      "dark": "#D6E8F2",
+      "light": "#334155"
+    },
+    "thinkingOpacity": 0.56
+  }
+}

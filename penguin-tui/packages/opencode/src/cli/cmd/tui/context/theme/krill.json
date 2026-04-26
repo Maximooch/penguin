@@ -1,0 +1,235 @@
+{
+  "$schema": "https://opencode.ai/theme.json",
+  "defs": {
+    "abyss": "#07111F",
+    "deepSea": "#0D1B2A",
+    "shelf": "#102033",
+    "current": "#1B3048",
+    "foam": "#F5F7FA",
+    "iceMist": "#BFD8E6",
+    "muted": "#8CA2B3",
+    "krill": "#FF6B6B",
+    "krillHot": "#FF4D7D",
+    "coral": "#FFB86B",
+    "amber": "#FFD166",
+    "aqua": "#8BE9FD",
+    "kelp": "#7EE787",
+    "plum": "#C084FC",
+    "lightBg": "#FFF8F5",
+    "lightPanel": "#FCEBE5",
+    "lightElement": "#F7DCD2",
+    "lightText": "#1D1414",
+    "lightMuted": "#6F5555"
+  },
+  "theme": {
+    "primary": {
+      "dark": "krill",
+      "light": "#D83A56"
+    },
+    "secondary": {
+      "dark": "coral",
+      "light": "#C45A1A"
+    },
+    "accent": {
+      "dark": "aqua",
+      "light": "#087990"
+    },
+    "error": {
+      "dark": "krillHot",
+      "light": "#B91C1C"
+    },
+    "warning": {
+      "dark": "amber",
+      "light": "#A16207"
+    },
+    "success": {
+      "dark": "kelp",
+      "light": "#15803D"
+    },
+    "info": {
+      "dark": "aqua",
+      "light": "#087990"
+    },
+    "text": {
+      "dark": "foam",
+      "light": "lightText"
+    },
+    "textMuted": {
+      "dark": "muted",
+      "light": "lightMuted"
+    },
+    "selectedListItemText": {
+      "dark": "abyss",
+      "light": "lightBg"
+    },
+    "background": {
+      "dark": "abyss",
+      "light": "lightBg"
+    },
+    "backgroundPanel": {
+      "dark": "deepSea",
+      "light": "lightPanel"
+    },
+    "backgroundElement": {
+      "dark": "shelf",
+      "light": "lightElement"
+    },
+    "backgroundMenu": {
+      "dark": "current",
+      "light": "#F2CFC3"
+    },
+    "border": {
+      "dark": "#304A63",
+      "light": "#D9B7AC"
+    },
+    "borderActive": {
+      "dark": "krill",
+      "light": "#D83A56"
+    },
+    "borderSubtle": {
+      "dark": "#22384F",
+      "light": "#E8CCC4"
+    },
+    "diffAdded": {
+      "dark": "kelp",
+      "light": "#15803D"
+    },
+    "diffRemoved": {
+      "dark": "krillHot",
+      "light": "#B91C1C"
+    },
+    "diffContext": {
+      "dark": "muted",
+      "light": "lightMuted"
+    },
+    "diffHunkHeader": {
+      "dark": "aqua",
+      "light": "#087990"
+    },
+    "diffHighlightAdded": {
+      "dark": "#A7F3B6",
+      "light": "#16A34A"
+    },
+    "diffHighlightRemoved": {
+      "dark": "#FFA0B5",
+      "light": "#DC2626"
+    },
+    "diffAddedBg": {
+      "dark": "#102A1D",
+      "light": "#DCFCE7"
+    },
+    "diffRemovedBg": {
+      "dark": "#35131D",
+      "light": "#FFE4E6"
+    },
+    "diffContextBg": {
+      "dark": "deepSea",
+      "light": "#FFF3EF"
+    },
+    "diffLineNumber": {
+      "dark": "#667D90",
+      "light": "#A48A83"
+    },
+    "diffAddedLineNumberBg": {
+      "dark": "#0D2118",
+      "light": "#BBF7D0"
+    },
+    "diffRemovedLineNumberBg": {
+      "dark": "#2B1018",
+      "light": "#FECDD3"
+    },
+    "markdownText": {
+      "dark": "foam",
+      "light": "lightText"
+    },
+    "markdownHeading": {
+      "dark": "krill",
+      "light": "#D83A56"
+    },
+    "markdownLink": {
+      "dark": "aqua",
+      "light": "#087990"
+    },
+    "markdownLinkText": {
+      "dark": "#B8F3FF",
+      "light": "#0E7490"
+    },
+    "markdownCode": {
+      "dark": "kelp",
+      "light": "#15803D"
+    },
+    "markdownBlockQuote": {
+      "dark": "coral",
+      "light": "#C45A1A"
+    },
+    "markdownEmph": {
+      "dark": "coral",
+      "light": "#C45A1A"
+    },
+    "markdownStrong": {
+      "dark": "krill",
+      "light": "#D83A56"
+    },
+    "markdownHorizontalRule": {
+      "dark": "#304A63",
+      "light": "#D9B7AC"
+    },
+    "markdownListItem": {
+      "dark": "krill",
+      "light": "#D83A56"
+    },
+    "markdownListEnumeration": {
+      "dark": "coral",
+      "light": "#C45A1A"
+    },
+    "markdownImage": {
+      "dark": "plum",
+      "light": "#7C3AED"
+    },
+    "markdownImageText": {
+      "dark": "muted",
+      "light": "lightMuted"
+    },
+    "markdownCodeBlock": {
+      "dark": "foam",
+      "light": "lightText"
+    },
+    "syntaxComment": {
+      "dark": "muted",
+      "light": "lightMuted"
+    },
+    "syntaxKeyword": {
+      "dark": "krill",
+      "light": "#D83A56"
+    },
+    "syntaxFunction": {
+      "dark": "aqua",
+      "light": "#087990"
+    },
+    "syntaxVariable": {
+      "dark": "foam",
+      "light": "lightText"
+    },
+    "syntaxString": {
+      "dark": "kelp",
+      "light": "#15803D"
+    },
+    "syntaxNumber": {
+      "dark": "coral",
+      "light": "#C45A1A"
+    },
+    "syntaxType": {
+      "dark": "plum",
+      "light": "#7C3AED"
+    },
+    "syntaxOperator": {
+      "dark": "amber",
+      "light": "#A16207"
+    },
+    "syntaxPunctuation": {
+      "dark": "iceMist",
+      "light": "#3D2A2A"
+    },
+    "thinkingOpacity": 0.56
+  }
+}

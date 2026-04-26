@@ -1,0 +1,234 @@
+{
+  "$schema": "https://opencode.ai/theme.json",
+  "defs": {
+    "polarBlack": "#050816",
+    "navy": "#0F172A",
+    "slate": "#1E293B",
+    "royalEdge": "#334155",
+    "iceWhite": "#E2E8F0",
+    "mutedIce": "#94A3B8",
+    "glacierCyan": "#7DD3FC",
+    "deepCyan": "#0284C7",
+    "emperorGold": "#FACC15",
+    "softGold": "#FDE68A",
+    "auroraGreen": "#4ADE80",
+    "redKrill": "#F43F5E",
+    "violetAurora": "#A78BFA",
+    "lightBg": "#F8FAFC",
+    "lightPanel": "#E2E8F0",
+    "lightElement": "#CBD5E1",
+    "lightText": "#0F172A",
+    "lightMuted": "#64748B"
+  },
+  "theme": {
+    "primary": {
+      "dark": "glacierCyan",
+      "light": "deepCyan"
+    },
+    "secondary": {
+      "dark": "emperorGold",
+      "light": "#A16207"
+    },
+    "accent": {
+      "dark": "violetAurora",
+      "light": "#7C3AED"
+    },
+    "error": {
+      "dark": "redKrill",
+      "light": "#BE123C"
+    },
+    "warning": {
+      "dark": "emperorGold",
+      "light": "#CA8A04"
+    },
+    "success": {
+      "dark": "auroraGreen",
+      "light": "#15803D"
+    },
+    "info": {
+      "dark": "glacierCyan",
+      "light": "deepCyan"
+    },
+    "text": {
+      "dark": "iceWhite",
+      "light": "lightText"
+    },
+    "textMuted": {
+      "dark": "mutedIce",
+      "light": "lightMuted"
+    },
+    "selectedListItemText": {
+      "dark": "polarBlack",
+      "light": "lightBg"
+    },
+    "background": {
+      "dark": "polarBlack",
+      "light": "lightBg"
+    },
+    "backgroundPanel": {
+      "dark": "navy",
+      "light": "lightPanel"
+    },
+    "backgroundElement": {
+      "dark": "slate",
+      "light": "lightElement"
+    },
+    "backgroundMenu": {
+      "dark": "#111C33",
+      "light": "#D8E2EE"
+    },
+    "border": {
+      "dark": "royalEdge",
+      "light": "#94A3B8"
+    },
+    "borderActive": {
+      "dark": "emperorGold",
+      "light": "#A16207"
+    },
+    "borderSubtle": {
+      "dark": "#25334A",
+      "light": "#CBD5E1"
+    },
+    "diffAdded": {
+      "dark": "auroraGreen",
+      "light": "#15803D"
+    },
+    "diffRemoved": {
+      "dark": "redKrill",
+      "light": "#BE123C"
+    },
+    "diffContext": {
+      "dark": "mutedIce",
+      "light": "lightMuted"
+    },
+    "diffHunkHeader": {
+      "dark": "glacierCyan",
+      "light": "deepCyan"
+    },
+    "diffHighlightAdded": {
+      "dark": "#86EFAC",
+      "light": "#16A34A"
+    },
+    "diffHighlightRemoved": {
+      "dark": "#FDA4AF",
+      "light": "#E11D48"
+    },
+    "diffAddedBg": {
+      "dark": "#10291B",
+      "light": "#DCFCE7"
+    },
+    "diffRemovedBg": {
+      "dark": "#35131D",
+      "light": "#FFE4E6"
+    },
+    "diffContextBg": {
+      "dark": "navy",
+      "light": "#F1F5F9"
+    },
+    "diffLineNumber": {
+      "dark": "#64748B",
+      "light": "#94A3B8"
+    },
+    "diffAddedLineNumberBg": {
+      "dark": "#0D2118",
+      "light": "#BBF7D0"
+    },
+    "diffRemovedLineNumberBg": {
+      "dark": "#2E1119",
+      "light": "#FECDD3"
+    },
+    "markdownText": {
+      "dark": "iceWhite",
+      "light": "lightText"
+    },
+    "markdownHeading": {
+      "dark": "emperorGold",
+      "light": "#A16207"
+    },
+    "markdownLink": {
+      "dark": "glacierCyan",
+      "light": "deepCyan"
+    },
+    "markdownLinkText": {
+      "dark": "#BAE6FD",
+      "light": "#0369A1"
+    },
+    "markdownCode": {
+      "dark": "auroraGreen",
+      "light": "#15803D"
+    },
+    "markdownBlockQuote": {
+      "dark": "softGold",
+      "light": "#A16207"
+    },
+    "markdownEmph": {
+      "dark": "glacierCyan",
+      "light": "deepCyan"
+    },
+    "markdownStrong": {
+      "dark": "emperorGold",
+      "light": "#A16207"
+    },
+    "markdownHorizontalRule": {
+      "dark": "royalEdge",
+      "light": "#94A3B8"
+    },
+    "markdownListItem": {
+      "dark": "emperorGold",
+      "light": "#A16207"
+    },
+    "markdownListEnumeration": {
+      "dark": "glacierCyan",
+      "light": "deepCyan"
+    },
+    "markdownImage": {
+      "dark": "violetAurora",
+      "light": "#7C3AED"
+    },
+    "markdownImageText": {
+      "dark": "mutedIce",
+      "light": "lightMuted"
+    },
+    "markdownCodeBlock": {
+      "dark": "iceWhite",
+      "light": "lightText"
+    },
+    "syntaxComment": {
+      "dark": "mutedIce",
+      "light": "lightMuted"
+    },
+    "syntaxKeyword": {
+      "dark": "glacierCyan",
+      "light": "deepCyan"
+    },
+    "syntaxFunction": {
+      "dark": "emperorGold",
+      "light": "#A16207"
+    },
+    "syntaxVariable": {
+      "dark": "iceWhite",
+      "light": "lightText"
+    },
+    "syntaxString": {
+      "dark": "auroraGreen",
+      "light": "#15803D"
+    },
+    "syntaxNumber": {
+      "dark": "softGold",
+      "light": "#CA8A04"
+    },
+    "syntaxType": {
+      "dark": "violetAurora",
+      "light": "#7C3AED"
+    },
+    "syntaxOperator": {
+      "dark": "redKrill",
+      "light": "#BE123C"
+    },
+    "syntaxPunctuation": {
+      "dark": "#CBD5E1",
+      "light": "#334155"
+    },
+    "thinkingOpacity": 0.52
+  }
+}

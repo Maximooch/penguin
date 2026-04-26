@@ -14,10 +14,13 @@ import dracula from "./theme/dracula.json" with { type: "json" }
 import everforest from "./theme/everforest.json" with { type: "json" }
 import flexoki from "./theme/flexoki.json" with { type: "json" }
 import github from "./theme/github.json" with { type: "json" }
+import glacierHighContrast from "./theme/glacier-high-contrast.json" with { type: "json" }
 import gruvbox from "./theme/gruvbox.json" with { type: "json" }
 import kanagawa from "./theme/kanagawa.json" with { type: "json" }
 import material from "./theme/material.json" with { type: "json" }
 import matrix from "./theme/matrix.json" with { type: "json" }
+import krill from "./theme/krill.json" with { type: "json" }
+import midnightTerminal from "./theme/midnight-terminal.json" with { type: "json" }
 import mercury from "./theme/mercury.json" with { type: "json" }
 import monokai from "./theme/monokai.json" with { type: "json" }
 import nightowl from "./theme/nightowl.json" with { type: "json" }
@@ -25,13 +28,19 @@ import nord from "./theme/nord.json" with { type: "json" }
 import osakaJade from "./theme/osaka-jade.json" with { type: "json" }
 import onedark from "./theme/one-dark.json" with { type: "json" }
 import opencode from "./theme/opencode.json" with { type: "json" }
+import emperor from "./theme/emperor.json" with { type: "json" }
 import orng from "./theme/orng.json" with { type: "json" }
 import lucentOrng from "./theme/lucent-orng.json" with { type: "json" }
 import palenight from "./theme/palenight.json" with { type: "json" }
+import penguinClassic from "./theme/penguin-classic.json" with { type: "json" }
+import polarNight from "./theme/polar-night.json" with { type: "json" }
 import rosepine from "./theme/rosepine.json" with { type: "json" }
 import solarized from "./theme/solarized.json" with { type: "json" }
+import researchLab from "./theme/research-lab.json" with { type: "json" }
+import solarIce from "./theme/solar-ice.json" with { type: "json" }
 import synthwave84 from "./theme/synthwave84.json" with { type: "json" }
 import tokyonight from "./theme/tokyonight.json" with { type: "json" }
+import tux from "./theme/tux.json" with { type: "json" }
 import vercel from "./theme/vercel.json" with { type: "json" }
 import vesper from "./theme/vesper.json" with { type: "json" }
 import zenburn from "./theme/zenburn.json" with { type: "json" }
@@ -150,10 +159,13 @@ export const DEFAULT_THEMES: Record<string, ThemeJson> = {
   everforest,
   flexoki,
   github,
+  ["glacier-high-contrast"]: glacierHighContrast,
   gruvbox,
   kanagawa,
   material,
   matrix,
+  krill,
+  ["midnight-terminal"]: midnightTerminal,
   mercury,
   monokai,
   nightowl,
@@ -161,13 +173,19 @@ export const DEFAULT_THEMES: Record<string, ThemeJson> = {
   ["one-dark"]: onedark,
   ["osaka-jade"]: osakaJade,
   opencode,
+  emperor,
   orng,
   ["lucent-orng"]: lucentOrng,
   palenight,
+  ["penguin-classic"]: penguinClassic,
+  ["polar-night"]: polarNight,
   rosepine,
   solarized,
+  ["research-lab"]: researchLab,
+  ["solar-ice"]: solarIce,
   synthwave84,
   tokyonight,
+  tux,
   vesper,
   vercel,
   zenburn,
