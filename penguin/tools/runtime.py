@@ -10,10 +10,11 @@ from __future__ import annotations
 # Keep Optional/Union annotations for Python 3.9 compatibility.
 # ruff: noqa: UP007
 import hashlib
+import inspect
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any, Literal, Optional, Union, cast
+from typing import Any, Awaitable, Callable, Literal, Optional, Union, cast
 
 from penguin.utils.parser import CodeActAction, parse_action
 
@@ -36,6 +37,9 @@ class ToolCall:
     requires_approval: bool = True
 
 
+ToolExecutor = Callable[[ToolCall], Union[Any, Awaitable[Any]]]
+
+
 @dataclass(frozen=True)
 class ToolResult:
     """Normalized result for a single tool call."""
@@ -52,6 +56,14 @@ class ToolResult:
     def __post_init__(self) -> None:
         if not self.output_hash:
             object.__setattr__(self, "output_hash", hash_tool_output(self.output))
+
+
+@dataclass(frozen=True)
+class ToolExecutionPolicy:
+    """Conservative execution policy for the serial scheduler."""
+
+    max_calls: Optional[int] = None
+    catch_exceptions: bool = False
 
 
 def hash_tool_output(output: Any) -> str:
@@ -181,6 +193,74 @@ def tool_calls_from_codeact_actions(actions: list[CodeActAction]) -> list[ToolCa
     return calls
 
 
+def select_tool_calls_for_policy(
+    tool_calls: list[ToolCall],
+    policy: Optional[ToolExecutionPolicy] = None,
+) -> list[ToolCall]:
+    """Select the calls a scheduler should execute under the policy."""
+
+    active_policy = policy or ToolExecutionPolicy()
+    if active_policy.max_calls is None:
+        return list(tool_calls)
+    return list(tool_calls[: max(active_policy.max_calls, 0)])
+
+
+async def execute_tool_calls_serially(
+    tool_calls: list[ToolCall],
+    execute_call: ToolExecutor,
+    *,
+    policy: Optional[ToolExecutionPolicy] = None,
+) -> list[ToolResult]:
+    """Execute normalized tool calls serially and return normalized results."""
+
+    active_policy = policy or ToolExecutionPolicy()
+    results: list[ToolResult] = []
+    for tool_call in select_tool_calls_for_policy(tool_calls, active_policy):
+        started_at = time.time()
+        try:
+            output = execute_call(tool_call)
+            if inspect.isawaitable(output):
+                output = await output
+            ended_at = time.time()
+            if isinstance(output, ToolResult):
+                results.append(output)
+                continue
+            if isinstance(output, dict):
+                results.append(
+                    tool_result_from_action_result(
+                        output,
+                        call_id=tool_call.id,
+                        started_at=started_at,
+                        ended_at=ended_at,
+                    )
+                )
+                continue
+            results.append(
+                ToolResult(
+                    call_id=tool_call.id,
+                    name=tool_call.name,
+                    status="completed",
+                    output=str(output if output is not None else ""),
+                    started_at=started_at,
+                    ended_at=ended_at,
+                )
+            )
+        except Exception as exc:
+            if not active_policy.catch_exceptions:
+                raise
+            results.append(
+                ToolResult(
+                    call_id=tool_call.id,
+                    name=tool_call.name,
+                    status="error",
+                    output=f"Error executing tool {tool_call.name}: {exc}",
+                    started_at=started_at,
+                    ended_at=time.time(),
+                )
+            )
+    return results
+
+
 def tool_call_from_responses_info(tool_info: dict[str, Any]) -> Optional[ToolCall]:
     """Convert provider-captured Responses tool metadata into a tool call."""
 
@@ -258,10 +338,14 @@ __all__ = [
     "ToolArguments",
     "ToolCall",
     "ToolCallSource",
+    "ToolExecutionPolicy",
+    "ToolExecutor",
     "ToolResult",
     "ToolResultStatus",
+    "execute_tool_calls_serially",
     "hash_tool_output",
     "legacy_action_result_from_tool_result",
+    "select_tool_calls_for_policy",
     "tool_call_from_responses_info",
     "tool_calls_from_actionxml",
     "tool_calls_from_codeact_actions",

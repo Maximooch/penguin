@@ -316,6 +316,16 @@ Acceptance criteria:
 - runtime can choose to execute only one or all calls by policy
 - all executed calls get stable ids and persisted results
 
+Phase 2 implementation note:
+
+- `execute_tool_calls_serially()` and `ToolExecutionPolicy` provide the first
+  conservative scheduler layer for normalized `ToolCall` objects.
+- The scheduler can execute every call in order or cap execution with
+  `max_calls`; Penguin's ActionXML path currently uses `max_calls=1` to
+  preserve existing one-action-per-iteration behavior.
+- Responses tool-call execution also goes through the scheduler with a single
+  call, keeping provider call ids and current persistence/UI behavior intact.
+
 ### Phase 3: Replace ActionExecutor Routing With Registry Routing
 
 Goals:

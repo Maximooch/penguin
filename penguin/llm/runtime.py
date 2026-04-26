@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from penguin.tools.runtime import (
+    ToolExecutionPolicy,
+    execute_tool_calls_serially,
     legacy_action_result_from_tool_result,
     tool_call_from_responses_info,
-    tool_result_from_action_result,
 )
 from penguin.utils.errors import LLMEmptyResponseError
 
@@ -346,19 +346,14 @@ async def execute_pending_tool_call(
         )
 
     try:
-        started_at = time.time()
-        output = tool_manager.execute_tool(tool_name, tool_args)
-        action_result = {
-            "action": tool_name,
-            "result": str(output if output is not None else ""),
-            "status": "completed",
-        }
-        tool_result = tool_result_from_action_result(
-            action_result,
-            call_id=tool_call.id,
-            started_at=started_at,
-            ended_at=time.time(),
+        scheduler_results = await execute_tool_calls_serially(
+            [tool_call],
+            lambda _tool_call: tool_manager.execute_tool(tool_name, tool_args),
+            policy=ToolExecutionPolicy(max_calls=1),
         )
+        if not scheduler_results:
+            return None
+        tool_result = scheduler_results[0]
         legacy_action_result = legacy_action_result_from_tool_result(tool_result)
         runtime_action_result = {
             **legacy_action_result,

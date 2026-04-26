@@ -54,10 +54,11 @@ from penguin.llm.runtime import (
 )
 from penguin.tools import ToolManager  # type: ignore
 from penguin.tools.runtime import (
+    ToolExecutionPolicy,
+    execute_tool_calls_serially,
     legacy_action_result_from_tool_result,
     tool_calls_from_codeact_actions,
     tool_results_loop_signature,
-    tool_result_from_action_result,
 )
 from penguin.config import TASK_COMPLETION_PHRASE  # Add this import
 from penguin.constants import get_engine_max_iterations_default
@@ -2521,22 +2522,16 @@ class Engine:
             "[AUTO-CONTINUE FIX] Parsed %s actions from response", len(tool_calls)
         )
 
-        # Enforce one action per iteration for incremental execution
-        for act, tool_call in zip(actions[:1], tool_calls[:1]):
-            result = await action_executor.execute_action(act)
+        async def _execute_actionxml_call(tool_call):
+            return await action_executor.execute_action(tool_call.raw)
 
-            # Format result (using standardized field names: action/result)
-            action_result = {
-                "action": act.action_type.value
-                if hasattr(act.action_type, "value")
-                else str(act.action_type),
-                "result": str(result if result is not None else ""),
-                "status": "completed",
-            }
-            tool_result = tool_result_from_action_result(
-                action_result,
-                call_id=tool_call.id,
-            )
+        scheduler_results = await execute_tool_calls_serially(
+            tool_calls,
+            _execute_actionxml_call,
+            policy=ToolExecutionPolicy(max_calls=1),
+        )
+
+        for tool_call, tool_result in zip(tool_calls[:1], scheduler_results):
             legacy_action_result = legacy_action_result_from_tool_result(tool_result)
             runtime_action_result = {
                 **legacy_action_result,
