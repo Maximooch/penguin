@@ -93,6 +93,7 @@ def _resolve_title_model_config(
         temperature=0.1,
         use_assistants_api=False,
         streaming_enabled=False,
+        service_tier=getattr(current, "service_tier", None),
         reasoning_enabled=False,
         reasoning_effort=None,
         reasoning_max_tokens=None,

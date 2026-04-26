@@ -826,6 +826,16 @@ export default function Page() {
       },
     },
     {
+      id: "model.fast.toggle",
+      title: language.t("command.model.fast.toggle"),
+      description: language.t("command.model.fast.toggle.description"),
+      category: language.t("command.category.model"),
+      slash: "fast",
+      onSelect: () => {
+        local.model.fast.toggle()
+      },
+    },
+    {
       id: "permissions.autoaccept",
       title:
         params.id && permission.isAutoAccepting(params.id, sdk.directory)

@@ -87,9 +87,17 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
 
       const [ephemeral, setEphemeral] = createStore<{
         model: Record<string, ModelKey | undefined>
+        fast?: boolean
       }>({
         model: {},
       })
+
+      const configuredServiceTier = createMemo(() => {
+        const config = sync.data.config as { service_tier?: string }
+        return config.service_tier?.toLowerCase()
+      })
+
+      const configuredFast = createMemo(() => configuredServiceTier() === "priority")
 
       const fallbackModel = createMemo<ModelKey | undefined>(() => {
         if (sync.data.config.model) {
@@ -214,6 +222,24 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
               return
             }
             this.set(variants[index + 1])
+          },
+        },
+        fast: {
+          override() {
+            return ephemeral.fast
+          },
+          enabled() {
+            return ephemeral.fast ?? configuredFast()
+          },
+          set(value: boolean | undefined) {
+            setEphemeral("fast", value)
+          },
+          toggle() {
+            this.set(!this.enabled())
+          },
+          serviceTier() {
+            if (ephemeral.fast === undefined) return undefined
+            return ephemeral.fast ? "priority" : "default"
           },
         },
       }

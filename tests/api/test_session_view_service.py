@@ -687,10 +687,13 @@ async def test_summarize_session_title_prefers_model_generation(
         )
     )
     core = _core([session])
+    core.model_config.service_tier = "priority"
+    captured: dict[str, object] = {}
 
     class _FakeAPIClient:
         def __init__(self, model_config):
             self.model_config = model_config
+            captured["service_tier"] = getattr(model_config, "service_tier", None)
 
         async def get_response(self, messages, **kwargs):
             del messages, kwargs
@@ -711,6 +714,7 @@ async def test_summarize_session_title_prefers_model_generation(
     assert result["changed"] is True
     assert result["source"] == "generated"
     assert result["title"] == "Session summarize parity"
+    assert captured["service_tier"] == "priority"
 
     info = get_session_info(core, session.id)
     assert info is not None

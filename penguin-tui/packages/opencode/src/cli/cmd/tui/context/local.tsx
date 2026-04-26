@@ -104,6 +104,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           modelID: string
         }[]
         variant: Record<string, string | undefined>
+        fast?: boolean
       }>({
         ready: false,
         model: {},
@@ -129,6 +130,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             recent: modelStore.recent,
             favorite: modelStore.favorite,
             variant: modelStore.variant,
+            fast: modelStore.fast,
           }),
         )
       }
@@ -139,6 +141,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           if (Array.isArray(x.recent)) setModelStore("recent", x.recent)
           if (Array.isArray(x.favorite)) setModelStore("favorite", x.favorite)
           if (typeof x.variant === "object" && x.variant !== null) setModelStore("variant", x.variant)
+          if (typeof x.fast === "boolean") setModelStore("fast", x.fast)
         })
         .catch(() => {})
         .finally(() => {
@@ -374,6 +377,26 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
               return
             }
             this.set(variants[index + 1])
+          },
+        },
+        fast: {
+          override() {
+            return modelStore.fast
+          },
+          enabled() {
+            const config = sync.data.config as { service_tier?: string }
+            return modelStore.fast ?? (config.service_tier?.toLowerCase() === "priority")
+          },
+          set(value: boolean | undefined) {
+            setModelStore("fast", value)
+            save()
+          },
+          toggle() {
+            this.set(!this.enabled())
+          },
+          serviceTier() {
+            if (modelStore.fast === undefined) return undefined
+            return modelStore.fast ? "priority" : "default"
           },
         },
       }

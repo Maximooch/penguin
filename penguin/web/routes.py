@@ -40,6 +40,7 @@ from PIL import Image, UnidentifiedImageError
 
 from penguin.config import WORKSPACE_PATH
 from penguin.core import PenguinCore
+from penguin.llm.model_config import normalize_openai_service_tier
 from penguin.llm.runtime import (
     apply_reasoning_variant_override as apply_llm_reasoning_variant_override,
     build_reasoning_debug_snapshot as build_llm_reasoning_debug_snapshot,
@@ -936,6 +937,7 @@ class MessageRequest(BaseModel):
     directory: Optional[str] = None
     model: Optional[str] = None
     variant: Optional[str] = None
+    service_tier: Optional[str] = None
     parts: Optional[List[Dict[str, Any]]] = None
 
 
@@ -969,6 +971,26 @@ def _restore_reasoning_variant_override(
         model_config or getattr(core, "model_config", None),
         snapshot,
     )
+
+
+def _apply_request_service_tier_override(
+    raw_service_tier: Any,
+    *,
+    model_config: Optional[Any],
+) -> Optional[str]:
+    if raw_service_tier is None:
+        return None
+
+    service_tier = normalize_openai_service_tier(raw_service_tier)
+    if service_tier is None:
+        raise HTTPException(
+            status_code=400,
+            detail="service_tier must be one of: auto, default, flex, priority",
+        )
+
+    if model_config is not None:
+        setattr(model_config, "service_tier", service_tier)
+    return service_tier
 
 
 def _resolve_include_reasoning(value: Optional[Any]) -> bool:
@@ -3710,6 +3732,17 @@ async def handle_chat_message(
         except Exception as exc:
             detail = str(exc) or f"Failed to resolve model runtime '{requested_model}'"
             raise HTTPException(status_code=400, detail=detail) from exc
+        service_tier_override = _apply_request_service_tier_override(
+            request.service_tier,
+            model_config=request_model_config,
+        )
+        if service_tier_override:
+            _request_log_info(
+                "chat.service_tier.request session=%s model=%s service_tier=%s",
+                request_session_id or "unknown",
+                getattr(request_model_config, "model", None) or requested_model,
+                service_tier_override,
+            )
 
         # Maybe?
         # # If no conversation_id is provided, try to use the most recent one
@@ -4118,6 +4151,7 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
                 data.get("include_reasoning")
             )
             variant = data.get("variant")
+            service_tier = data.get("service_tier")
             model = data.get("model")
             agent_id = data.get("agent_id")
             agent_mode = data.get("agent_mode")
@@ -4319,6 +4353,18 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
                 ) = await _resolve_request_runtime_for_model(
                     core, requested_model or None
                 )
+                service_tier_override = _apply_request_service_tier_override(
+                    service_tier,
+                    model_config=request_model_config,
+                )
+                if service_tier_override:
+                    _request_log_info(
+                        "chat.stream.service_tier.request session=%s model=%s service_tier=%s",
+                        effective_session_id or "unknown",
+                        getattr(request_model_config, "model", None)
+                        or requested_model,
+                        service_tier_override,
+                    )
                 reasoning_variant_snapshot = _apply_reasoning_variant_override(
                     core,
                     variant if isinstance(variant, str) else None,

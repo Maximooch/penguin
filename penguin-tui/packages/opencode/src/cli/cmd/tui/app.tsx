@@ -443,6 +443,23 @@ function App() {
       },
     },
     {
+      title: "Toggle fast mode",
+      value: "model.fast.toggle",
+      category: "Agent",
+      enabled: sdk.penguin,
+      slash: {
+        name: "fast",
+      },
+      onSelect: (dialog) => {
+        local.model.fast.toggle()
+        toast.show({
+          variant: "info",
+          message: local.model.fast.enabled() ? "Fast mode on" : "Fast mode off",
+        })
+        dialog.clear()
+      },
+    },
+    {
       title: "Agent cycle reverse",
       value: "agent.cycle.reverse",
       keybind: "agent_cycle_reverse",

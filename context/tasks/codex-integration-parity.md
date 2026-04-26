@@ -18,7 +18,11 @@ Recent fixes made the integration usable with the authenticated Codex model
 catalog, including latest model discovery and lowercase model IDs such as
 `gpt-5.5`.
 
-The remaining gaps are mostly request shaping and runtime/tool behavior.
+Penguin now threads OpenAI `service_tier` through the main request path and
+supports a TUI `/fast` toggle that maps to `service_tier: "priority"`.
+
+The remaining gaps are mostly catalog-gated request shaping and runtime/tool
+behavior.
 
 ## Reference Points
 
@@ -44,16 +48,15 @@ as:
 {"service_tier": "priority"}
 ```
 
-Penguin currently does not pass `service_tier` in the Codex OAuth request
-payload.
+Penguin now passes `service_tier` through OpenAI/Codex request payloads and the
+TUI can toggle fast mode with `/fast`, `/fast on`, `/fast off`, and
+`/fast status`.
 
-Expected Penguin behavior:
+Remaining Penguin behavior:
 
-- expose a safe config/UI setting for standard vs fast
 - only offer fast when the selected model advertises a fast speed tier
-- send `service_tier: "priority"` for fast mode
-- omit `service_tier` for standard mode
 - make the higher credit consumption clear in UI copy
+- decide whether OpenAI provider defaults should opt into priority service
 
 ### 2. Prompt Cache Key
 

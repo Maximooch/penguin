@@ -109,6 +109,13 @@ ToolCall(
 )
 ```
 
+`mutates_state`, `parallel_safe`, and `requires_approval` need explicit
+ownership before the scheduler consumes them. Until registry metadata exists,
+adapters should use conservative defaults: assume calls mutate state, are not
+parallel safe, and require approval when the current tool path would require
+approval. A registry-backed classifier should replace those defaults before any
+parallel scheduling policy is enabled.
+
 And a corresponding result:
 
 ```python
@@ -247,6 +254,23 @@ Acceptance criteria:
 - all current tool paths can produce normalized call/result records
 - existing action result persistence still works
 
+### Phase 1.5: Harden Current Loop Guard
+
+Goals:
+
+- improve the existing repeated-empty-tool guard before the full runtime
+  migration
+- include current action metadata such as tool name, arguments, file paths,
+  ranges, limits, status, and output hashes in the guard signature
+- keep the guard compatible with today's one-tool-at-a-time loop
+
+Acceptance criteria:
+
+- repeated reads of the same file with different ranges do not falsely trigger
+  stale-loop detection
+- truly identical empty tool-only loops still stop safely
+- guard messages explain what happened and how to continue
+
 ### Phase 2: Add Serial Tool Scheduler
 
 Goals:
@@ -278,7 +302,7 @@ Acceptance criteria:
 - `ActionExecutor` becomes a compatibility wrapper or is removed
 - `ToolManager` becomes an implementation backend, not the public routing API
 
-### Phase 4: Improve Loop Control
+### Phase 4: Replace Loop Guards With IR-Aware Control
 
 Goals:
 

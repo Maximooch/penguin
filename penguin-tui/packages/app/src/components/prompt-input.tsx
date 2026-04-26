@@ -1230,6 +1230,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     }
     const agent = currentAgent.name
     const variant = local.model.variant.current()
+    const serviceTier = local.model.fast.serviceTier()
 
     const clearInput = () => {
       prompt.reset()
@@ -1270,6 +1271,32 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     if (text.startsWith("/")) {
       const [cmdName, ...args] = text.split(" ")
       const commandName = cmdName.slice(1)
+      if (commandName === "fast") {
+        const argument = args.join(" ").trim().toLowerCase()
+        if (!argument) {
+          local.model.fast.toggle()
+        } else if (argument === "on") {
+          local.model.fast.set(true)
+        } else if (argument === "off") {
+          local.model.fast.set(false)
+        } else if (argument === "status") {
+          showToast({
+            title: local.model.fast.enabled() ? "fast mode on" : "fast mode off",
+          })
+          clearInput()
+          return
+        } else {
+          showToast({
+            title: "Usage: /fast [on|off|status]",
+          })
+          return
+        }
+        showToast({
+          title: local.model.fast.enabled() ? "fast mode on" : "fast mode off",
+        })
+        clearInput()
+        return
+      }
       const customCommand = sync.data.command.find((c) => c.name === commandName)
       if (customCommand) {
         clearInput()
@@ -1281,6 +1308,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
             agent,
             model: `${model.providerID}/${model.modelID}`,
             variant,
+            service_tier: serviceTier,
             parts: images.map((attachment) => ({
               id: Identifier.ascending("part"),
               type: "file" as const,
@@ -1588,6 +1616,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
         messageID,
         parts: requestParts,
         variant,
+        service_tier: serviceTier,
       })
     }
 
@@ -1959,6 +1988,22 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                       onClick={() => local.model.variant.cycle()}
                     >
                       {local.model.variant.current() ?? language.t("common.default")}
+                    </Button>
+                  </TooltipKeybind>
+                </Show>
+                <Show when={local.model.fast.enabled()}>
+                  <TooltipKeybind
+                    placement="top"
+                    title={language.t("command.model.fast.toggle")}
+                    keybind={command.keybind("model.fast.toggle")}
+                  >
+                    <Button
+                      data-action="model-fast-toggle"
+                      variant="ghost"
+                      class="text-text-base _hidden group-hover/prompt-input:inline-block lowercase text-12-regular"
+                      onClick={() => local.model.fast.toggle()}
+                    >
+                      fast
                     </Button>
                   </TooltipKeybind>
                 </Show>

@@ -889,6 +889,7 @@ export function Prompt(props: PromptProps) {
     }
     const currentMode = store.mode
     const variant = local.model.variant.current()
+    const serviceTier = sdk.penguin ? local.model.fast.serviceTier() : undefined
     const agent = local.agent.current()
     const getActiveDirectory = (activeSessionID?: string) => {
       return (
@@ -925,6 +926,34 @@ export function Prompt(props: PromptProps) {
         setStore("prompt", "input", "")
       })
     }
+    const handleFastCommand = () => {
+      const [command, argument = ""] = trimmed.split(/\s+/, 2)
+      if (command !== "/fast") return false
+
+      const value = argument.toLowerCase()
+      if (!value) {
+        local.model.fast.toggle()
+      } else if (value === "on") {
+        local.model.fast.set(true)
+      } else if (value === "off") {
+        local.model.fast.set(false)
+      } else if (value !== "status") {
+        toast.show({
+          variant: "warning",
+          message: "Usage: /fast [on|off|status]",
+        })
+        return true
+      }
+
+      toast.show({
+        variant: "info",
+        message: local.model.fast.enabled() ? "Fast mode on" : "Fast mode off",
+      })
+      clearPromptState()
+      props.onSubmit?.()
+      return true
+    }
+    if (sdk.penguin && handleFastCommand()) return
     const localCommand = sdk.penguin ? parsePenguinLocalCommand(store.prompt.input) : null
     const initialDirectory = getActiveDirectory(props.sessionID ?? sdk.sessionID)
     const ensureSessionID = async () => {
@@ -1180,6 +1209,7 @@ export function Prompt(props: PromptProps) {
           directory,
           streaming: true,
           variant,
+          service_tier: serviceTier,
           client_message_id: messageID,
           parts: nonTextParts,
         }),
@@ -1240,6 +1270,7 @@ export function Prompt(props: PromptProps) {
         model: `${selectedModel.providerID}/${selectedModel.modelID}`,
         messageID,
         variant,
+        service_tier: serviceTier,
         parts: nonTextParts
           .filter((x) => x.type === "file")
           .map((x) => ({
@@ -1256,6 +1287,7 @@ export function Prompt(props: PromptProps) {
           agent: agent.name,
           model: selectedModel,
           variant,
+          service_tier: serviceTier,
           parts: [
             {
               id: Identifier.ascending("part"),
@@ -1726,6 +1758,12 @@ export function Prompt(props: PromptProps) {
                     <text fg={theme.textMuted}>·</text>
                     <text>
                       <span style={{ fg: theme.warning, bold: true }}>{local.model.variant.current()}</span>
+                    </text>
+                  </Show>
+                  <Show when={sdk.penguin && local.model.fast.enabled()}>
+                    <text fg={theme.textMuted}>·</text>
+                    <text>
+                      <span style={{ fg: theme.warning, bold: true }}>fast</span>
                     </text>
                   </Show>
                 </box>
