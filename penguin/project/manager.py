@@ -428,6 +428,77 @@ class ProjectManager:
         logger.info(f"Task {task_id} status changed to {new_status.value}")
         return True
     
+    def mark_task_execution_ready_for_review(
+        self,
+        task_id: str,
+        executor_id: str = "runmode",
+        response: str = "",
+        task_prompt: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Task:
+        """Mark a successful task execution as DONE and ready for review.
+
+        This is the ProjectManager-owned bridge for execution paths that run a
+        project task outside WorkflowOrchestrator but still need to persist the
+        canonical ITUV lifecycle transition. It intentionally stops at
+        PENDING_REVIEW; approval to COMPLETED is a separate review action.
+        """
+        task = self.storage.get_task(task_id)
+        if not task:
+            raise TaskNotFoundError(f"Task '{task_id}' not found", task_id)
+
+        if task.status in {TaskStatus.PENDING_REVIEW, TaskStatus.COMPLETED}:
+            return task
+
+        if task.status not in {TaskStatus.ACTIVE, TaskStatus.RUNNING}:
+            raise StateTransitionError(
+                f"Cannot mark task execution ready for review from status {task.status.value}",
+                task.status.value,
+                TaskStatus.PENDING_REVIEW.value,
+                task_id,
+            )
+
+        if not task.get_current_execution():
+            task.start_execution(
+                executor_id=executor_id,
+                task_prompt=task_prompt or f"Project task execution: {task.title}",
+                context=context or {},
+            )
+
+        task.complete_current_execution(
+            ExecutionResult.SUCCESS,
+            response=response,
+        )
+
+        self.storage.update_task(task)
+        self._publish_event("task_status_changed", {
+            "task_id": task.id,
+            "old_status": TaskStatus.RUNNING.value,
+            "new_status": TaskStatus.PENDING_REVIEW.value,
+            "reason": "Execution successful; pending review",
+        })
+        return task
+
+    async def mark_task_execution_ready_for_review_async(
+        self,
+        task_id: str,
+        executor_id: str = "runmode",
+        response: str = "",
+        task_prompt: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Task:
+        """Async version of mark_task_execution_ready_for_review."""
+        return await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: self.mark_task_execution_ready_for_review(
+                task_id=task_id,
+                executor_id=executor_id,
+                response=response,
+                task_prompt=task_prompt,
+                context=context,
+            ),
+        )
+
     async def update_task_status_async(
         self, 
         task_id: str, 
@@ -776,22 +847,44 @@ class ProjectManager:
 
         return False
 
-    def _is_task_blocked(self, task: Task) -> bool:
-        """Check if a task is blocked by incomplete dependencies."""
+    def _get_unsatisfied_dependencies(
+        self,
+        task: Task,
+        task_map: Optional[Dict[str, Task]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return dependency details that currently block a task."""
         if not task.dependencies:
-            return False
+            return []
 
         dependency_specs = task.dependency_specs or [
             TaskDependency(task_id=dep_id)
             for dep_id in task.dependencies
         ]
 
+        blockers: List[Dict[str, Any]] = []
         for dependency in dependency_specs:
-            dep_task = self.storage.get_task(dependency.task_id)
-            if not self._is_dependency_satisfied(dependency, dep_task):
-                return True
+            dep_task = (
+                task_map.get(dependency.task_id)
+                if task_map is not None
+                else self.storage.get_task(dependency.task_id)
+            )
+            if self._is_dependency_satisfied(dependency, dep_task):
+                continue
 
-        return False
+            blockers.append({
+                "task_id": dependency.task_id,
+                "policy": dependency.policy.value,
+                "artifact_key": dependency.artifact_key,
+                "status": dep_task.status.value if dep_task else None,
+                "phase": dep_task.phase.value if dep_task else None,
+                "title": dep_task.title if dep_task else None,
+            })
+
+        return blockers
+
+    def _is_task_blocked(self, task: Task) -> bool:
+        """Check if a task is blocked by incomplete dependencies."""
+        return bool(self._get_unsatisfied_dependencies(task))
     
     def _publish_event(self, event_type: str, data: Dict[str, Any]) -> None:
         """Publish an event if EventBus is available."""
@@ -904,6 +997,33 @@ class ProjectManager:
             None, self.get_ready_tasks, project_id
         )
     
+    def get_blocked_ready_candidates(self, project_id: str) -> List[Dict[str, Any]]:
+        """Return active project tasks blocked only by unsatisfied dependencies."""
+        tasks = self.list_tasks(project_id)
+        task_map = {task.id: task for task in tasks}
+        blocked: List[Dict[str, Any]] = []
+
+        for task in tasks:
+            if task.status != TaskStatus.ACTIVE or not task.dependencies:
+                continue
+
+            blockers = self._get_unsatisfied_dependencies(task, task_map)
+            if blockers:
+                blocked.append({
+                    "task_id": task.id,
+                    "title": task.title,
+                    "blueprint_id": task.blueprint_id,
+                    "blockers": blockers,
+                })
+
+        return blocked
+
+    async def get_blocked_ready_candidates_async(self, project_id: str) -> List[Dict[str, Any]]:
+        """Async version of get_blocked_ready_candidates."""
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self.get_blocked_ready_candidates, project_id
+        )
+
     def get_next_task_dag(self, project_id: str) -> Optional[Task]:
         """Get the next task to execute from the DAG frontier.
         

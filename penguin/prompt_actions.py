@@ -888,13 +888,14 @@ COMPLETION_TOOLS = """
 **Important:** Put the final answer in normal assistant content before calling `finish_response`. Do not pass summary text here; summaries belong on `finish_task`.
 
 ### finish_task  
-**Purpose:** Mark a formal task as complete.  
-**When to use:** Finished implementing a feature or resolving a task.  
-**Tool call syntax:** `<finish_task>status</finish_task>`  
-**Parameters:**
+**Purpose:** Signal that formal task work is ready for human review.  
+**When to use:** Acceptance criteria are satisfied, or progress is partial/blocked and should stop.  
+**Tool call syntax:** `<finish_task>{"status":"done","summary":"What changed and how it was verified"}</finish_task>`  
+**Parameters:** JSON object or plain status string. Prefer JSON.
 - `status`: "done" (default), "partial", or "blocked"
+- `summary`: short review note describing what was accomplished
 
-**Important:** Call these tools explicitly. Never rely on implicit completion.
+**Important:** Call this tool explicitly. Do not emit `TASK_COMPLETED` as plain text; that phrase is legacy compatibility only.
 """
 
 
