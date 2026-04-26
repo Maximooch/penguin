@@ -1157,6 +1157,7 @@ class AgentModelSettings:
     streaming_enabled: Optional[bool] = None
     vision_enabled: Optional[bool] = None
     use_assistants_api: Optional[bool] = None
+    service_tier: Optional[str] = None
     reasoning: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -1174,6 +1175,7 @@ class AgentModelSettings:
             streaming_enabled=data.get("streaming_enabled"),
             vision_enabled=data.get("vision_enabled"),
             use_assistants_api=data.get("use_assistants_api"),
+            service_tier=data.get("service_tier"),
             reasoning=dict(data.get("reasoning", {})),
         )
 
@@ -1191,6 +1193,7 @@ class AgentModelSettings:
             "streaming_enabled": self.streaming_enabled,
             "vision_enabled": self.vision_enabled,
             "use_assistants_api": self.use_assistants_api,
+            "service_tier": self.service_tier,
         }
         if self.reasoning:
             payload["reasoning"] = dict(self.reasoning)
@@ -1350,8 +1353,17 @@ class Config:
             
         result = {}
         # Common model parameters
-        attrs = ["provider", "client_preference", "streaming_enabled", "api_base", 
-                 "max_output_tokens", "temperature", "vision_enabled", "use_assistants_api"]
+        attrs = [
+            "provider",
+            "client_preference",
+            "streaming_enabled",
+            "api_base",
+            "max_output_tokens",
+            "temperature",
+            "vision_enabled",
+            "use_assistants_api",
+            "service_tier",
+        ]
         
         for attr in attrs:
             if hasattr(self.model_config, attr):
@@ -1475,6 +1487,12 @@ class Config:
             if "vision_enabled" in default_model_settings:
                 llm_model_config.vision_enabled = bool(
                     default_model_settings.get("vision_enabled")
+                )
+            if "service_tier" in default_model_settings:
+                from penguin.llm.model_config import normalize_openai_service_tier
+
+                llm_model_config.service_tier = normalize_openai_service_tier(
+                    default_model_settings.get("service_tier")
                 )
 
         # Resolve agent personas (Phase 1+ configuration surface)

@@ -158,7 +158,12 @@ from penguin._version import __version__ as PENGUIN_VERSION
 
 # LLM and API
 from penguin.llm.api_client import APIClient
-from penguin.llm.model_config import ModelConfig, safe_context_window, fetch_model_specs
+from penguin.llm.model_config import (
+    ModelConfig,
+    fetch_model_specs,
+    normalize_openai_service_tier,
+    safe_context_window,
+)
 from penguin.llm.stream_handler import (
     StreamingStateManager,
     AgentStreamingStateManager,
@@ -452,6 +457,9 @@ class PenguinCore:
                         ),
                         max_context_window_tokens=getattr(
                             config.model_config, "max_context_window_tokens", None
+                        ),
+                        service_tier=getattr(
+                            config.model_config, "service_tier", None
                         ),
                     )
                     logger.info(
@@ -3528,6 +3536,10 @@ class PenguinCore:
         )
 
         new_model_config.model = runtime_model_id
+        if "service_tier" not in model_specific:
+            new_model_config.service_tier = normalize_openai_service_tier(
+                getattr(getattr(self, "model_config", None), "service_tier", None)
+            )
         if context_length is not None:
             new_model_config.max_context_window_tokens = context_length
             new_model_config.max_history_tokens = safe_window

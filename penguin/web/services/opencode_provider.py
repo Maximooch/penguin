@@ -602,6 +602,9 @@ def build_config_payload(core: Any) -> dict[str, Any]:
         if isinstance(supports_reasoning, bool):
             reasoning["supported"] = supports_reasoning
         payload["reasoning"] = reasoning
+        service_tier = getattr(model_config, "service_tier", None)
+        if isinstance(service_tier, str) and service_tier.strip():
+            payload["service_tier"] = service_tier.strip()
 
     runtime_config = getattr(core, "runtime_config", None)
     if runtime_config is not None:

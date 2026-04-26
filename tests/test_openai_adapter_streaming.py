@@ -177,6 +177,88 @@ async def test_openai_adapter_streaming_ignores_stream_options(
 
 
 @pytest.mark.asyncio
+async def test_openai_adapter_sends_service_tier_to_native_responses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_OAUTH_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_ACCOUNT_ID", raising=False)
+    monkeypatch.setattr(
+        "penguin.llm.adapters.openai.get_provider_credential",
+        lambda _provider_id: None,
+    )
+
+    model_config = ModelConfig(
+        model="gpt-5.2",
+        provider="openai",
+        client_preference="native",
+        api_key="sk-test",
+        streaming_enabled=True,
+        service_tier="priority",
+    )
+    adapter = OpenAIAdapter(model_config)
+    adapter.client = _DummyOpenAIClient()  # type: ignore[assignment]
+
+    result = await adapter.get_response(
+        [{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+
+    assert result == "hello"
+    assert adapter.client.responses.last_stream_kwargs is not None
+    assert adapter.client.responses.last_stream_kwargs["service_tier"] == "priority"
+
+
+@pytest.mark.asyncio
+async def test_openai_adapter_sends_service_tier_to_oauth_codex_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_OAUTH_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_ACCOUNT_ID", raising=False)
+
+    model_config = ModelConfig(
+        model="gpt-5.2",
+        provider="openai",
+        client_preference="native",
+        api_key="sk-test",
+        service_tier="flex",
+    )
+    adapter = OpenAIAdapter(model_config)
+    captured: dict[str, Any] = {}
+
+    async def fake_stream_codex_oauth(
+        payload: dict[str, Any],
+        headers: dict[str, str],
+        stream_callback: Any,
+        **kwargs: Any,
+    ) -> str:
+        del headers, stream_callback, kwargs
+        captured.update(payload)
+        return "ok"
+
+    monkeypatch.setattr(adapter, "_stream_codex_oauth", fake_stream_codex_oauth)
+
+    result = await adapter._create_oauth_codex_completion(
+        processed_messages=[{"role": "user", "content": "hi"}],
+        oauth_record={"access": "oauth-access-token", "accountId": "acct_123"},
+        max_output_tokens=None,
+        temperature=0.7,
+        stream=True,
+        stream_callback=None,
+        reasoning_config=None,
+        instructions=None,
+        previous_response_id=None,
+        conversation_id=None,
+        response_format=None,
+        tools=None,
+        tool_choice=None,
+        service_tier=adapter._get_service_tier(),
+    )
+
+    assert result == "ok"
+    assert captured["service_tier"] == "flex"
+
+
+@pytest.mark.asyncio
 async def test_openai_adapter_streaming_emits_callback_for_final_only_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

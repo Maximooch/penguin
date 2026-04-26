@@ -1,15 +1,23 @@
+import asyncio
+import json
+import logging
 import os
+import time
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, Literal, Optional
 
 from penguin.constants import get_default_max_history_tokens
+
+logger = logging.getLogger(__name__)
 
 
 CONTEXT_WINDOW_SAFETY_FRACTION = max(
     min(float(os.getenv("PENGUIN_CONTEXT_SAFETY_FRACTION", "0.85")), 0.95),
     0.5,
 )
+OPENAI_SERVICE_TIERS = frozenset({"auto", "default", "flex", "priority"})
 
 
 def safe_context_window(context_length: Optional[int]) -> Optional[int]:
@@ -17,6 +25,23 @@ def safe_context_window(context_length: Optional[int]) -> Optional[int]:
     if context_length is None or context_length <= 0:
         return None
     return max(int(context_length * CONTEXT_WINDOW_SAFETY_FRACTION), 1)
+
+
+def normalize_openai_service_tier(value: Any) -> Optional[str]:
+    """Return a valid OpenAI service tier value, or None when unset/invalid."""
+    if value is None:
+        return None
+    service_tier = str(value).strip().lower()
+    if not service_tier:
+        return None
+    if service_tier not in OPENAI_SERVICE_TIERS:
+        logger.warning(
+            "Ignoring unsupported OpenAI service_tier=%r; expected one of %s",
+            value,
+            ", ".join(sorted(OPENAI_SERVICE_TIERS)),
+        )
+        return None
+    return service_tier
 
 
 @dataclass
@@ -44,6 +69,7 @@ class ModelConfig:
     use_responses_api: bool = False
     interrupt_on_action: bool = True
     interrupt_on_tool_call: bool = False
+    service_tier: Optional[Literal["auto", "default", "flex", "priority"]] = None
 
     # Reasoning tokens support
     reasoning_enabled: bool = False
@@ -58,12 +84,15 @@ class ModelConfig:
     debug_upstream: bool = False
 
     def __post_init__(self):
+        self.service_tier = normalize_openai_service_tier(self.service_tier)
+
         if self.api_key is None and self.provider:
             self.api_key = os.getenv(f"{self.provider.upper()}_API_KEY")
 
         if self.client_preference == "litellm" and "/" not in self.model:
             print(
-                f"Warning: Model '{self.model}' for LiteLLM preference lacks provider prefix. Assuming '{self.provider}/{self.model}'."
+                f"Warning: Model '{self.model}' for LiteLLM preference lacks "
+                f"provider prefix. Assuming '{self.provider}/{self.model}'."
             )
             self.model = f"{self.provider}/{self.model}"
 
@@ -245,6 +274,7 @@ class ModelConfig:
             "use_responses_api": self.use_responses_api,
             "interrupt_on_action": self.interrupt_on_action,
             "interrupt_on_tool_call": self.interrupt_on_tool_call,
+            "service_tier": self.service_tier,
             "debug_upstream": self.debug_upstream,
         }
         if self.api_base:
@@ -277,7 +307,7 @@ class ModelConfig:
                 "PENGUIN_MODEL", f"{provider}/claude-3-5-sonnet-20240620"
             )
         elif client_pref == "openrouter":
-            # OpenRouter models are typically prefixed with the provider, e.g. "openai/gpt-4o"
+            # OpenRouter models are typically prefixed with the provider.
             default_model = os.getenv("PENGUIN_MODEL", "openai/gpt-4o")
         else:
             default_model = os.getenv("PENGUIN_MODEL", "claude-3-5-sonnet-20240620")
@@ -307,6 +337,10 @@ class ModelConfig:
         )  # TODO: renaming Penguin env vars
         max_context_env = os.getenv("PENGUIN_MAX_CONTEXT_WINDOW_TOKENS") or os.getenv(
             "PENGUIN_CONTEXT_WINDOW"
+        )
+        service_tier = (
+            os.getenv("PENGUIN_OPENAI_SERVICE_TIER")
+            or os.getenv("OPENAI_SERVICE_TIER")
         )
 
         return cls(
@@ -343,6 +377,7 @@ class ModelConfig:
                 "PENGUIN_INTERRUPT_ON_TOOL_CALL", "false"
             ).lower()
             == "true",
+            service_tier=normalize_openai_service_tier(service_tier),
             debug_upstream=os.getenv("OPENROUTER_DEBUG", "").lower() == "true",
         )
 
@@ -354,11 +389,11 @@ class ModelConfig:
         client_preference: Optional[str] = None,
         model_configs: Optional[Dict[str, Dict[str, Any]]] = None,
     ):
-        """Create ModelConfig for a specific model, dynamically resolving from model_configs.
+        """Create ModelConfig for a model, resolving from model_configs.
 
         Args:
             model_name: The model identifier (e.g., "openai/gpt-5")
-            provider: Provider override (if None, extracted from model_name or model_configs)
+            provider: Provider override.
             client_preference: Client preference override
             model_configs: Dict of model-specific configs from config.yml
 
@@ -447,21 +482,17 @@ class ModelConfig:
             reasoning_exclude=model_specific.get("reasoning", {}).get("exclude", False)
             if isinstance(model_specific.get("reasoning"), dict)
             else False,
+            service_tier=normalize_openai_service_tier(
+                model_specific.get("service_tier")
+                or os.getenv("PENGUIN_OPENAI_SERVICE_TIER")
+                or os.getenv("OPENAI_SERVICE_TIER")
+            ),
         )
 
 
 # =============================================================================
 # MODEL SPECS SERVICE - Cached OpenRouter API fetching
 # =============================================================================
-
-import asyncio
-import json
-import logging
-import time
-from pathlib import Path
-
-logger = logging.getLogger(__name__)
-
 
 @dataclass
 class ModelSpecs:

@@ -26,7 +26,7 @@ from penguin.web.services.provider_credentials import (
 
 from ..api_client import ConnectionPoolManager
 from ..contracts import FinishReason, LLMError, LLMProviderError, LLMUsage
-from ..model_config import ModelConfig
+from ..model_config import ModelConfig, normalize_openai_service_tier
 from ..provider_transform import (
     build_llm_error,
     extract_retry_after_seconds,
@@ -159,6 +159,10 @@ class OpenAIAdapter(BaseAdapter):
         if not isinstance(self._last_error, LLMError):
             return None
         return self._last_error
+
+    def _get_service_tier(self) -> Optional[str]:
+        value = getattr(self.model_config, "service_tier", None)
+        return normalize_openai_service_tier(value)
 
     def _set_last_finish_reason(self, finish_reason: Any) -> FinishReason:
         self._last_finish_reason = normalize_finish_reason(finish_reason)
@@ -463,14 +467,18 @@ class OpenAIAdapter(BaseAdapter):
         response_format: Optional[Dict[str, Any]] = kwargs.get("response_format")
         tools = normalize_openai_responses_tools(kwargs.get("tools"))
         tool_choice = normalize_openai_responses_tool_choice(kwargs.get("tool_choice"))
+        service_tier = self._get_service_tier()
 
         oauth_record = await self._resolve_oauth_record_for_request()
         if oauth_record is not None:
             flags = _oauth_trace_flags(oauth_record)
             _log_info(
-                "openai.request.route route=oauth_codex model=%s stream=%s has_access=%s has_refresh=%s has_expires=%s has_account=%s",
+                "openai.request.route route=oauth_codex model=%s stream=%s "
+                "service_tier=%s has_access=%s has_refresh=%s has_expires=%s "
+                "has_account=%s",
                 self.model_config.model,
                 stream,
+                service_tier,
                 flags["has_access"],
                 flags["has_refresh"],
                 flags["has_expires"],
@@ -490,12 +498,15 @@ class OpenAIAdapter(BaseAdapter):
                 response_format=response_format,
                 tools=tools,
                 tool_choice=tool_choice,
+                service_tier=service_tier,
             )
 
         _log_info(
-            "openai.request.route route=native_api model=%s stream=%s oauth_env=%s api_key_present=%s",
+            "openai.request.route route=native_api model=%s stream=%s "
+            "service_tier=%s oauth_env=%s api_key_present=%s",
             self.model_config.model,
             stream,
+            service_tier,
             bool(str(os.getenv("OPENAI_OAUTH_ACCESS_TOKEN") or "").strip()),
             bool(self.client.api_key),
         )
@@ -540,6 +551,8 @@ class OpenAIAdapter(BaseAdapter):
             request_params["tools"] = tools
         if tool_choice:
             request_params["tool_choice"] = tool_choice
+        if service_tier:
+            request_params["service_tier"] = service_tier
         # Per OpenAI Responses API, o-/gpt-5 style reasoning models do not accept
         # temperature.
         try:
@@ -1023,6 +1036,7 @@ class OpenAIAdapter(BaseAdapter):
         response_format: Dict[str, Any] | None,
         tools: List[Dict[str, Any]] | None,
         tool_choice: Union[str, Dict[str, Any]] | None,
+        service_tier: str | None,
     ) -> str:
         diag_id = self._new_codex_diag_id()
         model_id, model_fallback = self._codex_model_for_oauth(self.model_config.model)
@@ -1063,6 +1077,8 @@ class OpenAIAdapter(BaseAdapter):
             payload["tools"] = normalized_tools
         if normalized_tool_choice:
             payload["tool_choice"] = normalized_tool_choice
+        if service_tier:
+            payload["service_tier"] = service_tier
 
         try:
             uses_effort_style = bool(self.model_config._uses_effort_style())
@@ -1086,7 +1102,7 @@ class OpenAIAdapter(BaseAdapter):
             "openai.oauth.codex.request_start diag_id=%s requested_stream=%s "
             "transport_stream=%s model=%s "
             "model_fallback=%s input_items=%s instructions_present=%s "
-            "store=%s has_account_id=%s has_reasoning=%s",
+            "store=%s service_tier=%s has_account_id=%s has_reasoning=%s",
             diag_id,
             stream,
             True,
@@ -1095,6 +1111,7 @@ class OpenAIAdapter(BaseAdapter):
             len(input_items),
             bool(resolved_instructions),
             payload.get("store"),
+            service_tier,
             bool(account_id),
             isinstance(reasoning_config, dict) and bool(reasoning_config),
         )
@@ -1188,12 +1205,14 @@ class OpenAIAdapter(BaseAdapter):
 
         _log_info(
             "openai.oauth.codex.request_success diag_id=%s stage=request "
-            "status=%s latency_ms=%s model=%s model_fallback=%s trace=%s",
+            "status=%s latency_ms=%s model=%s model_fallback=%s "
+            "service_tier=%s trace=%s",
             diag_id,
             response.status_code,
             latency_ms,
             model_id,
             model_fallback,
+            payload.get("service_tier"),
             trace,
         )
 
@@ -1409,12 +1428,14 @@ class OpenAIAdapter(BaseAdapter):
         output_chars = len(completed_text) or len("".join(accumulated_content))
         _log_info(
             "openai.oauth.codex.request_success diag_id=%s stage=stream status=%s "
-            "latency_ms=%s model=%s model_fallback=%s output_chars=%s trace=%s",
+            "latency_ms=%s model=%s model_fallback=%s service_tier=%s "
+            "output_chars=%s trace=%s",
             diag_id,
             response.status_code if response is not None else 0,
             latency_ms,
             model_id,
             model_fallback,
+            stream_payload.get("service_tier"),
             output_chars,
             trace,
         )
@@ -1533,13 +1554,15 @@ class OpenAIAdapter(BaseAdapter):
             and str(payload.get("instructions")).strip()
         )
         store_flag = payload.get("store")
+        service_tier = payload.get("service_tier")
 
         error_message = (
             f"OpenAI OAuth Codex {stage} failed "
             f"(diag_id={diag_id}, status={status_code}, model={model_id}, "
             f"model_fallback={model_fallback}, input_is_list={input_is_list}, "
             f"input_items={input_items}, instructions_present={instructions_present}, "
-            f"store={store_flag}, latency_ms={latency_ms}) detail={detail}, "
+            f"store={store_flag}, service_tier={service_tier}, "
+            f"latency_ms={latency_ms}) detail={detail}, "
             f"trace={trace or {}}"
         )
         _log_error(error_message)

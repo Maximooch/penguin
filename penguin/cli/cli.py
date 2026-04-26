@@ -569,6 +569,7 @@ async def _initialize_core_components_globally(
             if isinstance(model_dict.get("reasoning"), dict)
             else bool(model_dict.get("reasoning_exclude", False))
         ),
+        service_tier=model_dict.get("service_tier"),
     )
 
     # Ensure .env files are loaded before API client needs API keys

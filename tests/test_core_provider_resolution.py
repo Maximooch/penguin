@@ -94,6 +94,32 @@ def test_resolve_model_provider_keeps_openrouter_gateway() -> None:
 
 
 @pytest.mark.asyncio
+async def test_request_model_config_inherits_top_level_service_tier() -> None:
+    core_like = SimpleNamespace(
+        config=SimpleNamespace(model_configs={}),
+        model_config=SimpleNamespace(
+            client_preference="native",
+            service_tier="priority",
+        ),
+    )
+    _attach_core_helpers(core_like)
+
+    def _resolve(model_id: str) -> tuple[str, str]:
+        del model_id
+        return "openai", "native"
+
+    core_like._resolve_model_provider = _resolve
+
+    model_config, _ = await PenguinCore._build_model_config_for_model(
+        _as_any(core_like),
+        "openai/gpt-5.5",
+    )
+
+    assert model_config.model == "gpt-5.5"
+    assert model_config.service_tier == "priority"
+
+
+@pytest.mark.asyncio
 async def test_load_model_resolves_provider_before_fetch() -> None:
     state = {"resolved": False}
     applied: dict[str, str] = {}

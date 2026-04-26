@@ -393,21 +393,36 @@ def test_model_config_flags_present():
         use_responses_api=True,
         interrupt_on_action=True,
         interrupt_on_tool_call=False,
+        service_tier="priority",
     )
 
     assert hasattr(config, "use_responses_api")
     assert hasattr(config, "interrupt_on_action")
     assert hasattr(config, "interrupt_on_tool_call")
+    assert hasattr(config, "service_tier")
 
     assert config.use_responses_api is True
     assert config.interrupt_on_action is True
     assert config.interrupt_on_tool_call is False
+    assert config.service_tier == "priority"
 
     # Verify get_config includes these
     cfg_dict = config.get_config()
     assert "use_responses_api" in cfg_dict
     assert "interrupt_on_action" in cfg_dict
     assert "interrupt_on_tool_call" in cfg_dict
+    assert cfg_dict["service_tier"] == "priority"
+
+
+def test_model_config_ignores_invalid_service_tier():
+    config = ModelConfig(
+        model="test-model",
+        provider="openai",
+        client_preference="native",
+        service_tier="turbo",
+    )
+
+    assert config.service_tier is None
 
 
 if __name__ == "__main__":
@@ -445,6 +460,10 @@ if __name__ == "__main__":
         ("Tool call accumulation", test_tool_call_accumulation),
         ("Reasoning config generation", test_reasoning_config_generation),
         ("ModelConfig flags present", test_model_config_flags_present),
+        (
+            "ModelConfig invalid service tier",
+            test_model_config_ignores_invalid_service_tier,
+        ),
     ]
 
     passed = 0
