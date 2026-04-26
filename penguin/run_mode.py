@@ -657,14 +657,44 @@ class RunMode:
                         logger.debug(
                             "No project-scoped tasks available; refusing synthetic drift task"
                         )
+                        blocked_candidates = []
+                        try:
+                            blocked_candidates = (
+                                await self.core.project_manager.get_blocked_ready_candidates_async(project_id)
+                            )
+                        except Exception as blocked_err:
+                            logger.debug(
+                                "Could not compute blocked project candidates for %s: %s",
+                                project_id,
+                                blocked_err,
+                            )
+
+                        idle_reason = (
+                            "project_tasks_blocked"
+                            if blocked_candidates
+                            else "no_project_tasks_available"
+                        )
                         await self._emit_event({
                             "type": "status",
                             "status_type": "continuous_mode_idle",
                             "data": {
-                                "reason": "no_project_tasks_available",
+                                "reason": idle_reason,
                                 "project_id": project_id,
+                                "blocked_tasks": blocked_candidates,
                             }
                         })
+                        if blocked_candidates:
+                            await self._emit_event({
+                                "type": "message",
+                                "role": "system",
+                                "content": (
+                                    "Project execution paused: remaining active tasks are "
+                                    "blocked by dependency policy. Approve review-ready "
+                                    "upstream tasks or use review_ready_ok/artifact_ready "
+                                    "dependency specs where parallel progress is intended."
+                                ),
+                                "category": MessageCategory.SYSTEM,
+                            })
                         self._shutdown_requested = True
                         break
 
@@ -682,7 +712,29 @@ class RunMode:
                     task_data["description"],
                     task_data["context"]
                 )
-                
+
+                task_id = (task_data.get("context") or {}).get("id")
+                project_task = bool(project_id and task_id and task_id != "user_specified")
+
+                if project_task and task_result.get("completion_type") == "pending_review":
+                    project_manager = getattr(self.core, "project_manager", None)
+                    if project_manager:
+                        await project_manager.mark_task_execution_ready_for_review_async(
+                            task_id=task_id,
+                            executor_id="runmode",
+                            response=task_result.get("message", ""),
+                            task_prompt=f"RunMode execution: {task_data['name']}",
+                            context={"source": "runmode_continuous"},
+                        )
+                    await self._emit_event({
+                        "type": "status",
+                        "status_type": "task_pending_review",
+                        "data": {
+                            "task_id": task_id,
+                            "project_id": project_id,
+                            "reason": "runmode_execution_completed",
+                        },
+                    })
                 # Check if we got an LLM empty response error - retry instead of stopping
                 if task_result.get("status") == "llm_empty_response_error":
                     logger.warning("LLM empty response error in continuous mode. Waiting 30s before retry...")
@@ -711,6 +763,14 @@ class RunMode:
                     })
                     # Small delay before continuing to avoid rapid error loops
                     await asyncio.sleep(2)
+
+                if project_task and task_result.get("completion_type") == "pending_review":
+                    await self._emit_event({
+                        "type": "status",
+                        "status_type": "continuous_project_task_done",
+                        "data": {"task_id": task_id, "project_id": project_id},
+                    })
+                    continue
                 
                 # Check if we should exit continuous mode based on the result
                 if task_result.get("completion_type") == "user_specified":
@@ -982,7 +1042,8 @@ class RunMode:
         task_prompt = (
             f"Execute task: {name}\n"
             f"Description: {description or f'Complete the task: {name}'}\n"
-            f"Respond with {self.TASK_COMPLETION_PHRASE} when finished."
+            "When the task acceptance criteria are satisfied, call the finish_task "
+            "tool with status done. Do not emit TASK_COMPLETED as plain text."
         )
         
         # Add context as formatted text if provided
@@ -1085,13 +1146,9 @@ class RunMode:
             
             logger.debug("Using Engine.run_task method")
             
-            # NOTE: Phrase-based completion detection is deprecated.
-            # The LLM should use finish_task tool instead.
-            # Keeping phrases for emergency stop and clarification only.
+            # The task prompt asks for finish_task. Legacy TASK_COMPLETED phrase
+            # handling remains in Engine.run_task for backwards compatibility only.
             completion_phrases = [
-                # self.TASK_COMPLETION_PHRASE,  # Deprecated: use finish_task tool
-                # "TASK_COMPLETE",  # Deprecated: use finish_task tool
-                # self.CONTINUOUS_COMPLETION_PHRASE,  # Deprecated: use finish_task tool
                 self.NEED_USER_CLARIFICATION_PHRASE,
                 self.EMERGENCY_STOP_PHRASE
             ]
@@ -1250,10 +1307,5 @@ class RunMode:
         if self.NEED_USER_CLARIFICATION_PHRASE in response:
             return "clarification_needed"
         
-        # NOTE: Phrase-based completion detection is deprecated.
-        # Keeping commented for reference.
-        # if self.CONTINUOUS_COMPLETION_PHRASE in response:
-        #     return "continuous"
-            
         # Standard task completion (via finish_task tool)
-        return "task" 
+        return "task"

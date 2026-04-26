@@ -49,6 +49,7 @@ from penguin.llm.runtime import (
     resolve_reasoning_payload,
 )
 from penguin.run_mode import RunMode
+from penguin.system.execution_context import ExecutionContext, execution_context_scope, normalize_directory
 from penguin import __version__
 from penguin.constants import get_engine_max_iterations_default
 from penguin.utils.events import EventBus as UtilsEventBus
@@ -91,6 +92,12 @@ from penguin.web.services.system_status import (
     get_lsp_status,
     get_path_info,
     get_vcs_info,
+)
+from penguin.web.services.projects import (
+    delete_project_with_tasks,
+    initialize_project_from_blueprint,
+    run_project_workflow,
+    start_project_execution,
 )
 from penguin.web.services.opencode_provider import (
     apply_auth_to_runtime,
@@ -965,10 +972,10 @@ def _restore_reasoning_variant_override(
 
 
 def _resolve_include_reasoning(value: Optional[Any]) -> bool:
-    """Default reasoning visibility to on unless explicitly disabled."""
+    """Default reasoning visibility to off unless explicitly enabled."""
 
     if value is None:
-        return True
+        return False
     return bool(value)
 
 
@@ -4573,6 +4580,30 @@ class ProjectUpdateRequest(BaseModel):
     status: Optional[str] = None
 
 
+class ProjectInitRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+    workspace_path: Optional[str] = None
+    blueprint_path: Optional[str] = None
+
+
+class ProjectStartRequest(BaseModel):
+    project_identifier: str
+    continuous: bool = True
+    time_limit: Optional[int] = None
+    session_id: Optional[str] = None
+    directory: Optional[str] = None
+
+
+class ProjectRunRequest(BaseModel):
+    spec_path: Optional[str] = None
+    markdown_content: Optional[str] = None
+    continuous: bool = True
+    time_limit: Optional[int] = None
+    session_id: Optional[str] = None
+    directory: Optional[str] = None
+
+
 class TaskCreateRequest(BaseModel):
     project_id: str
     title: str
@@ -4584,6 +4615,8 @@ class TaskCreateRequest(BaseModel):
 class ClarificationAnswerRequest(BaseModel):
     answer: str
     answered_by: Optional[str] = None
+    session_id: Optional[str] = None
+    directory: Optional[str] = None
 
 
 class TaskUpdateRequest(BaseModel):
@@ -4591,6 +4624,11 @@ class TaskUpdateRequest(BaseModel):
     description: Optional[str] = None
     status: Optional[str] = None
     priority: Optional[int] = None
+
+
+class TaskExecutionRequest(BaseModel):
+    session_id: Optional[str] = None
+    directory: Optional[str] = None
 
 
 # Project Management Endpoints
@@ -4642,6 +4680,54 @@ async def list_projects(core: PenguinCore = Depends(get_core)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/api/v1/projects/init")
+async def init_project(
+    request: ProjectInitRequest, core: PenguinCore = Depends(get_core)
+):
+    """Initialize a project and optionally sync a Blueprint into it."""
+    return await initialize_project_from_blueprint(
+        core=core,
+        name=request.name,
+        description=request.description,
+        workspace_path=request.workspace_path,
+        blueprint_path=request.blueprint_path,
+    )
+
+
+@router.post("/api/v1/projects/start")
+async def start_project(
+    request: ProjectStartRequest, core: PenguinCore = Depends(get_core)
+):
+    """Start project execution through the real RunMode path."""
+    return await start_project_execution(
+        core=core,
+        project_identifier=request.project_identifier,
+        continuous=request.continuous,
+        time_limit=request.time_limit,
+        session_id=request.session_id,
+        directory=request.directory,
+    )
+
+
+# NOTE: `project run` is kept as a provisional web/API compatibility surface.
+# The current product/TUI path should prefer explicit `project init` + `project start`
+# until the legacy CLI/kernel `run` contract is repaired and made consistent across surfaces.
+@router.post("/api/v1/projects/run")
+async def run_project(
+    request: ProjectRunRequest, core: PenguinCore = Depends(get_core)
+):
+    """Parse a project spec and immediately start the resulting project workflow."""
+    return await run_project_workflow(
+        core=core,
+        spec_path=request.spec_path,
+        markdown_content=request.markdown_content,
+        continuous=request.continuous,
+        time_limit=request.time_limit,
+        session_id=request.session_id,
+        directory=request.directory,
+    )
+
+
 @router.get("/api/v1/projects/{project_id}")
 async def get_project(project_id: str, core: PenguinCore = Depends(get_core)):
     """Get a specific project by ID."""
@@ -4676,9 +4762,10 @@ async def get_project(project_id: str, core: PenguinCore = Depends(get_core)):
 # @router.put("/api/v1/projects/{project_id}")
 # async def update_project(...):
 
-# Temporarily disabled - delete_project method not implemented in ProjectManager
-# @router.delete("/api/v1/projects/{project_id}")
-# async def delete_project(...):
+@router.delete("/api/v1/projects/{project_id}")
+async def delete_project(project_id: str, core: PenguinCore = Depends(get_core)):
+    """Delete a project and its tasks."""
+    return await delete_project_with_tasks(core=core, project_id=project_id)
 
 
 # Task Management Endpoints
@@ -4759,9 +4846,24 @@ async def get_task(task_id: str, core: PenguinCore = Depends(get_core)):
 # @router.put("/api/v1/tasks/{task_id}")
 # async def update_task(...):
 
-# Temporarily disabled - delete_task method not implemented in ProjectManager
-# @router.delete("/api/v1/tasks/{task_id}")
-# async def delete_task(...):
+@router.delete("/api/v1/tasks/{task_id}")
+async def delete_task(task_id: str, core: PenguinCore = Depends(get_core)):
+    """Delete a task by ID."""
+    try:
+        task = await core.project_manager.get_task_async(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+        core.project_manager.storage.delete_task(task_id)
+        return {
+            "task": _serialize_task_payload(task),
+            "message": f"Task '{task.title}' deleted successfully.",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting task: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/api/v1/tasks/{task_id}/clarification/resume")
@@ -4776,12 +4878,28 @@ async def resume_task_clarification(
         if not task:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-        run_mode = RunMode(core=core)
-        result = await run_mode.resume_with_clarification(
-            task_id=task_id,
-            answer=request.answer,
-            answered_by=request.answered_by,
+        project = None
+        if task.project_id and hasattr(core.project_manager, "get_project_async"):
+            project = await core.project_manager.get_project_async(task.project_id)
+        resolved_directory = normalize_directory(request.directory) or normalize_directory(
+            getattr(project, "workspace_path", None)
         )
+        execution_context = ExecutionContext(
+            session_id=request.session_id,
+            conversation_id=request.session_id,
+            directory=resolved_directory,
+            project_root=resolved_directory,
+            workspace_root=resolved_directory,
+            request_id=f"task-resume:{task_id}",
+        )
+
+        run_mode = RunMode(core=core)
+        with execution_context_scope(execution_context):
+            result = await run_mode.resume_with_clarification(
+                task_id=task_id,
+                answer=request.answer,
+                answered_by=request.answered_by,
+            )
 
         updated_task = await core.project_manager.get_task_async(task_id)
         response_task = updated_task or task
@@ -4881,7 +4999,9 @@ async def complete_task(task_id: str, core: PenguinCore = Depends(get_core)):
 
 @router.post("/api/v1/tasks/{task_id}/execute")
 async def execute_task_from_project(
-    task_id: str, core: PenguinCore = Depends(get_core)
+    task_id: str,
+    request: Optional[TaskExecutionRequest] = None,
+    core: PenguinCore = Depends(get_core),
 ):
     """Execute a task using RunMode so web responses preserve current lifecycle truth."""
     try:
@@ -4894,18 +5014,38 @@ async def execute_task_from_project(
                 status_code=503, detail="Engine layer not available for task execution"
             )
 
+        payload = request or TaskExecutionRequest()
+        project = None
+        if task.project_id and hasattr(core.project_manager, "get_project_async"):
+            project = await core.project_manager.get_project_async(task.project_id)
+        resolved_directory = normalize_directory(payload.directory) or normalize_directory(
+            getattr(project, "workspace_path", None)
+        )
+        execution_context = ExecutionContext(
+            session_id=payload.session_id,
+            conversation_id=payload.session_id,
+            directory=resolved_directory,
+            project_root=resolved_directory,
+            workspace_root=resolved_directory,
+            request_id=f"task-execute:{task_id}",
+        )
+
         # Route project execution through RunMode so clarification-needed and other
         # non-terminal outcomes survive instead of being collapsed into fake failure/completion states.
         run_mode = RunMode(core=core)
-        result = await run_mode.start(
-            name=task.title,
-            description=task.description,
-            context={
-                "task_id": task_id,
-                "project_id": task.project_id,
-                "priority": task.priority,
-            },
-        )
+        with execution_context_scope(execution_context):
+            result = await run_mode.start(
+                name=task.title,
+                description=task.description,
+                context={
+                    "task_id": task_id,
+                    "project_id": task.project_id,
+                    "priority": task.priority,
+                    "session_id": payload.session_id,
+                    "conversation_id": payload.session_id,
+                    "directory": resolved_directory,
+                },
+            )
 
         updated_task = await core.project_manager.get_task_async(task_id)
         response_task = updated_task or task

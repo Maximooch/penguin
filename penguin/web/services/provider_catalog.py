@@ -53,6 +53,15 @@ _MODELS_DEV_CACHE: dict[str, Any] = {
     "fetched_at": 0.0,
     "providers": {},
 }
+_OPENAI_CODEX_MODELS_URL = "https://chatgpt.com/backend-api/codex/models"
+_OPENAI_CODEX_MODELS_CLIENT_VERSION = "1.0.0"
+_OPENAI_CODEX_MODELS_CACHE_TTL_SECONDS = 600.0
+_OPENAI_CODEX_MODELS_CACHE_LOCK = RLock()
+_OPENAI_CODEX_MODELS_CACHE: dict[str, Any] = {
+    "fetched_at": 0.0,
+    "cache_key": "",
+    "models": {},
+}
 
 
 def _coerce_positive_int(value: Any, default: int) -> int:
@@ -217,6 +226,134 @@ def models_dev_provider_models(
             discovered[provider_id] = provider_models
 
     return discovered
+
+
+def _openai_codex_model_input_modalities(raw_value: Any) -> list[str]:
+    if not isinstance(raw_value, list):
+        return []
+    return [
+        str(item).strip().lower()
+        for item in raw_value
+        if isinstance(item, str) and item.strip()
+    ]
+
+
+def _openai_codex_model_reasoning_enabled(raw_value: Any) -> bool:
+    if not isinstance(raw_value, list):
+        return False
+    return any(isinstance(item, dict) and item.get("effort") for item in raw_value)
+
+
+def codex_oauth_provider_models(
+    credential_record: dict[str, Any] | None,
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Return OpenAI models available to a ChatGPT-backed Codex OAuth account."""
+    if not isinstance(credential_record, dict):
+        return {}
+    if credential_record.get("type") != "oauth":
+        return {}
+
+    access = credential_record.get("access")
+    if not isinstance(access, str) or not access.strip():
+        return {}
+
+    account_id = credential_record.get("accountId")
+    account_key = account_id.strip() if isinstance(account_id, str) else ""
+    cache_key = f"{access[-12:]}:{account_key}"
+    now = time.time()
+    with _OPENAI_CODEX_MODELS_CACHE_LOCK:
+        fetched_at = float(_OPENAI_CODEX_MODELS_CACHE.get("fetched_at") or 0.0)
+        cached_models = _OPENAI_CODEX_MODELS_CACHE.get("models")
+        cached_key = str(_OPENAI_CODEX_MODELS_CACHE.get("cache_key") or "")
+        if (
+            cache_key == cached_key
+            and isinstance(cached_models, dict)
+            and cached_models
+            and now - fetched_at <= _OPENAI_CODEX_MODELS_CACHE_TTL_SECONDS
+        ):
+            return {
+                "openai": {
+                    str(key): value
+                    for key, value in cached_models.items()
+                    if isinstance(key, str) and isinstance(value, dict)
+                }
+            }
+
+    headers = {
+        "Authorization": f"Bearer {access.strip()}",
+        "Accept": "application/json",
+        "User-Agent": "penguin-web/1.0",
+    }
+    if account_key:
+        headers["ChatGPT-Account-ID"] = account_key
+
+    discovered: dict[str, dict[str, Any]] = {}
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            response = client.get(
+                _OPENAI_CODEX_MODELS_URL,
+                headers=headers,
+                params={"client_version": _OPENAI_CODEX_MODELS_CLIENT_VERSION},
+            )
+            response.raise_for_status()
+            payload = response.json()
+    except Exception:
+        return {}
+
+    models_payload = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(models_payload, list):
+        return {}
+
+    for item in models_payload:
+        if not isinstance(item, dict):
+            continue
+        raw_slug = item.get("slug")
+        if not isinstance(raw_slug, str) or not raw_slug.strip():
+            continue
+        if str(item.get("visibility") or "").strip().lower() != "list":
+            continue
+
+        model_id = canonical_model_id("openai", raw_slug)
+        context_window = _coerce_positive_int(
+            item.get("context_window") or item.get("max_context_window"),
+            131072,
+        )
+        max_context_window = _coerce_positive_int(
+            item.get("max_context_window"),
+            context_window,
+        )
+        input_modalities = _openai_codex_model_input_modalities(
+            item.get("input_modalities")
+        )
+        reasoning_enabled = _openai_codex_model_reasoning_enabled(
+            item.get("supported_reasoning_levels")
+        )
+        priority = item.get("priority")
+
+        conf: dict[str, Any] = {
+            "provider": "openai",
+            "model": model_id,
+            "name": item.get("display_name") or model_id,
+            "context_window": context_window,
+            "max_context_window_tokens": max_context_window,
+            "max_output_tokens": 128000,
+            "vision_enabled": "image" in input_modalities,
+            "reasoning_enabled": reasoning_enabled,
+            "source": "codex",
+        }
+        if isinstance(priority, int):
+            conf["priority"] = priority
+        discovered[model_id] = conf
+
+    if not discovered:
+        return {}
+
+    with _OPENAI_CODEX_MODELS_CACHE_LOCK:
+        _OPENAI_CODEX_MODELS_CACHE["fetched_at"] = time.time()
+        _OPENAI_CODEX_MODELS_CACHE["cache_key"] = cache_key
+        _OPENAI_CODEX_MODELS_CACHE["models"] = discovered
+
+    return {"openai": discovered}
 
 
 def canonical_model_id(provider_id: str, model_id: str) -> str:

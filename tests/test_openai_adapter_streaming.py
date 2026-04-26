@@ -294,6 +294,30 @@ def test_openai_adapter_uses_oauth_access_token_when_api_key_missing(
     }
 
 
+def test_openai_adapter_normalizes_codex_oauth_display_model_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_OAUTH_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_ACCOUNT_ID", raising=False)
+    monkeypatch.setattr(
+        "penguin.llm.adapters.openai.get_provider_credential",
+        lambda _provider_id: None,
+    )
+
+    model_config = ModelConfig(
+        model="openai/GPT-5.4-Mini",
+        provider="openai",
+        client_preference="native",
+        api_key="sk-test",
+    )
+    adapter = OpenAIAdapter(model_config)
+
+    assert adapter._codex_model_for_oauth("openai/GPT-5.4-Mini") == (
+        "gpt-5.4-mini",
+        False,
+    )
+
+
 @pytest.mark.asyncio
 async def test_openai_adapter_streaming_captures_function_calls_without_leaking_text(
     monkeypatch: pytest.MonkeyPatch,

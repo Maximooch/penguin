@@ -530,8 +530,9 @@ COMPLETION_GUIDE = """
 
 **You MUST explicitly signal when done.**
 
-- Call `<finish_response>` to end conversation turn
-- Call `<finish_task>` to mark task complete (awaits human approval)
+- Call `<finish_response></finish_response>` to end a conversation turn
+- Call `<finish_task>{"status":"done","summary":"..."}</finish_task>` when task work satisfies acceptance criteria and is ready for human review
+- Do not emit `TASK_COMPLETED` as plain text; it is legacy compatibility only
 
 **Status options for finish_task:**
 - `done` (default): Task objective achieved

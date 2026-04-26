@@ -13,15 +13,18 @@ Commands
 - Full repo tests (legacy/misc): python run_all_tests.py ; python misc/run_all_memory_tests.py
 - Build wheel/sdist: python -m build
 - Publish (manual): twine upload dist/*
-- Dev web server: PORT=8080 uv run penguin-web
-- Dev web server with reload: PORT=8080 DEBUG=true uv run penguin-web
+- Dev web server: HOST=127.0.0.1 PORT=8080 uv run penguin-web
+- Dev web server with reload: HOST=127.0.0.1 PORT=8080 DEBUG=true uv run penguin-web
 - TUI against dev web server: uv run penguin --url http://127.0.0.1:8080 --no-web-autostart
+- If port `9000` is already occupied by a running Penguin backend/TUI session, use a different non-reserved local port for testing or verification, e.g. `8080` or `9010`.
+- Per `docs/docs/usage/web_interface.md`, port `9000` is the documented/default Penguin web server port, so treat it as the primary runtime port and avoid stealing it for ad hoc verification when a real backend is already running.
+- Current runtime truth: `penguin-web` host/port selection is reliably controlled by env vars (`HOST` / `PORT`). Do not assume `penguin-web --host ... --port ...` works until that path is explicitly fixed and verified.
 
 Style and Conventions
 - Follow .cursorrules at repo root. Key points: PEP 8, explicit > implicit, single responsibility, comprehensive type annotations, Google-style docstrings, robust exception handling, logging.
 - Imports: ruff/isort with profile=black; order stdlib, third-party, first-party (penguin). Combine "as" imports; known-first-party = ["penguin"].
 - Formatting: Black 88 col; Ruff line-length 88; quotes = double (ruff fmt). Target Python 3.9+ (ruff target 3.8, black target py39).
-- Types: annotate all public functions and dataclasses; prefer precise types (dict[str, Any] over Dict). Use Pydantic models where appropriate.
+- Types: annotate all public functions and dataclasses; prefer precise types (dict[str, Any] over Dict). Use Pydantic types where appropriate.
 - Naming Penguin: Just call it "Penguin", not "Penguin AI", or "Penguin AI Assistant". In some cases "Penguin Agent" are reasonable though.
 - Naming: snake_case for functions/vars; PascalCase for classes; UPPER_SNAKE for constants; clear, descriptive names.
 - Errors: raise specific exceptions, no bare except; add context; never swallow; log via logging with appropriate level.

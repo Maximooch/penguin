@@ -34,6 +34,12 @@ import { useKV } from "../../context/kv"
 import { useTextareaKeybindings } from "../textarea-keybindings"
 import { exitSession } from "../../util/exit"
 import { formatPenguinPromptFailure, recoverPenguinPromptFailure } from "./penguin-send"
+import { parsePenguinLocalCommand } from "./penguin-local-command"
+import {
+  executePenguinHttpLocalCommand,
+  isPenguinHttpLocalCommand,
+  penguinHttpLocalCommandNeedsSession,
+} from "./penguin-local-command-runtime"
 
 export type PromptProps = {
   sessionID?: string
@@ -257,6 +263,17 @@ export function Prompt(props: PromptProps) {
   })
 
   command.register(() => {
+    const prefillPrompt = (text: string) => {
+      input.extmarks.clear()
+      input.setText(text)
+      setStore("prompt", { input: text, parts: [] })
+      setStore("extmarkToPartIndex", new Map())
+      input.gotoBufferEnd()
+      input.focus()
+      input.getLayoutNode().markDirty()
+      renderer.requestRender()
+    }
+
     return [
       {
         title: "Clear prompt",
@@ -301,6 +318,230 @@ export function Prompt(props: PromptProps) {
         enabled: sdk.penguin && store.mode === "normal",
         onSelect: () => {
           cycleAgentMode()
+        },
+      },
+      {
+        title: "Create project",
+        description: "Prefill a project create command",
+        value: "project.create.prefill",
+        category: "Project",
+        suggested: sdk.penguin,
+        enabled: sdk.penguin,
+        slash: {
+          name: "project-create",
+          aliases: ["project create"],
+        },
+        onSelect: (dialog) => {
+          prefillPrompt('/project create "Project Name" --description "Project description"')
+          dialog.clear()
+        },
+      },
+      {
+        title: "Initialize project from Blueprint",
+        description: "Prefill a project init command for Penguin bootstrap workflows",
+        value: "project.init.prefill",
+        category: "Project",
+        suggested: sdk.penguin,
+        enabled: sdk.penguin,
+        slash: {
+          name: "project-init",
+          aliases: ["project init"],
+        },
+        onSelect: (dialog) => {
+          prefillPrompt('/project init "Project Name" --blueprint ./blueprint.md')
+          dialog.clear()
+        },
+      },
+      {
+        title: "List projects",
+        description: "Prefill a project list command",
+        value: "project.list.prefill",
+        category: "Project",
+        suggested: sdk.penguin,
+        enabled: sdk.penguin,
+        slash: {
+          name: "project-list",
+          aliases: ["project list"],
+        },
+        onSelect: (dialog) => {
+          prefillPrompt('/project list')
+          dialog.clear()
+        },
+      },
+      {
+        title: "Show project",
+        description: "Prefill a project show command",
+        value: "project.show.prefill",
+        category: "Project",
+        suggested: sdk.penguin,
+        enabled: sdk.penguin,
+        slash: {
+          name: "project-show",
+          aliases: ["project show", "project get"],
+        },
+        onSelect: (dialog) => {
+          prefillPrompt('/project show "Project ID"')
+          dialog.clear()
+        },
+      },
+      {
+        title: "Start project execution",
+        description: "Prefill a project start command for continuous project execution",
+        value: "project.start.prefill",
+        category: "Project",
+        suggested: sdk.penguin,
+        enabled: sdk.penguin,
+        slash: {
+          name: "project-start",
+          aliases: ["project start"],
+        },
+        onSelect: (dialog) => {
+          prefillPrompt('/project start "Project Name"')
+          dialog.clear()
+        },
+      },
+      {
+        title: "Delete project",
+        description: "Prefill a project delete command",
+        value: "project.delete.prefill",
+        category: "Project",
+        suggested: sdk.penguin,
+        enabled: sdk.penguin,
+        slash: {
+          name: "project-delete",
+          aliases: ["project delete"],
+        },
+        onSelect: (dialog) => {
+          prefillPrompt('/project delete "Project ID"')
+          dialog.clear()
+        },
+      },
+      {
+        title: "Create task",
+        description: "Prefill a task create command",
+        value: "task.create.prefill",
+        category: "Task",
+        suggested: sdk.penguin,
+        enabled: sdk.penguin,
+        slash: {
+          name: "task-create",
+          aliases: ["task create"],
+        },
+        onSelect: (dialog) => {
+          prefillPrompt('/task create "Project ID" "Task title"')
+          dialog.clear()
+        },
+      },
+      {
+        title: "List tasks",
+        description: "Prefill a task list command",
+        value: "task.list.prefill",
+        category: "Task",
+        suggested: sdk.penguin,
+        enabled: sdk.penguin,
+        slash: {
+          name: "task-list",
+          aliases: ["task list"],
+        },
+        onSelect: (dialog) => {
+          prefillPrompt('/task list')
+          dialog.clear()
+        },
+      },
+      {
+        title: "Show task",
+        description: "Prefill a task show command",
+        value: "task.show.prefill",
+        category: "Task",
+        suggested: sdk.penguin,
+        enabled: sdk.penguin,
+        slash: {
+          name: "task-show",
+          aliases: ["task show", "task get"],
+        },
+        onSelect: (dialog) => {
+          prefillPrompt('/task show "Task ID"')
+          dialog.clear()
+        },
+      },
+      {
+        title: "Start task",
+        description: "Prefill a task start command",
+        value: "task.start.prefill",
+        category: "Task",
+        suggested: sdk.penguin,
+        enabled: sdk.penguin,
+        slash: {
+          name: "task-start",
+          aliases: ["task start"],
+        },
+        onSelect: (dialog) => {
+          prefillPrompt('/task start "Task ID"')
+          dialog.clear()
+        },
+      },
+      {
+        title: "Complete task",
+        description: "Prefill a task complete command",
+        value: "task.complete.prefill",
+        category: "Task",
+        suggested: sdk.penguin,
+        enabled: sdk.penguin,
+        slash: {
+          name: "task-complete",
+          aliases: ["task complete"],
+        },
+        onSelect: (dialog) => {
+          prefillPrompt('/task complete "Task ID"')
+          dialog.clear()
+        },
+      },
+      {
+        title: "Execute task",
+        description: "Prefill a task execute command",
+        value: "task.execute.prefill",
+        category: "Task",
+        suggested: sdk.penguin,
+        enabled: sdk.penguin,
+        slash: {
+          name: "task-execute",
+          aliases: ["task execute"],
+        },
+        onSelect: (dialog) => {
+          prefillPrompt('/task execute "Task ID"')
+          dialog.clear()
+        },
+      },
+      {
+        title: "Delete task",
+        description: "Prefill a task delete command",
+        value: "task.delete.prefill",
+        category: "Task",
+        suggested: sdk.penguin,
+        enabled: sdk.penguin,
+        slash: {
+          name: "task-delete",
+          aliases: ["task delete"],
+        },
+        onSelect: (dialog) => {
+          prefillPrompt('/task delete "Task ID"')
+          dialog.clear()
+        },
+      },
+      {
+        title: "Resume task clarification",
+        description: "Prefill a task clarification resume command",
+        value: "task.resume.prefill",
+        category: "Task",
+        suggested: sdk.penguin,
+        enabled: sdk.penguin,
+        slash: {
+          name: "task-resume",
+          aliases: ["task resume", "task clarification resume"],
+        },
+        onSelect: (dialog) => {
+          prefillPrompt('/task resume "Task ID" "Clarification answer"')
+          dialog.clear()
         },
       },
       {
@@ -649,65 +890,167 @@ export function Prompt(props: PromptProps) {
     const currentMode = store.mode
     const variant = local.model.variant.current()
     const agent = local.agent.current()
-    const sessionID = await iife(async () => {
-      if (props.sessionID) return props.sessionID
-      if (sdk.sessionID) return sdk.sessionID
+    const getActiveDirectory = (activeSessionID?: string) => {
+      return (
+        (activeSessionID ? sync.session.get(activeSessionID)?.directory : undefined) ||
+        sync.session.get(props.sessionID ?? sdk.sessionID ?? "")?.directory ||
+        sync.data.path.directory ||
+        sdk.directory ||
+        process.cwd()
+      )
+    }
+    const clearPromptState = (options?: { keepDialog?: boolean }) => {
+      history.append({
+        ...store.prompt,
+        mode: currentMode,
+      })
+      if (!input.isDestroyed) {
+        input.extmarks.clear()
+      }
+      setStore("prompt", {
+        input: "",
+        parts: [],
+      })
+      setStore("extmarkToPartIndex", new Map())
+      if (!options?.keepDialog) {
+        dialog.clear()
+      }
+      if (!input.isDestroyed) {
+        input.clear()
+        input.setText("")
+        input.getLayoutNode().markDirty()
+        renderer.requestRender()
+      }
+      queueMicrotask(() => {
+        setStore("prompt", "input", "")
+      })
+    }
+    const localCommand = sdk.penguin ? parsePenguinLocalCommand(store.prompt.input) : null
+    const initialDirectory = getActiveDirectory(props.sessionID ?? sdk.sessionID)
+    const ensureSessionID = async () => {
+      return await iife(async () => {
+        if (props.sessionID) return props.sessionID
+        if (sdk.sessionID) return sdk.sessionID
 
-      if (sdk.penguin) {
-        const directory =
-          sync.session.get(props.sessionID ?? sdk.sessionID ?? "")?.directory ?? process.cwd()
-        const createUrl = new URL("/session", sdk.url)
-        createUrl.searchParams.set("directory", directory)
-        const created = await sdk.fetch(createUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            agent_mode: agentMode(),
-            providerID: selectedModel.providerID,
-            modelID: selectedModel.modelID,
-            variant,
-          }),
-        }).then(async (res) => {
-          if (!res.ok) {
-            const details = await res.text().catch(() => "")
-            throw new Error(
-              details
-                ? `Session create failed (${res.status}): ${details}`
-                : `Session create failed (${res.status})`,
-            )
-          }
-          return res.json().catch(() => undefined)
+        if (sdk.penguin) {
+          const createUrl = new URL("/session", sdk.url)
+          createUrl.searchParams.set("directory", initialDirectory)
+          const created = await sdk.fetch(createUrl, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              agent_mode: agentMode(),
+              providerID: selectedModel.providerID,
+              modelID: selectedModel.modelID,
+              variant,
+            }),
+          }).then(async (res) => {
+            if (!res.ok) {
+              const details = await res.text().catch(() => "")
+              throw new Error(
+                details
+                  ? `Session create failed (${res.status}): ${details}`
+                  : `Session create failed (${res.status})`,
+              )
+            }
+            return res.json().catch(() => undefined)
+          })
+          const createdID = resolveSessionID(created)
+          if (createdID) return createdID
+          const details =
+            created && typeof created === "object"
+              ? `response keys: ${Object.keys(created as Record<string, unknown>).join(",") || "none"}`
+              : `response type: ${typeof created}`
+          throw new Error(`Session create returned empty id (${details})`)
+        }
+
+        return await sdk.client.session.create({}).then((result) => {
+          const id = resolveSessionID(result)
+          if (id) return id
+          throw new Error("Session create returned empty id")
         })
-        const createdID = resolveSessionID(created)
-        if (createdID) return createdID
-        const details =
-          created && typeof created === "object"
-            ? `response keys: ${Object.keys(created as Record<string, unknown>).join(",") || "none"}`
-            : `response type: ${typeof created}`
-        throw new Error(`Session create returned empty id (${details})`)
+      }).catch((e) => {
+        const msg = e instanceof Error ? e.message : String(e)
+        toast.show({
+          variant: "error",
+          message: `Failed to start session: ${msg}`,
+        })
+        return undefined
+      })
+    }
+
+    if (sdk.penguin && localCommand) {
+      const commandNeedsSession = isPenguinHttpLocalCommand(localCommand) && penguinHttpLocalCommandNeedsSession(localCommand)
+      const commandSessionID = commandNeedsSession ? await ensureSessionID() : props.sessionID ?? sdk.sessionID
+      const keepDialog = localCommand.kind === "config" || localCommand.kind === "settings"
+
+      if (commandNeedsSession && !commandSessionID) return
+
+      try {
+        if (localCommand.kind === "config" || localCommand.kind === "settings") {
+          dialog.replace(() => <DialogSettings directory={initialDirectory} sessionID={commandSessionID} />)
+        } else if (localCommand.kind === "tool_details") {
+          const next = !kv.get("tool_details_visibility", true)
+          kv.set("tool_details_visibility", next)
+          toast.show({ variant: "success", message: `Tool details ${next ? "shown" : "hidden"}` })
+        } else if (localCommand.kind === "thinking") {
+          const next = !kv.get("thinking_visibility", true)
+          kv.set("thinking_visibility", next)
+          toast.show({ variant: "success", message: `Thinking ${next ? "shown" : "hidden"}` })
+        } else if (isPenguinHttpLocalCommand(localCommand)) {
+          const runCommand = () => executePenguinHttpLocalCommand({
+            command: localCommand,
+            fetch: sdk.fetch,
+            baseUrl: sdk.url,
+            directory: initialDirectory,
+            sessionID: commandSessionID,
+          })
+
+          if (commandNeedsSession) {
+            clearPromptState({ keepDialog })
+            props.onSubmit?.()
+            setStore("pending", true)
+            setStore("pendingSeenBusy", false)
+            if (!props.sessionID && commandSessionID) {
+              setTimeout(() => {
+                route.navigate({ type: "session", sessionID: commandSessionID })
+              }, 0)
+            }
+            void runCommand()
+              .then((result) => toast.show(result))
+              .catch((error) => {
+                toast.show({ variant: "error", message: error instanceof Error ? error.message : String(error) })
+              })
+              .finally(() => {
+                setStore("pending", false)
+                setStore("pendingSeenBusy", false)
+              })
+            return
+          }
+
+          const result = await runCommand()
+          toast.show(result)
+        }
+      } catch (error) {
+        toast.show({ variant: "error", message: error instanceof Error ? error.message : String(error) })
       }
 
-      return await sdk.client.session.create({}).then((result) => {
-        const id = resolveSessionID(result)
-        if (id) return id
-        throw new Error("Session create returned empty id")
-      })
-    }).catch((e) => {
-      const msg = e instanceof Error ? e.message : String(e)
-      toast.show({
-        variant: "error",
-        message: `Failed to start session: ${msg}`,
-      })
-      return undefined
-    })
+      clearPromptState({ keepDialog })
+      props.onSubmit?.()
+      return
+    }
+
+    const sessionID = await ensureSessionID()
     if (!sessionID) return
     const shouldNavigate = sdk.penguin && !props.sessionID
     if (input.isDestroyed) return
     const directory =
       sync.session.get(sessionID)?.directory ||
       sync.session.get(props.sessionID ?? "")?.directory ||
+      sync.data.path.directory ||
+      sdk.directory ||
       process.cwd()
     const messageID = sdk.penguin ? gen.next("msg") : Identifier.ascending("message")
     let inputText = store.prompt.input
@@ -739,59 +1082,6 @@ export function Prompt(props: PromptProps) {
     const nonTextParts = store.prompt.parts.filter((part) => part.type !== "text")
 
     if (sdk.penguin) {
-      const firstLine = inputText.split("\n", 1)[0].trim()
-      const firstToken = firstLine.split(/\s+/, 1)[0] ?? ""
-      const penguinCommand = /^\/[a-z_][a-z0-9_-]*$/i.test(firstToken)
-      if (penguinCommand) {
-        const name = firstToken.slice(1)
-        const showConfig = name === "config" || name === "settings"
-        const keepDialog = showConfig
-        if (showConfig) {
-          dialog.replace(() => <DialogSettings directory={directory} sessionID={sessionID} />)
-        } else if (name === "tool_details") {
-          const next = !kv.get("tool_details_visibility", true)
-          kv.set("tool_details_visibility", next)
-        } else if (name === "thinking") {
-          const next = !kv.get("thinking_visibility", true)
-          kv.set("thinking_visibility", next)
-        } else {
-          toast.show({ variant: "warning", message: `Unknown command: /${name}` })
-        }
-        history.append({
-          ...store.prompt,
-          mode: currentMode,
-        })
-        if (!input.isDestroyed) {
-          input.extmarks.clear()
-        }
-        setStore("prompt", {
-          input: "",
-          parts: [],
-        })
-        setStore("extmarkToPartIndex", new Map())
-        if (!keepDialog) {
-          dialog.clear()
-        }
-        if (!input.isDestroyed) {
-          input.clear()
-          input.setText("")
-          input.getLayoutNode().markDirty()
-          renderer.requestRender()
-        }
-        queueMicrotask(() => {
-          setStore("prompt", "input", "")
-        })
-        props.onSubmit?.()
-        if (shouldNavigate) {
-          setTimeout(() => {
-            route.navigate({
-              type: "session",
-              sessionID,
-            })
-          }, 0)
-        }
-        return
-      }
       const now = Date.now()
       const user = {
         id: messageID,

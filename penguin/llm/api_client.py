@@ -506,6 +506,12 @@ class APIClient:
 
     def _format_user_error_message(self, *, error: LLMError, diag_id: str) -> str:
         category = error.category.value
+        provider_detail = ""
+        if isinstance(error.provider_data, dict):
+            raw_detail = error.provider_data.get("detail")
+            if isinstance(raw_detail, str):
+                provider_detail = raw_detail.lower()
+
         if category == ErrorCategory.AUTH.value:
             reason = "Provider authentication failed. Reconnect and retry"
         elif category == ErrorCategory.TIMEOUT.value:
@@ -513,7 +519,19 @@ class APIClient:
         elif category == ErrorCategory.NETWORK.value:
             reason = "LLM network request failed"
         elif category in {"upstream_request", ErrorCategory.BAD_REQUEST.value}:
-            reason = "LLM upstream rejected the request, likely due to context or output token limits"
+            if (
+                "not supported" in provider_detail
+                and "codex with a chatgpt account" in provider_detail
+            ):
+                reason = (
+                    "Selected model is not available through ChatGPT-backed "
+                    "Codex auth"
+                )
+            else:
+                reason = (
+                    "LLM upstream rejected the request, likely due to context "
+                    "or output token limits"
+                )
         elif category == ErrorCategory.RATE_LIMIT.value:
             reason = "LLM upstream rate-limited this request"
         elif category in {

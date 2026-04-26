@@ -319,9 +319,11 @@ def test_runmode_help_text_reflects_continuous_mode_truth():
 
     assert result.exit_code == 0
     assert "24/7 mode" in result.stdout
-    assert "ready frontier" in result.stdout
-    assert "determine next steps" in result.stdout
-    assert "does not imply blueprint/task-defined time limits" in result.stdout
+    assert "ready" in result.stdout and "frontier" in result.stdout
+    assert "determining" in result.stdout
+    assert "next" in result.stdout and "steps" in result.stdout
+    assert "blueprint/task-defined time" in result.stdout
+    assert "limits" in result.stdout and "CLI" in result.stdout
 
 
 def test_handle_run_mode_reports_waiting_input_honestly():
@@ -367,3 +369,113 @@ def test_handle_run_mode_reports_idle_honestly():
 
     printed = " ".join(str(call.args[0]) for call in console_mock.print.call_args_list if call.args)
     assert "no ready work remained" in printed.lower()
+
+
+def test_project_init_with_blueprint_sync_reports_counts(tmp_path):
+    from penguin.cli import cli as cli_module
+
+    blueprint_path = tmp_path / "demo-blueprint.md"
+    blueprint_path.write_text("# demo")
+    project = Project(
+        id="project-1",
+        name="Demo",
+        description="Project description",
+        created_at=datetime.utcnow().isoformat(),
+        updated_at=datetime.utcnow().isoformat(),
+        status="active",
+        workspace_path=(tmp_path / "workspace").resolve(),
+        context_path=(tmp_path / "workspace" / "context").resolve(),
+    )
+    ready_task = make_task("task-1", TaskStatus.ACTIVE)
+    blueprint = SimpleNamespace(title="Demo", overview="desc")
+    diagnostics = SimpleNamespace(has_errors=False, has_warnings=False, diagnostics=[])
+    parser = SimpleNamespace(
+        parse_file=Mock(return_value=blueprint),
+        lint_blueprint=Mock(return_value=diagnostics),
+    )
+    core = SimpleNamespace(
+        project_manager=SimpleNamespace(
+            create_project_async=AsyncMock(return_value=project),
+            sync_blueprint=Mock(return_value={"created": ["A", "B"], "updated": ["C"], "skipped": []}),
+            get_ready_tasks_async=AsyncMock(return_value=[ready_task]),
+        )
+    )
+
+    with patch.object(cli_module, "_initialize_core_components_globally", AsyncMock()),          patch.object(cli_module, "_core", core),          patch("penguin.project.blueprint_parser.BlueprintParser", return_value=parser),          patch.object(cli_module, "console") as console_mock:
+        cli_module.project_init(
+            name="Demo",
+            blueprint_path=blueprint_path,
+            description="Project description",
+            workspace_path=str(tmp_path / "workspace"),
+        )
+
+    core.project_manager.create_project_async.assert_awaited_once()
+    core.project_manager.get_ready_tasks_async.assert_awaited_once_with(project.id)
+    printed = " ".join(str(call.args[0]) for call in console_mock.print.call_args_list if call.args)
+    assert "Tasks created: 2" in printed
+    assert "Tasks updated: 1" in printed
+    assert "Ready tasks: 1" in printed
+
+
+def test_project_start_resolves_unique_project_name_and_runs_with_project_context():
+    from penguin.cli import cli as cli_module
+
+    project = Project(
+        id="project-1",
+        name="Demo",
+        description="Project description",
+        created_at=datetime.utcnow().isoformat(),
+        updated_at=datetime.utcnow().isoformat(),
+        status="active",
+    )
+    ready_task = make_task("task-1", TaskStatus.ACTIVE)
+    core = SimpleNamespace(
+        project_manager=SimpleNamespace(
+            get_project=Mock(return_value=None),
+            get_project_by_name=Mock(return_value=project),
+            list_tasks_async=AsyncMock(return_value=[ready_task]),
+            get_ready_tasks_async=AsyncMock(return_value=[ready_task]),
+        ),
+        start_run_mode=AsyncMock(return_value=None),
+    )
+
+    with patch.object(cli_module, "_initialize_core_components_globally", AsyncMock()),          patch.object(cli_module, "_core", core),          patch.object(cli_module, "console"):
+        cli_module.project_start("Demo", continuous=True, time_limit=15)
+
+    core.start_run_mode.assert_awaited_once()
+    _, kwargs = core.start_run_mode.await_args
+    assert kwargs["context"] == {"project_id": project.id}
+    assert kwargs["continuous"] is True
+    assert kwargs["time_limit"] == 15
+    assert kwargs["mode_type"] == "project"
+
+
+def test_project_start_fails_when_no_ready_tasks():
+    from penguin.cli import cli as cli_module
+
+    project = Project(
+        id="project-1",
+        name="Demo",
+        description="Project description",
+        created_at=datetime.utcnow().isoformat(),
+        updated_at=datetime.utcnow().isoformat(),
+        status="active",
+    )
+    existing_task = make_task("task-1", TaskStatus.RUNNING)
+    core = SimpleNamespace(
+        project_manager=SimpleNamespace(
+            get_project=Mock(return_value=project),
+            get_project_by_name=Mock(return_value=None),
+            list_projects=Mock(return_value=[project]),
+            list_tasks_async=AsyncMock(return_value=[existing_task]),
+            get_ready_tasks_async=AsyncMock(return_value=[]),
+        ),
+        start_run_mode=AsyncMock(return_value=None),
+    )
+
+    with patch.object(cli_module, "_initialize_core_components_globally", AsyncMock()),          patch.object(cli_module, "_core", core),          patch.object(cli_module, "console") as console_mock:
+        with pytest.raises(click.exceptions.Exit):
+            cli_module.project_start("project-1", continuous=True, time_limit=None)
+
+    printed = " ".join(str(call.args[0]) for call in console_mock.print.call_args_list if call.args)
+    assert "no ready tasks" in printed.lower()

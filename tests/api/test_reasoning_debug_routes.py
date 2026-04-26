@@ -28,11 +28,12 @@ def _build_client(core: _Core) -> TestClient:
     return TestClient(app)
 
 
-def test_message_request_defaults_include_reasoning_true() -> None:
+def test_message_request_defaults_include_reasoning_false() -> None:
     request = routes_module.MessageRequest(text="hello")
 
-    assert request.include_reasoning is True
-    assert routes_module._resolve_include_reasoning(request.include_reasoning) is True
+    assert request.include_reasoning is False
+    assert routes_module._resolve_include_reasoning(request.include_reasoning) is False
+    assert routes_module._resolve_include_reasoning(True) is True
     assert routes_module._resolve_include_reasoning(False) is False
 
 

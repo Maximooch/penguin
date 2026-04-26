@@ -187,9 +187,10 @@ SAFETY_RULES = """**Safety:**
 - Never blind overwrite without verification
 - Respect permission boundaries
 
-**Completion Signals (Call these tools, do not output as text):**
-- Call `<finish_response>` to end conversation turn
-- Call `<finish_task>` to mark task complete (awaits human approval)
+**Completion Signals (Call these tools, do not output them as text):**
+- Call `<finish_response></finish_response>` to end a conversation turn
+- Call `<finish_task>{"status":"done","summary":"..."}</finish_task>` to mark task work ready for human review
+- Never emit `TASK_COMPLETED` as plain text; it is legacy compatibility only
 - Never rely on implicit completion
 """
 

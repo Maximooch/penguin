@@ -166,3 +166,92 @@ def test_diagnostics_report_helpers():
 
     assert report.has_errors is True
     assert report.has_warnings is True
+
+
+def test_parser_rejects_unclosed_frontmatter(tmp_path: Path):
+    blueprint_path = tmp_path / "unclosed.md"
+    blueprint_path.write_text(
+        """---
+        title: Broken Blueprint
+        project_key: BROKEN
+
+        ## Tasks
+
+        - [ ] <BROKEN-1> Missing close
+          - Acceptance: done
+        """
+    )
+
+    parser = BlueprintParser(base_path=tmp_path)
+
+    with pytest.raises(BlueprintParseError) as exc_info:
+        parser.parse_file(blueprint_path)
+
+    error = exc_info.value
+    assert error.code == "BP-PARSE-008"
+    assert "Unclosed YAML frontmatter" in str(error)
+
+
+
+def test_parser_rejects_non_mapping_yaml_root(tmp_path: Path):
+    blueprint_path = tmp_path / "list-root.yaml"
+    blueprint_path.write_text(
+        """
+- not
+- a
+- mapping
+""".strip()
+    )
+
+    parser = BlueprintParser(base_path=tmp_path)
+
+    with pytest.raises(BlueprintParseError) as exc_info:
+        parser.parse_file(blueprint_path)
+
+    error = exc_info.value
+    assert error.code == "BP-PARSE-010"
+    assert "document root must be a mapping/object" in str(error)
+
+
+
+def test_parser_rejects_non_list_tasks_field(tmp_path: Path):
+    blueprint_path = tmp_path / "bad-tasks.yaml"
+    blueprint_path.write_text(
+        """
+title: Broken Tasks
+project_key: BROKEN
+tasks:
+  id: NOT-A-LIST
+""".strip()
+    )
+
+    parser = BlueprintParser(base_path=tmp_path)
+
+    with pytest.raises(BlueprintParseError) as exc_info:
+        parser.parse_file(blueprint_path)
+
+    error = exc_info.value
+    assert error.code == "BP-PARSE-011"
+    assert "tasks/items must be a list" in str(error)
+
+
+
+def test_parser_rejects_non_mapping_task_entries(tmp_path: Path):
+    blueprint_path = tmp_path / "bad-task-entry.yaml"
+    blueprint_path.write_text(
+        """
+title: Broken Entry
+project_key: BROKEN
+tasks:
+  - just-a-string
+""".strip()
+    )
+
+    parser = BlueprintParser(base_path=tmp_path)
+
+    with pytest.raises(BlueprintParseError) as exc_info:
+        parser.parse_file(blueprint_path)
+
+    error = exc_info.value
+    assert error.code == "BP-PARSE-012"
+    assert "must be a mapping/object" in str(error)

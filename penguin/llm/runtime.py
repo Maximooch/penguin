@@ -201,6 +201,7 @@ async def call_with_retry(
     """Call provider once, retrying one time for empty non-tool responses."""
 
     streamed_assistant_chunk = False
+    replayed_retry_response = False
 
     async def _tracked_stream_callback(
         chunk: str, message_type: str = "assistant"
@@ -235,6 +236,14 @@ async def call_with_retry(
         if handler_has_pending_tool_call(api_client):
             return assistant_response or ""
         assistant_response = await api_client.get_response(messages, stream=False)
+        if (
+            streaming
+            and stream_callback
+            and assistant_response
+            and assistant_response.strip()
+        ):
+            await _tracked_stream_callback(assistant_response, "assistant")
+            replayed_retry_response = True
 
     if not assistant_response or not assistant_response.strip():
         if handler_has_pending_tool_call(api_client):
@@ -253,6 +262,16 @@ async def call_with_retry(
             handler=getattr(api_client, "client_handler", None),
         )
         raise LLMEmptyResponseError(diagnostics["user_message"])
+
+    if (
+        streaming
+        and stream_callback
+        and assistant_response
+        and assistant_response.strip()
+        and not streamed_assistant_chunk
+        and not replayed_retry_response
+    ):
+        await _tracked_stream_callback(assistant_response, "assistant")
 
     return assistant_response
 
@@ -284,6 +303,7 @@ async def execute_pending_tool_call(
 
     tool_name = str(tool_info.get("name") or "").strip()
     raw_args = tool_info.get("arguments") or "{}"
+    suppress_ui_artifacts = tool_name == "finish_response"
     tool_call_id = (
         tool_info.get("call_id")
         or tool_info.get("tool_call_id")
@@ -310,7 +330,7 @@ async def execute_pending_tool_call(
         "source": "responses_tool_call",
     }
 
-    if emit_action_start is not None:
+    if emit_action_start is not None and not suppress_ui_artifacts:
         await emit_action_start(
             {
                 "id": tool_call_id,
@@ -328,15 +348,16 @@ async def execute_pending_tool_call(
             "result": str(output if output is not None else ""),
             "status": "completed",
         }
-        persist_action_result(
-            action_result,
-            {
-                "tool_call_id": tool_call_id,
-                "tool_arguments": raw_args if isinstance(raw_args, str) else None,
-            },
-        )
+        if not suppress_ui_artifacts:
+            persist_action_result(
+                action_result,
+                {
+                    "tool_call_id": tool_call_id,
+                    "tool_arguments": raw_args if isinstance(raw_args, str) else None,
+                },
+            )
 
-        if emit_action_result is not None:
+        if emit_action_result is not None and not suppress_ui_artifacts:
             await emit_action_result(
                 {
                     "id": tool_call_id,
@@ -346,7 +367,7 @@ async def execute_pending_tool_call(
                     "metadata": event_metadata,
                 }
             )
-        if emit_tool_timeline is not None:
+        if emit_tool_timeline is not None and not suppress_ui_artifacts:
             await emit_tool_timeline(action_result)
         return action_result
     except Exception as exc:
