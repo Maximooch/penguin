@@ -263,6 +263,16 @@ Acceptance criteria:
 - all current tool paths can produce normalized call/result records
 - existing action result persistence still works
 
+Phase 1 implementation note:
+
+- `penguin.tools.runtime` defines additive `ToolCall` and `ToolResult`
+  dataclasses plus compatibility helpers for current legacy action-result dicts.
+- ActionXML and provider-captured Responses metadata now normalize through this
+  IR internally before converting back to the existing persisted result shape.
+- The initial metadata policy is conservative: calls default to mutating, not
+  parallel safe, and approval-required until later registry metadata can refine
+  those flags.
+
 ### Phase 1.5: Harden Current Loop Guard
 
 Goals:
@@ -279,6 +289,17 @@ Acceptance criteria:
   stale-loop detection
 - truly identical empty tool-only loops still stop safely
 - guard messages explain what happened and how to continue
+
+Phase 1.5 implementation note:
+
+- The current empty tool-only guard now hashes a deterministic signature built
+  from tool name, normalized arguments, common file/range/limit fields, status,
+  and full output hash.
+- ActionXML and Responses execution paths attach runtime-only `tool_arguments`,
+  `tool_call_id`, and `output_hash` metadata to action results so the existing
+  loop can distinguish real progress without waiting for the scheduler refactor.
+- Identical empty tool-only loops still stop after the current repeat threshold,
+  while repeated reads/searches with different arguments are treated as progress.
 
 ### Phase 2: Add Serial Tool Scheduler
 

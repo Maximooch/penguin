@@ -52,11 +52,12 @@ async def test_call_llm_with_retry_skips_retry_when_tool_call_pending() -> None:
             return ""
 
     api_client = _Client()
+
+    def _has_pending_tool_call(client):
+        return Engine._handler_has_pending_tool_call(engine_like, client)
+
     engine_like = SimpleNamespace(
-        _handler_has_pending_tool_call=lambda client: Engine._handler_has_pending_tool_call(
-            engine_like,
-            client,
-        ),
+        _handler_has_pending_tool_call=_has_pending_tool_call,
         _build_empty_response_diagnostics=lambda *_args, **_kwargs: {},
     )
 
@@ -208,6 +209,69 @@ def test_wallet_guard_keeps_short_empty_tool_only_chain_when_results_change() ->
     assert loop_state.repeated_tool_only_count == 1
 
 
+def test_wallet_guard_treats_tool_arguments_as_progress() -> None:
+    engine = Engine.__new__(Engine)
+    engine._default_run_state = SimpleNamespace(current_agent_id="default")
+    loop_state = LoopState()
+    engine._get_loop_state = lambda: loop_state  # type: ignore[method-assign]
+
+    for max_lines in (50, 100, 150, 200):
+        should_break, status = Engine._check_wallet_guard_termination(
+            engine,
+            last_response="",
+            iteration_results=[
+                {
+                    "action": "read_file",
+                    "tool_arguments": (
+                        f'{{"path":"README.md","max_lines":{max_lines}}}'
+                    ),
+                    "result": "same header",
+                    "status": "completed",
+                }
+            ],
+            mode="response",
+        )
+
+        assert should_break is False
+        assert status is None
+
+    assert loop_state.empty_tool_only_count == 4
+    assert loop_state.repeated_tool_only_count == 1
+
+
+def test_wallet_guard_breaks_on_same_tool_arguments_and_output_hash() -> None:
+    engine = Engine.__new__(Engine)
+    engine._default_run_state = SimpleNamespace(current_agent_id="default")
+    loop_state = LoopState()
+    engine._get_loop_state = lambda: loop_state  # type: ignore[method-assign]
+    iteration_results = [
+        {
+            "action": "read_file",
+            "tool_arguments": '{"path":"README.md","max_lines":50}',
+            "result": "same header",
+            "status": "completed",
+        }
+    ]
+
+    for _ in range(2):
+        should_break, status = Engine._check_wallet_guard_termination(
+            engine,
+            last_response="",
+            iteration_results=iteration_results,
+            mode="response",
+        )
+
+        assert should_break is False
+        assert status is None
+
+    assert Engine._check_wallet_guard_termination(
+        engine,
+        last_response="",
+        iteration_results=iteration_results,
+        mode="response",
+    ) == (True, "repeated_empty_tool_only_iterations")
+
+
 def test_wallet_guard_allows_many_empty_tool_only_turns_when_results_change() -> None:
     engine = Engine.__new__(Engine)
     engine._default_run_state = SimpleNamespace(current_agent_id="default")
@@ -286,9 +350,10 @@ async def test_record_tool_only_stall_note_persists_clearer_terminal_message() -
         "repeated_empty_tool_only_iterations",
     )
 
-    assert (
-        result
-        == "Stopping because empty tool-only turns are repeating the same tool outputs; this is probably a stale loop rather than forward progress."
+    expected = (
+        "Stopping because empty tool-only turns are repeating the same tool outputs; "
+        "this is probably a stale loop rather than forward progress."
     )
+    assert result == expected
     assert added == [result]
     engine._save_conversation.assert_awaited_once()

@@ -156,9 +156,17 @@ async def test_llm_step_persists_assistant_before_responses_tool_result() -> Non
         result["assistant_response"]
         == "Checking git state, then I'll write the roadmap file."
     )
-    assert result["action_results"] == [
-        {"action": "write_file", "result": "ok", "status": "completed"}
-    ]
+    assert len(result["action_results"]) == 1
+    action_result = result["action_results"][0]
+    assert action_result["action"] == "write_file"
+    assert action_result["result"] == "ok"
+    assert action_result["status"] == "completed"
+    assert action_result["tool_call_id"] == "call_123"
+    assert (
+        action_result["tool_arguments"]
+        == '{"path":"context/todo.md","content":"hi"}'
+    )
+    assert isinstance(action_result["output_hash"], str)
     assert [message.role for message in conversation.session.messages] == [
         "assistant",
         "tool",

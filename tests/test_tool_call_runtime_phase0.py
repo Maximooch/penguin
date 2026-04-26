@@ -59,21 +59,31 @@ async def test_engine_executes_only_first_actionxml_action_per_iteration() -> No
     )
 
     assert [action.action_type for action in executed] == [ActionType.READ_FILE]
-    assert action_results == [
+    assert len(action_results) == 1
+    assert action_results[0]["action"] == "read_file"
+    assert action_results[0]["result"] == "ran:read_file"
+    assert action_results[0]["status"] == "completed"
+    assert action_results[0]["tool_call_id"] == "action_xml_0_read_file"
+    assert action_results[0]["tool_arguments"] == (
+        '{"path":"README.md","max_lines":10}'
+    )
+    assert isinstance(action_results[0]["output_hash"], str)
+    assert persisted == [
+        {
+            "action_type": "read_file",
+            "result": "ran:read_file",
+            "status": "completed",
+            "tool_call_id": "action_xml_0_read_file",
+            "tool_arguments": '{"path":"README.md","max_lines":10}',
+        }
+    ]
+    assert emitted == [
         {
             "action": "read_file",
             "result": "ran:read_file",
             "status": "completed",
         }
     ]
-    assert persisted == [
-        {
-            "action_type": "read_file",
-            "result": "ran:read_file",
-            "status": "completed",
-        }
-    ]
-    assert emitted == action_results
 
 
 @pytest.mark.asyncio
@@ -116,14 +126,20 @@ async def test_responses_tool_call_execution_preserves_provider_identity() -> No
         emit_tool_timeline=_emit_timeline,
     )
 
-    assert result == {
-        "action": "read_file",
-        "result": "read_file:README.md:5",
-        "status": "completed",
-    }
+    assert result is not None
+    assert result["action"] == "read_file"
+    assert result["result"] == "read_file:README.md:5"
+    assert result["status"] == "completed"
+    assert result["tool_call_id"] == "call_read_123"
+    assert result["tool_arguments"] == '{"path":"README.md","max_lines":5}'
+    assert isinstance(result["output_hash"], str)
     assert persisted == [
         {
-            "action_result": result,
+            "action_result": {
+                "action": "read_file",
+                "result": "read_file:README.md:5",
+                "status": "completed",
+            },
             "tool_context": {
                 "tool_call_id": "call_read_123",
                 "tool_arguments": '{"path":"README.md","max_lines":5}',
@@ -132,7 +148,13 @@ async def test_responses_tool_call_execution_preserves_provider_identity() -> No
     ]
     assert started[0]["id"] == "call_read_123"
     assert completed[0]["id"] == "call_read_123"
-    assert timeline == [result]
+    assert timeline == [
+        {
+            "action": "read_file",
+            "result": "read_file:README.md:5",
+            "status": "completed",
+        }
+    ]
 
 
 def test_loop_state_detects_repeated_empty_tool_only_results() -> None:

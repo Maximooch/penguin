@@ -53,6 +53,12 @@ from penguin.llm.runtime import (
     prepare_responses_tool_kwargs,
 )
 from penguin.tools import ToolManager  # type: ignore
+from penguin.tools.runtime import (
+    legacy_action_result_from_tool_result,
+    tool_calls_from_codeact_actions,
+    tool_results_loop_signature,
+    tool_result_from_action_result,
+)
 from penguin.config import TASK_COMPLETION_PHRASE  # Add this import
 from penguin.constants import get_engine_max_iterations_default
 from penguin.system.execution_context import get_current_execution_context
@@ -149,7 +155,7 @@ class LoopState:
 
     # Empty tool-only iteration tracking
     empty_tool_only_count: int = 0
-    last_tool_only_signature: Optional[int] = None
+    last_tool_only_signature: Optional[str] = None
     repeated_tool_only_count: int = 0
 
     def reset(self) -> None:
@@ -217,17 +223,7 @@ class LoopState:
             return False, None
 
         self.empty_tool_only_count += 1
-        signature = hash(
-            tuple(
-                (
-                    str(result.get("action") or "").strip(),
-                    str(result.get("status") or "").strip(),
-                    str(result.get("result") or "")[:200],
-                )
-                for result in iteration_results
-                if isinstance(result, dict)
-            )
-        )
+        signature = tool_results_loop_signature(iteration_results)
 
         if signature == self.last_tool_only_signature:
             self.repeated_tool_only_count += 1
@@ -2520,12 +2516,13 @@ class Engine:
             return action_results
 
         actions: List[CodeActAction] = parse_action(assistant_response)
+        tool_calls = tool_calls_from_codeact_actions(actions)
         logger.debug(
-            "[AUTO-CONTINUE FIX] Parsed %s actions from response", len(actions)
+            "[AUTO-CONTINUE FIX] Parsed %s actions from response", len(tool_calls)
         )
 
         # Enforce one action per iteration for incremental execution
-        for act in actions[:1] if actions else []:
+        for act, tool_call in zip(actions[:1], tool_calls[:1]):
             result = await action_executor.execute_action(act)
 
             # Format result (using standardized field names: action/result)
@@ -2536,20 +2533,35 @@ class Engine:
                 "result": str(result if result is not None else ""),
                 "status": "completed",
             }
-            action_results.append(action_result)
+            tool_result = tool_result_from_action_result(
+                action_result,
+                call_id=tool_call.id,
+            )
+            legacy_action_result = legacy_action_result_from_tool_result(tool_result)
+            runtime_action_result = {
+                **legacy_action_result,
+                "tool_call_id": tool_call.id,
+                "tool_arguments": tool_call.arguments
+                if isinstance(tool_call.arguments, str)
+                else str(tool_call.arguments),
+                "output_hash": tool_result.output_hash,
+            }
+            action_results.append(runtime_action_result)
 
             # Persist result in conversation
             cm.add_action_result(
-                action_type=action_result["action"],
-                result=action_result["result"],
-                status=action_result["status"],
+                action_type=legacy_action_result["action"],
+                result=legacy_action_result["result"],
+                status=legacy_action_result["status"],
+                tool_call_id=tool_call.id,
+                tool_arguments=runtime_action_result["tool_arguments"],
             )
             logger.debug(
-                f"Added action result to conversation: {action_result['action']}"
+                f"Added action result to conversation: {legacy_action_result['action']}"
             )
 
             # Emit UI event
-            await self._emit_tool_event(cm, action_result)
+            await self._emit_tool_event(cm, legacy_action_result)
 
             # NOTE: Removed hardcoded action_to_tool mapping (architectural violation)
             # ActionExecutor in parser.py handles CodeAct action → tool routing

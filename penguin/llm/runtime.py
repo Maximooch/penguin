@@ -4,6 +4,11 @@ import asyncio
 import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
+from penguin.tools.runtime import (
+    legacy_action_result_from_tool_result,
+    tool_call_from_responses_info,
+    tool_result_from_action_result,
+)
 from penguin.utils.errors import LLMEmptyResponseError
 
 from .provider_transform import (
@@ -301,15 +306,14 @@ async def execute_pending_tool_call(
     if not tool_info or not isinstance(tool_info, dict):
         return None
 
-    tool_name = str(tool_info.get("name") or "").strip()
-    raw_args = tool_info.get("arguments") or "{}"
+    tool_call = tool_call_from_responses_info(tool_info)
+    if tool_call is None:
+        return None
+
+    tool_name = tool_call.name
+    raw_args = tool_call.arguments
     suppress_ui_artifacts = tool_name == "finish_response"
-    tool_call_id = (
-        tool_info.get("call_id")
-        or tool_info.get("tool_call_id")
-        or tool_info.get("item_id")
-        or f"call_{int(time.time() * 1000)}"
-    )
+    tool_call_id = tool_call.id
 
     try:
         import json as _json
@@ -342,18 +346,32 @@ async def execute_pending_tool_call(
         )
 
     try:
+        started_at = time.time()
         output = tool_manager.execute_tool(tool_name, tool_args)
         action_result = {
             "action": tool_name,
             "result": str(output if output is not None else ""),
             "status": "completed",
         }
+        tool_result = tool_result_from_action_result(
+            action_result,
+            call_id=tool_call.id,
+            started_at=started_at,
+            ended_at=time.time(),
+        )
+        legacy_action_result = legacy_action_result_from_tool_result(tool_result)
+        runtime_action_result = {
+            **legacy_action_result,
+            "tool_call_id": tool_call.id,
+            "tool_arguments": raw_args if isinstance(raw_args, str) else str(raw_args),
+            "output_hash": tool_result.output_hash,
+        }
         if not suppress_ui_artifacts:
             persist_action_result(
-                action_result,
+                legacy_action_result,
                 {
                     "tool_call_id": tool_call_id,
-                    "tool_arguments": raw_args if isinstance(raw_args, str) else None,
+                    "tool_arguments": runtime_action_result["tool_arguments"],
                 },
             )
 
@@ -361,15 +379,15 @@ async def execute_pending_tool_call(
             await emit_action_result(
                 {
                     "id": tool_call_id,
-                    "status": action_result["status"],
-                    "result": action_result["result"],
-                    "action": action_result["action"],
+                    "status": legacy_action_result["status"],
+                    "result": legacy_action_result["result"],
+                    "action": legacy_action_result["action"],
                     "metadata": event_metadata,
                 }
             )
         if emit_tool_timeline is not None and not suppress_ui_artifacts:
-            await emit_tool_timeline(action_result)
-        return action_result
+            await emit_tool_timeline(legacy_action_result)
+        return legacy_action_result if suppress_ui_artifacts else runtime_action_result
     except Exception as exc:
         if emit_action_result is not None:
             await emit_action_result(
