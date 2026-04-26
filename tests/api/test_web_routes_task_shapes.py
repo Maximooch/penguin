@@ -763,3 +763,29 @@ async def test_run_project_reports_parse_failures_as_400():
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail['message'] == 'No tasks found'
     assert exc_info.value.detail['source'] == 'inline_markdown'
+
+@pytest.mark.asyncio
+async def test_project_init_duplicate_name_returns_400_not_500():
+    from penguin.project.exceptions import ValidationError
+    from penguin.web.services.projects import initialize_project_from_blueprint
+
+    core = SimpleNamespace(
+        project_manager=SimpleNamespace(
+            create_project_async=AsyncMock(
+                side_effect=ValidationError("Project 'Demo' already exists", field="name")
+            ),
+        )
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await initialize_project_from_blueprint(
+            core=core,
+            name="Demo",
+            description=None,
+            workspace_path="/tmp/demo",
+            blueprint_path=None,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "already exists" in exc_info.value.detail
+

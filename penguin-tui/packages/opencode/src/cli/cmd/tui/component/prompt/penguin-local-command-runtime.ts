@@ -90,8 +90,8 @@ export async function executePenguinHttpLocalCommand(options: {
   }
 
   if (command.kind === "project_init") {
-    const projectName = requireArg(command.projectName, "/project init <name> [--blueprint <path>]")
-    if (!projectName) return usage("/project init <name> [--blueprint <path>]")
+    const projectName = requireArg(command.projectName, "/project init <name> [--blueprint <path>] [--workspace <path>]")
+    if (!projectName) return usage("/project init <name> [--blueprint <path>] [--workspace <path>]")
     const payload = objectPayload(
       await fetchJson(fetch, baseUrl, "/api/v1/projects/init", {
         method: "POST",
@@ -99,7 +99,7 @@ export async function executePenguinHttpLocalCommand(options: {
         body: JSON.stringify({
           name: projectName,
           blueprint_path: command.blueprintPath,
-          workspace_path: directory,
+          workspace_path: command.workspacePath ?? directory,
         }),
       }),
     )

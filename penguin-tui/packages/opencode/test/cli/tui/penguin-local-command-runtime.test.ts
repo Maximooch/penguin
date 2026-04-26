@@ -52,7 +52,7 @@ describe("penguin HTTP local command runtime", () => {
     expect(response.result.message).toBe("Project created: Demo")
 
     response = await run(
-      { kind: "project_init", projectName: "Demo", blueprintPath: "./blueprint.md" },
+      { kind: "project_init", projectName: "Demo", blueprintPath: "./blueprint.md", workspacePath: "/tmp/demo-workspace" },
       { project: { name: "Demo" }, blueprint: { tasks_created: 2, tasks_updated: 1 } },
     )
     expect(response.records[0]).toEqual({
@@ -61,7 +61,7 @@ describe("penguin HTTP local command runtime", () => {
       body: {
         name: "Demo",
         blueprint_path: "./blueprint.md",
-        workspace_path: "/tmp/workspace",
+        workspace_path: "/tmp/demo-workspace",
       },
     })
     expect(response.result.message).toBe("Project initialized: Demo (2 created, 1 updated)")

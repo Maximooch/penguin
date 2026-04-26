@@ -13,6 +13,7 @@ export type PenguinLocalCommand =
       kind: "project_init"
       projectName?: string
       blueprintPath?: string
+      workspacePath?: string
     }
   | {
       kind: "project_list"
@@ -107,11 +108,12 @@ function parsePriority(value: string | undefined): number | undefined {
 }
 
 function parseProjectInit(args: string[]): PenguinLocalCommand {
-  const projectName = withoutOptions(args, ["--blueprint"])[0]
+  const projectName = withoutOptions(args, ["--blueprint", "--workspace"])[0]
   return {
     kind: "project_init",
     projectName,
     blueprintPath: optionValue(args, "--blueprint"),
+    workspacePath: optionValue(args, "--workspace"),
   }
 }
 

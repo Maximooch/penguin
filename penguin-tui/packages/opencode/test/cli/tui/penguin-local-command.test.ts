@@ -9,18 +9,20 @@ import {
 
 describe("penguin local command parser", () => {
   test("parses dashed project init form", () => {
-    expect(parsePenguinLocalCommand('/project-init "Auth Rewrite" --blueprint ./auth.md')).toEqual({
+    expect(parsePenguinLocalCommand('/project-init "Auth Rewrite" --blueprint ./auth.md --workspace ./auth-workspace')).toEqual({
       kind: "project_init",
       projectName: "Auth Rewrite",
       blueprintPath: "./auth.md",
+      workspacePath: "./auth-workspace",
     })
   })
 
   test("parses spaced project init form", () => {
-    expect(parsePenguinLocalCommand('/project init "Auth Rewrite" --blueprint ./auth.md')).toEqual({
+    expect(parsePenguinLocalCommand('/project init "Auth Rewrite" --blueprint ./auth.md --workspace ./auth-workspace')).toEqual({
       kind: "project_init",
       projectName: "Auth Rewrite",
       blueprintPath: "./auth.md",
+      workspacePath: "./auth-workspace",
     })
   })
 
@@ -91,12 +93,13 @@ describe("penguin local command parser", () => {
 
 describe("penguin prompt classification", () => {
   test("classifies project commands as local commands", () => {
-    expect(classifyPenguinPromptInput('/project init Demo --blueprint ./demo.md')).toEqual({
+    expect(classifyPenguinPromptInput('/project init Demo --blueprint ./demo.md --workspace ./demo-workspace')).toEqual({
       kind: "local_command",
       command: {
         kind: "project_init",
         projectName: "Demo",
         blueprintPath: "./demo.md",
+        workspacePath: "./demo-workspace",
       },
     })
   })

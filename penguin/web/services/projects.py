@@ -20,6 +20,7 @@ from penguin.project.blueprint_parser import (
     BlueprintParseError,
     BlueprintParser,
 )
+from penguin.project.exceptions import ValidationError
 from penguin.project.git_manager import GitManager
 from penguin.project.spec_parser import parse_project_specification_from_markdown
 from penguin.project.task_executor import ProjectTaskExecutor
@@ -104,11 +105,14 @@ async def initialize_project_from_blueprint(
     blueprint_path: Optional[str],
 ) -> Dict[str, Any]:
     """Create a project and optionally parse/lint/sync a Blueprint into it."""
-    project = await core.project_manager.create_project_async(
-        name=name,
-        description=description or f"Project: {name}",
-        workspace_path=Path(workspace_path).expanduser().resolve() if workspace_path else None,
-    )
+    try:
+        project = await core.project_manager.create_project_async(
+            name=name,
+            description=description or f"Project: {name}",
+            workspace_path=Path(workspace_path).expanduser().resolve() if workspace_path else None,
+        )
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     response: Dict[str, Any] = {
         "project": {
