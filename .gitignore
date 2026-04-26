@@ -8,6 +8,8 @@ debugland/
 olderhold/
 copywriting/
 
+misc/prototypes/
+
 # Python cache
 __pycache__/
 *.py[cod]

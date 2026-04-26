@@ -239,6 +239,15 @@ Acceptance criteria:
 - current behavior is explicitly covered by tests
 - regressions during migration are visible
 
+Phase 0 coverage added:
+
+- `tests/test_tool_call_runtime_phase0.py` locks multiple ActionXML parsing,
+  current one-action-per-iteration execution, Responses tool-call identity
+  preservation, and empty tool-only loop detection/reset behavior.
+- Existing Responses-path tests in `tests/test_engine_responses_tool_calls.py`
+  and `tests/test_engine_responses_tool_action_results.py` continue to cover
+  engine integration and persistence ordering.
+
 ### Phase 1: Introduce ToolCall / ToolResult IR
 
 Goals:
