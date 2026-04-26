@@ -63,6 +63,9 @@ Build a small but production-lean Python CRUD service for managing team tasks. T
   - Acceptance: Task records persist across runs.
   - Acceptance: Task model supports title, description, status, due_date, and created_by.
   - Depends: TASKAPI-1
+  - Dependency Specs:
+    - task_id: TASKAPI-1
+      policy: review_ready_ok
   - Recipe: task-crud
   - Description: Add database setup and persistence logic for task data.
 
@@ -70,6 +73,9 @@ Build a small but production-lean Python CRUD service for managing team tasks. T
   - Acceptance: Users can register and log in with hashed passwords.
   - Acceptance: Auth returns a token or session suitable for protected routes.
   - Depends: TASKAPI-1
+  - Dependency Specs:
+    - task_id: TASKAPI-1
+      policy: review_ready_ok
   - Recipe: auth-flow
   - Description: Implement basic authentication flow for local use.
 
@@ -77,6 +83,11 @@ Build a small but production-lean Python CRUD service for managing team tasks. T
   - Acceptance: Unauthenticated task access is rejected.
   - Acceptance: Authenticated users can access only valid task operations.
   - Depends: TASKAPI-2, TASKAPI-3
+  - Dependency Specs:
+    - task_id: TASKAPI-2
+      policy: review_ready_ok
+    - task_id: TASKAPI-3
+      policy: review_ready_ok
   - Recipe: auth-flow
   - Description: Add route protection and current-user resolution.
 
@@ -84,6 +95,11 @@ Build a small but production-lean Python CRUD service for managing team tasks. T
   - Acceptance: Users can create, list, update, and delete tasks.
   - Acceptance: API returns appropriate status codes and JSON payloads.
   - Depends: TASKAPI-2, TASKAPI-4
+  - Dependency Specs:
+    - task_id: TASKAPI-2
+      policy: review_ready_ok
+    - task_id: TASKAPI-4
+      policy: review_ready_ok
   - Recipe: task-crud
   - Description: Implement the main task API behavior.
 
@@ -91,6 +107,9 @@ Build a small but production-lean Python CRUD service for managing team tasks. T
   - Acceptance: Tasks can be filtered by status and due date.
   - Acceptance: Invalid payloads fail with clear validation errors.
   - Depends: TASKAPI-5
+  - Dependency Specs:
+    - task_id: TASKAPI-5
+      policy: review_ready_ok
   - Recipe: task-filtering
   - Description: Add query filtering and stronger request validation.
 
@@ -98,6 +117,9 @@ Build a small but production-lean Python CRUD service for managing team tasks. T
   - Acceptance: Auth and task CRUD are covered by pytest tests.
   - Acceptance: Tests are deterministic and runnable locally.
   - Depends: TASKAPI-5
+  - Dependency Specs:
+    - task_id: TASKAPI-5
+      policy: review_ready_ok
   - Recipe: test-suite
   - Description: Add focused automated coverage for happy path and invalid input paths.
 
@@ -105,6 +127,9 @@ Build a small but production-lean Python CRUD service for managing team tasks. T
   - Acceptance: Task create/update/delete actions are recorded.
   - Acceptance: Audit entries include actor, timestamp, and action type.
   - Depends: TASKAPI-5
+  - Dependency Specs:
+    - task_id: TASKAPI-5
+      policy: review_ready_ok
   - Recipe: audit-trail
   - Description: Add a simple audit log for task mutations.
 
