@@ -239,6 +239,79 @@ def test_wallet_guard_treats_tool_arguments_as_progress() -> None:
     assert loop_state.repeated_tool_only_count == 1
 
 
+def test_wallet_guard_treats_file_ranges_as_progress() -> None:
+    engine = Engine.__new__(Engine)
+    engine._default_run_state = SimpleNamespace(current_agent_id="default")
+    loop_state = LoopState()
+    engine._get_loop_state = lambda: loop_state  # type: ignore[method-assign]
+
+    for start_line, end_line in ((1, 40), (41, 80), (81, 120), (121, 160)):
+        should_break, status = Engine._check_wallet_guard_termination(
+            engine,
+            last_response="",
+            iteration_results=[
+                {
+                    "action": "read_file",
+                    "tool_arguments": {
+                        "path": "README.md",
+                        "start_line": start_line,
+                        "end_line": end_line,
+                    },
+                    "result": "same repeated header",
+                    "status": "completed",
+                }
+            ],
+            mode="response",
+        )
+
+        assert should_break is False
+        assert status is None
+
+    assert loop_state.empty_tool_only_count == 4
+    assert loop_state.repeated_tool_only_count == 1
+
+
+def test_wallet_guard_ignores_provider_call_ids_for_stale_loop_detection() -> None:
+    engine = Engine.__new__(Engine)
+    engine._default_run_state = SimpleNamespace(current_agent_id="default")
+    loop_state = LoopState()
+    engine._get_loop_state = lambda: loop_state  # type: ignore[method-assign]
+
+    for index in range(2):
+        should_break, status = Engine._check_wallet_guard_termination(
+            engine,
+            last_response="",
+            iteration_results=[
+                {
+                    "action": "read_file",
+                    "tool_call_id": f"call_{index}",
+                    "tool_arguments": '{"path":"README.md","max_lines":50}',
+                    "result": "same header",
+                    "status": "completed",
+                }
+            ],
+            mode="response",
+        )
+
+        assert should_break is False
+        assert status is None
+
+    assert Engine._check_wallet_guard_termination(
+        engine,
+        last_response="",
+        iteration_results=[
+            {
+                "action": "read_file",
+                "tool_call_id": "call_3",
+                "tool_arguments": '{"path":"README.md","max_lines":50}',
+                "result": "same header",
+                "status": "completed",
+            }
+        ],
+        mode="response",
+    ) == (True, "repeated_empty_tool_only_iterations")
+
+
 def test_wallet_guard_breaks_on_same_tool_arguments_and_output_hash() -> None:
     engine = Engine.__new__(Engine)
     engine._default_run_state = SimpleNamespace(current_agent_id="default")
@@ -330,6 +403,8 @@ def test_suppress_empty_tool_only_placeholder_removes_persisted_placeholder() ->
 async def test_record_tool_only_stall_note_persists_clearer_terminal_message() -> None:
     engine = Engine.__new__(Engine)
     engine._save_conversation = AsyncMock()  # type: ignore[method-assign]
+    loop_state = LoopState(last_tool_only_summary="read_file(path=README.md)")
+    engine._get_loop_state = lambda: loop_state  # type: ignore[method-assign]
     added: list[str] = []
 
     class _Conversation:
@@ -350,10 +425,11 @@ async def test_record_tool_only_stall_note_persists_clearer_terminal_message() -
         "repeated_empty_tool_only_iterations",
     )
 
-    expected = (
-        "Stopping because empty tool-only turns are repeating the same tool outputs; "
-        "this is probably a stale loop rather than forward progress."
+    assert result.startswith(
+        "Stopping because empty tool-only turns repeated the same tool result "
+        "identity; this is probably a stale loop rather than forward progress."
     )
-    assert result == expected
+    assert "Repeated tool result: read_file(path=README.md)." in result
+    assert "To continue, send a new message" in result
     assert added == [result]
     engine._save_conversation.assert_awaited_once()

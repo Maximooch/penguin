@@ -370,6 +370,17 @@ Acceptance criteria:
 - truly identical empty tool-only loops still stop safely
 - guard messages explain what happened and how to continue
 
+Phase 4 implementation note:
+
+- `ToolLoopIdentity` now captures a stable fingerprint, per-tool identity
+  entries, and a compact summary for each empty tool-only iteration.
+- Loop fingerprints include tool name, status, normalized arguments, file/range
+  fields, and output hashes while ignoring volatile provider call ids, so
+  repeated native calls can still be detected as stale.
+- `LoopState` tracks the last repeated tool identity summary, and the terminal
+  stall note now names the repeated tool result and tells the user to continue
+  with a new file, range, query, or command.
+
 ### Phase 5: Native Tool-Call First Providers
 
 Goals:

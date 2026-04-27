@@ -13,6 +13,7 @@ from penguin.tools.runtime import (
     tool_call_from_responses_info,
     tool_calls_from_actionxml,
     tool_result_from_action_result,
+    tool_results_loop_identity,
 )
 
 
@@ -153,3 +154,43 @@ async def test_serial_scheduler_preserves_current_one_call_policy() -> None:
 
     assert executed == ["read_file"]
     assert [result.name for result in results] == ["read_file"]
+
+
+def test_tool_loop_identity_ignores_provider_call_id_but_keeps_args() -> None:
+    first = tool_results_loop_identity(
+        [
+            {
+                "action": "read_file",
+                "tool_call_id": "call_1",
+                "tool_arguments": '{"path":"README.md","max_lines":20}',
+                "result": "same output",
+                "status": "completed",
+            }
+        ]
+    )
+    second = tool_results_loop_identity(
+        [
+            {
+                "action": "read_file",
+                "tool_call_id": "call_2",
+                "tool_arguments": '{"path":"README.md","max_lines":20}',
+                "result": "same output",
+                "status": "completed",
+            }
+        ]
+    )
+    changed_range = tool_results_loop_identity(
+        [
+            {
+                "action": "read_file",
+                "tool_call_id": "call_3",
+                "tool_arguments": '{"path":"README.md","max_lines":40}',
+                "result": "same output",
+                "status": "completed",
+            }
+        ]
+    )
+
+    assert first.fingerprint == second.fingerprint
+    assert first.fingerprint != changed_range.fingerprint
+    assert "read_file(path=README.md, max_lines=20)" in first.summary

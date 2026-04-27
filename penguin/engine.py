@@ -25,12 +25,11 @@ from typing import (
     Any,
     Awaitable,
     Callable,
+    Coroutine,
     Dict,
     List,
     Optional,
     Sequence,
-    Union,
-    AsyncGenerator,
     Tuple,
 )
 from penguin.utils.errors import LLMEmptyResponseError
@@ -58,7 +57,7 @@ from penguin.tools.runtime import (
     execute_tool_calls_serially,
     legacy_action_result_from_tool_result,
     tool_calls_from_codeact_actions,
-    tool_results_loop_signature,
+    tool_results_loop_identity,
 )
 from penguin.config import TASK_COMPLETION_PHRASE  # Add this import
 from penguin.constants import get_engine_max_iterations_default
@@ -157,6 +156,7 @@ class LoopState:
     # Empty tool-only iteration tracking
     empty_tool_only_count: int = 0
     last_tool_only_signature: Optional[str] = None
+    last_tool_only_summary: str = ""
     repeated_tool_only_count: int = 0
 
     def reset(self) -> None:
@@ -166,6 +166,7 @@ class LoopState:
         self.repeat_count = 0
         self.empty_tool_only_count = 0
         self.last_tool_only_signature = None
+        self.last_tool_only_summary = ""
         self.repeated_tool_only_count = 0
 
     def check_repeated(self, response: str) -> bool:
@@ -220,11 +221,14 @@ class LoopState:
         if not is_empty_tool_only:
             self.empty_tool_only_count = 0
             self.last_tool_only_signature = None
+            self.last_tool_only_summary = ""
             self.repeated_tool_only_count = 0
             return False, None
 
         self.empty_tool_only_count += 1
-        signature = tool_results_loop_signature(iteration_results)
+        identity = tool_results_loop_identity(iteration_results)
+        signature = identity.fingerprint
+        self.last_tool_only_summary = identity.summary
 
         if signature == self.last_tool_only_signature:
             self.repeated_tool_only_count += 1
@@ -241,8 +245,8 @@ class LoopState:
 _EMPTY_RESPONSE_PLACEHOLDER = "[Empty response from model]"
 _TOOL_ONLY_STALL_NOTES = {
     "repeated_empty_tool_only_iterations": (
-        "Stopping because empty tool-only turns are repeating the same tool outputs; "
-        "this is probably a stale loop rather than forward progress."
+        "Stopping because empty tool-only turns repeated the same tool result "
+        "identity; this is probably a stale loop rather than forward progress."
     ),
 }
 
@@ -1152,7 +1156,18 @@ class Engine:
         """Return a user-facing explanation for stalled tool-only loops."""
         if not isinstance(status, str):
             return ""
-        return _TOOL_ONLY_STALL_NOTES.get(status, "")
+        note = _TOOL_ONLY_STALL_NOTES.get(status, "")
+        if not note:
+            return ""
+
+        loop_state = self._get_loop_state()
+        repeated_tool = loop_state.last_tool_only_summary.strip()
+        if repeated_tool:
+            note = f"{note} Repeated tool result: {repeated_tool}."
+        return (
+            f"{note} To continue, send a new message with the next file, range, "
+            "query, or command to try."
+        )
 
     async def _record_tool_only_stall_note(
         self,

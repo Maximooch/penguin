@@ -59,6 +59,15 @@ class ToolResult:
 
 
 @dataclass(frozen=True)
+class ToolLoopIdentity:
+    """Stable identity for one tool-only loop iteration."""
+
+    fingerprint: str
+    entries: tuple[dict[str, Any], ...]
+    summary: str
+
+
+@dataclass(frozen=True)
 class ToolExecutionPolicy:
     """Conservative execution policy for the serial scheduler."""
 
@@ -101,8 +110,30 @@ def _metadata_from_result(action_result: dict[str, Any]) -> dict[str, Any]:
     return metadata if isinstance(metadata, dict) else {}
 
 
-def tool_loop_signature(action_result: dict[str, Any]) -> dict[str, Any]:
-    """Build a loop-guard identity payload for a legacy action result."""
+def _tool_result_to_action_result(tool_result: ToolResult) -> dict[str, Any]:
+    structured_output = tool_result.structured_output or {}
+    return {
+        "action": tool_result.name,
+        "result": tool_result.output,
+        "status": tool_result.status,
+        "tool_call_id": tool_result.call_id,
+        "output_hash": tool_result.output_hash,
+        "metadata": structured_output,
+        "tool_arguments": structured_output.get("tool_arguments")
+        or structured_output.get("arguments"),
+    }
+
+
+def _normalize_tool_loop_input(action_result: Any) -> dict[str, Any]:
+    if isinstance(action_result, ToolResult):
+        return _tool_result_to_action_result(action_result)
+    return action_result if isinstance(action_result, dict) else {}
+
+
+def tool_loop_signature(action_result: Any) -> dict[str, Any]:
+    """Build a loop-guard identity payload for one tool result."""
+
+    action_result = _normalize_tool_loop_input(action_result)
 
     metadata = _metadata_from_result(action_result)
     arguments = (
@@ -139,8 +170,19 @@ def tool_loop_signature(action_result: dict[str, Any]) -> dict[str, Any]:
             common_fields[key] = value
 
     output = action_result.get("result", action_result.get("output", ""))
-    output_hash = action_result.get("output_hash") or hash_tool_output(output)
+    output_hash = (
+        action_result.get("output_hash")
+        or metadata.get("output_hash")
+        or hash_tool_output(output)
+    )
     return {
+        "call_id": str(
+            action_result.get("tool_call_id")
+            or action_result.get("call_id")
+            or metadata.get("tool_call_id")
+            or metadata.get("call_id")
+            or ""
+        ).strip(),
         "name": str(
             action_result.get("action")
             or action_result.get("name")
@@ -154,15 +196,68 @@ def tool_loop_signature(action_result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def tool_results_loop_signature(action_results: list[dict[str, Any]]) -> str:
-    """Return a deterministic signature for one empty tool-only iteration."""
+def _fingerprint_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """Return the stable portion of a tool-loop identity entry."""
+
+    return {key: value for key, value in entry.items() if key != "call_id"}
+
+
+def _summarize_tool_loop_entry(entry: dict[str, Any]) -> str:
+    name = str(entry.get("name") or "tool").strip() or "tool"
+    status = str(entry.get("status") or "completed").strip() or "completed"
+    fields = entry.get("fields") if isinstance(entry.get("fields"), dict) else {}
+    arguments = entry.get("arguments")
+
+    detail_parts: list[str] = []
+    for key in (
+        "path",
+        "file_path",
+        "directory",
+        "start_line",
+        "end_line",
+        "max_lines",
+        "limit",
+        "query",
+        "pattern",
+    ):
+        value = fields.get(key)
+        if value is not None:
+            detail_parts.append(f"{key}={value}")
+
+    if not detail_parts and isinstance(arguments, dict):
+        for key in ("path", "file_path", "directory", "query", "pattern"):
+            value = arguments.get(key)
+            if value is not None:
+                detail_parts.append(f"{key}={value}")
+
+    detail = f"({', '.join(detail_parts[:4])})" if detail_parts else ""
+    output_hash = str(entry.get("output_hash") or "")
+    hash_preview = output_hash[:12] if output_hash else "none"
+    return f"{name}{detail} status={status} output={hash_preview}"
+
+
+def tool_results_loop_identity(action_results: list[Any]) -> ToolLoopIdentity:
+    """Return stable identity details for one empty tool-only iteration."""
 
     payload = [
         tool_loop_signature(result)
         for result in action_results
-        if isinstance(result, dict)
+        if isinstance(result, (dict, ToolResult))
     ]
-    return hashlib.sha256(_stable_json(payload).encode()).hexdigest()
+    fingerprint_payload = [_fingerprint_entry(entry) for entry in payload]
+    fingerprint = hashlib.sha256(_stable_json(fingerprint_payload).encode()).hexdigest()
+    summary = "; ".join(_summarize_tool_loop_entry(entry) for entry in payload)
+    return ToolLoopIdentity(
+        fingerprint=fingerprint,
+        entries=tuple(payload),
+        summary=summary,
+    )
+
+
+def tool_results_loop_signature(action_results: list[Any]) -> str:
+    """Return a deterministic signature for one empty tool-only iteration."""
+
+    return tool_results_loop_identity(action_results).fingerprint
 
 
 def tool_calls_from_actionxml(content: str) -> list[ToolCall]:
@@ -232,6 +327,10 @@ async def execute_tool_calls_serially(
                         call_id=tool_call.id,
                         started_at=started_at,
                         ended_at=ended_at,
+                        structured_output={
+                            "tool_call_id": tool_call.id,
+                            "tool_arguments": tool_call.arguments,
+                        },
                     )
                 )
                 continue
@@ -340,6 +439,7 @@ __all__ = [
     "ToolCallSource",
     "ToolExecutionPolicy",
     "ToolExecutor",
+    "ToolLoopIdentity",
     "ToolResult",
     "ToolResultStatus",
     "execute_tool_calls_serially",
@@ -351,5 +451,6 @@ __all__ = [
     "tool_calls_from_codeact_actions",
     "tool_loop_signature",
     "tool_result_from_action_result",
+    "tool_results_loop_identity",
     "tool_results_loop_signature",
 ]
