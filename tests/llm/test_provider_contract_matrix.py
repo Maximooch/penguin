@@ -521,3 +521,69 @@ def test_anthropic_formats_tool_transcript() -> None:
             }
         ],
     }
+
+
+def test_anthropic_repairs_orphaned_tool_result_adjacency() -> None:
+    handler = build_anthropic_handler(
+        stream_chunks=[AnthropicStreamChunk("message_stop")],
+        final_text="answer",
+        usage=ANTHROPIC_USAGE,
+    )
+
+    formatted = handler.format_messages(
+        [
+            {"role": "user", "content": "howdy"},
+            {
+                "role": "assistant",
+                "content": "Howdy!",
+                "tool_calls": [
+                    {
+                        "id": "toolu_1",
+                        "type": "function",
+                        "function": {
+                            "name": "shell",
+                            "arguments": '{"command":"pwd"}',
+                        },
+                    }
+                ],
+            },
+            {"role": "user", "content": "what dir are you in?"},
+            {
+                "role": "tool",
+                "tool_call_id": "toolu_1",
+                "name": "shell",
+                "tool_arguments": '{"command":"pwd"}',
+                "content": "/tmp/project",
+            },
+        ]
+    )
+
+    assert formatted == [
+        {"role": "user", "content": [{"type": "text", "text": "howdy"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "Howdy!"}]},
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "what dir are you in?"}],
+        },
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "shell",
+                    "input": {"command": "pwd"},
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_1",
+                    "content": "/tmp/project",
+                }
+            ],
+        },
+    ]

@@ -6,7 +6,7 @@ import logging
 import os
 import time
 import traceback
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 import anthropic
 from anthropic import AsyncAnthropic
@@ -918,6 +918,75 @@ class AnthropicAdapter(BaseAdapter):
             self.logger.error(f"Processing error details: {traceback.format_exc()}")
             return f"Error processing response: {str(e)}", []
 
+    def _parse_tool_input(self, raw_arguments: Any) -> Dict[str, Any]:
+        if isinstance(raw_arguments, dict):
+            return raw_arguments
+        if not isinstance(raw_arguments, str):
+            return {}
+        try:
+            parsed = json.loads(raw_arguments or "{}")
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    def _tool_use_block_from_tool_call(
+        self, tool_call: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        function_payload = tool_call.get("function")
+        if not isinstance(function_payload, dict):
+            return None
+        name = function_payload.get("name")
+        if not name:
+            return None
+        return {
+            "type": "tool_use",
+            "id": tool_call.get("id"),
+            "name": name,
+            "input": self._parse_tool_input(function_payload.get("arguments")),
+        }
+
+    def _tool_use_block_from_tool_message(
+        self, tool_msg: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        tool_call_id = str(tool_msg.get("tool_call_id") or "").strip()
+        if not tool_call_id:
+            return None
+        name = str(
+            tool_msg.get("name") or tool_msg.get("action_type") or "tool"
+        ).strip()
+        if not name:
+            return None
+        return {
+            "type": "tool_use",
+            "id": tool_call_id,
+            "name": name,
+            "input": self._parse_tool_input(tool_msg.get("tool_arguments")),
+        }
+
+    def _following_tool_result_ids(
+        self, messages: List[Dict[str, Any]], start_index: int
+    ) -> Set[str]:
+        tool_result_ids: Set[str] = set()
+        index = start_index
+        while index < len(messages) and messages[index].get("role") == "tool":
+            tool_call_id = str(messages[index].get("tool_call_id") or "").strip()
+            if tool_call_id:
+                tool_result_ids.add(tool_call_id)
+            index += 1
+        return tool_result_ids
+
+    def _formatted_tool_use_ids(self, message: Dict[str, Any]) -> Set[str]:
+        if message.get("role") != "assistant":
+            return set()
+        content = message.get("content")
+        if not isinstance(content, list):
+            return set()
+        return {
+            str(part.get("id"))
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "tool_use"
+        }
+
     def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Format messages for Anthropic API, properly handling images"""
         formatted_messages = []
@@ -936,11 +1005,22 @@ class AnthropicAdapter(BaseAdapter):
 
             if role == "tool":
                 tool_result_blocks = []
+                preceding_tool_use_ids = (
+                    self._formatted_tool_use_ids(formatted_messages[-1])
+                    if formatted_messages
+                    else set()
+                )
+                synthesized_tool_uses = []
                 while index < len(messages) and messages[index].get("role") == "tool":
                     tool_msg = messages[index]
                     tool_call_id = str(tool_msg.get("tool_call_id") or "").strip()
                     tool_result_content = str(tool_msg.get("content", ""))
                     if tool_call_id:
+                        if tool_call_id not in preceding_tool_use_ids:
+                            tool_use = self._tool_use_block_from_tool_message(tool_msg)
+                            if tool_use:
+                                synthesized_tool_uses.append(tool_use)
+                                preceding_tool_use_ids.add(tool_call_id)
                         block: Dict[str, Any] = {
                             "type": "tool_result",
                             "tool_use_id": tool_call_id,
@@ -955,6 +1035,10 @@ class AnthropicAdapter(BaseAdapter):
                             {"type": "text", "text": tool_result_content}
                         )
                     index += 1
+                if synthesized_tool_uses:
+                    formatted_messages.append(
+                        {"role": "assistant", "content": synthesized_tool_uses}
+                    )
                 formatted_messages.append(
                     {"role": "user", "content": tool_result_blocks}
                 )
@@ -1218,30 +1302,24 @@ class AnthropicAdapter(BaseAdapter):
             if role == "assistant":
                 tool_calls = msg.get("tool_calls")
                 if isinstance(tool_calls, list) and tool_calls:
-                    if formatted_content == [{"type": "text", "text": ""}]:
-                        formatted_content = []
+                    following_tool_ids = self._following_tool_result_ids(
+                        messages, index + 1
+                    )
+                    valid_tool_uses = []
                     for tool_call in tool_calls:
                         if not isinstance(tool_call, dict):
                             continue
-                        function_payload = tool_call.get("function")
-                        if not isinstance(function_payload, dict):
+                        tool_use = self._tool_use_block_from_tool_call(tool_call)
+                        if not tool_use:
                             continue
-                        name = function_payload.get("name")
-                        if not name:
+                        tool_call_id = str(tool_use.get("id") or "").strip()
+                        if tool_call_id not in following_tool_ids:
                             continue
-                        raw_arguments = function_payload.get("arguments") or "{}"
-                        try:
-                            tool_input = json.loads(raw_arguments)
-                        except Exception:
-                            tool_input = {}
-                        formatted_content.append(
-                            {
-                                "type": "tool_use",
-                                "id": tool_call.get("id"),
-                                "name": name,
-                                "input": tool_input,
-                            }
-                        )
+                        valid_tool_uses.append(tool_use)
+                    if valid_tool_uses:
+                        if formatted_content == [{"type": "text", "text": ""}]:
+                            formatted_content = []
+                        formatted_content.extend(valid_tool_uses)
 
             formatted_messages.append({"role": role, "content": formatted_content})
             index += 1
