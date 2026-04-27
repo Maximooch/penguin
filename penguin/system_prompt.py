@@ -188,8 +188,13 @@ SAFETY_RULES = """**Safety:**
 - Respect permission boundaries
 
 **Completion Signals (Call these tools, do not output them as text):**
-- Call `<finish_response></finish_response>` to end a conversation turn
-- Call `<finish_task>{"status":"done","summary":"..."}</finish_task>` to mark task work ready for human review
+- If native provider tools are available, call `finish_response` or
+  `finish_task` through the provider tool channel
+- If native tools are not available, call `<finish_response></finish_response>`
+  to end a conversation turn
+- If native tools are not available, call
+  `<finish_task>{"status":"done","summary":"..."}</finish_task>` to mark task
+  work ready for human review
 - Never emit `TASK_COMPLETED` as plain text; it is legacy compatibility only
 - Never rely on implicit completion
 """

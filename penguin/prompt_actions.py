@@ -124,6 +124,23 @@ def _render_tool_section(tool_name: str, hint: ToolPromptHint) -> str:
     return "\n".join(lines)
 
 
+TOOL_INVOCATION_PROTOCOL = """
+## Tool Invocation Protocol
+
+Penguin supports two tool-call protocols:
+
+1. Native provider tools: when the API/runtime exposes tools as function calls,
+   call the named tool through that provider tool channel. Do not print XML tags
+   for that tool call.
+2. ActionXML fallback: when native tools are not available, call tools by
+   emitting the documented `<tool_name>...</tool_name>` ActionXML block.
+
+The tool names, arguments, and completion semantics are the same in both paths.
+Use native tool calls first when they are available; use ActionXML only as the
+compatibility fallback.
+"""
+
+
 READ_FILE_HINT = ToolPromptHint(
     when_to_use="Reading source files, configs, or documentation.",
     strategy_notes=[
@@ -879,18 +896,22 @@ COMPLETION_TOOLS = """
 
 **Call these tools to signal completion. Do not output them as text.**
 
+If native provider tools are available, call `finish_response` or `finish_task`
+through the provider tool channel. If only ActionXML is available, use the XML
+syntax shown below.
+
 ### finish_response
-**Purpose:** End the conversation turn.  
-**When to use:** Done answering a question or providing information.  
-**Tool call syntax:** `<finish_response></finish_response>`  
+**Purpose:** End the conversation turn.
+**When to use:** Done answering a question or providing information.
+**ActionXML fallback syntax:** `<finish_response></finish_response>`
 **Parameters:** None
 
 **Important:** Put the final answer in normal assistant content before calling `finish_response`. Do not pass summary text here; summaries belong on `finish_task`.
 
 ### finish_task  
-**Purpose:** Signal that formal task work is ready for human review.  
-**When to use:** Acceptance criteria are satisfied, or progress is partial/blocked and should stop.  
-**Tool call syntax:** `<finish_task>{"status":"done","summary":"What changed and how it was verified"}</finish_task>`  
+**Purpose:** Signal that formal task work is ready for human review.
+**When to use:** Acceptance criteria are satisfied, or progress is partial/blocked and should stop.
+**ActionXML fallback syntax:** `<finish_task>{"status":"done","summary":"What changed and how it was verified"}</finish_task>`
 **Parameters:** JSON object or plain status string. Prefer JSON.
 - `status`: "done" (default), "partial", or "blocked"
 - `summary`: short review note describing what was accomplished
@@ -908,6 +929,7 @@ def get_tool_guide() -> str:
     """Get the complete tool documentation."""
     return "\n\n".join(
         [
+            TOOL_INVOCATION_PROTOCOL,
             _build_file_editing_tools(),
             _build_file_operation_tools(),
             EXECUTION_TOOLS,

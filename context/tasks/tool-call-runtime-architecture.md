@@ -396,6 +396,58 @@ Acceptance criteria:
 - provider-specific parsing is isolated in adapters
 - the loop controller is provider-neutral
 
+Phase 5 implementation note:
+
+- OpenAI/Codex Responses function calls are now captured as a pending list in
+  the adapter, preserving each provider `call_id`/item id instead of reducing
+  the turn to a single last call.
+- `execute_pending_tool_calls()` drains those native calls into `ToolCall`
+  records and executes them through the serial scheduler, keeping execution
+  order deterministic while Phase 6 parallel policy remains disabled.
+- Engine tool handling is plural internally, while the old singular helper
+  remains as a compatibility shim for existing callers and tests.
+- This matches the OpenAI Responses function-calling contract: provider
+  function calls are app-executed and returned as tool outputs by call id,
+  without translating native calls through ActionXML.
+
+### Phase 5.5: Update Model-Facing Tool Instructions
+
+Goals:
+
+- make prompts describe the native tool-call path clearly
+- keep ActionXML documented as the compatibility/fallback protocol
+- avoid telling native-tool providers to print XML tags when schemas are
+  available
+- keep completion guidance correct for both native tools and ActionXML
+
+Acceptance criteria:
+
+- system/tool prompts say to use the provider tool channel when tools are
+  exposed natively
+- ActionXML remains documented for providers or modes without native tool
+  support
+- completion-tool guidance does not conflict with native `finish_response` and
+  `finish_task` calls
+
+### Phase 5.6: Extend Native Tool Support Across Providers
+
+Goals:
+
+- inventory `penguin/llm` provider runtimes for native tool-call capability
+- add provider-specific extraction/adaptation for OpenRouter and other
+  OpenAI-compatible tool-call responses
+- normalize non-OpenAI provider tool metadata into `ToolCall` records
+- keep unsupported providers on the ActionXML fallback path
+
+Acceptance criteria:
+
+- OpenRouter/OpenAI-compatible tool-call responses can flow through the same
+  plural pending-call runtime when the upstream model supports tools
+- provider capability checks prevent sending native tool payloads to models or
+  endpoints that do not support them
+- provider contract tests cover text, reasoning, streaming, and tool-call
+  behavior without relying on live provider responses
+
 ### Phase 6: Safe Parallel Tool Calls
 
 Goals:

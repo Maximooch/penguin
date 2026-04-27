@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from penguin.engine import Engine, LoopState
-from penguin.llm.runtime import execute_pending_tool_call
+from penguin.llm.runtime import execute_pending_tool_call, execute_pending_tool_calls
 
 
 def test_prepare_responses_tools_enables_openai_native_tools() -> None:
@@ -119,6 +119,75 @@ async def test_finish_response_tool_call_is_not_persisted_or_emitted() -> None:
     assert started == []
     assert completed == []
     assert timeline == []
+
+
+@pytest.mark.asyncio
+async def test_multiple_pending_responses_tool_calls_execute_serially() -> None:
+    class _Handler:
+        def __init__(self) -> None:
+            self._tool_calls = [
+                {
+                    "name": "execute",
+                    "arguments": '{"command":"pwd"}',
+                    "call_id": "call_pwd",
+                },
+                {
+                    "name": "execute",
+                    "arguments": '{"command":"ls"}',
+                    "call_id": "call_ls",
+                },
+            ]
+
+        def get_and_clear_pending_tool_calls(self):
+            result = self._tool_calls
+            self._tool_calls = []
+            return result
+
+    persisted: list[dict[str, object]] = []
+    started: list[dict[str, object]] = []
+    completed: list[dict[str, object]] = []
+    timeline: list[dict[str, object]] = []
+    executed: list[tuple[str, dict[str, object]]] = []
+
+    def _execute_tool(tool_name: str, tool_args: dict[str, object]) -> str:
+        executed.append((tool_name, dict(tool_args)))
+        return f"ran {tool_args['command']}"
+
+    async def _emit_action_start(payload: dict[str, object]) -> None:
+        started.append(payload)
+
+    async def _emit_action_result(payload: dict[str, object]) -> None:
+        completed.append(payload)
+
+    async def _emit_tool_timeline(payload: dict[str, object]) -> None:
+        timeline.append(payload)
+
+    results = await execute_pending_tool_calls(
+        api_client=SimpleNamespace(
+            client_handler=_Handler(),
+            model_config=SimpleNamespace(provider="openai", model="gpt-5.5"),
+        ),
+        tool_manager=SimpleNamespace(execute_tool=_execute_tool),
+        persist_action_result=lambda action_result, tool_context: persisted.append(
+            {"action_result": action_result, "tool_context": tool_context}
+        ),
+        emit_action_start=_emit_action_start,
+        emit_action_result=_emit_action_result,
+        emit_tool_timeline=_emit_tool_timeline,
+    )
+
+    assert executed == [
+        ("execute", {"command": "pwd"}),
+        ("execute", {"command": "ls"}),
+    ]
+    assert [result["tool_call_id"] for result in results] == ["call_pwd", "call_ls"]
+    assert [result["result"] for result in results] == ["ran pwd", "ran ls"]
+    assert [item["id"] for item in started] == ["call_pwd", "call_ls"]
+    assert [item["id"] for item in completed] == ["call_pwd", "call_ls"]
+    assert [item["action"] for item in timeline] == ["execute", "execute"]
+    assert [
+        item["tool_context"]["tool_call_id"] for item in persisted
+    ] == ["call_pwd", "call_ls"]
 
 
 def test_wallet_guard_does_not_break_on_tool_only_empty_iteration() -> None:

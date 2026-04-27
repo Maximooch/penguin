@@ -15,6 +15,15 @@ def test_tool_guide_includes_canonical_edit_headings() -> None:
         assert f"### {tool_name}" in guide
 
 
+def test_tool_guide_documents_native_tool_protocol_first() -> None:
+    guide = get_tool_guide()
+
+    assert "## Tool Invocation Protocol" in guide
+    assert "Native provider tools" in guide
+    assert "ActionXML fallback" in guide
+    assert "Use native tool calls first" in guide
+
+
 def test_tool_guide_uses_schema_derived_aliases_and_required_fields() -> None:
     guide = get_tool_guide()
     schemas = get_edit_tool_schema_map()

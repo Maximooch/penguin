@@ -256,6 +256,8 @@ class ToolCallRuntime(Protocol):
 
     def get_and_clear_last_tool_call(self) -> Optional[Dict[str, Any]]: ...
 
+    def get_and_clear_pending_tool_calls(self) -> List[Dict[str, Any]]: ...
+
 
 @runtime_checkable
 class ErrorReportingRuntime(Protocol):

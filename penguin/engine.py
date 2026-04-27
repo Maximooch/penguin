@@ -47,7 +47,7 @@ from penguin.llm.runtime import (
     build_empty_response_diagnostics as build_llm_empty_response_diagnostics,
     build_reasoning_fallback_note,
     call_with_retry as call_llm_with_retry,
-    execute_pending_tool_call,
+    execute_pending_tool_calls,
     handler_has_pending_tool_call,
     prepare_responses_tool_kwargs,
 )
@@ -2252,7 +2252,30 @@ class Engine:
         Returns:
             Action result dict if tool was executed, None otherwise
         """
-        return await execute_pending_tool_call(
+        results = await self._handle_responses_tool_calls(
+            api_client,
+            tool_manager,
+            cm,
+        )
+        return results[0] if results else None
+
+    async def _handle_responses_tool_calls(
+        self,
+        api_client: APIClient,
+        tool_manager,
+        cm: ConversationManager,
+    ) -> List[Dict[str, Any]]:
+        """Handle all pending Responses API tool calls.
+
+        Args:
+            api_client: The API client (to get tool_call info from handler)
+            tool_manager: Tool manager to execute the tools
+            cm: Conversation manager to persist results
+
+        Returns:
+            Action result dicts for executed tools.
+        """
+        return await execute_pending_tool_calls(
             api_client=api_client,
             tool_manager=tool_manager,
             persist_action_result=lambda action_result,
@@ -2691,17 +2714,15 @@ class Engine:
             api_client=api_client,
         )
 
-        # Step 4: Handle Responses API tool_call if one was triggered
-        responses_action_result = await self._handle_responses_tool_call(
+        # Step 4: Handle Responses API tool_calls if they were triggered
+        responses_action_results = await self._handle_responses_tool_calls(
             api_client,
             tool_manager,
             cm,
         )
 
         # Step 5: Execute CodeAct actions if enabled
-        action_results = []
-        if isinstance(responses_action_result, dict):
-            action_results.append(responses_action_result)
+        action_results = list(responses_action_results)
         if tools_enabled:
             action_results.extend(
                 await self._execute_codeact_actions(

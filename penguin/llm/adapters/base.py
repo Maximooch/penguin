@@ -94,6 +94,11 @@ class BaseAdapter(ABC):
         """Return the last captured tool call when supported by the provider."""
         return None
 
+    def get_and_clear_pending_tool_calls(self) -> List[Dict[str, Any]]:
+        """Return all captured tool calls when supported by the provider."""
+        tool_call = self.get_and_clear_last_tool_call()
+        return [tool_call] if isinstance(tool_call, dict) else []
+
     def get_last_error(self) -> Optional[LLMError]:
         """Return canonical error metadata from the latest request when available."""
         return None

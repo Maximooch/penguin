@@ -47,7 +47,11 @@ async def test_responses_tool_call_emits_live_action_start_and_result_events() -
 
     result = await engine._handle_responses_tool_call(api_client, tool_manager, cm)
 
-    assert result == {"action": "write_file", "result": "ok", "status": "completed"}
+    assert result is not None
+    assert result["action"] == "write_file"
+    assert result["result"] == "ok"
+    assert result["status"] == "completed"
+    assert result["tool_call_id"] == "call_123"
     assert executed == [("write_file", {"path": "x.txt", "content": "hello"})]
     assert emitted[0][0] == "action"
     assert emitted[0][1]["id"] == "call_123"
