@@ -490,6 +490,13 @@ Acceptance criteria:
 - result ordering is deterministic
 - cancellation and errors are handled per call
 
+Related future work:
+
+- Broader tool-system improvements that are adjacent to this runtime refactor
+  are tracked in `context/tasks/tool-system-future-improvements.md`, including
+  terminal/session handling, debugger tools, dev-server process tools, result
+  paging, richer metadata, and test/code-navigation suites.
+
 ## Non-Goals
 
 - Do not remove ActionXML before a replacement path is stable.
