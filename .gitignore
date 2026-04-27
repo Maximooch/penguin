@@ -8,7 +8,8 @@ debugland/
 olderhold/
 copywriting/
 
-misc/prototypes/
+# prototypes
+misc/prototypes
 
 # Python cache
 __pycache__/
