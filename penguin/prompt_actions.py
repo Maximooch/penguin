@@ -104,7 +104,8 @@ def _render_tool_section(tool_name: str, hint: ToolPromptHint) -> str:
         "",
         f"**When to use:** {hint.when_to_use}",
         "",
-        f"**Preferred format:** `<{tool_name}>{{...}}</{tool_name}>`",
+        f"**Preferred path:** native provider tool call named `{tool_name}` when available.",
+        f"**ActionXML fallback:** `<{tool_name}>{{...}}</{tool_name}>`",
     ]
 
     example_block = _render_tool_examples(hint.examples)
@@ -857,7 +858,7 @@ Scroll the page.
 - `by:1200:0:1` - Scroll by x,y pixels, speed
 - `element:#results:css:smooth` - Scroll to element
 
-**Example:**
+**ActionXML fallback example:**
 ```actionxml
 <pydoll_browser_scroll>to:bottom</pydoll_browser_scroll>
 ```
@@ -865,7 +866,7 @@ Scroll the page.
 ### pydoll_browser_screenshot
 Capture a screenshot of the current page.
 
-**Example:**
+**ActionXML fallback example:**
 ```actionxml
 <pydoll_browser_screenshot></pydoll_browser_screenshot>
 ```
@@ -873,7 +874,7 @@ Capture a screenshot of the current page.
 ### pydoll_debug_toggle
 Enable/disable detailed debugging.
 
-**Example:**
+**ActionXML fallback example:**
 ```actionxml
 <pydoll_debug_toggle>on</pydoll_debug_toggle>
 ```

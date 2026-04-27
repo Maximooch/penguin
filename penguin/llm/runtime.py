@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from penguin.tools.runtime import (
@@ -61,21 +62,31 @@ def prepare_native_tool_kwargs(
     if not tools_payload:
         return extra_kwargs
 
-    setattr(model_config, "interrupt_on_tool_call", True)
-
     if tool_format == "openai_responses":
-        extra_kwargs["tools"] = normalize_openai_responses_tools(tools_payload)
+        normalized_tools = normalize_openai_responses_tools(tools_payload)
+        if not normalized_tools:
+            return extra_kwargs
+        setattr(model_config, "interrupt_on_tool_call", True)
+        extra_kwargs["tools"] = normalized_tools
         extra_kwargs["tool_choice"] = normalize_openai_responses_tool_choice("auto")
         return extra_kwargs
 
     if tool_format == "openai_chat":
-        extra_kwargs["tools"] = normalize_openai_chat_tools(tools_payload)
+        normalized_tools = normalize_openai_chat_tools(tools_payload)
+        if not normalized_tools:
+            return extra_kwargs
+        setattr(model_config, "interrupt_on_tool_call", True)
+        extra_kwargs["tools"] = normalized_tools
         extra_kwargs["tool_choice"] = normalize_openai_chat_tool_choice("auto")
         extra_kwargs["parallel_tool_calls"] = False
         return extra_kwargs
 
     if tool_format == "anthropic":
-        extra_kwargs["tools"] = normalize_anthropic_tools(tools_payload)
+        normalized_tools = normalize_anthropic_tools(tools_payload)
+        if not normalized_tools:
+            return extra_kwargs
+        setattr(model_config, "interrupt_on_tool_call", True)
+        extra_kwargs["tools"] = normalized_tools
         extra_kwargs["tool_choice"] = {"type": "auto"}
         return extra_kwargs
 
@@ -396,18 +407,20 @@ async def execute_pending_tool_calls(
     raw_args_by_id: Dict[str, str] = {}
     for tool_call in tool_calls:
         raw_args = tool_call.arguments
-        raw_args_text = raw_args if isinstance(raw_args, str) else str(raw_args)
+        if isinstance(raw_args, dict):
+            parsed_args = raw_args
+            raw_args_text = json.dumps(raw_args, sort_keys=True)
+        else:
+            raw_args_text = raw_args if isinstance(raw_args, str) else str(raw_args)
+            try:
+                parsed_args = (
+                    json.loads(raw_args_text)
+                    if isinstance(raw_args_text, str) and raw_args_text.strip()
+                    else {}
+                )
+            except Exception:
+                parsed_args = {}
         raw_args_by_id[tool_call.id] = raw_args_text
-        try:
-            import json as _json
-
-            parsed_args = (
-                _json.loads(raw_args_text)
-                if isinstance(raw_args_text, str) and raw_args_text.strip()
-                else {}
-            )
-        except Exception:
-            parsed_args = {}
         if not isinstance(parsed_args, dict):
             parsed_args = {}
         parsed_args_by_id[tool_call.id] = parsed_args
@@ -443,7 +456,10 @@ async def execute_pending_tool_calls(
                 current_tool_call.name,
                 parsed_args_by_id.get(current_tool_call.id, {}),
             ),
-            policy=ToolExecutionPolicy(max_calls=len(tool_calls)),
+            policy=ToolExecutionPolicy(
+                max_calls=len(tool_calls),
+                catch_exceptions=True,
+            ),
         )
         if not scheduler_results:
             return []

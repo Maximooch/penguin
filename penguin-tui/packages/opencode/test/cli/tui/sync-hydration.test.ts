@@ -309,7 +309,7 @@ describe("sync hydration", () => {
     ])
   })
 
-  test("appends new live penguin messages instead of reordering by timestamp", () => {
+  test("orders new live penguin messages by creation time", () => {
     const optimistic = {
       ...user,
       id: "msg_local_user",
@@ -324,8 +324,39 @@ describe("sync hydration", () => {
     const merged = upsertPenguinMessage([optimistic], streamed)
 
     expect(merged.map((item) => item.id)).toEqual([
-      "msg_local_user",
       "msg_streamed_assistant",
+      "msg_local_user",
+    ])
+  })
+
+  test("inserts late optimistic user before newer streamed tool response", () => {
+    const firstUser = {
+      ...user,
+      time: { created: 5 },
+    }
+    const firstAssistant = {
+      ...assistant,
+      id: "msg_first_assistant",
+      time: { created: 10, completed: 11 },
+    }
+    const toolAssistant = {
+      ...assistant,
+      id: "msg_tool_assistant",
+      time: { created: 30, completed: 40 },
+    }
+    const lateUser = {
+      ...user,
+      id: "msg_late_user",
+      time: { created: 20 },
+    }
+
+    const merged = upsertPenguinMessage([firstUser, firstAssistant, toolAssistant], lateUser)
+
+    expect(merged.map((item) => item.id)).toEqual([
+      "msg_user_1",
+      "msg_first_assistant",
+      "msg_late_user",
+      "msg_tool_assistant",
     ])
   })
 

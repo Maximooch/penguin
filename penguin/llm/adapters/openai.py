@@ -143,7 +143,7 @@ class OpenAIAdapter(BaseAdapter):
     def get_and_clear_last_tool_call(self) -> Optional[Dict[str, Any]]:
         """Return the latest structured tool call and clear adapter state."""
         pending = self.get_and_clear_pending_tool_calls()
-        return dict(pending[0]) if pending else None
+        return dict(pending[-1]) if pending else None
 
     def get_and_clear_pending_tool_calls(self) -> List[Dict[str, Any]]:
         """Return all pending structured tool calls and clear adapter state."""
@@ -1950,8 +1950,10 @@ class OpenAIAdapter(BaseAdapter):
                     self._set_last_finish_reason(FinishReason.TOOL_CALLS)
                     if self._interrupt_on_tool_call():
                         return "".join(accumulated_content)
-                else:
+                elif not self.has_pending_tool_call():
                     self._set_last_finish_reason(FinishReason.STOP)
+                else:
+                    self._set_last_finish_reason(FinishReason.TOOL_CALLS)
                 # Prefer SDK's convenience property if present
                 final_text = getattr(final, "output_text", None)
                 if isinstance(final_text, str) and final_text:

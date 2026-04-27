@@ -408,6 +408,66 @@ async def test_openrouter_preserves_multiple_pending_tool_calls(
     ]
 
 
+@pytest.mark.asyncio
+async def test_openrouter_deduplicates_fragmented_stream_tool_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handler = build_openrouter_handler(
+        monkeypatch,
+        stream_chunks=[
+            make_openrouter_chunk(
+                model="openai/gpt-4.1-mini",
+                tool_calls=[
+                    {
+                        "index": 0,
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path":',
+                        },
+                    }
+                ],
+            ),
+            make_openrouter_chunk(
+                model="openai/gpt-4.1-mini",
+                tool_calls=[
+                    {
+                        "index": 0,
+                        "type": "function",
+                        "function": {
+                            "arguments": '"README.md"}',
+                        },
+                    }
+                ],
+                finish_reason="tool_calls",
+                usage=OPENROUTER_USAGE,
+            ),
+        ],
+        final_text="",
+        usage=OPENROUTER_USAGE,
+        interrupt_on_tool_call=True,
+    )
+
+    result = await handler.get_response(
+        [{"role": "user", "content": "inspect README"}],
+        stream=True,
+        stream_callback=lambda *_args: None,
+    )
+
+    assert result == ""
+    assert handler.has_pending_tool_call() is True
+    pending = handler.get_and_clear_pending_tool_calls()
+    assert pending == [
+        {
+            "item_id": None,
+            "call_id": "call_1",
+            "name": "read_file",
+            "arguments": '{"path":"README.md"}',
+        }
+    ]
+
+
 def test_anthropic_formats_tool_transcript() -> None:
     handler = build_anthropic_handler(
         stream_chunks=[AnthropicStreamChunk("message_stop")],

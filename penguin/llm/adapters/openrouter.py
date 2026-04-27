@@ -491,15 +491,8 @@ class OpenRouterGateway:
             if isinstance(arguments_delta, str):
                 acc["arguments"] = str(acc.get("arguments") or "") + arguments_delta
 
-            if acc.get("name"):
-                self._remember_tool_call(
-                    call_id=acc.get("call_id"),
-                    name=acc.get("name"),
-                    arguments=str(acc.get("arguments") or ""),
-                )
-
     def _finalize_stream_tool_calls(self) -> None:
-        for acc in self._tool_call_accs.values():
+        for _call_index, acc in sorted(self._tool_call_accs.items()):
             self._remember_tool_call(
                 call_id=acc.get("call_id"),
                 name=acc.get("name"),
@@ -2090,7 +2083,8 @@ class OpenRouterGateway:
         """Return last detected tool_call (name, arguments) and clear accumulators."""
         pending = self.get_and_clear_pending_tool_calls()
         if pending:
-            return pending[0]
+            selected = pending[-1]
+            return dict(selected) if isinstance(selected, dict) else None
         data = getattr(self, "_last_tool_call", None)
         self._last_tool_call = None
         self._tool_call_acc = {"name": None, "arguments": ""}
@@ -2098,6 +2092,7 @@ class OpenRouterGateway:
 
     def get_and_clear_pending_tool_calls(self) -> List[Dict[str, Any]]:
         """Return all detected tool calls and clear accumulators."""
+        pending: List[Dict[str, Any]] = []
         try:
             pending = [
                 dict(tool_call)
@@ -2108,13 +2103,18 @@ class OpenRouterGateway:
                 getattr(self, "_last_tool_call", None), dict
             ):
                 pending = [dict(self._last_tool_call)]
+            return pending
+        except Exception as exc:
+            self.logger.exception(
+                "[OpenRouterGateway] Failed to collect pending tool calls: %s",
+                exc,
+            )
+            return []
+        finally:
             self._pending_tool_calls = []
             self._last_tool_call = None
             self._tool_call_acc = {"name": None, "arguments": ""}
             self._tool_call_accs = {}
-            return pending
-        except Exception:
-            return []
 
     async def _handle_non_streaming_response(
         self,

@@ -13,6 +13,7 @@ import hashlib
 import inspect
 import json
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Literal, Optional, Union, cast
 
@@ -374,7 +375,7 @@ def tool_call_from_responses_info(tool_info: dict[str, Any]) -> Optional[ToolCal
         tool_info.get("call_id")
         or tool_info.get("tool_call_id")
         or tool_info.get("item_id")
-        or f"call_{int(time.time() * 1000)}"
+        or f"call_{uuid.uuid4().hex}"
     )
     raw_args = tool_info.get("arguments") or "{}"
     arguments: ToolArguments = (

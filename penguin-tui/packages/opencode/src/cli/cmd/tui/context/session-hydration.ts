@@ -52,8 +52,8 @@ export function compareMessagesByCreated(left: Message, right: Message): number 
 export function upsertPenguinMessage(existing: Message[] | undefined, incoming: Message): Message[] {
   if (!Array.isArray(existing) || existing.length === 0) return [incoming]
   const match = existing.findIndex((item) => item.id === incoming.id)
-  if (match === -1) return [...existing, incoming]
-  return existing.map((item, index) => (index === match ? incoming : item))
+  if (match !== -1) return existing.map((item, index) => (index === match ? incoming : item))
+  return [...existing, incoming].toSorted(compareMessagesByCreated)
 }
 
 function normalizeText(value: string): string {

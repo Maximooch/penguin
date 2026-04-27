@@ -2560,7 +2560,7 @@ class Engine:
             "[AUTO-CONTINUE FIX] Parsed %s actions from response", len(tool_calls)
         )
 
-        async def _execute_actionxml_call(tool_call):
+        async def _execute_actionxml_call(tool_call: Any) -> Any:
             return await action_executor.execute_action(tool_call.raw)
 
         scheduler_results = await execute_tool_calls_serially(

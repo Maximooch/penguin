@@ -130,7 +130,7 @@ class AnthropicAdapter(BaseAdapter):
 
     def get_and_clear_last_tool_call(self) -> Optional[Dict[str, Any]]:
         pending = self.get_and_clear_pending_tool_calls()
-        return pending[0] if pending else None
+        return pending[-1] if pending else None
 
     def get_and_clear_pending_tool_calls(self) -> List[Dict[str, Any]]:
         pending = [

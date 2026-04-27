@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Optional
 from unittest.mock import AsyncMock
 
 import pytest
@@ -145,7 +146,7 @@ async def test_call_llm_with_retry_skips_retry_when_tool_call_pending() -> None:
 
     api_client = _Client()
 
-    def _has_pending_tool_call(client):
+    def _has_pending_tool_call(client: object) -> bool:
         return Engine._handler_has_pending_tool_call(engine_like, client)
 
     engine_like = SimpleNamespace(
@@ -176,7 +177,7 @@ async def test_finish_response_tool_call_is_not_persisted_or_emitted() -> None:
                 "call_id": "call_finish_response",
             }
 
-        def get_and_clear_last_tool_call(self):
+        def get_and_clear_last_tool_call(self) -> Optional[dict[str, str]]:
             result = self._tool_call
             self._tool_call = None
             return result
@@ -230,7 +231,7 @@ async def test_multiple_pending_responses_tool_calls_execute_serially() -> None:
                 },
             ]
 
-        def get_and_clear_pending_tool_calls(self):
+        def get_and_clear_pending_tool_calls(self) -> list[dict[str, str]]:
             result = self._tool_calls
             self._tool_calls = []
             return result
@@ -280,6 +281,92 @@ async def test_multiple_pending_responses_tool_calls_execute_serially() -> None:
     assert [
         item["tool_context"]["tool_call_id"] for item in persisted
     ] == ["call_pwd", "call_ls"]
+
+
+@pytest.mark.asyncio
+async def test_pending_responses_tool_call_preserves_dict_arguments() -> None:
+    class _Handler:
+        def __init__(self) -> None:
+            self._tool_calls = [
+                {
+                    "name": "execute",
+                    "arguments": {"command": "pwd"},
+                    "call_id": "call_pwd",
+                }
+            ]
+
+        def get_and_clear_pending_tool_calls(self) -> list[dict[str, object]]:
+            result = self._tool_calls
+            self._tool_calls = []
+            return result
+
+    executed: list[dict[str, object]] = []
+    persisted: list[dict[str, object]] = []
+
+    def _execute_tool(_tool_name: str, tool_args: dict[str, object]) -> str:
+        executed.append(dict(tool_args))
+        return "ran pwd"
+
+    results = await execute_pending_tool_calls(
+        api_client=SimpleNamespace(
+            client_handler=_Handler(),
+            model_config=SimpleNamespace(provider="openai", model="gpt-5.5"),
+        ),
+        tool_manager=SimpleNamespace(execute_tool=_execute_tool),
+        persist_action_result=lambda action_result, tool_context: persisted.append(
+            {"action_result": action_result, "tool_context": tool_context}
+        ),
+    )
+
+    assert executed == [{"command": "pwd"}]
+    assert results[0]["tool_arguments"] == '{"command": "pwd"}'
+    assert persisted[0]["tool_context"]["tool_arguments"] == '{"command": "pwd"}'
+
+
+@pytest.mark.asyncio
+async def test_pending_responses_tool_calls_keep_successes_when_later_call_errors() -> None:
+    class _Handler:
+        def __init__(self) -> None:
+            self._tool_calls = [
+                {
+                    "name": "execute",
+                    "arguments": '{"command":"pwd"}',
+                    "call_id": "call_pwd",
+                },
+                {
+                    "name": "execute",
+                    "arguments": '{"command":"boom"}',
+                    "call_id": "call_boom",
+                },
+            ]
+
+        def get_and_clear_pending_tool_calls(self) -> list[dict[str, str]]:
+            result = self._tool_calls
+            self._tool_calls = []
+            return result
+
+    def _execute_tool(_tool_name: str, tool_args: dict[str, object]) -> str:
+        if tool_args.get("command") == "boom":
+            raise RuntimeError("boom")
+        return "ran pwd"
+
+    results = await execute_pending_tool_calls(
+        api_client=SimpleNamespace(
+            client_handler=_Handler(),
+            model_config=SimpleNamespace(provider="openai", model="gpt-5.5"),
+        ),
+        tool_manager=SimpleNamespace(execute_tool=_execute_tool),
+        persist_action_result=lambda *_args: None,
+    )
+
+    assert [result["tool_call_id"] for result in results] == [
+        "call_pwd",
+        "call_boom",
+    ]
+    assert results[0]["status"] == "completed"
+    assert results[0]["result"] == "ran pwd"
+    assert results[1]["status"] == "error"
+    assert "boom" in results[1]["result"]
 
 
 def test_wallet_guard_does_not_break_on_tool_only_empty_iteration() -> None:
@@ -572,7 +659,7 @@ async def test_record_tool_only_stall_note_persists_clearer_terminal_message() -
         def __init__(self) -> None:
             self.session = SimpleNamespace(messages=[])
 
-        def add_assistant_message(self, content: str):
+        def add_assistant_message(self, content: str) -> None:
             added.append(content)
             self.session.messages.append(
                 SimpleNamespace(role="assistant", content=content)

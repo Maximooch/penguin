@@ -1626,6 +1626,8 @@ class ActionExecutor:
 
         action_registry = create_default_action_tool_registry()
         for registered_action_type in action_registry.action_types():
+            if registered_action_type in action_map:
+                continue
             action_map[registered_action_type] = (
                 lambda params, action_type=registered_action_type: (
                     action_registry.execute(
