@@ -40,6 +40,10 @@ def _build_handler(
     if provider_id in {"openai", "openai_compatible"}:
         monkeypatch.delenv("OPENAI_OAUTH_ACCESS_TOKEN", raising=False)
         monkeypatch.delenv("OPENAI_ACCOUNT_ID", raising=False)
+        monkeypatch.setattr(
+            "penguin.llm.adapters.openai.get_provider_credential",
+            lambda provider: None,
+        )
         if scenario == "nonstream":
             events = [
                 OpenAIStreamEvent(type="response.output_text.delta", delta="answer")
@@ -171,6 +175,7 @@ def _build_handler(
                 ],
                 final_text="",
                 usage=ANTHROPIC_USAGE,
+                interrupt_on_tool_call=True,
             )
 
     if provider_id == "openrouter":

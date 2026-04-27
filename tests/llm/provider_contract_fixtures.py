@@ -307,6 +307,7 @@ def build_anthropic_handler(
     final_text: str,
     usage: AnthropicUsage,
     reasoning_enabled: bool = False,
+    interrupt_on_tool_call: bool = False,
 ) -> AnthropicAdapter:
     config = ModelConfig(
         model="claude-sonnet-4-6",
@@ -316,6 +317,7 @@ def build_anthropic_handler(
         streaming_enabled=True,
         reasoning_enabled=reasoning_enabled,
         reasoning_effort="medium" if reasoning_enabled else None,
+        interrupt_on_tool_call=interrupt_on_tool_call,
     )
     adapter = AnthropicAdapter.__new__(AnthropicAdapter)
     adapter.model_config = config

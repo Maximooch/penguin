@@ -209,7 +209,7 @@ def _build_session_info(core: Any, session: Any, manager: Any) -> dict[str, Any]
         directory_source = "cwd"
 
     if directory_source in {"runtime", "cwd"}:
-        logger.warning(
+        logger.debug(
             "session.view.directory_fallback session=%s source=%s resolved=%s manager=%s",
             getattr(session, "id", "unknown"),
             directory_source,

@@ -282,6 +282,38 @@ describe("sync hydration", () => {
     expect(merged.map((item) => item.id)).toEqual(["msg_server_old", "msg_local_2"])
   })
 
+  test("inserts preserved optimistic user before newer hydrated tool response", () => {
+    const optimistic: Message = {
+      id: "msg_local_tool_prompt",
+      sessionID: "ses_anthropic",
+      role: "user",
+      agent: "build",
+      model: { providerID: "anthropic", modelID: "claude-haiku-4-5" },
+      time: { created: 20_000 },
+    }
+    const optimisticParts: Part[] = [
+      {
+        id: "part_local_tool_prompt",
+        sessionID: "ses_anthropic",
+        messageID: "msg_local_tool_prompt",
+        type: "text",
+        text: "to test, what dir are we in?",
+      },
+    ]
+    const hydratedAssistant: Message = {
+      ...assistant,
+      id: "msg_anthropic_tool_response",
+      sessionID: "ses_anthropic",
+      time: { created: 21_000, completed: 22_000 },
+    }
+
+    const merged = mergeHydratedMessages([optimistic], [{ info: hydratedAssistant, parts: [] }], {
+      [optimistic.id]: optimisticParts,
+    })
+
+    expect(merged.map((item) => item.id)).toEqual(["msg_local_tool_prompt", "msg_anthropic_tool_response"])
+  })
+
   test("preserves hydrated transcript order even when timestamps disagree", () => {
     const hydratedUser: Message = {
       ...user,

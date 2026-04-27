@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
+import logging
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from penguin.tools.runtime import (
@@ -25,6 +27,7 @@ from .reasoning_variants import native_reasoning_efforts
 _REASONING_EFFORT_VARIANTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
 _REASONING_MAX_VARIANTS = {"max"}
 _REASONING_DISABLE_VARIANTS = {"off"}
+logger = logging.getLogger(__name__)
 
 
 def _get_tool_payload(
@@ -35,9 +38,14 @@ def _get_tool_payload(
     tools_getter = getattr(tool_manager, "get_responses_tools", None)
     if not callable(tools_getter):
         return []
-    try:
+    signature = inspect.signature(tools_getter)
+    accepts_include_web_search = "include_web_search" in signature.parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+    if accepts_include_web_search:
         tools_payload = tools_getter(include_web_search=include_web_search)
-    except TypeError:
+    else:
         tools_payload = tools_getter()
     return list(tools_payload or [])
 
@@ -364,19 +372,34 @@ async def _call_pending_tool_getter(getter: Any) -> Any:
 async def _get_and_clear_pending_tool_infos(api_client: Any) -> List[Dict[str, Any]]:
     """Return all provider-captured tool calls from the active handler."""
 
+    handler = getattr(api_client, "client_handler", None)
     try:
-        handler = getattr(api_client, "client_handler", None)
         plural_getter = getattr(handler, "get_and_clear_pending_tool_calls", None)
         tool_infos = await _call_pending_tool_getter(plural_getter)
-        if isinstance(tool_infos, list):
-            return [item for item in tool_infos if isinstance(item, dict)]
-        if isinstance(tool_infos, dict):
-            return [tool_infos]
+    except Exception:
+        logger.exception(
+            "Failed to read pending tool calls from api_client=%r handler=%r "
+            "via get_and_clear_pending_tool_calls",
+            api_client,
+            handler,
+        )
+        raise
+    if isinstance(tool_infos, list):
+        return [item for item in tool_infos if isinstance(item, dict)]
+    if isinstance(tool_infos, dict):
+        return [tool_infos]
 
+    try:
         singular_getter = getattr(handler, "get_and_clear_last_tool_call", None)
         tool_info = await _call_pending_tool_getter(singular_getter)
     except Exception:
-        return []
+        logger.exception(
+            "Failed to read pending tool call from api_client=%r handler=%r "
+            "via get_and_clear_last_tool_call",
+            api_client,
+            handler,
+        )
+        raise
 
     return [tool_info] if isinstance(tool_info, dict) else []
 

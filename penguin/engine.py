@@ -11,6 +11,7 @@ remains test‑friendly and avoids hidden globals.
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+import json
 import uuid
 import asyncio
 import copy
@@ -2571,12 +2572,20 @@ class Engine:
 
         for tool_call, tool_result in zip(tool_calls[:1], scheduler_results):
             legacy_action_result = legacy_action_result_from_tool_result(tool_result)
+            tool_arguments_text = (
+                tool_call.arguments
+                if isinstance(tool_call.arguments, str)
+                else json.dumps(
+                    tool_call.arguments,
+                    default=str,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            )
             runtime_action_result = {
                 **legacy_action_result,
                 "tool_call_id": tool_call.id,
-                "tool_arguments": tool_call.arguments
-                if isinstance(tool_call.arguments, str)
-                else str(tool_call.arguments),
+                "tool_arguments": tool_arguments_text,
                 "output_hash": tool_result.output_hash,
             }
             action_results.append(runtime_action_result)
@@ -2723,7 +2732,7 @@ class Engine:
 
         # Step 5: Execute CodeAct actions if enabled
         action_results = list(responses_action_results)
-        if tools_enabled:
+        if tools_enabled and not responses_action_results:
             action_results.extend(
                 await self._execute_codeact_actions(
                     cm, action_executor, assistant_response

@@ -106,13 +106,66 @@ def _normalize_arguments(arguments: Any) -> Any:
     return arguments
 
 
+def _first_non_none(mapping: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    """Return the first explicitly present non-None value from a mapping.
+
+    Args:
+        mapping: Source dictionary to inspect.
+        keys: Candidate keys in priority order.
+
+    Returns:
+        The first value whose key exists and whose value is not None, preserving
+        falsy values such as ``{}`` and ``""``. Returns None when no key has a
+        non-None value.
+
+    Raises:
+        None. Non-dict callers should normalize before calling this helper.
+    """
+
+    for key in keys:
+        if key in mapping and mapping.get(key) is not None:
+            return mapping.get(key)
+    return None
+
+
 def _metadata_from_result(action_result: dict[str, Any]) -> dict[str, Any]:
+    """Extract structured metadata from a legacy action result.
+
+    Args:
+        action_result: Legacy action-result dictionary that may include a
+            ``metadata`` field.
+
+    Returns:
+        The metadata dictionary when present and dict-shaped; otherwise an
+        empty dictionary.
+
+    Raises:
+        None. Non-dict metadata is treated as absent.
+    """
+
     metadata = action_result.get("metadata")
     return metadata if isinstance(metadata, dict) else {}
 
 
 def _tool_result_to_action_result(tool_result: ToolResult) -> dict[str, Any]:
+    """Convert a normalized tool result into a legacy action-result dict.
+
+    Args:
+        tool_result: Normalized ``ToolResult`` produced by the scheduler.
+
+    Returns:
+        A legacy action-result dictionary with action, result, status,
+        tool-call metadata, output hash, and structured metadata. Empty
+        ``tool_arguments`` values are preserved when explicitly present.
+
+    Raises:
+        None. Missing structured output is treated as an empty dictionary.
+    """
+
     structured_output = tool_result.structured_output or {}
+    tool_arguments = _first_non_none(
+        structured_output, ("tool_arguments", "arguments")
+    )
     return {
         "action": tool_result.name,
         "result": tool_result.output,
@@ -120,12 +173,26 @@ def _tool_result_to_action_result(tool_result: ToolResult) -> dict[str, Any]:
         "tool_call_id": tool_result.call_id,
         "output_hash": tool_result.output_hash,
         "metadata": structured_output,
-        "tool_arguments": structured_output.get("tool_arguments")
-        or structured_output.get("arguments"),
+        "tool_arguments": tool_arguments,
     }
 
 
 def _normalize_tool_loop_input(action_result: Any) -> dict[str, Any]:
+    """Normalize loop-guard input to a legacy action-result dictionary.
+
+    Args:
+        action_result: A legacy action-result dictionary, ``ToolResult``, or
+            arbitrary value from older call sites.
+
+    Returns:
+        A dict suitable for loop-signature extraction. ``ToolResult`` values are
+        converted to legacy result shape; non-dict unsupported values become an
+        empty dict.
+
+    Raises:
+        None. Unsupported inputs are intentionally normalized to ``{}``.
+    """
+
     if isinstance(action_result, ToolResult):
         return _tool_result_to_action_result(action_result)
     return action_result if isinstance(action_result, dict) else {}
@@ -137,14 +204,13 @@ def tool_loop_signature(action_result: Any) -> dict[str, Any]:
     action_result = _normalize_tool_loop_input(action_result)
 
     metadata = _metadata_from_result(action_result)
-    arguments = (
-        action_result.get("tool_arguments")
-        or action_result.get("arguments")
-        or action_result.get("params")
-        or metadata.get("tool_arguments")
-        or metadata.get("arguments")
-        or metadata.get("params")
+    arguments = _first_non_none(
+        action_result, ("tool_arguments", "arguments", "params")
     )
+    if arguments is None:
+        arguments = _first_non_none(
+            metadata, ("tool_arguments", "arguments", "params")
+        )
     normalized_arguments = _normalize_arguments(arguments)
     argument_fields = (
         normalized_arguments if isinstance(normalized_arguments, dict) else {}
@@ -377,7 +443,11 @@ def tool_call_from_responses_info(tool_info: dict[str, Any]) -> Optional[ToolCal
         or tool_info.get("item_id")
         or f"call_{uuid.uuid4().hex}"
     )
-    raw_args = tool_info.get("arguments") or "{}"
+    raw_args = (
+        tool_info.get("arguments")
+        if tool_info.get("arguments") is not None
+        else "{}"
+    )
     arguments: ToolArguments = (
         raw_args if isinstance(raw_args, (dict, str)) else str(raw_args)
     )
@@ -414,7 +484,13 @@ def tool_result_from_action_result(
     )
 
     return ToolResult(
-        call_id=str(call_id or action_result.get("call_id") or name or "tool_call"),
+        call_id=str(
+            call_id
+            or action_result.get("call_id")
+            or action_result.get("tool_call_id")
+            or name
+            or "tool_call"
+        ),
         name=name,
         status=status,
         output=output,

@@ -36,13 +36,30 @@ def _format_code_items(items: List[str]) -> str:
     return ", ".join(f"`{item}`" for item in items)
 
 
-def _render_tool_examples(examples: List[ToolPromptExample]) -> str:
+def _native_example_payload(tool_name: str, body: str) -> str:
+    opening = f"<{tool_name}>"
+    closing = f"</{tool_name}>"
+    if body.startswith(opening) and body.endswith(closing):
+        return body[len(opening) : -len(closing)]
+    return body
+
+
+def _render_tool_examples(
+    tool_name: str, examples: List[ToolPromptExample]
+) -> str:
     blocks: List[str] = []
     for example in examples:
+        native_payload = _native_example_payload(tool_name, example.body)
         blocks.append(
             "\n".join(
                 [
-                    f"**Example - {example.title}:**",
+                    f"**Native tool call example - {example.title}:**",
+                    f"Call provider tool `{tool_name}` with:",
+                    "```json",
+                    native_payload,
+                    "```",
+                    "",
+                    f"**ActionXML fallback - {example.title}:**",
                     "```actionxml",
                     example.body,
                     "```",
@@ -108,7 +125,7 @@ def _render_tool_section(tool_name: str, hint: ToolPromptHint) -> str:
         f"**ActionXML fallback:** `<{tool_name}>{{...}}</{tool_name}>`",
     ]
 
-    example_block = _render_tool_examples(hint.examples)
+    example_block = _render_tool_examples(tool_name, hint.examples)
     if example_block:
         lines.extend(["", example_block])
 
@@ -690,12 +707,18 @@ Create a child agent for isolated or shared-session work.
 - `initial_prompt` (optional)
 - `background` (optional, default: `false`)
 
-**Example (isolated child):**
+**Native tool call example (isolated child):** call `spawn_sub_agent` with
+`{"id":"researcher","share_session":false,"share_context_window":false,"initial_prompt":"Summarize docs in /docs"}`.
+
+**ActionXML fallback example (isolated child):**
 ```actionxml
 <spawn_sub_agent>{"id":"researcher","share_session":false,"share_context_window":false,"initial_prompt":"Summarize docs in /docs"}</spawn_sub_agent>
 ```
 
-**Example (background child):**
+**Native tool call example (background child):** call `spawn_sub_agent` with
+`{"id":"analyzer","background":true,"initial_prompt":"Audit Python files for security issues"}`.
+
+**ActionXML fallback example (background child):**
 ```actionxml
 <spawn_sub_agent>{"id":"analyzer","background":true,"initial_prompt":"Audit Python files for security issues"}</spawn_sub_agent>
 ```
@@ -704,26 +727,29 @@ Create a child agent for isolated or shared-session work.
 ### stop_sub_agent
 Pause a sub-agent, cancelling a running background task when applicable.
 
-**Format:** `<stop_sub_agent>{"id":"researcher"}</stop_sub_agent>`
+**Native tool call:** call `stop_sub_agent` with `{"id":"researcher"}`.
+**ActionXML fallback syntax:** `<stop_sub_agent>{"id":"researcher"}</stop_sub_agent>`
 
 
 ### resume_sub_agent
 Resume a previously paused sub-agent.
 
-**Format:** `<resume_sub_agent>{"id":"researcher"}</resume_sub_agent>`
+**Native tool call:** call `resume_sub_agent` with `{"id":"researcher"}`.
+**ActionXML fallback syntax:** `<resume_sub_agent>{"id":"researcher"}</resume_sub_agent>`
 
 
 ### get_agent_status
 Query background sub-agent status for one agent or all running agents.
 
-**Format:** `<get_agent_status>{...}</get_agent_status>`
+**Native tool call:** call `get_agent_status` with the fields below.
+**ActionXML fallback syntax:** `<get_agent_status>{...}</get_agent_status>`
 
 **Payload fields:**
 - `id` (optional) - Agent ID to query
 - `agent_id` (optional alias for `id`)
 - `include_result` (optional, default: `false`) - Include completed result payload
 
-**Examples:**
+**ActionXML fallback examples:**
 ```actionxml
 <get_agent_status>{"id":"analyzer"}</get_agent_status>
 ```
@@ -736,14 +762,15 @@ Query background sub-agent status for one agent or all running agents.
 ### wait_for_agents
 Wait for one or more background sub-agents to complete.
 
-**Format:** `<wait_for_agents>{...}</wait_for_agents>`
+**Native tool call:** call `wait_for_agents` with the fields below.
+**ActionXML fallback syntax:** `<wait_for_agents>{...}</wait_for_agents>`
 
 **Payload fields:**
 - `ids` (optional list) - Agent IDs to wait for (all if omitted)
 - `agent_ids` (optional alias for `ids`)
 - `timeout` (optional float seconds)
 
-**Example:**
+**ActionXML fallback example:**
 ```actionxml
 <wait_for_agents>{"ids":["analyzer","researcher"],"timeout":60}</wait_for_agents>
 ```
@@ -752,7 +779,8 @@ Wait for one or more background sub-agents to complete.
 ### get_context_info
 Inspect context-window sharing details for an agent.
 
-**Format:** `<get_context_info>{...}</get_context_info>`
+**Native tool call:** call `get_context_info` with the fields below.
+**ActionXML fallback syntax:** `<get_context_info>{...}</get_context_info>`
 
 **Payload fields:**
 - `id` (optional) - Agent ID (defaults to current/default)
@@ -763,7 +791,8 @@ Inspect context-window sharing details for an agent.
 ### sync_context
 Synchronize context from a parent agent to a child agent.
 
-**Format:** `<sync_context>{...}</sync_context>`
+**Native tool call:** call `sync_context` with the fields below.
+**ActionXML fallback syntax:** `<sync_context>{...}</sync_context>`
 
 **Payload fields:**
 - `parent` (required) - Parent/source agent
@@ -779,7 +808,8 @@ Send a concrete task to an existing sub-agent.
 - Assign follow-up work to a named child
 - Run background delegated tasks with optional waiting
 
-**Format:** `<delegate>{...}</delegate>`
+**Native tool call:** call `delegate` with the fields below.
+**ActionXML fallback syntax:** `<delegate>{...}</delegate>`
 
 **Payload fields:**
 - `child` (required) - Target agent id
@@ -791,7 +821,7 @@ Send a concrete task to an existing sub-agent.
 - `wait` (optional, default: `false`) - Only relevant when `background=true`
 - `timeout` (optional float seconds) - Only relevant when `wait=true`
 
-**Examples:**
+**ActionXML fallback examples:**
 ```actionxml
 <delegate>{"child":"researcher","content":"Audit README for missing setup steps.","channel":"dev-room"}</delegate>
 ```
@@ -805,14 +835,15 @@ Send a concrete task to an existing sub-agent.
 Spawn a lightweight exploration sub-agent that can list files, read files, and search,
 then return a structured summary.
 
-**Format:** `<delegate_explore_task>{...}</delegate_explore_task>`
+**Native tool call:** call `delegate_explore_task` with the fields below.
+**ActionXML fallback syntax:** `<delegate_explore_task>{...}</delegate_explore_task>`
 
 **Payload fields:**
 - `task` (required) - Exploration objective
 - `directory` (optional) - Starting path (default: current)
 - `max_iterations` (optional int) - Exploration rounds (capped)
 
-**Example:**
+**ActionXML fallback example:**
 ```actionxml
 <delegate_explore_task>{"task":"Map this repo architecture and identify entry points.","directory":".","max_iterations":40}</delegate_explore_task>
 ```
@@ -842,7 +873,7 @@ Interact with page elements (click, input, submit).
 **Actions:** click, input, submit  
 **Selector types:** css, xpath, id, class_name
 
-**Examples:**
+**Native tool calls are preferred. ActionXML fallback examples:**
 ```actionxml
 <pydoll_browser_interact>click:button.submit:css</pydoll_browser_interact>
 <pydoll_browser_interact>input:search-box:id:search query</pydoll_browser_interact>
@@ -904,6 +935,7 @@ syntax shown below.
 ### finish_response
 **Purpose:** End the conversation turn.
 **When to use:** Done answering a question or providing information.
+**Native tool call:** call `finish_response` with no parameters.
 **ActionXML fallback syntax:** `<finish_response></finish_response>`
 **Parameters:** None
 
@@ -912,6 +944,7 @@ syntax shown below.
 ### finish_task  
 **Purpose:** Signal that formal task work is ready for human review.
 **When to use:** Acceptance criteria are satisfied, or progress is partial/blocked and should stop.
+**Native tool call:** call `finish_task` with `status` and optional `summary`.
 **ActionXML fallback syntax:** `<finish_task>{"status":"done","summary":"What changed and how it was verified"}</finish_task>`
 **Parameters:** JSON object or plain status string. Prefer JSON.
 - `status`: "done" (default), "partial", or "blocked"
