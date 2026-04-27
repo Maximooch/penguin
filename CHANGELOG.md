@@ -5,6 +5,37 @@ Changelog
 
 All notable changes to this project are documented in this file.
 
+0.7.0 — 2026-04-27
+------------------
+
+Highlights
+- **Native tool-call runtime hardening**: Completed the tool-call runtime architecture work through Phase 5.6, including provider transcript normalization, native tool-call ordering, and stricter tool-result handling.
+- **Web/TUI security overhaul**: Hardened local auth bootstrap, protected HTTP/SSE/WebSocket paths, strengthened upload handling, and added webhook replay defenses.
+- **Project bootstrap workflow**: Added project init/start commands, exposed project/task parity routes, expanded TUI project and task commands, and tightened session workspace scoping.
+- **Run Mode reliability**: Thinned `Engine.run_task` into the unified iteration loop, preserved non-terminal task outcomes, surfaced blocked project frontiers, and hardened executor cleanup/status semantics.
+- **OpenAI/Codex improvements**: Added `service_tier`/fast-mode support, improved OAuth-backed Codex latest-model access, and fixed OpenRouter/OpenAI tool-continuity regressions.
+- **TUI polish**: Added Penguin TUI themes and defaulted the TUI to the Emperor theme.
+
+Added
+- Project bootstrap commands for init/start flows in CLI/TUI surfaces.
+- Project and task API parity routes for web/API consumers.
+- `/fast` mode command and deeper OpenAI/Codex service-tier request support.
+- Penguin TUI theme support, including Emperor as the default theme.
+- Deterministic tests for project start, TUI command routing, web hardening, provider contracts, native tool runtime IR, and Run Mode truth surfaces.
+
+Changed
+- Removed the old Ink-based CLI and retired unused desktop surface code.
+- Normalized docs package management and refreshed frontend/docs dependencies within compatibility bounds.
+- Refactored shared web auth helpers and local browser/TUI bootstrap flows around server-written session auth.
+- Reworked native tool-call handling around a stricter runtime architecture and ordered TUI event delivery.
+
+Fixed
+- Web auth guards, local startup defaults, upload handling, and GitHub webhook replay validation.
+- TUI local auth regressions by preferring server-written auth cache state over provisional environment tokens.
+- Project executor cleanup paths, malformed status payload handling, duplicate project init behavior, and blocked run frontier visibility.
+- Anthropic tool-result adjacency plus native tool-call transcript and TUI ordering regressions.
+- Codex reasoning/completion leaks and ChatGPT-backed Codex latest-model access.
+
 0.5.0 — 2026-01-28
 -------------------
 

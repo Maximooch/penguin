@@ -234,6 +234,14 @@ Read more:
 
 ## Version Highlights
 
+### v0.7.0
+
+- Hardened the native tool-call runtime across provider adapters, transcript replay, tool-result adjacency, and TUI event ordering.
+- Shipped a safer local web/TUI auth flow with protected HTTP, SSE, and WebSocket bootstrap paths plus stronger upload and webhook guards.
+- Expanded project bootstrap and task orchestration surfaces across TUI, web/API routes, and Run Mode while preserving non-terminal runtime truth.
+- Added OpenAI/Codex fast-mode service-tier support and improved OAuth-backed Codex/latest-model access.
+- Added Penguin TUI themes and defaulted the packaged TUI experience to the Emperor theme.
+
 ### v0.6.3
 
 - Expanded native OpenAI / Codex integration, including stronger Responses API handling and OAuth-backed Codex response support.
