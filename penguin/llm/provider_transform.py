@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Union, cast
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Union
 
 from .contracts import ErrorCategory, FinishReason, LLMError
 
@@ -317,6 +317,117 @@ def normalize_openai_responses_tools(
     return normalized
 
 
+def normalize_openai_chat_tools(
+    tools: Optional[Iterable[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """Canonicalize tools to OpenAI Chat Completions function schema."""
+
+    normalized: List[Dict[str, Any]] = []
+    for raw_tool in list(tools or []):
+        if not isinstance(raw_tool, dict):
+            continue
+        tool_type = str(raw_tool.get("type") or "").strip()
+        if tool_type != "function":
+            continue
+
+        function_payload = raw_tool.get("function")
+        if isinstance(function_payload, dict):
+            name = function_payload.get("name") or raw_tool.get("name")
+            description = function_payload.get("description") or raw_tool.get(
+                "description", ""
+            )
+            parameters = (
+                function_payload.get("parameters")
+                or raw_tool.get("parameters")
+                or {"type": "object", "properties": {}}
+            )
+        else:
+            name = raw_tool.get("name")
+            description = raw_tool.get("description", "")
+            parameters = raw_tool.get("parameters") or {
+                "type": "object",
+                "properties": {},
+            }
+
+        if not name:
+            continue
+        normalized.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": description,
+                    "parameters": parameters,
+                },
+            }
+        )
+    return normalized
+
+
+def normalize_openai_chat_tool_choice(
+    tool_choice: Optional[Union[str, Dict[str, Any]]],
+) -> Optional[Union[str, Dict[str, Any]]]:
+    """Canonicalize tool_choice to OpenAI Chat Completions schema."""
+
+    if not isinstance(tool_choice, dict):
+        return tool_choice
+
+    if str(tool_choice.get("type") or "").strip() != "function":
+        return dict(tool_choice)
+
+    function_payload = tool_choice.get("function")
+    if isinstance(function_payload, dict):
+        return dict(tool_choice)
+    name = tool_choice.get("name")
+    if name:
+        return {"type": "function", "function": {"name": name}}
+    return dict(tool_choice)
+
+
+def normalize_anthropic_tools(
+    tools: Optional[Iterable[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """Canonicalize tools to Anthropic Messages client-tool schema."""
+
+    normalized: List[Dict[str, Any]] = []
+    for raw_tool in list(tools or []):
+        if not isinstance(raw_tool, dict):
+            continue
+        tool_type = str(raw_tool.get("type") or "").strip()
+        if tool_type != "function":
+            continue
+
+        function_payload = raw_tool.get("function")
+        if isinstance(function_payload, dict):
+            name = function_payload.get("name") or raw_tool.get("name")
+            description = function_payload.get("description") or raw_tool.get(
+                "description", ""
+            )
+            input_schema = (
+                function_payload.get("parameters")
+                or raw_tool.get("parameters")
+                or {"type": "object", "properties": {}}
+            )
+        else:
+            name = raw_tool.get("name")
+            description = raw_tool.get("description", "")
+            input_schema = raw_tool.get("parameters") or {
+                "type": "object",
+                "properties": {},
+            }
+
+        if not name:
+            continue
+        normalized.append(
+            {
+                "name": name,
+                "description": description,
+                "input_schema": input_schema,
+            }
+        )
+    return normalized
+
+
 def normalize_openai_responses_tool_choice(
     tool_choice: Optional[Union[str, Dict[str, Any]]],
 ) -> Optional[Union[str, Dict[str, Any]]]:
@@ -351,6 +462,27 @@ def should_use_openai_responses_tools(model_config: Any) -> bool:
     )
 
 
+def native_tool_format(model_config: Any) -> Optional[str]:
+    """Return the native tool contract for the configured provider, if any."""
+
+    if model_config is None:
+        return None
+    provider = normalize_provider_name(str(getattr(model_config, "provider", "") or ""))
+    preference = normalize_client_preference(
+        str(getattr(model_config, "client_preference", "") or "")
+    )
+
+    if provider == "openrouter" and preference == "openrouter":
+        return "openai_chat"
+    if provider == "anthropic" and preference == "native":
+        return "anthropic"
+    if getattr(model_config, "use_responses_api", False) or (
+        should_use_openai_responses_tools(model_config)
+    ):
+        return "openai_responses"
+    return None
+
+
 __all__ = [
     "OPENAI_COMPATIBLE_PROVIDER",
     "OPENAI_COMPATIBLE_PROVIDER_ALIASES",
@@ -363,6 +495,10 @@ __all__ = [
     "normalize_error_category",
     "normalize_finish_reason",
     "normalize_client_preference",
+    "native_tool_format",
+    "normalize_anthropic_tools",
+    "normalize_openai_chat_tool_choice",
+    "normalize_openai_chat_tools",
     "normalize_openai_responses_tool_choice",
     "normalize_openai_responses_tools",
     "normalize_provider_name",

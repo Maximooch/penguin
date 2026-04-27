@@ -103,10 +103,17 @@ class AnthropicStreamDelta:
 
 class AnthropicStreamChunk:
     def __init__(
-        self, chunk_type: str, delta: AnthropicStreamDelta | None = None
+        self,
+        chunk_type: str,
+        delta: AnthropicStreamDelta | None = None,
+        *,
+        content_block: Any = None,
+        index: int = 0,
     ) -> None:
         self.type = chunk_type
         self.delta = delta
+        self.content_block = content_block
+        self.index = index
 
 
 class AnthropicCountResponse:
@@ -371,7 +378,7 @@ def build_openrouter_handler(
             )
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-fixture")
-    monkeypatch.setattr("penguin.llm.openrouter_gateway.AsyncOpenAI", _ClientFactory)
+    monkeypatch.setattr("penguin.llm.adapters.openrouter.AsyncOpenAI", _ClientFactory)
 
     gateway = OpenRouterGateway(
         ModelConfig(

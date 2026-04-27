@@ -151,6 +151,27 @@ def _build_handler(
                 usage=ANTHROPIC_USAGE,
                 reasoning_enabled=True,
             )
+        if scenario == "tool_call":
+            return build_anthropic_handler(
+                stream_chunks=[
+                    AnthropicStreamChunk(
+                        "content_block_start",
+                        content_block=type(
+                            "ToolUseBlock",
+                            (),
+                            {
+                                "type": "tool_use",
+                                "id": "toolu_1",
+                                "name": "read_file",
+                                "input": {"path": "README.md"},
+                            },
+                        )(),
+                    ),
+                    AnthropicStreamChunk("message_stop"),
+                ],
+                final_text="",
+                usage=ANTHROPIC_USAGE,
+            )
 
     if provider_id == "openrouter":
         if scenario == "nonstream":
@@ -304,7 +325,7 @@ async def test_provider_contract_reasoning_stream_matrix(
 
 @pytest.mark.parametrize(
     "provider_id",
-    ["openai", "openai_compatible", "openrouter"],
+    ["openai", "openai_compatible", "anthropic", "openrouter"],
 )
 @pytest.mark.asyncio
 async def test_provider_contract_tool_call_interrupt_matrix(
@@ -332,3 +353,111 @@ async def test_provider_contract_tool_call_interrupt_matrix(
     assert tool_call["name"] == "read_file"
     assert tool_call["arguments"] == '{"path":"README.md"}'
     assert handler.get_and_clear_last_tool_call() is None
+
+
+@pytest.mark.asyncio
+async def test_openrouter_preserves_multiple_pending_tool_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handler = build_openrouter_handler(
+        monkeypatch,
+        stream_chunks=[
+            make_openrouter_chunk(
+                model="openai/gpt-4.1-mini",
+                tool_calls=[
+                    {
+                        "index": 0,
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path":"README.md"}',
+                        },
+                    },
+                    {
+                        "index": 1,
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {
+                            "name": "list_files",
+                            "arguments": '{"path":"."}',
+                        },
+                    },
+                ],
+                finish_reason="tool_calls",
+                usage=OPENROUTER_USAGE,
+            )
+        ],
+        final_text="",
+        usage=OPENROUTER_USAGE,
+        interrupt_on_tool_call=True,
+    )
+
+    result = await handler.get_response(
+        [{"role": "user", "content": "inspect files"}],
+        stream=True,
+        stream_callback=lambda *_args: None,
+    )
+
+    assert result == ""
+    assert handler.has_pending_tool_call() is True
+    pending = handler.get_and_clear_pending_tool_calls()
+    assert [tool_call["name"] for tool_call in pending] == [
+        "read_file",
+        "list_files",
+    ]
+
+
+def test_anthropic_formats_tool_transcript() -> None:
+    handler = build_anthropic_handler(
+        stream_chunks=[AnthropicStreamChunk("message_stop")],
+        final_text="answer",
+        usage=ANTHROPIC_USAGE,
+    )
+
+    formatted = handler.format_messages(
+        [
+            {"role": "user", "content": "read README"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "toolu_1",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path":"README.md"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "toolu_1",
+                "content": "# README",
+            },
+        ]
+    )
+
+    assert formatted[1] == {
+        "role": "assistant",
+        "content": [
+            {
+                "type": "tool_use",
+                "id": "toolu_1",
+                "name": "read_file",
+                "input": {"path": "README.md"},
+            }
+        ],
+    }
+    assert formatted[2] == {
+        "role": "user",
+        "content": [
+            {
+                "type": "tool_result",
+                "tool_use_id": "toolu_1",
+                "content": "# README",
+            }
+        ],
+    }

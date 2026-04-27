@@ -448,6 +448,32 @@ Acceptance criteria:
 - provider contract tests cover text, reasoning, streaming, and tool-call
   behavior without relying on live provider responses
 
+Phase 5.6 implementation note:
+
+- Native tool preparation is now provider-aware in `penguin/llm/runtime.py`.
+  OpenAI/Codex keeps the Responses tool schema, OpenRouter receives regular
+  Chat Completions `tools`/`tool_choice`, and Anthropic receives Messages API
+  client-tool schemas with `input_schema`.
+- OpenRouter remains on the regular Chat Completions tool contract for now,
+  even though OpenRouter also exposes a Responses API beta. This keeps the
+  implementation aligned with Penguin's existing OpenRouter gateway and avoids
+  mixing two OpenRouter transport contracts in one phase.
+- OpenRouter tool-call capture is plural and preserves multiple pending
+  `tool_calls`, while retaining the singular getter as a compatibility shim.
+- Anthropic maps Penguin assistant `tool_calls` metadata into `tool_use`
+  content blocks and maps Penguin `role: tool` messages into user
+  `tool_result` blocks. Consecutive tool results are grouped into one user
+  message so Anthropic's immediate tool-result ordering rule is preserved.
+- Follow-up: provider-native tool support is separate from provider
+  reasoning-control support. OpenRouter logs can show `reasoning payload`
+  disabled because Penguin did not send an explicit reasoning config, while
+  the provider/model may still report reasoning-token usage. Audit provider and
+  model capability metadata later so controllable reasoning config is applied
+  only where the selected provider contract supports it.
+- LiteLLM, Gemini, Ollama, and other providers intentionally remain on the
+  ActionXML fallback path until their native tool contracts are audited and
+  tested.
+
 ### Phase 6: Safe Parallel Tool Calls
 
 Goals:

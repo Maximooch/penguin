@@ -12,9 +12,12 @@ from penguin.tools.runtime import (
 from penguin.utils.errors import LLMEmptyResponseError
 
 from .provider_transform import (
+    native_tool_format,
+    normalize_anthropic_tools,
+    normalize_openai_chat_tool_choice,
+    normalize_openai_chat_tools,
     normalize_openai_responses_tool_choice,
     normalize_openai_responses_tools,
-    should_use_openai_responses_tools,
 )
 from .reasoning_variants import native_reasoning_efforts
 
@@ -23,35 +26,68 @@ _REASONING_MAX_VARIANTS = {"max"}
 _REASONING_DISABLE_VARIANTS = {"off"}
 
 
-def prepare_responses_tool_kwargs(
+def _get_tool_payload(
+    tool_manager: Any,
+    *,
+    include_web_search: bool,
+) -> List[Dict[str, Any]]:
+    tools_getter = getattr(tool_manager, "get_responses_tools", None)
+    if not callable(tools_getter):
+        return []
+    try:
+        tools_payload = tools_getter(include_web_search=include_web_search)
+    except TypeError:
+        tools_payload = tools_getter()
+    return list(tools_payload or [])
+
+
+def prepare_native_tool_kwargs(
     model_config: Any, tool_manager: Any
 ) -> Dict[str, Any]:
-    """Build Responses API tool kwargs for providers that use that contract."""
+    """Build native tool kwargs for providers that support structured tool calls."""
 
     extra_kwargs: Dict[str, Any] = {}
     if model_config is None:
         return extra_kwargs
 
-    uses_openai_native_responses = bool(
-        model_config and should_use_openai_responses_tools(model_config)
-    )
-    if not (
-        getattr(model_config, "use_responses_api", False)
-        or uses_openai_native_responses
-    ):
+    tool_format = native_tool_format(model_config)
+    if not tool_format:
         return extra_kwargs
 
-    tools_getter = getattr(tool_manager, "get_responses_tools", None)
-    tools_payload = tools_getter() if callable(tools_getter) else []
+    tools_payload = _get_tool_payload(
+        tool_manager,
+        include_web_search=tool_format == "openai_responses",
+    )
     if not tools_payload:
         return extra_kwargs
 
-    if uses_openai_native_responses:
-        setattr(model_config, "interrupt_on_tool_call", True)
+    setattr(model_config, "interrupt_on_tool_call", True)
 
-    extra_kwargs["tools"] = normalize_openai_responses_tools(tools_payload)
-    extra_kwargs["tool_choice"] = normalize_openai_responses_tool_choice("auto")
+    if tool_format == "openai_responses":
+        extra_kwargs["tools"] = normalize_openai_responses_tools(tools_payload)
+        extra_kwargs["tool_choice"] = normalize_openai_responses_tool_choice("auto")
+        return extra_kwargs
+
+    if tool_format == "openai_chat":
+        extra_kwargs["tools"] = normalize_openai_chat_tools(tools_payload)
+        extra_kwargs["tool_choice"] = normalize_openai_chat_tool_choice("auto")
+        extra_kwargs["parallel_tool_calls"] = False
+        return extra_kwargs
+
+    if tool_format == "anthropic":
+        extra_kwargs["tools"] = normalize_anthropic_tools(tools_payload)
+        extra_kwargs["tool_choice"] = {"type": "auto"}
+        return extra_kwargs
+
     return extra_kwargs
+
+
+def prepare_responses_tool_kwargs(
+    model_config: Any, tool_manager: Any
+) -> Dict[str, Any]:
+    """Backward-compatible wrapper for native tool kwargs preparation."""
+
+    return prepare_native_tool_kwargs(model_config, tool_manager)
 
 
 def handler_has_pending_tool_call(api_client: Any) -> bool:
@@ -677,6 +713,7 @@ __all__ = [
     "execute_pending_tool_calls",
     "handler_has_pending_tool_call",
     "persist_reasoning_debug_snapshot",
+    "prepare_native_tool_kwargs",
     "prepare_responses_tool_kwargs",
     "resolve_reasoning_payload",
     "restore_reasoning_variant_override",
