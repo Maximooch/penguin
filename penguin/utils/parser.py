@@ -1620,6 +1620,21 @@ class ActionExecutor:
             ActionType.CREATE_FEATURE_PR: self._create_feature_pr,
             ActionType.CREATE_BUGFIX_PR: self._create_bugfix_pr,
         }
+        from penguin.tools.action_registry import (
+            create_default_action_tool_registry,
+        )
+
+        action_registry = create_default_action_tool_registry()
+        for registered_action_type in action_registry.action_types():
+            action_map[registered_action_type] = (
+                lambda params, action_type=registered_action_type: (
+                    action_registry.execute(
+                        action_type,
+                        params,
+                        self.tool_manager,
+                    )
+                )
+            )
 
         try:
             if action.action_type not in action_map:

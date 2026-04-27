@@ -342,6 +342,18 @@ Acceptance criteria:
 - `ActionExecutor` becomes a compatibility wrapper or is removed
 - `ToolManager` becomes an implementation backend, not the public routing API
 
+Phase 3 implementation note:
+
+- `penguin.tools.action_registry` introduces `ActionToolRegistry` and
+  `ActionToolRoute` for ActionXML routes that can already be expressed as
+  ToolManager calls.
+- `ActionExecutor` now lets the registry override canonical ToolManager-backed
+  actions such as command execution, search, read/write, and patch operations;
+  the legacy handler map remains as fallback for UI-heavy and manager-specific
+  actions.
+- Legacy edit aliases remain registered with canonical action metadata, keeping
+  old tags compatible while moving routing ownership out of the parser module.
+
 ### Phase 4: Replace Loop Guards With IR-Aware Control
 
 Goals:
