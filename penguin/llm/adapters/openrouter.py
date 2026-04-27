@@ -12,7 +12,6 @@ from PIL import Image as PILImage  # Use alias for PIL Image # type: ignore
 # --- End Added Imports ---
 
 import httpx  # type: ignore
-import openai  # type: ignore
 import tiktoken  # type: ignore
 from openai import AsyncOpenAI, APIError  # type: ignore
 
@@ -78,6 +77,8 @@ class OpenRouterGateway:
         }
         # Tool-call accumulation for SSE
         self._tool_call_acc: Dict[str, Any] = {"name": None, "arguments": ""}
+        self._tool_call_accs: Dict[int, Dict[str, Any]] = {}
+        self._pending_tool_calls: List[Dict[str, Any]] = []
         self._last_tool_call: Optional[Dict[str, Any]] = None
         self._last_usage: Dict[str, Any] = {}
         self._last_error: Optional[LLMError] = None
@@ -370,54 +371,133 @@ class OpenRouterGateway:
             )
         )
 
-    def _store_tool_call(self, tool_call: Any) -> None:
-        tc0 = None
-        if isinstance(tool_call, (list, tuple)) and tool_call:
-            tc0 = tool_call[0]
-        else:
-            tc0 = tool_call
-        if tc0 is None:
-            return
-
-        payload = tc0 if isinstance(tc0, dict) else {}
-        if not payload and tc0 is not None:
+    def _tool_call_payload(self, tool_call: Any) -> Dict[str, Any]:
+        payload = tool_call if isinstance(tool_call, dict) else {}
+        if not payload and tool_call is not None:
             try:
-                payload = vars(tc0)
+                payload = vars(tool_call)
             except Exception:
                 payload = {}
+        return payload if isinstance(payload, dict) else {}
 
-        function_payload = (
-            payload.get("function") if isinstance(payload, dict) else None
-        )
-        if function_payload is None and tc0 is not None:
-            function_payload = getattr(tc0, "function", None)
-        if function_payload is None:
+    def _function_payload(self, tool_call: Any) -> Dict[str, Any]:
+        payload = self._tool_call_payload(tool_call)
+        function_payload = payload.get("function")
+        if function_payload is None and tool_call is not None:
+            function_payload = getattr(tool_call, "function", None)
+        if isinstance(function_payload, dict):
+            return function_payload
+        try:
+            return vars(function_payload) if function_payload is not None else {}
+        except Exception:
+            return {}
+
+    def _remember_tool_call(
+        self,
+        *,
+        call_id: Optional[str],
+        name: Optional[str],
+        arguments: str,
+        item_id: Optional[str] = None,
+    ) -> None:
+        if not name:
             return
+        if not hasattr(self, "_pending_tool_calls"):
+            self._pending_tool_calls = []
+        remembered = {
+            "item_id": item_id,
+            "call_id": call_id,
+            "name": name,
+            "arguments": arguments or "",
+        }
+        existing_index = next(
+            (
+                index
+                for index, pending in enumerate(self._pending_tool_calls)
+                if call_id and pending.get("call_id") == call_id
+            ),
+            None,
+        )
+        if existing_index is None:
+            self._pending_tool_calls.append(remembered)
+        else:
+            self._pending_tool_calls[existing_index] = remembered
+        self._last_tool_call = remembered
+        self._set_last_finish_reason(FinishReason.TOOL_CALLS)
 
-        if not isinstance(function_payload, dict):
+    def _store_tool_call(self, tool_call: Any) -> None:
+        tool_calls = (
+            list(tool_call)
+            if isinstance(tool_call, (list, tuple))
+            else [tool_call]
+            if tool_call is not None
+            else []
+        )
+        for current_call in tool_calls:
+            payload = self._tool_call_payload(current_call)
+            function_payload = self._function_payload(current_call)
+            name = function_payload.get("name")
+            arguments = function_payload.get("arguments") or ""
+            call_id = payload.get("id")
+            if not call_id and current_call is not None:
+                call_id = getattr(current_call, "id", None)
+            item_id = payload.get("id") if isinstance(payload, dict) else None
+            self._remember_tool_call(
+                call_id=call_id,
+                item_id=item_id,
+                name=name,
+                arguments=arguments,
+            )
+            if name:
+                self._tool_call_acc = {
+                    "name": name,
+                    "arguments": arguments,
+                    "call_id": call_id,
+                }
+
+    def _record_tool_call_delta(self, tool_calls_delta: Any) -> None:
+        if not hasattr(self, "_tool_call_accs"):
+            self._tool_call_accs = {}
+        tool_calls = (
+            list(tool_calls_delta)
+            if isinstance(tool_calls_delta, (list, tuple))
+            else [tool_calls_delta]
+            if tool_calls_delta is not None
+            else []
+        )
+        for offset, current_call in enumerate(tool_calls):
+            payload = self._tool_call_payload(current_call)
+            index = payload.get("index")
+            if index is None and current_call is not None:
+                index = getattr(current_call, "index", None)
             try:
-                function_payload = vars(function_payload)
+                call_index = int(index)
             except Exception:
-                function_payload = {}
+                call_index = offset
 
-        name = function_payload.get("name")
-        arguments = function_payload.get("arguments") or ""
-        call_id = payload.get("id") if isinstance(payload, dict) else None
-        if not call_id and tc0 is not None:
-            call_id = getattr(tc0, "id", None)
-        if name:
-            self._last_tool_call = {
-                "item_id": None,
-                "call_id": call_id,
-                "name": name,
-                "arguments": arguments,
-            }
-            self._tool_call_acc = {
-                "name": name,
-                "arguments": arguments,
-                "call_id": call_id,
-            }
-            self._set_last_finish_reason(FinishReason.TOOL_CALLS)
+            acc = self._tool_call_accs.setdefault(
+                call_index, {"name": None, "arguments": "", "call_id": None}
+            )
+            function_payload = self._function_payload(current_call)
+            name = function_payload.get("name")
+            arguments_delta = function_payload.get("arguments")
+            call_id = payload.get("id")
+            if not call_id and current_call is not None:
+                call_id = getattr(current_call, "id", None)
+            if call_id:
+                acc["call_id"] = call_id
+            if name:
+                acc["name"] = name
+            if isinstance(arguments_delta, str):
+                acc["arguments"] = str(acc.get("arguments") or "") + arguments_delta
+
+    def _finalize_stream_tool_calls(self) -> None:
+        for _call_index, acc in sorted(self._tool_call_accs.items()):
+            self._remember_tool_call(
+                call_id=acc.get("call_id"),
+                name=acc.get("name"),
+                arguments=str(acc.get("arguments") or ""),
+            )
 
     def _extract_generation_id_from_headers(self, headers: Any) -> Optional[str]:
         """Extract OpenRouter generation id from response headers."""
@@ -833,7 +913,7 @@ class OpenRouterGateway:
                     content = re.sub(
                         r"call_[a-zA-Z0-9_-]+", "[tool-call-reference]", content
                     )
-                    self.logger.debug(f"Reformatted tool call references in message")
+                    self.logger.debug("Reformatted tool call references in message")
 
                 # Check for XML action tags - they're Penguin's tool system and should be preserved
                 if self._contains_penguin_action_tags(content):
@@ -948,6 +1028,8 @@ class OpenRouterGateway:
         self._last_reasoning = ""
         self._last_tool_call = None
         self._tool_call_acc = {"name": None, "arguments": ""}
+        self._tool_call_accs = {}
+        self._pending_tool_calls = []
 
         # Determine if streaming should be used *based on the passed flag first*
         # If stream is explicitly False, don't stream, even if config says yes.
@@ -1021,14 +1103,14 @@ class OpenRouterGateway:
                 # Fallback to simple enabled format for backwards compatibility
                 request_params["reasoning"] = {"enabled": True}
                 self.logger.info(
-                    f"[OpenRouterGateway] Using basic reasoning config with enabled=True"
+                    "[OpenRouterGateway] Using basic reasoning config with enabled=True"
                 )
 
         # Handle reasoning configuration - always use direct API for reasoning
         use_direct_api = bool(reasoning_config)
         if reasoning_config:
             self.logger.info(
-                f"[OpenRouterGateway] Reasoning enabled, will use direct API call to bypass SDK limitations"
+                "[OpenRouterGateway] Reasoning enabled, will use direct API call to bypass SDK limitations"
             )
 
         # Filter out None values for cleaner API calls
@@ -1070,7 +1152,7 @@ class OpenRouterGateway:
         # Use direct API call if reasoning is enabled to avoid SDK compatibility issues
         if use_direct_api:
             self.logger.debug(
-                f"[OpenRouterGateway] Using direct API call for reasoning support"
+                "[OpenRouterGateway] Using direct API call for reasoning support"
             )
             return await self._direct_api_call_with_reasoning(
                 request_params, reasoning_config, use_streaming, stream_callback
@@ -1346,60 +1428,11 @@ class OpenRouterGateway:
                         self.logger.debug(
                             f"[OpenRouterGateway] Received tool_calls delta: {tool_calls_delta}."
                         )
-                        # Accumulate name/arguments from delta (best-effort)
                         try:
-                            tc0 = None
-                            if (
-                                isinstance(tool_calls_delta, (list, tuple))
-                                and tool_calls_delta
-                            ):
-                                tc0 = tool_calls_delta[0]
-                            if tc0 is not None:
-                                fn = (
-                                    getattr(tc0, "function", None)
-                                    if not isinstance(tc0, dict)
-                                    else tc0.get("function")
-                                )
-                                if fn is not None:
-                                    name = (
-                                        getattr(fn, "name", None)
-                                        if not isinstance(fn, dict)
-                                        else fn.get("name")
-                                    )
-                                    args_delta = (
-                                        getattr(fn, "arguments", None)
-                                        if not isinstance(fn, dict)
-                                        else fn.get("arguments")
-                                    )
-                                    if name and not self._tool_call_acc.get("name"):
-                                        self._tool_call_acc["name"] = name
-                                    if isinstance(args_delta, str) and args_delta:
-                                        self._tool_call_acc["arguments"] += args_delta
+                            self._record_tool_call_delta(tool_calls_delta)
                         except Exception as _acc_err:
                             self.logger.debug(
                                 f"[OpenRouterGateway] tool_call accumulation failed: {_acc_err}"
-                            )
-                        # Interrupt on tool_call if enabled
-                        try:
-                            if getattr(
-                                self.model_config, "interrupt_on_tool_call", False
-                            ):
-                                self.logger.info(
-                                    "[OpenRouterGateway] Interrupting stream on tool_call delta (SDK path)"
-                                )
-                                # Snapshot last tool call
-                                try:
-                                    self._store_tool_call(tool_calls_delta)
-                                except Exception:
-                                    self._last_tool_call = None
-                                try:
-                                    self._telemetry["interrupts"] += 1
-                                except Exception:
-                                    pass
-                                return _gateway_accumulated_content
-                        except Exception as _tool_int_err:
-                            self.logger.debug(
-                                f"[OpenRouterGateway] interrupt_on_tool_call check failed: {_tool_int_err}"
                             )
 
                     # Log if no delta was found (all three types were empty)
@@ -1418,6 +1451,7 @@ class OpenRouterGateway:
                 self.logger.info(
                     f"[OpenRouterGateway] SDK streaming completed. Content: {len(full_response_content)} chars, finish_reason: {sdk_last_finish_reason}"
                 )
+                self._finalize_stream_tool_calls()
                 self._log_last_usage("sdk-stream")
 
                 # Handle mid-stream error if one occurred
@@ -1431,6 +1465,8 @@ class OpenRouterGateway:
                 # For streaming responses, we return only the content part
                 # The reasoning was already streamed via callback
                 if not full_response_content:
+                    if self.has_pending_tool_call():
+                        return ""
                     self.logger.warning(
                         f"Streaming response completed with no content. Model: {self.model_config.model}"
                     )
@@ -1538,6 +1574,8 @@ class OpenRouterGateway:
                             full_response_content = ""
 
                 if not full_response_content:
+                    if self.has_pending_tool_call():
+                        return ""
                     self.logger.warning(
                         f"OpenRouter non-streaming response had no text content. Response: {completion}"
                     )
@@ -1706,7 +1744,7 @@ class OpenRouterGateway:
             self._record_error(
                 message="Connection timed out communicating with OpenRouter",
             )
-            return f"[Error: Connection timed out. OpenRouter may be experiencing issues. Try again later.]"
+            return "[Error: Connection timed out. OpenRouter may be experiencing issues. Try again later.]"
         except Exception as e:
             self.logger.error(f"Direct API call failed: {e}", exc_info=True)
             # Check for timeout-related errors in the exception
@@ -1929,7 +1967,7 @@ class OpenRouterGateway:
                                             full_content
                                         )
                                         self.logger.debug(
-                                            f"[OpenRouterGateway] Stripped incomplete tags from direct API response"
+                                            "[OpenRouterGateway] Stripped incomplete tags from direct API response"
                                         )
                                         interrupted_reason = "action"
                                         break
@@ -1944,59 +1982,13 @@ class OpenRouterGateway:
                                 if hasattr(delta, "tool_calls")
                                 else delta.get("tool_calls")
                             )
-                            if tool_calls_delta and getattr(
-                                self.model_config, "interrupt_on_tool_call", False
-                            ):
-                                # Accumulate information
+                            if tool_calls_delta:
                                 try:
-                                    tc0 = None
-                                    if (
-                                        isinstance(tool_calls_delta, (list, tuple))
-                                        and tool_calls_delta
-                                    ):
-                                        tc0 = tool_calls_delta[0]
-                                    if tc0 is not None:
-                                        fn = (
-                                            getattr(tc0, "function", None)
-                                            if not isinstance(tc0, dict)
-                                            else tc0.get("function")
-                                        )
-                                        if fn is not None:
-                                            name = (
-                                                getattr(fn, "name", None)
-                                                if not isinstance(fn, dict)
-                                                else fn.get("name")
-                                            )
-                                            args_delta = (
-                                                getattr(fn, "arguments", None)
-                                                if not isinstance(fn, dict)
-                                                else fn.get("arguments")
-                                            )
-                                            if name and not self._tool_call_acc.get(
-                                                "name"
-                                            ):
-                                                self._tool_call_acc["name"] = name
-                                            if (
-                                                isinstance(args_delta, str)
-                                                and args_delta
-                                            ):
-                                                self._tool_call_acc["arguments"] += (
-                                                    args_delta
-                                                )
+                                    self._record_tool_call_delta(tool_calls_delta)
                                 except Exception as _acc_err2:
                                     self.logger.debug(
                                         f"[OpenRouterGateway] tool_call accumulation failed: {_acc_err2}"
                                     )
-                                self._store_tool_call(tool_calls_delta)
-                                self.logger.info(
-                                    "[OpenRouterGateway] Interrupting stream on tool_call delta (Direct API path)"
-                                )
-                                try:
-                                    self._telemetry["interrupts"] += 1
-                                except Exception:
-                                    pass
-                                interrupted_reason = "tool_call"
-                                break
                         except Exception as _tool_int_err2:
                             self.logger.debug(
                                 f"[OpenRouterGateway] interrupt_on_tool_call check failed: {_tool_int_err2}"
@@ -2011,6 +2003,7 @@ class OpenRouterGateway:
         self.logger.info(
             f"Direct streaming call completed. Reasoning: {len(full_reasoning)} chars, Content: {len(full_content)} chars, finish_reason: {last_finish_reason}"
         )
+        self._finalize_stream_tool_calls()
         if interrupted_reason and (
             not isinstance(self._last_usage, dict) or not self._last_usage
         ):
@@ -2033,6 +2026,8 @@ class OpenRouterGateway:
 
         # Check for empty content and provide helpful message
         if not full_content:
+            if self.has_pending_tool_call():
+                return ""
             self.logger.debug(
                 f"Direct streaming response completed with no content. Model: {self.model_config.model}"
             )
@@ -2076,19 +2071,50 @@ class OpenRouterGateway:
 
     def has_pending_tool_call(self) -> bool:
         """Return whether a Responses/tool-call interrupt is waiting to execute."""
-        return isinstance(self._last_tool_call, dict) and bool(
-            self._last_tool_call.get("name")
+        return bool(
+            isinstance(getattr(self, "_last_tool_call", None), dict)
+            and self._last_tool_call.get("name")
+        ) or any(
+            isinstance(tool_call, dict) and bool(tool_call.get("name"))
+            for tool_call in getattr(self, "_pending_tool_calls", [])
         )
 
     def get_and_clear_last_tool_call(self) -> Optional[Dict[str, Any]]:
         """Return last detected tool_call (name, arguments) and clear accumulators."""
+        pending = self.get_and_clear_pending_tool_calls()
+        if pending:
+            selected = pending[-1]
+            return dict(selected) if isinstance(selected, dict) else None
+        data = getattr(self, "_last_tool_call", None)
+        self._last_tool_call = None
+        self._tool_call_acc = {"name": None, "arguments": ""}
+        return dict(data) if isinstance(data, dict) else None
+
+    def get_and_clear_pending_tool_calls(self) -> List[Dict[str, Any]]:
+        """Return all detected tool calls and clear accumulators."""
+        pending: List[Dict[str, Any]] = []
         try:
-            data = self._last_tool_call
+            pending = [
+                dict(tool_call)
+                for tool_call in getattr(self, "_pending_tool_calls", [])
+                if isinstance(tool_call, dict) and tool_call.get("name")
+            ]
+            if not pending and isinstance(
+                getattr(self, "_last_tool_call", None), dict
+            ):
+                pending = [dict(self._last_tool_call)]
+            return pending
+        except Exception as exc:
+            self.logger.exception(
+                "[OpenRouterGateway] Failed to collect pending tool calls: %s",
+                exc,
+            )
+            return []
+        finally:
+            self._pending_tool_calls = []
             self._last_tool_call = None
             self._tool_call_acc = {"name": None, "arguments": ""}
-            return dict(data) if isinstance(data, dict) else None
-        except Exception:
-            return None
+            self._tool_call_accs = {}
 
     async def _handle_non_streaming_response(
         self,
@@ -2161,6 +2187,8 @@ class OpenRouterGateway:
 
             # Check for empty content and provide helpful message
             if not content:
+                if self.has_pending_tool_call():
+                    return ""
                 self.logger.warning(
                     f"Direct non-streaming response had no content. Model: {self.model_config.model}"
                 )

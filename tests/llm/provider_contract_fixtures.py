@@ -103,10 +103,17 @@ class AnthropicStreamDelta:
 
 class AnthropicStreamChunk:
     def __init__(
-        self, chunk_type: str, delta: AnthropicStreamDelta | None = None
+        self,
+        chunk_type: str,
+        delta: AnthropicStreamDelta | None = None,
+        *,
+        content_block: Any = None,
+        index: int = 0,
     ) -> None:
         self.type = chunk_type
         self.delta = delta
+        self.content_block = content_block
+        self.index = index
 
 
 class AnthropicCountResponse:
@@ -300,6 +307,7 @@ def build_anthropic_handler(
     final_text: str,
     usage: AnthropicUsage,
     reasoning_enabled: bool = False,
+    interrupt_on_tool_call: bool = False,
 ) -> AnthropicAdapter:
     config = ModelConfig(
         model="claude-sonnet-4-6",
@@ -309,6 +317,7 @@ def build_anthropic_handler(
         streaming_enabled=True,
         reasoning_enabled=reasoning_enabled,
         reasoning_effort="medium" if reasoning_enabled else None,
+        interrupt_on_tool_call=interrupt_on_tool_call,
     )
     adapter = AnthropicAdapter.__new__(AnthropicAdapter)
     adapter.model_config = config
@@ -371,7 +380,7 @@ def build_openrouter_handler(
             )
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-fixture")
-    monkeypatch.setattr("penguin.llm.openrouter_gateway.AsyncOpenAI", _ClientFactory)
+    monkeypatch.setattr("penguin.llm.adapters.openrouter.AsyncOpenAI", _ClientFactory)
 
     gateway = OpenRouterGateway(
         ModelConfig(

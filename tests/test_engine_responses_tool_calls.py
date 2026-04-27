@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Optional
 from unittest.mock import AsyncMock
 
 import pytest
 
 from penguin.engine import Engine, LoopState
-from penguin.llm.runtime import execute_pending_tool_call
+from penguin.llm.runtime import execute_pending_tool_call, execute_pending_tool_calls
 
 
 def test_prepare_responses_tools_enables_openai_native_tools() -> None:
@@ -40,6 +41,98 @@ def test_prepare_responses_tools_enables_openai_native_tools() -> None:
     assert engine_like.model_config.interrupt_on_tool_call is True
 
 
+def test_prepare_responses_tools_enables_openrouter_chat_tools() -> None:
+    model_config = SimpleNamespace(
+        provider="openrouter",
+        client_preference="openrouter",
+        use_responses_api=False,
+        interrupt_on_tool_call=False,
+    )
+    engine_like = SimpleNamespace(
+        model_config=model_config,
+        _get_runtime_model_config=lambda: model_config,
+    )
+    tool_manager = SimpleNamespace(
+        get_responses_tools=lambda **_kwargs: [
+            {
+                "type": "function",
+                "name": "read_file",
+                "description": "Read a file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                },
+            },
+            {"type": "web_search"},
+        ]
+    )
+
+    extra_kwargs = Engine._prepare_responses_tools(engine_like, tool_manager)
+
+    assert extra_kwargs == {
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Read a file",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                    },
+                },
+            }
+        ],
+        "tool_choice": "auto",
+        "parallel_tool_calls": False,
+    }
+    assert engine_like.model_config.interrupt_on_tool_call is True
+
+
+def test_prepare_responses_tools_enables_anthropic_tools() -> None:
+    model_config = SimpleNamespace(
+        provider="anthropic",
+        client_preference="native",
+        use_responses_api=False,
+        interrupt_on_tool_call=False,
+    )
+    engine_like = SimpleNamespace(
+        model_config=model_config,
+        _get_runtime_model_config=lambda: model_config,
+    )
+    tool_manager = SimpleNamespace(
+        get_responses_tools=lambda **_kwargs: [
+            {
+                "type": "function",
+                "name": "read_file",
+                "description": "Read a file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                },
+            },
+            {"type": "web_search"},
+        ]
+    )
+
+    extra_kwargs = Engine._prepare_responses_tools(engine_like, tool_manager)
+
+    assert extra_kwargs == {
+        "tools": [
+            {
+                "name": "read_file",
+                "description": "Read a file",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                },
+            }
+        ],
+        "tool_choice": {"type": "auto"},
+    }
+    assert engine_like.model_config.interrupt_on_tool_call is True
+
+
 @pytest.mark.asyncio
 async def test_call_llm_with_retry_skips_retry_when_tool_call_pending() -> None:
     class _Client:
@@ -52,11 +145,12 @@ async def test_call_llm_with_retry_skips_retry_when_tool_call_pending() -> None:
             return ""
 
     api_client = _Client()
+
+    def _has_pending_tool_call(client: object) -> bool:
+        return Engine._handler_has_pending_tool_call(engine_like, client)
+
     engine_like = SimpleNamespace(
-        _handler_has_pending_tool_call=lambda client: Engine._handler_has_pending_tool_call(
-            engine_like,
-            client,
-        ),
+        _handler_has_pending_tool_call=_has_pending_tool_call,
         _build_empty_response_diagnostics=lambda *_args, **_kwargs: {},
     )
 
@@ -83,7 +177,7 @@ async def test_finish_response_tool_call_is_not_persisted_or_emitted() -> None:
                 "call_id": "call_finish_response",
             }
 
-        def get_and_clear_last_tool_call(self):
+        def get_and_clear_last_tool_call(self) -> Optional[dict[str, str]]:
             result = self._tool_call
             self._tool_call = None
             return result
@@ -118,6 +212,161 @@ async def test_finish_response_tool_call_is_not_persisted_or_emitted() -> None:
     assert started == []
     assert completed == []
     assert timeline == []
+
+
+@pytest.mark.asyncio
+async def test_multiple_pending_responses_tool_calls_execute_serially() -> None:
+    class _Handler:
+        def __init__(self) -> None:
+            self._tool_calls = [
+                {
+                    "name": "execute",
+                    "arguments": '{"command":"pwd"}',
+                    "call_id": "call_pwd",
+                },
+                {
+                    "name": "execute",
+                    "arguments": '{"command":"ls"}',
+                    "call_id": "call_ls",
+                },
+            ]
+
+        def get_and_clear_pending_tool_calls(self) -> list[dict[str, str]]:
+            result = self._tool_calls
+            self._tool_calls = []
+            return result
+
+    persisted: list[dict[str, object]] = []
+    started: list[dict[str, object]] = []
+    completed: list[dict[str, object]] = []
+    timeline: list[dict[str, object]] = []
+    executed: list[tuple[str, dict[str, object]]] = []
+
+    def _execute_tool(tool_name: str, tool_args: dict[str, object]) -> str:
+        executed.append((tool_name, dict(tool_args)))
+        return f"ran {tool_args['command']}"
+
+    async def _emit_action_start(payload: dict[str, object]) -> None:
+        started.append(payload)
+
+    async def _emit_action_result(payload: dict[str, object]) -> None:
+        completed.append(payload)
+
+    async def _emit_tool_timeline(payload: dict[str, object]) -> None:
+        timeline.append(payload)
+
+    results = await execute_pending_tool_calls(
+        api_client=SimpleNamespace(
+            client_handler=_Handler(),
+            model_config=SimpleNamespace(provider="openai", model="gpt-5.5"),
+        ),
+        tool_manager=SimpleNamespace(execute_tool=_execute_tool),
+        persist_action_result=lambda action_result, tool_context: persisted.append(
+            {"action_result": action_result, "tool_context": tool_context}
+        ),
+        emit_action_start=_emit_action_start,
+        emit_action_result=_emit_action_result,
+        emit_tool_timeline=_emit_tool_timeline,
+    )
+
+    assert executed == [
+        ("execute", {"command": "pwd"}),
+        ("execute", {"command": "ls"}),
+    ]
+    assert [result["tool_call_id"] for result in results] == ["call_pwd", "call_ls"]
+    assert [result["result"] for result in results] == ["ran pwd", "ran ls"]
+    assert [item["id"] for item in started] == ["call_pwd", "call_ls"]
+    assert [item["id"] for item in completed] == ["call_pwd", "call_ls"]
+    assert [item["action"] for item in timeline] == ["execute", "execute"]
+    assert [
+        item["tool_context"]["tool_call_id"] for item in persisted
+    ] == ["call_pwd", "call_ls"]
+
+
+@pytest.mark.asyncio
+async def test_pending_responses_tool_call_preserves_dict_arguments() -> None:
+    class _Handler:
+        def __init__(self) -> None:
+            self._tool_calls = [
+                {
+                    "name": "execute",
+                    "arguments": {"command": "pwd"},
+                    "call_id": "call_pwd",
+                }
+            ]
+
+        def get_and_clear_pending_tool_calls(self) -> list[dict[str, object]]:
+            result = self._tool_calls
+            self._tool_calls = []
+            return result
+
+    executed: list[dict[str, object]] = []
+    persisted: list[dict[str, object]] = []
+
+    def _execute_tool(_tool_name: str, tool_args: dict[str, object]) -> str:
+        executed.append(dict(tool_args))
+        return "ran pwd"
+
+    results = await execute_pending_tool_calls(
+        api_client=SimpleNamespace(
+            client_handler=_Handler(),
+            model_config=SimpleNamespace(provider="openai", model="gpt-5.5"),
+        ),
+        tool_manager=SimpleNamespace(execute_tool=_execute_tool),
+        persist_action_result=lambda action_result, tool_context: persisted.append(
+            {"action_result": action_result, "tool_context": tool_context}
+        ),
+    )
+
+    assert executed == [{"command": "pwd"}]
+    assert results[0]["tool_arguments"] == '{"command": "pwd"}'
+    assert persisted[0]["tool_context"]["tool_arguments"] == '{"command": "pwd"}'
+
+
+@pytest.mark.asyncio
+async def test_pending_responses_tool_calls_keep_successes_when_later_call_errors() -> None:
+    class _Handler:
+        def __init__(self) -> None:
+            self._tool_calls = [
+                {
+                    "name": "execute",
+                    "arguments": '{"command":"pwd"}',
+                    "call_id": "call_pwd",
+                },
+                {
+                    "name": "execute",
+                    "arguments": '{"command":"boom"}',
+                    "call_id": "call_boom",
+                },
+            ]
+
+        def get_and_clear_pending_tool_calls(self) -> list[dict[str, str]]:
+            result = self._tool_calls
+            self._tool_calls = []
+            return result
+
+    def _execute_tool(_tool_name: str, tool_args: dict[str, object]) -> str:
+        if tool_args.get("command") == "boom":
+            raise RuntimeError("boom")
+        return "ran pwd"
+
+    results = await execute_pending_tool_calls(
+        api_client=SimpleNamespace(
+            client_handler=_Handler(),
+            model_config=SimpleNamespace(provider="openai", model="gpt-5.5"),
+        ),
+        tool_manager=SimpleNamespace(execute_tool=_execute_tool),
+        persist_action_result=lambda *_args: None,
+    )
+
+    assert [result["tool_call_id"] for result in results] == [
+        "call_pwd",
+        "call_boom",
+    ]
+    assert results[0]["status"] == "completed"
+    assert results[0]["result"] == "ran pwd"
+    assert results[1]["status"] == "error"
+    assert "boom" in results[1]["result"]
 
 
 def test_wallet_guard_does_not_break_on_tool_only_empty_iteration() -> None:
@@ -208,6 +457,142 @@ def test_wallet_guard_keeps_short_empty_tool_only_chain_when_results_change() ->
     assert loop_state.repeated_tool_only_count == 1
 
 
+def test_wallet_guard_treats_tool_arguments_as_progress() -> None:
+    engine = Engine.__new__(Engine)
+    engine._default_run_state = SimpleNamespace(current_agent_id="default")
+    loop_state = LoopState()
+    engine._get_loop_state = lambda: loop_state  # type: ignore[method-assign]
+
+    for max_lines in (50, 100, 150, 200):
+        should_break, status = Engine._check_wallet_guard_termination(
+            engine,
+            last_response="",
+            iteration_results=[
+                {
+                    "action": "read_file",
+                    "tool_arguments": (
+                        f'{{"path":"README.md","max_lines":{max_lines}}}'
+                    ),
+                    "result": "same header",
+                    "status": "completed",
+                }
+            ],
+            mode="response",
+        )
+
+        assert should_break is False
+        assert status is None
+
+    assert loop_state.empty_tool_only_count == 4
+    assert loop_state.repeated_tool_only_count == 1
+
+
+def test_wallet_guard_treats_file_ranges_as_progress() -> None:
+    engine = Engine.__new__(Engine)
+    engine._default_run_state = SimpleNamespace(current_agent_id="default")
+    loop_state = LoopState()
+    engine._get_loop_state = lambda: loop_state  # type: ignore[method-assign]
+
+    for start_line, end_line in ((1, 40), (41, 80), (81, 120), (121, 160)):
+        should_break, status = Engine._check_wallet_guard_termination(
+            engine,
+            last_response="",
+            iteration_results=[
+                {
+                    "action": "read_file",
+                    "tool_arguments": {
+                        "path": "README.md",
+                        "start_line": start_line,
+                        "end_line": end_line,
+                    },
+                    "result": "same repeated header",
+                    "status": "completed",
+                }
+            ],
+            mode="response",
+        )
+
+        assert should_break is False
+        assert status is None
+
+    assert loop_state.empty_tool_only_count == 4
+    assert loop_state.repeated_tool_only_count == 1
+
+
+def test_wallet_guard_ignores_provider_call_ids_for_stale_loop_detection() -> None:
+    engine = Engine.__new__(Engine)
+    engine._default_run_state = SimpleNamespace(current_agent_id="default")
+    loop_state = LoopState()
+    engine._get_loop_state = lambda: loop_state  # type: ignore[method-assign]
+
+    for index in range(2):
+        should_break, status = Engine._check_wallet_guard_termination(
+            engine,
+            last_response="",
+            iteration_results=[
+                {
+                    "action": "read_file",
+                    "tool_call_id": f"call_{index}",
+                    "tool_arguments": '{"path":"README.md","max_lines":50}',
+                    "result": "same header",
+                    "status": "completed",
+                }
+            ],
+            mode="response",
+        )
+
+        assert should_break is False
+        assert status is None
+
+    assert Engine._check_wallet_guard_termination(
+        engine,
+        last_response="",
+        iteration_results=[
+            {
+                "action": "read_file",
+                "tool_call_id": "call_3",
+                "tool_arguments": '{"path":"README.md","max_lines":50}',
+                "result": "same header",
+                "status": "completed",
+            }
+        ],
+        mode="response",
+    ) == (True, "repeated_empty_tool_only_iterations")
+
+
+def test_wallet_guard_breaks_on_same_tool_arguments_and_output_hash() -> None:
+    engine = Engine.__new__(Engine)
+    engine._default_run_state = SimpleNamespace(current_agent_id="default")
+    loop_state = LoopState()
+    engine._get_loop_state = lambda: loop_state  # type: ignore[method-assign]
+    iteration_results = [
+        {
+            "action": "read_file",
+            "tool_arguments": '{"path":"README.md","max_lines":50}',
+            "result": "same header",
+            "status": "completed",
+        }
+    ]
+
+    for _ in range(2):
+        should_break, status = Engine._check_wallet_guard_termination(
+            engine,
+            last_response="",
+            iteration_results=iteration_results,
+            mode="response",
+        )
+
+        assert should_break is False
+        assert status is None
+
+    assert Engine._check_wallet_guard_termination(
+        engine,
+        last_response="",
+        iteration_results=iteration_results,
+        mode="response",
+    ) == (True, "repeated_empty_tool_only_iterations")
+
+
 def test_wallet_guard_allows_many_empty_tool_only_turns_when_results_change() -> None:
     engine = Engine.__new__(Engine)
     engine._default_run_state = SimpleNamespace(current_agent_id="default")
@@ -266,13 +651,15 @@ def test_suppress_empty_tool_only_placeholder_removes_persisted_placeholder() ->
 async def test_record_tool_only_stall_note_persists_clearer_terminal_message() -> None:
     engine = Engine.__new__(Engine)
     engine._save_conversation = AsyncMock()  # type: ignore[method-assign]
+    loop_state = LoopState(last_tool_only_summary="read_file(path=README.md)")
+    engine._get_loop_state = lambda: loop_state  # type: ignore[method-assign]
     added: list[str] = []
 
     class _Conversation:
         def __init__(self) -> None:
             self.session = SimpleNamespace(messages=[])
 
-        def add_assistant_message(self, content: str):
+        def add_assistant_message(self, content: str) -> None:
             added.append(content)
             self.session.messages.append(
                 SimpleNamespace(role="assistant", content=content)
@@ -286,9 +673,11 @@ async def test_record_tool_only_stall_note_persists_clearer_terminal_message() -
         "repeated_empty_tool_only_iterations",
     )
 
-    assert (
-        result
-        == "Stopping because empty tool-only turns are repeating the same tool outputs; this is probably a stale loop rather than forward progress."
+    assert result.startswith(
+        "Stopping because empty tool-only turns repeated the same tool result "
+        "identity; this is probably a stale loop rather than forward progress."
     )
+    assert "Repeated tool result: read_file(path=README.md)." in result
+    assert "To continue, send a new message" in result
     assert added == [result]
     engine._save_conversation.assert_awaited_once()

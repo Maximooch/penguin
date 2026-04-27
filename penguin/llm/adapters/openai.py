@@ -129,21 +129,29 @@ class OpenAIAdapter(BaseAdapter):
             "name": None,
             "arguments": "",
         }
+        self._tool_call_acc_by_item: Dict[str, Dict[str, Any]] = {}
+        self._pending_tool_calls: List[Dict[str, Any]] = []
         self._last_tool_call: Optional[Dict[str, Any]] = None
 
     def has_pending_tool_call(self) -> bool:
         """Return whether a structured Responses tool call is waiting to run."""
-        return isinstance(self._last_tool_call, dict) and bool(
-            self._last_tool_call.get("name")
+        return bool(self._pending_tool_calls) or (
+            isinstance(self._last_tool_call, dict)
+            and bool(self._last_tool_call.get("name"))
         )
 
     def get_and_clear_last_tool_call(self) -> Optional[Dict[str, Any]]:
         """Return the latest structured tool call and clear adapter state."""
-        tool_call = (
-            self._last_tool_call if isinstance(self._last_tool_call, dict) else None
-        )
+        pending = self.get_and_clear_pending_tool_calls()
+        return dict(pending[-1]) if pending else None
+
+    def get_and_clear_pending_tool_calls(self) -> List[Dict[str, Any]]:
+        """Return all pending structured tool calls and clear adapter state."""
+        pending = [dict(call) for call in self._pending_tool_calls]
+        if not pending and isinstance(self._last_tool_call, dict):
+            pending = [dict(self._last_tool_call)]
         self._reset_tool_call_state()
-        return dict(tool_call) if isinstance(tool_call, dict) else None
+        return pending
 
     def _reset_response_state(self) -> None:
         self._last_usage = {}
@@ -293,25 +301,75 @@ class OpenAIAdapter(BaseAdapter):
         call_id: Any = None,
         name: Any = None,
         arguments: Any = None,
+        accumulator: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
-        resolved_name = str(name or self._tool_call_acc.get("name") or "").strip()
+        active_acc = (
+            accumulator if isinstance(accumulator, dict) else self._tool_call_acc
+        )
+        resolved_name = str(name or active_acc.get("name") or "").strip()
         if not resolved_name:
             return None
 
         resolved_arguments = arguments
         if not isinstance(resolved_arguments, str):
-            resolved_arguments = self._tool_call_acc.get("arguments", "")
+            resolved_arguments = active_acc.get("arguments", "")
         if not isinstance(resolved_arguments, str):
             resolved_arguments = ""
 
-        resolved_item_id = item_id or self._tool_call_acc.get("item_id")
-        resolved_call_id = call_id or self._tool_call_acc.get("call_id")
+        resolved_item_id = item_id or active_acc.get("item_id")
+        resolved_call_id = call_id or active_acc.get("call_id")
         return {
             "item_id": str(resolved_item_id).strip() if resolved_item_id else None,
             "call_id": str(resolved_call_id).strip() if resolved_call_id else None,
             "name": resolved_name,
             "arguments": resolved_arguments,
         }
+
+    def _tool_call_accumulator_for_item(
+        self,
+        *,
+        item_id: Any = None,
+        call_id: Any = None,
+    ) -> Dict[str, Any]:
+        key = str(item_id or call_id or "").strip()
+        if not key:
+            return self._tool_call_acc
+        if key not in self._tool_call_acc_by_item:
+            self._tool_call_acc_by_item[key] = {
+                "item_id": str(item_id).strip() if item_id else None,
+                "call_id": str(call_id).strip() if call_id else None,
+                "name": None,
+                "arguments": "",
+            }
+        return self._tool_call_acc_by_item[key]
+
+    def _remember_tool_call(self, tool_call: Dict[str, Any]) -> Dict[str, Any]:
+        """Record one provider tool call without duplicating completed events."""
+        call_id = str(tool_call.get("call_id") or "").strip()
+        item_id = str(tool_call.get("item_id") or "").strip()
+        name = str(tool_call.get("name") or "").strip()
+        arguments = str(tool_call.get("arguments") or "")
+
+        for pending in self._pending_tool_calls:
+            same_call_id = call_id and call_id == str(pending.get("call_id") or "")
+            same_item_id = item_id and item_id == str(pending.get("item_id") or "")
+            if same_call_id or same_item_id:
+                pending.update(tool_call)
+                self._last_tool_call = pending
+                return pending
+            if (
+                not call_id
+                and not item_id
+                and name == str(pending.get("name") or "")
+                and arguments == str(pending.get("arguments") or "")
+            ):
+                self._last_tool_call = pending
+                return pending
+
+        remembered = dict(tool_call)
+        self._pending_tool_calls.append(remembered)
+        self._last_tool_call = remembered
+        return remembered
 
     def _accumulate_function_call_item(
         self,
@@ -327,18 +385,27 @@ class OpenAIAdapter(BaseAdapter):
         call_id = item_payload.get("call_id")
         name = item_payload.get("name")
         arguments = item_payload.get("arguments")
+        accumulator = self._tool_call_accumulator_for_item(
+            item_id=item_id,
+            call_id=call_id,
+        )
 
         if isinstance(item_id, str) and item_id.strip():
+            accumulator["item_id"] = item_id.strip()
             self._tool_call_acc["item_id"] = item_id.strip()
         if isinstance(call_id, str) and call_id.strip():
+            accumulator["call_id"] = call_id.strip()
             self._tool_call_acc["call_id"] = call_id.strip()
         if isinstance(name, str) and name.strip():
+            accumulator["name"] = name.strip()
             self._tool_call_acc["name"] = name.strip()
 
         if isinstance(arguments, str):
             if overwrite_arguments:
+                accumulator["arguments"] = arguments
                 self._tool_call_acc["arguments"] = arguments
-            elif arguments and not self._tool_call_acc.get("arguments"):
+            elif arguments and not accumulator.get("arguments"):
+                accumulator["arguments"] = arguments
                 self._tool_call_acc["arguments"] = arguments
 
         return self._snapshot_tool_call(
@@ -346,6 +413,7 @@ class OpenAIAdapter(BaseAdapter):
             call_id=call_id,
             name=name,
             arguments=arguments if overwrite_arguments else None,
+            accumulator=accumulator,
         )
 
     def _capture_responses_tool_event(self, event: Any) -> Optional[Dict[str, Any]]:
@@ -362,19 +430,14 @@ class OpenAIAdapter(BaseAdapter):
         if etype == "response.function_call_arguments.delta":
             item_id = payload.get("item_id") or getattr(event, "item_id", None)
             delta = payload.get("delta") or getattr(event, "delta", None)
-            current_item_id = self._tool_call_acc.get("item_id")
-            if (
-                isinstance(item_id, str)
-                and item_id
-                and isinstance(current_item_id, str)
-                and current_item_id
-                and item_id != current_item_id
-            ):
-                return None
-            if isinstance(item_id, str) and item_id and not current_item_id:
+            accumulator = self._tool_call_accumulator_for_item(item_id=item_id)
+            if isinstance(item_id, str) and item_id:
+                accumulator["item_id"] = item_id
                 self._tool_call_acc["item_id"] = item_id
             if isinstance(delta, str) and delta:
-                self._tool_call_acc["arguments"] += delta
+                accumulator["arguments"] = str(accumulator.get("arguments") or "")
+                accumulator["arguments"] += delta
+                self._tool_call_acc["arguments"] = accumulator["arguments"]
             return None
 
         if etype == "response.output_item.done":
@@ -383,23 +446,23 @@ class OpenAIAdapter(BaseAdapter):
                 overwrite_arguments=True,
             )
             if tool_call:
-                self._last_tool_call = tool_call
+                self._remember_tool_call(tool_call)
             return tool_call
 
         if etype == "response.completed":
-            tool_call = self._extract_function_call_from_response_object(
+            tool_calls = self._extract_function_calls_from_response_object(
                 payload.get("response") or getattr(event, "response", None)
             )
-            if tool_call:
-                self._last_tool_call = tool_call
-            return tool_call
+            for tool_call in tool_calls:
+                self._remember_tool_call(tool_call)
+            return tool_calls[-1] if tool_calls else None
 
         return None
 
-    def _extract_function_call_from_response_object(
+    def _extract_function_calls_from_response_object(
         self,
         resp: Any,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> List[Dict[str, Any]]:
         output = None
         if isinstance(resp, dict):
             output = resp.get("output")
@@ -407,17 +470,25 @@ class OpenAIAdapter(BaseAdapter):
             output = getattr(resp, "output", None)
 
         if not isinstance(output, list):
-            return None
+            return []
 
+        tool_calls: List[Dict[str, Any]] = []
         for item in output:
             tool_call = self._accumulate_function_call_item(
                 item,
                 overwrite_arguments=True,
             )
             if tool_call:
-                return tool_call
+                tool_calls.append(tool_call)
 
-        return None
+        return tool_calls
+
+    def _extract_function_call_from_response_object(
+        self,
+        resp: Any,
+    ) -> Optional[Dict[str, Any]]:
+        tool_calls = self._extract_function_calls_from_response_object(resp)
+        return tool_calls[0] if tool_calls else None
 
     def _interrupt_on_tool_call(self) -> bool:
         return bool(getattr(self.model_config, "interrupt_on_tool_call", False))
@@ -577,9 +648,10 @@ class OpenAIAdapter(BaseAdapter):
         resp = await self.client.responses.create(**request_params)
         self._set_last_usage(getattr(resp, "usage", None))
         self._append_reasoning(self._extract_reasoning_from_response_object(resp))
-        tool_call = self._extract_function_call_from_response_object(resp)
-        if tool_call:
-            self._last_tool_call = tool_call
+        tool_calls = self._extract_function_calls_from_response_object(resp)
+        if tool_calls:
+            for tool_call in tool_calls:
+                self._remember_tool_call(tool_call)
             self._set_last_finish_reason(FinishReason.TOOL_CALLS)
         else:
             self._set_last_finish_reason(FinishReason.STOP)
@@ -1236,9 +1308,10 @@ class OpenAIAdapter(BaseAdapter):
             self._record_reasoning_debug_event("response.completed", body)
             self._set_last_usage(body.get("usage"))
             self._append_reasoning(self._extract_reasoning_from_response_object(body))
-        tool_call = self._extract_function_call_from_response_object(body)
-        if tool_call:
-            self._last_tool_call = tool_call
+        tool_calls = self._extract_function_calls_from_response_object(body)
+        if tool_calls:
+            for tool_call in tool_calls:
+                self._remember_tool_call(tool_call)
             self._set_last_finish_reason(FinishReason.TOOL_CALLS)
         else:
             self._set_last_finish_reason(FinishReason.STOP)
@@ -1318,18 +1391,13 @@ class OpenAIAdapter(BaseAdapter):
 
                         self._record_reasoning_debug_event(data.get("type"), data)
 
-                        tool_call = self._capture_responses_tool_event(data)
-                        if tool_call and self._interrupt_on_tool_call():
+                        if self._capture_responses_tool_event(data):
                             self._set_last_finish_reason(FinishReason.TOOL_CALLS)
-                            self._finalize_reasoning_debug_snapshot(
-                                visible_reasoning_chars=len(self.get_last_reasoning()),
-                                visible_reasoning_summary_returned=bool(
-                                    self.get_last_reasoning()
-                                ),
-                                usage=self.get_last_usage(),
-                                finish_reason=self.get_last_finish_reason().value,
-                            )
-                            return completed_text or "".join(accumulated_content)
+                        if (
+                            self.has_pending_tool_call()
+                            and self._interrupt_on_tool_call()
+                        ):
+                            self._set_last_finish_reason(FinishReason.TOOL_CALLS)
 
                         etype = data.get("type")
                         if etype == "response.output_text.delta":
@@ -1456,8 +1524,13 @@ class OpenAIAdapter(BaseAdapter):
             self._last_reasoning_debug.get("event_types", []),
         )
 
+        pending_tool_call = self.has_pending_tool_call()
+        if pending_tool_call:
+            self._set_last_finish_reason(FinishReason.TOOL_CALLS)
+
         if completed_text:
-            self._set_last_finish_reason(FinishReason.STOP)
+            if not pending_tool_call:
+                self._set_last_finish_reason(FinishReason.STOP)
             if not accumulated_content and stream_callback:
                 await self._safe_invoke_callback(
                     stream_callback,
@@ -1466,7 +1539,8 @@ class OpenAIAdapter(BaseAdapter):
                 )
             return completed_text
 
-        self._set_last_finish_reason(FinishReason.STOP)
+        if not pending_tool_call:
+            self._set_last_finish_reason(FinishReason.STOP)
         return "".join(accumulated_content)
 
     def _codex_error_detail(
@@ -1828,7 +1902,6 @@ class OpenAIAdapter(BaseAdapter):
                     tool_call = self._capture_responses_tool_event(event)
                     if tool_call and self._interrupt_on_tool_call():
                         self._set_last_finish_reason(FinishReason.TOOL_CALLS)
-                        return "".join(accumulated_content)
 
                     etype = getattr(event, "type", None)
                     if etype == "response.output_text.delta":
@@ -1870,14 +1943,17 @@ class OpenAIAdapter(BaseAdapter):
                             final_reasoning,
                             "reasoning",
                         )
-                tool_call = self._extract_function_call_from_response_object(final)
-                if tool_call:
-                    self._last_tool_call = tool_call
+                tool_calls = self._extract_function_calls_from_response_object(final)
+                if tool_calls:
+                    for tool_call in tool_calls:
+                        self._remember_tool_call(tool_call)
                     self._set_last_finish_reason(FinishReason.TOOL_CALLS)
                     if self._interrupt_on_tool_call():
                         return "".join(accumulated_content)
-                else:
+                elif not self.has_pending_tool_call():
                     self._set_last_finish_reason(FinishReason.STOP)
+                else:
+                    self._set_last_finish_reason(FinishReason.TOOL_CALLS)
                 # Prefer SDK's convenience property if present
                 final_text = getattr(final, "output_text", None)
                 if isinstance(final_text, str) and final_text:
@@ -1944,7 +2020,6 @@ class OpenAIAdapter(BaseAdapter):
                     tool_call = self._capture_responses_tool_event(data)
                     if tool_call and self._interrupt_on_tool_call():
                         self._set_last_finish_reason(FinishReason.TOOL_CALLS)
-                        return completed_text or "".join(accumulated_content)
 
                     etype = data.get("type")
                     if etype == "response.output_text.delta":
@@ -1988,14 +2063,21 @@ class OpenAIAdapter(BaseAdapter):
                 except Exception:
                     # Skip malformed lines
                     continue
+        pending_tool_call = self.has_pending_tool_call()
+        if pending_tool_call:
+            self._set_last_finish_reason(FinishReason.TOOL_CALLS)
+            if self._interrupt_on_tool_call():
+                return completed_text or "".join(accumulated_content)
         if completed_text:
-            self._set_last_finish_reason(FinishReason.STOP)
+            if not pending_tool_call:
+                self._set_last_finish_reason(FinishReason.STOP)
             if not accumulated_content and stream_callback:
                 await self._safe_invoke_callback(
                     stream_callback, completed_text, "assistant"
                 )
             return completed_text
-        self._set_last_finish_reason(FinishReason.STOP)
+        if not pending_tool_call:
+            self._set_last_finish_reason(FinishReason.STOP)
         return "".join(accumulated_content)
 
     async def _safe_invoke_callback(

@@ -1028,7 +1028,29 @@ class ActionExecutor:
             pass
         self._ui_event_cb = ui_event_callback
         self._ui_action_metadata: Dict[str, Dict[str, Any]] = {}
+        self._registry_action_map = self._build_registry_action_map()
         # No direct initialization of expensive tools, we'll use tool_manager's properties
+
+    def _build_registry_action_map(self) -> Dict[ActionType, Callable[[Any], Any]]:
+        """Build cached handlers for registry-backed ActionXML routes."""
+
+        from penguin.tools.action_registry import (
+            create_default_action_tool_registry,
+        )
+
+        action_registry = create_default_action_tool_registry()
+        registry_action_map: Dict[ActionType, Callable[[Any], Any]] = {}
+        for registered_action_type in action_registry.action_types():
+            registry_action_map[registered_action_type] = (
+                lambda params, action_type=registered_action_type: (
+                    action_registry.execute(
+                        action_type,
+                        params,
+                        self.tool_manager,
+                    )
+                )
+            )
+        return registry_action_map
 
     def _inject_tool_call_id(self, params: str, action_id: str) -> str:
         """Inject an internal tool_call_id into JSON action payloads."""
@@ -1620,6 +1642,10 @@ class ActionExecutor:
             ActionType.CREATE_FEATURE_PR: self._create_feature_pr,
             ActionType.CREATE_BUGFIX_PR: self._create_bugfix_pr,
         }
+        for registered_action_type, handler in self._registry_action_map.items():
+            if registered_action_type in action_map:
+                continue
+            action_map[registered_action_type] = handler
 
         try:
             if action.action_type not in action_map:

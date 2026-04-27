@@ -24,13 +24,17 @@ async def test_llm_step_includes_responses_tool_call_in_action_results() -> None
         del args, kwargs
         return "Running a tiny Python function now to verify execution."
 
-    async def _handle_responses_tool_call(*args: Any, **kwargs: Any) -> dict[str, str]:
+    async def _handle_responses_tool_calls(
+        *args: Any, **kwargs: Any
+    ) -> list[dict[str, str]]:
         del args, kwargs
-        return {
-            "action": "code_execution",
-            "result": "7",
-            "status": "completed",
-        }
+        return [
+            {
+                "action": "code_execution",
+                "result": "7",
+                "status": "completed",
+            }
+        ]
 
     async def _finalize_streaming_response(
         cm: Any,
@@ -47,7 +51,7 @@ async def test_llm_step_includes_responses_tool_call_in_action_results() -> None
         return []
 
     engine._call_llm_with_retry = _call_llm_with_retry  # type: ignore[method-assign]
-    engine._handle_responses_tool_call = _handle_responses_tool_call  # type: ignore[method-assign]
+    engine._handle_responses_tool_calls = _handle_responses_tool_calls  # type: ignore[method-assign]
     engine._finalize_streaming_response = _finalize_streaming_response  # type: ignore[method-assign]
     engine._execute_codeact_actions = _execute_codeact_actions  # type: ignore[method-assign]
     engine._extract_usage_from_api_client = lambda _api_client: {}  # type: ignore[method-assign]
@@ -156,9 +160,17 @@ async def test_llm_step_persists_assistant_before_responses_tool_result() -> Non
         result["assistant_response"]
         == "Checking git state, then I'll write the roadmap file."
     )
-    assert result["action_results"] == [
-        {"action": "write_file", "result": "ok", "status": "completed"}
-    ]
+    assert len(result["action_results"]) == 1
+    action_result = result["action_results"][0]
+    assert action_result["action"] == "write_file"
+    assert action_result["result"] == "ok"
+    assert action_result["status"] == "completed"
+    assert action_result["tool_call_id"] == "call_123"
+    assert (
+        action_result["tool_arguments"]
+        == '{"path":"context/todo.md","content":"hi"}'
+    )
+    assert isinstance(action_result["output_hash"], str)
     assert [message.role for message in conversation.session.messages] == [
         "assistant",
         "tool",
@@ -176,3 +188,106 @@ async def test_llm_step_persists_assistant_before_responses_tool_result() -> Non
         }
     ]
     assert tool_message.metadata["tool_call_id"] == "call_123"
+
+
+@pytest.mark.asyncio
+async def test_llm_step_includes_multiple_responses_tool_results() -> None:
+    engine = Engine.__new__(Engine)
+    cast(Any, engine)._default_run_state = SimpleNamespace(current_agent_id="default")
+    engine.current_agent_id = "default"
+    engine.default_agent_id = "default"
+    engine._trace_request_fields = lambda: ("req-1", "session-1")  # type: ignore[method-assign]
+    engine._apply_agent_mode_notice = lambda messages: messages  # type: ignore[method-assign]
+    engine._prepare_responses_tools = lambda _tm: {}  # type: ignore[method-assign]
+
+    async def _call_llm_with_retry(*args: Any, **kwargs: Any) -> str:
+        del args, kwargs
+        return ""
+
+    async def _finalize_streaming_response(
+        cm: Any,
+        response: str,
+        streaming: bool,
+        agent_id: str | None = None,
+        api_client: Any = None,
+    ) -> str:
+        del cm, streaming, agent_id, api_client
+        return response
+
+    async def _execute_codeact_actions(*args: Any, **kwargs: Any) -> list[Any]:
+        del args, kwargs
+        return []
+
+    engine._call_llm_with_retry = _call_llm_with_retry  # type: ignore[method-assign]
+    engine._finalize_streaming_response = _finalize_streaming_response  # type: ignore[method-assign]
+    engine._execute_codeact_actions = _execute_codeact_actions  # type: ignore[method-assign]
+    engine._extract_usage_from_api_client = lambda _api_client: {}  # type: ignore[method-assign]
+
+    session = Session()
+    conversation = ConversationSystem(
+        session_manager=SimpleNamespace(
+            current_session=session,
+            mark_session_modified=lambda _session_id: None,
+            check_session_boundary=lambda _session: False,
+        )
+    )
+    conversation.session = session
+
+    cm = SimpleNamespace(
+        conversation=conversation,
+        add_action_result=conversation.add_action_result,
+        core=None,
+    )
+    api_client = SimpleNamespace(
+        model_config=SimpleNamespace(provider="openai", model="gpt-5.5"),
+        client_handler=SimpleNamespace(
+            get_and_clear_pending_tool_calls=lambda: [
+                {
+                    "call_id": "call_pwd",
+                    "name": "execute",
+                    "arguments": '{"command":"pwd"}',
+                },
+                {
+                    "call_id": "call_ls",
+                    "name": "execute",
+                    "arguments": '{"command":"ls"}',
+                },
+            ]
+        ),
+    )
+    executed: list[tuple[str, dict[str, Any]]] = []
+
+    def _execute_tool(name: str, args: dict[str, Any]) -> str:
+        executed.append((name, args))
+        return f"ran {args['command']}"
+
+    tool_manager = SimpleNamespace(execute_tool=_execute_tool)
+    action_executor = SimpleNamespace()
+    engine._resolve_components = lambda _agent_id: (  # type: ignore[method-assign]
+        cm,
+        api_client,
+        tool_manager,
+        action_executor,
+    )
+
+    result = await engine._llm_step(
+        tools_enabled=True, streaming=True, agent_id="default"
+    )
+
+    assert executed == [
+        ("execute", {"command": "pwd"}),
+        ("execute", {"command": "ls"}),
+    ]
+    assert [item["tool_call_id"] for item in result["action_results"]] == [
+        "call_pwd",
+        "call_ls",
+    ]
+    assert [item["result"] for item in result["action_results"]] == [
+        "ran pwd",
+        "ran ls",
+    ]
+    assert [
+        message.metadata["tool_call_id"]
+        for message in conversation.session.messages
+        if message.role == "tool"
+    ] == ["call_pwd", "call_ls"]

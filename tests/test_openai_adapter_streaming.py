@@ -443,3 +443,55 @@ async def test_openai_adapter_streaming_captures_function_calls_without_leaking_
         "arguments": '{"path":"README.md"}',
     }
     assert adapter.get_and_clear_last_tool_call() is None
+
+
+def test_openai_adapter_captures_multiple_completed_tool_calls() -> None:
+    model_config = ModelConfig(
+        model="gpt-5.2",
+        provider="openai",
+        client_preference="native",
+        api_key="sk-test",
+        streaming_enabled=True,
+        interrupt_on_tool_call=True,
+    )
+    adapter = OpenAIAdapter(model_config)
+
+    adapter._capture_responses_tool_event(
+        {
+            "type": "response.completed",
+            "response": {
+                "output": [
+                    {
+                        "type": "function_call",
+                        "id": "item_1",
+                        "call_id": "call_1",
+                        "name": "read_file",
+                        "arguments": '{"path":"README.md"}',
+                    },
+                    {
+                        "type": "function_call",
+                        "id": "item_2",
+                        "call_id": "call_2",
+                        "name": "list_files",
+                        "arguments": '{"path":"tests"}',
+                    },
+                ]
+            },
+        }
+    )
+
+    assert adapter.get_and_clear_pending_tool_calls() == [
+        {
+            "item_id": "item_1",
+            "call_id": "call_1",
+            "name": "read_file",
+            "arguments": '{"path":"README.md"}',
+        },
+        {
+            "item_id": "item_2",
+            "call_id": "call_2",
+            "name": "list_files",
+            "arguments": '{"path":"tests"}',
+        },
+    ]
+    assert adapter.get_and_clear_pending_tool_calls() == []

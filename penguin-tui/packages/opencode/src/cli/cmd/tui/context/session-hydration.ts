@@ -52,8 +52,22 @@ export function compareMessagesByCreated(left: Message, right: Message): number 
 export function upsertPenguinMessage(existing: Message[] | undefined, incoming: Message): Message[] {
   if (!Array.isArray(existing) || existing.length === 0) return [incoming]
   const match = existing.findIndex((item) => item.id === incoming.id)
-  if (match === -1) return [...existing, incoming]
-  return existing.map((item, index) => (index === match ? incoming : item))
+  if (match !== -1) return existing.map((item, index) => (index === match ? incoming : item))
+  return [...existing, incoming].toSorted(compareMessagesByCreated)
+}
+
+function insertPreservedMessages(hydrated: Message[], preserved: Message[]): Message[] {
+  const merged = [...hydrated]
+  for (const message of preserved.toSorted(compareMessagesByCreated)) {
+    const messageTime = messageCreatedAt(message)
+    const insertAt = merged.findIndex((item) => messageTime < messageCreatedAt(item))
+    if (insertAt === -1) {
+      merged.push(message)
+      continue
+    }
+    merged.splice(insertAt, 0, message)
+  }
+  return merged
 }
 
 function normalizeText(value: string): string {
@@ -107,7 +121,7 @@ export function mergeHydratedMessages(
 
   if (preserved.length === 0) return incoming
 
-  return [...incoming, ...preserved.toSorted(compareMessagesByCreated)]
+  return insertPreservedMessages(incoming, preserved)
 }
 
 function withFallback<T>(request: Promise<{ data?: T }>, fallback: T): Promise<T> {

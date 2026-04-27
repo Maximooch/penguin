@@ -11,6 +11,7 @@ remains test‑friendly and avoids hidden globals.
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+import json
 import uuid
 import asyncio
 import copy
@@ -25,12 +26,11 @@ from typing import (
     Any,
     Awaitable,
     Callable,
+    Coroutine,
     Dict,
     List,
     Optional,
     Sequence,
-    Union,
-    AsyncGenerator,
     Tuple,
 )
 from penguin.utils.errors import LLMEmptyResponseError
@@ -48,11 +48,18 @@ from penguin.llm.runtime import (
     build_empty_response_diagnostics as build_llm_empty_response_diagnostics,
     build_reasoning_fallback_note,
     call_with_retry as call_llm_with_retry,
-    execute_pending_tool_call,
+    execute_pending_tool_calls,
     handler_has_pending_tool_call,
     prepare_responses_tool_kwargs,
 )
 from penguin.tools import ToolManager  # type: ignore
+from penguin.tools.runtime import (
+    ToolExecutionPolicy,
+    execute_tool_calls_serially,
+    legacy_action_result_from_tool_result,
+    tool_calls_from_codeact_actions,
+    tool_results_loop_identity,
+)
 from penguin.config import TASK_COMPLETION_PHRASE  # Add this import
 from penguin.constants import get_engine_max_iterations_default
 from penguin.system.execution_context import get_current_execution_context
@@ -149,7 +156,8 @@ class LoopState:
 
     # Empty tool-only iteration tracking
     empty_tool_only_count: int = 0
-    last_tool_only_signature: Optional[int] = None
+    last_tool_only_signature: Optional[str] = None
+    last_tool_only_summary: str = ""
     repeated_tool_only_count: int = 0
 
     def reset(self) -> None:
@@ -159,6 +167,7 @@ class LoopState:
         self.repeat_count = 0
         self.empty_tool_only_count = 0
         self.last_tool_only_signature = None
+        self.last_tool_only_summary = ""
         self.repeated_tool_only_count = 0
 
     def check_repeated(self, response: str) -> bool:
@@ -213,21 +222,14 @@ class LoopState:
         if not is_empty_tool_only:
             self.empty_tool_only_count = 0
             self.last_tool_only_signature = None
+            self.last_tool_only_summary = ""
             self.repeated_tool_only_count = 0
             return False, None
 
         self.empty_tool_only_count += 1
-        signature = hash(
-            tuple(
-                (
-                    str(result.get("action") or "").strip(),
-                    str(result.get("status") or "").strip(),
-                    str(result.get("result") or "")[:200],
-                )
-                for result in iteration_results
-                if isinstance(result, dict)
-            )
-        )
+        identity = tool_results_loop_identity(iteration_results)
+        signature = identity.fingerprint
+        self.last_tool_only_summary = identity.summary
 
         if signature == self.last_tool_only_signature:
             self.repeated_tool_only_count += 1
@@ -244,8 +246,8 @@ class LoopState:
 _EMPTY_RESPONSE_PLACEHOLDER = "[Empty response from model]"
 _TOOL_ONLY_STALL_NOTES = {
     "repeated_empty_tool_only_iterations": (
-        "Stopping because empty tool-only turns are repeating the same tool outputs; "
-        "this is probably a stale loop rather than forward progress."
+        "Stopping because empty tool-only turns repeated the same tool result "
+        "identity; this is probably a stale loop rather than forward progress."
     ),
 }
 
@@ -1155,7 +1157,18 @@ class Engine:
         """Return a user-facing explanation for stalled tool-only loops."""
         if not isinstance(status, str):
             return ""
-        return _TOOL_ONLY_STALL_NOTES.get(status, "")
+        note = _TOOL_ONLY_STALL_NOTES.get(status, "")
+        if not note:
+            return ""
+
+        loop_state = self._get_loop_state()
+        repeated_tool = loop_state.last_tool_only_summary.strip()
+        if repeated_tool:
+            note = f"{note} Repeated tool result: {repeated_tool}."
+        return (
+            f"{note} To continue, send a new message with the next file, range, "
+            "query, or command to try."
+        )
 
     async def _record_tool_only_stall_note(
         self,
@@ -2240,7 +2253,30 @@ class Engine:
         Returns:
             Action result dict if tool was executed, None otherwise
         """
-        return await execute_pending_tool_call(
+        results = await self._handle_responses_tool_calls(
+            api_client,
+            tool_manager,
+            cm,
+        )
+        return results[0] if results else None
+
+    async def _handle_responses_tool_calls(
+        self,
+        api_client: APIClient,
+        tool_manager,
+        cm: ConversationManager,
+    ) -> List[Dict[str, Any]]:
+        """Handle all pending Responses API tool calls.
+
+        Args:
+            api_client: The API client (to get tool_call info from handler)
+            tool_manager: Tool manager to execute the tools
+            cm: Conversation manager to persist results
+
+        Returns:
+            Action result dicts for executed tools.
+        """
+        return await execute_pending_tool_calls(
             api_client=api_client,
             tool_manager=tool_manager,
             persist_action_result=lambda action_result,
@@ -2520,36 +2556,54 @@ class Engine:
             return action_results
 
         actions: List[CodeActAction] = parse_action(assistant_response)
+        tool_calls = tool_calls_from_codeact_actions(actions)
         logger.debug(
-            "[AUTO-CONTINUE FIX] Parsed %s actions from response", len(actions)
+            "[AUTO-CONTINUE FIX] Parsed %s actions from response", len(tool_calls)
         )
 
-        # Enforce one action per iteration for incremental execution
-        for act in actions[:1] if actions else []:
-            result = await action_executor.execute_action(act)
+        async def _execute_actionxml_call(tool_call: Any) -> Any:
+            return await action_executor.execute_action(tool_call.raw)
 
-            # Format result (using standardized field names: action/result)
-            action_result = {
-                "action": act.action_type.value
-                if hasattr(act.action_type, "value")
-                else str(act.action_type),
-                "result": str(result if result is not None else ""),
-                "status": "completed",
+        scheduler_results = await execute_tool_calls_serially(
+            tool_calls,
+            _execute_actionxml_call,
+            policy=ToolExecutionPolicy(max_calls=1),
+        )
+
+        for tool_call, tool_result in zip(tool_calls[:1], scheduler_results):
+            legacy_action_result = legacy_action_result_from_tool_result(tool_result)
+            tool_arguments_text = (
+                tool_call.arguments
+                if isinstance(tool_call.arguments, str)
+                else json.dumps(
+                    tool_call.arguments,
+                    default=str,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            )
+            runtime_action_result = {
+                **legacy_action_result,
+                "tool_call_id": tool_call.id,
+                "tool_arguments": tool_arguments_text,
+                "output_hash": tool_result.output_hash,
             }
-            action_results.append(action_result)
+            action_results.append(runtime_action_result)
 
             # Persist result in conversation
             cm.add_action_result(
-                action_type=action_result["action"],
-                result=action_result["result"],
-                status=action_result["status"],
+                action_type=legacy_action_result["action"],
+                result=legacy_action_result["result"],
+                status=legacy_action_result["status"],
+                tool_call_id=tool_call.id,
+                tool_arguments=runtime_action_result["tool_arguments"],
             )
             logger.debug(
-                f"Added action result to conversation: {action_result['action']}"
+                f"Added action result to conversation: {legacy_action_result['action']}"
             )
 
             # Emit UI event
-            await self._emit_tool_event(cm, action_result)
+            await self._emit_tool_event(cm, legacy_action_result)
 
             # NOTE: Removed hardcoded action_to_tool mapping (architectural violation)
             # ActionExecutor in parser.py handles CodeAct action → tool routing
@@ -2669,18 +2723,16 @@ class Engine:
             api_client=api_client,
         )
 
-        # Step 4: Handle Responses API tool_call if one was triggered
-        responses_action_result = await self._handle_responses_tool_call(
+        # Step 4: Handle Responses API tool_calls if they were triggered
+        responses_action_results = await self._handle_responses_tool_calls(
             api_client,
             tool_manager,
             cm,
         )
 
         # Step 5: Execute CodeAct actions if enabled
-        action_results = []
-        if isinstance(responses_action_result, dict):
-            action_results.append(responses_action_result)
-        if tools_enabled:
+        action_results = list(responses_action_results)
+        if tools_enabled and not responses_action_results:
             action_results.extend(
                 await self._execute_codeact_actions(
                     cm, action_executor, assistant_response

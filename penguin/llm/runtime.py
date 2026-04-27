@@ -1,52 +1,112 @@
 from __future__ import annotations
 
 import asyncio
-import time
+import inspect
+import json
+import logging
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
+from penguin.tools.runtime import (
+    ToolExecutionPolicy,
+    execute_tool_calls_serially,
+    legacy_action_result_from_tool_result,
+    tool_call_from_responses_info,
+)
 from penguin.utils.errors import LLMEmptyResponseError
 
 from .provider_transform import (
+    native_tool_format,
+    normalize_anthropic_tools,
+    normalize_openai_chat_tool_choice,
+    normalize_openai_chat_tools,
     normalize_openai_responses_tool_choice,
     normalize_openai_responses_tools,
-    should_use_openai_responses_tools,
 )
 from .reasoning_variants import native_reasoning_efforts
 
 _REASONING_EFFORT_VARIANTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
 _REASONING_MAX_VARIANTS = {"max"}
 _REASONING_DISABLE_VARIANTS = {"off"}
+logger = logging.getLogger(__name__)
 
 
-def prepare_responses_tool_kwargs(
+def _get_tool_payload(
+    tool_manager: Any,
+    *,
+    include_web_search: bool,
+) -> List[Dict[str, Any]]:
+    tools_getter = getattr(tool_manager, "get_responses_tools", None)
+    if not callable(tools_getter):
+        return []
+    signature = inspect.signature(tools_getter)
+    accepts_include_web_search = "include_web_search" in signature.parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+    if accepts_include_web_search:
+        tools_payload = tools_getter(include_web_search=include_web_search)
+    else:
+        tools_payload = tools_getter()
+    return list(tools_payload or [])
+
+
+def prepare_native_tool_kwargs(
     model_config: Any, tool_manager: Any
 ) -> Dict[str, Any]:
-    """Build Responses API tool kwargs for providers that use that contract."""
+    """Build native tool kwargs for providers that support structured tool calls."""
 
     extra_kwargs: Dict[str, Any] = {}
     if model_config is None:
         return extra_kwargs
 
-    uses_openai_native_responses = bool(
-        model_config and should_use_openai_responses_tools(model_config)
-    )
-    if not (
-        getattr(model_config, "use_responses_api", False)
-        or uses_openai_native_responses
-    ):
+    tool_format = native_tool_format(model_config)
+    if not tool_format:
         return extra_kwargs
 
-    tools_getter = getattr(tool_manager, "get_responses_tools", None)
-    tools_payload = tools_getter() if callable(tools_getter) else []
+    tools_payload = _get_tool_payload(
+        tool_manager,
+        include_web_search=tool_format == "openai_responses",
+    )
     if not tools_payload:
         return extra_kwargs
 
-    if uses_openai_native_responses:
+    if tool_format == "openai_responses":
+        normalized_tools = normalize_openai_responses_tools(tools_payload)
+        if not normalized_tools:
+            return extra_kwargs
         setattr(model_config, "interrupt_on_tool_call", True)
+        extra_kwargs["tools"] = normalized_tools
+        extra_kwargs["tool_choice"] = normalize_openai_responses_tool_choice("auto")
+        return extra_kwargs
 
-    extra_kwargs["tools"] = normalize_openai_responses_tools(tools_payload)
-    extra_kwargs["tool_choice"] = normalize_openai_responses_tool_choice("auto")
+    if tool_format == "openai_chat":
+        normalized_tools = normalize_openai_chat_tools(tools_payload)
+        if not normalized_tools:
+            return extra_kwargs
+        setattr(model_config, "interrupt_on_tool_call", True)
+        extra_kwargs["tools"] = normalized_tools
+        extra_kwargs["tool_choice"] = normalize_openai_chat_tool_choice("auto")
+        extra_kwargs["parallel_tool_calls"] = False
+        return extra_kwargs
+
+    if tool_format == "anthropic":
+        normalized_tools = normalize_anthropic_tools(tools_payload)
+        if not normalized_tools:
+            return extra_kwargs
+        setattr(model_config, "interrupt_on_tool_call", True)
+        extra_kwargs["tools"] = normalized_tools
+        extra_kwargs["tool_choice"] = {"type": "auto"}
+        return extra_kwargs
+
     return extra_kwargs
+
+
+def prepare_responses_tool_kwargs(
+    model_config: Any, tool_manager: Any
+) -> Dict[str, Any]:
+    """Backward-compatible wrapper for native tool kwargs preparation."""
+
+    return prepare_native_tool_kwargs(model_config, tool_manager)
 
 
 def handler_has_pending_tool_call(api_client: Any) -> bool:
@@ -287,40 +347,110 @@ async def execute_pending_tool_call(
 ) -> Optional[Dict[str, Any]]:
     """Execute a pending provider-captured tool call using generic hooks."""
 
-    try:
-        handler = getattr(api_client, "client_handler", None)
-        getter = getattr(handler, "get_and_clear_last_tool_call", None)
-        tool_info = (
-            await getter()
-            if callable(getter) and asyncio.iscoroutinefunction(getter)
-            else (getter() if callable(getter) else None)
-        )
-    except Exception:
-        return None
-
-    if not tool_info or not isinstance(tool_info, dict):
-        return None
-
-    tool_name = str(tool_info.get("name") or "").strip()
-    raw_args = tool_info.get("arguments") or "{}"
-    suppress_ui_artifacts = tool_name == "finish_response"
-    tool_call_id = (
-        tool_info.get("call_id")
-        or tool_info.get("tool_call_id")
-        or tool_info.get("item_id")
-        or f"call_{int(time.time() * 1000)}"
+    results = await execute_pending_tool_calls(
+        api_client=api_client,
+        tool_manager=tool_manager,
+        persist_action_result=persist_action_result,
+        emit_action_start=emit_action_start,
+        emit_action_result=emit_action_result,
+        emit_tool_timeline=emit_tool_timeline,
     )
+    return results[0] if results else None
+
+
+async def _call_pending_tool_getter(getter: Any) -> Any:
+    """Call a sync or async pending-tool getter."""
+
+    if not callable(getter):
+        return None
+    result = getter()
+    if asyncio.iscoroutine(result):
+        return await result
+    return result
+
+
+async def _get_and_clear_pending_tool_infos(api_client: Any) -> List[Dict[str, Any]]:
+    """Return all provider-captured tool calls from the active handler."""
+
+    handler = getattr(api_client, "client_handler", None)
+    try:
+        plural_getter = getattr(handler, "get_and_clear_pending_tool_calls", None)
+        tool_infos = await _call_pending_tool_getter(plural_getter)
+    except Exception:
+        logger.exception(
+            "Failed to read pending tool calls from api_client=%r handler=%r "
+            "via get_and_clear_pending_tool_calls",
+            api_client,
+            handler,
+        )
+        raise
+    if isinstance(tool_infos, list):
+        return [item for item in tool_infos if isinstance(item, dict)]
+    if isinstance(tool_infos, dict):
+        return [tool_infos]
 
     try:
-        import json as _json
-
-        tool_args = (
-            _json.loads(raw_args)
-            if isinstance(raw_args, str) and raw_args.strip()
-            else {}
-        )
+        singular_getter = getattr(handler, "get_and_clear_last_tool_call", None)
+        tool_info = await _call_pending_tool_getter(singular_getter)
     except Exception:
-        tool_args = {}
+        logger.exception(
+            "Failed to read pending tool call from api_client=%r handler=%r "
+            "via get_and_clear_last_tool_call",
+            api_client,
+            handler,
+        )
+        raise
+
+    return [tool_info] if isinstance(tool_info, dict) else []
+
+
+async def execute_pending_tool_calls(
+    *,
+    api_client: Any,
+    tool_manager: Any,
+    persist_action_result: Callable[[Dict[str, Any], Dict[str, Any]], None],
+    emit_action_start: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+    emit_action_result: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+    emit_tool_timeline: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+) -> List[Dict[str, Any]]:
+    """Execute all pending provider-captured tool calls using generic hooks."""
+
+    tool_infos = await _get_and_clear_pending_tool_infos(api_client)
+    tool_calls = [
+        tool_call
+        for tool_call in (
+            tool_call_from_responses_info(tool_info) for tool_info in tool_infos
+        )
+        if tool_call is not None
+    ]
+    if not tool_calls:
+        return []
+
+    parsed_args_by_id: Dict[str, Dict[str, Any]] = {}
+    raw_args_by_id: Dict[str, str] = {}
+    for tool_call in tool_calls:
+        raw_args = tool_call.arguments
+        if isinstance(raw_args, dict):
+            parsed_args = raw_args
+            raw_args_text = json.dumps(raw_args, sort_keys=True)
+        else:
+            raw_args_text = raw_args if isinstance(raw_args, str) else str(raw_args)
+            try:
+                parsed_args = (
+                    json.loads(raw_args_text)
+                    if isinstance(raw_args_text, str) and raw_args_text.strip()
+                    else {}
+                )
+            except Exception:
+                parsed_args = {}
+        raw_args_by_id[tool_call.id] = raw_args_text
+        if not isinstance(parsed_args, dict):
+            parsed_args = {}
+        parsed_args_by_id[tool_call.id] = parsed_args
+
+    visible_tool_calls = [
+        tool_call for tool_call in tool_calls if tool_call.name != "finish_response"
+    ]
 
     event_metadata = {
         "provider": getattr(
@@ -330,58 +460,92 @@ async def execute_pending_tool_call(
         "source": "responses_tool_call",
     }
 
-    if emit_action_start is not None and not suppress_ui_artifacts:
-        await emit_action_start(
-            {
-                "id": tool_call_id,
-                "type": tool_name,
-                "action": tool_name,
-                "params": raw_args,
-                "metadata": event_metadata,
-            }
-        )
+    if emit_action_start is not None:
+        for tool_call in visible_tool_calls:
+            await emit_action_start(
+                {
+                    "id": tool_call.id,
+                    "type": tool_call.name,
+                    "action": tool_call.name,
+                    "params": raw_args_by_id.get(tool_call.id, ""),
+                    "metadata": event_metadata,
+                }
+            )
 
     try:
-        output = tool_manager.execute_tool(tool_name, tool_args)
-        action_result = {
-            "action": tool_name,
-            "result": str(output if output is not None else ""),
-            "status": "completed",
-        }
-        if not suppress_ui_artifacts:
-            persist_action_result(
-                action_result,
-                {
-                    "tool_call_id": tool_call_id,
-                    "tool_arguments": raw_args if isinstance(raw_args, str) else None,
-                },
+        scheduler_results = await execute_tool_calls_serially(
+            tool_calls,
+            lambda current_tool_call: tool_manager.execute_tool(
+                current_tool_call.name,
+                parsed_args_by_id.get(current_tool_call.id, {}),
+            ),
+            policy=ToolExecutionPolicy(
+                max_calls=len(tool_calls),
+                catch_exceptions=True,
+            ),
+        )
+        if not scheduler_results:
+            return []
+        action_results: List[Dict[str, Any]] = []
+        for tool_result in scheduler_results:
+            source_tool_call = next(
+                (
+                    current_tool_call
+                    for current_tool_call in tool_calls
+                    if current_tool_call.id == tool_result.call_id
+                ),
+                None,
             )
+            if source_tool_call is None:
+                continue
+            suppress_ui_artifacts = source_tool_call.name == "finish_response"
+            raw_args_text = raw_args_by_id.get(source_tool_call.id, "")
+            tool_call_id = source_tool_call.id
+            legacy_action_result = legacy_action_result_from_tool_result(tool_result)
+            runtime_action_result = {
+                **legacy_action_result,
+                "tool_call_id": source_tool_call.id,
+                "tool_arguments": raw_args_text,
+                "output_hash": tool_result.output_hash,
+            }
+            if not suppress_ui_artifacts:
+                persist_action_result(
+                    legacy_action_result,
+                    {
+                        "tool_call_id": tool_call_id,
+                        "tool_arguments": runtime_action_result["tool_arguments"],
+                    },
+                )
 
-        if emit_action_result is not None and not suppress_ui_artifacts:
-            await emit_action_result(
-                {
-                    "id": tool_call_id,
-                    "status": action_result["status"],
-                    "result": action_result["result"],
-                    "action": action_result["action"],
-                    "metadata": event_metadata,
-                }
+            if emit_action_result is not None and not suppress_ui_artifacts:
+                await emit_action_result(
+                    {
+                        "id": tool_call_id,
+                        "status": legacy_action_result["status"],
+                        "result": legacy_action_result["result"],
+                        "action": legacy_action_result["action"],
+                        "metadata": event_metadata,
+                    }
+                )
+            if emit_tool_timeline is not None and not suppress_ui_artifacts:
+                await emit_tool_timeline(legacy_action_result)
+            action_results.append(
+                legacy_action_result if suppress_ui_artifacts else runtime_action_result
             )
-        if emit_tool_timeline is not None and not suppress_ui_artifacts:
-            await emit_tool_timeline(action_result)
-        return action_result
+        return action_results
     except Exception as exc:
         if emit_action_result is not None:
-            await emit_action_result(
-                {
-                    "id": tool_call_id,
-                    "status": "error",
-                    "result": f"Error executing action {tool_name}: {exc}",
-                    "action": tool_name,
-                    "metadata": event_metadata,
-                }
-            )
-        return None
+            for tool_call in visible_tool_calls:
+                await emit_action_result(
+                    {
+                        "id": tool_call.id,
+                        "status": "error",
+                        "result": f"Error executing action {tool_call.name}: {exc}",
+                        "action": tool_call.name,
+                        "metadata": event_metadata,
+                    }
+                )
+        return []
 
 
 def resolve_reasoning_payload(model_config: Any) -> Optional[Dict[str, Any]]:
@@ -578,16 +742,18 @@ def restore_reasoning_variant_override(
 
 
 __all__ = [
+    "apply_reasoning_variant_override",
     "build_empty_response_diagnostics",
     "build_reasoning_debug_snapshot",
     "build_reasoning_fallback_note",
     "build_reasoning_visibility_note",
     "call_with_retry",
     "execute_pending_tool_call",
+    "execute_pending_tool_calls",
     "handler_has_pending_tool_call",
     "persist_reasoning_debug_snapshot",
+    "prepare_native_tool_kwargs",
     "prepare_responses_tool_kwargs",
-    "apply_reasoning_variant_override",
-    "restore_reasoning_variant_override",
     "resolve_reasoning_payload",
+    "restore_reasoning_variant_override",
 ]
