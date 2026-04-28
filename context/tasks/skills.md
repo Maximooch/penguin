@@ -132,6 +132,55 @@ Minimum useful flow:
 
 Do not start with marketplaces, auto-install, or fancy package-manager support. Those are distribution questions layered on top of a local runtime contract.
 
+## Penguin vs Codex Skills Comparison
+
+Codex's local Skills support provides a useful reference implementation, but Penguin should not copy it blindly because Penguin has a different runtime shape: explicit tool orchestration, persistent conversations, context categories, and multi-agent execution.
+
+### Codex Reference Behavior
+
+Observed local reference files:
+
+- `reference/codex/codex-rs/core/src/context/available_skills_instructions.rs`
+- `reference/codex/codex-rs/core/src/context/skill_instructions.rs`
+
+Codex does two important things:
+
+1. It injects an available-skills developer-context block that lists skill name, description, and file path, plus trigger rules and progressive-disclosure instructions.
+2. It wraps activated skill content as a separate user-context fragment under `<skill>` with `<name>`, `<path>`, and the skill body.
+
+Codex's trigger model is explicit: use a skill when the user names it with `$SkillName`/plain text or when the task clearly matches a listed description. It also instructs the agent not to bulk-load `references/`, to resolve relative paths from the skill directory, and to use scripts/assets when relevant.
+
+### Penguin Current Approach
+
+Penguin's implementation is similar in intent but more runtime-oriented:
+
+- Skill discovery and validation live under `penguin/skills/`, not only in prompt text.
+- The compact skill catalog is injected into startup/session context.
+- Activation goes through dedicated native tools: `list_skills` and `activate_skill`.
+- Activated skill content is loaded as `MessageCategory.CONTEXT`, not `SYSTEM`.
+- Activation is deduped per session by `SkillManager`.
+- Activation output uses structured `<skill_content>` and `<skill_resources>` wrappers.
+- Skill scripts still go through normal Penguin command/file/network permission gates.
+
+This is the right divergence. Codex can rely heavily on file-read instructions because its reference implementation exposes file paths directly in contextual instructions. Penguin benefits from dedicated tools because it can attach metadata, dedupe activations, feed context-window accounting, and later emit web/TUI events.
+
+### Practical Differences
+
+| Area | Codex Reference | Penguin MVP |
+|---|---|---|
+| Catalog disclosure | Developer-context skill list with file paths | Compact skill catalog injected as `CONTEXT` |
+| Activation path | Open `SKILL.md` or contextual injection | Dedicated `activate_skill` tool |
+| Activated content rank | User-context `<skill>` fragment | `MessageCategory.CONTEXT` message |
+| Dedupe | Runtime injection state in Codex skill system | Per-session `SkillManager` activation tracking |
+| Resource loading | Progressive file reads from paths | Resources listed; normal file tools load specific files |
+| Security posture | Prompt rules plus client file/tool policy | Prompt rules plus Penguin permission gates |
+| UI/API future | Codex-specific client surface | CLI done; web/API and TUI explicitly deferred |
+
+### Gap To Watch
+
+Penguin now has prompt guidance equivalent to Codex's trigger/progressive-disclosure rules, but the web/API and TUI still need first-class skill visibility. Until those surfaces are implemented, CLI and model-tool usage are the strongest paths.
+
+
 ## Proposed Architecture
 
 Add `penguin/skills/`:
