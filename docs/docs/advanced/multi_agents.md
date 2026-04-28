@@ -44,7 +44,7 @@ Isolation ensures that one misbehaving agent does not leak context or mutate ano
 ### REST API Example
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/chat \
+curl -X POST http://127.0.0.1:9000/api/v1/chat \
   -H "Content-Type: application/json" \
   -d '{
         "text": "Summarize the latest tickets",

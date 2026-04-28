@@ -135,7 +135,7 @@ Security settings can be changed at runtime via the CLI or API:
 /config runtime set security_mode read_only
 
 # Via API
-curl -X POST http://localhost:8000/api/v1/system/config/security \
+curl -X POST http://127.0.0.1:9000/api/v1/system/config/security \
   -H "Content-Type: application/json" \
   -d '{"mode": "workspace", "enabled": true}'
 ```
@@ -193,15 +193,15 @@ Approve or deny requests programmatically:
 
 ```bash
 # Approve a request
-curl -X POST http://localhost:8000/api/v1/approvals/apr_abc123/approve \
+curl -X POST http://127.0.0.1:9000/api/v1/approvals/apr_abc123/approve \
   -H "Content-Type: application/json" \
   -d '{"scope": "once"}'
 
 # Deny a request
-curl -X POST http://localhost:8000/api/v1/approvals/apr_abc123/deny
+curl -X POST http://127.0.0.1:9000/api/v1/approvals/apr_abc123/deny
 
 # Pre-approve an operation pattern
-curl -X POST http://localhost:8000/api/v1/approvals/pre-approve \
+curl -X POST http://127.0.0.1:9000/api/v1/approvals/pre-approve \
   -H "Content-Type: application/json" \
   -d '{
     "operation": "filesystem.delete",
@@ -340,10 +340,10 @@ penguin permissions summary
 
 ```bash
 # Get recent audit entries
-curl "http://localhost:8000/api/v1/security/audit?limit=100&result=deny"
+curl "http://127.0.0.1:9000/api/v1/security/audit?limit=100&result=deny"
 
 # Get audit statistics
-curl http://localhost:8000/api/v1/security/audit/stats
+curl http://127.0.0.1:9000/api/v1/security/audit/stats
 ```
 
 **Response:**

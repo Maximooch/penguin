@@ -2,11 +2,11 @@
 sidebar_position: 3
 ---
 
-# Configuring Penguin AI Assistant
+# Configuring Penguin
 
 Penguin can be configured through environment variables and YAML configuration files. This guide explains current options for core functionality, project management, the web server, and advanced features.
 
-Simpliest way is to just do `penguin config setup`
+Simplest way is to run `penguin config setup`.
 
 ## Configuration Architecture
 
@@ -44,15 +44,15 @@ The `RuntimeConfig` system allows you to change critical settings while the serv
 **Example: Dynamic Configuration via Web API**
 ```bash
 # Get current configuration
-curl http://localhost:8000/api/v1/system/config
+curl http://127.0.0.1:9000/api/v1/system/config
 
 # Change project root
-curl -X POST http://localhost:8000/api/v1/system/config/project-root \
+curl -X POST http://127.0.0.1:9000/api/v1/system/config/project-root \
   -H "Content-Type: application/json" \
   -d '{"path": "/Users/you/new-project"}'
 
 # Switch execution mode
-curl -X POST http://localhost:8000/api/v1/system/config/execution-mode \
+curl -X POST http://127.0.0.1:9000/api/v1/system/config/execution-mode \
   -H "Content-Type: application/json" \
   -d '{"path": "project"}'
 ```

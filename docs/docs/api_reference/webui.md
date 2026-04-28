@@ -213,7 +213,7 @@ To access the web interface:
    python -m penguin.api.server
    ```
 
-2. Navigate to http://localhost:8000 in your browser
+2. Navigate to http://127.0.0.1:9000 in your browser
 
 ## Mobile Support
 

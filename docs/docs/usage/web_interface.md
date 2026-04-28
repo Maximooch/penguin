@@ -13,20 +13,29 @@ This page focuses on **how to run and expose the web server safely**.
 penguin-web
 
 # Explicit host/port
-penguin-web --host 127.0.0.1 --port 9000
+HOST=127.0.0.1 PORT=9000 penguin-web
 
 # Exposed host (requires auth unless explicitly overridden)
-penguin-web --host 0.0.0.0 --port 9000
+HOST=0.0.0.0 PORT=9000 penguin-web
 ```
 
-The command is a thin wrapper around `penguin.web.server:main`.
+The command is a thin wrapper around `penguin.web.server:main`. Host and port
+selection is controlled by environment variables:
 
-Optional flags:
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HOST` | `127.0.0.1` | Bind address. Use `0.0.0.0` only for intentionally exposed deployments. |
+| `PORT` | `9000` | HTTP port for API, local dashboard routes, and TUI backend traffic. |
+| `DEBUG` | `false` | Enables development behavior such as reload where supported. |
 
-| Flag | Description |
-|------|-------------|
-| `--debug` | Enable reload and verbose logging |
-| `--workers N` | Run with a process pool |
+Do not rely on `penguin-web --host ... --port ...` until that path is explicitly
+verified. Use `HOST` and `PORT` instead.
+
+After startup, the server prints:
+
+- the local server URL
+- API documentation URL at `/api/docs`
+- local authorization guidance when auth is enabled
 
 ---
 
@@ -67,6 +76,11 @@ When enabled, protected routes accept:
 - `X-Link-API-Key: <key>`
 - `Authorization: Bearer <jwt>`
 
+Local browser sessions can also be authorized by opening the startup
+`/authorize#local_token=...` URL printed by `penguin-web`. The TUI/CLI local
+session path authenticates automatically. For CI, scripts, and headless clients,
+prefer `PENGUIN_API_KEYS` plus the `X-API-Key` header.
+
 ### Example: authenticated HTTP request
 
 ```bash
@@ -74,9 +88,12 @@ curl http://127.0.0.1:9000/api/v1/capabilities \
   -H "X-API-Key: your-key"
 ```
 
-### Example: unauthenticated request
+### Example: explicitly unauthenticated local-only request
+
+If you intentionally run local-only without auth:
 
 ```bash
+PENGUIN_AUTH_ENABLED=false HOST=127.0.0.1 PORT=9000 penguin-web
 curl http://127.0.0.1:9000/api/v1/capabilities
 ```
 
@@ -97,6 +114,23 @@ For now:
 - backend clients should use headers
 - browser-facing improvements likely need short-lived WS tickets or cookie/session auth later
 
+### Tool Execution Surface Truth
+
+Tool use is model-driven through the normal chat endpoints. Clients do not call
+`read_file`, `list_files`, `execute_command`, or similar tools directly through
+the web server; they send a chat request, and the runtime executes any approved
+tool calls as part of the reasoning loop.
+
+Current behavior:
+- native provider tool calls are preferred for providers that support them
+- ActionXML remains a fallback compatibility path, not the primary contract
+- tool calls execute inside the session-bound `directory`
+- tool results are returned in `action_results` and also emitted as live
+  message/tool-part events for TUI, SSE, and WebSocket clients
+- tools that require approval pause until the approval flow resolves
+- if native provider tools already executed an intent, the runtime does not
+  re-parse the assistant text for duplicate ActionXML execution
+
 ---
 
 ## Startup Hardening
@@ -108,7 +142,11 @@ This prevents the easiest “accidentally exposed dev server on the internet” 
 Override only if you really mean it:
 
 ```bash
-PENGUIN_ALLOW_INSECURE_NO_AUTH=true penguin-web --host 0.0.0.0 --port 9000
+PENGUIN_AUTH_ENABLED=false \
+PENGUIN_ALLOW_INSECURE_NO_AUTH=true \
+HOST=0.0.0.0 \
+PORT=9000 \
+penguin-web
 ```
 
 That override exists for edge cases, not because it is a good idea.
@@ -170,7 +208,9 @@ Example:
 ```bash
 PENGUIN_AUTH_ENABLED=true \
 PENGUIN_PUBLIC_ENDPOINTS=/api/v1/integrations/github/webhook \
-penguin-web --host 127.0.0.1 --port 9000
+HOST=127.0.0.1 \
+PORT=9000 \
+penguin-web
 ```
 
 Penguin still verifies the webhook HMAC signature and now also rejects replayed delivery IDs, but the route has to be reachable first.
@@ -182,8 +222,22 @@ Penguin still verifies the webhook HMAC signature and now also rejects replayed 
 ### Local development
 
 ```bash
+PENGUIN_AUTH_ENABLED=true
+HOST=127.0.0.1
+PORT=9000
+penguin-web
+```
+
+Open the printed `/authorize#local_token=...` URL once for browser/dashboard
+usage. TUI/CLI local sessions authenticate automatically.
+
+### Local development without auth
+
+```bash
 PENGUIN_AUTH_ENABLED=false
-penguin-web --host 127.0.0.1 --port 9000
+HOST=127.0.0.1
+PORT=9000
+penguin-web
 ```
 
 ### Hardened exposed deployment
@@ -192,7 +246,9 @@ penguin-web --host 127.0.0.1 --port 9000
 PENGUIN_AUTH_ENABLED=true
 PENGUIN_API_KEYS=replace-me
 PENGUIN_CORS_ORIGINS=https://penguin.example.com
-penguin-web --host 0.0.0.0 --port 9000
+HOST=0.0.0.0
+PORT=9000
+penguin-web
 ```
 
 ### GitHub webhook with auth enabled
@@ -202,8 +258,20 @@ PENGUIN_AUTH_ENABLED=true
 PENGUIN_API_KEYS=replace-me
 PENGUIN_PUBLIC_ENDPOINTS=/api/v1/integrations/github/webhook
 GITHUB_WEBHOOK_SECRET=replace-me
-penguin-web --host 0.0.0.0 --port 9000
+HOST=0.0.0.0
+PORT=9000
+penguin-web
 ```
+
+### TUI against a running development server
+
+```bash
+HOST=127.0.0.1 PORT=8080 uv run penguin-web
+uv run penguin --url http://127.0.0.1:8080 --no-web-autostart
+```
+
+Use a non-reserved alternate port such as `8080` or `9010` when another Penguin
+backend is already using the default `9000` port.
 
 ---
 
@@ -216,4 +284,4 @@ penguin-web --host 0.0.0.0 --port 9000
 
 ---
 
-*Last updated: April 16, 2026*
+*Last updated: April 27, 2026*

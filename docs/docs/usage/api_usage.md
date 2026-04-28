@@ -15,6 +15,10 @@ Penguin provides a comprehensive REST API and WebSocket interface for integratin
 
 ## Quick Start
 
+The examples below assume a local server on the default `127.0.0.1:9000`.
+If web auth is enabled, include an `X-API-Key` header using a key from
+`PENGUIN_API_KEYS` or the startup token printed by `penguin-web`.
+
 ### Basic Chat Request
 
 ```python
@@ -22,7 +26,8 @@ import requests
 
 # Send a simple message
 response = requests.post(
-    "http://localhost:8000/api/v1/chat/message",
+    "http://127.0.0.1:9000/api/v1/chat/message",
+    headers={"X-API-Key": "your-key"},
     json={
         "text": "Write a Python function to calculate the Fibonacci sequence."
     }
@@ -37,10 +42,11 @@ print(response.json()["response"])
 ```javascript
 // Send a message using fetch
 async function sendMessage(text) {
-  const response = await fetch('http://localhost:8000/api/v1/chat/message', {
+  const response = await fetch('http://127.0.0.1:9000/api/v1/chat/message', {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
+      'X-API-Key': 'your-key'
     },
     body: JSON.stringify({
       text: text
@@ -64,7 +70,7 @@ sendMessage("Explain quantum computing in simple terms")
 To send a message and receive a response:
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/chat/message \
+curl -X POST http://127.0.0.1:9000/api/v1/chat/message \
   -H "Content-Type: application/json" \
   -d '{"text": "Generate a hello world program in Rust"}'
 ```
@@ -74,7 +80,7 @@ curl -X POST http://localhost:8000/api/v1/chat/message \
 To continue an existing conversation:
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/chat/message \
+curl -X POST http://127.0.0.1:9000/api/v1/chat/message \
   -H "Content-Type: application/json" \
   -d '{
     "text": "Explain the key components of the code you just generated",
@@ -87,7 +93,7 @@ curl -X POST http://localhost:8000/api/v1/chat/message \
 Use `session_id`/`conversation_id` plus `directory` to bind a session to a specific repo root.
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/chat/message \
+curl -X POST http://127.0.0.1:9000/api/v1/chat/message \
   -H "Content-Type: application/json" \
   -d '{
     "text": "Run checks in this repo",
@@ -101,13 +107,29 @@ Notes:
 - Rebinding that same session to a different directory returns `409`.
 - Invalid directories return `400`.
 
+#### Tool Use Through Chat
+
+Tools are invoked by the model during chat execution, not by calling tool names
+directly from the web API. To let Penguin inspect or modify a repo, provide a
+stable `session_id` and `directory`; the runtime binds that session to the repo
+root and executes native provider tool calls there.
+
+Tool-related behavior to expect:
+- successful tool runs appear in the REST `action_results` payload
+- live clients receive message/tool-part events for tool start and completion
+- approval-gated tools pause until approved or denied
+- native provider tool calls are preferred; ActionXML is retained only as a
+  fallback compatibility path
+- Penguin avoids executing both native tool calls and duplicate ActionXML from
+  the same assistant turn
+
 ### Streaming Responses
 
 For real-time streaming of responses, use the WebSocket API:
 
 ```javascript
 // Create WebSocket connection
-const socket = new WebSocket('ws://localhost:8000/api/v1/chat/stream');
+const socket = new WebSocket('ws://127.0.0.1:9000/api/v1/chat/stream');
 
 // Connection opened
 socket.addEventListener('open', (event) => {
@@ -141,7 +163,7 @@ socket.addEventListener('message', (event) => {
 import requests
 
 # Get all conversations
-response = requests.get("http://localhost:8000/api/v1/conversations")
+response = requests.get("http://127.0.0.1:9000/api/v1/conversations")
 conversations = response.json()["conversations"]
 
 for conv in conversations:
@@ -154,7 +176,7 @@ for conv in conversations:
 import requests
 
 # Create a new conversation
-response = requests.post("http://localhost:8000/api/v1/conversations/create")
+response = requests.post("http://127.0.0.1:9000/api/v1/conversations/create")
 conversation_id = response.json()["conversation_id"]
 
 print(f"Created conversation: {conversation_id}")
@@ -167,7 +189,7 @@ import requests
 
 # Get a specific conversation
 conversation_id = "conversation_20240330_123456"
-response = requests.get(f"http://localhost:8000/api/v1/conversations/{conversation_id}")
+response = requests.get(f"http://127.0.0.1:9000/api/v1/conversations/{conversation_id}")
 data = response.json()
 
 # Get messages
@@ -184,7 +206,7 @@ import requests
 
 # Create a new project
 response = requests.post(
-    "http://localhost:8000/api/v1/projects",
+    "http://127.0.0.1:9000/api/v1/projects",
     json={
         "name": "Website Development",
         "description": "Create a responsive website with React and FastAPI backend"
@@ -202,7 +224,7 @@ import requests
 
 # Run a task
 response = requests.post(
-    "http://localhost:8000/api/v1/tasks/execute",
+    "http://127.0.0.1:9000/api/v1/tasks/execute",
     json={
         "name": "Generate API documentation",
         "description": "Create OpenAPI documentation for all endpoints",
@@ -222,7 +244,7 @@ print(f"Task execution started: {response.json()}")
 import requests
 
 # Get token usage stats
-response = requests.get("http://localhost:8000/api/v1/token-usage")
+response = requests.get("http://127.0.0.1:9000/api/v1/token-usage")
 usage = response.json()["usage"]
 
 print(f"Main model usage: {usage['main_model']['total']} tokens")
@@ -234,7 +256,7 @@ print(f"Main model usage: {usage['main_model']['total']} tokens")
 import requests
 
 # List available context files
-response = requests.get("http://localhost:8000/api/v1/context-files")
+response = requests.get("http://127.0.0.1:9000/api/v1/context-files")
 files = response.json()["files"]
 
 for file in files:
@@ -242,7 +264,7 @@ for file in files:
 
 # Load a context file
 response = requests.post(
-    "http://localhost:8000/api/v1/context-files/load",
+    "http://127.0.0.1:9000/api/v1/context-files/load",
     json={
         "file_path": "docs/api_reference.md"
     }
@@ -267,7 +289,7 @@ import requests
 
 try:
     response = requests.post(
-        "http://localhost:8000/api/v1/chat/message",
+        "http://127.0.0.1:9000/api/v1/chat/message",
         json={"invalid_param": "value"}
     )
     response.raise_for_status()
@@ -293,7 +315,7 @@ except Exception as e:
 
 ```bash
 # Send a message
-curl -X POST http://localhost:8000/api/v1/chat/message \
+curl -X POST http://127.0.0.1:9000/api/v1/chat/message \
   -H "Content-Type: application/json" \
   -d '{"text": "What are the key features of Penguin?"}'
 ```
@@ -314,7 +336,7 @@ public class PenguinApiExample {
             String requestBody = "{\"text\": \"Explain SOLID principles\"}";
             
             HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create("http://localhost:8000/api/v1/chat/message"))
+                .uri(URI.create("http://127.0.0.1:9000/api/v1/chat/message"))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(requestBody))
                 .build();
@@ -351,7 +373,7 @@ func main() {
 
 	// Send POST request
 	resp, err := http.Post(
-		"http://localhost:8000/api/v1/chat/message",
+		"http://127.0.0.1:9000/api/v1/chat/message",
 		"application/json",
 		bytes.NewBuffer(requestBody),
 	)
@@ -400,7 +422,7 @@ import requests
 
 # Create a checkpoint
 response = requests.post(
-    "http://localhost:8000/api/v1/checkpoints/create",
+    "http://127.0.0.1:9000/api/v1/checkpoints/create",
     json={
         "name": "Before refactor",
         "description": "Save state prior to major refactor"
@@ -409,10 +431,10 @@ response = requests.post(
 checkpoint_id = response.json()["checkpoint_id"]
 
 # List checkpoints
-checkpoints = requests.get("http://localhost:8000/api/v1/checkpoints").json()["checkpoints"]
+checkpoints = requests.get("http://127.0.0.1:9000/api/v1/checkpoints").json()["checkpoints"]
 
 # Rollback
-requests.post(f"http://localhost:8000/api/v1/checkpoints/{checkpoint_id}/rollback")
+requests.post(f"http://127.0.0.1:9000/api/v1/checkpoints/{checkpoint_id}/rollback")
 ```
 
 ### Model Management
@@ -421,16 +443,16 @@ requests.post(f"http://localhost:8000/api/v1/checkpoints/{checkpoint_id}/rollbac
 import requests
 
 # List available models
-models = requests.get("http://localhost:8000/api/v1/models").json()["models"]
+models = requests.get("http://127.0.0.1:9000/api/v1/models").json()["models"]
 
 # Switch model
 requests.post(
-    "http://localhost:8000/api/v1/models/load",
+    "http://127.0.0.1:9000/api/v1/models/load",
     json={"model_id": "openai/gpt-4o"}
 )
 
 # Get current model
-current = requests.get("http://localhost:8000/api/v1/models/current").json()
+current = requests.get("http://127.0.0.1:9000/api/v1/models/current").json()
 ```
 
 ### Memory API
@@ -440,7 +462,7 @@ import requests
 
 # Store memory
 memory = requests.post(
-    "http://localhost:8000/api/v1/memory/store",
+    "http://127.0.0.1:9000/api/v1/memory/store",
     json={
         "content": "Remember that Friday is deploy day",
         "categories": ["dev_notes"]
@@ -449,7 +471,7 @@ memory = requests.post(
 
 # Search memory
 results = requests.post(
-    "http://localhost:8000/api/v1/memory/search",
+    "http://127.0.0.1:9000/api/v1/memory/search",
     json={"query": "deploy day", "max_results": 3}
 ).json()["results"]
 ```
@@ -458,14 +480,14 @@ results = requests.post(
 
 ```bash
 # Capabilities
-curl http://localhost:8000/api/v1/capabilities
+curl http://127.0.0.1:9000/api/v1/capabilities
 
 # System status
-curl http://localhost:8000/api/v1/system/status
+curl http://127.0.0.1:9000/api/v1/system/status
 ``` -->
 
 ## Next Steps
 
 - Review the [API Reference Documentation](/docs/api_reference/api_server) for detailed endpoint specifications
 - Explore the [Web Interface](/docs/api_reference/webui) for a browser-based experience
-- Consider [setting up a proxy](/docs/advanced/deployment) for production deployments 
+- Consider [setting up a proxy](/docs/advanced/deployment) for production deployments

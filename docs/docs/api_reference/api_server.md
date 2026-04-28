@@ -213,6 +213,14 @@ Process a chat message with optional conversation support, multi-modal capabilit
 - Invalid directories return `400 Bad Request`.
 - Request execution is context-scoped, so concurrent requests in different repos keep tool/file/command roots isolated.
 
+**Tool Execution Contract:**
+- Tools are invoked by the model during chat processing; the web API does not expose a direct “run arbitrary tool by name” chat contract.
+- Native provider tool calls are the primary path when supported by the selected provider.
+- ActionXML remains a fallback compatibility path and is skipped when native provider tool calls have already executed for the turn.
+- Tool arguments and results are persisted as structured metadata where possible, with stable JSON serialization for structured arguments.
+- Tool execution is scoped to the session-bound `directory`, and approval-gated tools pause until the approval flow resolves.
+- REST responses include completed tool runs in `action_results`; live clients receive corresponding message/tool-part events.
+
 #### WebSocket `/api/v1/chat/stream`
 
 Stream chat responses in real-time with support for reasoning models and multiple agents.
@@ -227,7 +235,7 @@ Stream chat responses in real-time with support for reasoning models and multipl
 **Connection:**
 ```javascript
 // Works for public or intentionally exposed routes only.
-const ws = new WebSocket('ws://localhost:8000/api/v1/chat/stream');
+const ws = new WebSocket('ws://127.0.0.1:9000/api/v1/chat/stream');
 ```
 
 **Send Message:**
@@ -1088,7 +1096,7 @@ flowchart TD
 ```python
 import requests
 
-base_url = "http://localhost:8000"
+base_url = "http://127.0.0.1:9000"
 
 # Get current configuration
 response = requests.get(f"{base_url}/api/v1/system/config")
@@ -1602,19 +1610,19 @@ from penguin.web import start_server
 # Start with custom settings
 start_server(
     host="0.0.0.0",
-    port=8000,
+    port=9000,
     debug=False  # Enable auto-reload in development
 )
 ```
 
 ### Environment Variables
 
-Configure the server via environment variables:
+Configure the `penguin-web` entrypoint via environment variables:
 
 ```bash
 # Server settings
 HOST=0.0.0.0
-PORT=8000
+PORT=9000
 DEBUG=false
 
 # CORS configuration
@@ -1631,17 +1639,17 @@ OPENROUTER_API_KEY=your-key  # For model discovery
 
 ### Access Points
 
-By default, the server runs on port 8000 and provides:
+By default, the server runs on port 9000 and provides:
 
-- **Web UI**: http://localhost:8000/
-- **API Documentation (Swagger)**: http://localhost:8000/api/docs
-- **API Documentation (ReDoc)**: http://localhost:8000/api/redoc
-- **GitHub Webhook**: http://localhost:8000/api/v1/integrations/github/webhook
-- **WebSocket Events**: ws://localhost:8000/api/v1/events/ws
-- **WebSocket Chat**: ws://localhost:8000/api/v1/chat/stream
+- **Web UI**: http://127.0.0.1:9000/
+- **API Documentation (Swagger)**: http://127.0.0.1:9000/api/docs
+- **API Documentation (ReDoc)**: http://127.0.0.1:9000/api/redoc
+- **GitHub Webhook**: http://127.0.0.1:9000/api/v1/integrations/github/webhook
+- **WebSocket Events**: ws://127.0.0.1:9000/api/v1/events/ws
+- **WebSocket Chat**: ws://127.0.0.1:9000/api/v1/chat/stream
 
 ## API Documentation
 
 FastAPI automatically generates OpenAPI documentation for all endpoints, available at:
-- Swagger UI: http://localhost:8000/api/docs
-- ReDoc: http://localhost:8000/api/redoc
+- Swagger UI: http://127.0.0.1:9000/api/docs
+- ReDoc: http://127.0.0.1:9000/api/redoc

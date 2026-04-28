@@ -98,8 +98,8 @@ penguin-cli project task list [<PROJECT_ID>]
 ### Enhanced Web Interface (optional)
 ```bash
 pip install "penguin-ai[web]"   # compatibility alias; base install already includes this runtime
-penguin-web                      # Enhanced web interface at http://localhost:8000
-# API docs at http://localhost:8000/api/docs
+penguin-web                      # Web/API server at http://127.0.0.1:9000
+# API docs at http://127.0.0.1:9000/api/docs
 ```
 
 ### TUI Runtime Notes
@@ -259,6 +259,5 @@ penguin profile               # Profile startup and save a report
 penguin perf-test             # Benchmark startup performance
 penguin config debug          # Extended config + environment diagnostics
 ```
-
 
 
