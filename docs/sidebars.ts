@@ -38,6 +38,7 @@ const sidebars: SidebarsConfig = {
         'usage/task_management',
         'usage/checkpointing',
         'usage/cli_commands',
+        'usage/skills',
         'usage/project_management',
         'usage/api_usage',
         'usage/python_api_reference'

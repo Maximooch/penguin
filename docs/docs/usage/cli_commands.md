@@ -108,6 +108,26 @@ Manage the Penguin configuration file and first-run setup wizard.
 | `penguin-cli config test-routing` | Debug provider/model routing logic |
 | `penguin-cli config debug`        | Print an extended diagnostic report |
 
+### `skill`
+Discover, inspect, activate, and diagnose local Agent Skills.
+
+| Command | What it does |
+|---------|--------------|
+| `penguin-cli skill list` | List discovered skills and surface a count of invalid skill diagnostics |
+| `penguin-cli skill list --json` | Emit compact catalog and diagnostics as JSON |
+| `penguin-cli skill show <NAME>` | Show the full `SKILL.md` body and metadata for a discovered skill |
+| `penguin-cli skill show <NAME> --json` | Emit full skill metadata and body as JSON |
+| `penguin-cli skill activate <NAME>` | Load the named skill into the current runtime session as `MessageCategory.CONTEXT` |
+| `penguin-cli skill activate <NAME> --show-content` | Print the rendered `<skill_content>` activation payload after loading it |
+| `penguin-cli skill doctor` | Validate discovered skill directories and print install guidance |
+| `penguin-cli skill doctor --json` | Emit diagnostics as structured JSON |
+
+The default `penguin` launcher routes the `skill` subcommand to the same headless CLI path, so `penguin skill list` also works. For scripts and automation, prefer `penguin-cli`.
+
+Manual install is currently folder-copy based: put skill directories containing `SKILL.md` under `~/.penguin/skills/<skill-name>/` for user skills or `.penguin/skills/<skill-name>/` for trusted project skills. Package-manager install flows are deferred.
+
+See [Agent Skills](./skills.md) for the runtime behavior and security model.
+
 ### Developer utilities
 | Command | Purpose |
 |---------|---------|
@@ -210,5 +230,5 @@ penguin-cli project task start <TASK_ID>
 Earlier versions of the docs referenced commands such as `penguin memory`, `penguin db`, advanced task dependency graphs, and full web-server management. These features are **work-in-progress** and are **not** available in the current release. Attempting to run them will result in a "No such command" error.
 ---
 
-*Last updated: April 15, 2026*  
+*Last updated: April 28, 2026*
 If you find inaccuracies, please open an issue.
