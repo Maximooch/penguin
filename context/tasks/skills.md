@@ -39,6 +39,15 @@ MVP runtime and first CLI UX slice implemented in this branch. Web API, TUI, pac
 - [x] Surface invalid skill diagnostics clearly.
 - [x] Document manual install by copying folders into `~/.penguin/skills` or `.penguin/skills`.
 
+### Prompting And Agent Behavior
+
+- [x] Document skill-use rules in the generated tool guide.
+- [x] Add workflow guidance for when to activate skills from explicit mentions or matching descriptions.
+- [x] Instruct Penguin to activate the minimal relevant skill set, not every available skill.
+- [x] Clarify activated skills are `CONTEXT`, not `SYSTEM`, and lower priority than Penguin's system/developer instructions.
+- [x] Instruct Penguin to load referenced skill files progressively instead of bulk-loading resources.
+- [x] Add prompt regression tests covering skill tool docs and workflow guidance.
+
 ### Web API Interface
 
 - [ ] Add `GET /api/v1/skills` for compact catalog and diagnostics.
