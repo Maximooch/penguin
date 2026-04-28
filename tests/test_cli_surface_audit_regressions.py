@@ -1,6 +1,7 @@
 from datetime import datetime
 import importlib
 import asyncio
+import json
 import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -12,6 +13,7 @@ import pytest
 from penguin.cli.event_manager import EventManager
 from penguin.cli.interface import PenguinInterface
 from penguin.project.models import Project, Task, TaskPhase, TaskStatus
+from penguin.skills.models import Skill, SkillCatalogEntry, SkillDiagnostic
 
 
 def make_task(task_id: str, status: TaskStatus) -> Task:
@@ -39,6 +41,131 @@ def make_project() -> Project:
         updated_at=now,
         status="active",
     )
+
+
+def make_skill(tmp_path, name="demo-skill") -> Skill:
+    skill_dir = tmp_path / name
+    skill_dir.mkdir()
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_text("---\nname: demo-skill\ndescription: Demo skill\n---\n# Demo\nUse this skill.")
+    return Skill(
+        name=name,
+        description="Demo skill",
+        path=skill_dir,
+        skill_file=skill_file,
+        body="# Demo\nUse this skill.",
+        frontmatter={"name": name, "description": "Demo skill"},
+        allowed_tools=["read_file"],
+        source="user",
+    )
+
+
+class FakeSkillManager:
+    def __init__(self, skill: Skill, diagnostics=None):
+        self.skill = skill
+        self.diagnostics = diagnostics or []
+
+    def refresh(self):
+        return None
+
+    def catalog(self):
+        return [
+            SkillCatalogEntry(
+                name=self.skill.name,
+                description=self.skill.description,
+                source=self.skill.source,
+                path=str(self.skill.path),
+            )
+        ]
+
+    def get(self, name: str):
+        if name == self.skill.name:
+            return self.skill
+        return None
+
+    def list_payload(self):
+        return {
+            "skills": [entry.__dict__ for entry in self.catalog()],
+            "diagnostics": [diagnostic.__dict__ for diagnostic in self.diagnostics],
+        }
+
+
+def test_skill_list_command_outputs_catalog_json(tmp_path):
+    from penguin.cli import cli as cli_module
+
+    manager = FakeSkillManager(make_skill(tmp_path))
+
+    with patch.object(cli_module, "_get_skill_manager_for_cli", AsyncMock(return_value=manager)), patch.object(
+        cli_module, "console"
+    ) as console_mock:
+        cli_module.skill_list(json_output=True, workspace=None)
+
+    printed = console_mock.print.call_args.args[0]
+    payload = json.loads(printed)
+    assert payload["skills"][0]["name"] == "demo-skill"
+    assert payload["skills"][0]["source"] == "user"
+
+
+def test_skill_show_command_surfaces_skill_body(tmp_path):
+    from penguin.cli import cli as cli_module
+
+    skill = make_skill(tmp_path)
+    manager = FakeSkillManager(skill)
+
+    with patch.object(cli_module, "_get_skill_manager_for_cli", AsyncMock(return_value=manager)), patch.object(
+        cli_module, "console"
+    ) as console_mock:
+        cli_module.skill_show(name="demo-skill", json_output=True, workspace=None)
+
+    payload = json.loads(console_mock.print.call_args.args[0])
+    assert payload["name"] == "demo-skill"
+    assert "Use this skill" in payload["body"]
+    assert payload["allowed_tools"] == ["read_file"]
+
+
+def test_skill_activate_command_uses_runtime_skill_tool(tmp_path):
+    from penguin.cli import cli as cli_module
+
+    manager = FakeSkillManager(make_skill(tmp_path))
+    activation_payload = {
+        "status": "activated",
+        "duplicate": False,
+        "skill": {"name": "demo-skill", "path": str(tmp_path / "demo-skill")},
+        "content": "<skill_content name=\"demo-skill\">content</skill_content>",
+    }
+    skill_tools = SimpleNamespace(activate_skill=Mock(return_value=json.dumps(activation_payload)))
+    tool_manager = SimpleNamespace(skill_tools=skill_tools)
+
+    with patch.object(cli_module, "_get_skill_manager_for_cli", AsyncMock(return_value=manager)), patch.object(
+        cli_module, "_tool_manager", tool_manager
+    ), patch.object(cli_module, "console") as console_mock:
+        cli_module.skill_activate(name="demo-skill", json_output=True, show_content=False, workspace=None)
+
+    skill_tools.activate_skill.assert_called_once_with("demo-skill")
+    payload = json.loads(console_mock.print.call_args.args[0])
+    assert payload["status"] == "activated"
+
+
+def test_skill_doctor_surfaces_invalid_skill_diagnostics(tmp_path):
+    from penguin.cli import cli as cli_module
+
+    diagnostic = SkillDiagnostic(
+        path=str(tmp_path / "bad-skill" / "SKILL.md"),
+        severity="error",
+        code="invalid_frontmatter",
+        message="Malformed YAML frontmatter",
+        source="project",
+    )
+    manager = FakeSkillManager(make_skill(tmp_path), diagnostics=[diagnostic])
+
+    with patch.object(cli_module, "_get_skill_manager_for_cli", AsyncMock(return_value=manager)), patch.object(
+        cli_module, "console"
+    ) as console_mock:
+        cli_module.skill_doctor(json_output=True, workspace=None)
+
+    payload = json.loads(console_mock.print.call_args.args[0])
+    assert payload["diagnostics"][0]["code"] == "invalid_frontmatter"
+    assert "Malformed YAML" in payload["diagnostics"][0]["message"]
 
 
 @pytest.mark.asyncio

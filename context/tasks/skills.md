@@ -2,7 +2,7 @@
 
 ## Status
 
-MVP runtime implemented in this branch. CLI commands, package-manager distribution, and eval runner remain deferred.
+MVP runtime and first CLI UX slice implemented in this branch. Web API, TUI, package-manager distribution, and eval runner remain deferred.
 
 ## Work Checklist
 
@@ -32,12 +32,30 @@ MVP runtime implemented in this branch. CLI commands, package-manager distributi
 
 ### CLI And UX
 
-- [ ] Add `penguin skill list`.
-- [ ] Add `penguin skill show <name>`.
-- [ ] Add `penguin skill activate <name>`.
-- [ ] Add `penguin skill doctor`.
-- [ ] Surface invalid skill diagnostics clearly.
-- [ ] Document manual install by copying folders into `~/.penguin/skills` or `.penguin/skills`.
+- [x] Add `penguin skill list`.
+- [x] Add `penguin skill show <name>`.
+- [x] Add `penguin skill activate <name>`.
+- [x] Add `penguin skill doctor`.
+- [x] Surface invalid skill diagnostics clearly.
+- [x] Document manual install by copying folders into `~/.penguin/skills` or `.penguin/skills`.
+
+### Web API Interface
+
+- [ ] Add `GET /api/v1/skills` for compact catalog and diagnostics.
+- [ ] Add `GET /api/v1/skills/{name}` for full `SKILL.md` inspection without activation.
+- [ ] Add `POST /api/v1/skills/{name}/activate` to load skill content as session-scoped `CONTEXT`.
+- [ ] Include duplicate activation status and skill metadata in activation responses.
+- [ ] Surface invalid skill diagnostics in structured JSON for web clients.
+- [ ] Emit SSE/OpenCode-compatible events when skills are activated or diagnostics change.
+
+### TUI Interface
+
+- [ ] Add a Skills panel/list using the web/API catalog endpoint.
+- [ ] Show invalid skill diagnostics with actionable file paths and validation errors.
+- [ ] Add explicit activation action that calls the web/API activation endpoint.
+- [ ] Show whether a skill is already active in the current session.
+- [ ] Display manual install guidance for user/project skill folders.
+- [ ] Avoid auto-activating skills from UI selection; require explicit user action.
 
 ### Security And Trust
 
