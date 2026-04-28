@@ -773,12 +773,18 @@ class PenguinCore:
             max_sessions_in_memory=20,
             auto_save_interval=60,
             checkpoint_config=checkpoint_config,
+            skills_config=self.config.to_dict() if hasattr(self.config, "to_dict") else {},
+            project_root=getattr(self.tool_manager, "project_root", None),
         )
         # Attach a back-reference so Engine (and other helpers) can emit UI events
-        # and finalize streaming messages via the Core.  Without this the Engine
+        # and finalize streaming messages via the Core. Without this the Engine
         # silently skips those steps which caused tool results to be lost and
         # streaming panels to merge into a single message in the CLI.
         self.conversation_manager.core = self  # type: ignore[attr-defined]
+
+        # Inject core reference into tool_manager now that ConversationManager exists.
+        if self.tool_manager and hasattr(self.tool_manager, "set_core"):
+            self.tool_manager.set_core(self)
 
         self.action_executor = ActionExecutor(
             self.tool_manager,
