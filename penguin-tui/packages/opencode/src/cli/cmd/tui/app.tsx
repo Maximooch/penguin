@@ -12,6 +12,7 @@ import { SyncProvider, useSync } from "@tui/context/sync"
 import { LocalProvider, useLocal } from "@tui/context/local"
 import { DialogModel, useConnected } from "@tui/component/dialog-model"
 import { DialogMcp } from "@tui/component/dialog-mcp"
+import { DialogSkills } from "@tui/component/dialog-skills"
 import { DialogStatus } from "@tui/component/dialog-status"
 import { DialogSettings } from "@tui/component/dialog-settings"
 import { DialogThemeList } from "@tui/component/dialog-theme-list"
@@ -420,6 +421,19 @@ function App() {
       },
       onSelect: () => {
         dialog.replace(() => <DialogMcp />)
+      },
+    },
+    {
+      title: "Manage skills",
+      value: "skill.list",
+      category: "Agent",
+      enabled: sdk.penguin,
+      slash: {
+        name: "skills",
+        aliases: ["skill"],
+      },
+      onSelect: () => {
+        dialog.replace(() => <DialogSkills />)
       },
     },
     {

@@ -59,12 +59,12 @@ MVP runtime and first CLI UX slice implemented in this branch. Web API, TUI, pac
 
 ### TUI Interface
 
-- [ ] Add a Skills panel/list using the web/API catalog endpoint.
-- [ ] Show invalid skill diagnostics with actionable file paths and validation errors.
-- [ ] Add explicit activation action that calls the web/API activation endpoint.
-- [ ] Show whether a skill is already active in the current session.
-- [ ] Display manual install guidance for user/project skill folders.
-- [ ] Avoid auto-activating skills from UI selection; require explicit user action.
+- [x] Add a Skills panel/list using the web/API catalog endpoint.
+- [x] Show invalid skill diagnostics with actionable file paths and validation errors.
+- [x] Add explicit activation action that calls the web/API activation endpoint.
+- [x] Show whether a skill is already active in the current session.
+- [x] Display manual install guidance for user/project skill folders.
+- [x] Avoid auto-activating skills from UI selection; require explicit user action.
 
 ### Security And Trust
 

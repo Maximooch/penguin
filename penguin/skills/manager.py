@@ -56,6 +56,14 @@ class SkillManager:
             "diagnostics": [diagnostic.__dict__ for diagnostic in self.diagnostics],
         }
 
+    def active_names(self, session_id: str = "default") -> List[str]:
+        """Return activated skill names for a session."""
+        return sorted(self._activated_by_session.get(session_id, set()))
+
+    def is_active(self, name: str, session_id: str = "default") -> bool:
+        """Check whether a skill is already active for a session."""
+        return name in self._activated_by_session.get(session_id, set())
+
     def activate(
         self,
         name: str,

@@ -2143,6 +2143,7 @@ async def _emit_skill_event(
 @router.get("/api/v1/skills")
 async def list_skills(
     refresh: bool = False,
+    session_id: str = "default",
     core: PenguinCore = Depends(get_core),
 ) -> Dict[str, Any]:
     """Return compact skill catalog and diagnostics for web/TUI clients."""
@@ -2153,6 +2154,12 @@ async def list_skills(
     payload = manager.list_payload()
     payload["count"] = len(payload.get("skills", []))
     payload["diagnostic_count"] = len(payload.get("diagnostics", []))
+    active_names = set(manager.active_names(session_id))
+    payload["active"] = sorted(active_names)
+    payload["skills"] = [
+        {**skill, "active": skill.get("name") in active_names}
+        for skill in payload.get("skills", [])
+    ]
 
     if refresh:
         await _emit_skill_event(
@@ -2171,6 +2178,7 @@ async def list_skills(
 async def get_skill(
     name: str,
     max_resources: int = 200,
+    session_id: str = "default",
     core: PenguinCore = Depends(get_core),
 ) -> Dict[str, Any]:
     """Inspect a skill's full SKILL.md content without activating it."""
@@ -2188,6 +2196,7 @@ async def get_skill(
         "frontmatter": skill.frontmatter,
         "allowed_tools": skill.allowed_tools,
         "body": skill.body,
+        "active": manager.is_active(name, session_id),
         "resources": list_skill_resources(skill, max_resources=max_resources),
     }
 

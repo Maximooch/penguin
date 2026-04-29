@@ -76,12 +76,16 @@ def test_skill_routes_list_show_and_activate(tmp_path: Path) -> None:
         assert data["diagnostic_count"] == 0
         skill_names = {skill["name"] for skill in data["skills"]}
         assert "demo" in skill_names
+        demo_entry = next(skill for skill in data["skills"] if skill["name"] == "demo")
+        assert demo_entry["active"] is False
+        assert data["active"] == []
 
         detail = client.get("/api/v1/skills/demo")
         assert detail.status_code == 200
         detail_data = detail.json()
         assert detail_data["body"].startswith("# Demo Skill")
         assert detail_data["allowed_tools"] == ["read_file"]
+        assert detail_data["active"] is False
         assert "references.md" in detail_data["resources"]
 
         activated = client.post(
@@ -93,6 +97,11 @@ def test_skill_routes_list_show_and_activate(tmp_path: Path) -> None:
         assert activated_data["status"] == "activated"
         assert activated_data["duplicate"] is False
 
+        active_catalog = client.get("/api/v1/skills", params={"session_id": "web-session"})
+        active_data = active_catalog.json()
+        active_demo = next(skill for skill in active_data["skills"] if skill["name"] == "demo")
+        assert active_data["active"] == ["demo"]
+        assert active_demo["active"] is True
         duplicate = client.post(
             "/api/v1/skills/demo/activate",
             json={"session_id": "web-session", "load_into_context": False},
