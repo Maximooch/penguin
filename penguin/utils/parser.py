@@ -103,6 +103,9 @@ class ActionType(Enum):
     FINISH_TASK = "finish_task"
     # Legacy alias - kept for backward compatibility
     TASK_COMPLETED = "task_completed"  # Deprecated: use FINISH_TASK
+    # Agent Skills
+    LIST_SKILLS = "list_skills"
+    ACTIVATE_SKILL = "activate_skill"
     PROJECT_CREATE = "project_create"
     PROJECT_UPDATE = "project_update"
     PROJECT_DELETE = "project_delete"
@@ -1593,6 +1596,9 @@ class ActionExecutor:
             ActionType.FINISH_RESPONSE: self._finish_response,
             ActionType.FINISH_TASK: self._finish_task,
             ActionType.TASK_COMPLETED: self._finish_task,  # Deprecated alias
+            # Agent Skills
+            ActionType.LIST_SKILLS: self._list_skills,
+            ActionType.ACTIVATE_SKILL: self._activate_skill,
             ActionType.DEPENDENCY_DISPLAY: self._dependency_display,
             ActionType.ANALYZE_CODEBASE: self._analyze_codebase,
             ActionType.REINDEX_WORKSPACE: self._reindex_workspace,
@@ -3564,6 +3570,37 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             )
         except Exception as e:
             return f"Error signaling task completion: {str(e)}"
+
+    def _list_skills(self, params: str) -> str:
+        """List discovered Agent Skills and diagnostics.
+
+        Format: optional JSON {"refresh": true}
+        """
+        try:
+            payload = _parse_json_payload(params) or {}
+            return self.tool_manager.skill_tools.list_skills(
+                refresh=bool(payload.get("refresh", False))
+            )
+        except Exception as e:
+            return f"Error listing skills: {str(e)}"
+
+    def _activate_skill(self, params: str) -> str:
+        """Activate an Agent Skill by name.
+
+        Format: JSON {"name": "skill-name"} or plain skill name
+        """
+        try:
+            payload = _parse_json_payload(params) or {}
+            name = str(payload.get("name") or params or "").strip()
+            if not name:
+                return "Error activating skill: missing required skill name"
+            return self.tool_manager.skill_tools.activate_skill(
+                name,
+                session_id=payload.get("session_id"),
+                load_into_context=bool(payload.get("load_into_context", True)),
+            )
+        except Exception as e:
+            return f"Error activating skill: {str(e)}"
 
     # Deprecated: kept for backward compatibility
     def _task_completed(self, params: str) -> str:

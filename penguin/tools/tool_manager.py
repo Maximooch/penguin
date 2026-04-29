@@ -1997,6 +1997,8 @@ class ToolManager:
             "grep_search",
             "finish_response",
             "finish_task",
+            "list_skills",
+            "activate_skill",
         ]
         allowed = {
             self._canonical_tool_name(name)
