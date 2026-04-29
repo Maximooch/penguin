@@ -95,12 +95,12 @@ def test_skill_list_command_outputs_catalog_json(tmp_path):
 
     manager = FakeSkillManager(make_skill(tmp_path))
 
-    with patch.object(cli_module, "_get_skill_manager_for_cli", AsyncMock(return_value=manager)), patch.object(
-        cli_module, "console"
-    ) as console_mock:
-        cli_module.skill_list(json_output=True, workspace=None)
+    with patch.object(cli_module, "_get_skill_manager_for_cli", AsyncMock(return_value=manager)):
+        from io import StringIO
+        with patch("sys.stdout", new_callable=StringIO) as stdout:
+            cli_module.skill_list(json_output=True, workspace=None)
+            printed = stdout.getvalue()
 
-    printed = console_mock.print.call_args.args[0]
     payload = json.loads(printed)
     assert payload["skills"][0]["name"] == "demo-skill"
     assert payload["skills"][0]["source"] == "user"
@@ -112,16 +112,16 @@ def test_skill_show_command_surfaces_skill_body(tmp_path):
     skill = make_skill(tmp_path)
     manager = FakeSkillManager(skill)
 
-    with patch.object(cli_module, "_get_skill_manager_for_cli", AsyncMock(return_value=manager)), patch.object(
-        cli_module, "console"
-    ) as console_mock:
-        cli_module.skill_show(name="demo-skill", json_output=True, workspace=None)
+    with patch.object(cli_module, "_get_skill_manager_for_cli", AsyncMock(return_value=manager)):
+        from io import StringIO
+        with patch("sys.stdout", new_callable=StringIO) as stdout:
+            cli_module.skill_show(name="demo-skill", json_output=True, workspace=None)
+            printed = stdout.getvalue()
 
-    payload = json.loads(console_mock.print.call_args.args[0])
+    payload = json.loads(printed)
     assert payload["name"] == "demo-skill"
     assert "Use this skill" in payload["body"]
     assert payload["allowed_tools"] == ["read_file"]
-
 
 def test_skill_activate_command_uses_runtime_skill_tool(tmp_path):
     from penguin.cli import cli as cli_module
@@ -138,11 +138,14 @@ def test_skill_activate_command_uses_runtime_skill_tool(tmp_path):
 
     with patch.object(cli_module, "_get_skill_manager_for_cli", AsyncMock(return_value=manager)), patch.object(
         cli_module, "_tool_manager", tool_manager
-    ), patch.object(cli_module, "console") as console_mock:
-        cli_module.skill_activate(name="demo-skill", json_output=True, show_content=False, workspace=None)
+    ):
+        from io import StringIO
+        with patch("sys.stdout", new_callable=StringIO) as stdout:
+            cli_module.skill_activate(name="demo-skill", json_output=True, show_content=False, workspace=None)
+            printed = stdout.getvalue()
 
     skill_tools.activate_skill.assert_called_once_with("demo-skill")
-    payload = json.loads(console_mock.print.call_args.args[0])
+    payload = json.loads(printed)
     assert payload["status"] == "activated"
 
 
@@ -158,12 +161,13 @@ def test_skill_doctor_surfaces_invalid_skill_diagnostics(tmp_path):
     )
     manager = FakeSkillManager(make_skill(tmp_path), diagnostics=[diagnostic])
 
-    with patch.object(cli_module, "_get_skill_manager_for_cli", AsyncMock(return_value=manager)), patch.object(
-        cli_module, "console"
-    ) as console_mock:
-        cli_module.skill_doctor(json_output=True, workspace=None)
+    with patch.object(cli_module, "_get_skill_manager_for_cli", AsyncMock(return_value=manager)):
+        from io import StringIO
+        with patch("sys.stdout", new_callable=StringIO) as stdout:
+            cli_module.skill_doctor(json_output=True, workspace=None)
+            printed = stdout.getvalue()
 
-    payload = json.loads(console_mock.print.call_args.args[0])
+    payload = json.loads(printed)
     assert payload["diagnostics"][0]["code"] == "invalid_frontmatter"
     assert "Malformed YAML" in payload["diagnostics"][0]["message"]
 

@@ -595,11 +595,12 @@ async def _initialize_core_components_globally(
 
     effective_fast_startup = fast_startup_override or config_fast_startup
 
-    # Convert config to dict format for ToolManager
+    # Convert config to dict format for ToolManager while preserving typed fields
+    # like `skills` that are not present in a raw dataclass `__dict__` shape.
     config_dict = (
-        _loaded_config.__dict__
-        if hasattr(_loaded_config, "__dict__")
-        else _loaded_config
+        _loaded_config.to_dict()
+        if hasattr(_loaded_config, "to_dict")
+        else (_loaded_config.__dict__ if hasattr(_loaded_config, "__dict__") else _loaded_config)
     )
     _tool_manager = ToolManager(
         config_dict, log_error, fast_startup=effective_fast_startup
@@ -805,7 +806,7 @@ def skill_list(
         manager = await _get_skill_manager_for_cli(workspace)
         payload = manager.list_payload()
         if json_output:
-            console.print(json.dumps(payload, indent=2))
+            print(json.dumps(payload, indent=2))
             return
 
         from rich.table import Table
@@ -850,7 +851,7 @@ def skill_show(
         if skill is None:
             available = [entry.name for entry in manager.catalog()]
             if json_output:
-                console.print(json.dumps({"error": f"Skill not found: {name}", "available_skills": available}, indent=2))
+                print(json.dumps({"error": f"Skill not found: {name}", "available_skills": available}, indent=2))
             else:
                 console.print(f"[red]Skill not found:[/red] {name}")
                 if available:
@@ -868,7 +869,7 @@ def skill_show(
             "body": skill.body,
         }
         if json_output:
-            console.print(json.dumps(payload, indent=2))
+            print(json.dumps(payload, indent=2))
             return
 
         console.print(Panel(
@@ -902,7 +903,7 @@ def skill_activate(
 
         result = json.loads(skill_tools.activate_skill(name))
         if json_output:
-            console.print(json.dumps(result, indent=2))
+            print(json.dumps(result, indent=2))
             return
 
         status = result.get("status")
@@ -937,7 +938,7 @@ def skill_doctor(
         payload = manager.list_payload()
         diagnostics = manager.diagnostics
         if json_output:
-            console.print(json.dumps(payload, indent=2))
+            print(json.dumps(payload, indent=2))
             return
 
         console.print("[bold cyan]Agent Skills Doctor[/bold cyan]")
