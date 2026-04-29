@@ -50,12 +50,12 @@ MVP runtime and first CLI UX slice implemented in this branch. Web API, TUI, pac
 
 ### Web API Interface
 
-- [ ] Add `GET /api/v1/skills` for compact catalog and diagnostics.
-- [ ] Add `GET /api/v1/skills/{name}` for full `SKILL.md` inspection without activation.
-- [ ] Add `POST /api/v1/skills/{name}/activate` to load skill content as session-scoped `CONTEXT`.
-- [ ] Include duplicate activation status and skill metadata in activation responses.
-- [ ] Surface invalid skill diagnostics in structured JSON for web clients.
-- [ ] Emit SSE/OpenCode-compatible events when skills are activated or diagnostics change.
+- [x] Add `GET /api/v1/skills` for compact catalog and diagnostics.
+- [x] Add `GET /api/v1/skills/{name}` for full `SKILL.md` inspection without activation.
+- [x] Add `POST /api/v1/skills/{name}/activate` to load skill content as session-scoped `CONTEXT`.
+- [x] Include duplicate activation status and skill metadata in activation responses.
+- [x] Surface invalid skill diagnostics in structured JSON for web clients.
+- [x] Emit SSE/OpenCode-compatible events when skills are activated or diagnostics change.
 
 ### TUI Interface
 
