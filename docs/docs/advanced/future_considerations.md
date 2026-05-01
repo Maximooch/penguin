@@ -1,6 +1,6 @@
 # Future Considerations
 
-This document outlines planned and potential future enhancements for the Penguin AI Assistant platform.
+This document outlines planned and potential future enhancements for Penguin.
 
 ## Conversation and Memory Systems
 

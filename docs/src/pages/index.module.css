@@ -1,23 +1,580 @@
-/**
- * CSS files with the .module.css suffix will be treated as CSS modules
- * and scoped locally.
- */
-
-.heroBanner {
-  padding: 4rem 0;
-  text-align: center;
-  position: relative;
-  overflow: hidden;
+.pageShell {
+  --penguin-bg: #07090d;
+  --penguin-bg-soft: #0c1017;
+  --penguin-panel: rgba(255, 255, 255, 0.045);
+  --penguin-panel-strong: rgba(255, 255, 255, 0.075);
+  --penguin-border: rgba(255, 255, 255, 0.1);
+  --penguin-border-soft: rgba(255, 255, 255, 0.065);
+  --penguin-text: #f7f8fb;
+  --penguin-muted: #a3abb9;
+  --penguin-dim: #697386;
+  --penguin-blue: #5f8cff;
+  --penguin-cyan: #41d7ff;
+  --penguin-green: #5df0a6;
+  --penguin-violet: #8e7dff;
+  --penguin-shadow: 0 24px 80px rgba(0, 0, 0, 0.36);
 }
 
-@media screen and (max-width: 996px) {
-  .heroBanner {
-    padding: 2rem;
+.heroShell {
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 18% 16%, rgba(95, 140, 255, 0.26), transparent 28rem),
+    radial-gradient(circle at 82% 18%, rgba(65, 215, 255, 0.16), transparent 24rem),
+    linear-gradient(180deg, #06080c 0%, var(--penguin-bg) 100%);
+  color: var(--penguin-text);
+  border-bottom: 1px solid var(--penguin-border-soft);
+}
+
+.heroShell::before {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  content: '';
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.78), transparent 84%);
+}
+
+.heroGrid {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1.04fr) minmax(340px, 0.76fr);
+  gap: clamp(2rem, 5vw, 5rem);
+  align-items: center;
+  width: min(1180px, calc(100% - 2rem));
+  min-height: 720px;
+  margin: 0 auto;
+  padding: clamp(5rem, 10vw, 8rem) 0;
+}
+
+.heroCopy {
+  max-width: 760px;
+}
+
+.statusBadge {
+  display: inline-flex;
+  gap: 0.55rem;
+  align-items: center;
+  padding: 0.45rem 0.7rem;
+  margin-bottom: 1.6rem;
+  font: 600 0.78rem/1.2 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: #d7def0;
+  letter-spacing: 0.02em;
+  background: rgba(255, 255, 255, 0.055);
+  border: 1px solid var(--penguin-border);
+  border-radius: 999px;
+}
+
+.statusDot {
+  width: 0.48rem;
+  height: 0.48rem;
+  background: var(--penguin-green);
+  border-radius: 999px;
+  box-shadow: 0 0 22px rgba(93, 240, 166, 0.8);
+}
+
+.heroTitle {
+  max-width: 780px;
+  margin: 0;
+  font-size: clamp(3.4rem, 8vw, 7.5rem);
+  font-weight: 750;
+  line-height: 0.92;
+  letter-spacing: -0.075em;
+  color: var(--penguin-text);
+  text-wrap: balance;
+}
+
+.heroSubtitle {
+  max-width: 680px;
+  margin: 1.6rem 0 0;
+  font-size: clamp(1.08rem, 1.7vw, 1.28rem);
+  line-height: 1.65;
+  color: var(--penguin-muted);
+  text-wrap: pretty;
+}
+
+.heroActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+  align-items: center;
+  margin-top: 2rem;
+}
+
+.primaryAction,
+.secondaryAction {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 46px;
+  padding: 0.78rem 1.05rem;
+  font-weight: 700;
+  line-height: 1;
+  border-radius: 10px;
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.primaryAction,
+.primaryAction:hover {
+  color: #06101a;
+  text-decoration: none;
+  background: linear-gradient(135deg, var(--penguin-cyan), var(--penguin-blue));
+  box-shadow: 0 14px 34px rgba(95, 140, 255, 0.28);
+}
+
+.secondaryAction,
+.secondaryAction:hover {
+  color: var(--penguin-text);
+  text-decoration: none;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--penguin-border);
+}
+
+.primaryAction:hover,
+.secondaryAction:hover {
+  transform: translateY(-1px);
+}
+
+.commandStack {
+  display: grid;
+  gap: 0.65rem;
+  max-width: 560px;
+  margin-top: 2rem;
+}
+
+.commandLine {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.82rem 0.95rem;
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: #dbe4f6;
+  background: rgba(3, 7, 14, 0.78);
+  border: 1px solid var(--penguin-border);
+  border-radius: 12px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045);
+}
+
+.commandLine span {
+  color: var(--penguin-green);
+}
+
+.commandLine code {
+  overflow: hidden;
+  color: #dbe4f6;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+  border: 0;
+}
+
+.copyButton {
+  min-height: 32px;
+  padding: 0 0.62rem;
+  font: 700 0.72rem/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: #dbe4f6;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.075);
+  border: 1px solid var(--penguin-border);
+  border-radius: 8px;
+}
+
+.copyButton:hover,
+.copyButton:focus-visible {
+  color: #06101a;
+  background: var(--penguin-green);
+  outline: none;
+}
+
+.terminalCard {
+  position: relative;
+  padding: 1rem;
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0.035)),
+    rgba(8, 12, 18, 0.84);
+  border: 1px solid var(--penguin-border);
+  border-radius: 24px;
+  box-shadow: var(--penguin-shadow);
+  backdrop-filter: blur(18px);
+}
+
+.terminalCard::after {
+  position: absolute;
+  inset: auto -16% -24% 16%;
+  height: 180px;
+  pointer-events: none;
+  content: '';
+  background: radial-gradient(circle, rgba(65, 215, 255, 0.23), transparent 70%);
+  filter: blur(12px);
+}
+
+.terminalChrome {
+  display: flex;
+  gap: 0.44rem;
+  align-items: center;
+  padding: 0.85rem;
+  color: var(--penguin-dim);
+  border-bottom: 1px solid var(--penguin-border-soft);
+}
+
+.terminalChrome span {
+  width: 0.68rem;
+  height: 0.68rem;
+  background: var(--penguin-dim);
+  border-radius: 999px;
+}
+
+.terminalChrome span:first-child {
+  background: #ff6b6b;
+}
+
+.terminalChrome span:nth-child(2) {
+  background: #ffd166;
+}
+
+.terminalChrome span:nth-child(3) {
+  background: var(--penguin-green);
+}
+
+.terminalChrome p {
+  margin: 0 0 0 auto;
+  font: 600 0.72rem/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.penguinMark {
+  display: grid;
+  place-items: center;
+  min-height: 420px;
+  padding: clamp(1.5rem, 4vw, 2.4rem) 0.6rem;
+  font-size: clamp(6rem, 14vw, 12rem);
+  line-height: 1;
+  text-shadow: 0 22px 70px rgba(65, 215, 255, 0.32);
+  background: transparent;
+}
+
+.terminalRows {
+  display: grid;
+  gap: 0.6rem;
+  padding: 0 0.6rem 0.7rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.terminalRows p {
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  padding: 0.76rem 0.85rem;
+  margin: 0;
+  color: #dbe4f6;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid var(--penguin-border-soft);
+  border-radius: 12px;
+}
+
+.terminalRows span {
+  color: var(--penguin-cyan);
+}
+
+.mainContent {
+  color: var(--penguin-text);
+  background:
+    linear-gradient(180deg, var(--penguin-bg) 0%, #090c12 52%, #05070a 100%);
+}
+
+.sectionBlock,
+.splitSection,
+.capabilitySection,
+.finalCta {
+  width: min(1180px, calc(100% - 2rem));
+  margin: 0 auto;
+}
+
+.sectionBlock,
+.capabilitySection {
+  padding: clamp(4.5rem, 8vw, 7.5rem) 0 0;
+}
+
+.sectionHeader {
+  max-width: 780px;
+  margin-bottom: 2rem;
+}
+
+.sectionKicker {
+  display: inline-block;
+  margin-bottom: 0.85rem;
+  font: 800 0.74rem/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: var(--penguin-green);
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+}
+
+.sectionHeader h2,
+.splitSection h2,
+.workflowIntro h2,
+.finalCta h2 {
+  margin: 0;
+  font-size: clamp(2.2rem, 4.8vw, 4.6rem);
+  line-height: 0.98;
+  letter-spacing: -0.055em;
+  color: var(--penguin-text);
+  text-wrap: balance;
+}
+
+.sectionHeader p,
+.splitSection > div > p,
+.workflowIntro p,
+.finalCta p {
+  max-width: 720px;
+  margin: 1rem 0 0;
+  font-size: 1.06rem;
+  line-height: 1.7;
+  color: var(--penguin-muted);
+  text-wrap: pretty;
+}
+
+.pillarGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.pillarCard,
+.workflowStep,
+.capabilityItem,
+.installStep {
+  background: var(--penguin-panel);
+  border: 1px solid var(--penguin-border-soft);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.pillarCard {
+  min-height: 310px;
+  padding: 1.25rem;
+  border-radius: 20px;
+}
+
+.pillarCard > span,
+.workflowStep > span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.1rem;
+  height: 2.1rem;
+  margin-bottom: 1.8rem;
+  font: 800 0.75rem/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: #06101a;
+  background: var(--penguin-green);
+  border-radius: 999px;
+}
+
+.pillarCard h3,
+.workflowStep h3 {
+  margin: 0 0 0.85rem;
+  font-size: 1.08rem;
+  line-height: 1.2;
+  color: var(--penguin-text);
+}
+
+.pillarCard p,
+.workflowStep p,
+.surfaceRow p {
+  margin: 0;
+  font-size: 0.95rem;
+  line-height: 1.62;
+  color: var(--penguin-muted);
+}
+
+.splitSection {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1fr);
+  gap: clamp(2rem, 6vw, 5rem);
+  align-items: start;
+  padding: clamp(5rem, 9vw, 8rem) 0;
+}
+
+.surfaceList {
+  display: grid;
+  overflow: hidden;
+  border: 1px solid var(--penguin-border-soft);
+  border-radius: 20px;
+}
+
+.surfaceRow {
+  display: grid;
+  grid-template-columns: 7rem minmax(0, 1fr);
+  gap: 1rem;
+  padding: 1.15rem;
+  background: rgba(255, 255, 255, 0.035);
+  border-bottom: 1px solid var(--penguin-border-soft);
+}
+
+.surfaceRow:last-child {
+  border-bottom: 0;
+}
+
+.surfaceRow strong {
+  color: var(--penguin-cyan);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.workflowPanel {
+  display: grid;
+  grid-template-columns: minmax(0, 0.88fr) minmax(0, 1.12fr);
+  gap: clamp(2rem, 5vw, 4rem);
+  padding: clamp(1.25rem, 4vw, 2rem);
+  background:
+    radial-gradient(circle at 15% 20%, rgba(142, 125, 255, 0.16), transparent 28rem),
+    rgba(255, 255, 255, 0.035);
+  border: 1px solid var(--penguin-border-soft);
+  border-radius: 28px;
+}
+
+.workflowGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.workflowStep {
+  min-height: 220px;
+  padding: 1.15rem;
+  border-radius: 18px;
+}
+
+.installSteps {
+  display: grid;
+  gap: 1rem;
+}
+
+.installStep {
+  padding: 1.15rem;
+  border-radius: 18px;
+}
+
+.installStep strong {
+  display: block;
+  margin-bottom: 0.65rem;
+  color: var(--penguin-text);
+}
+
+.capabilityGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.capabilityItem {
+  min-height: 120px;
+  padding: 1.1rem;
+  font-size: 0.98rem;
+  font-weight: 700;
+  line-height: 1.45;
+  color: #dce5f8;
+  border-radius: 18px;
+}
+
+.finalCta {
+  padding: clamp(5rem, 10vw, 9rem) 0;
+  text-align: center;
+}
+
+.finalCta p {
+  margin-right: auto;
+  margin-left: auto;
+}
+
+.finalCta .heroActions {
+  justify-content: center;
+}
+
+@media (max-width: 1060px) {
+  .heroGrid,
+  .splitSection,
+  .workflowPanel {
+    grid-template-columns: 1fr;
+  }
+
+  .heroGrid {
+    min-height: auto;
+  }
+
+  .terminalCard {
+    max-width: 720px;
+  }
+
+  .pillarGrid,
+  .capabilityGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
-.buttons {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+@media (max-width: 700px) {
+  .heroGrid,
+  .sectionBlock,
+  .splitSection,
+  .capabilitySection,
+  .finalCta {
+    width: min(100% - 1rem, 1180px);
+  }
+
+  .heroGrid {
+    padding-top: 3.2rem;
+  }
+
+  .heroTitle {
+    font-size: clamp(3rem, 17vw, 4.2rem);
+  }
+
+  .heroActions,
+  .finalCta .heroActions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .primaryAction,
+  .secondaryAction {
+    width: 100%;
+  }
+
+  .commandLine {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .copyButton {
+    grid-column: 2;
+    width: max-content;
+  }
+
+  .pillarGrid,
+  .workflowGrid,
+  .capabilityGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .pillarCard,
+  .workflowStep {
+    min-height: auto;
+  }
+
+  .surfaceRow {
+    grid-template-columns: 1fr;
+  }
+
+  .terminalRows p {
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .primaryAction,
+  .secondaryAction {
+    transition: none;
+  }
 }

@@ -1,6 +1,6 @@
 # Basic Usage
 
-This guide covers the fundamental ways to interact with Penguin AI Assistant v0.2.0, from simple chat conversations to project management and automation.
+This guide covers the fundamental ways to interact with Penguin, from interactive coding sessions to project management and automation.
 
 ## Interactive Chat Mode
 
