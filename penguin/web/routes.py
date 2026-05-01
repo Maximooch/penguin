@@ -2215,7 +2215,7 @@ async def activate_skill(
     tool_manager = getattr(core, "tool_manager", None)
     skill_tools = getattr(tool_manager, "skill_tools", None)
     if skill_tools is not None:
-        result = await skill_tools.activate_skill(
+        result = skill_tools.activate_skill(
             name=name,
             session_id=request.session_id,
             load_into_context=request.load_into_context,

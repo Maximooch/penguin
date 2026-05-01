@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from penguin.skills.manager import SkillManager
+from penguin.tools.core.skill_tools import SkillTools
 from penguin.web import routes as routes_module
 
 
@@ -26,6 +27,17 @@ class _Core:
         self.conversation_manager = SimpleNamespace(skill_manager=manager)
         self.tool_manager = None
         self.event_bus = _EventBus()
+
+
+class _CoreWithSkillTools(_Core):
+    def __init__(self, manager: SkillManager) -> None:
+        super().__init__(manager)
+        self.tool_manager = SimpleNamespace(
+            skill_tools=SkillTools(
+                manager,
+                conversation_manager=self.conversation_manager,
+            )
+        )
 
 
 def _write_skill(root: Path, name: str = "demo") -> Path:
@@ -45,10 +57,10 @@ def _write_skill(root: Path, name: str = "demo") -> Path:
     return skill_dir
 
 
-def _build_client(tmp_path: Path) -> tuple[TestClient, _Core]:
+def _build_manager(tmp_path: Path) -> SkillManager:
     skills_root = tmp_path / "skills"
     _write_skill(skills_root)
-    manager = SkillManager(
+    return SkillManager(
         {
             "skills": {
                 "enabled": True,
@@ -61,7 +73,18 @@ def _build_client(tmp_path: Path) -> tuple[TestClient, _Core]:
         },
         project_root=tmp_path,
     )
-    core = _Core(manager)
+
+
+def _build_client(tmp_path: Path) -> tuple[TestClient, _Core]:
+    core = _Core(_build_manager(tmp_path))
+    cast(Any, routes_module.router).core = cast(Any, core)
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    return TestClient(app), core
+
+
+def _build_client_with_skill_tools(tmp_path: Path) -> tuple[TestClient, _CoreWithSkillTools]:
+    core = _CoreWithSkillTools(_build_manager(tmp_path))
     cast(Any, routes_module.router).core = cast(Any, core)
     app = FastAPI()
     app.include_router(routes_module.router)
@@ -102,12 +125,26 @@ def test_skill_routes_list_show_and_activate(tmp_path: Path) -> None:
         active_demo = next(skill for skill in active_data["skills"] if skill["name"] == "demo")
         assert active_data["active"] == ["demo"]
         assert active_demo["active"] is True
+
         duplicate = client.post(
             "/api/v1/skills/demo/activate",
             json={"session_id": "web-session", "load_into_context": False},
         )
         assert duplicate.status_code == 200
         assert duplicate.json()["status"] == "already_active"
+
+
+def test_skill_activation_route_handles_sync_skill_tool_adapter(tmp_path: Path) -> None:
+    client, _ = _build_client_with_skill_tools(tmp_path)
+    with client:
+        activate = client.post(
+            "/api/v1/skills/demo/activate",
+            json={"session_id": "tool-session", "load_into_context": False},
+        )
+        assert activate.status_code == 200
+        data = activate.json()
+        assert data["status"] == "activated"
+        assert data["skill"]["name"] == "demo"
 
 
 def test_skill_routes_emit_refresh_and_activation_events(tmp_path: Path) -> None:
