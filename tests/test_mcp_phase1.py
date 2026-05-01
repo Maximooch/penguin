@@ -4,7 +4,11 @@ import json
 
 from penguin.integrations.mcp.config import load_mcp_server_configs
 from penguin.integrations.mcp.manager import MCPToolDefinition
-from penguin.integrations.mcp.names import is_mcp_tool_name, make_tool_name, sanitize_part
+from penguin.integrations.mcp.names import (
+    is_mcp_tool_name,
+    make_tool_name,
+    sanitize_part,
+)
 from penguin.tools.providers.mcp import MCPToolProvider
 from penguin.tools.tool_manager import ToolManager
 
@@ -32,8 +36,31 @@ class FakeManager:
         self.called_with = (public_name, arguments)
         return {"public_name": public_name, "arguments": arguments}
 
+    def refresh_sync(self):
+        return self.list_tools_sync()
+
+    def reconnect_sync(self, server_name=None) -> dict:
+        return {
+            "available": True,
+            "discovered": True,
+            "servers": {"local-fs": {"status": "connected"}},
+        }
+
+    def close_sync(self) -> dict:
+        return {
+            "available": True,
+            "discovered": True,
+            "servers": {"local-fs": {"status": "disconnected"}},
+        }
+
     def status(self) -> dict:
-        return {"available": True, "discovered": True, "servers": {}}
+        return {
+            "available": True,
+            "discovered": True,
+            "server_count": 1,
+            "tool_count": 1,
+            "servers": {},
+        }
 
 
 def test_mcp_config_parses_mapping_servers_and_env(monkeypatch) -> None:
@@ -157,3 +184,70 @@ def test_mcp_provider_gracefully_noops_when_disabled() -> None:
     assert provider.get_tool_schemas() == []
     payload = json.loads(provider.execute_tool("mcp__missing__tool", {}))
     assert payload["error"] == "mcp_disabled"
+
+
+
+def test_mcp_config_accepts_claude_style_mcp_servers() -> None:
+    configs = load_mcp_server_configs(
+        {
+            "mcpServers": {
+                "everything": {
+                    "command": "npx",
+                    "args": ["-y", "@modelcontextprotocol/server-everything"],
+                    "startupTimeoutSec": 30,
+                    "toolTimeoutSec": 120,
+                }
+            }
+        }
+    )
+
+    assert len(configs) == 1
+    server = configs[0]
+    assert server.name == "everything"
+    assert server.command == "npx"
+    assert server.startup_timeout_sec == 30
+    assert server.tool_timeout_sec == 120
+
+
+def test_mcp_provider_status_refresh_reconnect_and_close() -> None:
+    provider = MCPToolProvider(
+        {
+            "mcp": {
+                "enabled": True,
+                "servers": {"local-fs": {"command": "fake"}},
+            }
+        }
+    )
+    fake_manager = FakeManager()
+    provider._manager = fake_manager
+
+    assert provider.status()["initialized"] is True
+    assert provider.refresh()[0]["name"] == "mcp__local_fs__read_file"
+    assert (
+        provider.reconnect("local-fs")["servers"]["local-fs"]["status"]
+        == "connected"
+    )
+    assert provider.close()["servers"]["local-fs"]["status"] == "disconnected"
+
+
+def test_tool_manager_mcp_diagnostic_facade() -> None:
+    manager = ToolManager(
+        {
+            "mcp": {
+                "enabled": True,
+                "servers": {"local-fs": {"command": "fake"}},
+            }
+        },
+        lambda *_args, **_kwargs: None,
+        fast_startup=True,
+    )
+    fake_manager = FakeManager()
+    manager._mcp_provider._manager = fake_manager
+
+    assert manager.get_mcp_status()["initialized"] is True
+    assert manager.refresh_mcp_tools()[0]["name"] == "mcp__local_fs__read_file"
+    assert (
+        manager.reconnect_mcp("local-fs")["servers"]["local-fs"]["status"]
+        == "connected"
+    )
+    assert manager.close_mcp()["servers"]["local-fs"]["status"] == "disconnected"

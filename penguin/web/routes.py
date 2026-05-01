@@ -112,6 +112,11 @@ from penguin.web.services.opencode_provider import (
     remove_provider_auth_record,
     set_provider_auth_record,
 )
+from penguin.web.services.mcp import (
+    close_mcp as close_mcp_service,
+    get_mcp_status as get_mcp_status_service,
+    reconnect_mcp as reconnect_mcp_service,
+)
 from penguin.system.execution_context import (
     ExecutionContext,
     execution_context_scope,
@@ -2176,6 +2181,32 @@ async def list_skills(
         )
 
     return payload
+
+
+@router.get("/api/v1/mcp")
+async def get_mcp_status(
+    refresh: bool = False,
+    core: PenguinCore = Depends(get_core),
+) -> Dict[str, Any]:
+    """Return MCP server diagnostics for web/TUI clients."""
+    return get_mcp_status_service(core, refresh=refresh)
+
+
+@router.post("/api/v1/mcp/reconnect")
+async def reconnect_mcp(
+    server_name: Optional[str] = None,
+    core: PenguinCore = Depends(get_core),
+) -> Dict[str, Any]:
+    """Reconnect one or all configured MCP servers."""
+    return reconnect_mcp_service(core, server_name=server_name)
+
+
+@router.post("/api/v1/mcp/close")
+async def close_mcp(
+    core: PenguinCore = Depends(get_core),
+) -> Dict[str, Any]:
+    """Close all MCP sessions."""
+    return close_mcp_service(core)
 
 
 @router.get("/api/v1/skills/{name}")

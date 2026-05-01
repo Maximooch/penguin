@@ -325,6 +325,42 @@ Penguin can connect to configured MCP servers and use their tools as normal Peng
 - Integration test uses a tiny Python FastMCP/stdio server.
 - Tool list changes from an MCP server invalidate cached schemas or are explicitly documented as unsupported in MVP.
 
+## Phase 1.5: MCP Host Hardening And E2E Validation
+
+### Scope
+
+Make Penguin comfortable to test as an MCP host/client before exposing Penguin itself as an MCP server. This phase is about diagnostics, real config shapes, and one-command smoke validation against real STDIO servers such as `@modelcontextprotocol/server-everything` and `chrome-devtools-mcp`.
+
+### Implementation Steps
+
+1. Accept common host config shapes:
+   - Penguin-native `mcp.servers`.
+   - Claude-style top-level `mcpServers`.
+   - Codex-style top-level `mcp_servers` where practical.
+   - Keep Streamable HTTP/SSE rejected with a clear unsupported-transport error until that phase lands.
+
+2. Add diagnostics and lifecycle controls:
+   - ToolManager facade methods for MCP status, refresh, reconnect, and close.
+   - Web/API endpoints for `/api/v1/mcp`, reconnect, and close, following the skills-route precedent.
+   - Status payload should include availability, initialized/discovered state, server status, transport, command, tool count, and last error.
+
+3. Add smoke validation tooling:
+   - Scriptable STDIO smoke runner using Penguin's `MCPClientManager`, not Inspector only.
+   - Example target: `npx -y @modelcontextprotocol/server-everything`.
+   - Example high-value target: `npx -y chrome-devtools-mcp@latest --no-usage-statistics --no-update-checks`.
+
+4. Preserve permission and provider boundaries:
+   - MCP tool execution still routes through `ToolManager.execute_tool()`.
+   - Browser/Chrome MCP tools should remain high-risk and prompt/deny according to permission policy.
+
+### Acceptance Criteria
+
+- Penguin can parse `mcp.servers`, `mcpServers`, and `mcp_servers` config shapes.
+- `/api/v1/mcp?refresh=true` reports configured server status without hiding errors.
+- ToolManager can refresh/reconnect/close MCP sessions without restarting Penguin.
+- A local smoke script can list tools from a real STDIO MCP server when `penguin-ai[mcp]` is installed on Python 3.10+.
+- Focused tests cover config aliases, diagnostics, refresh/reconnect/close facades, and disabled/no-SDK behavior.
+
 ## Phase 2: Real MCP Server For Penguin Tools
 
 ### Scope
@@ -444,6 +480,13 @@ Potential mappings:
 - One MCP tool can be called as `mcp__<server>__<tool>`.
 - Basic tests pass.
 
+### Milestone 1.5: Host Hardening And Real-Server Smoke
+
+- Common config aliases parse correctly.
+- MCP status/refresh/reconnect/close surfaces exist in ToolManager and web/API.
+- Smoke script validates STDIO discovery against `server-everything` and Chrome DevTools MCP.
+- Diagnostics clearly show missing SDK, failed command startup, unsupported transport, and tool counts.
+
 ### Milestone 2: Robust Client
 
 - Reconnect/cleanup.
@@ -478,4 +521,4 @@ Potential mappings:
 
 ## Recommendation
 
-Start with Milestone 1 only, but include the reference-agent basics that prevent pain later: explicit status states, conservative `mcp__server__tool` naming, raw-name reverse lookup, separate startup/tool timeouts, and STDIO process cleanup. Do not touch resources, prompts, OAuth, or server exposure until a local STDIO MCP tool can be discovered and called through Penguin's existing ToolManager with tests. Anything else is scope creep wearing a fake mustache.
+Start with Milestone 1, immediately follow with Milestone 1.5 for real-server validation, and include the reference-agent basics that prevent pain later: explicit status states, conservative `mcp__server__tool` naming, raw-name reverse lookup, separate startup/tool timeouts, and STDIO process cleanup. Do not touch resources, prompts, OAuth, or server exposure until a local STDIO MCP tool can be discovered and called through Penguin's existing ToolManager with tests. Anything else is scope creep wearing a fake mustache.

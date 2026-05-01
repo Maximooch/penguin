@@ -8,9 +8,10 @@ import logging
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any
 
-from penguin.integrations.mcp.config import MCPServerConfig
+if TYPE_CHECKING:
+    from penguin.integrations.mcp.config import MCPServerConfig
 from penguin.integrations.mcp.names import make_tool_name
 
 logger = logging.getLogger(__name__)
@@ -67,9 +68,9 @@ class MCPServerState:
     config: MCPServerConfig
     status: MCPServerStatus = MCPServerStatus.DISCONNECTED
     tools: dict[str, MCPToolDefinition] = field(default_factory=dict)
-    error: Optional[str] = None
+    error: str | None = None
     session: Any = None
-    stack: Optional[AsyncExitStack] = None
+    stack: AsyncExitStack | None = None
 
 
 class MCPClientManager:
@@ -92,9 +93,14 @@ class MCPClientManager:
         return {
             "available": self.available,
             "discovered": self._discovered,
+            "server_count": len(self._states),
+            "tool_count": len(self._tool_index),
             "servers": {
                 name: {
                     "status": state.status.value,
+                    "transport": state.config.transport,
+                    "command": state.config.command,
+                    "tool_count": len(state.tools),
                     "error": state.error,
                     "tools": sorted(state.tools),
                 }
@@ -112,11 +118,30 @@ class MCPClientManager:
         """Call an MCP tool synchronously for ToolManager integration."""
         return self._run_async(self.call_tool(public_name, arguments))
 
+    def refresh_sync(self) -> list[MCPToolDefinition]:
+        """Force rediscovery synchronously."""
+        return self._run_async(self.refresh())
+
+    def reconnect_sync(self, server_name: str | None = None) -> dict[str, Any]:
+        """Reconnect one or all MCP servers synchronously."""
+        self._run_async(self.reconnect(server_name))
+        return self.status()
+
+    def close_sync(self) -> dict[str, Any]:
+        """Close all MCP sessions synchronously."""
+        self._run_async(self.close())
+        return self.status()
+
     async def discover(self) -> list[MCPToolDefinition]:
         """Connect to configured servers and discover tools."""
         if self._discovered:
             return list(self._tool_index.values())
         if not HAS_MCP_SDK:
+            for state in self._states.values():
+                state.status = MCPServerStatus.FAILED
+                state.error = (
+                    "MCP SDK is not installed. Install with `penguin-ai[mcp]`."
+                )
             logger.info("MCP SDK is not installed; no MCP tools discovered")
             self._discovered = True
             return []
@@ -127,6 +152,37 @@ class MCPClientManager:
         self._discovered = True
         return list(self._tool_index.values())
 
+    async def refresh(self) -> list[MCPToolDefinition]:
+        """Close sessions and force a fresh tool discovery pass."""
+        await self.close()
+        self._tool_index.clear()
+        for state in self._states.values():
+            state.tools.clear()
+            state.error = None
+        self._discovered = False
+        return await self.discover()
+
+    async def reconnect(self, server_name: str | None = None) -> None:
+        """Reconnect one server or all servers and refresh their tool lists."""
+        if server_name is None:
+            await self.refresh()
+            return
+        state = self._states.get(server_name)
+        if state is None:
+            raise ValueError(f"Unknown MCP server: {server_name}")
+        if state.stack is not None:
+            await state.stack.aclose()
+        for public_name in list(state.tools):
+            self._tool_index.pop(public_name, None)
+        state.tools.clear()
+        state.stack = None
+        state.session = None
+        state.error = None
+        state.status = MCPServerStatus.DISCONNECTED
+        existing = set(self._tool_index)
+        await self._connect_and_list_tools(state, existing)
+        self._discovered = True
+
     async def call_tool(self, public_name: str, arguments: dict[str, Any]) -> Any:
         """Call a discovered MCP tool by Penguin public name."""
         if public_name not in self._tool_index:
@@ -136,26 +192,23 @@ class MCPClientManager:
             raise ValueError(f"Unknown MCP tool: {public_name}")
 
         state = self._states[tool.server_name]
-        if state.session is None or state.status != MCPServerStatus.CONNECTED:
-            await self._connect_and_list_tools(state, set(self._tool_index))
-        if state.session is None:
-            raise RuntimeError(f"MCP server '{tool.server_name}' is not connected")
-
         timeout = state.config.tool_timeout_sec
-        result = await asyncio.wait_for(
-            state.session.call_tool(tool.raw_name, arguments or {}),
-            timeout=timeout,
-        )
-        return self._serialize_call_result(result)
+        async with AsyncExitStack() as stack:
+            session = await self._open_session(state, stack)
+            result = await asyncio.wait_for(
+                session.call_tool(tool.raw_name, arguments or {}),
+                timeout=timeout,
+            )
+            return self._serialize_call_result(result)
 
     async def close(self) -> None:
-        """Close all open MCP sessions."""
+        """Close cached MCP session handles.
+
+        Phase 1.5 intentionally opens stdio sessions per discovery/call so AnyIO
+        cancel scopes close in the same task that created them. This method keeps
+        the lifecycle facade stable for future persistent-session support.
+        """
         for state in self._states.values():
-            if state.stack is not None:
-                try:
-                    await state.stack.aclose()
-                except Exception as exc:  # pragma: no cover - defensive cleanup
-                    logger.warning("Failed closing MCP server '%s': %s", state.config.name, exc)
             state.stack = None
             state.session = None
             state.status = MCPServerStatus.DISCONNECTED
@@ -168,58 +221,73 @@ class MCPClientManager:
         state.status = MCPServerStatus.CONNECTING
         state.error = None
         try:
-            session = await self._ensure_session(state)
-            response = await asyncio.wait_for(
-                session.list_tools(),
-                timeout=state.config.startup_timeout_sec,
-            )
-            for raw_tool in getattr(response, "tools", []) or []:
-                raw_name = str(getattr(raw_tool, "name", ""))
-                if not raw_name or not state.config.allows_tool(raw_name):
-                    continue
-                public_name = make_tool_name(state.config.name, raw_name, existing)
-                existing.add(public_name)
-                input_schema = getattr(raw_tool, "inputSchema", None) or getattr(
-                    raw_tool,
-                    "input_schema",
-                    None,
+            async with AsyncExitStack() as stack:
+                session = await self._open_session(state, stack)
+                response = await asyncio.wait_for(
+                    session.list_tools(),
+                    timeout=state.config.startup_timeout_sec,
                 )
-                if not isinstance(input_schema, dict):
-                    input_schema = {"type": "object", "properties": {}}
-                description = str(getattr(raw_tool, "description", "") or "")
-                definition = MCPToolDefinition(
-                    public_name=public_name,
-                    server_name=state.config.name,
-                    raw_name=raw_name,
-                    description=description or f"MCP tool {raw_name} from {state.config.name}",
-                    input_schema=input_schema,
-                )
-                state.tools[public_name] = definition
-                self._tool_index[public_name] = definition
+                for raw_tool in getattr(response, "tools", []) or []:
+                    raw_name = str(getattr(raw_tool, "name", ""))
+                    if not raw_name or not state.config.allows_tool(raw_name):
+                        continue
+                    public_name = make_tool_name(state.config.name, raw_name, existing)
+                    existing.add(public_name)
+                    input_schema = getattr(raw_tool, "inputSchema", None) or getattr(
+                        raw_tool,
+                        "input_schema",
+                        None,
+                    )
+                    if not isinstance(input_schema, dict):
+                        input_schema = {"type": "object", "properties": {}}
+                    description = str(getattr(raw_tool, "description", "") or "")
+                    definition = MCPToolDefinition(
+                        public_name=public_name,
+                        server_name=state.config.name,
+                        raw_name=raw_name,
+                        description=(
+                            description
+                            or f"MCP tool {raw_name} from {state.config.name}"
+                        ),
+                        input_schema=input_schema,
+                    )
+                    state.tools[public_name] = definition
+                    self._tool_index[public_name] = definition
+            state.session = None
+            state.stack = None
             state.status = MCPServerStatus.CONNECTED
         except Exception as exc:
             state.status = MCPServerStatus.FAILED
             state.error = str(exc)
-            logger.warning("MCP server '%s' discovery failed: %s", state.config.name, exc)
+            logger.warning(
+                "MCP server '%s' discovery failed: %s",
+                state.config.name,
+                exc,
+            )
 
-    async def _ensure_session(self, state: MCPServerState) -> Any:
-        if state.session is not None:
-            return state.session
+    async def _open_session(self, state: MCPServerState, stack: AsyncExitStack) -> Any:
+        """Open one MCP stdio session owned by the caller's async context."""
         if not HAS_MCP_SDK:
-            raise RuntimeError("MCP SDK is not installed. Install with `penguin-ai[mcp]`.")
+            raise RuntimeError(
+                "MCP SDK is not installed. Install with `penguin-ai[mcp]`."
+            )
 
-        stack = AsyncExitStack()
         params = StdioServerParameters(  # type: ignore[misc]
             command=state.config.command,
             args=state.config.args,
             env=state.config.env or None,
             cwd=state.config.cwd,
         )
-        read_stream, write_stream = await stack.enter_async_context(stdio_client(params))
-        session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
-        await asyncio.wait_for(session.initialize(), timeout=state.config.startup_timeout_sec)
-        state.stack = stack
-        state.session = session
+        read_stream, write_stream = await stack.enter_async_context(
+            stdio_client(params)
+        )
+        session = await stack.enter_async_context(
+            ClientSession(read_stream, write_stream)
+        )
+        await asyncio.wait_for(
+            session.initialize(),
+            timeout=state.config.startup_timeout_sec,
+        )
         return session
 
     @staticmethod
@@ -237,9 +305,17 @@ class MCPClientManager:
         if isinstance(result, list):
             return [MCPClientManager._serialize_call_result(item) for item in result]
         if isinstance(result, dict):
-            return {key: MCPClientManager._serialize_call_result(value) for key, value in result.items()}
+            return {
+                key: MCPClientManager._serialize_call_result(value)
+                for key, value in result.items()
+            }
         try:
-            return json.loads(json.dumps(result, default=lambda value: getattr(value, "__dict__", str(value))))
+            return json.loads(
+                json.dumps(
+                    result,
+                    default=lambda value: getattr(value, "__dict__", str(value)),
+                )
+            )
         except Exception:
             return str(result)
 
@@ -251,7 +327,7 @@ class MCPClientManager:
             return asyncio.run(coro)
 
         result: Any = None
-        error: Optional[BaseException] = None
+        error: BaseException | None = None
 
         def run() -> None:
             nonlocal result, error

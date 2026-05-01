@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from penguin.integrations.mcp.config import load_mcp_server_configs
 from penguin.integrations.mcp.manager import MCPClientManager
@@ -16,10 +16,10 @@ logger = logging.getLogger(__name__)
 class MCPToolProvider:
     """Expose external MCP server tools through Penguin's ToolManager."""
 
-    def __init__(self, config: Optional[dict[str, Any]] = None) -> None:
+    def __init__(self, config: dict[str, Any] | None = None) -> None:
         self.config = config or {}
-        self._manager: Optional[MCPClientManager] = None
-        self._schemas: Optional[list[dict[str, Any]]] = None
+        self._manager: MCPClientManager | None = None
+        self._schemas: list[dict[str, Any]] | None = None
 
     @property
     def enabled(self) -> bool:
@@ -49,7 +49,7 @@ class MCPToolProvider:
         return list(self._schemas)
 
     def execute_tool(
-        self, tool_name: str, tool_input: Optional[dict[str, Any]] = None
+        self, tool_name: str, tool_input: dict[str, Any] | None = None
     ) -> str:
         """Execute an MCP tool and return a JSON string payload."""
         if not self.enabled:
@@ -74,12 +74,45 @@ class MCPToolProvider:
                 indent=2,
             )
 
+    def refresh(self) -> list[dict[str, Any]]:
+        """Force rediscovery and return fresh ToolManager-compatible schemas."""
+        self._schemas = None
+        if not self.enabled:
+            return []
+        definitions = self.manager.refresh_sync()
+        self._schemas = [definition.to_penguin_schema() for definition in definitions]
+        return list(self._schemas)
+
+    def reconnect(self, server_name: str | None = None) -> dict[str, Any]:
+        """Reconnect one or all MCP servers and invalidate cached schemas."""
+        self._schemas = None
+        if not self.enabled:
+            return self.status()
+        result = self.manager.reconnect_sync(server_name)
+        self._schemas = [
+            definition.to_penguin_schema()
+            for definition in self.manager.list_tools_sync()
+        ]
+        return {"enabled": self.enabled, "initialized": True, **result}
+
+    def close(self) -> dict[str, Any]:
+        """Close MCP sessions and return diagnostics."""
+        self._schemas = None
+        if self._manager is None:
+            return self.status()
+        result = self._manager.close_sync()
+        return {"enabled": self.enabled, "initialized": True, **result}
+
     def status(self) -> dict[str, Any]:
         """Return serializable provider diagnostics."""
         if self._manager is None:
             return {
                 "enabled": self.enabled,
                 "initialized": False,
+                "available": None,
+                "discovered": False,
+                "server_count": len(load_mcp_server_configs(self.config)),
+                "tool_count": 0,
                 "servers": {},
             }
         return {

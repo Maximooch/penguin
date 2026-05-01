@@ -1969,6 +1969,22 @@ class ToolManager:
         tools.extend(self._mcp_provider.get_tool_schemas())
         return tools
 
+    def get_mcp_status(self) -> Dict[str, Any]:
+        """Return MCP provider diagnostics."""
+        return self._mcp_provider.status()
+
+    def refresh_mcp_tools(self) -> List[Dict[str, Any]]:
+        """Force MCP tool rediscovery and return fresh schemas."""
+        return self._mcp_provider.refresh()
+
+    def reconnect_mcp(self, server_name: Optional[str] = None) -> Dict[str, Any]:
+        """Reconnect one or all MCP servers."""
+        return self._mcp_provider.reconnect(server_name)
+
+    def close_mcp(self) -> Dict[str, Any]:
+        """Close MCP sessions."""
+        return self._mcp_provider.close()
+
     def get_tool_aliases(self) -> Dict[str, str]:
         """Return centralized legacy-to-canonical tool aliases."""
         return dict(self._tool_aliases)
