@@ -96,3 +96,29 @@ class SkillManager:
             ).__dict__,
             "content": render_activation(skill, max_resources=max_resources),
         }
+
+    def deactivate(self, name: str, *, session_id: str = "default") -> Dict[str, Any]:
+        """Deactivate a skill for a session."""
+        skill = self.get(name)
+        if skill is None:
+            return {
+                "status": "not_found",
+                "error": f"Skill not found: {name}",
+                "available_skills": [entry.name for entry in self.catalog()],
+            }
+
+        activated = self._activated_by_session.setdefault(session_id, set())
+        was_active = name in activated
+        if was_active:
+            activated.remove(name)
+
+        return {
+            "status": "deactivated" if was_active else "not_active",
+            "was_active": was_active,
+            "skill": SkillCatalogEntry(
+                name=skill.name,
+                description=skill.description,
+                source=skill.source,
+                path=str(skill.path),
+            ).__dict__,
+        }

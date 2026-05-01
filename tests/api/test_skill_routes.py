@@ -147,6 +147,29 @@ def test_skill_activation_route_handles_sync_skill_tool_adapter(tmp_path: Path) 
         assert data["skill"]["name"] == "demo"
 
 
+def test_skill_deactivation_route_toggles_active_state(tmp_path: Path) -> None:
+    client, _ = _build_client_with_skill_tools(tmp_path)
+    with client:
+        activate = client.post(
+            "/api/v1/skills/demo/activate",
+            json={"session_id": "tool-session", "load_into_context": False},
+        )
+        assert activate.status_code == 200
+
+        deactivate = client.post(
+            "/api/v1/skills/demo/deactivate",
+            json={"session_id": "tool-session"},
+        )
+        assert deactivate.status_code == 200
+        data = deactivate.json()
+        assert data["status"] == "deactivated"
+        assert data["was_active"] is True
+
+        catalog = client.get("/api/v1/skills", params={"session_id": "tool-session"})
+        active_demo = next(skill for skill in catalog.json()["skills"] if skill["name"] == "demo")
+        assert active_demo["active"] is False
+
+
 def test_skill_routes_emit_refresh_and_activation_events(tmp_path: Path) -> None:
     client, core = _build_client(tmp_path)
     with client:

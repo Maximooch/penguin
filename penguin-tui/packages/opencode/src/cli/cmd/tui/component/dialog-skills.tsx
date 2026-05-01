@@ -35,7 +35,7 @@ type SkillOption =
 
 function Status(props: { active?: boolean; loading?: boolean }) {
   const { theme } = useTheme()
-  if (props.loading) return <span style={{ fg: theme.textMuted }}>⋯ Activating</span>
+  if (props.loading) return <span style={{ fg: theme.textMuted }}>⋯ Updating</span>
   if (props.active) return <span style={{ fg: theme.success, attributes: TextAttributes.BOLD }}>✓ Active</span>
   return <span style={{ fg: theme.textMuted }}>○ Available</span>
 }
@@ -72,21 +72,22 @@ export function DialogSkills() {
     }
   }
 
-  async function activate(name: string) {
+  async function toggleSkill(skill: SkillEntry) {
     if (activating() !== null) return
-    setActivating(name)
+    setActivating(skill.name)
     try {
-      const url = new URL(`/api/v1/skills/${encodeURIComponent(name)}/activate`, sdk.url)
+      const action = skill.active ? "deactivate" : "activate"
+      const url = new URL(`/api/v1/skills/${encodeURIComponent(skill.name)}/${action}`, sdk.url)
       const res = await sdk.fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ session_id: sdk.sessionID ?? "default", load_into_context: true }),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const result = (await res.json()) as { status?: string; duplicate?: boolean }
+      const result = (await res.json()) as { status?: string; duplicate?: boolean; was_active?: boolean }
       toast.show({
-        variant: result.duplicate ? "info" : "success",
-        message: result.duplicate ? `${name} already active` : `Activated ${name}`,
+        variant: result.status === "not_active" || result.duplicate ? "info" : "success",
+        message: skill.active ? `Deactivated ${skill.name}` : `Activated ${skill.name}`,
       })
       await load(false)
     } catch (err) {
@@ -159,11 +160,14 @@ export function DialogSkills() {
   const keybinds = createMemo(() => [
     {
       keybind: Keybind.parse("space")[0],
-      title: "activate",
+      title: "toggle",
       disabled: activating() !== null,
       onTrigger: (option: DialogSelectOption<SkillOption>) => {
-        if (option.value.kind !== "skill") return
-        activate(option.value.name)
+        const selected = option.value
+        if (selected.kind !== "skill") return
+        const skill = payload().skills?.find((entry) => entry.name === selected.name)
+        if (!skill) return
+        toggleSkill(skill)
       },
     },
     {

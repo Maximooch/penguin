@@ -2071,6 +2071,10 @@ def _setup_question_event_callbacks():
         logger.error("Failed to setup question callbacks: %s", e)
 
 
+class SkillDeactivateRequest(BaseModel):
+    session_id: str = "default"
+
+
 router = APIRouter()
 
 
@@ -2237,6 +2241,39 @@ async def activate_skill(
             "status": result.get("status"),
             "duplicate": result.get("duplicate", False),
             "load_into_context": request.load_into_context,
+        },
+    )
+
+    return result
+
+
+@router.post("/api/v1/skills/{name}/deactivate")
+async def deactivate_skill(
+    name: str,
+    request: SkillDeactivateRequest,
+    core: PenguinCore = Depends(get_core),
+) -> Dict[str, Any]:
+    """Deactivate a skill for a session and remove loaded CONTEXT when possible."""
+    manager = _get_skill_manager(core)
+    if manager.get(name) is None:
+        raise HTTPException(status_code=404, detail=f"Skill not found: {name}")
+
+    tool_manager = getattr(core, "tool_manager", None)
+    skill_tools = getattr(tool_manager, "skill_tools", None)
+    if skill_tools is not None:
+        result = skill_tools.deactivate_skill(name=name, session_id=request.session_id)
+    else:
+        result = manager.deactivate(name, session_id=request.session_id)
+
+    result = _normalize_skill_activation_result(result)
+    await _emit_skill_event(
+        core,
+        "skill.deactivated",
+        {
+            "sessionID": request.session_id,
+            "skill": result.get("skill"),
+            "status": result.get("status"),
+            "was_active": result.get("was_active", False),
         },
     )
 

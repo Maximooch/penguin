@@ -33,6 +33,17 @@ class SkillTools:
             self._add_skill_context(name, result["content"])
         return json.dumps(result, indent=2)
 
+    def deactivate_skill(
+        self,
+        name: str,
+        session_id: Optional[str] = None,
+    ) -> str:
+        resolved_session_id = session_id or self._current_session_id() or "default"
+        result = self.manager.deactivate(name, session_id=resolved_session_id)
+        if result.get("status") == "deactivated":
+            self._remove_skill_context(name)
+        return json.dumps(result, indent=2)
+
     def _current_session_id(self) -> Optional[str]:
         try:
             conversation = self.conversation_manager.conversation
@@ -55,5 +66,24 @@ class SkillTools:
                 },
             )
             message.metadata.setdefault("skill_name", name)
+        except Exception:
+            return
+
+    def _remove_skill_context(self, name: str) -> None:
+        if self.conversation_manager is None:
+            return
+        try:
+            conversation = self.conversation_manager.conversation
+            session = conversation.session
+            session.messages = [
+                message
+                for message in session.messages
+                if (
+                    message.metadata.get("skill_name") != name
+                    or message.metadata.get("type") != "skill_activation"
+                )
+            ]
+            if hasattr(conversation, "_modified"):
+                conversation._modified = True
         except Exception:
             return
