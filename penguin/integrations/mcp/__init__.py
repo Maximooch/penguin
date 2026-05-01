@@ -1,10 +1,30 @@
-"""MCP integration package for Penguin.
+"""Model Context Protocol integration package for Penguin."""
 
-Contains server and client adapters for exposing Penguin tools via the
-Model Context Protocol and consuming remote MCP servers as virtual tools.
-"""
+from __future__ import annotations
 
-from .adapter import MCPAdapter, MCPToolImplementation
-from .echo import start_server
+from penguin.integrations.mcp.config import MCPServerConfig, load_mcp_server_configs
+from penguin.integrations.mcp.manager import (
+    HAS_MCP_SDK,
+    MCPClientManager,
+    MCPServerStatus,
+    MCPToolDefinition,
+)
+from penguin.integrations.mcp.names import (
+    MCP_TOOL_PREFIX,
+    is_mcp_tool_name,
+    make_tool_name,
+    sanitize_part,
+)
 
-__all__ = ["MCPAdapter", "MCPToolImplementation", "start_server"] 
+__all__ = [
+    "HAS_MCP_SDK",
+    "MCPClientManager",
+    "MCPServerConfig",
+    "MCPServerStatus",
+    "MCPToolDefinition",
+    "MCP_TOOL_PREFIX",
+    "is_mcp_tool_name",
+    "load_mcp_server_configs",
+    "make_tool_name",
+    "sanitize_part",
+]

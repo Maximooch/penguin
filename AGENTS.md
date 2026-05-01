@@ -2,6 +2,7 @@ Fast Reference for Agents
 
 Commands
 - Install dev deps: pip install -e .[dev] (use uv/pipx if available)
+- Development workflow preference: use `uv` for installs and running Penguin (`uv sync`, `uv pip install ...`, `uv run penguin...`); plain `pytest` is fine for tests.
 - Lint (Ruff): ruff check . ; ruff format .
 - Format (Black + isort profile via Ruff): black . ; ruff check --fix .
 - Type hints policy: use typing, no strict mypy configured; prefer Pydantic types where relevant.

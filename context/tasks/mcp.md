@@ -3,6 +3,7 @@
 ## Status
 
 - Created: 2026-05-01
+- Updated: 2026-05-01
 - Owner: Penguin runtime/tooling
 - State: proposed
 - Bias: rewrite existing MCP integration instead of patching current stubs
@@ -12,6 +13,8 @@
 Current MCP integration should be treated as disposable. It exposes and consumes a custom HTTP/JSON-lines shape that resembles MCP vocabulary but does not implement the real MCP protocol. The rewrite should make Penguin a real MCP host first: connect to external MCP servers and expose their tools as Penguin tools. Exposing Penguin itself as an MCP server is useful, but it is phase 2.
 
 The leverage point is `ToolManager`: Penguin already has tool schemas, permission enforcement, path/context normalization, and execution dispatch. MCP should plug into that system rather than invent a parallel tool layer.
+
+Post-skills-merge adjustment: the new skills runtime pattern is the right precedent. MCP should be a runtime-owned manager with small ToolManager facade methods, explicit status/diagnostics, and web/TUI visibility. Do not hardcode MCP tools only into the static registry and call it done.
 
 ## Goals
 
@@ -41,6 +44,8 @@ The leverage point is `ToolManager`: Penguin already has tool schemas, permissio
 - `penguin/integrations/mcp/stdio_server.py` uses custom JSON-line methods `list_tools` and `call_tool`; this is not MCP `tools/list` / `tools/call` JSON-RPC.
 - `penguin/integrations/mcp/adapter.py` imports `ModelContextProtocol`, which is not the Python SDK usage shown in current MCP docs.
 - `pyproject.toml` has an `[mcp]` extra with auth dependencies but does not include the `mcp` SDK itself.
+- Recent skills-system work added a useful integration pattern: a runtime-owned manager, ToolManager facade tools, core wiring, and web/TUI diagnostics. MCP should follow that pattern instead of becoming another isolated subsystem.
+- MCP dynamic tool registration must coexist cleanly with static native tools and skills tools in ToolManager listing/execution paths.
 
 ## Evidence From Cached MCP Docs
 
@@ -57,17 +62,51 @@ Key points:
 - Python server docs use `mcp.server.fastmcp.FastMCP`.
 - STDIO servers must not write logs to stdout because stdout carries protocol frames.
 
+## Reference-Agent Lessons
+
+Reviewed these reference implementations:
+
+- `reference/opencode/packages/opencode/src/mcp/index.ts`
+- `reference/opencode/packages/opencode/src/server/routes/mcp.ts`
+- `reference/codex/codex-rs/codex-mcp/src/mcp_connection_manager.rs`
+- `reference/codex/codex-rs/codex-mcp/src/mcp_tool_names.rs`
+- `reference/codex/codex-rs/rmcp-client/src/stdio_server_launcher.rs`
+
+Useful takeaways to steal shamelessly, minus language/runtime mismatch:
+
+- Maintain explicit server status states: `connected`, `disabled`, `failed`, `needs_auth`, and later `needs_client_registration`. This is cleaner than boolean connected/not connected.
+- Treat `tools/list_changed` notifications as a real cache invalidation event. OpenCode publishes a tools-changed bus event when a server says its tool list changed.
+- Normalize MCP schemas defensively. OpenCode forces tool input schemas to object-shaped schemas with `properties` and `additionalProperties: false`; Penguin should do equivalent validation where safe.
+- Timeouts need two separate knobs: startup/listing timeout and per-tool-call timeout. Codex defaults are roughly 30 seconds startup and 120 seconds tool calls; Penguin config should distinguish them.
+- Tool naming must be collision-safe and model-safe. Codex uses `mcp__<server>__<tool>`, sanitizes names, hashes collisions, and caps model-visible names at 64 chars. Penguin should use this form, not `mcp::<server>::<tool>`, unless existing provider constraints prove colons are accepted everywhere.
+- Preserve raw MCP identities separately from model-visible names. The callable name can be sanitized/hashed; the protocol call must still send the raw MCP `tool.name` to the owning server.
+- Process lifecycle is not optional. Local STDIO server launch should set cwd/env deliberately, pipe stdout for protocol, capture stderr for logs, kill on drop, and on Unix prefer process-group cleanup for child subprocesses.
+- Add status/connect/disconnect APIs early. OpenCode has `/mcp`, add, auth, connect, disconnect routes; Penguin does not need the full OAuth flow in phase 1, but status and reconnect controls are worth having.
+- Cache only as an optimization. Codex has startup snapshots/caches for hosted connector tools; Penguin should avoid cache complexity in the MVP but design the manager so cache can be added without changing ToolManager contracts.
+- Resources/prompts are second-pass. Both reference agents support or plan resources/prompts, but tools are the leverage point. Do not let resource/prompt support block tool calls.
+
+Codex config precedents worth copying in spirit:
+
+- Uses a top-level `mcp_servers` map keyed by server name. Penguin can use nested `mcp.servers` if that fits existing config style, but should support import/export from `mcp_servers`-style configs later.
+- STDIO server fields: `command`, `args`, `env`, optional `env_vars`, and `cwd`.
+- Streamable HTTP fields: `url`, `bearer_token_env_var`, `http_headers`, and `env_http_headers`.
+- Reject inline plaintext bearer tokens; prefer env-var indirection for secrets.
+- Per-server fields include `enabled`, `startup_timeout_sec`, `tool_timeout_sec`, tool allow/deny lists, and a default tool approval mode.
+- Codex supports both global config and project/plugin-derived MCP servers; Penguin should plan for user-global plus project-local config, with project-local gated by trust/permissions.
+
 ## Proposed Architecture
 
 ```text
 PenguinCore
   └── ToolManager
         ├── Native Penguin tools
+        ├── Skills tools / skill facade
         └── MCPToolProvider
               ├── MCPConnectionManager
               │     ├── stdio server sessions
               │     └── streamable HTTP server sessions
               ├── tool discovery/cache
+              ├── model-safe name allocation
               ├── schema conversion
               └── call dispatch to MCP sessions
 ```
@@ -79,22 +118,33 @@ penguin/integrations/mcp/
   __init__.py
   config.py              # typed config models and validation
   manager.py             # MCPConnectionManager lifecycle
-  provider.py            # registers MCP tools into ToolManager
+  names.py               # model-safe tool-name allocation and reverse lookup
   schema.py              # MCP inputSchema -> Penguin tool schema conversion
   transports.py          # stdio/http transport helpers
-  errors.py              # explicit error types
+  diagnostics.py         # status snapshots and error formatting
+  errors.py              # explicit integration exceptions
   server.py              # phase 2: expose Penguin via FastMCP
 ```
 
-The exact file split can change, but the boundaries should not.
+Companion Penguin-facing provider code should live with tools, not inside the protocol adapter:
+
+```text
+penguin/tools/providers/
+  mcp.py                 # dynamic MCP tools as Penguin tools
+```
+
+The exact file split can change, but the boundary should not: `integrations/mcp/` owns MCP protocol/client/server concerns; `tools/providers/mcp.py` owns ToolManager-facing registration, schema exposure, and dispatch facade.
 
 ## Configuration Shape
 
-Initial user-facing config should mirror common MCP host configs:
+Initial user-facing config should mirror common MCP host configs while fitting Penguin's config style. Prefer a nested shape for Penguin-native config, but design import/export so Codex/Claude-style `mcp_servers` maps are easy to ingest later.
 
 ```yaml
 mcp:
   enabled: true
+  initialize: lazy        # lazy | startup
+  fail_on_startup_error: true
+  tool_prefix: mcp
   servers:
     filesystem:
       transport: stdio
@@ -104,20 +154,100 @@ mcp:
         - '@modelcontextprotocol/server-filesystem'
         - /safe/root
       env: {}
+      env_vars: []        # optional allowlist/inheritance descriptors, if supported
       cwd: null
-      timeout_seconds: 30
+      startup_timeout_sec: 30
+      tool_timeout_sec: 120
+      enabled: true
+      default_tools_approval_mode: prompt
+      enabled_tools: null
+      disabled_tools: null
 
     sentry:
       transport: streamable_http
       url: https://mcp.sentry.dev/mcp
-      headers:
-        Authorization: Bearer ${SENTRY_MCP_TOKEN}
-      timeout_seconds: 30
-  tool_prefix: mcp
-  fail_on_startup_error: true
+      bearer_token_env_var: SENTRY_MCP_TOKEN
+      http_headers: {}
+      env_http_headers: {}
+      startup_timeout_sec: 30
+      tool_timeout_sec: 120
+      enabled: true
 ```
 
+Security rule: do not support inline plaintext bearer tokens. Use `bearer_token_env_var` / env-backed headers. Secrets in config files are foot-guns with a nice YAML hat.
+
+Config scope target:
+
+- User-global MCP config for durable personal/server setup.
+- Project-local MCP config for repo-specific servers, gated by project trust and permission policy.
+- Later: config import from Claude Desktop/Codex-style configs.
+
 Do not bury errors. If a configured MCP server cannot start/connect, report it clearly in CLI/TUI/web diagnostics.
+
+### Status Shape
+
+Use explicit states, not boolean soup:
+
+```json
+{
+  "filesystem": {
+    "status": "connected",
+    "transport": "stdio",
+    "tool_count": 4,
+    "last_error": null
+  },
+  "sentry": {
+    "status": "failed",
+    "transport": "streamable_http",
+    "tool_count": 0,
+    "last_error": "401 Unauthorized"
+  }
+}
+```
+
+Allowed initial states:
+
+- `connected`
+- `disabled`
+- `failed`
+- `connecting`
+- `disconnected`
+
+Reserve these for remote auth work:
+
+- `needs_auth`
+- `needs_client_registration`
+
+## Initialization Strategy
+
+Default to lazy initialization on first tool-schema build or first MCP status request, with an explicit `mcp.initialize: startup` option for users who prefer fail-fast behavior.
+
+Lazy initialization pros:
+
+- Preserves Penguin startup time when MCP is installed but unused.
+- Avoids launching long-lived STDIO subprocesses for sessions that never need external tools.
+- Makes optional-extra behavior cleaner: no MCP SDK import or process startup unless MCP is configured/enabled.
+- Better for large server sets and remote servers with auth/network latency.
+
+Lazy initialization cons:
+
+- First model turn that needs tool schemas may pay startup/listing latency.
+- Failures appear later, which can feel spooky if diagnostics are weak.
+- Tool schema generation becomes async/failure-prone; caching and status states must be tight.
+
+Eager startup pros:
+
+- Fail-fast diagnostics before a user asks the model to do work.
+- Tool list is ready for the first completion request.
+- Simpler mental model for status: configured servers connect at boot.
+
+Eager startup cons:
+
+- Slower startup and more background processes.
+- Remote/auth failures can make Penguin feel broken even when MCP is irrelevant to the current session.
+- More painful in web/server mode where many sessions may not need MCP.
+
+Recommendation: default `lazy`, support `startup`, and expose `penguin mcp status/connect/reconnect` plus web/TUI status so failures are visible without forcing everyone to pay startup cost.
 
 ## Phase 1: MCP Host / Client Support
 
@@ -128,8 +258,9 @@ Penguin can connect to configured MCP servers and use their tools as normal Peng
 ### Implementation Steps
 
 1. Add dependency:
-   - `mcp>=1.2.0` or current compatible version.
-   - Put it in `[project.optional-dependencies].mcp` first unless product decision says base install should include it.
+   - Add the official Python SDK to `[project.optional-dependencies].mcp` first, not the base install.
+   - Use docs language like: `pip install "penguin-ai[mcp]"` or `uv sync --extra mcp` if you want MCP support.
+   - Pin a compatible SDK range once tested; do not leave this floating forever.
 
 2. Delete or quarantine current fake implementation:
    - Replace `client.py`, `stdio_server.py`, and `adapter.py` behavior.
@@ -140,24 +271,31 @@ Penguin can connect to configured MCP servers and use their tools as normal Peng
    - Validate command/args for STDIO.
    - Validate URL/headers for Streamable HTTP.
    - Expand env vars safely.
+   - Support per-server `enabled`, `startup_timeout_sec`, and `tool_timeout_sec`.
 
 4. Implement connection lifecycle:
    - One session per configured server.
    - Initialize sessions on demand or at app startup based on config.
    - Support cleanup on shutdown.
    - Support reconnect after failure.
+   - Separate startup/listing timeout from per-tool timeout.
+   - Capture STDIO stderr into logs/diagnostics; never let server logs contaminate stdout protocol frames.
+   - Use explicit cwd/env resolution and avoid inheriting the whole host environment unless configured.
 
 5. Tool discovery:
    - Call `session.list_tools()`.
-   - Register each as `mcp::<server>::<tool>`.
+   - Register each as `mcp__<server>__<tool>` unless tool-name constraints prove another separator is required.
    - Store original MCP server/tool metadata.
    - Convert `inputSchema` to Penguin's `input_schema` field without lossy hacks.
+   - Sanitize model-visible names, hash collisions, and preserve a reverse lookup from model-visible tool name to `(server_name, raw_tool_name)`.
+   - Handle `tools/list_changed` notifications by invalidating the provider's tool cache and emitting a Penguin UI/event-bus diagnostic.
 
 6. Tool call dispatch:
-   - Route `mcp::<server>::<tool>` to `session.call_tool(tool_name, arguments)`.
+   - Route `mcp__<server>__<tool>` to the owning session and raw MCP tool name.
    - Normalize result content into Penguin tool result text/dict.
    - Preserve structured content where possible.
-   - Apply timeouts.
+   - Apply per-tool timeout.
+   - Include server name and raw tool name in error/debug metadata.
 
 7. Permission integration:
    - MCP tools should go through `ToolManager.execute_tool()` permission flow.
@@ -169,16 +307,23 @@ Penguin can connect to configured MCP servers and use their tools as normal Peng
 8. Diagnostics:
    - Add status endpoint/API method listing configured servers, connection state, tools discovered, last error.
    - CLI/TUI should show MCP server failures rather than silently continuing.
+   - Add connect/disconnect/reconnect controls for configured servers.
+
+9. Skills-era ToolManager integration:
+   - Follow the skills-manager shape: runtime-owned MCP manager, `ToolManager.set_core()` access where needed, `penguin/tools/providers/mcp.py` facade methods, and web/TUI route visibility.
+   - Ensure static tools, skills tools, and dynamic MCP tools are merged deterministically in listing and schema generation.
+   - Do not let MCP bypass `ToolManager.execute_tool()` permission and context paths.
 
 ### Acceptance Criteria
 
 - A configured local STDIO MCP test server appears as Penguin tools.
 - Penguin can call one MCP tool and return its output in a normal assistant turn.
 - Failed server startup produces a visible diagnostic with server name and error.
-- MCP tool names are stable and collision-safe.
+- MCP tool names are stable, model-safe, length-bounded where required, and collision-safe.
 - Permission-denied MCP tool calls fail through the same shape as native tools.
 - Unit tests cover config validation, discovery, dispatch, timeout, and failure state.
 - Integration test uses a tiny Python FastMCP/stdio server.
+- Tool list changes from an MCP server invalidate cached schemas or are explicitly documented as unsupported in MVP.
 
 ## Phase 2: Real MCP Server For Penguin Tools
 
@@ -251,10 +396,13 @@ Potential mappings:
 
 - Config parsing and env expansion.
 - Server name/tool name normalization.
+- Name collision hashing and raw-name reverse lookup.
 - Schema conversion.
 - Result normalization.
 - Permission policy decisions.
 - Error classification.
+- Status-state transitions.
+- Tool-list-changed invalidation.
 
 ### Integration Tests
 
@@ -264,6 +412,10 @@ Potential mappings:
 - Simulate startup failure.
 - Simulate tool timeout.
 - Simulate malformed tool result.
+- Simulate duplicate/sanitized tool names from two servers.
+- Confirm STDIO stderr is captured and stdout remains protocol-only.
+- Confirm disconnect/reconnect updates status and rediscovery.
+- Confirm static tools, skills tools, and MCP tools all appear without clobbering each other.
 
 ### Manual Validation
 
@@ -279,6 +431,8 @@ Potential mappings:
 - OAuth/remote auth can balloon scope fast. Keep first pass token/header based.
 - Permission semantics are easy to bypass if MCP tools are registered outside `ToolManager.execute_tool()`.
 - Silent optional imports will create ghost bugs. Kill silent failure for configured MCP.
+- Tool-name constraints differ across model/provider surfaces. Use conservative names and tests; do not assume colons/slashes survive every schema path.
+- STDIO process cleanup is easy to get 90% right and still leak grandchildren. Test it.
 
 ## Suggested Milestones
 
@@ -287,7 +441,7 @@ Potential mappings:
 - Dependency added.
 - Config model added.
 - One local STDIO server can be discovered.
-- One MCP tool can be called as `mcp::<server>::<tool>`.
+- One MCP tool can be called as `mcp__<server>__<tool>`.
 - Basic tests pass.
 
 ### Milestone 2: Robust Client
@@ -297,6 +451,8 @@ Potential mappings:
 - Allow/deny policy.
 - Result normalization.
 - Streamable HTTP support if SDK support is stable.
+- Connect/disconnect/reconnect controls.
+- Tool-list-changed cache invalidation.
 
 ### Milestone 3: Penguin As MCP Server
 
@@ -311,14 +467,15 @@ Potential mappings:
 - Docs.
 - Example configs.
 
-## Open Questions
+## Decisions And Remaining Open Questions
 
-1. Should `mcp` be a base dependency or optional extra?
-2. Should MCP servers initialize eagerly at Penguin startup or lazily on first tool-schema build?
-3. Do we want project-local MCP config, user-global MCP config, or both?
-4. Should external MCP tools default to ask-before-call, or should trust be per-server?
-5. How much Streamable HTTP/OAuth should be in the first production cut?
+1. Dependency packaging: MCP starts as an optional extra. Docs should say `install Penguin with MCP support` and show the appropriate extra install command.
+2. Initialization: default lazy on first tool-schema build/status request; support eager startup via config for fail-fast users.
+3. Config scope: support both user-global and project-local MCP config. Use Codex/Claude patterns as import/export references where practical.
+4. Permissions: external MCP default approval depends on Penguin's permission system, but MVP should route every MCP call through `ToolManager.execute_tool()` and support per-server/per-tool approval policy.
+5. Streamable HTTP/OAuth: token/env-header support can land in robust client phase; full OAuth/client registration belongs in the final/security-focused phase.
+6. Tool-name constraints: still open. Assume conservative `mcp__server__tool`, length cap, sanitization, hash collisions, and reverse lookup until provider paths are empirically tested.
 
 ## Recommendation
 
-Start with Milestone 1 only. Do not touch resources, prompts, OAuth, or server exposure until a local STDIO MCP tool can be discovered and called through Penguin's existing ToolManager with tests. Anything else is scope creep wearing a fake mustache.
+Start with Milestone 1 only, but include the reference-agent basics that prevent pain later: explicit status states, conservative `mcp__server__tool` naming, raw-name reverse lookup, separate startup/tool timeouts, and STDIO process cleanup. Do not touch resources, prompts, OAuth, or server exposure until a local STDIO MCP tool can be discovered and called through Penguin's existing ToolManager with tests. Anything else is scope creep wearing a fake mustache.

@@ -84,6 +84,9 @@ def get_tool_operations(tool_name: str) -> List[Operation]:
         List of Operation enums required by the tool.
         Returns empty list if tool is unknown (allows by default).
     """
+    if str(tool_name or "").startswith("mcp__"):
+        return [Operation.NETWORK_POST]
+
     return TOOL_OPERATION_MAP.get(tool_name, [])
 
 
@@ -119,6 +122,9 @@ def extract_resource_from_input(
 
     if tool_name in ("memory_search", "perplexity_search"):
         return tool_input.get("query")
+
+    if str(tool_name or "").startswith("mcp__"):
+        return tool_name
 
     # For operations without a clear resource, return None
     return None
