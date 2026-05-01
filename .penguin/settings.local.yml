@@ -1,0 +1,11 @@
+skills:
+  enabled: true
+  trust_project_skills: true
+  scan_paths:
+    project:
+      - reference/hermes-agent/skills
+      - reference/codex/codex-rs/skills/src/assets/samples
+      - reference/codex/.codex/skills
+    user: []
+  max_scan_depth: 8
+  max_skill_dirs: 500
