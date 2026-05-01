@@ -70,3 +70,30 @@ async def test_action_executor_runs_list_skills_fallback_tag(tmp_path: Path) -> 
     payload = json.loads(result)
 
     assert payload["skills"][0]["name"] == "demo-skill"
+
+
+def test_tool_manager_list_skills_reports_current_session_active_state(tmp_path: Path) -> None:
+    _make_skill(tmp_path / "skills" / "demo", "demo-skill")
+    manager = ToolManager(
+        {"skills": {"scan_paths": {"user": [str(tmp_path / "skills")]}}},
+        lambda *args, **kwargs: None,
+        fast_startup=True,
+    )
+
+    json.loads(
+        manager.execute_tool(
+            "activate_skill",
+            {"name": "demo-skill", "load_into_context": False},
+            context={"session_id": "session-a"},
+        )
+    )
+    payload = json.loads(
+        manager.execute_tool(
+            "list_skills",
+            {"refresh": True},
+            context={"session_id": "session-a"},
+        )
+    )
+
+    assert payload["active"] == ["demo-skill"]
+    assert payload["skills"][0]["active"] is True

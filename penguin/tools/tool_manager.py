@@ -395,7 +395,11 @@ class ToolManager:
                         "refresh": {
                             "type": "boolean",
                             "description": "Refresh skill discovery from disk before listing (default: false)",
-                        }
+                        },
+                        "session_id": {
+                            "type": "string",
+                            "description": "Optional session id for active-skill state. Defaults to the current conversation session.",
+                        },
                     },
                     "required": [],
                 },
@@ -3298,11 +3302,14 @@ class ToolManager:
                     tool_input.get("files_fixed"),
                 ),
                 "list_skills": lambda: self.skill_tools.list_skills(
-                    tool_input.get("refresh", False)
+                    refresh=tool_input.get("refresh", False),
+                    session_id=tool_input.get("session_id")
+                    or effective_context.get("session_id"),
                 ),
                 "activate_skill": lambda: self.skill_tools.activate_skill(
                     tool_input["name"],
-                    session_id=tool_input.get("session_id"),
+                    session_id=tool_input.get("session_id")
+                    or effective_context.get("session_id"),
                     load_into_context=tool_input.get("load_into_context", True),
                 ),
                 "get_repository_status": lambda: get_repository_status(

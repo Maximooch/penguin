@@ -16,10 +16,22 @@ class SkillTools:
         self.manager = manager
         self.conversation_manager = conversation_manager
 
-    def list_skills(self, refresh: bool = False) -> str:
+    def list_skills(
+        self,
+        refresh: bool = False,
+        session_id: Optional[str] = None,
+    ) -> str:
+        resolved_session_id = session_id or self._current_session_id() or "default"
         if refresh:
             self.manager.refresh()
-        return json.dumps(self.manager.list_payload(), indent=2)
+        payload = self.manager.list_payload()
+        active_names = set(self.manager.active_names(resolved_session_id))
+        payload["active"] = sorted(active_names)
+        payload["skills"] = [
+            {**skill, "active": skill.get("name") in active_names}
+            for skill in payload.get("skills", [])
+        ]
+        return json.dumps(payload, indent=2)
 
     def activate_skill(
         self,

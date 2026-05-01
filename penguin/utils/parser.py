@@ -3579,7 +3579,8 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
         try:
             payload = _parse_json_payload(params) or {}
             return self.tool_manager.skill_tools.list_skills(
-                refresh=bool(payload.get("refresh", False))
+                refresh=bool(payload.get("refresh", False)),
+                session_id=payload.get("session_id"),
             )
         except Exception as e:
             return f"Error listing skills: {str(e)}"
