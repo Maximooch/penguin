@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
+from concurrent.futures import Future
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from enum import Enum
@@ -82,6 +84,9 @@ class MCPClientManager:
         }
         self._tool_index: dict[str, MCPToolDefinition] = {}
         self._discovered = False
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._loop_thread: threading.Thread | None = None
+        self._actor_queue: asyncio.Queue[tuple[Any, Future[Any]]] | None = None
 
     @property
     def available(self) -> bool:
@@ -130,7 +135,9 @@ class MCPClientManager:
     def close_sync(self) -> dict[str, Any]:
         """Close all MCP sessions synchronously."""
         self._run_async(self.close())
-        return self.status()
+        status = self.status()
+        self._stop_actor()
+        return status
 
     async def discover(self) -> list[MCPToolDefinition]:
         """Connect to configured servers and discover tools."""
@@ -192,23 +199,30 @@ class MCPClientManager:
             raise ValueError(f"Unknown MCP tool: {public_name}")
 
         state = self._states[tool.server_name]
+        if state.session is None or state.status != MCPServerStatus.CONNECTED:
+            await self._connect_and_list_tools(state, set(self._tool_index))
+        if state.session is None:
+            raise RuntimeError(f"MCP server '{tool.server_name}' is not connected")
+
         timeout = state.config.tool_timeout_sec
-        async with AsyncExitStack() as stack:
-            session = await self._open_session(state, stack)
-            result = await asyncio.wait_for(
-                session.call_tool(tool.raw_name, arguments or {}),
-                timeout=timeout,
-            )
-            return self._serialize_call_result(result)
+        result = await asyncio.wait_for(
+            state.session.call_tool(tool.raw_name, arguments or {}),
+            timeout=timeout,
+        )
+        return self._serialize_call_result(result)
 
     async def close(self) -> None:
-        """Close cached MCP session handles.
-
-        Phase 1.5 intentionally opens stdio sessions per discovery/call so AnyIO
-        cancel scopes close in the same task that created them. This method keeps
-        the lifecycle facade stable for future persistent-session support.
-        """
+        """Close cached MCP session handles from the actor task that opened them."""
         for state in self._states.values():
+            if state.stack is not None:
+                try:
+                    await state.stack.aclose()
+                except Exception as exc:  # pragma: no cover - defensive cleanup
+                    logger.warning(
+                        "Failed closing MCP server '%s': %s",
+                        state.config.name,
+                        exc,
+                    )
             state.stack = None
             state.session = None
             state.status = MCPServerStatus.DISCONNECTED
@@ -221,40 +235,36 @@ class MCPClientManager:
         state.status = MCPServerStatus.CONNECTING
         state.error = None
         try:
-            async with AsyncExitStack() as stack:
-                session = await self._open_session(state, stack)
-                response = await asyncio.wait_for(
-                    session.list_tools(),
-                    timeout=state.config.startup_timeout_sec,
+            session = await self._ensure_session(state)
+            response = await asyncio.wait_for(
+                session.list_tools(),
+                timeout=state.config.startup_timeout_sec,
+            )
+            for raw_tool in getattr(response, "tools", []) or []:
+                raw_name = str(getattr(raw_tool, "name", ""))
+                if not raw_name or not state.config.allows_tool(raw_name):
+                    continue
+                public_name = make_tool_name(state.config.name, raw_name, existing)
+                existing.add(public_name)
+                input_schema = getattr(raw_tool, "inputSchema", None) or getattr(
+                    raw_tool,
+                    "input_schema",
+                    None,
                 )
-                for raw_tool in getattr(response, "tools", []) or []:
-                    raw_name = str(getattr(raw_tool, "name", ""))
-                    if not raw_name or not state.config.allows_tool(raw_name):
-                        continue
-                    public_name = make_tool_name(state.config.name, raw_name, existing)
-                    existing.add(public_name)
-                    input_schema = getattr(raw_tool, "inputSchema", None) or getattr(
-                        raw_tool,
-                        "input_schema",
-                        None,
-                    )
-                    if not isinstance(input_schema, dict):
-                        input_schema = {"type": "object", "properties": {}}
-                    description = str(getattr(raw_tool, "description", "") or "")
-                    definition = MCPToolDefinition(
-                        public_name=public_name,
-                        server_name=state.config.name,
-                        raw_name=raw_name,
-                        description=(
-                            description
-                            or f"MCP tool {raw_name} from {state.config.name}"
-                        ),
-                        input_schema=input_schema,
-                    )
-                    state.tools[public_name] = definition
-                    self._tool_index[public_name] = definition
-            state.session = None
-            state.stack = None
+                if not isinstance(input_schema, dict):
+                    input_schema = {"type": "object", "properties": {}}
+                description = str(getattr(raw_tool, "description", "") or "")
+                definition = MCPToolDefinition(
+                    public_name=public_name,
+                    server_name=state.config.name,
+                    raw_name=raw_name,
+                    description=(
+                        description or f"MCP tool {raw_name} from {state.config.name}"
+                    ),
+                    input_schema=input_schema,
+                )
+                state.tools[public_name] = definition
+                self._tool_index[public_name] = definition
             state.status = MCPServerStatus.CONNECTED
         except Exception as exc:
             state.status = MCPServerStatus.FAILED
@@ -265,13 +275,16 @@ class MCPClientManager:
                 exc,
             )
 
-    async def _open_session(self, state: MCPServerState, stack: AsyncExitStack) -> Any:
-        """Open one MCP stdio session owned by the caller's async context."""
+    async def _ensure_session(self, state: MCPServerState) -> Any:
+        """Open or return a persistent MCP stdio session."""
+        if state.session is not None:
+            return state.session
         if not HAS_MCP_SDK:
             raise RuntimeError(
                 "MCP SDK is not installed. Install with `penguin-ai[mcp]`."
             )
 
+        stack = AsyncExitStack()
         params = StdioServerParameters(  # type: ignore[misc]
             command=state.config.command,
             args=state.config.args,
@@ -288,6 +301,8 @@ class MCPClientManager:
             session.initialize(),
             timeout=state.config.startup_timeout_sec,
         )
+        state.stack = stack
+        state.session = session
         return session
 
     @staticmethod
@@ -319,31 +334,79 @@ class MCPClientManager:
         except Exception:
             return str(result)
 
-    @staticmethod
-    def _run_async(coro: Any) -> Any:
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(coro)
+    def _run_async(self, coro: Any) -> Any:
+        """Run manager coroutines on one actor task.
 
-        result: Any = None
-        error: BaseException | None = None
+        The MCP SDK stdio transport uses AnyIO cancel scopes that must close in
+        the same task that opened them. A single actor task preserves session
+        state and closes transports cleanly.
+        """
+        loop, queue = self._ensure_actor()
+        future: Future[Any] = Future()
+        loop.call_soon_threadsafe(queue.put_nowait, (coro, future))
+        return future.result()
 
-        def run() -> None:
-            nonlocal result, error
-            try:
-                result = asyncio.run(coro)
-            except BaseException as exc:  # pragma: no cover - re-raised below
-                error = exc
+    def _ensure_actor(
+        self,
+    ) -> tuple[asyncio.AbstractEventLoop, asyncio.Queue[tuple[Any, Future[Any]]]]:
+        if (
+            self._loop is not None
+            and self._loop.is_running()
+            and self._actor_queue is not None
+        ):
+            return self._loop, self._actor_queue
 
-        import threading
+        ready = threading.Event()
+        loop = asyncio.new_event_loop()
 
-        thread = threading.Thread(target=run, daemon=True)
+        def run_loop() -> None:
+            asyncio.set_event_loop(loop)
+            self._actor_queue = asyncio.Queue()
+            ready.set()
+            loop.run_until_complete(self._actor_worker())
+            loop.close()
+
+        thread = threading.Thread(
+            target=run_loop,
+            name="penguin-mcp-client-loop",
+            daemon=True,
+        )
         thread.start()
-        thread.join()
-        if error is not None:
-            raise error
-        return result
+        ready.wait(timeout=5)
+        if self._actor_queue is None:
+            raise RuntimeError("MCP actor failed to start")
+        self._loop = loop
+        self._loop_thread = thread
+        return loop, self._actor_queue
+
+    async def _actor_worker(self) -> None:
+        assert self._actor_queue is not None
+        while True:
+            coro, future = await self._actor_queue.get()
+            if coro is None:
+                future.set_result(None)
+                return
+            try:
+                result = await coro
+            except BaseException as exc:  # pragma: no cover - re-raised by caller
+                future.set_exception(exc)
+            else:
+                future.set_result(result)
+
+    def _stop_actor(self) -> None:
+        if self._loop is None or self._actor_queue is None:
+            return
+        future: Future[Any] = Future()
+        self._loop.call_soon_threadsafe(
+            self._actor_queue.put_nowait,
+            (None, future),
+        )
+        future.result(timeout=5)
+        if self._loop_thread is not None:
+            self._loop_thread.join(timeout=5)
+        self._loop = None
+        self._loop_thread = None
+        self._actor_queue = None
 
 
 __all__ = [
