@@ -51,3 +51,13 @@ def test_tool_guide_promotes_canonical_names_over_legacy_headers() -> None:
     assert "### enhanced_write" not in guide
     assert "### apply_diff" not in guide
     assert "### multiedit" not in guide
+
+
+def test_tool_guide_documents_skills_tools_and_rules() -> None:
+    guide = get_tool_guide()
+
+    assert "## Skills" in guide
+    assert "### list_skills" in guide
+    assert "### activate_skill" in guide
+    assert "Activated skill content is `CONTEXT`, not `SYSTEM`" in guide
+    assert "Do not activate every skill" in guide

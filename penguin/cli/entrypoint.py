@@ -24,6 +24,7 @@ _CLI_COMMANDS = {
     "perf_test",
     "profile",
     "project",
+    "skill",
 }
 
 _CLI_FLAGS = {

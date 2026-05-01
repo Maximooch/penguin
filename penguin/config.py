@@ -1340,6 +1340,7 @@ class Config:
     fast_startup: bool = field(default=False)
     model_configs: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     agent_personas: Dict[str, AgentPersonaConfig] = field(default_factory=dict)
+    skills: Dict[str, Any] = field(default_factory=dict)
     
     # Dictionary-like access to model settings
     @property
@@ -1386,6 +1387,8 @@ class Config:
             self.model_configs = {}
         if self.agent_personas is None:
             self.agent_personas = {}
+        if self.skills is None:
+            self.skills = {}
         if self.output is None:
             self.output = OutputConfig()
 
@@ -1525,6 +1528,7 @@ class Config:
             diagnostics=diagnostics_config,
             security=security_config,
             output=output_config,
+            skills=config_data.get("skills", {}) if isinstance(config_data.get("skills", {}), dict) else {},
             fast_startup=config_data.get("performance", {}).get("fast_startup", False),
             model_configs=model_configs_section,
             agent_personas=agent_personas,
@@ -1552,6 +1556,7 @@ class Config:
                 "show_tool_results": getattr(self.output, "show_tool_results", True),
             },
             "workspace_dir": str(self.workspace_dir),
+            "skills": dict(self.skills),
             "cache_dir": str(self.cache_dir),
             "workspace_path": str(self.workspace_path),
             "model_configs": self.model_configs,

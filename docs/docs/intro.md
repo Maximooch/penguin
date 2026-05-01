@@ -2,9 +2,11 @@
 sidebar_position: 1
 ---
 
-# Penguin AI Assistant Documentation
+# Penguin Documentation
 
-Welcome to the documentation for Penguin! Penguin v0.4.0 is a modular, extensible AI coding agent with advanced conversation management, real-time streaming, comprehensive checkpoint/branching, and multi/sub-agent capabilities with coordinated orchestration.
+Penguin is an open-source coding agent built on a scalable cognitive architecture runtime.
+
+It is designed for long-running, tool-using, multi-agent software workflows: from interactive coding in the TUI to persistent sessions, subagent delegation, and API-driven automation. Penguin combines a coding-focused agent runtime with durable state, workspace-aware tools, and multiple interfaces on top of the same core.
 
 ## Features
 

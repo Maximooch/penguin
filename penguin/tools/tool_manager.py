@@ -38,6 +38,7 @@ from penguin.tools.browser_tools import (
     BrowserInteractionTool,
     BrowserScreenshotTool,
 )
+from penguin.tools.core.skill_tools import SkillTools
 from penguin.tools.core.task_tools import TaskTools
 from penguin.tools.editing.registry import (
     get_edit_tool_public_names,
@@ -239,10 +240,12 @@ class ToolManager:
                 "memory_indexing": False,
                 "browser_tools": False,
                 "pydoll_tools": False,
+                "skill_tools": False,
                 "task_tools": False,
             }
 
             # Placeholder attributes for ALL lazy loading
+            self._skill_tools = None
             self._declarative_memory_tool = None
             self._task_tools = None
             self._grep_search = None
@@ -320,6 +323,8 @@ class ToolManager:
                 "pydoll_browser_scroll": "self.pydoll_browser_scroll_tool.execute",
                 "analyze_codebase": "self.analyze_codebase",
                 "reindex_workspace": "self.reindex_workspace",
+                "list_skills": "self.skill_tools.list_skills",
+                "activate_skill": "self.skill_tools.activate_skill",
                 "finish_response": "self.task_tools.finish_response",
                 "finish_task": "self.task_tools.finish_task",
                 "task_completed": "self.task_tools.task_completed",  # Deprecated alias
@@ -379,6 +384,46 @@ class ToolManager:
                     "type": "object",
                     "properties": {},
                     "required": [],
+                },
+            },
+            {
+                "name": "list_skills",
+                "description": "List discovered Agent Skills and discovery diagnostics. Use this before activating a skill when you need task-specific instructions.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "refresh": {
+                            "type": "boolean",
+                            "description": "Refresh skill discovery from disk before listing (default: false)",
+                        },
+                        "session_id": {
+                            "type": "string",
+                            "description": "Optional session id for active-skill state. Defaults to the current conversation session.",
+                        },
+                    },
+                    "required": [],
+                },
+            },
+            {
+                "name": "activate_skill",
+                "description": "Load full instructions for a discovered Agent Skill as CONTEXT. Activation is deduped per session.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "The skill name to activate",
+                        },
+                        "session_id": {
+                            "type": "string",
+                            "description": "Optional session id for activation dedupe; defaults to current session",
+                        },
+                        "load_into_context": {
+                            "type": "boolean",
+                            "description": "Add activated skill content to the conversation as CONTEXT (default: true)",
+                        },
+                    },
+                    "required": ["name"],
                 },
             },
             {
@@ -1588,6 +1633,29 @@ class ToolManager:
         return self._task_tools
 
     @property
+    def skill_tools(self):
+        """Lazy load skill tools."""
+        if not self._lazy_initialized["skill_tools"]:
+            with profile_operation("ToolManager.lazy_load_skill_tools"):
+                logger.debug("Lazy-loading skill tools")
+                from penguin.skills.manager import SkillManager
+
+                skill_manager = getattr(self, "skill_manager", None)
+                if skill_manager is None:
+                    skill_manager = SkillManager(
+                        self.config,
+                        project_root=getattr(self, "project_root", None),
+                    )
+                    self.skill_manager = skill_manager
+                conversation_manager = getattr(self._core, "conversation_manager", None)
+                self._skill_tools = SkillTools(
+                    skill_manager,
+                    conversation_manager=conversation_manager,
+                )
+                self._lazy_initialized["skill_tools"] = True
+        return self._skill_tools
+
+    @property
     def declarative_memory_tool(self):
         if not self._lazy_initialized["declarative_memory_tool"]:
             with profile_operation("ToolManager.lazy_load_declarative_memory_tool"):
@@ -1933,6 +2001,8 @@ class ToolManager:
             "grep_search",
             "finish_response",
             "finish_task",
+            "list_skills",
+            "activate_skill",
         ]
         allowed = {
             self._canonical_tool_name(name)
@@ -3231,6 +3301,17 @@ class ToolManager:
                     tool_input["fix_description"],
                     tool_input.get("files_fixed"),
                 ),
+                "list_skills": lambda: self.skill_tools.list_skills(
+                    refresh=tool_input.get("refresh", False),
+                    session_id=tool_input.get("session_id")
+                    or effective_context.get("session_id"),
+                ),
+                "activate_skill": lambda: self.skill_tools.activate_skill(
+                    tool_input["name"],
+                    session_id=tool_input.get("session_id")
+                    or effective_context.get("session_id"),
+                    load_into_context=tool_input.get("load_into_context", True),
+                ),
                 "get_repository_status": lambda: get_repository_status(
                     tool_input["repo_owner"], tool_input["repo_name"]
                 ),
@@ -4526,6 +4607,13 @@ class ToolManager:
             core: The PenguinCore instance
         """
         self._core = core
+        conversation_manager = getattr(core, "conversation_manager", None)
+        if conversation_manager is not None and hasattr(conversation_manager, "skill_manager"):
+            self.skill_manager = conversation_manager.skill_manager
+        if self._lazy_initialized.get("skill_tools") and self._skill_tools is not None:
+            self._skill_tools.conversation_manager = getattr(
+                core, "conversation_manager", None
+            )
 
     def _resolve_subagent_tool_call_id(
         self, tool_input: Optional[Dict[str, Any]]

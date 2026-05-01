@@ -1,6 +1,6 @@
 const config = {
-  title: 'Penguin AI Assistant',
-  tagline: 'A modular, extensible AI coding assistant',
+  title: 'Penguin',
+  tagline: 'Open-source coding agent built on a scalable cognitive architecture runtime.',
   url: 'https://maximooch.github.io',
   baseUrl: '/',
   onBrokenLinks: 'ignore',
@@ -32,10 +32,10 @@ const config = {
 
   themeConfig: {
     mermaid: {
-      theme: { light: 'neutral', dark: 'forest' },
+      theme: {light: 'neutral', dark: 'forest'},
     },
     navbar: {
-      title: 'Penguin AI Assistant',
+      title: 'Penguin',
       logo: {
         alt: 'Penguin',
         src: 'img/logo.svg',

@@ -50,6 +50,8 @@ class ConversationManager:
         max_sessions_in_memory: int = 20,
         auto_save_interval: int = 60,
         checkpoint_config: Optional[CheckpointConfig] = None,
+        skills_config: Optional[Dict[str, Any]] = None,
+        project_root: Optional[Path] = None,
     ):
         """
         Initialize the conversation manager.
@@ -61,6 +63,8 @@ class ConversationManager:
             system_prompt: Initial system prompt
             max_messages_per_session: Maximum messages before creating a new session
             max_sessions_in_memory: Maximum sessions to keep in memory cache
+            skills_config: Optional Skills subsystem configuration
+            project_root: Root used for project-local skill discovery
             auto_save_interval: Seconds between auto-saves (0 to disable)
             checkpoint_config: Configuration for checkpointing system
         """
@@ -167,6 +171,30 @@ class ConversationManager:
                     )
             except Exception as e:
                 logger.debug(f"Project docs autoload skipped due to error: {e}")
+
+        # Auto-load compact Agent Skills catalog into CONTEXT if skills are enabled.
+        # Full skill instructions are loaded later through activate_skill and remain
+        # normal CONTEXT messages, subject to existing category truncation rules.
+        self.skill_manager = None
+        try:
+            from penguin.skills.manager import SkillManager
+
+            skill_runtime_config = skills_config or global_config
+            skill_project_root = project_root or self.workspace_path
+            self.skill_manager = SkillManager(
+                skill_runtime_config,
+                project_root=skill_project_root,
+            )
+            catalog_context = self.skill_manager.render_catalog_context()
+            if catalog_context:
+                message = self.conversation.add_context(
+                    catalog_context,
+                    source="skills_catalog",
+                )
+                message.metadata["type"] = "skills_catalog"
+                logger.info("Skills catalog autoloaded into CONTEXT")
+        except Exception as e:
+            logger.debug(f"Skills catalog autoload skipped due to error: {e}")
 
         # -----------------------------------------------------------
         # Snapshot / Restore support (Phase 3)

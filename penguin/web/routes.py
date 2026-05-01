@@ -117,6 +117,8 @@ from penguin.system.execution_context import (
     execution_context_scope,
     normalize_directory,
 )
+from penguin.skills.manager import SkillManager
+from penguin.skills.renderer import list_skill_resources
 from penguin.utils.errors import AgentNotFoundError, PenguinError
 
 logger = logging.getLogger(__name__)
@@ -2069,6 +2071,10 @@ def _setup_question_event_callbacks():
         logger.error("Failed to setup question callbacks: %s", e)
 
 
+class SkillDeactivateRequest(BaseModel):
+    session_id: str = "default"
+
+
 router = APIRouter()
 
 
@@ -2081,6 +2087,197 @@ def _get_coordinator(core: PenguinCore):
         return core.get_coordinator()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Coordinator not available: {e}")
+
+
+class SkillActivateRequest(BaseModel):
+    session_id: str = "default"
+    load_into_context: bool = True
+    max_resources: int = 200
+
+
+def _get_skill_manager(core: PenguinCore) -> SkillManager:
+    """Resolve the runtime skill manager shared by chat, tools, and web routes."""
+    conversation_manager = getattr(core, "conversation_manager", None)
+    manager = getattr(conversation_manager, "skill_manager", None)
+    if manager is not None:
+        return manager
+
+    tool_manager = getattr(core, "tool_manager", None)
+    manager = getattr(tool_manager, "skill_manager", None)
+    if manager is not None:
+        return manager
+
+    raise HTTPException(status_code=503, detail="Skills are not initialized")
+
+
+def _normalize_skill_activation_result(result: Any) -> Dict[str, Any]:
+    if isinstance(result, dict):
+        return result
+    if isinstance(result, str):
+        try:
+            parsed = json.loads(result)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+    raise HTTPException(status_code=500, detail="Invalid skill activation response")
+
+
+async def _emit_skill_event(
+    core: PenguinCore,
+    event_type: str,
+    properties: Dict[str, Any],
+) -> None:
+    """Emit OpenCode/SSE-compatible skill lifecycle events when available."""
+    emit = getattr(getattr(core, "event_bus", None), "emit", None)
+    if not callable(emit):
+        return
+    try:
+        await emit(
+            "opencode_event",
+            {
+                "type": event_type,
+                "properties": properties,
+            },
+        )
+    except Exception:
+        logger.debug("Failed to emit %s event", event_type, exc_info=True)
+
+
+@router.get("/api/v1/skills")
+async def list_skills(
+    refresh: bool = False,
+    session_id: str = "default",
+    core: PenguinCore = Depends(get_core),
+) -> Dict[str, Any]:
+    """Return compact skill catalog and diagnostics for web/TUI clients."""
+    manager = _get_skill_manager(core)
+    if refresh:
+        manager.refresh()
+
+    payload = manager.list_payload()
+    payload["count"] = len(payload.get("skills", []))
+    payload["diagnostic_count"] = len(payload.get("diagnostics", []))
+    active_names = set(manager.active_names(session_id))
+    payload["active"] = sorted(active_names)
+    payload["skills"] = [
+        {**skill, "active": skill.get("name") in active_names}
+        for skill in payload.get("skills", [])
+    ]
+
+    if refresh:
+        await _emit_skill_event(
+            core,
+            "skills.diagnostics",
+            {
+                "diagnostics": payload.get("diagnostics", []),
+                "diagnostic_count": payload["diagnostic_count"],
+            },
+        )
+
+    return payload
+
+
+@router.get("/api/v1/skills/{name}")
+async def get_skill(
+    name: str,
+    max_resources: int = 200,
+    session_id: str = "default",
+    core: PenguinCore = Depends(get_core),
+) -> Dict[str, Any]:
+    """Inspect a skill's full SKILL.md content without activating it."""
+    manager = _get_skill_manager(core)
+    skill = manager.get(name)
+    if skill is None:
+        raise HTTPException(status_code=404, detail=f"Skill not found: {name}")
+
+    return {
+        "name": skill.name,
+        "description": skill.description,
+        "source": skill.source,
+        "path": str(skill.path),
+        "skill_file": str(skill.skill_file),
+        "frontmatter": skill.frontmatter,
+        "allowed_tools": skill.allowed_tools,
+        "body": skill.body,
+        "active": manager.is_active(name, session_id),
+        "resources": list_skill_resources(skill, max_resources=max_resources),
+    }
+
+
+@router.post("/api/v1/skills/{name}/activate")
+async def activate_skill(
+    name: str,
+    request: SkillActivateRequest,
+    core: PenguinCore = Depends(get_core),
+) -> Dict[str, Any]:
+    """Activate a skill and optionally inject it into session CONTEXT."""
+    manager = _get_skill_manager(core)
+    if manager.get(name) is None:
+        raise HTTPException(status_code=404, detail=f"Skill not found: {name}")
+
+    tool_manager = getattr(core, "tool_manager", None)
+    skill_tools = getattr(tool_manager, "skill_tools", None)
+    if skill_tools is not None:
+        result = skill_tools.activate_skill(
+            name=name,
+            session_id=request.session_id,
+            load_into_context=request.load_into_context,
+        )
+    else:
+        result = manager.activate(
+            name,
+            session_id=request.session_id,
+            max_resources=request.max_resources,
+        )
+
+    result = _normalize_skill_activation_result(result)
+    await _emit_skill_event(
+        core,
+        "skill.activated",
+        {
+            "sessionID": request.session_id,
+            "skill": result.get("skill"),
+            "status": result.get("status"),
+            "duplicate": result.get("duplicate", False),
+            "load_into_context": request.load_into_context,
+        },
+    )
+
+    return result
+
+
+@router.post("/api/v1/skills/{name}/deactivate")
+async def deactivate_skill(
+    name: str,
+    request: SkillDeactivateRequest,
+    core: PenguinCore = Depends(get_core),
+) -> Dict[str, Any]:
+    """Deactivate a skill for a session and remove loaded CONTEXT when possible."""
+    manager = _get_skill_manager(core)
+    if manager.get(name) is None:
+        raise HTTPException(status_code=404, detail=f"Skill not found: {name}")
+
+    tool_manager = getattr(core, "tool_manager", None)
+    skill_tools = getattr(tool_manager, "skill_tools", None)
+    if skill_tools is not None:
+        result = skill_tools.deactivate_skill(name=name, session_id=request.session_id)
+    else:
+        result = manager.deactivate(name, session_id=request.session_id)
+
+    result = _normalize_skill_activation_result(result)
+    await _emit_skill_event(
+        core,
+        "skill.deactivated",
+        {
+            "sessionID": request.session_id,
+            "skill": result.get("skill"),
+            "status": result.get("status"),
+            "was_active": result.get("was_active", False),
+        },
+    )
+
+    return result
 
 
 def _validate_agent_id(agent_id: str) -> None:
