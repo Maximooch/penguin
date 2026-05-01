@@ -361,23 +361,27 @@ Make Penguin comfortable to test as an MCP host/client before exposing Penguin i
 - A local smoke script can list tools from a real STDIO MCP server when `penguin-ai[mcp]` is installed on Python 3.10+.
 - Focused tests cover config aliases, diagnostics, refresh/reconnect/close facades, and disabled/no-SDK behavior.
 
-## Phase 2: Real MCP Server For Penguin Tools
+## Phase 2: Penguin As An MCP Server
 
-### Scope
+Expose Penguin through a real SDK-backed MCP server. Split this into two tracks: a narrow tool-level server for protocol correctness, then an agent-level server that exposes Penguin as a software-engineering runtime.
 
-Expose selected Penguin tools through an SDK-backed MCP server.
+### Phase 2A: Tool-Level MCP Server
 
-### Implementation Steps
+#### Scope
+
+Expose selected low-risk Penguin tools through an SDK-backed MCP server. This is a protocol foundation, not the final product shape.
+
+#### Implementation Steps
 
 1. Build `FastMCP` server wrapper.
 2. Register allowlisted Penguin tools as MCP tools.
-3. Convert Penguin tool schemas to MCP `inputSchema`.
+3. Convert Penguin tool schemas to MCP-friendly function signatures/input schemas where practical.
 4. Route calls into `ToolManager.execute_tool()`.
 5. Preserve permission checks and workspace restrictions.
 6. Support STDIO first; Streamable HTTP second.
 7. Ensure all server logging goes to stderr for STDIO.
 
-### Default Exposure Policy
+#### Default Exposure Policy
 
 Deny by default for dangerous tools:
 
@@ -386,6 +390,7 @@ Deny by default for dangerous tools:
 - file writes/patches unless explicitly allowed
 - workspace reindexing
 - sub-agent spawning/delegation unless explicitly allowed
+- external MCP-hosted tools (`mcp__*`) unless explicitly allowed
 
 Expose read-only tools first:
 
@@ -395,12 +400,44 @@ Expose read-only tools first:
 - `grep_search`
 - `analyze_project`
 
-### Acceptance Criteria
+#### Acceptance Criteria
 
-- Claude Desktop or MCP Inspector can discover Penguin tools via real `tools/list`.
+- MCP Inspector can discover Penguin tools via real `tools/list`.
 - A read-only Penguin tool can be called via real `tools/call`.
 - STDIO mode emits no protocol-breaking stdout logs.
 - Denied tools are absent or fail with clear permission errors.
+- Tool calls route through `ToolManager.execute_tool()`, not direct private registry calls.
+
+### Phase 2B: Agent-Level MCP Server
+
+#### Scope
+
+Expose Penguin as an agent-like runtime rather than merely a low-level tool registry. This is the strategic surface for Link, Claude Desktop, IDEs, and other agent hosts that want to delegate software work to Penguin.
+
+#### Candidate Tools
+
+- `penguin_chat` — send a message to a Penguin session and receive a response.
+- `penguin_run_task` — start a Run Mode task with objective, constraints, and optional project context.
+- `penguin_get_task_status` — poll task/run status, phase, blockers, and artifact evidence.
+- `penguin_cancel_task` — cancel a long-running task.
+- `penguin_resume_with_clarification` — answer a pending clarification request and resume execution.
+- `penguin_list_sessions` — discover available sessions/projects.
+- `penguin_get_context_summary` — retrieve a concise state summary for coordination.
+
+#### Design Requirements
+
+- Long-running tools must return durable IDs/status, not block forever.
+- Session/project scope must be explicit.
+- Cancellation and clarification must be first-class.
+- Permission boundaries must be stricter than direct local Penguin usage because another host/agent may be driving it.
+- Outputs should include artifact paths/evidence, not just prose.
+
+#### Acceptance Criteria
+
+- External MCP clients can delegate a bounded task to Penguin and poll status.
+- Clarification-needed states survive across MCP calls.
+- The surface does not expose dangerous low-level tools by accident.
+- Link can eventually use this as a deep Penguin orchestration bridge.
 
 ## Phase 3: Resources, Prompts, Notifications
 

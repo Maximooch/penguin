@@ -251,3 +251,86 @@ def test_tool_manager_mcp_diagnostic_facade() -> None:
         == "connected"
     )
     assert manager.close_mcp()["servers"]["local-fs"]["status"] == "disconnected"
+
+def test_penguin_mcp_server_exposes_safe_tools_only() -> None:
+    from penguin.integrations.mcp.server import build_penguin_mcp_server
+
+    manager = ToolManager({}, lambda *_args, **_kwargs: None, fast_startup=True)
+    server = build_penguin_mcp_server(manager)
+    exposed = {tool["name"] for tool in server.list_exposed_tools()}
+
+    assert {"read_file", "list_files", "find_file", "grep_search", "analyze_project"} <= exposed
+    assert "execute" not in exposed
+    assert "write_file" not in exposed
+    assert all(not name.startswith("mcp__") for name in exposed)
+
+
+def test_penguin_mcp_server_routes_calls_through_tool_manager() -> None:
+    from penguin.integrations.mcp.server import build_penguin_mcp_server
+
+    class FakeToolManager:
+        def __init__(self) -> None:
+            self.called_with = None
+
+        def get_tools(self):
+            return [
+                {
+                    "name": "read_file",
+                    "description": "Read a file",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                        "required": ["path"],
+                    },
+                },
+                {
+                    "name": "execute",
+                    "description": "Run a command",
+                    "input_schema": {"type": "object", "properties": {}},
+                },
+            ]
+
+        def execute_tool(self, tool_name, arguments):
+            self.called_with = (tool_name, arguments)
+            return {"ok": True, "tool": tool_name, "arguments": arguments}
+
+    fake = FakeToolManager()
+    server = build_penguin_mcp_server(fake)
+    result = json.loads(server.call_tool("read_file", {"path": "README.md"}))
+
+    assert result["ok"] is True
+    assert fake.called_with == ("read_file", {"path": "README.md"})
+    assert json.loads(server.call_tool("execute", {}))["error"] == "tool_not_exposed"
+
+
+def test_penguin_mcp_server_dynamic_handler_signature() -> None:
+    import inspect
+    from penguin.integrations.mcp.server import build_penguin_mcp_server
+
+    class FakeToolManager:
+        def get_tools(self):
+            return [
+                {
+                    "name": "find_file",
+                    "description": "Find a file",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "filename": {"type": "string"},
+                            "search_path": {"type": "string"},
+                        },
+                        "required": ["filename"],
+                    },
+                }
+            ]
+
+        def execute_tool(self, tool_name, arguments):
+            return arguments
+
+    server = build_penguin_mcp_server(FakeToolManager(), allow_tools=["find_file"])
+    handler = server._build_tool_handler(server.list_exposed_tools()[0])
+    signature = inspect.signature(handler)
+
+    assert "filename" in signature.parameters
+    assert signature.parameters["filename"].default is inspect.Parameter.empty
+    assert signature.parameters["search_path"].default is None

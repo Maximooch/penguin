@@ -1,124 +1,269 @@
+"""Expose selected Penguin tools through a real MCP server."""
+
 from __future__ import annotations
 
-import fnmatch
+import inspect
 import json
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+import logging
+import re
+import sys
+from dataclasses import dataclass, field
+from typing import Any, Callable, Iterable, Optional
+
+try:  # pragma: no cover - import availability depends on optional extra
+    from mcp.server.fastmcp import FastMCP
+
+    HAS_MCP_SERVER_SDK = True
+except Exception:  # pragma: no cover - exercised when optional extra missing
+    FastMCP = None  # type: ignore[assignment]
+    HAS_MCP_SERVER_SDK = False
 
 from penguin.tools.tool_manager import ToolManager
 
+logger = logging.getLogger(__name__)
 
-class MCPServer:
-    """Thin adapter exposing a subset of ToolManager tools via MCP.
+DEFAULT_EXPOSED_TOOLS = (
+    "read_file",
+    "list_files",
+    "find_file",
+    "grep_search",
+    "analyze_project",
+)
 
-    - Filters tools using allow/deny patterns.
-    - Normalizes input/output to structured JSON objects.
-    - Provides discovery and invocation entrypoints.
-    """
+DEFAULT_DENIED_PATTERNS = (
+    "mcp__*",
+    "execute*",
+    "run_*",
+    "process_*",
+    "browser_*",
+    "pydoll_*",
+    "create_*",
+    "write_*",
+    "patch_*",
+    "delete_*",
+    "apply_*",
+    "edit_*",
+    "reindex_workspace",
+    "spawn_sub_agent",
+    "delegate*",
+    "send_message",
+)
+
+_JSON_TYPE_TO_PYTHON: dict[str, Any] = {
+    "string": str,
+    "integer": int,
+    "number": float,
+    "boolean": bool,
+    "array": list,
+    "object": dict,
+}
+
+
+@dataclass(frozen=True)
+class PenguinMCPServerConfig:
+    """Configuration for exposing Penguin as an MCP server."""
+
+    name: str = "penguin"
+    allow_tools: tuple[str, ...] = DEFAULT_EXPOSED_TOOLS
+    deny_patterns: tuple[str, ...] = DEFAULT_DENIED_PATTERNS
+    transport: str = "stdio"
+    enabled: bool = True
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+class MCPServerUnavailableError(RuntimeError):
+    """Raised when the optional MCP SDK server extra is unavailable."""
+
+
+class PenguinMCPServer:
+    """SDK-backed MCP server exposing selected Penguin ToolManager tools."""
 
     def __init__(
         self,
         tool_manager: ToolManager,
-        *,
-        allow: Optional[Iterable[str]] = None,
-        deny: Optional[Iterable[str]] = None,
-        confirm_required_write: bool = True,
+        config: Optional[PenguinMCPServerConfig] = None,
     ) -> None:
-        self.tm = tool_manager
-        self.allow = tuple(allow or ("*",))
-        # Default denylists: browser/pydoll and embedding/vector tools
-        self.deny = tuple(
-            deny
-            or (
-                "browser_*",
-                "pydoll_*",
-                "reindex_workspace",
-            )
-        )
-        self.confirm_required_write = confirm_required_write
+        self.tool_manager = tool_manager
+        self.config = config or PenguinMCPServerConfig()
+        self._tool_schemas = self._select_tool_schemas()
 
-    # -------------------------
-    # Discovery
-    # -------------------------
-    def list_tools(self) -> List[Dict[str, Any]]:
-        tools: List[Dict[str, Any]] = []
-        for spec in getattr(self.tm, "tools", []) or []:
-            name = spec.get("name")
-            if not name or not self._is_allowed(name):
+    def list_exposed_tools(self) -> list[dict[str, Any]]:
+        """Return the selected ToolManager schemas exposed over MCP."""
+        return list(self._tool_schemas)
+
+    def create_fastmcp(self) -> Any:
+        """Create and populate a FastMCP server instance."""
+        if not HAS_MCP_SERVER_SDK or FastMCP is None:
+            raise MCPServerUnavailableError(
+                "MCP server SDK is not installed. Install with `penguin-ai[mcp]` "
+                "on Python 3.10+."
+            )
+
+        mcp = FastMCP(self.config.name)
+        for schema in self._tool_schemas:
+            handler = self._build_tool_handler(schema)
+            mcp.add_tool(
+                handler,
+                name=schema["name"],
+                description=schema.get("description") or "Penguin tool",
+                structured_output=False,
+            )
+        return mcp
+
+    def run(self, transport: Optional[str] = None) -> None:
+        """Run the FastMCP server."""
+        selected_transport = transport or self.config.transport
+        if selected_transport != "stdio":
+            raise ValueError(
+                "Phase 2A only supports stdio transport for Penguin MCP server."
+            )
+        self.create_fastmcp().run(transport="stdio")
+
+    def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> str:
+        """Route an MCP call through ToolManager.execute_tool()."""
+        if not self._is_allowed(tool_name):
+            return json.dumps(
+                {
+                    "error": "tool_not_exposed",
+                    "tool": tool_name,
+                    "message": "This Penguin tool is not exposed over MCP.",
+                },
+                indent=2,
+            )
+
+        result = self.tool_manager.execute_tool(tool_name, arguments or {})
+        if isinstance(result, str):
+            return result
+        return json.dumps(result, indent=2, default=str)
+
+    def _select_tool_schemas(self) -> list[dict[str, Any]]:
+        schemas: list[dict[str, Any]] = []
+        for schema in self.tool_manager.get_tools():
+            name = schema.get("name")
+            if not isinstance(name, str) or not self._is_allowed(name):
                 continue
-            tools.append(
+            schemas.append(
                 {
                     "name": name,
-                    "description": spec.get("description", ""),
-                    "input_schema": spec.get("input_schema") or {"type": "object", "properties": {}},
+                    "description": schema.get("description", ""),
+                    "input_schema": _object_schema(schema.get("input_schema")),
                 }
             )
-        return tools
+        return schemas
 
-    # -------------------------
-    # Invocation
-    # -------------------------
-    async def call_tool(self, name: str, params: Dict[str, Any], *, confirm: bool = False) -> Dict[str, Any]:
-        if not self._is_allowed(name):
-            return self._error("forbidden", f"Tool '{name}' is not allowed")
-
-        if self.confirm_required_write and self._is_write_tool(name) and not confirm:
-            return self._error("confirmation_required", f"Tool '{name}' requires confirmation")
-
-        # Resolve the callable using ToolManager's internal registry
-        func = self._resolve_tool_callable(name)
-        if func is None:
-            return self._error("not_found", f"Tool '{name}' not found")
-        try:
-            result = func(**(params or {}))  # supports sync; ToolManager tools are sync
-            # Some tools return coroutine (rare) – await if needed
-            if hasattr(result, "__await__"):
-                result = await result  # type: ignore[func-returns-value]
-            return self._ok(result)
-        except Exception as e:  # pragma: no cover - surface errors cleanly
-            return self._error("execution_error", str(e))
-
-    # -------------------------
-    # Helpers
-    # -------------------------
-    def _is_allowed(self, name: str) -> bool:
-        if any(fnmatch.fnmatch(name, pat) for pat in self.deny):
+    def _is_allowed(self, tool_name: str) -> bool:
+        if any(_glob_match(tool_name, pattern) for pattern in self.config.deny_patterns):
             return False
-        return any(fnmatch.fnmatch(name, pat) for pat in self.allow)
+        return any(_glob_match(tool_name, pattern) for pattern in self.config.allow_tools)
 
-    @staticmethod
-    def _is_write_tool(name: str) -> bool:
-        # Heuristic: known write/edit tools
-        return name in {"apply_diff", "edit_with_pattern", "create_file", "write_to_file"}
+    def _build_tool_handler(self, schema: dict[str, Any]) -> Callable[..., Any]:
+        tool_name = schema["name"]
+        input_schema = _object_schema(schema.get("input_schema"))
+        properties = input_schema.get("properties", {})
+        required = set(input_schema.get("required", []))
+        param_to_property: dict[str, str] = {}
 
-    def _resolve_tool_callable(self, name: str):
-        # ToolManager keeps a private registry mapping names to call paths
-        registry: Dict[str, str] = getattr(self.tm, "_tool_registry", {})
-        target = registry.get(name)
-        if not target:
-            return None
-        # Resolve 'self.xxx' members directly on ToolManager
-        if target.startswith("self."):
-            attr_path = target.split(".")
-            obj = self.tm
-            for part in attr_path[1:]:
-                obj = getattr(obj, part)
-            return obj
-        # Otherwise, import the function dynamically
-        try:
-            import importlib
+        async def handler(**kwargs: Any) -> str:
+            arguments = {
+                param_to_property.get(key, key): value for key, value in kwargs.items()
+            }
+            return self.call_tool(tool_name, arguments)
 
-            module_path, func_name = target.rsplit(".", 1)
-            mod = importlib.import_module(module_path)
-            return getattr(mod, func_name)
-        except Exception:
-            return None
+        handler.__name__ = _safe_identifier(tool_name)
+        handler.__doc__ = schema.get("description") or f"Run Penguin tool {tool_name}."
+        parameters: list[inspect.Parameter] = []
 
-    @staticmethod
-    def _ok(data: Any) -> Dict[str, Any]:
-        return {"status": "ok", "data": data}
+        for property_name, property_schema in properties.items():
+            param_name = _safe_identifier(property_name)
+            if param_name in param_to_property:
+                param_name = f"{param_name}_{len(param_to_property)}"
+            param_to_property[param_name] = property_name
+            default = inspect.Parameter.empty if property_name in required else None
+            annotation = _python_annotation_for_schema(property_schema)
+            parameters.append(
+                inspect.Parameter(
+                    param_name,
+                    inspect.Parameter.KEYWORD_ONLY,
+                    default=default,
+                    annotation=annotation,
+                )
+            )
 
-    @staticmethod
-    def _error(code: str, message: str) -> Dict[str, Any]:
-        return {"status": "error", "error": {"code": code, "message": message}}
+        handler.__signature__ = inspect.Signature(  # type: ignore[attr-defined]
+            parameters=parameters,
+            return_annotation=str,
+        )
+        return handler
 
 
+def build_penguin_mcp_server(
+    tool_manager: ToolManager,
+    *,
+    allow_tools: Optional[Iterable[str]] = None,
+    deny_patterns: Optional[Iterable[str]] = None,
+    name: str = "penguin",
+) -> PenguinMCPServer:
+    """Build a configured Penguin MCP server wrapper."""
+    return PenguinMCPServer(
+        tool_manager,
+        PenguinMCPServerConfig(
+            name=name,
+            allow_tools=tuple(allow_tools or DEFAULT_EXPOSED_TOOLS),
+            deny_patterns=tuple(deny_patterns or DEFAULT_DENIED_PATTERNS),
+        ),
+    )
+
+
+def _object_schema(schema: Any) -> dict[str, Any]:
+    if not isinstance(schema, dict):
+        return {"type": "object", "properties": {}}
+    result = dict(schema)
+    if result.get("type") != "object":
+        result["type"] = "object"
+    if not isinstance(result.get("properties"), dict):
+        result["properties"] = {}
+    return result
+
+
+def _python_annotation_for_schema(schema: Any) -> Any:
+    if not isinstance(schema, dict):
+        return Any
+    schema_type = schema.get("type")
+    if isinstance(schema_type, list):
+        schema_type = next((item for item in schema_type if item != "null"), None)
+    return _JSON_TYPE_TO_PYTHON.get(str(schema_type), Any)
+
+
+def _safe_identifier(value: str) -> str:
+    cleaned = re.sub(r"\W+", "_", value).strip("_") or "tool"
+    if cleaned[0].isdigit():
+        cleaned = f"_{cleaned}"
+    if not cleaned.isidentifier():
+        cleaned = "tool"
+    return cleaned
+
+
+def _glob_match(value: str, pattern: str) -> bool:
+    regex = "^" + re.escape(pattern).replace("\*", ".*") + "$"
+    return re.match(regex, value) is not None
+
+
+def configure_stdio_logging() -> None:
+    """Configure logging for stdio MCP mode without corrupting stdout."""
+    logging.basicConfig(
+        level=logging.INFO,
+        stream=sys.stderr,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+
+__all__ = [
+    "DEFAULT_DENIED_PATTERNS",
+    "DEFAULT_EXPOSED_TOOLS",
+    "HAS_MCP_SERVER_SDK",
+    "MCPServerUnavailableError",
+    "PenguinMCPServer",
+    "PenguinMCPServerConfig",
+    "build_penguin_mcp_server",
+    "configure_stdio_logging",
+]
