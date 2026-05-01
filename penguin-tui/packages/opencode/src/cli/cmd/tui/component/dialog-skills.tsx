@@ -31,7 +31,8 @@ type SkillCatalogPayload = {
 type SkillOption =
   | { kind: "skill"; name: string }
   | { kind: "diagnostic"; index: number }
-  | { kind: "help" }
+  | { kind: "help"; id: "install" }
+  | { kind: "status"; id: "loading" | "error" }
 
 function Status(props: { active?: boolean; loading?: boolean }) {
   const { theme } = useTheme()
@@ -42,6 +43,13 @@ function Status(props: { active?: boolean; loading?: boolean }) {
 
 function installGuidance() {
   return "Install manually by copying a skill folder into ~/.penguin/skills or .penguin/skills, then refresh this panel."
+}
+
+function summarize(value: string | undefined, max = 42) {
+  if (!value) return undefined
+  const compact = value.replace(/\s+/g, " ").trim()
+  if (compact.length <= max) return compact
+  return `${compact.slice(0, Math.max(0, max - 1)).trimEnd()}…`
 }
 
 export function DialogSkills() {
@@ -78,10 +86,13 @@ export function DialogSkills() {
     try {
       const action = skill.active ? "deactivate" : "activate"
       const url = new URL(`/api/v1/skills/${encodeURIComponent(skill.name)}/${action}`, sdk.url)
+      const body = skill.active
+        ? { session_id: sdk.sessionID ?? "default" }
+        : { session_id: sdk.sessionID ?? "default", load_into_context: true }
       const res = await sdk.fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sdk.sessionID ?? "default", load_into_context: true }),
+        body: JSON.stringify(body),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const result = (await res.json()) as { status?: string; duplicate?: boolean; was_active?: boolean }
@@ -109,8 +120,8 @@ export function DialogSkills() {
     if (error()) {
       result.push({
         title: "Skills unavailable",
-        value: { kind: "diagnostic", index: -1 },
-        description: error(),
+        value: { kind: "status", id: "error" },
+        description: summarize(error(), 52),
         footer: "Check penguin-web logs, then reopen this panel.",
         category: "Diagnostics",
       })
@@ -120,8 +131,8 @@ export function DialogSkills() {
       result.push({
         title: diagnostic.severity ? `${diagnostic.severity}: invalid skill` : "Invalid skill",
         value: { kind: "diagnostic", index },
-        description: diagnostic.message ?? "Invalid skill diagnostic",
-        footer: diagnostic.path ?? "No path reported",
+        description: summarize(diagnostic.message, 52),
+        footer: summarize(diagnostic.path, 48) ?? "No path reported",
         category: "Diagnostics",
       })
     }
@@ -130,7 +141,7 @@ export function DialogSkills() {
       result.push({
         title: skill.name,
         value: { kind: "skill", name: skill.name },
-        description: skill.description,
+        description: summarize(skill.description),
         footer: <Status active={skill.active} loading={activating() === skill.name} />,
         category: skill.active ? "Active" : "Available",
       })
@@ -138,17 +149,17 @@ export function DialogSkills() {
 
     result.push({
       title: "Install skills manually",
-      value: { kind: "help" },
-      description: installGuidance(),
+      value: { kind: "help", id: "install" },
+      description: summarize(installGuidance(), 52),
       footer: "~/.penguin/skills · .penguin/skills",
       category: "Help",
     })
 
-    if (loading()) {
+    if (loading() && skills.length === 0 && diagnostics.length === 0) {
       result.unshift({
         title: "Loading skills...",
-        value: { kind: "help" },
-        description: "Fetching the Penguin skill catalog from the local server.",
+        value: { kind: "status", id: "loading" },
+        description: "Fetching catalog",
         footer: <span style={{ fg: theme.textMuted }}>Please wait</span>,
         category: "Status",
       })
@@ -185,7 +196,7 @@ export function DialogSkills() {
       options={options()}
       keybind={keybinds()}
       onSelect={() => {
-        // Deliberately no auto-activation on selection. Use Space to activate.
+        // Deliberately no auto-activation on selection. Use Space to activate/deactivate.
       }}
     />
   )
