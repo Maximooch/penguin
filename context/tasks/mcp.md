@@ -408,36 +408,152 @@ Expose read-only tools first:
 - Denied tools are absent or fail with clear permission errors.
 - Tool calls route through `ToolManager.execute_tool()`, not direct private registry calls.
 
-### Phase 2B: Agent-Level MCP Server
+### Phase 2B: Penguin Runtime MCP Server
 
 #### Scope
 
-Expose Penguin as an agent-like runtime rather than merely a low-level tool registry. This is the strategic surface for Link, Claude Desktop, IDEs, and other agent hosts that want to delegate software work to Penguin.
+Expose Penguin's differentiated runtime surfaces, not a generic chat wrapper. The target audience is Link, IDEs, Claude Desktop, and other agent hosts that want to delegate durable software work into Penguin's project/task/runtime system.
 
-#### Candidate Tools
+Primary docs to keep aligned:
 
-- `penguin_chat` — send a message to a Penguin session and receive a response.
-- `penguin_run_task` — start a Run Mode task with objective, constraints, and optional project context.
-- `penguin_get_task_status` — poll task/run status, phase, blockers, and artifact evidence.
-- `penguin_cancel_task` — cancel a long-running task.
-- `penguin_resume_with_clarification` — answer a pending clarification request and resume execution.
-- `penguin_list_sessions` — discover available sessions/projects.
-- `penguin_get_context_summary` — retrieve a concise state summary for coordination.
+- `docs/docs/system/run-mode.md` — autonomous execution and continuous task processing.
+- `docs/docs/usage/project_management.md` — SQLite-backed projects/tasks, dependency metadata, task truth.
+- `docs/docs/usage/task_management.md` — lifecycle status plus ITUV phase semantics.
+- `docs/docs/system/blueprints.md` — spec-driven task DAGs, recipes, acceptance criteria, agent hints.
+- `docs/docs/system/orchestration.md` — ITUV workflow phases, native/Temporal backend shape.
+- `features.md` — competitive feature bar and Penguin differentiators.
+
+#### Default Exposure Policy
+
+If a user intentionally connects a Penguin MCP server, it should expose Penguin's differentiated control-plane by default. Hiding everything creates a bad first-run experience. However, autonomous execution and high-risk mutation still need explicit opt-in.
+
+Default-on Phase 2B surfaces:
+
+- Project/task management tools.
+- Blueprint lint/status/graph tools, and sync once its internals are verified.
+- Read-only session/context/evidence/checkpoint listing tools.
+
+Explicit opt-in surfaces:
+
+- RunMode execution tools.
+- ITUV workflow start/signal tools.
+- Cancellation/resume operations that mutate active execution state.
+- Raw dangerous low-level tools: shell, writes, patches, browser, subagents, external MCP-hosted tools.
+
+Runtime opt-in should support at least one explicit flag/config/env path, for example:
+
+- `scripts/penguin_mcp_server.py --allow-runtime-tools`
+- `mcp.server.expose_runtime_tools: true`
+- `PENGUIN_MCP_ALLOW_RUNTIME_TOOLS=1`
+
+#### Implementation Layout
+
+Use focused tool modules rather than growing `server.py` into a god file:
+
+```text
+penguin/integrations/mcp/server_tools/
+  __init__.py
+  pm.py
+  blueprints.py
+  runmode.py
+  sessions.py
+  artifacts.py
+```
+
+Shared helpers should prefer web/API service-layer payload construction when available. If route logic contains the current truth, extract small shared service functions instead of duplicating stale Python API behavior in MCP.
+
+#### Slice 1: PM Tools Default-On
+
+Expose Penguin's project/task truth as the first Phase 2B control-plane surface.
+
+Tools:
+
+- `penguin_pm_list_projects` — list project containers and lifecycle summaries.
+- `penguin_pm_create_project` — create a project with name, description, workspace/root metadata.
+- `penguin_pm_list_tasks` — list tasks by project/status/phase/dependency readiness.
+- `penguin_pm_create_task` — create tasks with description, priority, dependencies, acceptance criteria, resource constraints, and metadata.
+- `penguin_pm_get_task` — return rich task truth: status, phase, dependency specs, artifact evidence, recipe, metadata, clarification requests.
+
+Defer or gate until lifecycle validation is confirmed:
+
+- `penguin_pm_update_task` — update status, phase, metadata, dependency specs, recipe, or artifact evidence through validated lifecycle paths.
+
+Task creation should support rich fields immediately. Fields that are first-class in `ProjectManager` should be stored first-class; unsupported-but-useful fields should be preserved under metadata and reported as metadata-preserved, not silently dropped or faked.
+
+#### Slice 2: Blueprint Tools Default-On
+
+Expose Penguin's spec-to-task DAG capability.
+
+Tools:
+
+- `penguin_blueprint_lint` — parse/lint Markdown/YAML/JSON blueprints and return structured diagnostics for duplicate IDs, missing deps, cycles, and missing acceptance criteria.
+- `penguin_blueprint_graph` — return the dependency DAG in a machine-readable form, optionally DOT/JSON.
+- `penguin_blueprint_status` — map blueprint items to project tasks and report sync/execution status.
+
+Defer until internals are verified and idempotency is clear:
+
+- `penguin_blueprint_sync` — import/sync a blueprint into a project as tasks/dependency graph without executing it.
+
+#### Slice 3: Runtime / RunMode Explicit Opt-In
+
+Expose long-running execution as durable jobs, not blocking tool calls. These tools are not registered unless runtime tools are explicitly enabled.
+
+Tools:
+
+- `penguin_runmode_start_task` — start a bounded RunMode task with name, description, context, max iterations, time limit, and optional project/task binding.
+- `penguin_runmode_start_continuous` — start continuous task processing for a project or named task queue, with explicit time/resource limits.
+- `penguin_runmode_status` — return status, phase, current iteration, active task, stop reason, waiting-input state, and latest artifact evidence.
+- `penguin_runmode_cancel` — cancel or interrupt a running RunMode job.
+- `penguin_runmode_resume_clarification` — answer a clarification request and resume through the same lifecycle path.
+
+Implementation note: this slice needs a durable-ish job registry/status handle before exposing start operations. Do not implement it as a blocking `process_message("do task")` wrapper.
+
+#### Slice 4: Orchestration / ITUV Explicit Opt-In
+
+Expose the ITUV lifecycle explicitly instead of hiding it behind prose. Starting/signaling workflows mutates execution state, so keep this behind runtime opt-in until policy is nailed down.
+
+Tools:
+
+- `penguin_ituv_start_workflow` — start an ITUV workflow for a task or blueprint item.
+- `penguin_ituv_status` — return implement/test/use/verify phase, retry state, blockers, and artifact evidence.
+- `penguin_ituv_signal` — pause, resume, cancel, or nudge a workflow.
+
+#### Slice 5: Sessions / Context / Evidence Default-On Read Paths
+
+Expose enough runtime context for another host to coordinate safely. Keep listing/summarization default-on; restoration/mutation should be opt-in or separately gated.
+
+Tools:
+
+- `penguin_session_list` — list active/recent sessions and associated projects/tasks.
+- `penguin_session_summary` — return a compact session/context summary suitable for handoff.
+- `penguin_artifacts_list` — list files, diffs, command outputs, screenshots, or evidence attached to a task/run.
+- `penguin_checkpoints_list` — list checkpoints for audit/handoff.
+
+Gated:
+
+- `penguin_checkpoint_restore` — controlled rollback.
 
 #### Design Requirements
 
-- Long-running tools must return durable IDs/status, not block forever.
-- Session/project scope must be explicit.
-- Cancellation and clarification must be first-class.
+- Long-running tools must return durable IDs and status handles. Do not block an MCP call for an entire autonomous run.
+- Every task/run payload should expose lifecycle truth: `status`, `phase`, dependencies, artifact evidence, recipe, metadata, and clarification state.
+- Project/task scope must be explicit; defaulting to a hidden global project is a foot-gun.
+- Clarification-needed states must survive as first-class MCP results, not become fake failures.
+- Cancellation must be explicit and reliable.
 - Permission boundaries must be stricter than direct local Penguin usage because another host/agent may be driving it.
-- Outputs should include artifact paths/evidence, not just prose.
+- Outputs should include artifact paths/evidence and machine-readable state, not just prose.
+- Phase 2B should prefer existing web/API and `PenguinAPI` lifecycle semantics where those are truthful, rather than inventing another parallel task API.
 
 #### Acceptance Criteria
 
-- External MCP clients can delegate a bounded task to Penguin and poll status.
-- Clarification-needed states survive across MCP calls.
-- The surface does not expose dangerous low-level tools by accident.
-- Link can eventually use this as a deep Penguin orchestration bridge.
+- External MCP clients can create/list projects and tasks with rich lifecycle fields.
+- External MCP clients can start a bounded RunMode job and receive a durable run/task ID.
+- Polling returns truthful non-terminal states including `running`, `pending_review`, `waiting_input`, `failed`, `cancelled`, and `completed`.
+- Clarification-needed states can be resumed via MCP.
+- Blueprint lint/sync can create dependency-aware task graphs without execution.
+- Artifact evidence is visible through MCP for completed or pending-review work.
+- Dangerous low-level tools remain unavailable unless explicitly exposed.
+- Link can use this as a deep Penguin orchestration bridge rather than a generic chat endpoint.
 
 ## Phase 3: Resources, Prompts, Notifications
 
