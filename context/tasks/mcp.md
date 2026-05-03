@@ -464,13 +464,16 @@ Shared helpers should prefer web/API service-layer payload construction when ava
 
 #### Slice 1: PM Tools Default-On
 
+Status: implemented in `penguin/integrations/mcp/server_tools/pm.py` with shared web/MCP payload serializers in `penguin/web/services/project_payloads.py`.
+
 Expose Penguin's project/task truth as the first Phase 2B control-plane surface.
 
 Tools:
 
 - `penguin_pm_list_projects` — list project containers and lifecycle summaries.
 - `penguin_pm_create_project` — create a project with name, description, workspace/root metadata.
-- `penguin_pm_list_tasks` — list tasks by project/status/phase/dependency readiness.
+- `penguin_pm_get_project` — return one project by ID with tasks included by default.
+- `penguin_pm_list_tasks` — list tasks by project/status/parent task. Phase/dependency-readiness filters remain future work.
 - `penguin_pm_create_task` — create tasks with description, priority, dependencies, acceptance criteria, resource constraints, and metadata.
 - `penguin_pm_get_task` — return rich task truth: status, phase, dependency specs, artifact evidence, recipe, metadata, clarification requests.
 

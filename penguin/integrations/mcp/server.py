@@ -18,6 +18,7 @@ except Exception:  # pragma: no cover - exercised when optional extra missing
     FastMCP = None  # type: ignore[assignment]
     HAS_MCP_SERVER_SDK = False
 
+from penguin.integrations.mcp.server_tools import MCPServerTool, build_pm_tools
 from penguin.tools.tool_manager import ToolManager
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,7 @@ DEFAULT_EXPOSED_TOOLS = (
     "find_file",
     "grep_search",
     "analyze_project",
+    "penguin_pm_*",
 )
 
 DEFAULT_DENIED_PATTERNS = (
@@ -68,6 +70,7 @@ class PenguinMCPServerConfig:
     deny_patterns: tuple[str, ...] = DEFAULT_DENIED_PATTERNS
     transport: str = "stdio"
     enabled: bool = True
+    expose_pm_tools: bool = True
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -82,9 +85,13 @@ class PenguinMCPServer:
         self,
         tool_manager: ToolManager,
         config: Optional[PenguinMCPServerConfig] = None,
+        core: Any = None,
     ) -> None:
         self.tool_manager = tool_manager
         self.config = config or PenguinMCPServerConfig()
+        self.core = core or getattr(tool_manager, "_core", None)
+        self._runtime_tools = self._build_runtime_tools()
+        self._runtime_tool_map = {tool.name: tool for tool in self._runtime_tools}
         self._tool_schemas = self._select_tool_schemas()
 
     def list_exposed_tools(self) -> list[dict[str, Any]]:
@@ -131,7 +138,22 @@ class PenguinMCPServer:
                 indent=2,
             )
 
-        result = self.tool_manager.execute_tool(tool_name, arguments or {})
+        runtime_tool = self._runtime_tool_map.get(tool_name)
+        if runtime_tool is not None:
+            try:
+                result = runtime_tool.handler(arguments or {})
+            except Exception as exc:
+                return json.dumps(
+                    {
+                        "error": "penguin_runtime_tool_failed",
+                        "tool": tool_name,
+                        "message": str(exc),
+                    },
+                    indent=2,
+                    default=str,
+                )
+        else:
+            result = self.tool_manager.execute_tool(tool_name, arguments or {})
         if isinstance(result, str):
             return result
         return json.dumps(result, indent=2, default=str)
@@ -149,7 +171,21 @@ class PenguinMCPServer:
                     "input_schema": _object_schema(schema.get("input_schema")),
                 }
             )
+        for tool in self._runtime_tools:
+            if self._is_allowed(tool.name):
+                schemas.append(
+                    {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "input_schema": _object_schema(tool.input_schema),
+                    }
+                )
         return schemas
+
+    def _build_runtime_tools(self) -> list[MCPServerTool]:
+        if not self.config.expose_pm_tools or self.core is None:
+            return []
+        return build_pm_tools(self.core)
 
     def _is_allowed(self, tool_name: str) -> bool:
         if any(_glob_match(tool_name, pattern) for pattern in self.config.deny_patterns):
@@ -202,6 +238,8 @@ def build_penguin_mcp_server(
     allow_tools: Optional[Iterable[str]] = None,
     deny_patterns: Optional[Iterable[str]] = None,
     name: str = "penguin",
+    core: Any = None,
+    expose_pm_tools: bool = True,
 ) -> PenguinMCPServer:
     """Build a configured Penguin MCP server wrapper."""
     return PenguinMCPServer(
@@ -210,7 +248,9 @@ def build_penguin_mcp_server(
             name=name,
             allow_tools=tuple(allow_tools or DEFAULT_EXPOSED_TOOLS),
             deny_patterns=tuple(deny_patterns or DEFAULT_DENIED_PATTERNS),
+            expose_pm_tools=expose_pm_tools,
         ),
+        core=core,
     )
 
 

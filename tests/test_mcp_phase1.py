@@ -334,3 +334,102 @@ def test_penguin_mcp_server_dynamic_handler_signature() -> None:
     assert "filename" in signature.parameters
     assert signature.parameters["filename"].default is inspect.Parameter.empty
     assert signature.parameters["search_path"].default is None
+
+
+def test_penguin_mcp_server_exposes_pm_tools_with_core(tmp_path) -> None:
+    from penguin.integrations.mcp.server import build_penguin_mcp_server
+    from penguin.project.manager import ProjectManager
+
+    class FakeCore:
+        def __init__(self) -> None:
+            self.project_manager = ProjectManager(tmp_path)
+
+    class FakeToolManager:
+        def __init__(self, core) -> None:
+            self._core = core
+
+        def get_tools(self):
+            return []
+
+        def execute_tool(self, tool_name, arguments):
+            raise AssertionError("PM tools should not route through ToolManager")
+
+    core = FakeCore()
+    server = build_penguin_mcp_server(FakeToolManager(core), core=core)
+    exposed = {tool["name"] for tool in server.list_exposed_tools()}
+
+    assert {
+        "penguin_pm_list_projects",
+        "penguin_pm_create_project",
+        "penguin_pm_get_project",
+        "penguin_pm_list_tasks",
+        "penguin_pm_create_task",
+        "penguin_pm_get_task",
+    } <= exposed
+
+
+def test_penguin_mcp_pm_project_and_task_lifecycle(tmp_path) -> None:
+    from penguin.integrations.mcp.server import build_penguin_mcp_server
+    from penguin.project.manager import ProjectManager
+
+    class FakeCore:
+        def __init__(self) -> None:
+            self.project_manager = ProjectManager(tmp_path)
+
+    class FakeToolManager:
+        def __init__(self, core) -> None:
+            self._core = core
+
+        def get_tools(self):
+            return []
+
+        def execute_tool(self, tool_name, arguments):
+            raise AssertionError("PM tools should not route through ToolManager")
+
+    core = FakeCore()
+    server = build_penguin_mcp_server(FakeToolManager(core), core=core)
+
+    project_payload = json.loads(
+        server.call_tool(
+            "penguin_pm_create_project",
+            {
+                "name": "MCP Slice 1",
+                "description": "PM control plane",
+                "tags": ["mcp"],
+                "metadata": {"source": "test"},
+            },
+        )
+    )
+    project = project_payload["project"]
+    assert project["name"] == "MCP Slice 1"
+    assert project["metadata"] == {"source": "test"}
+
+    task_payload = json.loads(
+        server.call_tool(
+            "penguin_pm_create_task",
+            {
+                "project_id": project["id"],
+                "title": "Implement PM tools",
+                "description": "Expose PM over MCP",
+                "acceptance_criteria": ["tools/list includes PM tools"],
+                "definition_of_done": "verified",
+                "metadata": {"risk": "low"},
+            },
+        )
+    )
+    task = task_payload["task"]
+    assert task["project_id"] == project["id"]
+    assert task["title"] == "Implement PM tools"
+    assert task["acceptance_criteria"] == ["tools/list includes PM tools"]
+    assert task["definition_of_done"] == "verified"
+    assert task["metadata"] == {"risk": "low"}
+
+    list_payload = json.loads(
+        server.call_tool("penguin_pm_list_tasks", {"project_id": project["id"]})
+    )
+    assert [item["id"] for item in list_payload["tasks"]] == [task["id"]]
+
+    fetched = json.loads(
+        server.call_tool("penguin_pm_get_project", {"project_id": project["id"]})
+    )
+    assert fetched["project"]["tasks"][0]["id"] == task["id"]

@@ -94,6 +94,7 @@ from penguin.web.services.system_status import (
     get_path_info,
     get_vcs_info,
 )
+from penguin.web.services.project_payloads import serialize_task_payload
 from penguin.web.services.projects import (
     delete_project_with_tasks,
     initialize_project_from_blueprint,
@@ -149,42 +150,8 @@ def _format_error_response(error: Exception, status_code: int = 500) -> HTTPExce
 def _serialize_task_payload(
     task: Any, *, include_metadata: bool = True
 ) -> Dict[str, Any]:
-    """Serialize a task for web responses without flattening new runtime state away."""
-    # Keep this centralized so task payload fixes land in one place instead of drifting across routes.
-    # The web surface should expose current lifecycle truth, including phase and clarification state, not just legacy status fields.
-    dependency_specs = [
-        spec.to_dict() if hasattr(spec, "to_dict") else dict(spec)
-        for spec in getattr(task, "dependency_specs", []) or []
-    ]
-    artifact_evidence = [
-        artifact.to_dict() if hasattr(artifact, "to_dict") else dict(artifact)
-        for artifact in getattr(task, "artifact_evidence", []) or []
-    ]
-    metadata = dict(getattr(task, "metadata", {}) or {})
-    clarification_requests = list(metadata.get("clarification_requests", []))
-
-    payload = {
-        "id": task.id,
-        "project_id": getattr(task, "project_id", None),
-        "title": task.title,
-        "description": task.description,
-        "status": task.status.value if hasattr(task.status, "value") else task.status,
-        "phase": task.phase.value
-        if hasattr(task.phase, "value")
-        else getattr(task, "phase", None),
-        "priority": getattr(task, "priority", None),
-        "parent_task_id": getattr(task, "parent_task_id", None),
-        "dependencies": list(getattr(task, "dependencies", []) or []),
-        "dependency_specs": dependency_specs,
-        "artifact_evidence": artifact_evidence,
-        "recipe": getattr(task, "recipe", None),
-        "clarification_requests": clarification_requests,
-        "created_at": task.created_at if getattr(task, "created_at", None) else None,
-        "updated_at": task.updated_at if getattr(task, "updated_at", None) else None,
-    }
-    if include_metadata:
-        payload["metadata"] = metadata
-    return payload
+    """Serialize a task for web responses using the shared PM payload shape."""
+    return serialize_task_payload(task, include_metadata=include_metadata)
 
 
 MAX_IMAGES_PER_REQUEST = 10
