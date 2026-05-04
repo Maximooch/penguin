@@ -540,10 +540,19 @@ Acceptance criteria:
 
 ##### Slice 3B: Runtime Start Behind Opt-In
 
-Future tools:
+Status: implemented with in-process background jobs.
+
+Tools:
 
 - `penguin_runmode_start_task` — start a bounded RunMode task with name, description, context, max iterations, time limit, and optional project/task binding.
 - `penguin_runmode_start_project` — start project-scoped execution through the same service path as the web project start route.
+
+Slice 3B caveats:
+
+- Job registry is in-process and non-durable.
+- Jobs start in daemon threads and report result/error through `penguin_runmode_get_job`.
+- Cancellation is still unavailable until Slice 3C.
+- Execution remains model-dependent; tests cover job lifecycle with mocked execution plus capabilities/listing via MCP Inspector.
 
 ##### Slice 3C: Cancel And Resume Clarification
 

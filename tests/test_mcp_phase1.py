@@ -789,7 +789,7 @@ def test_penguin_mcp_runmode_tools_are_opt_in(tmp_path) -> None:
         runtime_server.call_tool("penguin_runmode_capabilities", {})
     )
     assert capabilities["runtime_tools_enabled"] is True
-    assert capabilities["start_supported"] is False
+    assert capabilities["start_supported"] is True
     assert capabilities["cancel_supported"] is False
     assert capabilities["core"]["has_project_manager"] is True
     assert capabilities["core"]["has_engine"] is True
@@ -826,10 +826,118 @@ def test_penguin_mcp_runmode_job_read_tools(tmp_path) -> None:
 
     jobs = json.loads(server.call_tool("penguin_runmode_list_jobs", {}))
     assert jobs["jobs"] == []
-    assert jobs["registry"]["supports_start"] is False
+    assert jobs["registry"]["supports_start"] is True
 
     missing = json.loads(
         server.call_tool("penguin_runmode_get_job", {"job_id": "missing"})
     )
     assert missing["error"] == "job_not_found"
+
+
+def test_penguin_mcp_runmode_start_task_registers_background_job(monkeypatch) -> None:
+    import time
+    import penguin.integrations.mcp.server_tools.runmode as runmode_tools
+    from penguin.integrations.mcp.server import build_penguin_mcp_server
+
+    async def fake_execute_task(core, arguments):
+        return {"status": "completed", "task_id": arguments["task_id"]}
+
+    monkeypatch.setattr(runmode_tools, "_execute_task_job", fake_execute_task)
+
+    class FakeCore:
+        project_manager = object()
+        engine = object()
+
+    class FakeToolManager:
+        def __init__(self, core) -> None:
+            self._core = core
+
+        def get_tools(self):
+            return []
+
+        def execute_tool(self, tool_name, arguments):
+            raise AssertionError("RunMode tools should not route through ToolManager")
+
+    core = FakeCore()
+    server = build_penguin_mcp_server(
+        FakeToolManager(core),
+        core=core,
+        expose_runtime_tools=True,
+    )
+
+    start_payload = json.loads(
+        server.call_tool("penguin_runmode_start_task", {"task_id": "task-1"})
+    )
+    job = start_payload["job"]
+    assert job["kind"] == "task"
+    assert job["task_id"] == "task-1"
+    assert start_payload["registry"]["supports_start"] is True
+
+    latest = None
+    for _ in range(50):
+        latest = json.loads(
+            server.call_tool("penguin_runmode_get_job", {"job_id": job["job_id"]})
+        )["job"]
+        if latest["status"] == "completed":
+            break
+        time.sleep(0.02)
+
+    assert latest is not None
+    assert latest["status"] == "completed"
+    assert latest["result"] == {"status": "completed", "task_id": "task-1"}
+
+
+def test_penguin_mcp_runmode_start_project_registers_background_job(monkeypatch) -> None:
+    import time
+    import penguin.integrations.mcp.server_tools.runmode as runmode_tools
+    from penguin.integrations.mcp.server import build_penguin_mcp_server
+
+    async def fake_execute_project(core, arguments):
+        return {
+            "status": "completed",
+            "execution": {"project_id": arguments["project_id"]},
+        }
+
+    monkeypatch.setattr(runmode_tools, "_execute_project_job", fake_execute_project)
+
+    class FakeCore:
+        project_manager = object()
+        engine = object()
+
+    class FakeToolManager:
+        def __init__(self, core) -> None:
+            self._core = core
+
+        def get_tools(self):
+            return []
+
+        def execute_tool(self, tool_name, arguments):
+            raise AssertionError("RunMode tools should not route through ToolManager")
+
+    core = FakeCore()
+    server = build_penguin_mcp_server(
+        FakeToolManager(core),
+        core=core,
+        expose_runtime_tools=True,
+    )
+
+    start_payload = json.loads(
+        server.call_tool("penguin_runmode_start_project", {"project_id": "proj-1"})
+    )
+    job = start_payload["job"]
+    assert job["kind"] == "project"
+    assert job["project_id"] == "proj-1"
+
+    latest = None
+    for _ in range(50):
+        latest = json.loads(
+            server.call_tool("penguin_runmode_get_job", {"job_id": job["job_id"]})
+        )["job"]
+        if latest["status"] == "completed":
+            break
+        time.sleep(0.02)
+
+    assert latest is not None
+    assert latest["status"] == "completed"
+    assert latest["result"]["execution"] == {"project_id": "proj-1"}
 
