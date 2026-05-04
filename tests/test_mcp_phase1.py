@@ -1069,3 +1069,109 @@ def test_penguin_mcp_runmode_resume_clarification_registers_job(monkeypatch) -> 
     assert latest["result"]["answer"] == "Use SQLite"
     assert latest["result"]["record_seen"] is True
 
+
+def test_penguin_mcp_ituv_tools_are_runtime_gated(tmp_path) -> None:
+    from penguin.integrations.mcp.server import build_penguin_mcp_server
+    from penguin.project.manager import ProjectManager
+
+    class FakeCore:
+        def __init__(self) -> None:
+            self.project_manager = ProjectManager(tmp_path)
+            self.engine = object()
+
+    class FakeToolManager:
+        def __init__(self, core) -> None:
+            self._core = core
+
+        def get_tools(self):
+            return []
+
+        def execute_tool(self, tool_name, arguments):
+            raise AssertionError("ITUV tools should not route through ToolManager")
+
+    core = FakeCore()
+    default_server = build_penguin_mcp_server(FakeToolManager(core), core=core)
+    assert "penguin_ituv_capabilities" not in {
+        tool["name"] for tool in default_server.list_exposed_tools()
+    }
+
+    runtime_server = build_penguin_mcp_server(
+        FakeToolManager(core),
+        core=core,
+        expose_runtime_tools=True,
+    )
+    names = {tool["name"] for tool in runtime_server.list_exposed_tools()}
+    assert "penguin_ituv_capabilities" in names
+    assert "penguin_ituv_status" in names
+    assert "penguin_ituv_frontier" in names
+
+    capabilities = json.loads(runtime_server.call_tool("penguin_ituv_capabilities", {}))
+    assert capabilities["slice"] == "4A"
+    assert capabilities["read_only"] is True
+    assert "implement" in capabilities["phases"]
+    assert "pending_review" in capabilities["statuses"]
+    assert capabilities["dependency_readiness_rules"]["artifact_ready"]
+
+
+def test_penguin_mcp_ituv_status_and_frontier_report_ready_tasks(tmp_path) -> None:
+    from penguin.integrations.mcp.server import build_penguin_mcp_server
+    from penguin.project.manager import ProjectManager
+
+    class FakeCore:
+        def __init__(self) -> None:
+            self.project_manager = ProjectManager(tmp_path)
+            self.engine = object()
+
+    class FakeToolManager:
+        def __init__(self, core) -> None:
+            self._core = core
+
+        def get_tools(self):
+            return []
+
+        def execute_tool(self, tool_name, arguments):
+            raise AssertionError("ITUV tools should not route through ToolManager")
+
+    core = FakeCore()
+    project = core.project_manager.create_project(
+        name="ITUV Test",
+        description="ITUV Test",
+        workspace_path=tmp_path,
+    )
+    ready_task = core.project_manager.create_task(
+        project_id=project.id,
+        title="Ready task",
+        description="Ready task",
+    )
+    blocked_task = core.project_manager.create_task(
+        project_id=project.id,
+        title="Blocked task",
+        description="Blocked task",
+        dependencies=[ready_task.id],
+    )
+
+    server = build_penguin_mcp_server(
+        FakeToolManager(core),
+        core=core,
+        expose_runtime_tools=True,
+    )
+
+    status = json.loads(
+        server.call_tool(
+            "penguin_ituv_status",
+            {"project_id": project.id, "task_id": blocked_task.id},
+        )
+    )
+    assert status["task"]["id"] == blocked_task.id
+    assert status["task_readiness"]["blocked"] is True
+    assert status["task_readiness"]["blockers"][0]["task_id"] == ready_task.id
+    assert status["dag"]["ready_count"] == 1
+
+    frontier = json.loads(
+        server.call_tool("penguin_ituv_frontier", {"project_id": project.id})
+    )
+    assert frontier["ready_count"] == 1
+    assert frontier["ready_tasks"][0]["id"] == ready_task.id
+    assert frontier["next_task"]["id"] == ready_task.id
+    assert frontier["blocked_ready_candidates"][0]["task_id"] == blocked_task.id
+

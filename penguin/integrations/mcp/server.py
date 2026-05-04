@@ -21,6 +21,7 @@ except Exception:  # pragma: no cover - exercised when optional extra missing
 from penguin.integrations.mcp.server_tools import (
     MCPServerTool,
     build_blueprint_tools,
+    build_ituv_tools,
     RunModeJobRegistry,
     build_pm_tools,
     build_runmode_tools,
@@ -38,6 +39,7 @@ DEFAULT_EXPOSED_TOOLS = (
     "penguin_pm_*",
     "penguin_blueprint_*",
     "penguin_runmode_*",
+    "penguin_ituv_*",
 )
 
 DEFAULT_DENIED_PATTERNS = (
@@ -203,6 +205,7 @@ class PenguinMCPServer:
             tools.extend(build_blueprint_tools(self.core))
         if self.config.expose_runtime_tools:
             tools.extend(build_runmode_tools(self.core, self._runmode_job_registry))
+            tools.extend(build_ituv_tools(self.core))
         return tools
 
     def _is_allowed(self, tool_name: str) -> bool:

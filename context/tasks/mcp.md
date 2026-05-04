@@ -574,13 +574,33 @@ Slice 3C caveats:
 
 Expose the ITUV lifecycle explicitly instead of hiding it behind prose. Starting/signaling workflows mutates execution state, so keep this behind runtime opt-in until policy is nailed down.
 
-Tools:
+##### Slice 4A: ITUV Readiness And Status
 
-- `penguin_ituv_start_workflow` — start an ITUV workflow for a task or blueprint item.
-- `penguin_ituv_status` — return implement/test/use/verify phase, retry state, blockers, and artifact evidence.
-- `penguin_ituv_signal` — pause, resume, cancel, or nudge a workflow.
+Status: implemented in `penguin/integrations/mcp/server_tools/ituv.py` and audited in `context/tasks/mcp-ituv-audit.md`.
 
-#### Slice 5: Sessions / Context / Evidence Default-On Read Paths
+Read-only tools:
+
+- `penguin_ituv_capabilities` — report status values, phase values, status transition map, dependency policies, and known gaps.
+- `penguin_ituv_status` — return project/task lifecycle truth, dependency specs, artifact evidence, DAG stats, ready tasks, and blocked candidates.
+- `penguin_ituv_frontier` — return the current dependency-aware ready-task frontier and next DAG task.
+
+Slice 4A tools are exposed only when `--allow-runtime-tools` is set and must not mutate project/task state.
+
+##### Slice 4B: ITUV Mutation / Signaling
+
+Future gated tools:
+
+- `penguin_ituv_signal` — validated status/phase/workflow signal transitions.
+- `penguin_ituv_record_artifact` — attach validated artifact evidence.
+- `penguin_ituv_mark_ready_for_review` — route successful execution into review state through existing PM semantics.
+
+Slice 4B preconditions:
+
+- Define legal phase transition rules as explicitly as `TaskStatus.valid_transitions()`.
+- Decide whether mutation uses direct `ProjectManager` methods or an orchestration service.
+- Make `phase=done` vs `status=completed` impossible to confuse.
+
+#### Slice 5: Sessions / Context / Evidence / Durable Runtime Records
 
 Expose enough runtime context for another host to coordinate safely. Keep listing/summarization default-on; restoration/mutation should be opt-in or separately gated.
 
@@ -590,6 +610,10 @@ Tools:
 - `penguin_session_summary` — return a compact session/context summary suitable for handoff.
 - `penguin_artifacts_list` — list files, diffs, command outputs, screenshots, or evidence attached to a task/run.
 - `penguin_checkpoints_list` — list checkpoints for audit/handoff.
+- `penguin_runtime_jobs_list` — list durable runtime job records, merging persisted records with any in-process active jobs.
+- `penguin_runtime_job_get` — retrieve one durable runtime job record by ID.
+
+Durable runtime job records should preserve at least `job_id`, `kind`, `project_id`, `task_id`, `session_id`, `status`, `started_at`, `finished_at`, `result_summary`, `error`, and cancellation state. Current Slice 3 job records are in-process only and must be persisted here before serious external orchestration depends on them.
 
 Gated:
 

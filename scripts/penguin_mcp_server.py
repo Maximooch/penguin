@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--allow-runtime-tools",
         action="store_true",
-        help="Expose opt-in RunMode readiness tools. Start/cancel remain unavailable in Slice 3A.",
+        help="Expose opt-in RunMode and ITUV runtime/orchestration MCP tools.",
     )
     parser.add_argument(
         "--minimal-core",
