@@ -18,7 +18,11 @@ except Exception:  # pragma: no cover - exercised when optional extra missing
     FastMCP = None  # type: ignore[assignment]
     HAS_MCP_SERVER_SDK = False
 
-from penguin.integrations.mcp.server_tools import MCPServerTool, build_pm_tools
+from penguin.integrations.mcp.server_tools import (
+    MCPServerTool,
+    build_blueprint_tools,
+    build_pm_tools,
+)
 from penguin.tools.tool_manager import ToolManager
 
 logger = logging.getLogger(__name__)
@@ -30,6 +34,7 @@ DEFAULT_EXPOSED_TOOLS = (
     "grep_search",
     "analyze_project",
     "penguin_pm_*",
+    "penguin_blueprint_*",
 )
 
 DEFAULT_DENIED_PATTERNS = (
@@ -71,6 +76,7 @@ class PenguinMCPServerConfig:
     transport: str = "stdio"
     enabled: bool = True
     expose_pm_tools: bool = True
+    expose_blueprint_tools: bool = True
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -183,9 +189,14 @@ class PenguinMCPServer:
         return schemas
 
     def _build_runtime_tools(self) -> list[MCPServerTool]:
-        if not self.config.expose_pm_tools or self.core is None:
+        if self.core is None:
             return []
-        return build_pm_tools(self.core)
+        tools: list[MCPServerTool] = []
+        if self.config.expose_pm_tools:
+            tools.extend(build_pm_tools(self.core))
+        if self.config.expose_blueprint_tools:
+            tools.extend(build_blueprint_tools(self.core))
+        return tools
 
     def _is_allowed(self, tool_name: str) -> bool:
         if any(_glob_match(tool_name, pattern) for pattern in self.config.deny_patterns):
@@ -240,6 +251,7 @@ def build_penguin_mcp_server(
     name: str = "penguin",
     core: Any = None,
     expose_pm_tools: bool = True,
+    expose_blueprint_tools: bool = True,
 ) -> PenguinMCPServer:
     """Build a configured Penguin MCP server wrapper."""
     return PenguinMCPServer(
@@ -249,6 +261,7 @@ def build_penguin_mcp_server(
             allow_tools=tuple(allow_tools or DEFAULT_EXPOSED_TOOLS),
             deny_patterns=tuple(deny_patterns or DEFAULT_DENIED_PATTERNS),
             expose_pm_tools=expose_pm_tools,
+            expose_blueprint_tools=expose_blueprint_tools,
         ),
         core=core,
     )
@@ -284,7 +297,7 @@ def _safe_identifier(value: str) -> str:
 
 
 def _glob_match(value: str, pattern: str) -> bool:
-    regex = "^" + re.escape(pattern).replace("\*", ".*") + "$"
+    regex = "^" + re.escape(pattern).replace("\\*", ".*") + "$"
     return re.match(regex, value) is not None
 
 

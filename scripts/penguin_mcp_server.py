@@ -38,6 +38,11 @@ def parse_args() -> argparse.Namespace:
         help="Disable default Penguin PM MCP tools.",
     )
     parser.add_argument(
+        "--no-blueprint-tools",
+        action="store_true",
+        help="Disable default Penguin Blueprint MCP tools.",
+    )
+    parser.add_argument(
         "--minimal-core",
         action="store_true",
         help="Use a bare ToolManager only; PM tools require full PenguinCore.",
@@ -68,6 +73,7 @@ def main() -> None:
         deny_patterns=args.deny_pattern,
         core=core,
         expose_pm_tools=not args.no_pm_tools,
+        expose_blueprint_tools=not args.no_blueprint_tools,
     )
     try:
         server.run("stdio")

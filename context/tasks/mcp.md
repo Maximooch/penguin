@@ -485,17 +485,20 @@ Task creation should support rich fields immediately. Fields that are first-clas
 
 #### Slice 2: Blueprint Tools Default-On
 
+Status: implemented in `penguin/integrations/mcp/server_tools/blueprints.py` with shared Blueprint payload serializers in `penguin/web/services/blueprint_payloads.py`.
+
 Expose Penguin's spec-to-task DAG capability.
 
 Tools:
 
 - `penguin_blueprint_lint` — parse/lint Markdown/YAML/JSON blueprints and return structured diagnostics for duplicate IDs, missing deps, cycles, and missing acceptance criteria.
 - `penguin_blueprint_graph` — return the dependency DAG in a machine-readable form, optionally DOT/JSON.
-- `penguin_blueprint_status` — map blueprint items to project tasks and report sync/execution status.
+- `penguin_blueprint_status` — map blueprint-derived project tasks to current DAG/status data.
 
 Defer until internals are verified and idempotency is clear:
 
 - `penguin_blueprint_sync` — import/sync a blueprint into a project as tasks/dependency graph without executing it.
+- Phase/dependency-readiness filters and richer blueprint/task status correlation.
 
 #### Slice 3: Runtime / RunMode Explicit Opt-In
 
