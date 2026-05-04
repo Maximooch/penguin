@@ -741,3 +741,95 @@ items:
     assert payload["reason"] == "lint_errors"
     assert payload["diagnostics"]["has_errors"] is True
     assert core.project_manager.list_projects() == []
+
+
+def test_penguin_mcp_runmode_tools_are_opt_in(tmp_path) -> None:
+    from penguin.integrations.mcp.server import build_penguin_mcp_server
+    from penguin.project.manager import ProjectManager
+
+    class FakeCore:
+        def __init__(self) -> None:
+            self.project_manager = ProjectManager(tmp_path)
+            self.engine = object()
+            self._runmode_active = False
+            self._continuous_mode = False
+            self.current_runmode_status_summary = None
+
+        async def start_run_mode(self, *args, **kwargs):
+            raise AssertionError("Slice 3A must not start RunMode")
+
+    class FakeToolManager:
+        def __init__(self, core) -> None:
+            self._core = core
+
+        def get_tools(self):
+            return []
+
+        def execute_tool(self, tool_name, arguments):
+            raise AssertionError("RunMode tools should not route through ToolManager")
+
+    core = FakeCore()
+    default_server = build_penguin_mcp_server(FakeToolManager(core), core=core)
+    default_exposed = {tool["name"] for tool in default_server.list_exposed_tools()}
+    assert "penguin_runmode_capabilities" not in default_exposed
+
+    runtime_server = build_penguin_mcp_server(
+        FakeToolManager(core),
+        core=core,
+        expose_runtime_tools=True,
+    )
+    exposed = {tool["name"] for tool in runtime_server.list_exposed_tools()}
+    assert {
+        "penguin_runmode_capabilities",
+        "penguin_runmode_list_jobs",
+        "penguin_runmode_get_job",
+    } <= exposed
+
+    capabilities = json.loads(
+        runtime_server.call_tool("penguin_runmode_capabilities", {})
+    )
+    assert capabilities["runtime_tools_enabled"] is True
+    assert capabilities["start_supported"] is False
+    assert capabilities["cancel_supported"] is False
+    assert capabilities["core"]["has_project_manager"] is True
+    assert capabilities["core"]["has_engine"] is True
+
+
+def test_penguin_mcp_runmode_job_read_tools(tmp_path) -> None:
+    from penguin.integrations.mcp.server import build_penguin_mcp_server
+    from penguin.project.manager import ProjectManager
+
+    class FakeCore:
+        def __init__(self) -> None:
+            self.project_manager = ProjectManager(tmp_path)
+            self.engine = object()
+
+        async def start_run_mode(self, *args, **kwargs):
+            raise AssertionError("Slice 3A must not start RunMode")
+
+    class FakeToolManager:
+        def __init__(self, core) -> None:
+            self._core = core
+
+        def get_tools(self):
+            return []
+
+        def execute_tool(self, tool_name, arguments):
+            raise AssertionError("RunMode tools should not route through ToolManager")
+
+    core = FakeCore()
+    server = build_penguin_mcp_server(
+        FakeToolManager(core),
+        core=core,
+        expose_runtime_tools=True,
+    )
+
+    jobs = json.loads(server.call_tool("penguin_runmode_list_jobs", {}))
+    assert jobs["jobs"] == []
+    assert jobs["registry"]["supports_start"] is False
+
+    missing = json.loads(
+        server.call_tool("penguin_runmode_get_job", {"job_id": "missing"})
+    )
+    assert missing["error"] == "job_not_found"
+

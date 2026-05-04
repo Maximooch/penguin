@@ -21,7 +21,9 @@ except Exception:  # pragma: no cover - exercised when optional extra missing
 from penguin.integrations.mcp.server_tools import (
     MCPServerTool,
     build_blueprint_tools,
+    RunModeJobRegistry,
     build_pm_tools,
+    build_runmode_tools,
 )
 from penguin.tools.tool_manager import ToolManager
 
@@ -35,6 +37,7 @@ DEFAULT_EXPOSED_TOOLS = (
     "analyze_project",
     "penguin_pm_*",
     "penguin_blueprint_*",
+    "penguin_runmode_*",
 )
 
 DEFAULT_DENIED_PATTERNS = (
@@ -77,6 +80,7 @@ class PenguinMCPServerConfig:
     enabled: bool = True
     expose_pm_tools: bool = True
     expose_blueprint_tools: bool = True
+    expose_runtime_tools: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -96,6 +100,7 @@ class PenguinMCPServer:
         self.tool_manager = tool_manager
         self.config = config or PenguinMCPServerConfig()
         self.core = core or getattr(tool_manager, "_core", None)
+        self._runmode_job_registry = RunModeJobRegistry()
         self._runtime_tools = self._build_runtime_tools()
         self._runtime_tool_map = {tool.name: tool for tool in self._runtime_tools}
         self._tool_schemas = self._select_tool_schemas()
@@ -196,6 +201,8 @@ class PenguinMCPServer:
             tools.extend(build_pm_tools(self.core))
         if self.config.expose_blueprint_tools:
             tools.extend(build_blueprint_tools(self.core))
+        if self.config.expose_runtime_tools:
+            tools.extend(build_runmode_tools(self.core, self._runmode_job_registry))
         return tools
 
     def _is_allowed(self, tool_name: str) -> bool:
@@ -252,6 +259,7 @@ def build_penguin_mcp_server(
     core: Any = None,
     expose_pm_tools: bool = True,
     expose_blueprint_tools: bool = True,
+    expose_runtime_tools: bool = False,
 ) -> PenguinMCPServer:
     """Build a configured Penguin MCP server wrapper."""
     return PenguinMCPServer(
@@ -262,6 +270,7 @@ def build_penguin_mcp_server(
             deny_patterns=tuple(deny_patterns or DEFAULT_DENIED_PATTERNS),
             expose_pm_tools=expose_pm_tools,
             expose_blueprint_tools=expose_blueprint_tools,
+            expose_runtime_tools=expose_runtime_tools,
         ),
         core=core,
     )

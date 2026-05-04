@@ -520,17 +520,39 @@ Acceptance criteria:
 
 #### Slice 3: Runtime / RunMode Explicit Opt-In
 
-Expose long-running execution as durable jobs, not blocking tool calls. These tools are not registered unless runtime tools are explicitly enabled.
+Expose long-running execution as durable jobs, not blocking tool calls. Runtime tools are not registered unless explicitly enabled with `scripts/penguin_mcp_server.py --allow-runtime-tools`.
+
+##### Slice 3A: Runtime Capabilities And Readiness
+
+Status: implemented in `penguin/integrations/mcp/server_tools/runmode.py`.
 
 Tools:
 
+- `penguin_runmode_capabilities` — reports current RunMode readiness, core/engine/project-manager availability, registry metadata, and known gaps. It never starts execution.
+- `penguin_runmode_list_jobs` — lists the in-process runtime MCP job registry. In Slice 3A this registry is read-only and usually empty.
+- `penguin_runmode_get_job` — returns one in-process runtime MCP job by ID if it exists.
+
+Acceptance criteria:
+
+- Runtime tools are absent unless `--allow-runtime-tools` is set.
+- Capabilities tool is truthful: `start_supported=false`, `cancel_supported=false`, and gaps are reported.
+- No model call is required.
+
+##### Slice 3B: Runtime Start Behind Opt-In
+
+Future tools:
+
 - `penguin_runmode_start_task` — start a bounded RunMode task with name, description, context, max iterations, time limit, and optional project/task binding.
-- `penguin_runmode_start_continuous` — start continuous task processing for a project or named task queue, with explicit time/resource limits.
-- `penguin_runmode_status` — return status, phase, current iteration, active task, stop reason, waiting-input state, and latest artifact evidence.
-- `penguin_runmode_cancel` — cancel or interrupt a running RunMode job.
+- `penguin_runmode_start_project` — start project-scoped execution through the same service path as the web project start route.
+
+##### Slice 3C: Cancel And Resume Clarification
+
+Future tools:
+
+- `penguin_runmode_cancel_job` — cancel a registered background job.
 - `penguin_runmode_resume_clarification` — answer a clarification request and resume through the same lifecycle path.
 
-Implementation note: this slice needs a durable-ish job registry/status handle before exposing start operations. Do not implement it as a blocking `process_message("do task")` wrapper.
+Implementation note: Slice 3B/3C need real background job start/cancel semantics before exposing start operations. Do not implement them as blocking `process_message("do task")` wrappers.
 
 #### Slice 4: Orchestration / ITUV Explicit Opt-In
 
