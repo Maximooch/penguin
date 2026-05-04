@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional
 
@@ -27,10 +27,32 @@ class RunModeJobRecord:
     result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    cancel_requested: bool = False
+    cancel_requested_at: Optional[str] = None
+    cancel_signal_sent: bool = False
+    cancel_callback: Optional[Callable[[], bool]] = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def to_dict(self) -> Dict[str, Any]:
         """Return a JSON-serializable job record."""
-        return asdict(self)
+        return {
+            "job_id": self.job_id,
+            "kind": self.kind,
+            "status": self.status,
+            "project_id": self.project_id,
+            "task_id": self.task_id,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "result": self.result,
+            "error": self.error,
+            "metadata": self.metadata,
+            "cancel_requested": self.cancel_requested,
+            "cancel_requested_at": self.cancel_requested_at,
+            "cancel_signal_sent": self.cancel_signal_sent,
+        }
 
 
 class RunModeJobRegistry:
@@ -101,6 +123,56 @@ class RunModeJobRegistry:
             job = self._jobs.get(job_id)
             return job.to_dict() if job else None
 
+    def cancel_job(self, job_id: str, reason: Optional[str] = None) -> Dict[str, Any]:
+        """Request cooperative cancellation for one in-process job."""
+        with self._lock:
+            record = self._jobs.get(job_id)
+            if record is None:
+                return {
+                    "error": "job_not_found",
+                    "job_id": job_id,
+                    "message": "No runtime MCP job exists with this ID.",
+                    "registry": self.summary(),
+                }
+            if record.status in {
+                "completed",
+                "failed",
+                "cancelled",
+                "completed_after_cancel_requested",
+            }:
+                return {
+                    "job": record.to_dict(),
+                    "cancel_requested": False,
+                    "message": "Job is already terminal.",
+                    "registry": self.summary(),
+                }
+            record.cancel_requested = True
+            record.cancel_requested_at = datetime.utcnow().isoformat()
+            record.metadata["cancel_reason"] = reason
+            record.status = "cancelling"
+            callback = record.cancel_callback
+
+        signal_sent = False
+        if callback:
+            try:
+                signal_sent = bool(callback())
+            except Exception as exc:  # pragma: no cover - defensive boundary
+                with self._lock:
+                    record.error = f"Cancel callback failed: {exc}"
+        with self._lock:
+            record.cancel_signal_sent = signal_sent
+            return {
+                "job": record.to_dict(),
+                "cancel_requested": True,
+                "cancel_signal_sent": signal_sent,
+                "hard_cancel_supported": False,
+                "message": (
+                    "Cooperative cancellation requested. The job may still finish "
+                    "if the underlying RunMode path does not observe the signal."
+                ),
+                "registry": self.summary(),
+            }
+
     def summary(self) -> Dict[str, Any]:
         """Return registry metadata."""
         with self._lock:
@@ -113,7 +185,8 @@ class RunModeJobRegistry:
             "job_count": job_count,
             "running_count": running_count,
             "supports_start": True,
-            "supports_cancel": False,
+            "supports_cancel": True,
+            "hard_cancel_supported": False,
             "durable": False,
         }
 
@@ -130,13 +203,19 @@ class RunModeJobRegistry:
             result = asyncio.run(runner(record))
             with self._lock:
                 record.result = result
-                record.status = _job_status_from_result(result)
+                mapped_status = _job_status_from_result(result)
+                if record.cancel_requested and mapped_status == "completed":
+                    record.status = "completed_after_cancel_requested"
+                else:
+                    record.status = mapped_status
                 record.finished_at = datetime.utcnow().isoformat()
+                record.cancel_callback = None
         except Exception as exc:  # pragma: no cover - defensive job boundary
             with self._lock:
                 record.status = "failed"
                 record.error = str(exc)
                 record.finished_at = datetime.utcnow().isoformat()
+                record.cancel_callback = None
 
 
 def _job_status_from_result(result: Dict[str, Any]) -> str:
@@ -173,10 +252,10 @@ def _capabilities_payload(
     core: Any,
     registry: RunModeJobRegistry,
 ) -> Dict[str, Any]:
-    """Build the Slice 3B capabilities payload."""
+    """Build the Slice 3C capabilities payload."""
     return {
         "runtime_tools_enabled": True,
-        "slice": "3B",
+        "slice": "3C",
         "tools": {
             "available": [
                 "penguin_runmode_capabilities",
@@ -184,26 +263,30 @@ def _capabilities_payload(
                 "penguin_runmode_get_job",
                 "penguin_runmode_start_task",
                 "penguin_runmode_start_project",
-            ],
-            "not_yet_exposed": [
                 "penguin_runmode_cancel_job",
                 "penguin_runmode_resume_clarification",
             ],
+            "not_yet_exposed": [],
         },
         "start_supported": True,
-        "cancel_supported": False,
-        "resume_clarification_supported": False,
+        "cancel_supported": True,
+        "hard_cancel_supported": False,
+        "resume_clarification_supported": True,
         "registry": registry.summary(),
         "core": _core_capabilities(core),
         "gaps": [
+            "Cancellation is cooperative/best-effort; Python threads are not force-killed.",
             "Job registry is in-process only and is lost on server restart.",
-            "Cancellation semantics are not exposed until Slice 3C.",
             "RunMode execution is model-dependent and remains explicitly gated.",
         ],
     }
 
 
-async def _execute_task_job(core: Any, arguments: Dict[str, Any]) -> Dict[str, Any]:
+async def _execute_task_job(
+    core: Any,
+    arguments: Dict[str, Any],
+    record: Optional[RunModeJobRecord] = None,
+) -> Dict[str, Any]:
     """Execute one project task through the same RunMode path as the web route."""
     from penguin.run_mode import RunMode
     from penguin.system.execution_context import (
@@ -227,11 +310,14 @@ async def _execute_task_job(core: Any, arguments: Dict[str, Any]) -> Dict[str, A
         return {"status": "error", "message": f"Task {task_id} not found"}
 
     project = None
-    if getattr(task, "project_id", None) and hasattr(project_manager, "get_project_async"):
+    if getattr(task, "project_id", None) and hasattr(
+        project_manager,
+        "get_project_async",
+    ):
         project = await project_manager.get_project_async(task.project_id)
-    resolved_directory = normalize_directory(arguments.get("directory")) or normalize_directory(
-        getattr(project, "workspace_path", None)
-    )
+    resolved_directory = normalize_directory(
+        arguments.get("directory")
+    ) or normalize_directory(getattr(project, "workspace_path", None))
     session_id = arguments.get("session_id")
     execution_context = ExecutionContext(
         session_id=session_id,
@@ -243,6 +329,8 @@ async def _execute_task_job(core: Any, arguments: Dict[str, Any]) -> Dict[str, A
     )
 
     run_mode = RunMode(core=core)
+    if record is not None:
+        record.cancel_callback = lambda: _request_runmode_shutdown(run_mode)
     with execution_context_scope(execution_context):
         result = await run_mode.start(
             name=task.title,
@@ -266,7 +354,11 @@ async def _execute_task_job(core: Any, arguments: Dict[str, Any]) -> Dict[str, A
     }
 
 
-async def _execute_project_job(core: Any, arguments: Dict[str, Any]) -> Dict[str, Any]:
+async def _execute_project_job(
+    core: Any,
+    arguments: Dict[str, Any],
+    record: Optional[RunModeJobRecord] = None,
+) -> Dict[str, Any]:
     """Execute project-scoped RunMode through the web service path."""
     from penguin.web.services.projects import start_project_execution
 
@@ -281,6 +373,13 @@ async def _execute_project_job(core: Any, arguments: Dict[str, Any]) -> Dict[str
             "message": "project_id, project_identifier, or project_name is required",
         }
 
+    if record is not None:
+        record.metadata["cancel_signal_note"] = (
+            "Project execution uses the web service path; cancellation can be "
+            "recorded but may not stop the underlying run until RunMode exposes "
+            "a shared cancellation handle."
+        )
+
     result = await start_project_execution(
         core=core,
         project_identifier=str(project_identifier),
@@ -290,6 +389,79 @@ async def _execute_project_job(core: Any, arguments: Dict[str, Any]) -> Dict[str
         directory=arguments.get("directory"),
     )
     return {"status": "completed", "execution": result}
+
+
+def _request_runmode_shutdown(run_mode: Any) -> bool:
+    """Request cooperative shutdown on a RunMode instance."""
+    setattr(run_mode, "_shutdown_requested", True)
+    setattr(run_mode, "_interrupted", True)
+    return True
+
+
+async def _resume_clarification_job(
+    core: Any,
+    arguments: Dict[str, Any],
+    record: Optional[RunModeJobRecord] = None,
+) -> Dict[str, Any]:
+    """Answer the latest clarification request and resume task execution."""
+    from penguin.run_mode import RunMode
+    from penguin.system.execution_context import (
+        ExecutionContext,
+        execution_context_scope,
+        normalize_directory,
+    )
+
+    task_id = arguments.get("task_id")
+    answer = arguments.get("answer")
+    if not task_id:
+        return {"status": "error", "message": "task_id is required"}
+    if not answer:
+        return {"status": "error", "message": "answer is required"}
+
+    project_manager = getattr(core, "project_manager", None)
+    if project_manager is None:
+        return {"status": "error", "message": "Project manager not available"}
+
+    task = await project_manager.get_task_async(str(task_id))
+    if not task:
+        return {"status": "error", "message": f"Task {task_id} not found"}
+
+    project = None
+    if getattr(task, "project_id", None) and hasattr(
+        project_manager,
+        "get_project_async",
+    ):
+        project = await project_manager.get_project_async(task.project_id)
+    resolved_directory = normalize_directory(
+        arguments.get("directory")
+    ) or normalize_directory(getattr(project, "workspace_path", None))
+    session_id = arguments.get("session_id")
+    execution_context = ExecutionContext(
+        session_id=session_id,
+        conversation_id=session_id,
+        directory=resolved_directory,
+        project_root=resolved_directory,
+        workspace_root=resolved_directory,
+        request_id=f"mcp-task-resume:{task_id}",
+    )
+
+    run_mode = RunMode(core=core)
+    if record is not None:
+        record.cancel_callback = lambda: _request_runmode_shutdown(run_mode)
+    with execution_context_scope(execution_context):
+        result = await run_mode.resume_with_clarification(
+            task_id=str(task_id),
+            answer=str(answer),
+            answered_by=arguments.get("answered_by"),
+        )
+
+    updated_task = await project_manager.get_task_async(str(task_id))
+    return {
+        "status": _job_status_from_result(result if isinstance(result, dict) else {}),
+        "task_id": str(task_id),
+        "result": result,
+        "task": serialize_task_payload(updated_task or task),
+    }
 
 
 def build_runmode_tools(
@@ -337,10 +509,34 @@ def build_runmode_tools(
             return {"error": "missing_task_id", "message": "task_id is required."}
         return job_registry.start_job(
             kind="task",
-            runner=lambda _job: _execute_task_job(core, arguments),
+            runner=lambda job: _execute_task_job(core, arguments, job),
             task_id=str(task_id),
             project_id=arguments.get("project_id"),
             metadata={
+                "session_id": arguments.get("session_id"),
+                "directory": arguments.get("directory"),
+            },
+        )
+
+    def cancel_job(arguments: Dict[str, Any]) -> Dict[str, Any]:
+        job_id = arguments.get("job_id")
+        if not job_id:
+            return {"error": "missing_job_id", "message": "job_id is required."}
+        return job_registry.cancel_job(str(job_id), reason=arguments.get("reason"))
+
+    def resume_clarification(arguments: Dict[str, Any]) -> Dict[str, Any]:
+        task_id = arguments.get("task_id")
+        if not task_id:
+            return {"error": "missing_task_id", "message": "task_id is required."}
+        if not arguments.get("answer"):
+            return {"error": "missing_answer", "message": "answer is required."}
+        return job_registry.start_job(
+            kind="clarification_resume",
+            runner=lambda job: _resume_clarification_job(core, arguments, job),
+            task_id=str(task_id),
+            project_id=arguments.get("project_id"),
+            metadata={
+                "answered_by": arguments.get("answered_by"),
                 "session_id": arguments.get("session_id"),
                 "directory": arguments.get("directory"),
             },
@@ -359,7 +555,7 @@ def build_runmode_tools(
             }
         return job_registry.start_job(
             kind="project",
-            runner=lambda _job: _execute_project_job(core, arguments),
+            runner=lambda job: _execute_project_job(core, arguments, job),
             project_id=str(project_identifier),
             metadata={
                 "continuous": bool(arguments.get("continuous", False)),
@@ -385,7 +581,10 @@ def build_runmode_tools(
             input_schema={
                 "type": "object",
                 "properties": {
-                    "status": {"type": "string", "description": "Optional status filter."},
+                    "status": {
+                        "type": "string",
+                        "description": "Optional status filter.",
+                    },
                     "project_id": {
                         "type": "string",
                         "description": "Optional project ID filter.",
@@ -405,7 +604,10 @@ def build_runmode_tools(
             input_schema={
                 "type": "object",
                 "properties": {
-                    "job_id": {"type": "string", "description": "Runtime MCP job ID."}
+                    "job_id": {
+                        "type": "string",
+                        "description": "Runtime MCP job ID.",
+                    }
                 },
                 "required": ["job_id"],
             },
@@ -479,6 +681,63 @@ def build_runmode_tools(
                 "required": [],
             },
             handler=start_project,
+        ),
+        MCPServerTool(
+            name="penguin_runmode_cancel_job",
+            description=(
+                "Request cooperative cancellation for a runtime MCP job. This is "
+                "best-effort and cannot force-kill Python threads."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "Runtime MCP job ID.",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Optional cancellation reason.",
+                    },
+                },
+                "required": ["job_id"],
+            },
+            handler=cancel_job,
+        ),
+        MCPServerTool(
+            name="penguin_runmode_resume_clarification",
+            description=(
+                "Answer a task's latest open clarification request and resume "
+                "execution in a background job."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string", "description": "Project task ID."},
+                    "answer": {
+                        "type": "string",
+                        "description": "Answer to the latest open clarification request.",
+                    },
+                    "answered_by": {
+                        "type": "string",
+                        "description": "Optional actor/user answering the clarification.",
+                    },
+                    "project_id": {
+                        "type": "string",
+                        "description": "Optional project ID for metadata/filtering.",
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Optional Penguin session/conversation ID.",
+                    },
+                    "directory": {
+                        "type": "string",
+                        "description": "Optional execution directory override.",
+                    },
+                },
+                "required": ["task_id", "answer"],
+            },
+            handler=resume_clarification,
         ),
     ]
 

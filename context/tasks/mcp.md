@@ -556,12 +556,19 @@ Slice 3B caveats:
 
 ##### Slice 3C: Cancel And Resume Clarification
 
-Future tools:
+Status: implemented with cooperative cancellation and clarification resume jobs.
+
+Tools:
 
 - `penguin_runmode_cancel_job` — cancel a registered background job.
 - `penguin_runmode_resume_clarification` — answer a clarification request and resume through the same lifecycle path.
 
-Implementation note: Slice 3B/3C need real background job start/cancel semantics before exposing start operations. Do not implement them as blocking `process_message("do task")` wrappers.
+Slice 3C caveats:
+
+- Cancellation is cooperative/best-effort. Python threads are not force-killed.
+- `penguin_runmode_cancel_job` records cancellation intent and signals a RunMode instance when a job exposes one.
+- `penguin_runmode_resume_clarification` answers the latest open clarification request and resumes execution in a background job.
+- Job registry remains in-process and non-durable.
 
 #### Slice 4: Orchestration / ITUV Explicit Opt-In
 
