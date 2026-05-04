@@ -582,3 +582,162 @@ items:
     assert payload["stats"]["total_edges"] == 1
     assert payload["blueprint_task_count"] == 2
     assert {task["blueprint_id"] for task in payload["tasks"]} == {"ROOT", "LEAF"}
+
+
+def test_penguin_mcp_blueprint_sync_dry_run_defaults_to_safe_no_mutation(tmp_path) -> None:
+    from penguin.integrations.mcp.server import build_penguin_mcp_server
+    from penguin.project.manager import ProjectManager
+
+    class FakeCore:
+        def __init__(self) -> None:
+            self.project_manager = ProjectManager(tmp_path)
+
+    class FakeToolManager:
+        def __init__(self, core) -> None:
+            self._core = core
+
+        def get_tools(self):
+            return []
+
+        def execute_tool(self, tool_name, arguments):
+            raise AssertionError("Blueprint tools should not route through ToolManager")
+
+    core = FakeCore()
+    server = build_penguin_mcp_server(FakeToolManager(core), core=core)
+    project_payload = json.loads(
+        server.call_tool("penguin_pm_create_project", {"name": "Sync Dry Run"})
+    )
+    project_id = project_payload["project"]["id"]
+    blueprint = """
+title: Dry Blueprint
+project_key: DRY
+items:
+  - id: ROOT
+    title: Root
+    description: Root
+    acceptance_criteria:
+      - root works
+  - id: LEAF
+    title: Leaf
+    description: Leaf
+    depends_on:
+      - ROOT
+""".strip()
+
+    payload = json.loads(
+        server.call_tool(
+            "penguin_blueprint_sync",
+            {"project_id": project_id, "content": blueprint, "format": "yaml"},
+        )
+    )
+
+    assert payload["status"] == "dry_run"
+    assert payload["sync"]["created"] == ["ROOT", "LEAF"]
+    assert payload["sync"]["updated"] == []
+    assert payload["sync"]["total_items"] == 2
+    assert core.project_manager.list_tasks(project_id=project_id) == []
+
+
+def test_penguin_mcp_blueprint_sync_mutates_when_dry_run_false(tmp_path) -> None:
+    from penguin.integrations.mcp.server import build_penguin_mcp_server
+    from penguin.project.manager import ProjectManager
+
+    class FakeCore:
+        def __init__(self) -> None:
+            self.project_manager = ProjectManager(tmp_path)
+
+    class FakeToolManager:
+        def __init__(self, core) -> None:
+            self._core = core
+
+        def get_tools(self):
+            return []
+
+        def execute_tool(self, tool_name, arguments):
+            raise AssertionError("Blueprint tools should not route through ToolManager")
+
+    core = FakeCore()
+    server = build_penguin_mcp_server(FakeToolManager(core), core=core)
+    blueprint = """
+title: Apply Blueprint
+project_key: APPLY
+items:
+  - id: ROOT
+    title: Root
+    description: Root
+    acceptance_criteria:
+      - root works
+  - id: LEAF
+    title: Leaf
+    description: Leaf
+    depends_on:
+      - ROOT
+""".strip()
+
+    payload = json.loads(
+        server.call_tool(
+            "penguin_blueprint_sync",
+            {
+                "content": blueprint,
+                "format": "yaml",
+                "create_project": True,
+                "dry_run": False,
+                "include_tasks": True,
+            },
+        )
+    )
+
+    assert payload["status"] == "synced"
+    assert payload["sync"]["created"] == ["ROOT", "LEAF"]
+    assert payload["sync"]["updated"] == []
+    assert len(payload["tasks"]) == 2
+    assert {task["blueprint_id"] for task in payload["tasks"]} == {"ROOT", "LEAF"}
+
+
+def test_penguin_mcp_blueprint_sync_rejects_errors(tmp_path) -> None:
+    from penguin.integrations.mcp.server import build_penguin_mcp_server
+    from penguin.project.manager import ProjectManager
+
+    class FakeCore:
+        def __init__(self) -> None:
+            self.project_manager = ProjectManager(tmp_path)
+
+    class FakeToolManager:
+        def __init__(self, core) -> None:
+            self._core = core
+
+        def get_tools(self):
+            return []
+
+        def execute_tool(self, tool_name, arguments):
+            raise AssertionError("Blueprint tools should not route through ToolManager")
+
+    core = FakeCore()
+    server = build_penguin_mcp_server(FakeToolManager(core), core=core)
+    blueprint = """
+title: Broken Blueprint
+project_key: BROKEN
+items:
+  - id: CHILD
+    title: Child
+    description: Child
+    depends_on:
+      - MISSING
+""".strip()
+
+    payload = json.loads(
+        server.call_tool(
+            "penguin_blueprint_sync",
+            {
+                "content": blueprint,
+                "format": "yaml",
+                "create_project": True,
+                "dry_run": False,
+            },
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["reason"] == "lint_errors"
+    assert payload["diagnostics"]["has_errors"] is True
+    assert core.project_manager.list_projects() == []
