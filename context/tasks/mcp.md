@@ -501,6 +501,23 @@ Defer until internals are verified and idempotency is clear:
 - Phase/dependency-readiness filters and richer blueprint/task status correlation.
 - More detailed id mapping/result metadata from `ProjectManager.sync_blueprint` if/when the manager exposes it.
 
+#### Slice 2.75: Control-Plane Smoke And RunMode Audit
+
+Status: implemented with `scripts/mcp_control_plane_smoke.py` and `context/tasks/mcp-runmode-audit.md`.
+
+Before exposing runtime execution, validate the MCP control-plane as a coherent external API and audit the existing RunMode surface empirically.
+
+Deliverables:
+
+- `scripts/mcp_control_plane_smoke.py` — starts Penguin's MCP server over STDIO in an isolated workspace and runs project creation, Blueprint dry-run sync, Blueprint apply sync, task listing, and Blueprint status through real MCP calls.
+- `context/tasks/mcp-runmode-audit.md` — records current web/API RunMode routes, Python API caveats, missing job/status/cancel semantics, and the recommended Slice 3A/3B/3C split.
+
+Acceptance criteria:
+
+- Smoke script can run with `uv run --python 3.11 --extra mcp python scripts/mcp_control_plane_smoke.py`.
+- Smoke script validates PM + Blueprint tools through MCP protocol, not direct Python calls.
+- Audit confirms what runtime capabilities are currently real versus aspirational before any RunMode start tool is exposed.
+
 #### Slice 3: Runtime / RunMode Explicit Opt-In
 
 Expose long-running execution as durable jobs, not blocking tool calls. These tools are not registered unless runtime tools are explicitly enabled.
