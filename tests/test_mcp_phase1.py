@@ -1106,8 +1106,9 @@ def test_penguin_mcp_ituv_tools_are_runtime_gated(tmp_path) -> None:
     assert "penguin_ituv_frontier" in names
 
     capabilities = json.loads(runtime_server.call_tool("penguin_ituv_capabilities", {}))
-    assert capabilities["slice"] == "4A"
-    assert capabilities["read_only"] is True
+    assert capabilities["slice"] == "4B"
+    assert capabilities["read_only"] is False
+    assert capabilities["mutation_tools_exposed"] is True
     assert "implement" in capabilities["phases"]
     assert "pending_review" in capabilities["statuses"]
     assert capabilities["dependency_readiness_rules"]["artifact_ready"]
@@ -1175,3 +1176,145 @@ def test_penguin_mcp_ituv_status_and_frontier_report_ready_tasks(tmp_path) -> No
     assert frontier["next_task"]["id"] == ready_task.id
     assert frontier["blocked_ready_candidates"][0]["task_id"] == blocked_task.id
 
+
+
+
+def test_penguin_mcp_ituv_mutations_default_to_dry_run(tmp_path) -> None:
+    from penguin.integrations.mcp.server import build_penguin_mcp_server
+    from penguin.project.manager import ProjectManager
+    from penguin.project.models import TaskPhase
+
+    class FakeCore:
+        def __init__(self) -> None:
+            self.project_manager = ProjectManager(tmp_path)
+            self.engine = object()
+
+    class FakeToolManager:
+        def __init__(self, core) -> None:
+            self._core = core
+
+        def get_tools(self):
+            return []
+
+        def execute_tool(self, tool_name, arguments):
+            raise AssertionError("ITUV tools should not route through ToolManager")
+
+    core = FakeCore()
+    project = core.project_manager.create_project(
+        name="ITUV Mutations",
+        description="ITUV Mutations",
+        workspace_path=tmp_path,
+    )
+    task = core.project_manager.create_task(
+        project_id=project.id,
+        title="Mutable task",
+        description="Mutable task",
+    )
+    server = build_penguin_mcp_server(
+        FakeToolManager(core),
+        core=core,
+        expose_runtime_tools=True,
+    )
+
+    dry_run = json.loads(
+        server.call_tool(
+            "penguin_ituv_signal",
+            {"task_id": task.id, "action": "set_phase", "phase": "implement"},
+        )
+    )
+    assert dry_run["status"] == "dry_run"
+    assert core.project_manager.get_task(task.id).phase == TaskPhase.PENDING
+
+    applied = json.loads(
+        server.call_tool(
+            "penguin_ituv_signal",
+            {
+                "task_id": task.id,
+                "action": "set_phase",
+                "phase": "implement",
+                "dry_run": False,
+            },
+        )
+    )
+    assert applied["status"] == "applied"
+    assert applied["after"]["phase"] == "implement"
+    assert core.project_manager.get_task(task.id).phase == TaskPhase.IMPLEMENT
+
+    rejected = json.loads(
+        server.call_tool(
+            "penguin_ituv_signal",
+            {
+                "task_id": task.id,
+                "action": "set_phase",
+                "phase": "done",
+                "dry_run": False,
+            },
+        )
+    )
+    assert rejected["status"] == "rejected"
+    assert "mark_ready_for_review" in rejected["reason"]
+
+
+def test_penguin_mcp_ituv_artifact_and_review_bridge(tmp_path) -> None:
+    from penguin.integrations.mcp.server import build_penguin_mcp_server
+    from penguin.project.manager import ProjectManager
+    from penguin.project.models import TaskPhase, TaskStatus
+
+    class FakeCore:
+        def __init__(self) -> None:
+            self.project_manager = ProjectManager(tmp_path)
+            self.engine = object()
+
+    class FakeToolManager:
+        def __init__(self, core) -> None:
+            self._core = core
+
+        def get_tools(self):
+            return []
+
+        def execute_tool(self, tool_name, arguments):
+            raise AssertionError("ITUV tools should not route through ToolManager")
+
+    core = FakeCore()
+    project = core.project_manager.create_project(
+        name="ITUV Evidence",
+        description="ITUV Evidence",
+        workspace_path=tmp_path,
+    )
+    task = core.project_manager.create_task(
+        project_id=project.id,
+        title="Evidence task",
+        description="Evidence task",
+    )
+    server = build_penguin_mcp_server(
+        FakeToolManager(core),
+        core=core,
+        expose_runtime_tools=True,
+    )
+
+    artifact = json.loads(
+        server.call_tool(
+            "penguin_ituv_record_artifact",
+            {
+                "task_id": task.id,
+                "key": "build-log",
+                "kind": "file",
+                "path": "build.log",
+                "valid": True,
+                "dry_run": False,
+            },
+        )
+    )
+    assert artifact["status"] == "applied"
+    assert artifact["after"]["artifact_evidence"][0]["key"] == "build-log"
+
+    review = json.loads(
+        server.call_tool(
+            "penguin_ituv_mark_ready_for_review",
+            {"task_id": task.id, "dry_run": False, "response": "done"},
+        )
+    )
+    assert review["status"] == "applied"
+    updated = core.project_manager.get_task(task.id)
+    assert updated.status == TaskStatus.PENDING_REVIEW
+    assert updated.phase == TaskPhase.DONE

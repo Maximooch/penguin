@@ -122,16 +122,25 @@ Expose behind `--allow-runtime-tools`:
 
 All Slice 4A tools must be read-only.
 
-## Slice 4B Preconditions
+## Slice 4B Implementation Decision
 
-Before mutation/signaling tools:
+Slice 4B now exposes guarded mutation tools behind the same runtime opt-in flag:
 
-1. Define legal phase transition rules as explicitly as `TaskStatus.valid_transitions()`.
-2. Decide whether MCP may call `update_task_status` / `update_task_phase` directly or must route through an orchestrator/service.
-3. Define artifact evidence write schema and validation.
-4. Make pending-review vs completed semantics impossible to confuse.
-5. Decide whether mutation tools need a separate flag beyond `--allow-runtime-tools`.
+- `penguin_ituv_signal`
+- `penguin_ituv_record_artifact`
+- `penguin_ituv_mark_ready_for_review`
 
-## Decision
+Rules:
 
-Proceed with Slice 4A only. Pause before Slice 4B.
+1. All mutation tools default to `dry_run=true`.
+2. Applying mutations requires explicit `dry_run=false`.
+3. `penguin_ituv_signal` validates status transitions with `TaskStatus.valid_transitions()`.
+4. `penguin_ituv_signal` validates phase transitions with a conservative MCP-local transition map until ProjectManager exposes a first-class phase-transition policy.
+5. Direct `status=pending_review|completed` and direct `phase=done` are rejected unless lifecycle state is already legal; normal successful execution should use `penguin_ituv_mark_ready_for_review`.
+6. `penguin_ituv_record_artifact` persists `ArtifactEvidence` directly through task storage because ProjectManager does not yet expose a public artifact-evidence method.
+
+## Remaining Debt Before Wider Mutation Use
+
+- Extract ProjectManager public helpers for task readiness, phase transition validation, and artifact evidence writes.
+- Decide whether ITUV mutation tools need a stricter flag than `--allow-runtime-tools` before public release.
+- Add durable runtime job records in Slice 5 so external orchestrators can reconstruct run history after process restart.

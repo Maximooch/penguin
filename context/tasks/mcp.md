@@ -588,17 +588,20 @@ Slice 4A tools are exposed only when `--allow-runtime-tools` is set and must not
 
 ##### Slice 4B: ITUV Mutation / Signaling
 
-Future gated tools:
+Status: implemented in `penguin/integrations/mcp/server_tools/ituv.py`.
 
-- `penguin_ituv_signal` — validated status/phase/workflow signal transitions.
-- `penguin_ituv_record_artifact` — attach validated artifact evidence.
-- `penguin_ituv_mark_ready_for_review` — route successful execution into review state through existing PM semantics.
+Gated mutation tools:
 
-Slice 4B preconditions:
+- `penguin_ituv_signal` — dry-run/apply validated status and phase signals. Defaults to `dry_run=true` and enforces status + phase transition guards before calling ProjectManager.
+- `penguin_ituv_record_artifact` — dry-run/apply artifact evidence writes. Defaults to `dry_run=true` and persists `ArtifactEvidence` on the task.
+- `penguin_ituv_mark_ready_for_review` — dry-run/apply the ProjectManager-owned successful-execution bridge into `phase=done` and `status=pending_review`.
 
-- Define legal phase transition rules as explicitly as `TaskStatus.valid_transitions()`.
-- Decide whether mutation uses direct `ProjectManager` methods or an orchestration service.
-- Make `phase=done` vs `status=completed` impossible to confuse.
+Current guardrails:
+
+- Tools are exposed only when `--allow-runtime-tools` is set.
+- Mutation tools default to `dry_run=true`; callers must explicitly pass `dry_run=false` to apply.
+- Direct `status=pending_review|completed` and direct `phase=done` are rejected unless using the review bridge or already in a legal state.
+- Phase transitions use an explicit conservative transition map in the MCP server tool layer until ProjectManager owns public phase-transition policy.
 
 #### Slice 5: Sessions / Context / Evidence / Durable Runtime Records
 
