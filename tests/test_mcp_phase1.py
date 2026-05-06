@@ -355,7 +355,11 @@ def test_penguin_mcp_server_exposes_pm_tools_with_core(tmp_path) -> None:
             raise AssertionError("PM tools should not route through ToolManager")
 
     core = FakeCore()
-    server = build_penguin_mcp_server(FakeToolManager(core), core=core)
+    server = build_penguin_mcp_server(
+        FakeToolManager(core),
+        core=core,
+        expose_runtime_tools=True,
+    )
     exposed = {tool["name"] for tool in server.list_exposed_tools()}
 
     assert {
@@ -1414,3 +1418,106 @@ def test_penguin_mcp_ituv_artifact_and_review_bridge(tmp_path) -> None:
     updated = core.project_manager.get_task(task.id)
     assert updated.status == TaskStatus.PENDING_REVIEW
     assert updated.phase == TaskPhase.DONE
+
+
+
+def test_penguin_mcp_session_tools_are_default_on(tmp_path) -> None:
+    from penguin.integrations.mcp.server import build_penguin_mcp_server
+    from penguin.project.manager import ProjectManager
+    from penguin.system.conversation_manager import ConversationManager
+    from penguin.system.state import MessageCategory, create_message
+
+    class FakeCore:
+        def __init__(self) -> None:
+            self.project_manager = ProjectManager(tmp_path)
+            self.conversation_manager = ConversationManager(workspace_path=tmp_path)
+            self.model_config = type("Model", (), {"provider": "test", "model": "fake"})()
+
+        def list_checkpoints(self, session_id=None, limit=50):
+            return []
+
+        def get_checkpoint_stats(self):
+            return {"enabled": True, "total_checkpoints": 0}
+
+    class FakeToolManager:
+        def __init__(self, core) -> None:
+            self._core = core
+
+        def get_tools(self):
+            return []
+
+        def execute_tool(self, tool_name, arguments):
+            raise AssertionError("session tools should not route through ToolManager")
+
+    core = FakeCore()
+    session_id = core.conversation_manager.create_new_conversation()
+    session = core.conversation_manager.get_current_session()
+    session.add_message(
+        create_message(
+            "user",
+            "Summarize the MCP session surface",
+            MessageCategory.DIALOG,
+        )
+    )
+    core.conversation_manager.save()
+
+    project = core.project_manager.create_project(
+        name="Artifact Project",
+        description="Artifact Project",
+        workspace_path=tmp_path,
+    )
+    task = core.project_manager.create_task(
+        project_id=project.id,
+        title="Evidence task",
+        description="Evidence task",
+    )
+    server = build_penguin_mcp_server(
+        FakeToolManager(core),
+        core=core,
+        expose_runtime_tools=True,
+    )
+    tool_names = {tool["name"] for tool in server.list_exposed_tools()}
+    assert "penguin_session_list" in tool_names
+    assert "penguin_artifacts_list" in tool_names
+    assert "penguin_checkpoints_list" in tool_names
+
+    listed = json.loads(server.call_tool("penguin_session_list", {"limit": 10}))
+    assert any(item["id"] == session_id for item in listed["sessions"])
+
+    summary = json.loads(
+        server.call_tool(
+            "penguin_session_summary",
+            {"session_id": session_id, "message_limit": 5},
+        )
+    )
+    assert summary["session"]["id"] == session_id
+    assert summary["messages_preview"]
+    assert "MCP session surface" in summary["messages_preview"][-1]["text_preview"]
+
+    artifact = json.loads(
+        server.call_tool(
+            "penguin_ituv_record_artifact",
+            {
+                "task_id": task.id,
+                "key": "report",
+                "kind": "file",
+                "path": "report.md",
+                "valid": True,
+                "dry_run": False,
+            },
+        )
+    )
+    assert artifact["status"] == "applied"
+
+    artifacts = json.loads(
+        server.call_tool(
+            "penguin_artifacts_list",
+            {"project_id": project.id, "valid_only": True},
+        )
+    )
+    assert artifacts["count"] == 1
+    assert artifacts["artifacts"][0]["artifact_key"] == "report"
+
+    checkpoints = json.loads(server.call_tool("penguin_checkpoints_list", {}))
+    assert checkpoints["count"] == 0
+    assert checkpoints["stats"]["enabled"] is True

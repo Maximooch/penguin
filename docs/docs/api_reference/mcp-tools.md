@@ -98,3 +98,15 @@ These route through Penguin's ToolManager and permission semantics.
 - Full JSON input/output examples should be added before public release.
 - Runtime job records persist locally in ProjectStorage when a ProjectManager is available. Live records are merged with durable records; orphaned non-terminal records are visible but not controllable.
 - Remote MCP transport/OAuth docs are future work.
+
+
+## Session / Context / Evidence Tools
+
+Default-on, read-only surfaces for handoff and audit.
+
+| Tool | Purpose | Mutates | Gated |
+|---|---|---:|---:|
+| `penguin_session_list` | List Penguin sessions. | No | No |
+| `penguin_session_summary` | Return compact recent session message previews. | No | No |
+| `penguin_artifacts_list` | List task artifact evidence. | No | No |
+| `penguin_checkpoints_list` | List conversation checkpoints and stats. | No | No |

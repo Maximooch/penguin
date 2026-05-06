@@ -25,6 +25,7 @@ from penguin.integrations.mcp.server_tools import (
     RunModeJobRegistry,
     build_pm_tools,
     build_runmode_tools,
+    build_session_tools,
 )
 from penguin.tools.tool_manager import ToolManager
 
@@ -40,6 +41,9 @@ DEFAULT_EXPOSED_TOOLS = (
     "penguin_blueprint_*",
     "penguin_runmode_*",
     "penguin_ituv_*",
+    "penguin_session_*",
+    "penguin_artifacts_*",
+    "penguin_checkpoints_*",
 )
 
 DEFAULT_DENIED_PATTERNS = (
@@ -83,6 +87,7 @@ class PenguinMCPServerConfig:
     expose_pm_tools: bool = True
     expose_blueprint_tools: bool = True
     expose_runtime_tools: bool = False
+    expose_session_tools: bool = True
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -206,6 +211,8 @@ class PenguinMCPServer:
         if self.config.expose_runtime_tools:
             tools.extend(build_runmode_tools(self.core, self._runmode_job_registry))
             tools.extend(build_ituv_tools(self.core))
+        if self.config.expose_session_tools:
+            tools.extend(build_session_tools(self.core))
         return tools
 
     def _is_allowed(self, tool_name: str) -> bool:
@@ -263,6 +270,7 @@ def build_penguin_mcp_server(
     expose_pm_tools: bool = True,
     expose_blueprint_tools: bool = True,
     expose_runtime_tools: bool = False,
+    expose_session_tools: bool = True,
 ) -> PenguinMCPServer:
     """Build a configured Penguin MCP server wrapper."""
     return PenguinMCPServer(
@@ -274,6 +282,7 @@ def build_penguin_mcp_server(
             expose_pm_tools=expose_pm_tools,
             expose_blueprint_tools=expose_blueprint_tools,
             expose_runtime_tools=expose_runtime_tools,
+            expose_session_tools=expose_session_tools,
         ),
         core=core,
     )

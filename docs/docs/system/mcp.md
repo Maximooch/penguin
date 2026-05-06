@@ -200,3 +200,15 @@ Privacy/safety note: Chrome DevTools MCP can inspect browser state. Use an isola
 ## Runtime Job Durability
 
 RunMode MCP jobs are persisted locally in Penguin's project database (`projects.db`) when a `ProjectManager` is available. The live MCP server still owns cancellation handles, so a restarted server can recover job history but cannot force-control an orphaned non-terminal Python thread from a dead process. Orphaned records are returned as `live=false`, `controllable=false`, with metadata explaining the missing live handle.
+
+
+### Session, Artifact, And Checkpoint Reads
+
+Penguin MCP also exposes default-on read-only handoff tools:
+
+- `penguin_session_list`
+- `penguin_session_summary`
+- `penguin_artifacts_list`
+- `penguin_checkpoints_list`
+
+These tools do not restore checkpoints or mutate sessions. Restore/rollback remains intentionally gated future work.

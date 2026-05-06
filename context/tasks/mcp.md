@@ -612,7 +612,7 @@ Current guardrails:
 
 #### Slice 5: Sessions / Context / Evidence / Durable Runtime Records
 
-Slice 5B durable runtime job records are implemented in `penguin/project/runtime_jobs.py`, `ProjectStorage`, and the RunMode MCP registry. Session/context/evidence listing remains future Slice 5A work.
+Slice 5B durable runtime job records are implemented in `penguin/project/runtime_jobs.py`, `ProjectStorage`, and the RunMode MCP registry. Slice 5A status: implemented with default-on read-only session, artifact, and checkpoint listing tools.
 
 Expose enough runtime context for another host to coordinate safely. Keep listing/summarization default-on; restoration/mutation should be opt-in or separately gated.
 

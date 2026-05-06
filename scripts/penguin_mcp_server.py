@@ -43,6 +43,11 @@ def parse_args() -> argparse.Namespace:
         help="Disable default Penguin Blueprint MCP tools.",
     )
     parser.add_argument(
+        "--no-session-tools",
+        action="store_true",
+        help="Disable default-on session/artifact/checkpoint read tools.",
+    )
+    parser.add_argument(
         "--allow-runtime-tools",
         action="store_true",
         help="Expose opt-in RunMode and ITUV runtime/orchestration MCP tools.",
@@ -80,6 +85,7 @@ def main() -> None:
         expose_pm_tools=not args.no_pm_tools,
         expose_blueprint_tools=not args.no_blueprint_tools,
         expose_runtime_tools=args.allow_runtime_tools,
+        expose_session_tools=not args.no_session_tools,
     )
     try:
         server.run("stdio")
