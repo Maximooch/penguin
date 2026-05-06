@@ -45,9 +45,17 @@ from penguin.tools.editing.registry import (
     get_edit_tool_schemas,
 )
 from penguin.tools.browser_harness_tools import (
+    BrowserHarnessClickTool,
+    BrowserHarnessFillTool,
+    BrowserHarnessJsTool,
+    BrowserHarnessKeyTool,
+    BrowserHarnessListTabsTool,
     BrowserHarnessOpenTabTool,
     BrowserHarnessPageInfoTool,
     BrowserHarnessScreenshotTool,
+    BrowserHarnessSwitchTabTool,
+    BrowserHarnessTypeTool,
+    BrowserHarnessWaitTool,
 )
 from penguin.tools.providers.mcp import MCPToolProvider
 
@@ -276,6 +284,14 @@ class ToolManager:
             self._browser_harness_open_tab_tool = None
             self._browser_harness_page_info_tool = None
             self._browser_harness_screenshot_tool = None
+            self._browser_harness_click_tool = None
+            self._browser_harness_type_tool = None
+            self._browser_harness_key_tool = None
+            self._browser_harness_fill_tool = None
+            self._browser_harness_wait_tool = None
+            self._browser_harness_js_tool = None
+            self._browser_harness_list_tabs_tool = None
+            self._browser_harness_switch_tab_tool = None
 
             # PyDoll tools placeholders
             self._pydoll_browser_navigation_tool = None
@@ -339,6 +355,14 @@ class ToolManager:
                 "browser_open_tab": "self.browser_harness_open_tab_tool.execute",
                 "browser_page_info": "self.browser_harness_page_info_tool.execute",
                 "browser_harness_screenshot": "self.browser_harness_screenshot_tool.execute",
+                "browser_click": "self.browser_harness_click_tool.execute",
+                "browser_type": "self.browser_harness_type_tool.execute",
+                "browser_key": "self.browser_harness_key_tool.execute",
+                "browser_fill": "self.browser_harness_fill_tool.execute",
+                "browser_wait": "self.browser_harness_wait_tool.execute",
+                "browser_js": "self.browser_harness_js_tool.execute",
+                "browser_list_tabs": "self.browser_harness_list_tabs_tool.execute",
+                "browser_switch_tab": "self.browser_harness_switch_tab_tool.execute",
                 "analyze_codebase": "self.analyze_codebase",
                 "reindex_workspace": "self.reindex_workspace",
                 "list_skills": "self.skill_tools.list_skills",
@@ -915,6 +939,154 @@ class ToolManager:
                             "description": "Optional screenshot output directory",
                         },
                     },
+                },
+            },
+            {
+                "name": "browser_click",
+                "description": "Click browser page coordinates through browser-harness. Mutates the attached real Chrome tab.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "x": {"type": "number"},
+                        "y": {"type": "number"},
+                        "button": {"type": "string", "default": "left"},
+                        "clicks": {"type": "integer", "default": 1},
+                        "return_page_info": {"type": "boolean", "default": True},
+                    },
+                    "required": ["x", "y"],
+                },
+                "x-penguin-permissions": {
+                    "mutates_state": True,
+                    "requires_approval": True,
+                    "parallel_safe": False,
+                    "risk": "medium",
+                },
+            },
+            {
+                "name": "browser_type",
+                "description": "Insert text into the active browser focus using browser-harness.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"text": {"type": "string"}},
+                    "required": ["text"],
+                },
+                "x-penguin-permissions": {
+                    "mutates_state": True,
+                    "requires_approval": True,
+                    "parallel_safe": False,
+                    "risk": "medium",
+                },
+            },
+            {
+                "name": "browser_key",
+                "description": "Press a key in the active browser tab using browser-harness.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "key": {"type": "string"},
+                        "modifiers": {"type": "integer", "default": 0},
+                    },
+                    "required": ["key"],
+                },
+                "x-penguin-permissions": {
+                    "mutates_state": True,
+                    "requires_approval": True,
+                    "parallel_safe": False,
+                    "risk": "medium",
+                },
+            },
+            {
+                "name": "browser_fill",
+                "description": "Fill a DOM input selector using browser-harness framework-aware input events.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "selector": {"type": "string"},
+                        "text": {"type": "string"},
+                        "clear_first": {"type": "boolean", "default": True},
+                        "timeout": {"type": "number", "default": 0.0},
+                    },
+                    "required": ["selector", "text"],
+                },
+                "x-penguin-permissions": {
+                    "mutates_state": True,
+                    "requires_approval": True,
+                    "parallel_safe": False,
+                    "risk": "medium",
+                },
+            },
+            {
+                "name": "browser_wait",
+                "description": "Wait for load, element, network idle, or sleep using browser-harness helpers.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "mode": {
+                            "type": "string",
+                            "enum": ["load", "element", "network_idle", "sleep"],
+                            "default": "load",
+                        },
+                        "timeout": {"type": "number", "default": 15.0},
+                        "selector": {"type": "string"},
+                        "visible": {"type": "boolean", "default": False},
+                        "idle_ms": {"type": "integer", "default": 500},
+                        "seconds": {"type": "number"},
+                    },
+                },
+                "x-penguin-permissions": {
+                    "mutates_state": False,
+                    "requires_approval": False,
+                    "parallel_safe": False,
+                    "risk": "low",
+                },
+            },
+            {
+                "name": "browser_js",
+                "description": "Evaluate JavaScript in the active browser tab. Use for inspection first; avoid state-changing scripts unless approved.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "expression": {"type": "string"},
+                        "target_id": {"type": "string"},
+                    },
+                    "required": ["expression"],
+                },
+                "x-penguin-permissions": {
+                    "mutates_state": True,
+                    "requires_approval": True,
+                    "parallel_safe": False,
+                    "risk": "high",
+                },
+            },
+            {
+                "name": "browser_list_tabs",
+                "description": "List browser-harness visible tabs and current tab metadata.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "include_chrome": {"type": "boolean", "default": False}
+                    },
+                },
+                "x-penguin-permissions": {
+                    "mutates_state": False,
+                    "requires_approval": False,
+                    "parallel_safe": False,
+                    "risk": "low",
+                },
+            },
+            {
+                "name": "browser_switch_tab",
+                "description": "Switch browser-harness control to a tab target_id from browser_list_tabs.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"target_id": {"type": "string"}},
+                    "required": ["target_id"],
+                },
+                "x-penguin-permissions": {
+                    "mutates_state": True,
+                    "requires_approval": True,
+                    "parallel_safe": False,
+                    "risk": "medium",
                 },
             },
             {
@@ -1978,6 +2150,14 @@ class ToolManager:
                 self._browser_harness_open_tab_tool = BrowserHarnessOpenTabTool(harness_config)
                 self._browser_harness_page_info_tool = BrowserHarnessPageInfoTool(harness_config)
                 self._browser_harness_screenshot_tool = BrowserHarnessScreenshotTool(harness_config)
+                self._browser_harness_click_tool = BrowserHarnessClickTool(harness_config)
+                self._browser_harness_type_tool = BrowserHarnessTypeTool(harness_config)
+                self._browser_harness_key_tool = BrowserHarnessKeyTool(harness_config)
+                self._browser_harness_fill_tool = BrowserHarnessFillTool(harness_config)
+                self._browser_harness_wait_tool = BrowserHarnessWaitTool(harness_config)
+                self._browser_harness_js_tool = BrowserHarnessJsTool(harness_config)
+                self._browser_harness_list_tabs_tool = BrowserHarnessListTabsTool(harness_config)
+                self._browser_harness_switch_tab_tool = BrowserHarnessSwitchTabTool(harness_config)
                 self._lazy_initialized["browser_harness_tools"] = True
         return self._browser_harness_open_tab_tool
 
@@ -1992,6 +2172,54 @@ class ToolManager:
         if not self._lazy_initialized["browser_harness_tools"]:
             _ = self.browser_harness_open_tab_tool
         return self._browser_harness_screenshot_tool
+
+    @property
+    def browser_harness_click_tool(self):
+        if not self._lazy_initialized["browser_harness_tools"]:
+            _ = self.browser_harness_open_tab_tool
+        return self._browser_harness_click_tool
+
+    @property
+    def browser_harness_type_tool(self):
+        if not self._lazy_initialized["browser_harness_tools"]:
+            _ = self.browser_harness_open_tab_tool
+        return self._browser_harness_type_tool
+
+    @property
+    def browser_harness_key_tool(self):
+        if not self._lazy_initialized["browser_harness_tools"]:
+            _ = self.browser_harness_open_tab_tool
+        return self._browser_harness_key_tool
+
+    @property
+    def browser_harness_fill_tool(self):
+        if not self._lazy_initialized["browser_harness_tools"]:
+            _ = self.browser_harness_open_tab_tool
+        return self._browser_harness_fill_tool
+
+    @property
+    def browser_harness_wait_tool(self):
+        if not self._lazy_initialized["browser_harness_tools"]:
+            _ = self.browser_harness_open_tab_tool
+        return self._browser_harness_wait_tool
+
+    @property
+    def browser_harness_js_tool(self):
+        if not self._lazy_initialized["browser_harness_tools"]:
+            _ = self.browser_harness_open_tab_tool
+        return self._browser_harness_js_tool
+
+    @property
+    def browser_harness_list_tabs_tool(self):
+        if not self._lazy_initialized["browser_harness_tools"]:
+            _ = self.browser_harness_open_tab_tool
+        return self._browser_harness_list_tabs_tool
+
+    @property
+    def browser_harness_switch_tab_tool(self):
+        if not self._lazy_initialized["browser_harness_tools"]:
+            _ = self.browser_harness_open_tab_tool
+        return self._browser_harness_switch_tab_tool
 
     # PyDoll tools lazy loading
     @property
@@ -3389,6 +3617,44 @@ class ToolManager:
                     tool_input.get("max_dim"),
                     tool_input.get("output_dir"),
                 ),
+                "browser_click": lambda: self.execute_browser_harness_click(
+                    tool_input["x"],
+                    tool_input["y"],
+                    tool_input.get("button", "left"),
+                    tool_input.get("clicks", 1),
+                    tool_input.get("return_page_info", True),
+                ),
+                "browser_type": lambda: self.execute_browser_harness_type(
+                    tool_input["text"]
+                ),
+                "browser_key": lambda: self.execute_browser_harness_key(
+                    tool_input["key"],
+                    tool_input.get("modifiers", 0),
+                ),
+                "browser_fill": lambda: self.execute_browser_harness_fill(
+                    tool_input["selector"],
+                    tool_input["text"],
+                    tool_input.get("clear_first", True),
+                    tool_input.get("timeout", 0.0),
+                ),
+                "browser_wait": lambda: self.execute_browser_harness_wait(
+                    tool_input.get("mode", "load"),
+                    tool_input.get("timeout", 15.0),
+                    tool_input.get("selector"),
+                    tool_input.get("visible", False),
+                    tool_input.get("idle_ms", 500),
+                    tool_input.get("seconds"),
+                ),
+                "browser_js": lambda: self.execute_browser_harness_js(
+                    tool_input["expression"],
+                    tool_input.get("target_id"),
+                ),
+                "browser_list_tabs": lambda: self.execute_browser_harness_list_tabs(
+                    tool_input.get("include_chrome", False)
+                ),
+                "browser_switch_tab": lambda: self.execute_browser_harness_switch_tab(
+                    tool_input["target_id"]
+                ),
                 "analyze_codebase": lambda: self.analyze_codebase(
                     tool_input.get("directory"),
                     tool_input.get("analysis_type", "all"),
@@ -3851,6 +4117,136 @@ class ToolManager:
             return self.browser_harness_screenshot_tool.execute(full, max_dim, output_dir)
         except Exception as e:
             error_message = f"Error capturing browser-harness screenshot: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return {"error": error_message}
+
+    def execute_browser_harness_click(
+        self,
+        x: float,
+        y: float,
+        button: str = "left",
+        clicks: int = 1,
+        return_page_info: bool = True,
+    ) -> Dict[str, Any]:
+        """Click coordinates through optional browser-harness."""
+        try:
+            return self.browser_harness_click_tool.execute(
+                x,
+                y,
+                button,
+                clicks,
+                return_page_info,
+            )
+        except Exception as e:
+            error_message = f"Error clicking with browser-harness: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return {"error": error_message}
+
+    def execute_browser_harness_type(self, text: str) -> Dict[str, Any]:
+        """Type text through optional browser-harness."""
+        try:
+            return self.browser_harness_type_tool.execute(text)
+        except Exception as e:
+            error_message = f"Error typing with browser-harness: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return {"error": error_message}
+
+    def execute_browser_harness_key(
+        self,
+        key: str,
+        modifiers: int = 0,
+    ) -> Dict[str, Any]:
+        """Press a key through optional browser-harness."""
+        try:
+            return self.browser_harness_key_tool.execute(key, modifiers)
+        except Exception as e:
+            error_message = f"Error pressing key with browser-harness: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return {"error": error_message}
+
+    def execute_browser_harness_fill(
+        self,
+        selector: str,
+        text: str,
+        clear_first: bool = True,
+        timeout: float = 0.0,
+    ) -> Dict[str, Any]:
+        """Fill an input through optional browser-harness."""
+        try:
+            return self.browser_harness_fill_tool.execute(
+                selector,
+                text,
+                clear_first,
+                timeout,
+            )
+        except Exception as e:
+            error_message = f"Error filling input with browser-harness: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return {"error": error_message}
+
+    def execute_browser_harness_wait(
+        self,
+        mode: str = "load",
+        timeout: float = 15.0,
+        selector: Optional[str] = None,
+        visible: bool = False,
+        idle_ms: int = 500,
+        seconds: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Wait through optional browser-harness."""
+        try:
+            return self.browser_harness_wait_tool.execute(
+                mode,
+                timeout,
+                selector,
+                visible,
+                idle_ms,
+                seconds,
+            )
+        except Exception as e:
+            error_message = f"Error waiting with browser-harness: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return {"error": error_message}
+
+    def execute_browser_harness_js(
+        self,
+        expression: str,
+        target_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Evaluate JavaScript through optional browser-harness."""
+        try:
+            return self.browser_harness_js_tool.execute(expression, target_id)
+        except Exception as e:
+            error_message = f"Error evaluating JS with browser-harness: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return {"error": error_message}
+
+    def execute_browser_harness_list_tabs(
+        self,
+        include_chrome: bool = False,
+    ) -> Dict[str, Any]:
+        """List tabs through optional browser-harness."""
+        try:
+            return self.browser_harness_list_tabs_tool.execute(include_chrome)
+        except Exception as e:
+            error_message = f"Error listing tabs with browser-harness: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return {"error": error_message}
+
+    def execute_browser_harness_switch_tab(self, target_id: str) -> Dict[str, Any]:
+        """Switch tabs through optional browser-harness."""
+        try:
+            return self.browser_harness_switch_tab_tool.execute(target_id)
+        except Exception as e:
+            error_message = f"Error switching tabs with browser-harness: {str(e)}"
             logging.error(error_message)
             self.log_error(e, error_message)
             return {"error": error_message}

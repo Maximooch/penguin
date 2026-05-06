@@ -229,12 +229,12 @@ Tool metadata should mark browser tools with:
 
 ### Phase 0 - Spike / Prove The Backend
 
-- [ ] Add optional dependency path for browser-harness without changing defaults.
-- [ ] Add a small internal adapter that can call browser-harness helpers.
-- [ ] Implement `browser_open_tab`, `browser_page_info`, and `browser_screenshot` only.
+- [x] Add optional dependency path for browser-harness without changing defaults.
+- [x] Add a small internal adapter that can call browser-harness helpers.
+- [x] Implement `browser_open_tab`, `browser_page_info`, and `browser_harness_screenshot` only.
 - [ ] Verify local real-Chrome attach setup on macOS.
 - [ ] Verify failure modes when Chrome remote debugging permission is missing.
-- [ ] Verify screenshot artifact return through current tool-result pipeline.
+- [x] Verify screenshot artifact return through current tool-result pipeline.
 
 Exit criteria:
 
@@ -243,12 +243,17 @@ Exit criteria:
 
 ### Phase 1 - Minimal Useful Browser Tool Set
 
-- [ ] Add coordinate click and text/key input tools.
-- [ ] Add wait helpers for load, element, network idle, and sleep.
-- [ ] Add JS evaluation tool.
-- [ ] Add tab listing/switching tools.
-- [ ] Add permission metadata and approval gates for risky tools.
-- [ ] Keep PyDoll fallback intact.
+- [x] Add coordinate click and text/key input tools.
+- [x] Add wait helpers for load, element, network idle, and sleep.
+- [x] Add JS evaluation tool.
+- [x] Add tab listing/switching tools.
+- [x] Add permission metadata and approval gates for risky tools.
+- [x] Keep PyDoll fallback intact.
+
+Notes after Phase 1 implementation:
+
+- Phase 1 is covered with mocked browser-harness modules; real Chrome attach remains a manual validation item because browser-harness is not yet an installed dependency in base dev/test.
+- Risky tools carry permission metadata and map to `NETWORK_POST`; enforcement depends on Penguin permission mode/config.
 
 Exit criteria:
 
