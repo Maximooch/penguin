@@ -95,6 +95,44 @@ def test_browser_harness_screenshot_returns_multimodal_artifact(
     assert result["artifact"]["image_path"] == result["filepath"]
 
 
+def test_browser_harness_sets_env_before_importing_helpers(
+    monkeypatch, tmp_path: Path
+) -> None:
+    captured = {}
+    fake_admin = types.ModuleType("browser_harness.admin")
+    fake_helpers = types.ModuleType("browser_harness.helpers")
+
+    def fake_import(name):
+        if name == "browser_harness.admin":
+            captured["admin_bu_name"] = __import__("os").environ.get("BU_NAME")
+            return fake_admin
+        if name == "browser_harness.helpers":
+            captured["helpers_bu_name"] = __import__("os").environ.get("BU_NAME")
+            captured["helpers_workspace"] = __import__("os").environ.get(
+                "BH_AGENT_WORKSPACE"
+            )
+            return fake_helpers
+        raise ModuleNotFoundError(name)
+
+    def ensure_daemon(name=None, env=None, wait=60.0):
+        captured["daemon"] = (name, dict(env or {}), wait)
+
+    fake_admin.ensure_daemon = ensure_daemon
+    monkeypatch.setattr("importlib.import_module", fake_import)
+    monkeypatch.delenv("BU_NAME", raising=False)
+    monkeypatch.delenv("BH_AGENT_WORKSPACE", raising=False)
+
+    adapter = BrowserHarnessAdapter(
+        {"name": "session:vision", "skills_dir": str(tmp_path / "skills")}
+    )
+
+    assert adapter._ensure_ready() is fake_helpers
+    assert captured["admin_bu_name"] == "session-vision"
+    assert captured["helpers_bu_name"] == "session-vision"
+    assert captured["helpers_workspace"] == str(tmp_path / "skills")
+    assert captured["daemon"][0] == "session-vision"
+
+
 class _FakeBrowserHarnessModules:
     def __init__(self, monkeypatch):
         self.events = []

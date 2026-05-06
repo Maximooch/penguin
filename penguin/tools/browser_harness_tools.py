@@ -54,7 +54,9 @@ class BrowserHarnessAdapter:
             env["BH_DOMAIN_SKILLS"] = "1"
         return env
 
-    def _load_modules(self):
+    def _load_modules(self, env: Optional[Dict[str, str]] = None):
+        for key, value in (env or {}).items():
+            os.environ[key] = value
         try:
             admin = importlib.import_module("browser_harness.admin")
             helpers = importlib.import_module("browser_harness.helpers")
@@ -66,10 +68,8 @@ class BrowserHarnessAdapter:
         return admin, helpers
 
     def _ensure_ready(self):
-        admin, helpers = self._load_modules()
         env = self._base_env()
-        for key, value in env.items():
-            os.environ[key] = value
+        admin, helpers = self._load_modules(env)
         try:
             admin.ensure_daemon(name=self.name, env=env)
         except Exception as exc:
