@@ -221,7 +221,17 @@ include-package-data = true
 # (No license-files to stop setuptools from generating lowercase 'license-file')
 
 [tool.setuptools.package-data]
-penguin = ["config.yml", "requirements.txt", "*.yml", "*.yaml", "*.css", "cli/*.css"]
+penguin = [
+    "config.yml",
+    "requirements.txt",
+    "*.yml",
+    "*.yaml",
+    "*.css",
+    "cli/*.css",
+    "bundled_skills/*/SKILL.md",
+    "bundled_skills/*/interaction-skills/*.md",
+    "bundled_skills/*/domain-skills/*.md",
+]
 
 # Exclude specific files and patterns
 [tool.setuptools.exclude-package-data]

@@ -89,21 +89,20 @@ Browser-harness includes a large markdown skill corpus:
 
 Important constraint: do **not** dump all browser/domain skills into the base prompt.
 
-Recommended approach:
+Decisions:
 
-1. Treat general interaction skills as retrievable references.
-2. Treat domain skills as hostname/task-scoped retrievable references.
-3. Enable domain skills only by explicit config, equivalent to `BH_DOMAIN_SKILLS=1`.
-4. Load only the relevant skill file(s) after navigation or when the model asks for them.
-5. Store generated/learned site playbooks under Penguin-controlled workspace context, not in global prompts.
+1. Reference the browser-harness `SKILL.md` pattern as a bundled Penguin skill named `browser`.
+2. Keep interaction skills as progressively-loadable references under that `browser` skill.
+3. Store browser domain skills under Penguin Skills in the browser-specific directory: `penguin/bundled_skills/browser/domain-skills/` for packaged defaults and user/project browser skill directories for learned/local site playbooks.
+4. Treat hostname lookup as optional. Browser-harness already has a domain-skill section and `BH_DOMAIN_SKILLS` gate; Penguin should preserve the concept without forcing every navigation to retrieve site files.
+5. For docs/static scraping, prefer scripting/HTTP/JS extraction. Use actual browser interaction primarily for testing software Penguin made, authenticated workflows, dynamic UI verification, or pages where static scraping is insufficient.
 6. Redact secrets and avoid storing pixel coordinates, task transcripts, credentials, or personal data in reusable domain skills.
 
 Potential integration with Penguin Skills:
 
-- Convert browser-harness `SKILL.md` into a Penguin skill named `browser`.
-- Convert interaction skills into references under that skill.
-- Either index domain skills separately by hostname or expose them through a browser-skill resource browser.
 - Keep activated browser instructions as `MessageCategory.CONTEXT`, not `SYSTEM`.
+- Use `activate_skill("browser")` when a browser workflow begins or when browser interaction starts failing.
+- Load only the relevant interaction reference file after a concrete mechanic appears.
 
 ## Proposed Tool Surface
 
@@ -276,13 +275,12 @@ Exit criteria:
 
 ### Phase 2 - Skill/Reference Integration
 
-- [ ] Import or reference browser-harness `SKILL.md` as a Penguin browser skill.
-- [ ] Add interaction skills as progressively-loadable references.
-- [ ] Decide whether domain skills live under Penguin Skills, docs cache, or browser-specific index.
+- [x] Reference browser-harness `SKILL.md` as a bundled Penguin browser skill.
+- [x] Add interaction skills as progressively-loadable references.
+- [x] Decide domain skills live under Penguin Skills in a browser-specific directory.
 - [ ] Implement hostname-based domain-skill lookup when enabled.
-- [ ] Add guidance to prompt/tool docs: screenshot-first, coordinate-click-first, use DOM/CDP as escape hatches.
-- [ ] Add redaction/no-secret guidance for learned domain skills.
-
+- [x] Add guidance to prompt/tool docs: browser interaction is screenshot/coordinate-first; docs/static scraping should prefer scripting/HTTP/JS extraction; DOM/CDP are escape hatches.
+- [x] Add redaction/no-secret guidance for learned domain skills.
 Exit criteria:
 
 - General interaction guidance is available without prompt bloat.

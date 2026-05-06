@@ -13,7 +13,12 @@ def make_skill(path: Path, name: str, description: str = "Desc") -> None:
 
 def test_discover_nested_skills(tmp_path: Path) -> None:
     make_skill(tmp_path / "user" / "nested" / "skill", "nested-skill")
-    config = {"skills": {"scan_paths": {"user": [str(tmp_path / "user")]}}}
+    config = {
+        "skills": {
+            "include_bundled": False,
+            "scan_paths": {"user": [str(tmp_path / "user")]},
+        }
+    }
 
     skills, diagnostics = discover_skills(config)
 
@@ -21,11 +26,26 @@ def test_discover_nested_skills(tmp_path: Path) -> None:
     assert diagnostics == []
 
 
+def test_discover_includes_bundled_browser_skill_by_default() -> None:
+    skills, diagnostics = discover_skills({"skills": {"scan_paths": {"user": []}}})
+
+    browser = next(skill for skill in skills if skill.name == "browser")
+    assert browser.source == "bundled"
+    assert (browser.path / "interaction-skills" / "screenshots.md").is_file()
+    assert (browser.path / "domain-skills" / "README.md").is_file()
+    assert diagnostics == []
+
+
 def test_discover_invalid_skill_reports_diagnostic(tmp_path: Path) -> None:
     bad = tmp_path / "user" / "bad"
     bad.mkdir(parents=True)
     (bad / "SKILL.md").write_text("---\nname: Bad\n---\nBody\n", encoding="utf-8")
-    config = {"skills": {"scan_paths": {"user": [str(tmp_path / "user")]}}}
+    config = {
+        "skills": {
+            "include_bundled": False,
+            "scan_paths": {"user": [str(tmp_path / "user")]},
+        }
+    }
 
     skills, diagnostics = discover_skills(config)
 
@@ -36,7 +56,12 @@ def test_discover_invalid_skill_reports_diagnostic(tmp_path: Path) -> None:
 def test_discover_collisions_keep_first(tmp_path: Path) -> None:
     make_skill(tmp_path / "a", "same-name", "First")
     make_skill(tmp_path / "b", "same-name", "Second")
-    config = {"skills": {"scan_paths": {"user": [str(tmp_path / "a"), str(tmp_path / "b")]}}}
+    config = {
+        "skills": {
+            "include_bundled": False,
+            "scan_paths": {"user": [str(tmp_path / "a"), str(tmp_path / "b")]},
+        }
+    }
 
     skills, diagnostics = discover_skills(config)
 
@@ -49,6 +74,7 @@ def test_discover_max_depth(tmp_path: Path) -> None:
     make_skill(tmp_path / "root" / "one" / "two", "too-deep")
     config = {
         "skills": {
+            "include_bundled": False,
             "scan_paths": {"user": [str(tmp_path / "root")]},
             "max_scan_depth": 1,
         }
@@ -62,7 +88,13 @@ def test_discover_max_depth(tmp_path: Path) -> None:
 
 def test_project_skills_ignored_when_not_trusted(tmp_path: Path) -> None:
     make_skill(tmp_path / ".penguin" / "skills" / "project", "project-skill")
-    config = {"skills": {"trust_project_skills": False, "scan_paths": {"user": [], "project": [".penguin/skills"]}}}
+    config = {
+        "skills": {
+            "include_bundled": False,
+            "trust_project_skills": False,
+            "scan_paths": {"user": [], "project": [".penguin/skills"]},
+        }
+    }
 
     skills, diagnostics = discover_skills(config, project_root=tmp_path)
 
@@ -72,7 +104,13 @@ def test_project_skills_ignored_when_not_trusted(tmp_path: Path) -> None:
 
 def test_project_skills_loaded_when_trusted(tmp_path: Path) -> None:
     make_skill(tmp_path / ".penguin" / "skills" / "project", "project-skill")
-    config = {"skills": {"trust_project_skills": True, "scan_paths": {"user": [], "project": [".penguin/skills"]}}}
+    config = {
+        "skills": {
+            "include_bundled": False,
+            "trust_project_skills": True,
+            "scan_paths": {"user": [], "project": [".penguin/skills"]},
+        }
+    }
 
     skills, _ = discover_skills(config, project_root=tmp_path)
 
