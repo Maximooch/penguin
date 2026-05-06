@@ -655,6 +655,8 @@ Gated:
 
 ## Phase 3: Resources, Prompts, Notifications
 
+Status: implemented initial conservative resources and prompts. Tool-list change notifications remain future Phase 4/product-polish work.
+
 ### Resources
 
 Potential mappings:

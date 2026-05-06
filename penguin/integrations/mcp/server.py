@@ -18,6 +18,9 @@ except Exception:  # pragma: no cover - exercised when optional extra missing
     FastMCP = None  # type: ignore[assignment]
     HAS_MCP_SERVER_SDK = False
 
+from penguin.integrations.mcp.server_resources import (
+    register_penguin_resources_and_prompts,
+)
 from penguin.integrations.mcp.server_tools import (
     MCPServerTool,
     build_blueprint_tools,
@@ -88,6 +91,8 @@ class PenguinMCPServerConfig:
     expose_blueprint_tools: bool = True
     expose_runtime_tools: bool = False
     expose_session_tools: bool = True
+    expose_resources: bool = True
+    expose_prompts: bool = True
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -133,6 +138,8 @@ class PenguinMCPServer:
                 description=schema.get("description") or "Penguin tool",
                 structured_output=False,
             )
+        if self.config.expose_resources or self.config.expose_prompts:
+            register_penguin_resources_and_prompts(mcp, self)
         return mcp
 
     def run(self, transport: Optional[str] = None) -> None:
@@ -271,6 +278,8 @@ def build_penguin_mcp_server(
     expose_blueprint_tools: bool = True,
     expose_runtime_tools: bool = False,
     expose_session_tools: bool = True,
+    expose_resources: bool = True,
+    expose_prompts: bool = True,
 ) -> PenguinMCPServer:
     """Build a configured Penguin MCP server wrapper."""
     return PenguinMCPServer(
@@ -283,6 +292,8 @@ def build_penguin_mcp_server(
             expose_blueprint_tools=expose_blueprint_tools,
             expose_runtime_tools=expose_runtime_tools,
             expose_session_tools=expose_session_tools,
+            expose_resources=expose_resources,
+            expose_prompts=expose_prompts,
         ),
         core=core,
     )

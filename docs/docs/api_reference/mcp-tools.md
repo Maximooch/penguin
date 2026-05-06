@@ -110,3 +110,22 @@ Default-on, read-only surfaces for handoff and audit.
 | `penguin_session_summary` | Return compact recent session message previews. | No | No |
 | `penguin_artifacts_list` | List task artifact evidence. | No | No |
 | `penguin_checkpoints_list` | List conversation checkpoints and stats. | No | No |
+
+
+## MCP Resources And Prompts
+
+Resources are read-only MCP resources, not tools:
+
+| URI | Purpose |
+|---|---|
+| `penguin://projects` | List projects. |
+| `penguin://project/{project_id}` | Return one project and tasks. |
+| `penguin://task/{task_id}` | Return one task lifecycle payload. |
+| `penguin://session/{session_id}/summary` | Return compact session handoff context. |
+| `penguin://docs-cache/{source}/{page}` | Read cached docs pages under `context/docs_cache`. |
+
+Prompts:
+
+- `penguin_task_brief`
+- `penguin_blueprint_outline`
+- `penguin_runmode_handoff`

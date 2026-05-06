@@ -212,3 +212,24 @@ Penguin MCP also exposes default-on read-only handoff tools:
 - `penguin_checkpoints_list`
 
 These tools do not restore checkpoints or mutate sessions. Restore/rollback remains intentionally gated future work.
+
+
+### MCP Resources And Prompts
+
+Penguin's MCP server exposes conservative resources and prompts by default:
+
+Resources:
+
+- `penguin://projects`
+- `penguin://project/{project_id}`
+- `penguin://task/{task_id}`
+- `penguin://session/{session_id}/summary`
+- `penguin://docs-cache/{source}/{page}`
+
+Prompts:
+
+- `penguin_task_brief`
+- `penguin_blueprint_outline`
+- `penguin_runmode_handoff`
+
+Disable them with `--no-resources` or `--no-prompts` when running `scripts/penguin_mcp_server.py`.

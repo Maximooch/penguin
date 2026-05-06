@@ -43,6 +43,16 @@ def parse_args() -> argparse.Namespace:
         help="Disable default Penguin Blueprint MCP tools.",
     )
     parser.add_argument(
+        "--no-resources",
+        action="store_true",
+        help="Disable MCP resources. Prompts remain controlled separately.",
+    )
+    parser.add_argument(
+        "--no-prompts",
+        action="store_true",
+        help="Disable MCP prompts.",
+    )
+    parser.add_argument(
         "--no-session-tools",
         action="store_true",
         help="Disable default-on session/artifact/checkpoint read tools.",
@@ -86,6 +96,8 @@ def main() -> None:
         expose_blueprint_tools=not args.no_blueprint_tools,
         expose_runtime_tools=args.allow_runtime_tools,
         expose_session_tools=not args.no_session_tools,
+        expose_resources=not args.no_resources,
+        expose_prompts=not args.no_prompts,
     )
     try:
         server.run("stdio")
