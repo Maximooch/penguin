@@ -8,6 +8,13 @@
 - State: proposed
 - Bias: rewrite existing MCP integration instead of patching current stubs
 
+## Documentation Map
+
+- `context/architecture/mcp-runtime-surface.md` — architecture and exposure policy for Penguin as MCP host/server/runtime surface.
+- `context/architecture/mcp-runtime-job-records.md` — Slice 5B durable runtime job record contract.
+- `docs/docs/api_reference/mcp-tools.md` — implemented MCP server tool catalog.
+- `docs/docs/system/mcp.md` — user/developer docs for installing, running, and testing MCP support.
+
 ## Executive Summary
 
 Current MCP integration should be treated as disposable. It exposes and consumes a custom HTTP/JSON-lines shape that resembles MCP vocabulary but does not implement the real MCP protocol. The rewrite should make Penguin a real MCP host first: connect to external MCP servers and expose their tools as Penguin tools. Exposing Penguin itself as an MCP server is useful, but it is phase 2.
