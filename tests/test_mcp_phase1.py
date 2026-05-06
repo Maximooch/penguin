@@ -355,11 +355,7 @@ def test_penguin_mcp_server_exposes_pm_tools_with_core(tmp_path) -> None:
             raise AssertionError("PM tools should not route through ToolManager")
 
     core = FakeCore()
-    server = build_penguin_mcp_server(
-        FakeToolManager(core),
-        core=core,
-        expose_runtime_tools=True,
-    )
+    server = build_penguin_mcp_server(FakeToolManager(core), core=core)
     exposed = {tool["name"] for tool in server.list_exposed_tools()}
 
     assert {
