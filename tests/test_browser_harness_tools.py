@@ -37,6 +37,33 @@ def test_browser_harness_config_uses_skills_dir_name() -> None:
     assert env["BH_DOMAIN_SKILLS"] == "1"
 
 
+def test_browser_harness_domain_skill_lookup_is_gated(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "skills"
+    github_skill = skill_dir / "domain-skills" / "github"
+    github_skill.mkdir(parents=True)
+    (github_skill / "repo-actions.md").write_text("# GitHub repo actions\n")
+
+    disabled = BrowserHarnessAdapter({"skills_dir": str(skill_dir)})
+    enabled = BrowserHarnessAdapter(
+        {"skills_dir": str(skill_dir), "domain_skills": True}
+    )
+
+    assert disabled.domain_skill_matches("https://github.com/penguin-ai/penguin") == {
+        "enabled": False,
+        "hostname": "github.com",
+        "matches": [],
+    }
+
+    result = enabled.domain_skill_matches("https://www.github.com/penguin-ai/penguin")
+
+    assert result["enabled"] is True
+    assert result["hostname"] == "github.com"
+    assert "github" in result["candidate_slugs"]
+    assert result["matches"][0]["slug"] == "github"
+    assert result["matches"][0]["path"] == str(github_skill)
+    assert result["matches"][0]["files"] == [str(github_skill / "repo-actions.md")]
+
+
 def test_browser_harness_tools_register_without_optional_dependency() -> None:
     manager = ToolManager(config={}, log_error_func=_dummy_log_error, fast_startup=True)
     names = {schema["name"] for schema in manager.tools}

@@ -278,9 +278,16 @@ Exit criteria:
 - [x] Reference browser-harness `SKILL.md` as a bundled Penguin browser skill.
 - [x] Add interaction skills as progressively-loadable references.
 - [x] Decide domain skills live under Penguin Skills in a browser-specific directory.
-- [ ] Implement hostname-based domain-skill lookup when enabled.
+- [x] Implement hostname-based domain-skill lookup when enabled.
 - [x] Add guidance to prompt/tool docs: browser interaction is screenshot/coordinate-first; docs/static scraping should prefer scripting/HTTP/JS extraction; DOM/CDP are escape hatches.
 - [x] Add redaction/no-secret guidance for learned domain skills.
+
+Notes after Phase 2 implementation:
+
+- Domain-skill lookup is metadata-only and gated by `browser.harness.domain_skills: true`.
+- When enabled, `browser_open_tab` and `browser_page_info` return matching browser domain skill directories/files for the current hostname; they do not auto-inject domain skill contents into the prompt.
+- Domain skills are searched under `skills_dir/domain-skills/`, configured `domain_skill_roots`, and bundled browser domain-skill resources.
+
 Exit criteria:
 
 - General interaction guidance is available without prompt bloat.

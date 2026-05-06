@@ -997,6 +997,14 @@ Penguin has two browser paths:
 coordinates or focused input → wait → screenshot/verify. Do not assume DOM state
 from text alone when the visual state matters.
 
+For documentation/static scraping, prefer scripting/HTTP/JS extraction over manual
+browser interaction. Actual browser interaction is strongest for testing software
+Penguin made, authenticated workflows, and dynamic UI verification.
+
+If `browser_open_tab` or `browser_page_info` returns `domain_skills.matches`,
+use those paths as opt-in references only when the current hostname-specific
+problem needs them. Do not bulk-load or summarize all domain-skill files.
+
 ### browser_open_tab
 Open a URL in a new browser-harness tab.
 

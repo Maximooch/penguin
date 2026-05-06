@@ -11,7 +11,8 @@ import importlib
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 
 class BrowserHarnessUnavailableError(RuntimeError):
@@ -46,13 +47,103 @@ class BrowserHarnessAdapter:
     def screenshot_max_dim(self) -> int:
         return int(self.config.get("screenshot_max_dim", 1800))
 
+    @property
+    def domain_skills_enabled(self) -> bool:
+        return bool(self.config.get("domain_skills"))
+
     def _base_env(self) -> Dict[str, str]:
         env = {"BU_NAME": self.name}
         if self.skills_dir:
             env["BH_AGENT_WORKSPACE"] = str(Path(self.skills_dir).expanduser())
-        if self.config.get("domain_skills"):
+        if self.domain_skills_enabled:
             env["BH_DOMAIN_SKILLS"] = "1"
         return env
+
+    def _domain_skill_roots(self) -> List[Path]:
+        roots: List[Path] = []
+        configured = self.config.get("domain_skill_roots") or []
+        if isinstance(configured, (str, Path)):
+            configured = [configured]
+        for root in configured:
+            roots.append(Path(str(root)).expanduser())
+        if self.skills_dir:
+            roots.append(Path(self.skills_dir).expanduser() / "domain-skills")
+        bundled_root = (
+            Path(__file__).resolve().parents[1]
+            / "bundled_skills"
+            / "browser"
+            / "domain-skills"
+        )
+        roots.append(bundled_root)
+        deduped: List[Path] = []
+        seen = set()
+        for root in roots:
+            key = str(root)
+            if key not in seen:
+                deduped.append(root)
+                seen.add(key)
+        return deduped
+
+    @staticmethod
+    def _domain_candidate_slugs(url: str) -> List[str]:
+        parsed = urlparse(url if "://" in url else f"https://{url}")
+        hostname = (parsed.hostname or "").lower().strip(".")
+        if hostname.startswith("www."):
+            hostname = hostname[4:]
+        if not hostname:
+            return []
+
+        labels = [label for label in hostname.split(".") if label]
+        candidates = [hostname.replace(".", "-")]
+        if len(labels) >= 2:
+            candidates.append(labels[-2])
+        if len(labels) >= 3:
+            candidates.append("-".join(labels[-3:-1]))
+        candidates.extend(labels[:-1])
+
+        deduped: List[str] = []
+        for candidate in candidates:
+            slug = _slug(candidate.lower())
+            if slug and slug not in deduped:
+                deduped.append(slug)
+        return deduped
+
+    def domain_skill_matches(self, url: str) -> Dict[str, Any]:
+        parsed = urlparse(url if "://" in url else f"https://{url}")
+        hostname = (parsed.hostname or "").lower().strip(".")
+        if hostname.startswith("www."):
+            hostname = hostname[4:]
+        payload: Dict[str, Any] = {
+            "enabled": self.domain_skills_enabled,
+            "hostname": hostname,
+            "matches": [],
+        }
+        if not self.domain_skills_enabled or not hostname:
+            return payload
+
+        candidate_slugs = self._domain_candidate_slugs(url)
+        roots = self._domain_skill_roots()
+        payload["candidate_slugs"] = candidate_slugs
+        payload["searched_roots"] = [str(root) for root in roots]
+
+        matches = []
+        for root in roots:
+            if not root.exists():
+                continue
+            for slug in candidate_slugs:
+                directory = root / slug
+                if not directory.is_dir():
+                    continue
+                files = sorted(str(path) for path in directory.glob("*.md"))
+                matches.append(
+                    {
+                        "slug": slug,
+                        "path": str(directory),
+                        "files": files,
+                    }
+                )
+        payload["matches"] = matches
+        return payload
 
     def _load_modules(self, env: Optional[Dict[str, str]] = None):
         for key, value in (env or {}).items():
@@ -91,19 +182,24 @@ class BrowserHarnessAdapter:
         target_id = helpers.new_tab(url)
         loaded = helpers.wait_for_load(timeout=timeout) if wait else None
         info = helpers.page_info()
-        return {
+        result = {
             "result": "Opened browser tab",
             "target_id": target_id,
             "loaded": loaded,
             "page_info": info,
             "backend": "browser-harness",
         }
+        domain_url = info.get("url") if isinstance(info, dict) else None
+        result["domain_skills"] = self.domain_skill_matches(domain_url or url)
+        return result
 
     def page_info(self) -> Dict[str, Any]:
         helpers = self._ensure_ready()
+        info = helpers.page_info()
         return {
             "result": "Browser page info",
-            "page_info": helpers.page_info(),
+            "page_info": info,
+            "domain_skills": self.domain_skill_matches(info.get("url", "")),
             "backend": "browser-harness",
         }
 
