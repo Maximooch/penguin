@@ -30,6 +30,7 @@ from .models import (
     TaskStatus,
 )
 from .storage import ProjectStorage
+from .runtime_jobs import RuntimeJobRecord
 from .exceptions import (
     ProjectError, TaskError, ValidationError, ProjectNotFoundError, 
     TaskNotFoundError, StateTransitionError, DependencyError
@@ -89,6 +90,32 @@ class ProjectManager:
         
         logger.info(f"ProjectManager initialized with workspace: {workspace_path}")
     
+    # ==================== Runtime Job Operations ====================
+
+    def upsert_runtime_job(self, record: RuntimeJobRecord) -> None:
+        """Create or update a durable runtime job record."""
+        self.storage.upsert_runtime_job(record)
+
+    def get_runtime_job(self, job_id: str) -> Optional[RuntimeJobRecord]:
+        """Return a durable runtime job record by ID."""
+        return self.storage.get_runtime_job(job_id)
+
+    def list_runtime_jobs(
+        self,
+        *,
+        status: Optional[str] = None,
+        project_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[RuntimeJobRecord]:
+        """List durable runtime job records with optional filters."""
+        return self.storage.list_runtime_jobs(
+            status=status,
+            project_id=project_id,
+            task_id=task_id,
+            limit=limit,
+        )
+
     # ==================== Project Operations ====================
     
     def create_project(

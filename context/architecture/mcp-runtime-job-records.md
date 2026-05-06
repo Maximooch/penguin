@@ -4,7 +4,7 @@
 
 - Created: 2026-05-04
 - Scope: Slice 5B durable runtime job records for Penguin's MCP runtime server
-- State: proposed contract before implementation
+- State: implemented locally in Slice 5B
 
 ## Purpose
 
@@ -12,7 +12,7 @@ Slice 3 introduced RunMode MCP tools that can start, list, inspect, cancel, and 
 
 That is acceptable for live testing, but not enough for serious orchestration. If the MCP server process restarts, an external host loses job IDs, results, cancellation state, and status history.
 
-Slice 5B must persist runtime job records.
+Slice 5B persists runtime job records in local ProjectStorage and merges them with the live in-process registry exposed by RunMode MCP tools.
 
 ## Storage Decision
 

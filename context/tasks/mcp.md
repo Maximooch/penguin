@@ -612,6 +612,8 @@ Current guardrails:
 
 #### Slice 5: Sessions / Context / Evidence / Durable Runtime Records
 
+Slice 5B durable runtime job records are implemented in `penguin/project/runtime_jobs.py`, `ProjectStorage`, and the RunMode MCP registry. Session/context/evidence listing remains future Slice 5A work.
+
 Expose enough runtime context for another host to coordinate safely. Keep listing/summarization default-on; restoration/mutation should be opt-in or separately gated.
 
 Tools:
@@ -623,7 +625,7 @@ Tools:
 - `penguin_runtime_jobs_list` — list durable runtime job records, merging persisted records with any in-process active jobs.
 - `penguin_runtime_job_get` — retrieve one durable runtime job record by ID.
 
-Durable runtime job records should preserve at least `job_id`, `kind`, `project_id`, `task_id`, `session_id`, `status`, `started_at`, `finished_at`, `result_summary`, `error`, and cancellation state. Current Slice 3 job records are in-process only and must be persisted here before serious external orchestration depends on them.
+Durable runtime job records preserve `job_id`, `kind`, `project_id`, `task_id`, `session_id`, `status`, `started_at`, `updated_at`, `finished_at`, `result_summary`, capped `result_json`, `error`, metadata, and cancellation state in the local ProjectStorage `runtime_jobs` table. Live jobs are merged with persisted records; non-terminal records without a live in-process handle are marked orphaned and non-controllable.
 
 Gated:
 

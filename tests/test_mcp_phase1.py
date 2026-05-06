@@ -972,7 +972,7 @@ def test_penguin_mcp_runmode_cancel_job_marks_running_job() -> None:
     cancelled = registry.cancel_job(job_id, reason="test requested")
 
     assert cancelled["cancel_requested"] is True
-    assert cancelled["job"]["status"] == "cancelling"
+    assert cancelled["job"]["status"] == "cancel_requested"
     assert cancelled["job"]["metadata"]["cancel_reason"] == "test requested"
     assert cancelled["registry"]["supports_cancel"] is True
 
@@ -1068,6 +1068,102 @@ def test_penguin_mcp_runmode_resume_clarification_registers_job(monkeypatch) -> 
     assert latest["status"] == "completed"
     assert latest["result"]["answer"] == "Use SQLite"
     assert latest["result"]["record_seen"] is True
+
+
+
+def test_runtime_job_records_persist_in_project_storage(tmp_path) -> None:
+    from penguin.project.manager import ProjectManager
+    from penguin.project.runtime_jobs import build_runtime_job_record
+
+    manager = ProjectManager(tmp_path)
+    record = build_runtime_job_record(
+        job_id="job-1",
+        kind="task",
+        status="running",
+        project_id="project-1",
+        task_id="task-1",
+        session_id="session-1",
+        result={"status": "running"},
+        metadata={"source": "test"},
+    )
+    manager.upsert_runtime_job(record)
+
+    reloaded = ProjectManager(tmp_path).get_runtime_job("job-1")
+
+    assert reloaded is not None
+    assert reloaded.job_id == "job-1"
+    assert reloaded.project_id == "project-1"
+    assert reloaded.task_id == "task-1"
+    assert reloaded.session_id == "session-1"
+    assert reloaded.to_dict()["result"] == {"status": "running"}
+    assert reloaded.metadata == {"source": "test"}
+
+
+def test_runmode_job_registry_persists_lifecycle(tmp_path) -> None:
+    import time
+
+    from penguin.integrations.mcp.server_tools.runmode import RunModeJobRegistry
+    from penguin.project.manager import ProjectManager
+
+    async def runner(_record):
+        return {"status": "completed", "message": "done"}
+
+    manager = ProjectManager(tmp_path)
+    registry = RunModeJobRegistry(project_manager=manager)
+    started = registry.start_job(
+        kind="task",
+        runner=runner,
+        project_id="project-1",
+        task_id="task-1",
+        metadata={"session_id": "session-1"},
+    )
+    job_id = started["job"]["job_id"]
+
+    for _ in range(50):
+        job = registry.get_job(job_id)
+        if job and job["status"] == "completed":
+            break
+        time.sleep(0.02)
+
+    reloaded_registry = RunModeJobRegistry(project_manager=ProjectManager(tmp_path))
+    durable = reloaded_registry.get_job(job_id)
+
+    assert durable is not None
+    assert durable["status"] == "completed"
+    assert durable["durable"] is True
+    assert durable["live"] is False
+    assert durable["controllable"] is False
+    assert durable["result_summary"] == "done"
+    assert durable["result"] == {"status": "completed", "message": "done"}
+
+
+def test_runmode_cancel_persists_intent_for_non_live_durable_job(tmp_path) -> None:
+    from penguin.integrations.mcp.server_tools.runmode import RunModeJobRegistry
+    from penguin.project.manager import ProjectManager
+    from penguin.project.runtime_jobs import build_runtime_job_record
+
+    manager = ProjectManager(tmp_path)
+    manager.upsert_runtime_job(
+        build_runtime_job_record(
+            job_id="job-orphan",
+            kind="task",
+            status="running",
+            project_id="project-1",
+            task_id="task-1",
+        )
+    )
+    registry = RunModeJobRegistry(project_manager=ProjectManager(tmp_path))
+
+    cancelled = registry.cancel_job("job-orphan", reason="operator request")
+    durable = registry.get_job("job-orphan")
+
+    assert cancelled["cancel_requested"] is True
+    assert cancelled["cancel_signal_sent"] is False
+    assert cancelled["controllable"] is False
+    assert durable["status"] == "cancel_requested"
+    assert durable["cancel_requested"] is True
+    assert durable["cancel_reason"] == "operator request"
+    assert durable["metadata"]["cancel_request_without_live_handle"] is True
 
 
 def test_penguin_mcp_ituv_tools_are_runtime_gated(tmp_path) -> None:

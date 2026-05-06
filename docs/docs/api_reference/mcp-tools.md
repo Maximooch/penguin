@@ -57,7 +57,7 @@ Runtime-gated with `--allow-runtime-tools`.
 | Tool | Mutates | Notes |
 | --- | --- | --- |
 | `penguin_runmode_capabilities` | no | Reports runtime support and caveats |
-| `penguin_runmode_list_jobs` | no | In-memory jobs today; durable records planned |
+| `penguin_runmode_list_jobs` | no | Merges ProjectStorage-backed durable jobs with live in-process jobs |
 | `penguin_runmode_get_job` | no | Inspect one in-memory job |
 | `penguin_runmode_start_task` | yes | Starts background RunMode task job |
 | `penguin_runmode_start_project` | yes | Starts background project-scoped execution |
@@ -96,5 +96,5 @@ These route through Penguin's ToolManager and permission semantics.
 ## Known Documentation Gaps
 
 - Full JSON input/output examples should be added before public release.
-- Durable runtime job record tools are planned but not implemented yet.
+- Runtime job records persist locally in ProjectStorage when a ProjectManager is available. Live records are merged with durable records; orphaned non-terminal records are visible but not controllable.
 - Remote MCP transport/OAuth docs are future work.

@@ -10,12 +10,16 @@ from datetime import datetime
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional
 
 from penguin.integrations.mcp.server_tools.base import MCPServerTool
+from penguin.project.runtime_jobs import (
+    TERMINAL_RUNTIME_JOB_STATUSES,
+    build_runtime_job_record,
+)
 from penguin.web.services.project_payloads import serialize_task_payload
 
 
 @dataclass
 class RunModeJobRecord:
-    """In-process runtime job record for MCP-triggered RunMode work."""
+    """Live runtime job record for MCP-triggered RunMode work."""
 
     job_id: str
     kind: str
@@ -23,6 +27,7 @@ class RunModeJobRecord:
     project_id: Optional[str] = None
     task_id: Optional[str] = None
     started_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     finished_at: Optional[str] = None
     result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
@@ -44,7 +49,9 @@ class RunModeJobRecord:
             "status": self.status,
             "project_id": self.project_id,
             "task_id": self.task_id,
+            "session_id": self.metadata.get("session_id"),
             "started_at": self.started_at,
+            "updated_at": self.updated_at,
             "finished_at": self.finished_at,
             "result": self.result,
             "error": self.error,
@@ -52,18 +59,23 @@ class RunModeJobRecord:
             "cancel_requested": self.cancel_requested,
             "cancel_requested_at": self.cancel_requested_at,
             "cancel_signal_sent": self.cancel_signal_sent,
+            "durable": bool(self.metadata.get("durable")),
+            "live": True,
+            "controllable": self.status not in TERMINAL_RUNTIME_JOB_STATUSES,
         }
 
 
 class RunModeJobRegistry:
-    """Small in-process registry for runtime MCP jobs.
+    """Registry for runtime MCP jobs.
 
-    The registry intentionally starts jobs in daemon threads and records final
-    results/errors. This is not durable across process restarts; it is an MVP
-    control-plane handle so MCP clients do not block on model-dependent runs.
+    The registry starts jobs in daemon threads, records final results/errors,
+    and persists records through ProjectManager when available. Live handles are
+    still process-local, so restarted servers can recover history but cannot
+    force-control orphaned non-terminal jobs.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, project_manager: Optional[Any] = None) -> None:
+        self.project_manager = project_manager
         self._jobs: Dict[str, RunModeJobRecord] = {}
         self._threads: Dict[str, threading.Thread] = {}
         self._lock = threading.RLock()
@@ -85,8 +97,10 @@ class RunModeJobRegistry:
             task_id=task_id,
             metadata=dict(metadata or {}),
         )
+        record.metadata["durable"] = self._durable_enabled
         with self._lock:
             self._jobs[record.job_id] = record
+        self._persist(record)
 
         thread = threading.Thread(
             target=self._run_job_thread,
@@ -108,38 +122,71 @@ class RunModeJobRegistry:
     ) -> List[Dict[str, Any]]:
         """List job records with optional filters."""
         with self._lock:
-            jobs: Iterable[RunModeJobRecord] = list(self._jobs.values())
+            live_jobs: Iterable[RunModeJobRecord] = list(self._jobs.values())
+        live_payloads = [job.to_dict() for job in live_jobs]
+        durable_payloads = self._list_durable_jobs(
+            status=status,
+            project_id=project_id,
+            task_id=task_id,
+        )
+        merged: Dict[str, Dict[str, Any]] = {}
+        for payload in durable_payloads:
+            merged[payload["job_id"]] = payload
+        for payload in live_payloads:
+            merged[payload["job_id"]] = {**merged.get(payload["job_id"], {}), **payload}
+        jobs = list(merged.values())
         if status:
-            jobs = [job for job in jobs if job.status == status]
+            jobs = [job for job in jobs if job.get("status") == status]
         if project_id:
-            jobs = [job for job in jobs if job.project_id == project_id]
+            jobs = [job for job in jobs if job.get("project_id") == project_id]
         if task_id:
-            jobs = [job for job in jobs if job.task_id == task_id]
-        return [job.to_dict() for job in jobs]
+            jobs = [job for job in jobs if job.get("task_id") == task_id]
+        return jobs
 
     def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         """Return one job record if known."""
         with self._lock:
             job = self._jobs.get(job_id)
-            return job.to_dict() if job else None
+            if job:
+                durable = self._get_durable_job(job_id) or {}
+                return {**durable, **job.to_dict()}
+        return self._get_durable_job(job_id)
 
     def cancel_job(self, job_id: str, reason: Optional[str] = None) -> Dict[str, Any]:
         """Request cooperative cancellation for one in-process job."""
         with self._lock:
             record = self._jobs.get(job_id)
             if record is None:
+                durable = self._get_durable_job(job_id)
+                if durable is None:
+                    return {
+                        "error": "job_not_found",
+                        "job_id": job_id,
+                        "message": "No runtime MCP job exists with this ID.",
+                        "registry": self.summary(),
+                    }
+                if durable.get("status") in TERMINAL_RUNTIME_JOB_STATUSES:
+                    return {
+                        "job": durable,
+                        "cancel_requested": False,
+                        "message": "Job is already terminal.",
+                        "registry": self.summary(),
+                    }
+                self._persist_cancel_intent(job_id, reason)
+                durable = self._get_durable_job(job_id) or durable
                 return {
-                    "error": "job_not_found",
-                    "job_id": job_id,
-                    "message": "No runtime MCP job exists with this ID.",
+                    "job": durable,
+                    "cancel_requested": True,
+                    "cancel_signal_sent": False,
+                    "hard_cancel_supported": False,
+                    "controllable": False,
+                    "message": (
+                        "Cancellation intent persisted, but this job has no live "
+                        "in-process handle in the current MCP server."
+                    ),
                     "registry": self.summary(),
                 }
-            if record.status in {
-                "completed",
-                "failed",
-                "cancelled",
-                "completed_after_cancel_requested",
-            }:
+            if record.status in TERMINAL_RUNTIME_JOB_STATUSES:
                 return {
                     "job": record.to_dict(),
                     "cancel_requested": False,
@@ -148,8 +195,9 @@ class RunModeJobRegistry:
                 }
             record.cancel_requested = True
             record.cancel_requested_at = datetime.utcnow().isoformat()
+            record.updated_at = record.cancel_requested_at
             record.metadata["cancel_reason"] = reason
-            record.status = "cancelling"
+            record.status = "cancel_requested"
             callback = record.cancel_callback
 
         signal_sent = False
@@ -161,6 +209,7 @@ class RunModeJobRegistry:
                     record.error = f"Cancel callback failed: {exc}"
         with self._lock:
             record.cancel_signal_sent = signal_sent
+            self._persist(record)
             return {
                 "job": record.to_dict(),
                 "cancel_requested": True,
@@ -180,14 +229,23 @@ class RunModeJobRegistry:
             running_count = sum(
                 1 for job in self._jobs.values() if job.status == "running"
             )
+        durable_jobs = self._list_durable_jobs()
+        orphaned_count = sum(
+            1
+            for job in durable_jobs
+            if not job.get("live") and job.get("metadata", {}).get("orphaned")
+        )
         return {
-            "type": "in_process",
-            "job_count": job_count,
+            "type": "project_storage_backed" if self._durable_enabled else "in_process",
+            "job_count": len({job["job_id"] for job in durable_jobs} | set(self._jobs)),
+            "live_job_count": job_count,
             "running_count": running_count,
+            "durable_job_count": len(durable_jobs),
+            "orphaned_job_count": orphaned_count,
             "supports_start": True,
             "supports_cancel": True,
             "hard_cancel_supported": False,
-            "durable": False,
+            "durable": self._durable_enabled,
         }
 
     def _run_job_thread(
@@ -199,23 +257,132 @@ class RunModeJobRegistry:
         with self._lock:
             record = self._jobs[job_id]
             record.status = "running"
+            record.updated_at = datetime.utcnow().isoformat()
+        self._persist(record)
         try:
             result = asyncio.run(runner(record))
             with self._lock:
                 record.result = result
                 mapped_status = _job_status_from_result(result)
                 if record.cancel_requested and mapped_status == "completed":
-                    record.status = "completed_after_cancel_requested"
-                else:
-                    record.status = mapped_status
+                    record.metadata["completed_after_cancel_requested"] = True
+                record.status = mapped_status
                 record.finished_at = datetime.utcnow().isoformat()
+                record.updated_at = record.finished_at
                 record.cancel_callback = None
+            self._persist(record)
         except Exception as exc:  # pragma: no cover - defensive job boundary
             with self._lock:
                 record.status = "failed"
                 record.error = str(exc)
                 record.finished_at = datetime.utcnow().isoformat()
+                record.updated_at = record.finished_at
                 record.cancel_callback = None
+            self._persist(record)
+
+    @property
+    def _durable_enabled(self) -> bool:
+        """Return whether ProjectManager-backed durable jobs are available."""
+        return all(
+            hasattr(self.project_manager, method)
+            for method in (
+                "upsert_runtime_job",
+                "get_runtime_job",
+                "list_runtime_jobs",
+            )
+        )
+
+    def _persist(self, record: RunModeJobRecord) -> None:
+        """Persist one live job record when ProjectManager supports it."""
+        if not self._durable_enabled:
+            return
+        durable = build_runtime_job_record(
+            job_id=record.job_id,
+            kind=record.kind,
+            status=record.status,
+            project_id=record.project_id,
+            task_id=record.task_id,
+            session_id=record.metadata.get("session_id"),
+            started_at=record.started_at,
+            updated_at=record.updated_at,
+            finished_at=record.finished_at,
+            cancel_requested=record.cancel_requested,
+            cancel_reason=record.metadata.get("cancel_reason"),
+            result=record.result,
+            error=record.error,
+            metadata=record.metadata,
+        )
+        self.project_manager.upsert_runtime_job(durable)
+
+    def _get_durable_job(self, job_id: str) -> Optional[Dict[str, Any]]:
+        """Return one durable job payload if present."""
+        if not self._durable_enabled:
+            return None
+        record = self.project_manager.get_runtime_job(job_id)
+        if record is None:
+            return None
+        payload = record.to_dict()
+        live = job_id in self._jobs
+        payload["live"] = live
+        payload["controllable"] = (
+            live and payload.get("status") not in TERMINAL_RUNTIME_JOB_STATUSES
+        )
+        if not live and payload.get("status") not in TERMINAL_RUNTIME_JOB_STATUSES:
+            metadata = dict(payload.get("metadata") or {})
+            metadata["orphaned"] = True
+            metadata["orphaned_reason"] = (
+                "No live in-process job handle exists in this MCP server."
+            )
+            payload["metadata"] = metadata
+        return payload
+
+    def _list_durable_jobs(
+        self,
+        *,
+        status: Optional[str] = None,
+        project_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """List durable job payloads if ProjectManager supports them."""
+        if not self._durable_enabled:
+            return []
+        records = self.project_manager.list_runtime_jobs(
+            status=status,
+            project_id=project_id,
+            task_id=task_id,
+            limit=100,
+        )
+        payloads = []
+        for record in records:
+            payload = record.to_dict()
+            live = payload["job_id"] in self._jobs
+            payload["live"] = live
+            payload["controllable"] = (
+                live and payload.get("status") not in TERMINAL_RUNTIME_JOB_STATUSES
+            )
+            if not live and payload.get("status") not in TERMINAL_RUNTIME_JOB_STATUSES:
+                metadata = dict(payload.get("metadata") or {})
+                metadata["orphaned"] = True
+                metadata["orphaned_reason"] = (
+                    "No live in-process job handle exists in this MCP server."
+                )
+                payload["metadata"] = metadata
+            payloads.append(payload)
+        return payloads
+
+    def _persist_cancel_intent(self, job_id: str, reason: Optional[str]) -> None:
+        """Persist cancellation intent for a durable non-live job."""
+        if not self._durable_enabled:
+            return
+        record = self.project_manager.get_runtime_job(job_id)
+        if record is None:
+            return
+        record.cancel_requested = True
+        record.cancel_reason = reason
+        record.status = "cancel_requested"
+        record.updated_at = datetime.utcnow().isoformat()
+        record.metadata["cancel_request_without_live_handle"] = True
+        self.project_manager.upsert_runtime_job(record)
 
 
 def _job_status_from_result(result: Dict[str, Any]) -> str:
@@ -252,10 +419,10 @@ def _capabilities_payload(
     core: Any,
     registry: RunModeJobRegistry,
 ) -> Dict[str, Any]:
-    """Build the Slice 3C capabilities payload."""
+    """Build the Slice 5B capabilities payload."""
     return {
         "runtime_tools_enabled": True,
-        "slice": "3C",
+        "slice": "5B",
         "tools": {
             "available": [
                 "penguin_runmode_capabilities",
@@ -276,7 +443,7 @@ def _capabilities_payload(
         "core": _core_capabilities(core),
         "gaps": [
             "Cancellation is cooperative/best-effort; Python threads are not force-killed.",
-            "Job registry is in-process only and is lost on server restart.",
+            "Durable job records persist in ProjectStorage when ProjectManager is available.",
             "RunMode execution is model-dependent and remains explicitly gated.",
         ],
     }
@@ -469,7 +636,8 @@ def build_runmode_tools(
     registry: Optional[RunModeJobRegistry] = None,
 ) -> List[MCPServerTool]:
     """Build runtime tools for Penguin's MCP server."""
-    job_registry = registry or RunModeJobRegistry()
+    project_manager = getattr(core, "project_manager", None)
+    job_registry = registry or RunModeJobRegistry(project_manager=project_manager)
 
     def capabilities(_arguments: Dict[str, Any]) -> Dict[str, Any]:
         return _capabilities_payload(core, job_registry)
@@ -577,7 +745,7 @@ def build_runmode_tools(
         ),
         MCPServerTool(
             name="penguin_runmode_list_jobs",
-            description="List in-process RunMode MCP jobs with optional filters.",
+            description="List durable and live RunMode MCP jobs with optional filters.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -600,7 +768,7 @@ def build_runmode_tools(
         ),
         MCPServerTool(
             name="penguin_runmode_get_job",
-            description="Return one in-process RunMode MCP job by ID if it exists.",
+            description="Return one durable/live RunMode MCP job by ID if it exists.",
             input_schema={
                 "type": "object",
                 "properties": {

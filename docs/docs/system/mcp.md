@@ -185,7 +185,7 @@ Privacy/safety note: Chrome DevTools MCP can inspect browser state. Use an isola
 ## Current Limitations
 
 - STDIO host/client support is implemented; remote Streamable HTTP/OAuth support is future work.
-- Runtime job records are in-memory today; durable ProjectStorage-backed records are planned.
+- Runtime job records persist locally in ProjectStorage when a ProjectManager is available; orphaned non-terminal records survive restarts but are not controllable.
 - ITUV artifact writes currently use task storage directly from the MCP tool layer; a ProjectManager helper should be added.
 - Phase transition policy for ITUV mutation tools is currently MCP-local and should move into ProjectManager if it becomes a broader API contract.
 
@@ -195,3 +195,8 @@ Privacy/safety note: Chrome DevTools MCP can inspect browser state. Use an isola
 - `context/architecture/mcp-runtime-surface.md`
 - `context/architecture/mcp-runtime-job-records.md`
 - `context/architecture/runmode-project-ituv-system-map.md`
+
+
+## Runtime Job Durability
+
+RunMode MCP jobs are persisted locally in Penguin's project database (`projects.db`) when a `ProjectManager` is available. The live MCP server still owns cancellation handles, so a restarted server can recover job history but cannot force-control an orphaned non-terminal Python thread from a dead process. Orphaned records are returned as `live=false`, `controllable=false`, with metadata explaining the missing live handle.
