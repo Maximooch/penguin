@@ -232,14 +232,27 @@ Tool metadata should mark browser tools with:
 - [x] Add optional dependency path for browser-harness without changing defaults.
 - [x] Add a small internal adapter that can call browser-harness helpers.
 - [x] Implement `browser_open_tab`, `browser_page_info`, and `browser_harness_screenshot` only.
-- [ ] Verify local real-Chrome attach setup on macOS.
+- [x] Verify local real-Chrome attach setup on macOS.
 - [ ] Verify failure modes when Chrome remote debugging permission is missing.
 - [x] Verify screenshot artifact return through current tool-result pipeline.
+- [x] Verify the model can actually see a real browser-harness screenshot via `image_path` using modern vision-capable models.
 
 Exit criteria:
 
 - Penguin can open a new tab, wait for load, capture a screenshot, and report page info through native tools.
 - Failure messages are actionable enough for a user to complete Chrome remote-debugging setup.
+- Screenshot visibility is validated as model-visible content, not merely a saved file path.
+
+### Phase 0.5 - General Image Ingestion
+
+- [x] Add `read_image` as a general tool for local screenshots, diagrams, UI captures, and other image files.
+- [x] Return normalized image artifact metadata: `filepath`, `artifact.image_path`, MIME type, dimensions, format, and byte size.
+- [x] Add ActionXML support that injects image messages into the conversation using the same multimodal shape as screenshot tools.
+- [x] Add permission mapping as a filesystem read operation.
+
+Exit criteria:
+
+- Any allowed local image can be promoted into model-visible conversation context without coupling to browser tools.
 
 ### Phase 1 - Minimal Useful Browser Tool Set
 

@@ -21,6 +21,7 @@ from penguin.tools import ToolManager
 from penguin.utils.process_manager import ProcessManager
 from penguin.system.conversation import MessageCategory
 from penguin.system.execution_context import get_current_execution_context
+from penguin.tools.image_tools import ReadImageTool
 from penguin.tools.browser_harness_tools import BrowserHarnessScreenshotTool
 from penguin.tools.browser_tools import BrowserScreenshotTool, browser_manager
 from penguin.constants import (
@@ -120,6 +121,7 @@ class ActionType(Enum):
     BROWSER_NAVIGATE = "browser_navigate"
     BROWSER_INTERACT = "browser_interact"
     BROWSER_SCREENSHOT = "browser_screenshot"
+    READ_IMAGE = "read_image"
     BROWSER_HARNESS_SCREENSHOT = "browser_harness_screenshot"
     # PyDoll browser actions
     PYDOLL_BROWSER_NAVIGATE = "pydoll_browser_navigate"
@@ -1609,6 +1611,7 @@ class ActionExecutor:
             ActionType.BROWSER_NAVIGATE: self._browser_navigate,
             ActionType.BROWSER_INTERACT: self._browser_interact,
             ActionType.BROWSER_SCREENSHOT: self._browser_screenshot,
+            ActionType.READ_IMAGE: self._read_image,
             ActionType.BROWSER_HARNESS_SCREENSHOT: self._browser_harness_screenshot,
             # PyDoll browser actions
             ActionType.PYDOLL_BROWSER_NAVIGATE: self._pydoll_browser_navigate,
@@ -3801,6 +3804,51 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
         if not await browser_manager.initialize():
             return "Failed to initialize browser"
         return await browser_manager.navigate_to(params)
+
+    async def _read_image(self, params: str) -> str:
+        """Load a local image and add it to conversation as multimodal content."""
+        try:
+            payload = _parse_json_payload(params)
+            if payload:
+                path = payload.get("path") or payload.get("file_path")
+                prompt = payload.get("prompt") or payload.get("description")
+                max_dim = payload.get("max_dim")
+            else:
+                path = params.strip()
+                prompt = None
+                max_dim = None
+
+            if not path:
+                return "Error reading image: path is required"
+
+            result = ReadImageTool().execute(str(path), prompt=prompt, max_dim=max_dim)
+            if "filepath" in result and os.path.exists(result["filepath"]):
+                description = result.get("prompt") or "What can you see in this image?"
+                add_message_fn = None
+                if callable(getattr(self.conversation_system, "add_message", None)):
+                    add_message_fn = self.conversation_system.add_message
+                elif hasattr(self.conversation_system, "conversation") and callable(
+                    getattr(self.conversation_system.conversation, "add_message", None)
+                ):
+                    add_message_fn = self.conversation_system.conversation.add_message
+
+                multimodal_content = [
+                    {"type": "text", "text": description},
+                    {"type": "image_url", "image_path": result["filepath"]},
+                ]
+
+                if add_message_fn:
+                    add_message_fn(
+                        role="user",
+                        content=multimodal_content,
+                        category=MessageCategory.DIALOG,
+                    )
+                    return f"Image loaded from {result['filepath']} and added to conversation"
+                return f"Image loaded from {result['filepath']} (conversation update skipped)"
+
+            return result.get("error", "Failed to load image")
+        except Exception as e:
+            return f"Error reading image: {str(e)}"
 
     async def _browser_harness_screenshot(self, params: str) -> str:
         """Take a screenshot using browser-harness and add it to conversation."""

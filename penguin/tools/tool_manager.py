@@ -58,6 +58,7 @@ from penguin.tools.browser_harness_tools import (
     BrowserHarnessWaitTool,
 )
 from penguin.tools.providers.mcp import MCPToolProvider
+from penguin.tools.image_tools import ReadImageTool
 
 # Lazy import for PyDoll to avoid breaking if pydoll-python is not installed
 _pydoll_tools_imported = False
@@ -292,6 +293,7 @@ class ToolManager:
             self._browser_harness_js_tool = None
             self._browser_harness_list_tabs_tool = None
             self._browser_harness_switch_tab_tool = None
+            self._read_image_tool = None
 
             # PyDoll tools placeholders
             self._pydoll_browser_navigation_tool = None
@@ -328,6 +330,7 @@ class ToolManager:
                 "create_file": "penguin.tools.core.support.create_file",
                 "write_file": "penguin.tools.core.support.enhanced_write_to_file",
                 "read_file": "penguin.tools.core.support.enhanced_read_file",
+                "read_image": "self.read_image_tool.execute",
                 "list_files": "penguin.tools.core.support.list_files_filtered",
                 "find_file": "penguin.tools.core.support.find_files_enhanced",
                 "encode_image_to_base64": "penguin.tools.core.support.encode_image_to_base64",
@@ -784,6 +787,34 @@ class ToolManager:
                         }
                     },
                     "required": ["command"],
+                },
+            },
+            {
+                "name": "read_image",
+                "description": "Load a local image file into the conversation as a multimodal image artifact. Use this for screenshots, diagrams, UI captures, and other image files.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Path to an image file within allowed project/workspace roots",
+                        },
+                        "prompt": {
+                            "type": "string",
+                            "description": "Optional prompt/question to pair with the image",
+                        },
+                        "max_dim": {
+                            "type": "integer",
+                            "description": "Optional target max dimension hint for downstream image handling",
+                        },
+                    },
+                    "required": ["path"],
+                },
+                "x-penguin-permissions": {
+                    "mutates_state": False,
+                    "requires_approval": False,
+                    "parallel_safe": True,
+                    "risk": "low",
                 },
             },
             {
@@ -1950,6 +1981,14 @@ class ToolManager:
                 self._perplexity_provider = PerplexityProvider()
                 self._lazy_initialized["perplexity_provider"] = True
         return self._perplexity_provider
+
+    @property
+    def read_image_tool(self):
+        if self._read_image_tool is None:
+            with profile_operation("ToolManager.lazy_load_read_image_tool"):
+                logger.debug("Lazy-loading read_image tool")
+                self._read_image_tool = ReadImageTool()
+        return self._read_image_tool
 
     @property
     def permission_enforcer(self):
@@ -4102,6 +4141,21 @@ class ToolManager:
             return self.browser_harness_page_info_tool.execute()
         except Exception as e:
             error_message = f"Error getting browser-harness page info: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return {"error": error_message}
+
+    def execute_read_image(
+        self,
+        path: str,
+        prompt: Optional[str] = None,
+        max_dim: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Load a local image file as a multimodal artifact."""
+        try:
+            return self.read_image_tool.execute(path, prompt, max_dim)
+        except Exception as e:
+            error_message = f"Error reading image: {str(e)}"
             logging.error(error_message)
             self.log_error(e, error_message)
             return {"error": error_message}

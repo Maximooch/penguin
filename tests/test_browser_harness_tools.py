@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import json
 import sys
 import types
 from pathlib import Path
 
+import pytest
+from PIL import Image
+
 from penguin.security.permission_engine import Operation
 from penguin.security.tool_permissions import get_tool_operations
+from penguin.system.conversation import MessageCategory
 from penguin.tools.browser_harness_tools import BrowserHarnessAdapter
+from penguin.tools.image_tools import ReadImageTool
 from penguin.tools.tool_manager import ToolManager
+from penguin.utils.parser import ActionExecutor, ActionType, CodeActAction, parse_action
 
 
 def _dummy_log_error(exc: Exception, context: str = "") -> None:
@@ -267,6 +274,77 @@ def test_browser_harness_phase_1_dispatch(monkeypatch) -> None:
     assert "js" in event_names
     assert "list_tabs" in event_names
     assert "switch_tab" in event_names
+
+
+def test_read_image_tool_returns_multimodal_artifact(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("PENGUIN_CWD", str(tmp_path))
+    image_path = tmp_path / "sample.png"
+    Image.new("RGB", (16, 12), color=(255, 0, 0)).save(image_path)
+
+    result = ReadImageTool().execute(str(image_path), prompt="Describe this")
+
+    assert result["result"] == "Image loaded"
+    assert result["filepath"] == str(image_path.resolve())
+    assert result["artifact"]["type"] == "image"
+    assert result["artifact"]["image_path"] == str(image_path.resolve())
+    assert result["artifact"]["mime_type"] == "image/png"
+    assert result["width"] == 16
+    assert result["height"] == 12
+
+
+def test_read_image_registers_for_native_and_actionxml() -> None:
+    manager = ToolManager(config={}, log_error_func=_dummy_log_error, fast_startup=True)
+    names = {schema["name"] for schema in manager.tools}
+    actions = parse_action('<read_image>{"path":"sample.png"}</read_image>')
+
+    assert "read_image" in names
+    assert "read_image" in manager._tool_registry
+    assert get_tool_operations("read_image") == [Operation.FILESYSTEM_READ]
+    assert actions[0].action_type == ActionType.READ_IMAGE
+
+
+class _CaptureConversation:
+    def __init__(self) -> None:
+        self.messages = []
+
+    def add_message(self, **kwargs):
+        self.messages.append(kwargs)
+
+
+async def _run_read_image_action(image_path: Path, prompt: str):
+    manager = ToolManager(config={}, log_error_func=_dummy_log_error, fast_startup=True)
+    conversation = _CaptureConversation()
+    executor = ActionExecutor(
+        tool_manager=manager,
+        task_manager=None,
+        conversation_system=conversation,
+    )
+    payload = {"path": str(image_path), "prompt": prompt}
+    result = await executor.execute_action(
+        CodeActAction(ActionType.READ_IMAGE, json.dumps(payload))
+    )
+    return result, conversation
+
+
+@pytest.mark.asyncio
+async def test_read_image_actionxml_adds_multimodal_message(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("PENGUIN_CWD", str(tmp_path))
+    image_path = tmp_path / "sample.png"
+    Image.new("RGB", (10, 10), color=(0, 255, 0)).save(image_path)
+
+    result, conversation = await _run_read_image_action(image_path, "What color?")
+
+    assert "added to conversation" in result
+    assert len(conversation.messages) == 1
+    message = conversation.messages[0]
+    assert message["role"] == "user"
+    assert message["category"] == MessageCategory.DIALOG
+    assert message["content"][0] == {"type": "text", "text": "What color?"}
+    assert message["content"][1]["type"] == "image_url"
+    assert message["content"][1]["image_path"] == str(image_path.resolve())
 
 
 def test_browser_harness_permission_operations() -> None:

@@ -28,6 +28,7 @@ TOOL_OPERATION_MAP: dict[str, list[Operation]] = {
     "list_files": [Operation.FILESYSTEM_LIST],
     "find_file": [Operation.FILESYSTEM_LIST],
     "get_file_map": [Operation.FILESYSTEM_LIST],
+    "read_image": [Operation.FILESYSTEM_READ],
     "enhanced_read": [Operation.FILESYSTEM_READ],
     # File write operations
     "create_folder": [Operation.FILESYSTEM_MKDIR],
