@@ -44,6 +44,11 @@ from penguin.tools.editing.registry import (
     get_edit_tool_public_names,
     get_edit_tool_schemas,
 )
+from penguin.tools.browser_harness_tools import (
+    BrowserHarnessOpenTabTool,
+    BrowserHarnessPageInfoTool,
+    BrowserHarnessScreenshotTool,
+)
 from penguin.tools.providers.mcp import MCPToolProvider
 
 # Lazy import for PyDoll to avoid breaking if pydoll-python is not installed
@@ -240,6 +245,7 @@ class ToolManager:
                 "memory_provider": False,
                 "memory_indexing": False,
                 "browser_tools": False,
+                "browser_harness_tools": False,
                 "pydoll_tools": False,
                 "skill_tools": False,
                 "task_tools": False,
@@ -265,6 +271,11 @@ class ToolManager:
             self._browser_navigation_tool = None
             self._browser_interaction_tool = None
             self._browser_screenshot_tool = None
+
+            # Browser-harness tools placeholders
+            self._browser_harness_open_tab_tool = None
+            self._browser_harness_page_info_tool = None
+            self._browser_harness_screenshot_tool = None
 
             # PyDoll tools placeholders
             self._pydoll_browser_navigation_tool = None
@@ -325,6 +336,9 @@ class ToolManager:
                 "pydoll_browser_interact": "self.pydoll_browser_interaction_tool.execute",
                 "pydoll_browser_screenshot": "self.pydoll_browser_screenshot_tool.execute",
                 "pydoll_browser_scroll": "self.pydoll_browser_scroll_tool.execute",
+                "browser_open_tab": "self.browser_harness_open_tab_tool.execute",
+                "browser_page_info": "self.browser_harness_page_info_tool.execute",
+                "browser_harness_screenshot": "self.browser_harness_screenshot_tool.execute",
                 "analyze_codebase": "self.analyze_codebase",
                 "reindex_workspace": "self.reindex_workspace",
                 "list_skills": "self.skill_tools.list_skills",
@@ -862,6 +876,46 @@ class ToolManager:
                 "name": "pydoll_browser_screenshot",
                 "description": "Capture visible page content as image using PyDoll (no WebDriver required)",
                 "input_schema": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "browser_open_tab",
+                "description": "Open a URL in a new browser-harness controlled Chrome tab. Requires optional browser-harness setup.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "Full URL to open"},
+                        "wait": {"type": "boolean", "default": True},
+                        "timeout": {"type": "number", "default": 15.0},
+                    },
+                    "required": ["url"],
+                },
+            },
+            {
+                "name": "browser_page_info",
+                "description": "Return active browser-harness page URL, title, viewport, scroll position, and page size.",
+                "input_schema": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "browser_harness_screenshot",
+                "description": "Capture current browser-harness page as a PNG artifact/path suitable for multimodal follow-up.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "full": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Capture beyond viewport when supported",
+                        },
+                        "max_dim": {
+                            "type": "integer",
+                            "description": "Optional max image dimension for model-friendly screenshots",
+                        },
+                        "output_dir": {
+                            "type": "string",
+                            "description": "Optional screenshot output directory",
+                        },
+                    },
+                },
             },
             {
                 "name": "pydoll_browser_scroll",
@@ -1909,6 +1963,35 @@ class ToolManager:
                 self._browser_screenshot_tool = BrowserScreenshotTool()
                 self._lazy_initialized["browser_tools"] = True
         return self._browser_screenshot_tool
+
+    def _browser_harness_config(self) -> Dict[str, Any]:
+        browser_config = self.config.get("browser", {}) if isinstance(self.config, dict) else {}
+        harness_config = browser_config.get("harness", {}) if isinstance(browser_config, dict) else {}
+        return harness_config if isinstance(harness_config, dict) else {}
+
+    @property
+    def browser_harness_open_tab_tool(self):
+        if not self._lazy_initialized["browser_harness_tools"]:
+            with profile_operation("ToolManager.lazy_load_browser_harness_tools"):
+                logger.debug("Lazy-loading browser-harness tools")
+                harness_config = self._browser_harness_config()
+                self._browser_harness_open_tab_tool = BrowserHarnessOpenTabTool(harness_config)
+                self._browser_harness_page_info_tool = BrowserHarnessPageInfoTool(harness_config)
+                self._browser_harness_screenshot_tool = BrowserHarnessScreenshotTool(harness_config)
+                self._lazy_initialized["browser_harness_tools"] = True
+        return self._browser_harness_open_tab_tool
+
+    @property
+    def browser_harness_page_info_tool(self):
+        if not self._lazy_initialized["browser_harness_tools"]:
+            _ = self.browser_harness_open_tab_tool
+        return self._browser_harness_page_info_tool
+
+    @property
+    def browser_harness_screenshot_tool(self):
+        if not self._lazy_initialized["browser_harness_tools"]:
+            _ = self.browser_harness_open_tab_tool
+        return self._browser_harness_screenshot_tool
 
     # PyDoll tools lazy loading
     @property
@@ -3295,6 +3378,17 @@ class ToolManager:
                 "pydoll_browser_screenshot": lambda: self._execute_async_tool(
                     self.execute_pydoll_browser_screenshot()
                 ),
+                "browser_open_tab": lambda: self.execute_browser_harness_open_tab(
+                    tool_input["url"],
+                    tool_input.get("wait", True),
+                    tool_input.get("timeout", 15.0),
+                ),
+                "browser_page_info": lambda: self.execute_browser_harness_page_info(),
+                "browser_harness_screenshot": lambda: self.execute_browser_harness_screenshot(
+                    tool_input.get("full", False),
+                    tool_input.get("max_dim"),
+                    tool_input.get("output_dir"),
+                ),
                 "analyze_codebase": lambda: self.analyze_codebase(
                     tool_input.get("directory"),
                     tool_input.get("analysis_type", "all"),
@@ -3717,6 +3811,46 @@ class ToolManager:
             return result
         except Exception as e:
             error_message = f"Error capturing screenshot with PyDoll: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return {"error": error_message}
+
+    def execute_browser_harness_open_tab(
+        self,
+        url: str,
+        wait: bool = True,
+        timeout: float = 15.0,
+    ) -> Dict[str, Any]:
+        """Open a new tab through optional browser-harness."""
+        try:
+            return self.browser_harness_open_tab_tool.execute(url, wait, timeout)
+        except Exception as e:
+            error_message = f"Error opening browser-harness tab: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return {"error": error_message}
+
+    def execute_browser_harness_page_info(self) -> Dict[str, Any]:
+        """Return active browser-harness page info."""
+        try:
+            return self.browser_harness_page_info_tool.execute()
+        except Exception as e:
+            error_message = f"Error getting browser-harness page info: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return {"error": error_message}
+
+    def execute_browser_harness_screenshot(
+        self,
+        full: bool = False,
+        max_dim: Optional[int] = None,
+        output_dir: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Capture a screenshot through optional browser-harness."""
+        try:
+            return self.browser_harness_screenshot_tool.execute(full, max_dim, output_dir)
+        except Exception as e:
+            error_message = f"Error capturing browser-harness screenshot: {str(e)}"
             logging.error(error_message)
             self.log_error(e, error_message)
             return {"error": error_message}

@@ -21,6 +21,7 @@ from penguin.tools import ToolManager
 from penguin.utils.process_manager import ProcessManager
 from penguin.system.conversation import MessageCategory
 from penguin.system.execution_context import get_current_execution_context
+from penguin.tools.browser_harness_tools import BrowserHarnessScreenshotTool
 from penguin.tools.browser_tools import BrowserScreenshotTool, browser_manager
 from penguin.constants import (
     DELEGATE_EXPLORE_TASK_MAX_ITERATIONS_CAP,
@@ -119,6 +120,7 @@ class ActionType(Enum):
     BROWSER_NAVIGATE = "browser_navigate"
     BROWSER_INTERACT = "browser_interact"
     BROWSER_SCREENSHOT = "browser_screenshot"
+    BROWSER_HARNESS_SCREENSHOT = "browser_harness_screenshot"
     # PyDoll browser actions
     PYDOLL_BROWSER_NAVIGATE = "pydoll_browser_navigate"
     PYDOLL_BROWSER_INTERACT = "pydoll_browser_interact"
@@ -1607,6 +1609,7 @@ class ActionExecutor:
             ActionType.BROWSER_NAVIGATE: self._browser_navigate,
             ActionType.BROWSER_INTERACT: self._browser_interact,
             ActionType.BROWSER_SCREENSHOT: self._browser_screenshot,
+            ActionType.BROWSER_HARNESS_SCREENSHOT: self._browser_harness_screenshot,
             # PyDoll browser actions
             ActionType.PYDOLL_BROWSER_NAVIGATE: self._pydoll_browser_navigate,
             ActionType.PYDOLL_BROWSER_INTERACT: self._pydoll_browser_interact,
@@ -3798,6 +3801,55 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
         if not await browser_manager.initialize():
             return "Failed to initialize browser"
         return await browser_manager.navigate_to(params)
+
+    async def _browser_harness_screenshot(self, params: str) -> str:
+        """Take a screenshot using browser-harness and add it to conversation."""
+        try:
+            payload = _parse_json_payload(params) or {}
+            description = (
+                payload.get("description")
+                if isinstance(payload.get("description"), str)
+                else params.strip()
+            )
+            if params.strip().startswith("{"):
+                description = payload.get(
+                    "description", "What can you see in this browser-harness screenshot?"
+                )
+            description = description or "What can you see in this browser-harness screenshot?"
+
+            tool = BrowserHarnessScreenshotTool()
+            result = tool.execute(
+                full=bool(payload.get("full", False)),
+                max_dim=payload.get("max_dim"),
+                output_dir=payload.get("output_dir"),
+            )
+
+            if "filepath" in result and os.path.exists(result["filepath"]):
+                add_message_fn = None
+                if callable(getattr(self.conversation_system, "add_message", None)):
+                    add_message_fn = self.conversation_system.add_message
+                elif hasattr(self.conversation_system, "conversation") and callable(
+                    getattr(self.conversation_system.conversation, "add_message", None)
+                ):
+                    add_message_fn = self.conversation_system.conversation.add_message
+
+                multimodal_content = [
+                    {"type": "text", "text": description},
+                    {"type": "image_url", "image_path": result["filepath"]},
+                ]
+
+                if add_message_fn:
+                    add_message_fn(
+                        role="user",
+                        content=multimodal_content,
+                        category=MessageCategory.DIALOG,
+                    )
+                    return f"browser-harness screenshot saved to {result['filepath']} and added to conversation"
+                return f"browser-harness screenshot saved to {result['filepath']} (conversation update skipped)"
+
+            return result.get("error", "Failed to capture browser-harness screenshot")
+        except Exception as e:
+            return f"Error taking browser-harness screenshot: {str(e)}"
 
     async def _pydoll_browser_navigate(self, params: str) -> str:
         """Navigate to a URL using PyDoll browser."""
