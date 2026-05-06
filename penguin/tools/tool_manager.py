@@ -44,6 +44,7 @@ from penguin.tools.editing.registry import (
     get_edit_tool_public_names,
     get_edit_tool_schemas,
 )
+from penguin.tools.providers.mcp import MCPToolProvider
 
 # Lazy import for PyDoll to avoid breaking if pydoll-python is not installed
 _pydoll_tools_imported = False
@@ -256,6 +257,9 @@ class ToolManager:
             self._memory_provider = None
             self._indexing_task = None
             self._indexing_completed = False
+
+            # Dynamic external tool providers
+            self._mcp_provider = MCPToolProvider(self.config)
 
             # Browser tools placeholders
             self._browser_navigation_tool = None
@@ -1961,7 +1965,25 @@ class ToolManager:
 
     def get_tools(self):
         """Get available tool schemas."""
-        return self.tools
+        tools = list(self.tools)
+        tools.extend(self._mcp_provider.get_tool_schemas())
+        return tools
+
+    def get_mcp_status(self) -> Dict[str, Any]:
+        """Return MCP provider diagnostics."""
+        return self._mcp_provider.status()
+
+    def refresh_mcp_tools(self) -> List[Dict[str, Any]]:
+        """Force MCP tool rediscovery and return fresh schemas."""
+        return self._mcp_provider.refresh()
+
+    def reconnect_mcp(self, server_name: Optional[str] = None) -> Dict[str, Any]:
+        """Reconnect one or all MCP servers."""
+        return self._mcp_provider.reconnect(server_name)
+
+    def close_mcp(self) -> Dict[str, Any]:
+        """Close MCP sessions."""
+        return self._mcp_provider.close()
 
     def get_tool_aliases(self) -> Dict[str, str]:
         """Return centralized legacy-to-canonical tool aliases."""
@@ -2009,7 +2031,7 @@ class ToolManager:
             for name in (allowed_names or default_allowed)
         }
         responses_tools: List[Dict[str, Any]] = []
-        for t in self.tools:
+        for t in self.get_tools():
             name = t.get("name")
             if not name or name not in allowed:
                 continue
@@ -2037,6 +2059,9 @@ class ToolManager:
     def get_tool(self, tool_name: str):
         """Get a tool instance on-demand with caching."""
         tool_name = self._canonical_tool_name(tool_name)
+        if self._mcp_provider.is_mcp_tool(tool_name):
+            return lambda **kwargs: self._mcp_provider.execute_tool(tool_name, kwargs)
+
         if tool_name in self._tool_instances:
             return self._tool_instances[tool_name]
 
@@ -3001,6 +3026,21 @@ class ToolManager:
             effective_context.setdefault("directory", file_root)
             effective_context.setdefault("project_root", file_root)
             effective_context.setdefault("workspace_root", file_root)
+            tool_input = tool_input if isinstance(tool_input, dict) else {}
+
+            if self._mcp_provider.is_mcp_tool(tool_name):
+                if self._permission_enabled:
+                    result, reason = self.check_tool_permission(
+                        tool_name, tool_input, effective_context
+                    )
+                    if result is not None:
+                        _ensure_permission_imports()
+                        if result == _PermissionResult.DENY:
+                            return {"error": f"Permission denied: {reason}"}
+                        if result == _PermissionResult.ASK:
+                            return {"error": f"Permission required: {reason}"}
+                return self._mcp_provider.execute_tool(tool_name, tool_input)
+
             tool_input = self._normalize_tool_input_paths(tool_input, file_root)
 
             # Check permission before executing
@@ -4614,6 +4654,8 @@ class ToolManager:
             self._skill_tools.conversation_manager = getattr(
                 core, "conversation_manager", None
             )
+        if hasattr(self._mcp_provider, "core"):
+            self._mcp_provider.core = core
 
     def _resolve_subagent_tool_call_id(
         self, tool_input: Optional[Dict[str, Any]]

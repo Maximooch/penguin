@@ -241,16 +241,6 @@ def create_app() -> "FastAPI":
         http_conf: Dict[str, Any] = (
             srv_conf.get("http", {}) if isinstance(srv_conf, dict) else {}
         )
-        # Register remote MCP servers as virtual tools (client bridge)
-        servers_conf = mcp_conf.get("servers") if isinstance(mcp_conf, dict) else None
-        if isinstance(servers_conf, list) and servers_conf:
-            try:
-                from penguin.integrations.mcp.client import MCPClientBridge  # type: ignore
-
-                MCPClientBridge(servers_conf).register_remote_tools(core.tool_manager)
-            except Exception:
-                pass
-
         if bool(http_conf.get("enabled", False)):
             allow_patterns = srv_conf.get("allow_tools") or ["*"]
             deny_patterns = srv_conf.get("deny_tools") or [

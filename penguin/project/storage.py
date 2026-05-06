@@ -7,15 +7,19 @@ SQLite with ACID transactions, supporting both sync and async operations.
 import sqlite3
 import json
 import logging
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, List, Optional, Union
 from contextlib import contextmanager
 
 from .models import Project, Task, TaskPhase, TaskStatus, ExecutionRecord, StateTransition
-from .exceptions import StorageError, ProjectNotFoundError, TaskNotFoundError
+from .runtime_jobs import RuntimeJobRecord
+from .exceptions import StorageError
 
 logger = logging.getLogger(__name__)
+
+
+def _json_dumps_safe(value: Any) -> str:
+    return json.dumps(value, default=str)
 
 
 class ProjectStorage:
@@ -136,6 +140,26 @@ class ProjectStorage:
                     FOREIGN KEY (task_id) REFERENCES tasks (id) ON DELETE CASCADE
                 )
             """)
+            # Runtime job records table
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS runtime_jobs (
+                    job_id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    project_id TEXT,
+                    task_id TEXT,
+                    session_id TEXT,
+                    started_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    cancel_requested INTEGER DEFAULT 0,
+                    cancel_reason TEXT,
+                    result_summary TEXT,
+                    result_json TEXT,
+                    error TEXT,
+                    metadata_json TEXT
+                )
+            """)
             
             # Indexes for better query performance
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks (project_id)")
@@ -143,6 +167,9 @@ class ProjectStorage:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_parent_id ON tasks (parent_task_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_execution_records_task_id ON execution_records (task_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_state_transitions_task_id ON state_transitions (task_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_runtime_jobs_project_id ON runtime_jobs (project_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_runtime_jobs_task_id ON runtime_jobs (task_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_runtime_jobs_status ON runtime_jobs (status)")
             
             conn.commit()
     
@@ -447,6 +474,88 @@ class ProjectStorage:
             rows = conn.execute(query, task.dependencies).fetchall()
             return [self._row_to_task(row) for row in rows]
 
+    # Runtime job operations
+
+    def upsert_runtime_job(self, record: RuntimeJobRecord) -> None:
+        """Create or update a durable runtime job record."""
+        with self._get_connection() as conn:
+            conn.execute("""
+                INSERT INTO runtime_jobs (
+                    job_id, kind, status, project_id, task_id, session_id,
+                    started_at, updated_at, finished_at, cancel_requested,
+                    cancel_reason, result_summary, result_json, error, metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    kind = excluded.kind,
+                    status = excluded.status,
+                    project_id = excluded.project_id,
+                    task_id = excluded.task_id,
+                    session_id = excluded.session_id,
+                    started_at = excluded.started_at,
+                    updated_at = excluded.updated_at,
+                    finished_at = excluded.finished_at,
+                    cancel_requested = excluded.cancel_requested,
+                    cancel_reason = excluded.cancel_reason,
+                    result_summary = excluded.result_summary,
+                    result_json = excluded.result_json,
+                    error = excluded.error,
+                    metadata_json = excluded.metadata_json
+            """, (
+                record.job_id,
+                record.kind,
+                record.status,
+                record.project_id,
+                record.task_id,
+                record.session_id,
+                record.started_at,
+                record.updated_at,
+                record.finished_at,
+                1 if record.cancel_requested else 0,
+                record.cancel_reason,
+                record.result_summary,
+                record.result_json,
+                record.error,
+                _json_dumps_safe(record.metadata) if record.metadata else None,
+            ))
+            conn.commit()
+
+    def get_runtime_job(self, job_id: str) -> Optional[RuntimeJobRecord]:
+        """Return a durable runtime job record by ID."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM runtime_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            return self._row_to_runtime_job(row) if row else None
+
+    def list_runtime_jobs(
+        self,
+        *,
+        status: Optional[str] = None,
+        project_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        limit: Optional[int] = 50,
+    ) -> List[RuntimeJobRecord]:
+        """List durable runtime job records with optional filters."""
+        query = "SELECT * FROM runtime_jobs WHERE 1=1"
+        params: List[Any] = []
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        if project_id:
+            query += " AND project_id = ?"
+            params.append(project_id)
+        if task_id:
+            query += " AND task_id = ?"
+            params.append(task_id)
+        query += " ORDER BY started_at DESC"
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(max(1, int(limit)))
+        with self._get_connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+            return [self._row_to_runtime_job(row) for row in rows]
+
     # Helper methods
 
     def _insert_execution_record(self, conn: sqlite3.Connection, record: ExecutionRecord) -> None:
@@ -545,6 +654,26 @@ class ProjectStorage:
             task.transition_history = [self._row_to_state_transition(r) for r in transition_rows]
 
         return task
+
+    def _row_to_runtime_job(self, row: sqlite3.Row) -> RuntimeJobRecord:
+        """Convert a database row to a RuntimeJobRecord object."""
+        return RuntimeJobRecord(
+            job_id=row["job_id"],
+            kind=row["kind"],
+            status=row["status"],
+            project_id=row["project_id"],
+            task_id=row["task_id"],
+            session_id=row["session_id"],
+            started_at=row["started_at"],
+            updated_at=row["updated_at"],
+            finished_at=row["finished_at"],
+            cancel_requested=bool(row["cancel_requested"]),
+            cancel_reason=row["cancel_reason"],
+            result_summary=row["result_summary"],
+            result_json=row["result_json"],
+            error=row["error"],
+            metadata=json.loads(row["metadata_json"]) if row["metadata_json"] else {},
+        )
 
     def _row_to_execution_record(self, row: sqlite3.Row) -> ExecutionRecord:
         """Convert a database row to an ExecutionRecord object."""

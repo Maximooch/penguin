@@ -11,7 +11,7 @@ import logging
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import networkx as nx
 
@@ -20,18 +20,17 @@ from .models import (
     Blueprint,
     BlueprintItem,
     DependencyPolicy,
-    ExecutionRecord,
     ExecutionResult,
     Project,
-    StateTransition,
     Task,
     TaskDependency,
     TaskPhase,
     TaskStatus,
 )
 from .storage import ProjectStorage
+from .runtime_jobs import RuntimeJobRecord
 from .exceptions import (
-    ProjectError, TaskError, ValidationError, ProjectNotFoundError, 
+    ProjectError, ValidationError, ProjectNotFoundError, 
     TaskNotFoundError, StateTransitionError, DependencyError
 )
 
@@ -89,6 +88,32 @@ class ProjectManager:
         
         logger.info(f"ProjectManager initialized with workspace: {workspace_path}")
     
+    # ==================== Runtime Job Operations ====================
+
+    def upsert_runtime_job(self, record: RuntimeJobRecord) -> None:
+        """Create or update a durable runtime job record."""
+        self.storage.upsert_runtime_job(record)
+
+    def get_runtime_job(self, job_id: str) -> Optional[RuntimeJobRecord]:
+        """Return a durable runtime job record by ID."""
+        return self.storage.get_runtime_job(job_id)
+
+    def list_runtime_jobs(
+        self,
+        *,
+        status: Optional[str] = None,
+        project_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        limit: Optional[int] = 50,
+    ) -> List[RuntimeJobRecord]:
+        """List durable runtime job records with optional filters."""
+        return self.storage.list_runtime_jobs(
+            status=status,
+            project_id=project_id,
+            task_id=task_id,
+            limit=limit,
+        )
+
     # ==================== Project Operations ====================
     
     def create_project(
@@ -847,6 +872,14 @@ class ProjectManager:
 
         return False
 
+    def get_unsatisfied_dependencies(
+        self,
+        task: Task,
+        task_map: Optional[Dict[str, Task]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return dependency details that currently block a task."""
+        return self._get_unsatisfied_dependencies(task, task_map)
+
     def _get_unsatisfied_dependencies(
         self,
         task: Task,
@@ -964,7 +997,7 @@ class ProjectManager:
         Returns:
             List of ready tasks, sorted by tie-breakers.
         """
-        dag = self.build_dag(project_id)
+        self.build_dag(project_id)
         tasks = self.list_tasks(project_id)
         task_map = {t.id: t for t in tasks}
         

@@ -35,6 +35,7 @@ Example Usage:
 
 from .manager import ProjectManager
 from .models import Project, Task, TaskStatus, TaskEvent, ExecutionRecord
+from .runtime_jobs import RuntimeJobRecord
 from .storage import ProjectStorage
 from .exceptions import ProjectError, TaskError, ValidationError
 
@@ -48,6 +49,7 @@ __all__ = [
     "TaskStatus",
     "TaskEvent", 
     "ExecutionRecord",
+    "RuntimeJobRecord",
     
     # Storage
     "ProjectStorage",

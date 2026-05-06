@@ -18,6 +18,24 @@ from penguin.tools.editing.registry import (
 )
 
 
+__all__ = [
+    "AGENT_TOOLS",
+    "BROWSER_TOOLS",
+    "COMPLETION_TOOLS",
+    "EXECUTION_TOOLS",
+    "FILE_EDITING_TOOLS",
+    "FILE_OPERATION_TOOLS",
+    "MCP_TOOL_GUIDANCE",
+    "MEMORY_TOOLS",
+    "QUESTION_TOOLS",
+    "SEARCH_TOOLS",
+    "SKILL_TOOLS",
+    "TODO_TOOLS",
+    "TOOL_INVOCATION_PROTOCOL",
+    "get_tool_guide",
+]
+
+
 @dataclass(frozen=True)
 class ToolPromptExample:
     title: str
@@ -156,6 +174,47 @@ Penguin supports two tool-call protocols:
 The tool names, arguments, and completion semantics are the same in both paths.
 Use native tool calls first when they are available; use ActionXML only as the
 compatibility fallback.
+"""
+
+
+MCP_TOOL_GUIDANCE = """
+## MCP-Hosted Tools
+
+Penguin may expose external Model Context Protocol (MCP) server tools as normal
+runtime tools. MCP-hosted tools use model-safe names like
+`mcp__server_name__tool_name`, for example `mcp__chrome_devtools__navigate` or
+`mcp__github__list_issues`.
+
+**How to use MCP tools:**
+- Use MCP tools when the external server has the best capability for the task:
+  browser/page inspection, GitHub/Sentry/Linear data, databases, local
+  filesystem sandboxes, documentation servers, or other configured services.
+- Treat every `mcp__*` tool as an external third-party capability. Prefer
+  read-only inspection first, and ask/confirm before destructive, expensive, or
+  privacy-sensitive actions.
+- Do not invent MCP tool names. Use only names that are actually present in the
+  active tool schema/listing, and follow each tool's schema exactly.
+- Keep MCP calls narrowly scoped. Avoid broad queries or dumping huge external
+  datasets into context; request specific fields, pages, issues, traces, or
+  screenshots when possible.
+- If an MCP call returns a file path, image path, or artifact reference, summarize
+  it and read/load it only when needed for the user goal.
+- If an MCP tool fails because a server is disconnected, stale, or missing a
+  tool, report that clearly. When appropriate for debugging, use MCP status or
+  refresh/reconnect surfaces instead of repeatedly retrying the same failed call.
+
+**Browser MCP pattern:**
+- Navigate first, then verify with title/URL/evaluate, then capture screenshots
+  or inspect the DOM/network as needed.
+- Use isolated or non-sensitive browser profiles for browser MCP tasks. Browser
+  MCP servers can inspect and modify page/browser state.
+- Screenshots may return image data or a local file path depending on the MCP
+  server; handle either shape without assuming one fixed format.
+
+**Security posture:** MCP is powerful glue, not magic safety dust. Server-level
+allow/deny policy, output caps, and normal Penguin permission checks still
+matter. When in doubt, be explicit about the external system being accessed and
+what action will be taken.
 """
 
 
@@ -1010,6 +1069,7 @@ def get_tool_guide() -> str:
     return "\n\n".join(
         [
             TOOL_INVOCATION_PROTOCOL,
+            MCP_TOOL_GUIDANCE,
             _build_file_editing_tools(),
             _build_file_operation_tools(),
             EXECUTION_TOOLS,

@@ -176,6 +176,7 @@ Under the hood, the `latest` targets override the project default with `--exclud
 | `[memory_faiss]` | FAISS vector search + embeddings |
 | `[memory_lance]` | LanceDB vector database |
 | `[memory_chroma]` | ChromaDB integration |
+| `[mcp]` | Model Context Protocol client/server dependencies (Python 3.10+ for the MCP SDK) |
 | `[browser]` | Browser automation (Python 3.11+ only) |
 | `[all]` | Everything above |
 
