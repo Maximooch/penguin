@@ -761,13 +761,15 @@ Still deferred:
 
 ### Milestone 2: Robust Client
 
-- Reconnect/cleanup.
-- Diagnostics.
-- Allow/deny policy.
-- Result normalization.
-- Streamable HTTP and SSE support implemented; OAuth remains deferred.
-- Connect/close/reconnect controls.
-- Tool-list-changed cache invalidation.
+Status: mostly implemented for practical host/client use. Remaining items are listed under deferred follow-ups below.
+
+- Reconnect/cleanup implemented for configured servers.
+- Diagnostics/status/refresh/reconnect/close implemented in ToolManager, web service, and CLI.
+- Allow/deny policy implemented with wildcard support.
+- Result normalization and output caps implemented.
+- Streamable HTTP and SSE support implemented; OpenAI Docs MCP live-smoked over Streamable HTTP.
+- Full OAuth/client registration remains deferred.
+- Dynamic list-change notification parity remains deferred beyond best-effort SDK hook groundwork.
 
 ### Milestone 3: Penguin As MCP Server
 
@@ -777,10 +779,67 @@ Still deferred:
 
 ### Milestone 4: Product Polish
 
-- CLI/TUI settings/status.
-- Web API status surface.
-- Docs.
-- Example configs.
+Status: partially implemented.
+
+- CLI `penguin-cli mcp status|refresh|reconnect|close` implemented.
+- Web API status/reconnect/close service implemented.
+- Docs and example configs added for host/server usage, Chrome DevTools, and OpenAI Docs MCP.
+- TUI-facing MCP UX remains deferred.
+- Rich server trust/risk labels and audit UI remain deferred.
+
+
+## Deferred Follow-Ups After PR Review
+
+These findings were verified as directionally valid but intentionally deferred because
+they are broader refactors or product/security work rather than minimal PR fixes.
+They should be tracked after the initial MCP system lands.
+
+### F1 — ToolManager MCP Facade Extraction
+
+`ToolManager` still owns small MCP lifecycle delegate methods
+(`get_mcp_status`, `refresh_mcp_tools`, `reconnect_mcp`, `close_mcp`) and merges
+MCP schemas in `get_tools()`. This works, but the cleaner shape is a dedicated
+`MCPAdapter`/`MCPService` owned by ToolManager that wraps `MCPToolProvider` and
+exposes `get_tool_schemas()`, `status()`, `refresh()`, `reconnect()`, and
+`close()`. Defer until after merge to avoid a high-risk file-size refactor in
+the review-fix pass.
+
+### F2 — MCP Route Extraction
+
+The MCP web endpoints still live in `penguin/web/routes.py`. They should move to
+a focused router module such as `penguin/web/mcp_routes.py` and be mounted from
+application initialization. This is valid architecture cleanup, but it touches
+route registration and should be handled as a separate web-surface refactor.
+
+### F3 — Shared Approval Flow For MCP `ASK`
+
+MCP tools currently go through permission classification and deny handling, but
+the `ASK` branch is not fully unified with the native ToolManager approval
+workflow. Fixing this properly requires untangling ToolManager's approval and
+dispatch flow so MCP execution can enter the same approval/audit path as native
+tools without duplicating it. This is important but non-minimal; track as a
+focused permission-system follow-up.
+
+### F4 — Full Dynamic MCP Notifications
+
+Best-effort list-change callback hooks and status fields exist, but Penguin does
+not yet have full parity for `tools/list_changed`, `resources/list_changed`, and
+`prompts/list_changed` across all SDK transports. A complete version should
+invalidate caches, refresh schemas/resources/prompts, and emit web/TUI events.
+
+### F5 — Full OAuth / Client Registration
+
+Env-backed bearer/header auth is implemented and enough for the first serious
+host release. Full OAuth 2.1 / PKCE / Dynamic Client Registration remains
+deferred until remote SaaS connector UX needs it. This belongs with Penguin's
+web/security hardening work and Link/cloud connector design, not the initial MCP
+landing PR.
+
+### F6 — TUI MCP UX And Trust Labels
+
+CLI and web status surfaces exist, but TUI-native status/config controls,
+server-level risk labels, and richer MCP audit views are still product polish.
+These matter for day-to-day host usage but do not block the first MCP release.
 
 ## Decisions And Remaining Open Questions
 
@@ -800,19 +859,16 @@ The current product priority is Penguin **using external MCP servers** well. Pen
 Priority order before more server-surface work:
 
 1. **P0 — Product-path MCP host UX**
-   - CLI/TUI/web status surfaces for configured MCP servers.
-   - Refresh/reconnect/close controls.
-   - Clear examples for Chrome DevTools, GitHub, Sentry, OpenAI Docs, and filesystem scratch servers.
+   - CLI status/refresh/reconnect/close implemented. Web service/status controls implemented. TUI UX remains deferred.
+   - Clear examples added for Chrome DevTools and OpenAI Docs MCP; GitHub/Sentry examples remain useful follow-ups.
 2. **P1 — Real remote smoke tests**
-   - Validate Streamable HTTP/SSE against at least one live remote server.
-   - Keep env-backed auth examples for token-based servers.
+   - Streamable HTTP live-smoked against OpenAI Docs MCP.
+   - Token/header examples exist; authenticated SaaS smoke tests remain follow-up work.
 3. **P2 — Dynamic list-change handling**
-   - Handle `tools/list_changed`, `resources/list_changed`, and `prompts/list_changed` notifications where the Python SDK exposes callbacks.
-   - Invalidate MCP tool caches and surface diagnostics/events.
+   - Best-effort SDK callback groundwork exists. Full cache invalidation + web/TUI event propagation remains deferred.
 4. **P3 — Better permission/output UX**
-   - Server-level allow/deny controls and risk labels.
-   - Conservative output caps/truncation for noisy MCP tools.
-   - Better audit/diagnostic data for external MCP tool calls.
+   - Wildcard allow/deny and output caps implemented.
+   - Risk labels, richer audit views, and unified ASK approval remain deferred follow-ups.
 
 Full OAuth/client-registration remains deferred. Token/header config is enough to ship useful MCP host support; OAuth becomes necessary for polished remote SaaS connector UX, not for the first serious host release.
 
