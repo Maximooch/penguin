@@ -14,7 +14,7 @@ try:  # pragma: no cover - import availability depends on optional extra
     from mcp.server.fastmcp import FastMCP
 
     HAS_MCP_SERVER_SDK = True
-except Exception:  # pragma: no cover - exercised when optional extra missing
+except ImportError:  # pragma: no cover - exercised when optional extra missing
     FastMCP = None  # type: ignore[assignment]
     HAS_MCP_SERVER_SDK = False
 
@@ -112,7 +112,8 @@ class PenguinMCPServer:
         self.tool_manager = tool_manager
         self.config = config or PenguinMCPServerConfig()
         self.core = core or getattr(tool_manager, "_core", None)
-        self._runmode_job_registry = RunModeJobRegistry()
+        project_manager = getattr(self.core, "project_manager", None)
+        self._runmode_job_registry = RunModeJobRegistry(project_manager)
         self._runtime_tools = self._build_runtime_tools()
         self._runtime_tool_map = {tool.name: tool for tool in self._runtime_tools}
         self._tool_schemas = self._select_tool_schemas()

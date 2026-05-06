@@ -43,7 +43,10 @@ def build_pm_tools(core: Any) -> list[MCPServerTool]:
             tags=_optional_str_list(arguments.get("tags")),
             budget_tokens=_optional_int(arguments.get("budget_tokens")),
             budget_minutes=_optional_int(arguments.get("budget_minutes")),
-            workspace_path=_optional_path(arguments.get("workspace_path")),
+            workspace_path=_bounded_workspace_path(
+                project_manager,
+                arguments.get("workspace_path"),
+            ),
             **metadata,
         )
         changed = False
@@ -247,6 +250,22 @@ def _optional_str(value: Any) -> Optional[str]:
         stripped = value.strip()
         return stripped or None
     return str(value)
+
+
+def _bounded_workspace_path(project_manager: Any, value: Any) -> Optional[Path]:
+    """Return a workspace path bounded to ProjectManager.workspace_path."""
+    if value in (None, ""):
+        return None
+    root = Path(project_manager.workspace_path).expanduser().resolve()
+    path = Path(str(value)).expanduser()
+    if not path.is_absolute():
+        path = root / path
+    path = path.resolve()
+    if path != root and root not in path.parents:
+        raise PermissionError(
+            f"workspace_path must be inside Penguin workspace: {root}"
+        )
+    return path
 
 
 def _optional_path(value: Any) -> Optional[Path]:

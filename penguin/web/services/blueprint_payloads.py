@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any
 
 
-def serialize_blueprint_diagnostic(diagnostic: Any) -> Dict[str, Any]:
+def serialize_blueprint_diagnostic(diagnostic: Any) -> dict[str, Any]:
     """Return a JSON-safe Blueprint diagnostic payload."""
     if hasattr(diagnostic, "to_dict"):
         return diagnostic.to_dict()
@@ -20,7 +20,7 @@ def serialize_blueprint_diagnostic(diagnostic: Any) -> Dict[str, Any]:
     }
 
 
-def serialize_blueprint_diagnostics_report(report: Any) -> Dict[str, Any]:
+def serialize_blueprint_diagnostics_report(report: Any) -> dict[str, Any]:
     """Serialize a Blueprint diagnostics report."""
     diagnostics = [
         serialize_blueprint_diagnostic(diagnostic)
@@ -39,7 +39,7 @@ def serialize_blueprint_diagnostics_report(report: Any) -> Dict[str, Any]:
     }
 
 
-def serialize_blueprint_summary(blueprint: Any) -> Dict[str, Any]:
+def serialize_blueprint_summary(blueprint: Any) -> dict[str, Any]:
     """Serialize high-signal Blueprint metadata without dumping full content."""
     items = list(getattr(blueprint, "items", []) or [])
     return {
@@ -61,7 +61,7 @@ def serialize_blueprint_summary(blueprint: Any) -> Dict[str, Any]:
     }
 
 
-def serialize_blueprint_graph(blueprint: Any) -> Dict[str, Any]:
+def serialize_blueprint_graph(blueprint: Any) -> dict[str, Any]:
     """Serialize Blueprint task dependency graph as nodes and edges."""
     nodes = []
     edges = []
@@ -114,17 +114,18 @@ def _escape_dot(value: object) -> str:
     )
 
 
-def blueprint_graph_to_dot(graph: Dict[str, Any]) -> str:
+def blueprint_graph_to_dot(graph: dict[str, Any]) -> str:
     """Render a serialized Blueprint graph as DOT."""
     lines = ["digraph BlueprintDAG {", "  rankdir=LR;", "  node [shape=box];"]
     for node in graph.get("nodes", []):
-        label = str(node.get("title") or node.get("id") or "")[:40]
-        lines.append(f'  "{node.get("id")}" [label="{label}"];')
+        node_id = _escape_dot(node.get("id") or "")
+        label = _escape_dot(str(node.get("title") or node.get("id") or "")[:40])
+        lines.append(f'  "{node_id}" [label="{label}"];')
     for edge in graph.get("edges", []):
-        label = edge.get("policy") or ""
-        lines.append(
-            f'  "{edge.get("from")}" -> "{edge.get("to")}" [label="{label}"];'
-        )
+        source = _escape_dot(edge.get("from") or "")
+        target = _escape_dot(edge.get("to") or "")
+        label = _escape_dot(edge.get("policy") or "")
+        lines.append(f'  "{source}" -> "{target}" [label="{label}"];')
     lines.append("}")
     return "\n".join(lines)
 

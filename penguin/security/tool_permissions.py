@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     from penguin.security.permission_engine import PermissionEnforcer
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Map tool names to their required operations
 # Tools can require multiple operations (e.g., apply_diff needs read + write)
-TOOL_OPERATION_MAP: Dict[str, List[Operation]] = {
+TOOL_OPERATION_MAP: dict[str, list[Operation]] = {
     # File read operations
     "read_file": [Operation.FILESYSTEM_READ],
     "list_files": [Operation.FILESYSTEM_LIST],
@@ -77,7 +77,7 @@ TOOL_OPERATION_MAP: Dict[str, List[Operation]] = {
 }
 
 
-def get_tool_operations(tool_name: str) -> List[Operation]:
+def get_tool_operations(tool_name: str) -> list[Operation]:
     """Get the operations required by a tool.
 
     Args:
@@ -94,7 +94,7 @@ def get_tool_operations(tool_name: str) -> List[Operation]:
 
 
 def extract_resource_from_input(
-    tool_name: str, tool_input: Dict[str, Any]
+    tool_name: str, tool_input: dict[str, Any]
 ) -> Optional[str]:
     """Extract the primary resource (usually file path) from tool input.
 
@@ -126,14 +126,11 @@ def extract_resource_from_input(
     if tool_name in ("memory_search", "perplexity_search"):
         return tool_input.get("query")
 
-    if str(tool_name or "").startswith("mcp__"):
-        return None
-
     # For operations without a clear resource, return None
     return None
 
 
-def _resolve_resource_path(resource: str, context: Optional[Dict[str, Any]]) -> str:
+def _resolve_resource_path(resource: str, context: Optional[dict[str, Any]]) -> str:
     """Resolve relative resource paths against request-scoped directory hints."""
     text = str(resource or "").strip()
     if not text:
@@ -154,13 +151,13 @@ def _resolve_resource_path(resource: str, context: Optional[Dict[str, Any]]) -> 
     return text
 
 
-def _extract_patch_files_content_paths(content: str) -> List[str]:
+def _extract_patch_files_content_paths(content: str) -> list[str]:
     """Extract candidate file paths from legacy patch_files content payloads."""
     text = str(content or "")
     if not text.strip():
         return []
 
-    paths: List[str] = []
+    paths: list[str] = []
 
     for match in re.finditer(r"^\+\+\+\s+(?:b/)?(.+)$", text, re.MULTILINE):
         value = match.group(1).strip()
@@ -180,11 +177,11 @@ def _extract_patch_files_content_paths(content: str) -> List[str]:
 
 def extract_resources_from_input(
     tool_name: str,
-    tool_input: Dict[str, Any],
-    context: Optional[Dict[str, Any]] = None,
-) -> List[str]:
+    tool_input: dict[str, Any],
+    context: Optional[dict[str, Any]] = None,
+) -> list[str]:
     """Extract all primary resources from tool input, normalized for permission checks."""
-    resources: List[str] = []
+    resources: list[str] = []
 
     if tool_name == "patch_files":
         operations = tool_input.get("operations")
@@ -207,7 +204,7 @@ def extract_resources_from_input(
     if single:
         resources.append(_resolve_resource_path(single, context))
 
-    deduped: List[str] = []
+    deduped: list[str] = []
     seen: set[str] = set()
     for resource in resources:
         text = str(resource or "").strip()
@@ -285,10 +282,10 @@ def get_highest_risk_operation(tool_name: str) -> Optional[Operation]:
 
 def check_tool_permission(
     tool_name: str,
-    tool_input: Dict[str, Any],
+    tool_input: dict[str, Any],
     enforcer: "PermissionEnforcer",
-    context: Optional[Dict[str, Any]] = None,
-) -> Tuple[PermissionResult, str]:
+    context: Optional[dict[str, Any]] = None,
+) -> tuple[PermissionResult, str]:
     """Check if a tool execution is allowed.
 
     This is the main entry point for ToolManager integration.
@@ -361,10 +358,10 @@ def check_tool_permission(
 
 def _check_agent_permission(
     agent_id: str,
-    operations: List[Operation],
+    operations: list[Operation],
     resource: str,
-    context: Dict[str, Any],
-) -> Tuple[PermissionResult, str]:
+    context: dict[str, Any],
+) -> tuple[PermissionResult, str]:
     """Check agent-specific permission policy.
 
     Args:

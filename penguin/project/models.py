@@ -38,7 +38,7 @@ class TaskPhase(Enum):
             cls.IMPLEMENT: [cls.TEST, cls.BLOCKED, cls.PENDING],
             cls.TEST: [cls.USE, cls.VERIFY, cls.BLOCKED, cls.IMPLEMENT],
             cls.USE: [cls.VERIFY, cls.BLOCKED, cls.TEST],
-            cls.VERIFY: [cls.TEST, cls.USE, cls.BLOCKED],
+            cls.VERIFY: [cls.TEST, cls.USE, cls.DONE, cls.BLOCKED],
             cls.BLOCKED: [
                 cls.PENDING,
                 cls.IMPLEMENT,

@@ -394,7 +394,9 @@ def _job_status_from_result(result: Dict[str, Any]) -> str:
         return "cancelled"
     if status in {"waiting_input", "clarification_needed", "needs_input"}:
         return "waiting_input"
-    return "completed"
+    if status in {"completed", "complete", "success", "succeeded", "done"}:
+        return "completed"
+    return status or "unknown"
 
 
 def _core_capabilities(core: Any) -> Dict[str, Any]:

@@ -155,13 +155,6 @@ def build_ituv_tools(core: Any) -> list[MCPServerTool]:
                     )
                 project_manager.update_task_phase(task_id, phase, reason=reason)
             elif action == "block":
-                if dry_run:
-                    return _dry_run_payload(
-                        task_id,
-                        action,
-                        before,
-                        {"phase": TaskPhase.BLOCKED.value},
-                    )
                 validation_error = _validate_phase_transition(task, TaskPhase.BLOCKED)
                 if validation_error:
                     return _mutation_rejected(
@@ -169,6 +162,13 @@ def build_ituv_tools(core: Any) -> list[MCPServerTool]:
                         action=action,
                         reason=validation_error,
                         before=before,
+                    )
+                if dry_run:
+                    return _dry_run_payload(
+                        task_id,
+                        action,
+                        before,
+                        {"phase": TaskPhase.BLOCKED.value},
                     )
                 project_manager.update_task_phase(
                     task_id,
@@ -297,6 +297,13 @@ def build_ituv_tools(core: Any) -> list[MCPServerTool]:
                 "before": before,
                 "artifact": artifact.to_dict(),
             }
+        normalized_artifacts = []
+        for item in task.artifact_evidence:
+            if isinstance(item, ArtifactEvidence):
+                normalized_artifacts.append(item)
+            elif isinstance(item, dict):
+                normalized_artifacts.append(ArtifactEvidence(**item))
+        task.artifact_evidence = normalized_artifacts
         task.artifact_evidence.append(artifact)
         task.updated_at = datetime.now(timezone.utc).isoformat()
         project_manager.storage.update_task(task)
