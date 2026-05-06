@@ -129,3 +129,14 @@ Prompts:
 - `penguin_task_brief`
 - `penguin_blueprint_outline`
 - `penguin_runmode_handoff`
+
+
+## Remote MCP Client Transport Support
+
+For Penguin-as-host/client, configured external MCP servers may use:
+
+- `stdio`
+- `streamable_http`
+- `sse`
+
+Remote servers require `url`. Secrets should use `bearer_token_env_var` or `env_http_headers` so token values are resolved from the environment at runtime. OAuth/client registration is not implemented yet.

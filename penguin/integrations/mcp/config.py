@@ -15,11 +15,15 @@ class MCPServerConfig:
     """Configuration for one MCP server."""
 
     name: str
-    command: str
+    command: str = ""
     args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
     cwd: str | None = None
     transport: str = "stdio"
+    url: str | None = None
+    bearer_token_env_var: str | None = None
+    http_headers: dict[str, str] = field(default_factory=dict)
+    env_http_headers: dict[str, str] = field(default_factory=dict)
     enabled: bool = True
     startup_timeout_sec: float = 10.0
     tool_timeout_sec: float = 60.0
@@ -34,17 +38,15 @@ class MCPServerConfig:
             raise ValueError(
                 f"MCP server '{name}' has unsupported transport '{transport}'"
             )
-        if transport != "stdio":
-            raise ValueError(
-                f"MCP server '{name}' uses transport '{transport}', "
-                "but Phase 1.5 only supports stdio"
-            )
-
         args = data.get("args") or []
         if isinstance(args, str):
             args = [args]
 
         env = _parse_env(data.get("env") or {})
+        http_headers = _parse_env(data.get("http_headers") or data.get("httpHeaders") or {})
+        env_http_headers = _parse_env_header_map(
+            data.get("env_http_headers") or data.get("envHttpHeaders") or {}
+        )
         enabled_tools = _parse_optional_tool_set(
             data.get("enabled_tools") or data.get("enabledTools")
         )
@@ -53,8 +55,11 @@ class MCPServerConfig:
         )
 
         command = data.get("command")
-        if not command:
+        url = data.get("url")
+        if transport == "stdio" and not command:
             raise ValueError(f"MCP server '{name}' is missing required command")
+        if transport != "stdio" and not url:
+            raise ValueError(f"MCP server '{name}' is missing required url")
 
         cwd = data.get("cwd")
         cwd_value = (
@@ -65,11 +70,19 @@ class MCPServerConfig:
 
         return cls(
             name=str(data.get("name") or name),
-            command=str(command),
+            command=str(command or ""),
             args=[str(arg) for arg in args],
             env=env,
             cwd=cwd_value,
             transport=transport,
+            url=str(url) if url else None,
+            bearer_token_env_var=(
+                str(data.get("bearer_token_env_var") or data.get("bearerTokenEnvVar"))
+                if data.get("bearer_token_env_var") or data.get("bearerTokenEnvVar")
+                else None
+            ),
+            http_headers=http_headers,
+            env_http_headers=env_http_headers,
             enabled=bool(data.get("enabled", True)),
             startup_timeout_sec=float(
                 data.get("startup_timeout_sec", data.get("startupTimeoutSec", 10.0))
@@ -80,6 +93,20 @@ class MCPServerConfig:
             enabled_tools=enabled_tools,
             disabled_tools=disabled_tools,
         )
+
+    @property
+    def resolved_http_headers(self) -> dict[str, str]:
+        """Return HTTP headers with env-backed secrets resolved at call time."""
+        headers = dict(self.http_headers)
+        for header_name, env_var in self.env_http_headers.items():
+            value = os.environ.get(env_var)
+            if value:
+                headers[header_name] = value
+        if self.bearer_token_env_var:
+            token = os.environ.get(self.bearer_token_env_var)
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+        return headers
 
     def allows_tool(self, tool_name: str) -> bool:
         """Return whether this config allows a raw MCP tool name."""
@@ -98,6 +125,12 @@ def _parse_env(raw_env: Any) -> dict[str, str]:
         else:
             env[str(key)] = str(value)
     return env
+
+
+def _parse_env_header_map(raw_env: Any) -> dict[str, str]:
+    if not isinstance(raw_env, Mapping):
+        return {}
+    return {str(key): str(value) for key, value in raw_env.items()}
 
 
 def _parse_tool_set(value: Any) -> set[str]:

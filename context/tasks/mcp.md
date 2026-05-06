@@ -679,6 +679,25 @@ Potential mappings:
 - Support `tools/list_changed` when Penguin tool registry changes.
 - Emit diagnostics when MCP server capabilities change.
 
+## Phase 4: Robust Remote MCP Client
+
+Status: implemented Streamable HTTP and legacy SSE client transports with env-backed bearer/header config. Full OAuth/client-registration and `tools/list_changed` notifications remain future security/product-polish work.
+
+Implemented:
+
+- `transport: streamable_http` remote MCP clients.
+- `transport: sse` legacy remote MCP clients.
+- `url` validation for remote transports.
+- `bearer_token_env_var` and `env_http_headers` for secret indirection.
+- Remote transport diagnostics in MCP status payloads.
+
+Still deferred:
+
+- Full OAuth/client registration flows.
+- Streaming auth refresh semantics.
+- Dynamic `tools/list_changed` notifications.
+- Remote server marketplace/import UI.
+
 ## Test Plan
 
 ### Unit Tests
@@ -746,7 +765,7 @@ Potential mappings:
 - Diagnostics.
 - Allow/deny policy.
 - Result normalization.
-- Streamable HTTP support if SDK support is stable.
+- Streamable HTTP and SSE support implemented; OAuth remains deferred.
 - Connect/disconnect/reconnect controls.
 - Tool-list-changed cache invalidation.
 

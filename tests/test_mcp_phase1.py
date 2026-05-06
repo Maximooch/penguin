@@ -96,6 +96,51 @@ def test_mcp_config_is_disabled_by_default() -> None:
     assert load_mcp_server_configs({"mcp": {"enabled": False}}) == []
 
 
+
+def test_mcp_config_accepts_streamable_http_and_env_headers(monkeypatch) -> None:
+    monkeypatch.setenv("REMOTE_MCP_TOKEN", "token-value")
+    configs = load_mcp_server_configs(
+        {
+            "mcp_servers": {
+                "remote": {
+                    "transport": "streamable_http",
+                    "url": "https://example.test/mcp",
+                    "bearer_token_env_var": "REMOTE_MCP_TOKEN",
+                    "http_headers": {"X-Client": "Penguin"},
+                    "env_http_headers": {"X-Env": "REMOTE_MCP_TOKEN"},
+                }
+            }
+        }
+    )
+
+    assert len(configs) == 1
+    server = configs[0]
+    assert server.name == "remote"
+    assert server.transport == "streamable_http"
+    assert server.url == "https://example.test/mcp"
+    assert server.command == ""
+    assert server.resolved_http_headers == {
+        "Authorization": "Bearer token-value",
+        "X-Client": "Penguin",
+        "X-Env": "token-value",
+    }
+
+
+def test_mcp_config_requires_url_for_remote_transport() -> None:
+    try:
+        load_mcp_server_configs(
+            {
+                "mcp": {
+                    "enabled": True,
+                    "servers": {"remote": {"transport": "sse"}},
+                }
+            }
+        )
+    except ValueError as exc:
+        assert "missing required url" in str(exc)
+    else:  # pragma: no cover - defensive
+        raise AssertionError("remote MCP config without url should fail")
+
 def test_mcp_tool_name_sanitization_and_collision() -> None:
     first = make_tool_name("Local FS", "read-file")
     second = make_tool_name("Local FS", "read-file", existing=[first])

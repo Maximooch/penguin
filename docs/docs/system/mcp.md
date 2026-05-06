@@ -184,7 +184,7 @@ Privacy/safety note: Chrome DevTools MCP can inspect browser state. Use an isola
 
 ## Current Limitations
 
-- STDIO host/client support is implemented; remote Streamable HTTP/OAuth support is future work.
+- STDIO, Streamable HTTP, and legacy SSE host/client transports are implemented. Full OAuth/client-registration remains future work.
 - Runtime job records persist locally in ProjectStorage when a ProjectManager is available; orphaned non-terminal records survive restarts but are not controllable.
 - ITUV artifact writes currently use task storage directly from the MCP tool layer; a ProjectManager helper should be added.
 - Phase transition policy for ITUV mutation tools is currently MCP-local and should move into ProjectManager if it becomes a broader API contract.
@@ -233,3 +233,26 @@ Prompts:
 - `penguin_runmode_handoff`
 
 Disable them with `--no-resources` or `--no-prompts` when running `scripts/penguin_mcp_server.py`.
+
+
+### Remote MCP Client Config
+
+Penguin can connect to remote MCP servers over Streamable HTTP or legacy SSE when the MCP SDK extra is installed. Secrets should be referenced through environment variables, not inline plaintext tokens.
+
+```yaml
+mcp:
+  enabled: true
+  servers:
+    sentry:
+      transport: streamable_http
+      url: https://mcp.sentry.dev/mcp
+      bearer_token_env_var: SENTRY_MCP_TOKEN
+      http_headers:
+        X-Client: Penguin
+      env_http_headers:
+        X-Team-Token: TEAM_MCP_TOKEN
+      startup_timeout_sec: 30
+      tool_timeout_sec: 120
+```
+
+Legacy SSE servers can use `transport: sse` with the same `url` and header fields. Full OAuth/client-registration flows are intentionally deferred.

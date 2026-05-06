@@ -20,13 +20,17 @@ logger = logging.getLogger(__name__)
 
 try:  # pragma: no cover - availability depends on optional extra
     from mcp import ClientSession, StdioServerParameters  # type: ignore
+    from mcp.client.sse import sse_client  # type: ignore
     from mcp.client.stdio import stdio_client  # type: ignore
+    from mcp.client.streamable_http import streamablehttp_client  # type: ignore
 
     HAS_MCP_SDK = True
 except Exception:  # pragma: no cover - exercised when extra is absent
     ClientSession = None  # type: ignore[assignment]
     StdioServerParameters = None  # type: ignore[assignment]
+    sse_client = None  # type: ignore[assignment]
     stdio_client = None  # type: ignore[assignment]
+    streamablehttp_client = None  # type: ignore[assignment]
     HAS_MCP_SDK = False
 
 
@@ -105,6 +109,7 @@ class MCPClientManager:
                     "status": state.status.value,
                     "transport": state.config.transport,
                     "command": state.config.command,
+                    "url": state.config.url,
                     "tool_count": len(state.tools),
                     "error": state.error,
                     "tools": sorted(state.tools),
@@ -285,15 +290,40 @@ class MCPClientManager:
             )
 
         stack = AsyncExitStack()
-        params = StdioServerParameters(  # type: ignore[misc]
-            command=state.config.command,
-            args=state.config.args,
-            env=state.config.env or None,
-            cwd=state.config.cwd,
-        )
-        read_stream, write_stream = await stack.enter_async_context(
-            stdio_client(params)
-        )
+        if state.config.transport == "stdio":
+            params = StdioServerParameters(  # type: ignore[misc]
+                command=state.config.command,
+                args=state.config.args,
+                env=state.config.env or None,
+                cwd=state.config.cwd,
+            )
+            read_stream, write_stream = await stack.enter_async_context(
+                stdio_client(params)
+            )
+        elif state.config.transport == "streamable_http":
+            if streamablehttp_client is None:
+                raise RuntimeError("MCP streamable HTTP client is unavailable")
+            read_stream, write_stream, _session_id = await stack.enter_async_context(
+                streamablehttp_client(
+                    state.config.url or "",
+                    headers=state.config.resolved_http_headers or None,
+                    timeout=state.config.startup_timeout_sec,
+                    sse_read_timeout=state.config.tool_timeout_sec,
+                )
+            )
+        elif state.config.transport == "sse":
+            if sse_client is None:
+                raise RuntimeError("MCP SSE client is unavailable")
+            read_stream, write_stream = await stack.enter_async_context(
+                sse_client(
+                    state.config.url or "",
+                    headers=state.config.resolved_http_headers or None,
+                    timeout=state.config.startup_timeout_sec,
+                    sse_read_timeout=state.config.tool_timeout_sec,
+                )
+            )
+        else:
+            raise ValueError(f"Unsupported MCP transport: {state.config.transport}")
         session = await stack.enter_async_context(
             ClientSession(read_stream, write_stream)
         )
