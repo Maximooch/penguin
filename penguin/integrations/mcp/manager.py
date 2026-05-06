@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import threading
 from concurrent.futures import Future
 from contextlib import AsyncExitStack
@@ -77,6 +78,8 @@ class MCPServerState:
     error: str | None = None
     session: Any = None
     stack: AsyncExitStack | None = None
+    list_changed: bool = False
+    last_changed_at: float | None = None
 
 
 class MCPClientManager:
@@ -113,6 +116,9 @@ class MCPClientManager:
                     "tool_count": len(state.tools),
                     "error": state.error,
                     "tools": sorted(state.tools),
+                    "list_changed": state.list_changed,
+                    "last_changed_at": state.last_changed_at,
+                    "output_token_limit": state.config.output_token_limit,
                 }
                 for name, state in self._states.items()
             },
@@ -214,7 +220,7 @@ class MCPClientManager:
             state.session.call_tool(tool.raw_name, arguments or {}),
             timeout=timeout,
         )
-        return self._serialize_call_result(result)
+        return self._serialize_call_result(result, state.config.output_token_limit)
 
     async def close(self) -> None:
         """Close cached MCP session handles from the actor task that opened them."""
@@ -231,6 +237,7 @@ class MCPClientManager:
             state.stack = None
             state.session = None
             state.status = MCPServerStatus.DISCONNECTED
+            state.list_changed = False
 
     async def _connect_and_list_tools(
         self,
@@ -241,6 +248,7 @@ class MCPClientManager:
         state.error = None
         try:
             session = await self._ensure_session(state)
+            self._install_list_changed_handlers(state, session)
             response = await asyncio.wait_for(
                 session.list_tools(),
                 timeout=state.config.startup_timeout_sec,
@@ -279,6 +287,28 @@ class MCPClientManager:
                 state.config.name,
                 exc,
             )
+
+    def _install_list_changed_handlers(self, state: MCPServerState, session: Any) -> None:
+        """Install best-effort MCP list-change notification handlers."""
+
+        def mark_changed(*_args: Any, **_kwargs: Any) -> None:
+            state.list_changed = True
+            state.last_changed_at = time.time()
+
+        for attr_name in (
+            "on_tool_list_changed",
+            "on_tools_list_changed",
+            "tools_list_changed_callback",
+        ):
+            if hasattr(session, attr_name):
+                try:
+                    setattr(session, attr_name, mark_changed)
+                except Exception:  # pragma: no cover - SDK-version defensive
+                    logger.debug(
+                        "Unable to install MCP list-changed handler %s",
+                        attr_name,
+                        exc_info=True,
+                    )
 
     async def _ensure_session(self, state: MCPServerState) -> Any:
         """Open or return a persistent MCP stdio session."""
@@ -336,33 +366,52 @@ class MCPClientManager:
         return session
 
     @staticmethod
-    def _serialize_call_result(result: Any) -> Any:
-        """Convert MCP SDK result objects into JSON-ish data."""
+    def _cap_output(value: Any, output_limit: int | None) -> Any:
+        """Return value or a capped/truncated MCP tool result payload."""
+        if not output_limit:
+            return value
+        try:
+            serialized = json.dumps(value, ensure_ascii=False)
+        except TypeError:
+            serialized = str(value)
+        if len(serialized) <= output_limit:
+            return value
+        return {
+            "truncated": True,
+            "output_token_limit": output_limit,
+            "content": serialized[:output_limit],
+        }
+
+    @staticmethod
+    def _serialize_call_result(result: Any, output_limit: int | None = None) -> Any:
+        """Convert MCP SDK result objects into capped JSON-ish data."""
         if hasattr(result, "model_dump"):
-            return result.model_dump()
-        if hasattr(result, "dict"):
-            return result.dict()
-        if hasattr(result, "content"):
+            serialized = result.model_dump()
+        elif hasattr(result, "dict"):
+            serialized = result.dict()
+        elif hasattr(result, "content"):
             content = getattr(result, "content")
-            return [MCPClientManager._serialize_call_result(item) for item in content]
-        if isinstance(result, (str, int, float, bool)) or result is None:
-            return result
-        if isinstance(result, list):
-            return [MCPClientManager._serialize_call_result(item) for item in result]
-        if isinstance(result, dict):
-            return {
+            serialized = [MCPClientManager._serialize_call_result(item) for item in content]
+        elif isinstance(result, (str, int, float, bool)) or result is None:
+            serialized = result
+        elif isinstance(result, list):
+            serialized = [MCPClientManager._serialize_call_result(item) for item in result]
+        elif isinstance(result, dict):
+            serialized = {
                 key: MCPClientManager._serialize_call_result(value)
                 for key, value in result.items()
             }
-        try:
-            return json.loads(
-                json.dumps(
-                    result,
-                    default=lambda value: getattr(value, "__dict__", str(value)),
+        else:
+            try:
+                serialized = json.loads(
+                    json.dumps(
+                        result,
+                        default=lambda value: getattr(value, "__dict__", str(value)),
+                    )
                 )
-            )
-        except Exception:
-            return str(result)
+            except Exception:
+                serialized = str(result)
+        return MCPClientManager._cap_output(serialized, output_limit)
 
     def _run_async(self, coro: Any) -> Any:
         """Run manager coroutines on one actor task.

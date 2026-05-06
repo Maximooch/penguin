@@ -793,4 +793,27 @@ Still deferred:
 
 ## Recommendation
 
+## Current Host-Side Priority
+
+The current product priority is Penguin **using external MCP servers** well. Penguin exposing itself as an MCP server is valuable, but the 90% user-value path is host/client polish.
+
+Priority order before more server-surface work:
+
+1. **P0 — Product-path MCP host UX**
+   - CLI/TUI/web status surfaces for configured MCP servers.
+   - Refresh/reconnect/close controls.
+   - Clear examples for Chrome DevTools, GitHub, Sentry, OpenAI Docs, and filesystem scratch servers.
+2. **P1 — Real remote smoke tests**
+   - Validate Streamable HTTP/SSE against at least one live remote server.
+   - Keep env-backed auth examples for token-based servers.
+3. **P2 — Dynamic list-change handling**
+   - Handle `tools/list_changed`, `resources/list_changed`, and `prompts/list_changed` notifications where the Python SDK exposes callbacks.
+   - Invalidate MCP tool caches and surface diagnostics/events.
+4. **P3 — Better permission/output UX**
+   - Server-level allow/deny controls and risk labels.
+   - Conservative output caps/truncation for noisy MCP tools.
+   - Better audit/diagnostic data for external MCP tool calls.
+
+Full OAuth/client-registration remains deferred. Token/header config is enough to ship useful MCP host support; OAuth becomes necessary for polished remote SaaS connector UX, not for the first serious host release.
+
 Start with Milestone 1, immediately follow with Milestone 1.5 for real-server validation, and include the reference-agent basics that prevent pain later: explicit status states, conservative `mcp__server__tool` naming, raw-name reverse lookup, separate startup/tool timeouts, and STDIO process cleanup. Do not touch resources, prompts, OAuth, or server exposure until a local STDIO MCP tool can be discovered and called through Penguin's existing ToolManager with tests. Anything else is scope creep wearing a fake mustache.

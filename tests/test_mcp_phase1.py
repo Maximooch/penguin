@@ -141,6 +141,50 @@ def test_mcp_config_requires_url_for_remote_transport() -> None:
     else:  # pragma: no cover - defensive
         raise AssertionError("remote MCP config without url should fail")
 
+
+def test_mcp_tool_allow_deny_supports_globs() -> None:
+    configs = load_mcp_server_configs(
+        {
+            "mcpServers": {
+                "mixed": {
+                    "command": "fake",
+                    "enabled_tools": ["read_*"],
+                    "disabled_tools": ["read_secret*"],
+                }
+            }
+        }
+    )
+
+    server = configs[0]
+    assert server.allows_tool("read_file") is True
+    assert server.allows_tool("read_secret_file") is False
+    assert server.allows_tool("write_file") is False
+
+
+def test_mcp_config_parses_output_limit() -> None:
+    configs = load_mcp_server_configs(
+        {
+            "mcpServers": {
+                "capped": {
+                    "command": "fake",
+                    "output_token_limit": 25,
+                }
+            }
+        }
+    )
+
+    assert configs[0].output_token_limit == 25
+
+
+def test_mcp_output_cap_truncates_large_results() -> None:
+    from penguin.integrations.mcp.manager import MCPClientManager
+
+    result = MCPClientManager._cap_output({"text": "x" * 100}, 20)
+
+    assert result["truncated"] is True
+    assert result["output_token_limit"] == 20
+    assert len(result["content"]) == 20
+
 def test_mcp_tool_name_sanitization_and_collision() -> None:
     first = make_tool_name("Local FS", "read-file")
     second = make_tool_name("Local FS", "read-file", existing=[first])

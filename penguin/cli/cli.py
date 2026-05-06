@@ -366,6 +366,10 @@ app.add_typer(config_app, name="config")
 skill_app = typer.Typer(help="Agent Skills discovery and activation commands")
 app.add_typer(skill_app, name="skill")
 
+# MCP host diagnostics and lifecycle controls
+mcp_app = typer.Typer(help="MCP server diagnostics and lifecycle commands")
+app.add_typer(mcp_app, name="mcp")
+
 T = TypeVar("T")
 
 # Global core components - initialized by _initialize_core_components_globally
@@ -793,6 +797,94 @@ def _manual_skill_install_message() -> str:
         "~/.penguin/skills/<skill-name>/ for user skills or "
         ".penguin/skills/<skill-name>/ for trusted project skills."
     )
+
+
+
+def _mcp_tool_manager() -> Any:
+    """Create a lightweight ToolManager for MCP host diagnostics."""
+    from penguin.config import load_config
+    from penguin.tools.tool_manager import ToolManager
+
+    loaded_config = load_config()
+    return ToolManager(loaded_config, lambda *_args, **_kwargs: None, fast_startup=True)
+
+
+def _print_mcp_status(status: dict[str, Any], json_output: bool) -> None:
+    """Print MCP host status in JSON or human-readable form."""
+    if json_output:
+        console.print(json.dumps(status, indent=2, sort_keys=True))
+        return
+
+    console.print(
+        f"MCP SDK available: {status.get('available')} | "
+        f"discovered: {status.get('discovered')} | "
+        f"servers: {status.get('server_count', 0)} | "
+        f"tools: {status.get('tool_count', 0)}"
+    )
+    for name, server in (status.get("servers") or {}).items():
+        console.print(
+            f"- {name}: {server.get('status')} "
+            f"transport={server.get('transport')} "
+            f"tools={server.get('tool_count', 0)}"
+        )
+        if server.get("error"):
+            console.print(f"  error: {server['error']}")
+        if server.get("list_changed"):
+            console.print("  list changed: refresh recommended")
+
+
+@mcp_app.command("status")
+def mcp_status(
+    refresh: bool = typer.Option(False, "--refresh", help="Refresh tools before status."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON."),
+) -> None:
+    """Show configured MCP server status and tool counts."""
+    manager = _mcp_tool_manager()
+    try:
+        if refresh:
+            manager.refresh_mcp_tools()
+        _print_mcp_status(manager.get_mcp_status(), json_output)
+    finally:
+        manager.close_mcp()
+
+
+@mcp_app.command("refresh")
+def mcp_refresh(
+    json_output: bool = typer.Option(False, "--json", help="Output JSON."),
+) -> None:
+    """Refresh discovered MCP tools for configured servers."""
+    manager = _mcp_tool_manager()
+    try:
+        tools = manager.refresh_mcp_tools()
+        status = manager.get_mcp_status()
+        status["refreshed_tools"] = [tool.get("name") for tool in tools]
+        _print_mcp_status(status, json_output)
+    finally:
+        manager.close_mcp()
+
+
+@mcp_app.command("reconnect")
+def mcp_reconnect(
+    server: Optional[str] = typer.Argument(None, help="Optional MCP server name."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON."),
+) -> None:
+    """Reconnect one MCP server or all servers."""
+    manager = _mcp_tool_manager()
+    try:
+        status = manager.reconnect_mcp(server)
+        _print_mcp_status(status, json_output)
+    finally:
+        manager.close_mcp()
+
+
+@mcp_app.command("close")
+def mcp_close(
+    json_output: bool = typer.Option(False, "--json", help="Output JSON."),
+) -> None:
+    """Close active MCP client sessions."""
+    manager = _mcp_tool_manager()
+    status = manager.close_mcp()
+    _print_mcp_status(status, json_output)
 
 
 @skill_app.command("list")

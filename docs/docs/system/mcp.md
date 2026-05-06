@@ -62,6 +62,47 @@ A control-plane smoke script exercises Penguin's MCP server over real MCP stdio:
 uv run --python 3.11 --extra mcp python scripts/mcp_control_plane_smoke.py
 ```
 
+
+### Host CLI Diagnostics
+
+Penguin includes lightweight MCP host lifecycle commands. These operate on the
+configured external MCP servers and do not start or stop the Penguin web server.
+
+```bash
+uv run penguin-cli mcp status
+uv run penguin-cli mcp status --refresh
+uv run penguin-cli mcp refresh
+uv run penguin-cli mcp reconnect chrome-devtools
+uv run penguin-cli mcp close
+```
+
+Use `--json` on these commands for machine-readable diagnostics. Status payloads
+include server status, transport, tool count, last error, output cap, and whether
+a list-change notification has been observed.
+
+### Host Tool Policy And Output Caps
+
+Per-server tool selection supports exact names and shell-style globs:
+
+```yaml
+mcp:
+  enabled: true
+  servers:
+    github:
+      command: npx
+      args: [-y, "@modelcontextprotocol/server-github"]
+      enabled_tools:
+        - "list_*"
+        - "get_*"
+      disabled_tools:
+        - "delete_*"
+      output_token_limit: 12000
+```
+
+`output_token_limit` caps oversized MCP tool results before they enter Penguin's
+conversation/tool-result flow. This is intentionally conservative: noisy external
+servers should not be able to flood the model context for free.
+
 ## Penguin As MCP Server
 
 Run Penguin's MCP stdio server:

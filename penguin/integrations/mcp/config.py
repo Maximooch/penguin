@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+import fnmatch
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -29,6 +30,7 @@ class MCPServerConfig:
     tool_timeout_sec: float = 60.0
     enabled_tools: set[str] | None = None
     disabled_tools: set[str] = field(default_factory=set)
+    output_token_limit: int | None = None
 
     @classmethod
     def from_mapping(cls, name: str, data: Mapping[str, Any]) -> MCPServerConfig:
@@ -92,6 +94,12 @@ class MCPServerConfig:
             ),
             enabled_tools=enabled_tools,
             disabled_tools=disabled_tools,
+            output_token_limit=_parse_optional_int(
+                data.get("output_token_limit")
+                or data.get("outputTokenLimit")
+                or data.get("max_output_chars")
+                or data.get("maxOutputChars")
+            ),
         )
 
     @property
@@ -110,9 +118,12 @@ class MCPServerConfig:
 
     def allows_tool(self, tool_name: str) -> bool:
         """Return whether this config allows a raw MCP tool name."""
-        if self.enabled_tools is not None and tool_name not in self.enabled_tools:
+        if self.enabled_tools is not None and not _matches_any_tool_pattern(
+            tool_name,
+            self.enabled_tools,
+        ):
             return False
-        return tool_name not in self.disabled_tools
+        return not _matches_any_tool_pattern(tool_name, self.disabled_tools)
 
 
 def _parse_env(raw_env: Any) -> dict[str, str]:
@@ -131,6 +142,20 @@ def _parse_env_header_map(raw_env: Any) -> dict[str, str]:
     if not isinstance(raw_env, Mapping):
         return {}
     return {str(key): str(value) for key, value in raw_env.items()}
+
+
+def _matches_any_tool_pattern(tool_name: str, patterns: set[str]) -> bool:
+    return any(fnmatch.fnmatchcase(tool_name, pattern) for pattern in patterns)
+
+
+def _parse_optional_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _parse_tool_set(value: Any) -> set[str]:
