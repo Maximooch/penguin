@@ -11,7 +11,7 @@ import logging
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import networkx as nx
 
@@ -20,10 +20,8 @@ from .models import (
     Blueprint,
     BlueprintItem,
     DependencyPolicy,
-    ExecutionRecord,
     ExecutionResult,
     Project,
-    StateTransition,
     Task,
     TaskDependency,
     TaskPhase,
@@ -32,7 +30,7 @@ from .models import (
 from .storage import ProjectStorage
 from .runtime_jobs import RuntimeJobRecord
 from .exceptions import (
-    ProjectError, TaskError, ValidationError, ProjectNotFoundError, 
+    ProjectError, ValidationError, ProjectNotFoundError, 
     TaskNotFoundError, StateTransitionError, DependencyError
 )
 
@@ -991,7 +989,7 @@ class ProjectManager:
         Returns:
             List of ready tasks, sorted by tie-breakers.
         """
-        dag = self.build_dag(project_id)
+        self.build_dag(project_id)
         tasks = self.list_tasks(project_id)
         task_map = {t.id: t for t in tasks}
         

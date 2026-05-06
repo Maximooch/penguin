@@ -7,14 +7,13 @@ SQLite with ACID transactions, supporting both sync and async operations.
 import sqlite3
 import json
 import logging
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, List, Optional, Union
 from contextlib import contextmanager
 
 from .models import Project, Task, TaskPhase, TaskStatus, ExecutionRecord, StateTransition
 from .runtime_jobs import RuntimeJobRecord
-from .exceptions import StorageError, ProjectNotFoundError, TaskNotFoundError
+from .exceptions import StorageError
 
 logger = logging.getLogger(__name__)
 
