@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import fnmatch
 import os
 from dataclasses import dataclass, field
-import fnmatch
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -85,7 +85,7 @@ class MCPServerConfig:
             ),
             http_headers=http_headers,
             env_http_headers=env_http_headers,
-            enabled=bool(data.get("enabled", True)),
+            enabled=_parse_bool(data.get("enabled"), default=True),
             startup_timeout_sec=float(
                 data.get("startup_timeout_sec", data.get("startupTimeoutSec", 10.0))
             ),
@@ -144,6 +144,20 @@ def _parse_env_header_map(raw_env: Any) -> dict[str, str]:
     return {str(key): str(value) for key, value in raw_env.items()}
 
 
+def _parse_bool(value: Any, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "y"}:
+            return True
+        if normalized in {"false", "0", "no", "n"}:
+            return False
+    return bool(value)
+
+
 def _matches_any_tool_pattern(tool_name: str, patterns: set[str]) -> bool:
     return any(fnmatch.fnmatchcase(tool_name, pattern) for pattern in patterns)
 
@@ -171,7 +185,7 @@ def _server_entries_from_root(root: Mapping[str, Any]) -> tuple[ServerEntries, b
     mcp_config = root.get("mcp", {}) if isinstance(root, Mapping) else {}
     if isinstance(mcp_config, Mapping):
         servers = mcp_config.get("servers") or mcp_config.get("mcpServers") or {}
-        enabled = bool(mcp_config.get("enabled", bool(servers)))
+        enabled = _parse_bool(mcp_config.get("enabled"), default=bool(servers))
         if servers:
             return servers, enabled
 

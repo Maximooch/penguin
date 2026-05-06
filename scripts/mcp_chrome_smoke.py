@@ -13,6 +13,7 @@ import argparse
 import base64
 import json
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -117,7 +118,7 @@ def _visit_and_capture(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output-dir", default="/tmp/penguin-mcp-chrome-smoke")
+    parser.add_argument("--output-dir", default=None)
     parser.add_argument("--package", default="chrome-devtools-mcp@latest")
     parser.add_argument("--viewport", default="1280x900")
     parser.add_argument("--startup-timeout", type=int, default=120)
@@ -128,7 +129,11 @@ def main() -> int:
     parser.set_defaults(headless=True)
     args = parser.parse_args()
 
-    output_dir = Path(args.output_dir)
+    output_dir = (
+        Path(args.output_dir)
+        if args.output_dir
+        else Path(tempfile.mkdtemp(prefix="penguin-mcp-chrome-smoke-"))
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
 
     provider = MCPToolProvider(_build_config(args))

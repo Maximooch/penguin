@@ -10,7 +10,10 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from penguin.security.permission_engine import PermissionEnforcer
 
 from penguin.security.permission_engine import Operation, PermissionResult
 
@@ -124,7 +127,7 @@ def extract_resource_from_input(
         return tool_input.get("query")
 
     if str(tool_name or "").startswith("mcp__"):
-        return tool_name
+        return None
 
     # For operations without a clear resource, return None
     return None

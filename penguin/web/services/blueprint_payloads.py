@@ -103,6 +103,17 @@ def serialize_blueprint_graph(blueprint: Any) -> Dict[str, Any]:
     return {"nodes": nodes, "edges": edges}
 
 
+def _escape_dot(value: object) -> str:
+    """Escape a value for safe insertion into quoted DOT strings."""
+    return (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\r", "\\n")
+        .replace("\n", "\\n")
+    )
+
+
 def blueprint_graph_to_dot(graph: Dict[str, Any]) -> str:
     """Render a serialized Blueprint graph as DOT."""
     lines = ["digraph BlueprintDAG {", "  rankdir=LR;", "  node [shape=box];"]

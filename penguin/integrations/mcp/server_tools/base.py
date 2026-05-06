@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 
-@dataclass(frozen=True)
+@dataclass
 class MCPServerTool:
     """A Penguin runtime capability exposed as an MCP server tool."""
 

@@ -86,13 +86,15 @@ def main() -> None:
         )
         tool_manager = core.tool_manager
 
+    expose_pm_tools = not args.no_pm_tools and not args.minimal_core
+
     server = build_penguin_mcp_server(
         tool_manager,
         name=args.name,
         allow_tools=args.allow_tool,
         deny_patterns=args.deny_pattern,
         core=core,
-        expose_pm_tools=not args.no_pm_tools,
+        expose_pm_tools=expose_pm_tools,
         expose_blueprint_tools=not args.no_blueprint_tools,
         expose_runtime_tools=args.allow_runtime_tools,
         expose_session_tools=not args.no_session_tools,

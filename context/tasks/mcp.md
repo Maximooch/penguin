@@ -88,7 +88,7 @@ Useful takeaways to steal shamelessly, minus language/runtime mismatch:
 - Tool naming must be collision-safe and model-safe. Codex uses `mcp__<server>__<tool>`, sanitizes names, hashes collisions, and caps model-visible names at 64 chars. Penguin should use this form, not `mcp::<server>::<tool>`, unless existing provider constraints prove colons are accepted everywhere.
 - Preserve raw MCP identities separately from model-visible names. The callable name can be sanitized/hashed; the protocol call must still send the raw MCP `tool.name` to the owning server.
 - Process lifecycle is not optional. Local STDIO server launch should set cwd/env deliberately, pipe stdout for protocol, capture stderr for logs, kill on drop, and on Unix prefer process-group cleanup for child subprocesses.
-- Add status/connect/disconnect APIs early. OpenCode has `/mcp`, add, auth, connect, disconnect routes; Penguin does not need the full OAuth flow in phase 1, but status and reconnect controls are worth having.
+- Add status/refresh/reconnect/close APIs early. OpenCode has `/mcp`, add, auth, connect, disconnect routes; Penguin does not need the full OAuth flow in phase 1, but status, reconnect, and close controls are worth having.
 - Cache only as an optimization. Codex has startup snapshots/caches for hosted connector tools; Penguin should avoid cache complexity in the MVP but design the manager so cache can be added without changing ToolManager contracts.
 - Resources/prompts are second-pass. Both reference agents support or plan resources/prompts, but tools are the leverage point. Do not let resource/prompt support block tool calls.
 
@@ -254,7 +254,7 @@ Eager startup cons:
 - Remote/auth failures can make Penguin feel broken even when MCP is irrelevant to the current session.
 - More painful in web/server mode where many sessions may not need MCP.
 
-Recommendation: default `lazy`, support `startup`, and expose `penguin mcp status/connect/reconnect` plus web/TUI status so failures are visible without forcing everyone to pay startup cost.
+Recommendation: default `lazy`, support `startup`, and expose `penguin mcp status/reconnect/close` plus web/TUI status so failures are visible without forcing everyone to pay startup cost.
 
 ## Phase 1: MCP Host / Client Support
 
@@ -314,7 +314,7 @@ Penguin can connect to configured MCP servers and use their tools as normal Peng
 8. Diagnostics:
    - Add status endpoint/API method listing configured servers, connection state, tools discovered, last error.
    - CLI/TUI should show MCP server failures rather than silently continuing.
-   - Add connect/disconnect/reconnect controls for configured servers.
+   - Add refresh/reconnect/close controls for configured servers.
 
 9. Skills-era ToolManager integration:
    - Follow the skills-manager shape: runtime-owned MCP manager, `ToolManager.set_core()` access where needed, `penguin/tools/providers/mcp.py` facade methods, and web/TUI route visibility.
@@ -537,7 +537,7 @@ Tools:
 
 - `penguin_runmode_capabilities` — reports current RunMode readiness, core/engine/project-manager availability, registry metadata, and known gaps. It never starts execution.
 - `penguin_runmode_list_jobs` — lists the in-process runtime MCP job registry. In Slice 3A this registry is read-only and usually empty.
-- `penguin_runmode_get_job` — returns one in-process runtime MCP job by ID if it exists.
+- `penguin_runmode_get_job` — returns one merged durable + live runtime MCP job by ID if it exists.
 
 Acceptance criteria:
 
@@ -557,7 +557,7 @@ Tools:
 Slice 3B caveats:
 
 - Job registry is in-process and non-durable.
-- Jobs start in daemon threads and report result/error through `penguin_runmode_get_job`.
+- Jobs start in daemon threads and report result/error through `penguin_runmode_get_job`, with durable records persisted through ProjectStorage.
 - Cancellation is still unavailable until Slice 3C.
 - Execution remains model-dependent; tests cover job lifecycle with mocked execution plus capabilities/listing via MCP Inspector.
 
@@ -722,7 +722,7 @@ Still deferred:
 - Simulate malformed tool result.
 - Simulate duplicate/sanitized tool names from two servers.
 - Confirm STDIO stderr is captured and stdout remains protocol-only.
-- Confirm disconnect/reconnect updates status and rediscovery.
+- Confirm close/reconnect updates status and rediscovery.
 - Confirm static tools, skills tools, and MCP tools all appear without clobbering each other.
 
 ### Manual Validation
@@ -766,7 +766,7 @@ Still deferred:
 - Allow/deny policy.
 - Result normalization.
 - Streamable HTTP and SSE support implemented; OAuth remains deferred.
-- Connect/disconnect/reconnect controls.
+- Connect/close/reconnect controls.
 - Tool-list-changed cache invalidation.
 
 ### Milestone 3: Penguin As MCP Server

@@ -57,23 +57,24 @@ def main() -> None:
         tool_timeout_sec=args.tool_timeout,
     )
     manager = MCPClientManager([server])
-    tools = manager.list_tools_sync()
-    print(json.dumps(manager.status(), indent=2, sort_keys=True))
-    if not args.no_schemas:
-        print(
-            json.dumps(
-                [tool.to_penguin_schema() for tool in tools],
-                indent=2,
-                sort_keys=True,
+    try:
+        tools = manager.list_tools_sync()
+        print(json.dumps(manager.status(), indent=2, sort_keys=True))
+        if not args.no_schemas:
+            print(
+                json.dumps(
+                    [tool.to_penguin_schema() for tool in tools],
+                    indent=2,
+                    sort_keys=True,
+                )
             )
-        )
 
-    if args.call:
-        arguments: dict[str, Any] = json.loads(args.arguments)
-        result = manager.call_tool_sync(args.call, arguments)
-        print(json.dumps(result, indent=2, sort_keys=True))
-
-    manager.close_sync()
+        if args.call:
+            arguments: dict[str, Any] = json.loads(args.arguments)
+            result = manager.call_tool_sync(args.call, arguments)
+            print(json.dumps(result, indent=2, sort_keys=True))
+    finally:
+        manager.close_sync()
 
 
 if __name__ == "__main__":

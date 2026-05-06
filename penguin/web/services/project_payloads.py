@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Sequence
+from collections.abc import Sequence
+from typing import Any, Optional
 
 
 def _enum_value(value: Any) -> Any:
@@ -21,10 +22,10 @@ def _dict_list(values: Any) -> list[dict[str, Any]]:
 
 def serialize_task_payload(
     task: Any, *, include_metadata: bool = True
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Serialize a task without flattening current lifecycle/runtime truth."""
     metadata = dict(getattr(task, "metadata", {}) or {})
-    payload: Dict[str, Any] = {
+    payload: dict[str, Any] = {
         "id": task.id,
         "project_id": getattr(task, "project_id", None),
         "title": task.title,
@@ -61,9 +62,9 @@ def serialize_project_payload(
     *,
     tasks: Optional[Sequence[Any]] = None,
     include_metadata: bool = True,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Serialize a project with richer PM fields than the legacy route subset."""
-    payload: Dict[str, Any] = {
+    payload: dict[str, Any] = {
         "id": project.id,
         "name": project.name,
         "description": project.description,

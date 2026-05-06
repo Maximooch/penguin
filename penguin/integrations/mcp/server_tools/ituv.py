@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
+import logging
 from typing import Any, Optional
 
 from penguin.integrations.mcp.server_tools.base import MCPServerTool
@@ -12,22 +13,7 @@ from penguin.web.services.project_payloads import (
     serialize_task_payload,
 )
 
-
-PHASE_TRANSITIONS = {
-    TaskPhase.PENDING: {TaskPhase.IMPLEMENT, TaskPhase.BLOCKED},
-    TaskPhase.IMPLEMENT: {TaskPhase.TEST, TaskPhase.BLOCKED, TaskPhase.PENDING},
-    TaskPhase.TEST: {TaskPhase.USE, TaskPhase.VERIFY, TaskPhase.BLOCKED, TaskPhase.IMPLEMENT},
-    TaskPhase.USE: {TaskPhase.VERIFY, TaskPhase.BLOCKED, TaskPhase.TEST},
-    TaskPhase.VERIFY: {TaskPhase.TEST, TaskPhase.USE, TaskPhase.BLOCKED},
-    TaskPhase.BLOCKED: {
-        TaskPhase.PENDING,
-        TaskPhase.IMPLEMENT,
-        TaskPhase.TEST,
-        TaskPhase.USE,
-        TaskPhase.VERIFY,
-    },
-    TaskPhase.DONE: set(),
-}
+logger = logging.getLogger(__name__)
 
 
 def build_ituv_tools(core: Any) -> list[MCPServerTool]:
@@ -210,12 +196,25 @@ def build_ituv_tools(core: Any) -> list[MCPServerTool]:
                     "error": "unsupported_action",
                     "supported_actions": ["set_status", "set_phase", "block", "unblock"],
                 }
-        except Exception as exc:
+        except (ValueError, RuntimeError) as exc:
             return {
                 "status": "rejected",
                 "task_id": task_id,
                 "action": action,
                 "reason": str(exc),
+                "before": before,
+            }
+        except Exception:  # pragma: no cover - defensive server boundary
+            logger.exception(
+                "Unexpected ITUV signal failure for task %s action %s",
+                task_id,
+                action,
+            )
+            return {
+                "status": "rejected",
+                "task_id": task_id,
+                "action": action,
+                "reason": "internal error",
                 "before": before,
             }
         updated = project_manager.get_task(task_id)
@@ -284,7 +283,7 @@ def build_ituv_tools(core: Any) -> list[MCPServerTool]:
             path=_optional_str(arguments.get("path")),
             producer_task_id=_optional_str(arguments.get("producer_task_id")) or task_id,
             created_at=_optional_str(arguments.get("created_at"))
-            or datetime.utcnow().isoformat(),
+            or datetime.now(timezone.utc).isoformat(),
             valid=_optional_bool(arguments.get("valid"), False),
             metadata=_optional_dict(arguments.get("metadata")),
         )
@@ -299,7 +298,7 @@ def build_ituv_tools(core: Any) -> list[MCPServerTool]:
                 "artifact": artifact.to_dict(),
             }
         task.artifact_evidence.append(artifact)
-        task.updated_at = datetime.utcnow().isoformat()
+        task.updated_at = datetime.now(timezone.utc).isoformat()
         project_manager.storage.update_task(task)
         updated = project_manager.get_task(task_id)
         return {
@@ -439,8 +438,8 @@ def _capabilities_payload() -> dict[str, Any]:
         "statuses": [status.value for status in TaskStatus],
         "status_transitions": transitions,
         "phase_transitions": {
-            phase.value: [target.value for target in sorted(targets, key=lambda item: item.value)]
-            for phase, targets in PHASE_TRANSITIONS.items()
+            phase.value: [target.value for target in targets]
+            for phase, targets in TaskPhase.allowed_transitions().items()
         },
         "dependency_policies": [policy.value for policy in DependencyPolicy],
         "dependency_readiness_rules": {
@@ -474,7 +473,7 @@ def _task_readiness(project_manager: Any, task: Any) -> dict[str, Any]:
     try:
         tasks = project_manager.list_tasks(project_id=task.project_id)
         task_map = {item.id: item for item in tasks}
-        blockers = project_manager._get_unsatisfied_dependencies(task, task_map)
+        blockers = project_manager.get_unsatisfied_dependencies(task, task_map)
     except Exception as exc:  # pragma: no cover - defensive read-only boundary
         return {
             "ready_for_runmode": False,
@@ -528,7 +527,7 @@ def _validate_phase_transition(task: Any, phase: TaskPhase) -> Optional[str]:
             f"Cannot set phase {phase.value} while status is {task.status.value}. "
             "Use penguin_ituv_mark_ready_for_review for successful execution."
         )
-    if phase not in PHASE_TRANSITIONS.get(task.phase, set()):
+    if not task.phase.can_transition_to(phase):
         return f"Invalid phase transition from {task.phase.value} to {phase.value}."
     return None
 

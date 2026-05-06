@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any, Dict, Optional
+from datetime import datetime, timezone
+from typing import Any, Optional
 
 
 RUNTIME_JOB_RESULT_JSON_LIMIT = 64 * 1024
@@ -23,7 +23,7 @@ class RuntimeJobRecord:
     kind: str
     status: str
     started_at: str
-    updated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     project_id: Optional[str] = None
     task_id: Optional[str] = None
     session_id: Optional[str] = None
@@ -33,14 +33,14 @@ class RuntimeJobRecord:
     result_summary: Optional[str] = None
     result_json: Optional[str] = None
     error: Optional[str] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def terminal(self) -> bool:
         """Return whether the record is terminal."""
         return self.status in TERMINAL_RUNTIME_JOB_STATUSES
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable dictionary."""
         result = _decode_json(self.result_json)
         return {
@@ -79,10 +79,10 @@ def build_runtime_job_record(
     result: Optional[Any] = None,
     result_summary: Optional[str] = None,
     error: Optional[str] = None,
-    metadata: Optional[Dict[str, Any]] = None,
+    metadata: Optional[dict[str, Any]] = None,
 ) -> RuntimeJobRecord:
     """Build a durable runtime job record with capped result/error fields."""
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     encoded_result = encode_result_json(result)
     return RuntimeJobRecord(
         job_id=job_id,
@@ -128,15 +128,22 @@ def encode_result_json(result: Optional[Any]) -> Optional[str]:
         encoded = json.dumps(result, default=str)
     except (TypeError, ValueError):
         encoded = json.dumps({"repr": str(result)})
-    if len(encoded) > RUNTIME_JOB_RESULT_JSON_LIMIT:
-        return json.dumps(
-            {
-                "truncated": True,
-                "limit": RUNTIME_JOB_RESULT_JSON_LIMIT,
-                "preview": encoded[:RUNTIME_JOB_RESULT_JSON_LIMIT],
-            }
-        )
-    return encoded
+    if len(encoded) <= RUNTIME_JOB_RESULT_JSON_LIMIT:
+        return encoded
+
+    wrapper = {"truncated": True, "limit": RUNTIME_JOB_RESULT_JSON_LIMIT, "preview": ""}
+    wrapper_overhead = len(json.dumps(wrapper))
+    preview_budget = max(0, RUNTIME_JOB_RESULT_JSON_LIMIT - wrapper_overhead)
+    wrapper["preview"] = _truncate(encoded, preview_budget) or ""
+    wrapped = json.dumps(wrapper)
+    if len(wrapped) <= RUNTIME_JOB_RESULT_JSON_LIMIT:
+        return wrapped
+    # JSON escaping can add a few bytes after preview truncation. Recompute with
+    # a smaller preview until the complete serialized payload is within cap.
+    while wrapper["preview"] and len(wrapped) > RUNTIME_JOB_RESULT_JSON_LIMIT:
+        wrapper["preview"] = wrapper["preview"][:-1]
+        wrapped = json.dumps(wrapper)
+    return wrapped[:RUNTIME_JOB_RESULT_JSON_LIMIT]
 
 
 def _decode_json(value: Optional[str]) -> Optional[Any]:
@@ -151,9 +158,13 @@ def _decode_json(value: Optional[str]) -> Optional[Any]:
 def _truncate(value: Optional[str], limit: int) -> Optional[str]:
     if value is None:
         return None
+    if limit <= 0:
+        return ""
     if len(value) <= limit:
         return value
-    return value[:limit] + "…"
+    if limit == 1:
+        return "…"
+    return value[: limit - 1] + "…"
 
 
 __all__ = [

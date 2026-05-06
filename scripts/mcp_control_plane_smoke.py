@@ -20,6 +20,7 @@ Run with a Python environment that has Penguin's MCP extra installed, e.g.:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import asyncio
 import json
 import os
@@ -105,10 +106,17 @@ async def _run_smoke(server_command: Sequence[str], keep_workspace: bool) -> Dic
     if not server_command:
         raise ValueError("server_command must not be empty")
 
-    with tempfile.TemporaryDirectory(prefix="penguin-mcp-smoke-") as tmp:
+    if keep_workspace:
+        temp_context = contextlib.nullcontext(
+            tempfile.mkdtemp(prefix="penguin-mcp-smoke-")
+        )
+    else:
+        temp_context = tempfile.TemporaryDirectory(prefix="penguin-mcp-smoke-")
+
+    with temp_context as tmp:
         workspace = Path(tmp) / "workspace"
         workspace.mkdir(parents=True, exist_ok=True)
-        project_root = Path(tmp) / "project"
+        project_root = workspace / "project"
         project_root.mkdir(parents=True, exist_ok=True)
         blueprint_path = project_root / "blueprint.yml"
         blueprint_path.write_text(BLUEPRINT_CONTENT, encoding="utf-8")
@@ -156,6 +164,7 @@ async def _run_smoke(server_command: Sequence[str], keep_workspace: bool) -> Dic
                         "penguin_blueprint_sync",
                         {
                             "blueprint_path": str(blueprint_path),
+                            "workspace_path": str(workspace),
                             "project_id": project_id,
                             "dry_run": True,
                         },
@@ -169,6 +178,7 @@ async def _run_smoke(server_command: Sequence[str], keep_workspace: bool) -> Dic
                         "penguin_blueprint_sync",
                         {
                             "blueprint_path": str(blueprint_path),
+                            "workspace_path": str(workspace),
                             "project_id": project_id,
                             "dry_run": False,
                             "create_missing": True,

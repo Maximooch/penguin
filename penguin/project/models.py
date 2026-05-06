@@ -30,6 +30,32 @@ class TaskPhase(Enum):
     BLOCKED = "blocked"      # Waiting on dependencies or clarification
 
 
+    @classmethod
+    def allowed_transitions(cls) -> Dict["TaskPhase", List["TaskPhase"]]:
+        """Return valid ITUV phase transitions."""
+        return {
+            cls.PENDING: [cls.IMPLEMENT, cls.BLOCKED],
+            cls.IMPLEMENT: [cls.TEST, cls.BLOCKED, cls.PENDING],
+            cls.TEST: [cls.USE, cls.VERIFY, cls.BLOCKED, cls.IMPLEMENT],
+            cls.USE: [cls.VERIFY, cls.BLOCKED, cls.TEST],
+            cls.VERIFY: [cls.TEST, cls.USE, cls.BLOCKED],
+            cls.BLOCKED: [
+                cls.PENDING,
+                cls.IMPLEMENT,
+                cls.TEST,
+                cls.USE,
+                cls.VERIFY,
+            ],
+            cls.DONE: [],
+        }
+
+    def can_transition_to(self, phase: "TaskPhase") -> bool:
+        """Return whether this phase may transition to the target phase."""
+        if phase == self:
+            return True
+        return phase in self.allowed_transitions().get(self, [])
+
+
 class TaskStatus(Enum):
     """Task status enumeration with clear state transitions."""
     ACTIVE = "active"

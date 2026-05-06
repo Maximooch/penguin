@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 from penguin.integrations.mcp.server_tools.base import MCPServerTool
-from penguin.project.blueprint_parser import BlueprintParseError, BlueprintParser
+from penguin.project.blueprint_parser import BlueprintParser
+from penguin.project.models import Blueprint
 from penguin.web.services.blueprint_payloads import (
     blueprint_graph_to_dot,
     serialize_blueprint_diagnostics_report,
@@ -165,6 +166,7 @@ def build_blueprint_tools(core: Any) -> list[MCPServerTool]:
                     "content": {"type": "string"},
                     "format": {"type": "string"},
                     "source": {"type": "string"},
+                    "workspace_path": {"type": "string"},
                     "include_graph": {"type": "boolean"},
                 }
             ),
@@ -179,6 +181,7 @@ def build_blueprint_tools(core: Any) -> list[MCPServerTool]:
                     "content": {"type": "string"},
                     "format": {"type": "string"},
                     "source": {"type": "string"},
+                    "workspace_path": {"type": "string"},
                     "output_format": {"type": "string"},
                 }
             ),
@@ -208,6 +211,7 @@ def build_blueprint_tools(core: Any) -> list[MCPServerTool]:
                     "content": {"type": "string"},
                     "format": {"type": "string"},
                     "source": {"type": "string"},
+                    "workspace_path": {"type": "string"},
                     "project_id": {"type": "string"},
                     "create_project": {"type": "boolean"},
                     "dry_run": {"type": "boolean"},
@@ -292,7 +296,7 @@ def _build_sync_dry_run_payload(
     return payload
 
 
-def _parse_blueprint(arguments: dict[str, Any]):
+def _parse_blueprint(arguments: dict[str, Any]) -> tuple[Blueprint, str]:
     content = _optional_str(arguments.get("content"))
     fmt = (_optional_str(arguments.get("format")) or "markdown").lower()
     if content is not None:
@@ -303,7 +307,12 @@ def _parse_blueprint(arguments: dict[str, Any]):
     blueprint_path = _optional_str(arguments.get("blueprint_path"))
     if blueprint_path is None:
         raise ValueError("blueprint_path or content is required")
-    path = Path(blueprint_path).expanduser().resolve()
+    workspace_root = Path(
+        _optional_str(arguments.get("workspace_path")) or Path.cwd()
+    ).expanduser().resolve()
+    path = (workspace_root / blueprint_path).expanduser().resolve()
+    if not _is_relative_to(path, workspace_root):
+        raise PermissionError(f"Blueprint file is outside workspace: {path}")
     if not path.exists():
         raise FileNotFoundError(f"Blueprint file not found: {path}")
     parser = BlueprintParser(base_path=path.parent)
@@ -312,17 +321,22 @@ def _parse_blueprint(arguments: dict[str, Any]):
 
 def _parse_content(
     parser: BlueprintParser, content: str, fmt: str, source: str
-):
-    try:
-        if fmt == "yaml":
-            return parser.parse_yaml(content, source=source)
-        if fmt == "json":
-            return parser.parse_json(content, source=source)
-        if fmt == "markdown":
-            return parser.parse_markdown(content, source=source)
-    except BlueprintParseError:
-        raise
+) -> Blueprint:
+    if fmt == "yaml":
+        return parser.parse_yaml(content, source=source)
+    if fmt == "json":
+        return parser.parse_json(content, source=source)
+    if fmt == "markdown":
+        return parser.parse_markdown(content, source=source)
     raise ValueError("format must be one of markdown, yaml, or json")
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 def _base_path_for_source(source: str) -> Optional[Path]:

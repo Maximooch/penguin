@@ -18,6 +18,10 @@ from .exceptions import StorageError
 logger = logging.getLogger(__name__)
 
 
+def _json_dumps_safe(value: Any) -> str:
+    return json.dumps(value, default=str)
+
+
 class ProjectStorage:
     """SQLite-backed storage for projects and tasks."""
     
@@ -511,7 +515,7 @@ class ProjectStorage:
                 record.result_summary,
                 record.result_json,
                 record.error,
-                json.dumps(record.metadata) if record.metadata else None,
+                _json_dumps_safe(record.metadata) if record.metadata else None,
             ))
             conn.commit()
 
@@ -530,7 +534,7 @@ class ProjectStorage:
         status: Optional[str] = None,
         project_id: Optional[str] = None,
         task_id: Optional[str] = None,
-        limit: int = 50,
+        limit: Optional[int] = 50,
     ) -> List[RuntimeJobRecord]:
         """List durable runtime job records with optional filters."""
         query = "SELECT * FROM runtime_jobs WHERE 1=1"
@@ -544,8 +548,10 @@ class ProjectStorage:
         if task_id:
             query += " AND task_id = ?"
             params.append(task_id)
-        query += " ORDER BY started_at DESC LIMIT ?"
-        params.append(max(1, int(limit)))
+        query += " ORDER BY started_at DESC"
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(max(1, int(limit)))
         with self._get_connection() as conn:
             rows = conn.execute(query, params).fetchall()
             return [self._row_to_runtime_job(row) for row in rows]

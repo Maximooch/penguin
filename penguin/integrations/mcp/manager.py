@@ -190,9 +190,7 @@ class MCPClientManager:
             raise ValueError(f"Unknown MCP server: {server_name}")
         if state.stack is not None:
             await state.stack.aclose()
-        for public_name in list(state.tools):
-            self._tool_index.pop(public_name, None)
-        state.tools.clear()
+        self._clear_server_tools(state)
         state.stack = None
         state.session = None
         state.error = None
@@ -238,6 +236,9 @@ class MCPClientManager:
             state.session = None
             state.status = MCPServerStatus.DISCONNECTED
             state.list_changed = False
+
+    def _clear_server_tools(self, state: MCPServerState) -> None:
+        self._clear_server_tools(state)
 
     async def _connect_and_list_tools(
         self,

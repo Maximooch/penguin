@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 import json
 
 from penguin.web.services.project_payloads import (
@@ -100,7 +100,8 @@ def _register_resources(mcp: Any, core: Any) -> None:
         mime_type=_TEXT_MIME,
     )
     def docs_cache_resource(source: str, page: str) -> str:
-        root = Path("context/docs_cache").resolve()
+        workspace = _workspace_path(core)
+        root = (workspace / "context" / "docs_cache").resolve()
         safe_source = _safe_segment(source)
         safe_page = _safe_segment(page)
         candidates = [
@@ -160,11 +161,11 @@ def _register_prompts(mcp: Any) -> None:
         )
 
 
-def _preview_message(row: Dict[str, Any]) -> Dict[str, Any]:
+def _preview_message(row: dict[str, Any]) -> dict[str, Any]:
     info = row.get("info") if isinstance(row, dict) else {}
     info = info if isinstance(info, dict) else {}
     parts = row.get("parts") if isinstance(row, dict) else []
-    chunks: List[str] = []
+    chunks: list[str] = []
     if isinstance(parts, list):
         for part in parts:
             if isinstance(part, dict) and part.get("type") == "text":
@@ -179,8 +180,17 @@ def _preview_message(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _json(payload: Dict[str, Any]) -> str:
+def _json(payload: dict[str, Any]) -> str:
     return json.dumps(payload, indent=2, default=str)
+
+
+def _workspace_path(core: Any) -> Path:
+    config = getattr(core, "config", None)
+    workspace = getattr(config, "workspace_path", None)
+    if workspace is None:
+        conversation_manager = getattr(core, "conversation_manager", None)
+        workspace = getattr(conversation_manager, "workspace_path", None)
+    return Path(workspace or Path.cwd()).expanduser().resolve()
 
 
 def _safe_segment(value: str) -> str:

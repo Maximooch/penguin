@@ -7,7 +7,7 @@ import logging
 from typing import Any
 
 from penguin.integrations.mcp.config import load_mcp_server_configs
-from penguin.integrations.mcp.manager import MCPClientManager
+from penguin.integrations.mcp.manager import HAS_MCP_SDK, MCPClientManager
 from penguin.integrations.mcp.names import is_mcp_tool_name
 
 logger = logging.getLogger(__name__)
@@ -63,13 +63,23 @@ class MCPToolProvider:
         try:
             result = self.manager.call_tool_sync(tool_name, tool_input or {})
             return json.dumps({"status": "ok", "result": result}, indent=2)
-        except Exception as exc:
-            logger.warning("MCP tool '%s' failed: %s", tool_name, exc)
+        except (ValueError, RuntimeError) as exc:
+            logger.debug("MCP tool '%s' expected failure: %s", tool_name, exc)
             return json.dumps(
                 {
                     "error": "mcp_tool_error",
                     "tool": tool_name,
-                    "message": str(exc),
+                    "message": "MCP tool invocation failed.",
+                },
+                indent=2,
+            )
+        except Exception:
+            logger.exception("MCP tool '%s' unexpected failure", tool_name)
+            return json.dumps(
+                {
+                    "error": "internal_mcp_error",
+                    "tool": tool_name,
+                    "message": "internal error",
                 },
                 indent=2,
             )
@@ -109,7 +119,7 @@ class MCPToolProvider:
             return {
                 "enabled": self.enabled,
                 "initialized": False,
-                "available": None,
+                "available": bool(HAS_MCP_SDK),
                 "discovered": False,
                 "server_count": len(load_mcp_server_configs(self.config)),
                 "tool_count": 0,

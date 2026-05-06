@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -52,7 +52,7 @@ def build_pm_tools(core: Any) -> list[MCPServerTool]:
                 setattr(project, attr, arguments[attr])
                 changed = True
         if changed:
-            project.updated_at = datetime.utcnow().isoformat()
+            project.updated_at = datetime.now(timezone.utc).isoformat()
             project_manager.storage.update_project(project)
         return {"project": serialize_project_payload(project)}
 
@@ -108,7 +108,7 @@ def build_pm_tools(core: Any) -> list[MCPServerTool]:
                 setattr(task, attr, arguments[attr])
                 changed = True
         if changed:
-            task.updated_at = datetime.utcnow().isoformat()
+            task.updated_at = datetime.now(timezone.utc).isoformat()
             project_manager.storage.update_task(task)
         return {"task": serialize_task_payload(task)}
 
@@ -274,7 +274,13 @@ def _parse_status(value: Any) -> Optional[TaskStatus]:
     text = _optional_str(value)
     if text is None:
         return None
-    return TaskStatus(text.lower())
+    try:
+        return TaskStatus(text.lower())
+    except ValueError as exc:
+        valid = ", ".join(status.value for status in TaskStatus)
+        raise ValueError(
+            f"invalid status {text!r}, valid statuses are: {valid}"
+        ) from exc
 
 
 __all__ = ["build_pm_tools"]

@@ -104,7 +104,7 @@ class ProjectManager:
         status: Optional[str] = None,
         project_id: Optional[str] = None,
         task_id: Optional[str] = None,
-        limit: int = 50,
+        limit: Optional[int] = 50,
     ) -> List[RuntimeJobRecord]:
         """List durable runtime job records with optional filters."""
         return self.storage.list_runtime_jobs(
@@ -871,6 +871,14 @@ class ProjectManager:
             return False
 
         return False
+
+    def get_unsatisfied_dependencies(
+        self,
+        task: Task,
+        task_map: Optional[Dict[str, Task]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return dependency details that currently block a task."""
+        return self._get_unsatisfied_dependencies(task, task_map)
 
     def _get_unsatisfied_dependencies(
         self,

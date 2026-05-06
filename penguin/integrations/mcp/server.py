@@ -286,8 +286,14 @@ def build_penguin_mcp_server(
         tool_manager,
         PenguinMCPServerConfig(
             name=name,
-            allow_tools=tuple(allow_tools or DEFAULT_EXPOSED_TOOLS),
-            deny_patterns=tuple(deny_patterns or DEFAULT_DENIED_PATTERNS),
+            allow_tools=(
+                tuple(allow_tools) if allow_tools is not None else DEFAULT_EXPOSED_TOOLS
+            ),
+            deny_patterns=(
+                tuple(deny_patterns)
+                if deny_patterns is not None
+                else DEFAULT_DENIED_PATTERNS
+            ),
             expose_pm_tools=expose_pm_tools,
             expose_blueprint_tools=expose_blueprint_tools,
             expose_runtime_tools=expose_runtime_tools,
@@ -339,6 +345,7 @@ def configure_stdio_logging() -> None:
         level=logging.INFO,
         stream=sys.stderr,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        force=True,
     )
 
 

@@ -6,7 +6,7 @@ import asyncio
 import threading
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional
 
 from penguin.integrations.mcp.server_tools.base import MCPServerTool
@@ -26,8 +26,8 @@ class RunModeJobRecord:
     status: str = "pending"
     project_id: Optional[str] = None
     task_id: Optional[str] = None
-    started_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
-    updated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    started_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     finished_at: Optional[str] = None
     result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
@@ -194,7 +194,7 @@ class RunModeJobRegistry:
                     "registry": self.summary(),
                 }
             record.cancel_requested = True
-            record.cancel_requested_at = datetime.utcnow().isoformat()
+            record.cancel_requested_at = datetime.now(timezone.utc).isoformat()
             record.updated_at = record.cancel_requested_at
             record.metadata["cancel_reason"] = reason
             record.status = "cancel_requested"
@@ -257,7 +257,7 @@ class RunModeJobRegistry:
         with self._lock:
             record = self._jobs[job_id]
             record.status = "running"
-            record.updated_at = datetime.utcnow().isoformat()
+            record.updated_at = datetime.now(timezone.utc).isoformat()
         self._persist(record)
         try:
             result = asyncio.run(runner(record))
@@ -267,7 +267,7 @@ class RunModeJobRegistry:
                 if record.cancel_requested and mapped_status == "completed":
                     record.metadata["completed_after_cancel_requested"] = True
                 record.status = mapped_status
-                record.finished_at = datetime.utcnow().isoformat()
+                record.finished_at = datetime.now(timezone.utc).isoformat()
                 record.updated_at = record.finished_at
                 record.cancel_callback = None
             self._persist(record)
@@ -275,7 +275,7 @@ class RunModeJobRegistry:
             with self._lock:
                 record.status = "failed"
                 record.error = str(exc)
-                record.finished_at = datetime.utcnow().isoformat()
+                record.finished_at = datetime.now(timezone.utc).isoformat()
                 record.updated_at = record.finished_at
                 record.cancel_callback = None
             self._persist(record)
@@ -350,7 +350,7 @@ class RunModeJobRegistry:
             status=status,
             project_id=project_id,
             task_id=task_id,
-            limit=100,
+            limit=None,
         )
         payloads = []
         for record in records:
@@ -380,7 +380,7 @@ class RunModeJobRegistry:
         record.cancel_requested = True
         record.cancel_reason = reason
         record.status = "cancel_requested"
-        record.updated_at = datetime.utcnow().isoformat()
+        record.updated_at = datetime.now(timezone.utc).isoformat()
         record.metadata["cancel_request_without_live_handle"] = True
         self.project_manager.upsert_runtime_job(record)
 
@@ -555,7 +555,40 @@ async def _execute_project_job(
         session_id=arguments.get("session_id"),
         directory=arguments.get("directory"),
     )
-    return {"status": "completed", "execution": result}
+    payload = result if isinstance(result, dict) else {"result": result}
+    status = _job_status_from_result(payload)
+    if status == "completed":
+        raw_status = str(payload.get("status") or "").lower()
+        if raw_status in {"error", "failed", "failure"}:
+            status = "failed"
+    return {"status": status, "execution": payload}
+
+
+def _resolve_project_id(core: Any, project_identifier: str) -> Optional[str]:
+    """Resolve a project identifier/name to a canonical project ID when possible."""
+    project_manager = getattr(core, "project_manager", None)
+    if project_manager is None:
+        return None
+    get_project = getattr(project_manager, "get_project", None)
+    project = get_project(project_identifier) if callable(get_project) else None
+    if project is not None:
+        return project.id
+    get_by_name = getattr(project_manager, "get_project_by_name", None)
+    if callable(get_by_name):
+        project = get_by_name(project_identifier)
+        if project is not None:
+            return project.id
+    return None
+
+
+def _resolve_task_project_id(core: Any, task_id: str) -> Optional[str]:
+    """Resolve the project ID for a task when ProjectManager is available."""
+    project_manager = getattr(core, "project_manager", None)
+    if project_manager is None:
+        return None
+    get_task = getattr(project_manager, "get_task", None)
+    task = get_task(task_id) if callable(get_task) else None
+    return getattr(task, "project_id", None) if task is not None else None
 
 
 def _request_runmode_shutdown(run_mode: Any) -> bool:
@@ -675,12 +708,14 @@ def build_runmode_tools(
         task_id = arguments.get("task_id")
         if not task_id:
             return {"error": "missing_task_id", "message": "task_id is required."}
+        canonical_project_id = _resolve_task_project_id(core, str(task_id)) or arguments.get("project_id")
         return job_registry.start_job(
             kind="task",
             runner=lambda job: _execute_task_job(core, arguments, job),
             task_id=str(task_id),
-            project_id=arguments.get("project_id"),
+            project_id=canonical_project_id,
             metadata={
+                "project_lookup": arguments.get("project_id"),
                 "session_id": arguments.get("session_id"),
                 "directory": arguments.get("directory"),
             },
@@ -698,12 +733,14 @@ def build_runmode_tools(
             return {"error": "missing_task_id", "message": "task_id is required."}
         if not arguments.get("answer"):
             return {"error": "missing_answer", "message": "answer is required."}
+        canonical_project_id = _resolve_task_project_id(core, str(task_id)) or arguments.get("project_id")
         return job_registry.start_job(
             kind="clarification_resume",
             runner=lambda job: _resume_clarification_job(core, arguments, job),
             task_id=str(task_id),
-            project_id=arguments.get("project_id"),
+            project_id=canonical_project_id,
             metadata={
+                "project_lookup": arguments.get("project_id"),
                 "answered_by": arguments.get("answered_by"),
                 "session_id": arguments.get("session_id"),
                 "directory": arguments.get("directory"),
@@ -721,11 +758,13 @@ def build_runmode_tools(
                 "error": "missing_project_identifier",
                 "message": "project_id, project_identifier, or project_name is required.",
             }
+        canonical_project_id = _resolve_project_id(core, str(project_identifier)) or str(project_identifier)
         return job_registry.start_job(
             kind="project",
             runner=lambda job: _execute_project_job(core, arguments, job),
-            project_id=str(project_identifier),
+            project_id=canonical_project_id,
             metadata={
+                "project_lookup": str(project_identifier),
                 "continuous": bool(arguments.get("continuous", False)),
                 "time_limit": arguments.get("time_limit"),
                 "session_id": arguments.get("session_id"),
