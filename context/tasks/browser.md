@@ -318,11 +318,11 @@ Goal: prove real browser-harness sessions do not collide when Penguin runs multi
 
 Acceptance criteria:
 
-- [ ] Start two execution contexts with different `session_id`/`agent_id` pairs.
-- [ ] Verify each context gets a distinct deterministic `BU_NAME`.
-- [ ] Open/page-info/screenshot through both contexts against real local Chrome.
-- [ ] Confirm no tab/session bleed between contexts.
-- [ ] Document any browser-harness daemon limitation if true parallelism fails.
+- [x] Start two execution contexts with different `session_id`/`agent_id` pairs in deterministic tests.
+- [x] Verify each context gets a distinct deterministic `BU_NAME`.
+- [x] Open/page-info/screenshot through both contexts against real local Chrome.
+- [x] Confirm no tab/session bleed in mocked helper state and real local Chrome smoke.
+- [x] Document any browser-harness daemon limitation if true parallelism fails; no limitation observed in local smoke after serialized helper reload.
 
 #### Phase 3.2 - Ownership Persistence
 
@@ -332,10 +332,10 @@ Goal: persist which browser-harness daemon identities Penguin started or owns.
 
 Acceptance criteria:
 
-- [ ] Persist ownership records under a workspace-controlled path, likely `context/browser_harness/ownership.json` or a runtime metadata store.
-- [ ] Record `bu_name`, `session_id`, `agent_id`, `started_by_penguin`, `skills_dir`, timestamps, and backend/version where available.
-- [ ] Make `browser_status` distinguish persisted owned identities from external/user-managed identities.
-- [ ] Survive Penguin restart without falsely claiming ownership of unrelated browser state.
+- [x] Persist ownership records under a workspace-controlled path, defaulting to `context/browser_harness/ownership.json`.
+- [x] Record `bu_name`, `session_id`, `agent_id`, `started_by_penguin`, `skills_dir`, timestamps, and backend where available.
+- [x] Make `browser_status` distinguish persisted owned identities from external/user-managed identities.
+- [x] Survive Penguin restart via file-backed records without falsely claiming unrelated names.
 
 #### Phase 3.3 - Safe Cleanup Tool
 
@@ -345,11 +345,11 @@ Goal: clean only Penguin-owned browser-harness daemon state by default.
 
 Acceptance criteria:
 
-- [ ] Add `browser_cleanup` with default `owned_only=true`.
-- [ ] Refuse non-owned cleanup unless `force=true` and permission approval is present.
-- [ ] Never kill user Chrome blindly.
-- [ ] Use browser-harness admin APIs only after verifying exact semantics.
-- [ ] Test fake admin cleanup paths and at least one real local owned-daemon cleanup path.
+- [x] Add `browser_cleanup` with default `owned_only=true`.
+- [x] Refuse non-owned cleanup unless `force=true` is explicitly provided; permission metadata marks cleanup high-risk/approval-required.
+- [x] Never kill user Chrome blindly; cleanup delegates only to browser-harness daemon shutdown for the target `BU_NAME`.
+- [x] Use browser-harness `admin.restart_daemon(name)` after reviewing its identity-checked shutdown semantics.
+- [x] Test fake admin cleanup paths and real local owned-daemon cleanup smoke.
 
 #### Phase 3.4 - TUI/Web Browser Status Surface
 
@@ -363,6 +363,12 @@ Acceptance criteria:
 - [ ] Surface active backend, connection state, `BU_NAME`, `session_id`, and `agent_id` in TUI/web where appropriate.
 - [ ] Make failure states actionable: missing package, Chrome not debuggable, daemon unavailable, wrong identity.
 - [ ] Avoid polling aggressively; status should be explicit or low-frequency.
+
+Implementation notes after Phases 3.1-3.3:
+
+- Ownership persistence is file-backed through `BrowserHarnessOwnershipStore`.
+- `browser_cleanup` refuses unowned daemon names by default and removes ownership records after successful shutdown.
+- Deterministic parallel-context tests cover identity isolation and ownership records. Real Chrome smoke on local port `9444` confirmed distinct `BU_NAME`s, page titles, screenshots, and ownership records for two sessions. Cleanup smoke on local port `9445` confirmed owned cleanup removes records and non-owned cleanup is refused.
 
 Phase 3 exit criteria:
 

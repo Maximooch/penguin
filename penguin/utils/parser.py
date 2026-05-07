@@ -123,6 +123,7 @@ class ActionType(Enum):
     BROWSER_SCREENSHOT = "browser_screenshot"
     READ_IMAGE = "read_image"
     BROWSER_STATUS = "browser_status"
+    BROWSER_CLEANUP = "browser_cleanup"
     BROWSER_OPEN_TAB = "browser_open_tab"
     BROWSER_PAGE_INFO = "browser_page_info"
     BROWSER_HARNESS_SCREENSHOT = "browser_harness_screenshot"
@@ -1625,6 +1626,9 @@ class ActionExecutor:
             ActionType.READ_IMAGE: self._read_image,
             ActionType.BROWSER_STATUS: lambda params: self._browser_harness_tool(
                 "browser_status", params
+            ),
+            ActionType.BROWSER_CLEANUP: lambda params: self._browser_harness_tool(
+                "browser_cleanup", params
             ),
             ActionType.BROWSER_OPEN_TAB: lambda params: self._browser_harness_tool(
                 "browser_open_tab", params

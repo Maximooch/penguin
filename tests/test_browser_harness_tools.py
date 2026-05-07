@@ -70,7 +70,11 @@ def test_browser_harness_domain_skill_lookup_is_gated(tmp_path: Path) -> None:
 
 
 def test_browser_harness_tools_register_without_optional_dependency() -> None:
-    manager = ToolManager(config={}, log_error_func=_dummy_log_error, fast_startup=True)
+    manager = ToolManager(
+        config={},
+        log_error_func=_dummy_log_error,
+        fast_startup=True,
+    )
     names = {schema["name"] for schema in manager.tools}
 
     assert "browser_open_tab" in names
@@ -79,8 +83,14 @@ def test_browser_harness_tools_register_without_optional_dependency() -> None:
     assert "browser_open_tab" in manager._tool_registry
 
 
-def test_browser_harness_missing_dependency_returns_actionable_error(monkeypatch) -> None:
-    manager = ToolManager(config={}, log_error_func=_dummy_log_error, fast_startup=True)
+def test_browser_harness_missing_dependency_returns_actionable_error(
+    monkeypatch,
+) -> None:
+    manager = ToolManager(
+        config={},
+        log_error_func=_dummy_log_error,
+        fast_startup=True,
+    )
 
     real_import = __import__
 
@@ -177,10 +187,7 @@ class _FakeBrowserHarnessModules:
         self.events = []
         self.admin = types.ModuleType("browser_harness.admin")
         self.helpers = types.ModuleType("browser_harness.helpers")
-        self.helpers.page_info = lambda: {
-            "url": "https://example.test",
-            "title": "Example",
-        }
+        self.helpers.page_info = self._page_info
         self.helpers.new_tab = self._new_tab
         self.helpers.wait_for_load = self._wait_for_load
         self.helpers.capture_screenshot = self._capture_screenshot
@@ -196,11 +203,23 @@ class _FakeBrowserHarnessModules:
         self.helpers.current_tab = self._current_tab
         self.helpers.switch_tab = self._switch_tab
         self.admin.ensure_daemon = self._ensure_daemon
+        self.admin.restart_daemon = self._restart_daemon
         monkeypatch.setitem(sys.modules, "browser_harness.admin", self.admin)
         monkeypatch.setitem(sys.modules, "browser_harness.helpers", self.helpers)
 
+    def _page_info(self):
+        bu_name = __import__("os").environ.get("BU_NAME", "unknown")
+        self.events.append(("page_info", bu_name))
+        return {
+            "url": f"https://{bu_name}.example.test",
+            "title": f"Example {bu_name}",
+        }
+
     def _ensure_daemon(self, name=None, env=None, wait=60.0):
         self.events.append(("ensure_daemon", name, dict(env or {}), wait))
+
+    def _restart_daemon(self, name=None):
+        self.events.append(("restart_daemon", name))
 
     def _new_tab(self, url):
         self.events.append(("new_tab", url))
@@ -267,6 +286,9 @@ def test_browser_harness_actionxml_tools_parse() -> None:
     assert parse_action('<browser_click>{"x":10,"y":20}</browser_click>')[
         0
     ].action_type == ActionType.BROWSER_CLICK
+    assert parse_action('<browser_cleanup>{}</browser_cleanup>')[0].action_type == (
+        ActionType.BROWSER_CLEANUP
+    )
 
 
 def test_browser_status_registers_and_reports_identity(monkeypatch) -> None:
@@ -286,7 +308,9 @@ def test_browser_status_registers_and_reports_identity(monkeypatch) -> None:
     assert result["identity"]["agent_id"] == "agent.alpha"
     assert result["identity"]["started_by_penguin"] is True
     assert result["identity"]["env"]["PENGUIN_BROWSER_OWNED"] == "1"
-    assert result["page_info"]["title"] == "Example"
+    assert result["page_info"]["title"] == (
+        "Example penguin-session-one-agent.alpha"
+    )
     assert fake.events[0][0] == "ensure_daemon"
     assert fake.events[0][1] == "penguin-session-one-agent.alpha"
 
@@ -302,6 +326,84 @@ def test_browser_tool_identity_is_derived_per_execution_context(monkeypatch) -> 
 
     assert first["identity"]["bu_name"] == "penguin-s1-a1"
     assert second["identity"]["bu_name"] == "penguin-s2-a2"
+
+
+def test_browser_parallel_contexts_persist_separate_ownership(
+    monkeypatch, tmp_path: Path
+) -> None:
+    fake = _FakeBrowserHarnessModules(monkeypatch)
+    ownership_path = tmp_path / "ownership.json"
+    manager = ToolManager(
+        config={"browser": {"harness": {"ownership_path": str(ownership_path)}}},
+        log_error_func=_dummy_log_error,
+        fast_startup=True,
+    )
+
+    with execution_context_scope(ExecutionContext(session_id="s1", agent_id="a1")):
+        first = manager.execute_tool("browser_open_tab", {"url": "https://one.test"})
+    with execution_context_scope(ExecutionContext(session_id="s2", agent_id="a2")):
+        second = manager.execute_tool("browser_open_tab", {"url": "https://two.test"})
+
+    assert first["identity"]["bu_name"] == "penguin-s1-a1"
+    assert second["identity"]["bu_name"] == "penguin-s2-a2"
+    assert first["page_info"]["url"] == "https://penguin-s1-a1.example.test"
+    assert second["page_info"]["url"] == "https://penguin-s2-a2.example.test"
+
+    records = json.loads(ownership_path.read_text())["records"]
+    assert set(records) == {"penguin-s1-a1", "penguin-s2-a2"}
+    assert records["penguin-s1-a1"]["session_id"] == "s1"
+    assert records["penguin-s2-a2"]["agent_id"] == "a2"
+    expected_event = (
+        "ensure_daemon",
+        "penguin-s1-a1",
+        {
+            "BU_NAME": "penguin-s1-a1",
+            "PENGUIN_BROWSER_OWNED": "1",
+            "PENGUIN_SESSION_ID": "s1",
+            "PENGUIN_AGENT_ID": "a1",
+        },
+        60.0,
+    )
+    assert expected_event in fake.events
+
+
+def test_browser_cleanup_refuses_without_ownership(monkeypatch, tmp_path: Path) -> None:
+    fake = _FakeBrowserHarnessModules(monkeypatch)
+    manager = ToolManager(
+        config={
+            "browser": {
+                "harness": {"ownership_path": str(tmp_path / "owned.json")}
+            }
+        },
+        log_error_func=_dummy_log_error,
+        fast_startup=True,
+    )
+
+    result = manager.execute_tool("browser_cleanup", {"name": "external-daemon"})
+
+    assert "Refusing to clean up" in result["error"]
+    assert not any(event[0] == "restart_daemon" for event in fake.events)
+
+
+def test_browser_cleanup_stops_owned_daemon_and_removes_record(
+    monkeypatch, tmp_path: Path
+) -> None:
+    fake = _FakeBrowserHarnessModules(monkeypatch)
+    ownership_path = tmp_path / "owned.json"
+    manager = ToolManager(
+        config={"browser": {"harness": {"ownership_path": str(ownership_path)}}},
+        log_error_func=_dummy_log_error,
+        fast_startup=True,
+    )
+
+    with execution_context_scope(ExecutionContext(session_id="s1", agent_id="a1")):
+        manager.execute_tool("browser_page_info", {})
+        result = manager.execute_tool("browser_cleanup", {})
+
+    assert result["result"] == "Browser harness daemon cleanup completed"
+    assert result["target"] == "penguin-s1-a1"
+    assert ("restart_daemon", "penguin-s1-a1") in fake.events
+    assert json.loads(ownership_path.read_text())["records"] == {}
 
 
 def test_browser_status_handles_missing_dependency_without_page(monkeypatch) -> None:
@@ -362,10 +464,16 @@ def test_browser_harness_phase_1_dispatch(monkeypatch) -> None:
         "browser_wait",
         {"mode": "element", "selector": "#done", "visible": True},
     )["ok"] is True
-    assert manager.execute_tool("browser_js", {"expression": "1 + 1"})["value"] == 42
+    assert (
+        manager.execute_tool("browser_js", {"expression": "1 + 1"})["value"]
+        == 42
+    )
     tabs_result = manager.execute_tool("browser_list_tabs", {})
     assert tabs_result["tabs"][0]["targetId"] == "target-1"
-    switch_result = manager.execute_tool("browser_switch_tab", {"target_id": "target-1"})
+    switch_result = manager.execute_tool(
+        "browser_switch_tab",
+        {"target_id": "target-1"},
+    )
     assert switch_result["session_id"] == "session-1"
 
     event_names = [event[0] for event in fake.events]
@@ -379,7 +487,10 @@ def test_browser_harness_phase_1_dispatch(monkeypatch) -> None:
     assert "switch_tab" in event_names
 
 
-def test_read_image_tool_returns_multimodal_artifact(tmp_path: Path, monkeypatch) -> None:
+def test_read_image_tool_returns_multimodal_artifact(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     monkeypatch.setenv("PENGUIN_CWD", str(tmp_path))
     image_path = tmp_path / "sample.png"
     Image.new("RGB", (16, 12), color=(255, 0, 0)).save(image_path)

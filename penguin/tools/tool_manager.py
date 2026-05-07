@@ -45,6 +45,7 @@ from penguin.tools.editing.registry import (
     get_edit_tool_schemas,
 )
 from penguin.tools.browser_harness_tools import (
+    BrowserHarnessCleanupTool,
     BrowserHarnessClickTool,
     BrowserHarnessFillTool,
     BrowserHarnessJsTool,
@@ -284,6 +285,7 @@ class ToolManager:
 
             # Browser-harness tools placeholders
             self._browser_harness_status_tool = None
+            self._browser_harness_cleanup_tool = None
             self._browser_harness_open_tab_tool = None
             self._browser_harness_page_info_tool = None
             self._browser_harness_screenshot_tool = None
@@ -358,6 +360,7 @@ class ToolManager:
                 "pydoll_browser_screenshot": "self.pydoll_browser_screenshot_tool.execute",
                 "pydoll_browser_scroll": "self.pydoll_browser_scroll_tool.execute",
                 "browser_status": "self.browser_harness_status_tool.execute",
+                "browser_cleanup": "self.browser_harness_cleanup_tool.execute",
                 "browser_open_tab": "self.browser_harness_open_tab_tool.execute",
                 "browser_page_info": "self.browser_harness_page_info_tool.execute",
                 "browser_harness_screenshot": "self.browser_harness_screenshot_tool.execute",
@@ -953,6 +956,40 @@ class ToolManager:
                     "requires_approval": False,
                     "parallel_safe": True,
                     "risk": "low",
+                },
+            },
+            {
+                "name": "browser_cleanup",
+                "description": "Safely stop a browser-harness daemon. Defaults to Penguin-owned daemon records only.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "owned_only": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "Only clean up daemons with persisted Penguin ownership records",
+                        },
+                        "force": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Allow non-owned cleanup when approval policy permits it",
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "Optional BU_NAME target; defaults to current execution context identity",
+                        },
+                        "dry_run": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Report what would be cleaned without stopping the daemon",
+                        },
+                    },
+                },
+                "x-penguin-permissions": {
+                    "mutates_state": True,
+                    "requires_approval": True,
+                    "parallel_safe": False,
+                    "risk": "high",
                 },
             },
             {
@@ -2210,6 +2247,14 @@ class ToolManager:
                 self._browser_harness_config()
             )
         return self._browser_harness_status_tool
+
+    @property
+    def browser_harness_cleanup_tool(self):
+        if self._browser_harness_cleanup_tool is None:
+            self._browser_harness_cleanup_tool = BrowserHarnessCleanupTool(
+                self._browser_harness_config()
+            )
+        return self._browser_harness_cleanup_tool
 
     @property
     def browser_harness_open_tab_tool(self):
@@ -3701,6 +3746,12 @@ class ToolManager:
                 "browser_status": lambda: self.execute_browser_harness_status(
                     tool_input.get("include_page", True)
                 ),
+                "browser_cleanup": lambda: self.execute_browser_harness_cleanup(
+                    tool_input.get("owned_only", True),
+                    tool_input.get("force", False),
+                    tool_input.get("name"),
+                    tool_input.get("dry_run", False),
+                ),
                 "browser_open_tab": lambda: self.execute_browser_harness_open_tab(
                     tool_input["url"],
                     tool_input.get("wait", True),
@@ -4185,6 +4236,27 @@ class ToolManager:
             return self.browser_harness_status_tool.execute(include_page)
         except Exception as e:
             error_message = f"Error getting browser-harness status: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return {"error": error_message}
+
+    def execute_browser_harness_cleanup(
+        self,
+        owned_only: bool = True,
+        force: bool = False,
+        name: Optional[str] = None,
+        dry_run: bool = False,
+    ) -> Dict[str, Any]:
+        """Safely clean up a browser-harness daemon."""
+        try:
+            return self.browser_harness_cleanup_tool.execute(
+                owned_only,
+                force,
+                name,
+                dry_run,
+            )
+        except Exception as e:
+            error_message = f"Error cleaning browser-harness daemon: {str(e)}"
             logging.error(error_message)
             self.log_error(e, error_message)
             return {"error": error_message}

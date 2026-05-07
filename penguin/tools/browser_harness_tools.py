@@ -11,11 +11,15 @@ import importlib
 import os
 import re
 import socket
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 from penguin.system.execution_context import get_current_execution_context_dict
+from penguin.tools.browser_harness_ownership import BrowserHarnessOwnershipStore
+
+_HELPERS_LOCK = threading.RLock()
 
 
 class BrowserHarnessUnavailableError(RuntimeError):
@@ -36,7 +40,9 @@ class BrowserHarnessAdapter:
         execution_context: Optional[Dict[str, Any]] = None,
     ):
         self.config = config or {}
-        self.execution_context = execution_context or {}
+        self.execution_context = (
+            execution_context or get_current_execution_context_dict()
+        )
 
     @property
     def session_id(self) -> Optional[str]:
@@ -84,6 +90,17 @@ class BrowserHarnessAdapter:
     def domain_skills_enabled(self) -> bool:
         return bool(self.config.get("domain_skills"))
 
+    @property
+    def ownership_path(self) -> str:
+        value = self.config.get("ownership_path")
+        if value:
+            return str(Path(str(value)).expanduser())
+        return str(BrowserHarnessOwnershipStore.default_path())
+
+    @property
+    def ownership_store(self) -> BrowserHarnessOwnershipStore:
+        return BrowserHarnessOwnershipStore(self.ownership_path)
+
     def _base_env(self) -> Dict[str, str]:
         env = {"BU_NAME": self.name}
         env["PENGUIN_BROWSER_OWNED"] = "1" if self.started_by_penguin else "0"
@@ -95,6 +112,12 @@ class BrowserHarnessAdapter:
             env["BH_AGENT_WORKSPACE"] = str(Path(self.skills_dir).expanduser())
         if self.domain_skills_enabled:
             env["BH_DOMAIN_SKILLS"] = "1"
+        if self.config.get("cdp_url"):
+            env["BU_CDP_URL"] = str(self.config["cdp_url"])
+        if self.config.get("cdp_ws"):
+            env["BU_CDP_WS"] = str(self.config["cdp_ws"])
+        if self.config.get("tmp_dir"):
+            env["BH_TMP_DIR"] = str(Path(str(self.config["tmp_dir"])).expanduser())
         return env
 
     def _domain_skill_roots(self) -> List[Path]:
@@ -189,6 +212,17 @@ class BrowserHarnessAdapter:
         try:
             admin = importlib.import_module("browser_harness.admin")
             helpers = importlib.import_module("browser_harness.helpers")
+            expected_name = (env or {}).get("BU_NAME")
+            if (
+                expected_name
+                and getattr(admin, "NAME", expected_name) != expected_name
+            ):
+                admin = importlib.reload(admin)
+            if (
+                expected_name
+                and getattr(helpers, "NAME", expected_name) != expected_name
+            ):
+                helpers = importlib.reload(helpers)
         except ModuleNotFoundError as exc:
             raise BrowserHarnessUnavailableError(
                 "browser-harness is not installed. Install Penguin with the "
@@ -196,7 +230,7 @@ class BrowserHarnessAdapter:
             ) from exc
         return admin, helpers
 
-    def _ensure_ready(self):
+    def _ensure_ready_unlocked(self):
         env = self._base_env()
         admin, helpers = self._load_modules(env)
         try:
@@ -208,7 +242,13 @@ class BrowserHarnessAdapter:
                 "chrome://inspect/#remote-debugging, then retry. "
                 f"Original error: {exc}"
             ) from exc
+        if self.started_by_penguin:
+            self.ownership_store.record_started(self.identity())
         return helpers
+
+    def _ensure_ready(self):
+        with _HELPERS_LOCK:
+            return self._ensure_ready_unlocked()
 
     def identity(self) -> Dict[str, Any]:
         return {
@@ -219,18 +259,28 @@ class BrowserHarnessAdapter:
             "skills_dir": self.skills_dir,
             "domain_skills_enabled": self.domain_skills_enabled,
             "started_by_penguin": self.started_by_penguin,
+            "ownership_path": self.ownership_path,
             "env": self._base_env(),
         }
 
     def status(self, include_page: bool = True) -> Dict[str, Any]:
+        ownership_record = self.ownership_store.get(self.name)
         payload: Dict[str, Any] = {
             "result": "Browser harness status",
             "identity": self.identity(),
+            "ownership": {
+                "owned_by_penguin": bool(
+                    ownership_record and ownership_record.get("started_by_penguin")
+                ),
+                "record": ownership_record,
+                "path": self.ownership_path,
+            },
             "python": {"executable": os.sys.executable},
             "host": {"hostname": socket.gethostname()},
         }
         try:
-            helpers = self._ensure_ready()
+            with _HELPERS_LOCK:
+                helpers = self._ensure_ready_unlocked()
         except BrowserHarnessUnavailableError as exc:
             payload["connected"] = False
             payload["error"] = str(exc)
@@ -246,16 +296,87 @@ class BrowserHarnessAdapter:
                 )
         return payload
 
+    def cleanup(
+        self,
+        owned_only: bool = True,
+        force: bool = False,
+        name: Optional[str] = None,
+        dry_run: bool = False,
+    ) -> Dict[str, Any]:
+        target_name = _slug(name or self.name)
+        record = self.ownership_store.get(target_name)
+        owned_by_penguin = bool(record and record.get("started_by_penguin"))
+
+        if owned_only and not owned_by_penguin:
+            return {
+                "error": (
+                    "Refusing to clean up browser-harness daemon without "
+                    "Penguin ownership record"
+                ),
+                "target": target_name,
+                "owned_only": owned_only,
+                "owned_by_penguin": False,
+                "ownership_path": self.ownership_path,
+            }
+
+        if not owned_by_penguin and not force:
+            return {
+                "error": (
+                    "Refusing to clean up non-owned browser-harness daemon "
+                    "without force=true"
+                ),
+                "target": target_name,
+                "owned_only": owned_only,
+                "owned_by_penguin": False,
+                "ownership_path": self.ownership_path,
+            }
+
+        if dry_run:
+            return {
+                "result": "Browser cleanup dry run",
+                "target": target_name,
+                "would_cleanup": True,
+                "owned_by_penguin": owned_by_penguin,
+                "record": record,
+                "ownership_path": self.ownership_path,
+            }
+
+        env = self._base_env()
+        env["BU_NAME"] = target_name
+        admin, _helpers = self._load_modules(env)
+        try:
+            admin.restart_daemon(target_name)
+        except Exception as exc:
+            return {
+                "error": (
+                    "Failed to clean up browser-harness daemon "
+                    f"{target_name}: {exc}"
+                ),
+                "target": target_name,
+                "owned_by_penguin": owned_by_penguin,
+                "ownership_path": self.ownership_path,
+            }
+
+        removed = self.ownership_store.remove(target_name)
+        return {
+            "result": "Browser harness daemon cleanup completed",
+            "target": target_name,
+            "owned_by_penguin": owned_by_penguin,
+            "removed_record": removed,
+            "ownership_path": self.ownership_path,
+        }
+
     def open_tab(
         self,
         url: str,
         wait: bool = True,
         timeout: float = 15.0,
     ) -> Dict[str, Any]:
-        helpers = self._ensure_ready()
-        target_id = helpers.new_tab(url)
-        loaded = helpers.wait_for_load(timeout=timeout) if wait else None
-        info = helpers.page_info()
+        with _HELPERS_LOCK:
+            helpers = self._ensure_ready_unlocked()
+            target_id = helpers.new_tab(url)
+            loaded = helpers.wait_for_load(timeout=timeout) if wait else None
+            info = helpers.page_info()
         result = {
             "result": "Opened browser tab",
             "target_id": target_id,
@@ -269,8 +390,9 @@ class BrowserHarnessAdapter:
         return result
 
     def page_info(self) -> Dict[str, Any]:
-        helpers = self._ensure_ready()
-        info = helpers.page_info()
+        with _HELPERS_LOCK:
+            helpers = self._ensure_ready_unlocked()
+            info = helpers.page_info()
         return {
             "result": "Browser page info",
             "page_info": info,
@@ -285,7 +407,6 @@ class BrowserHarnessAdapter:
         max_dim: Optional[int] = None,
         output_dir: Optional[str] = None,
     ) -> Dict[str, Any]:
-        helpers = self._ensure_ready()
         directory = Path(
             output_dir
             or self.config.get("screenshot_dir")
@@ -295,11 +416,15 @@ class BrowserHarnessAdapter:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filepath = directory / f"browser_harness_screenshot_{timestamp}.png"
         resolved_max_dim = self.screenshot_max_dim if max_dim is None else max_dim
-        saved_path = helpers.capture_screenshot(
-            path=str(filepath),
-            full=full,
-            max_dim=resolved_max_dim,
-        )
+
+        with _HELPERS_LOCK:
+            helpers = self._ensure_ready_unlocked()
+            saved_path = helpers.capture_screenshot(
+                path=str(filepath),
+                full=full,
+                max_dim=resolved_max_dim,
+            )
+
         path = Path(saved_path)
         if not path.exists():
             return {"error": f"Screenshot was not saved: {saved_path}"}
@@ -328,8 +453,10 @@ class BrowserHarnessAdapter:
         clicks: int = 1,
         return_page_info: bool = True,
     ) -> Dict[str, Any]:
-        helpers = self._ensure_ready()
-        helpers.click_at_xy(x, y, button=button, clicks=clicks)
+        with _HELPERS_LOCK:
+            helpers = self._ensure_ready_unlocked()
+            helpers.click_at_xy(x, y, button=button, clicks=clicks)
+            page_info = helpers.page_info() if return_page_info else None
         result: Dict[str, Any] = {
             "result": "Clicked browser coordinates",
             "x": x,
@@ -339,12 +466,13 @@ class BrowserHarnessAdapter:
             "backend": "browser-harness",
         }
         if return_page_info:
-            result["page_info"] = helpers.page_info()
+            result["page_info"] = page_info
         return result
 
     def type_text(self, text: str) -> Dict[str, Any]:
-        helpers = self._ensure_ready()
-        helpers.type_text(text)
+        with _HELPERS_LOCK:
+            helpers = self._ensure_ready_unlocked()
+            helpers.type_text(text)
         return {
             "result": "Typed text",
             "text_length": len(text),
@@ -352,8 +480,9 @@ class BrowserHarnessAdapter:
         }
 
     def press_key(self, key: str, modifiers: int = 0) -> Dict[str, Any]:
-        helpers = self._ensure_ready()
-        helpers.press_key(key, modifiers=modifiers)
+        with _HELPERS_LOCK:
+            helpers = self._ensure_ready_unlocked()
+            helpers.press_key(key, modifiers=modifiers)
         return {
             "result": "Pressed key",
             "key": key,
@@ -368,13 +497,14 @@ class BrowserHarnessAdapter:
         clear_first: bool = True,
         timeout: float = 0.0,
     ) -> Dict[str, Any]:
-        helpers = self._ensure_ready()
-        helpers.fill_input(
-            selector,
-            text,
-            clear_first=clear_first,
-            timeout=timeout,
-        )
+        with _HELPERS_LOCK:
+            helpers = self._ensure_ready_unlocked()
+            helpers.fill_input(
+                selector,
+                text,
+                clear_first=clear_first,
+                timeout=timeout,
+            )
         return {
             "result": "Filled input",
             "selector": selector,
@@ -392,30 +522,31 @@ class BrowserHarnessAdapter:
         idle_ms: int = 500,
         seconds: Optional[float] = None,
     ) -> Dict[str, Any]:
-        helpers = self._ensure_ready()
-        if mode == "load":
-            ok = helpers.wait_for_load(timeout=timeout)
-        elif mode == "element":
-            if not selector:
-                return {"error": "browser_wait mode='element' requires selector"}
-            ok = helpers.wait_for_element(
-                selector,
-                timeout=timeout,
-                visible=visible,
-            )
-        elif mode == "network_idle":
-            ok = helpers.wait_for_network_idle(timeout=timeout, idle_ms=idle_ms)
-        elif mode == "sleep":
-            duration = seconds if seconds is not None else timeout
-            helpers.wait(duration)
-            ok = True
-        else:
-            return {
-                "error": (
-                    "browser_wait mode must be one of: "
-                    "load, element, network_idle, sleep"
+        with _HELPERS_LOCK:
+            helpers = self._ensure_ready_unlocked()
+            if mode == "load":
+                ok = helpers.wait_for_load(timeout=timeout)
+            elif mode == "element":
+                if not selector:
+                    return {"error": "browser_wait mode='element' requires selector"}
+                ok = helpers.wait_for_element(
+                    selector,
+                    timeout=timeout,
+                    visible=visible,
                 )
-            }
+            elif mode == "network_idle":
+                ok = helpers.wait_for_network_idle(timeout=timeout, idle_ms=idle_ms)
+            elif mode == "sleep":
+                duration = seconds if seconds is not None else timeout
+                helpers.wait(duration)
+                ok = True
+            else:
+                return {
+                    "error": (
+                        "browser_wait mode must be one of: "
+                        "load, element, network_idle, sleep"
+                    )
+                }
         return {
             "result": "Wait completed" if ok else "Wait timed out",
             "ok": bool(ok),
@@ -429,8 +560,9 @@ class BrowserHarnessAdapter:
         expression: str,
         target_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        helpers = self._ensure_ready()
-        value = helpers.js(expression, target_id=target_id)
+        with _HELPERS_LOCK:
+            helpers = self._ensure_ready_unlocked()
+            value = helpers.js(expression, target_id=target_id)
         return {
             "result": "JavaScript evaluated",
             "value": value,
@@ -438,9 +570,10 @@ class BrowserHarnessAdapter:
         }
 
     def list_tabs(self, include_chrome: bool = False) -> Dict[str, Any]:
-        helpers = self._ensure_ready()
-        tabs = helpers.list_tabs(include_chrome=include_chrome)
-        current = helpers.current_tab()
+        with _HELPERS_LOCK:
+            helpers = self._ensure_ready_unlocked()
+            tabs = helpers.list_tabs(include_chrome=include_chrome)
+            current = helpers.current_tab()
         return {
             "result": "Listed browser tabs",
             "tabs": tabs,
@@ -449,13 +582,15 @@ class BrowserHarnessAdapter:
         }
 
     def switch_tab(self, target_id: str) -> Dict[str, Any]:
-        helpers = self._ensure_ready()
-        session_id = helpers.switch_tab(target_id)
+        with _HELPERS_LOCK:
+            helpers = self._ensure_ready_unlocked()
+            session_id = helpers.switch_tab(target_id)
+            info = helpers.page_info()
         return {
             "result": "Switched browser tab",
             "target_id": target_id,
             "session_id": session_id,
-            "page_info": helpers.page_info(),
+            "page_info": info,
             "backend": "browser-harness",
         }
 
@@ -466,6 +601,25 @@ class BrowserHarnessStatusTool:
 
     def execute(self, include_page: bool = True) -> Dict[str, Any]:
         return _runtime_adapter(self.config).status(include_page=include_page)
+
+
+class BrowserHarnessCleanupTool:
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        self.config = config or {}
+
+    def execute(
+        self,
+        owned_only: bool = True,
+        force: bool = False,
+        name: Optional[str] = None,
+        dry_run: bool = False,
+    ) -> Dict[str, Any]:
+        return _runtime_adapter(self.config).cleanup(
+            owned_only=owned_only,
+            force=force,
+            name=name,
+            dry_run=dry_run,
+        )
 
 
 def _runtime_adapter(config: Optional[Dict[str, Any]] = None) -> BrowserHarnessAdapter:

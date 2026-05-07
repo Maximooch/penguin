@@ -1018,6 +1018,19 @@ Report browser-harness identity, ownership, dependency, connection, and optional
 Use this when browser setup fails, subagents may be sharing state accidentally,
 or you need to verify the active `BU_NAME`/session/agent identity.
 
+### browser_cleanup
+Safely stop browser-harness daemon state. Defaults to Penguin-owned daemon records only.
+
+**Native tool call:** call `browser_cleanup` with `{}` or `{"owned_only":true}`.
+
+**ActionXML fallback example:**
+```actionxml
+<browser_cleanup>{"owned_only":true}</browser_cleanup>
+```
+
+Never use forced cleanup for user/external daemons unless explicitly approved.
+Prefer `browser_status` first to verify `BU_NAME`, ownership, and active page state.
+
 ### browser_open_tab
 Open a URL in a new browser-harness tab.
 
