@@ -130,16 +130,16 @@ llm_ollama = ["ollama>=0.1.7"]
 # Orchestration (Temporal for durable workflows)
 orchestration = ["temporalio>=1.5.0"]
 
-# PyDoll browser automation (optional - no WebDriver required)
+# PyDoll browser automation fallback (optional - no WebDriver required)
 pydoll = [
     "pydoll-python>=2.0.0; python_version>='3.10'",  # Requires Python 3.10+
 ]
 
-# Browser automation (browser_use temporarily disabled)
+# Browser automation support. browser-harness is not published on PyPI yet,
+# so this extra installs the PyPI-available fallback and users must install
+# browser-harness from a local checkout/source tree separately.
 browser = [
-    "browser_use>=0.1.0; python_version>='3.11'",  # Requires Python 3.11+
-    "playwright>=1.40.0",
-    "pillow>=8.3.0"
+    "pydoll-python>=2.0.0; python_version>='3.10'",
 ]
 
 # Development tools
@@ -184,8 +184,7 @@ all = [
     "ollama>=0.1.7",
     "temporalio>=1.5.0",
     "pydoll-python>=2.0.0; python_version>='3.10'",
-    "browser_use>=0.1.0; python_version>='3.11'",
-    "playwright>=1.40.0",
+    # browser-harness is not on PyPI; install it separately from source.
     "textual",
 ]
 

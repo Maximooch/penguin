@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import datetime
 import importlib
+import importlib.metadata
+import importlib.util
 import os
 import re
 import socket
@@ -100,6 +102,59 @@ class BrowserHarnessAdapter:
     @property
     def ownership_store(self) -> BrowserHarnessOwnershipStore:
         return BrowserHarnessOwnershipStore(self.ownership_path)
+
+    @staticmethod
+    def _distribution_version(*names: str) -> Optional[str]:
+        for name in names:
+            try:
+                return importlib.metadata.version(name)
+            except importlib.metadata.PackageNotFoundError:
+                continue
+        return None
+
+    @staticmethod
+    def _find_package_path(package_name: str) -> Optional[str]:
+        try:
+            spec = importlib.util.find_spec(package_name)
+        except (ModuleNotFoundError, ValueError):
+            spec = None
+        if spec is None:
+            return None
+        if spec.submodule_search_locations:
+            return str(next(iter(spec.submodule_search_locations)))
+        return str(spec.origin) if spec.origin else None
+
+    def backend_diagnostics(self) -> Dict[str, Any]:
+        harness_path = self._find_package_path("browser_harness")
+        pydoll_path = self._find_package_path("pydoll")
+        return {
+            "contract": "penguin-browser-tools-v1",
+            "selected_backend": "browser-harness",
+            "selected_backend_importable": harness_path is not None,
+            "browser_harness": {
+                "importable": harness_path is not None,
+                "package_path": harness_path,
+                "version": self._distribution_version(
+                    "browser-harness", "browser_harness"
+                ),
+                "pypi_published": False,
+                "python_requires": (
+                    ">=3.11 for browser-harness; Penguin supports >=3.9,<3.13"
+                ),
+                "install_hint": (
+                    "browser-harness is not published on PyPI. Install "
+                    "penguin-ai[browser] for the PyDoll fallback, then install "
+                    "browser-harness from a local checkout/source tree into the "
+                    "same environment."
+                ),
+            },
+            "pydoll_fallback": {
+                "importable": pydoll_path is not None,
+                "package_path": pydoll_path,
+                "version": self._distribution_version("pydoll-python", "pydoll"),
+                "tool_prefix": "pydoll_browser_*",
+            },
+        }
 
     def _base_env(self) -> Dict[str, str]:
         env = {"BU_NAME": self.name}
@@ -225,9 +280,12 @@ class BrowserHarnessAdapter:
                 helpers = importlib.reload(helpers)
         except ModuleNotFoundError as exc:
             raise BrowserHarnessUnavailableError(
-                "browser-harness is not installed. Install Penguin with the "
-                "browser-harness extra or install browser-harness in this environment."
+                "browser-harness is not installed. It is not published on PyPI; "
+                "install `penguin-ai[browser]` for the PyDoll fallback, then "
+                "install browser-harness from a local checkout/source tree into "
+                "the same environment."
             ) from exc
+
         return admin, helpers
 
     def _ensure_ready_unlocked(self):
@@ -277,6 +335,7 @@ class BrowserHarnessAdapter:
             },
             "python": {"executable": os.sys.executable},
             "host": {"hostname": socket.gethostname()},
+            "backend": self.backend_diagnostics(),
         }
         try:
             with _HELPERS_LOCK:

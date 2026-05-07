@@ -10,16 +10,17 @@ The goal is not "add another browser tool." The goal is to make Penguin's browse
 
 ## Current Recommendation
 
-Adopt browser-harness as Penguin's canonical browser backend behind an optional extra/config flag, while keeping PyDoll as a compatibility fallback until harness parity is proven.
+Adopt browser-harness as Penguin's preferred canonical `browser_*` backend when it is installed locally/from source, while keeping PyDoll as the PyPI-available compatibility fallback.
 
-Do **not** hard-depend on browser-harness in Penguin's base install yet.
+Do **not** hard-depend on browser-harness in Penguin's base install or extras while it is not published on PyPI.
 
 Rationale:
 
-- Penguin supports Python `>=3.9,<3.13`; browser-harness requires Python `>=3.11`.
-- Browser-harness currently pins exact dependencies (`cdp-use`, `fetch-use`, `pillow`, `websockets`), which is too aggressive for Penguin's base dependency surface.
+- Penguin supports Python `>=3.9,<3.13`; browser-harness requires newer Python.
+- Browser-harness is not published on PyPI, so `penguin-ai[browser]` cannot honestly install it yet.
+- The `[browser]` extra should install the PyPI-available fallback (`pydoll-python`) and document local/source browser-harness installation.
 - Browser-harness is MIT-licensed, so copying/vendoring is legally feasible, but blindly forking it creates maintenance ownership immediately.
-- The best initial path is optional package/CLI integration, then decide later whether to vendor a small stable core.
+- The best current path is optional local/source library integration behind a stable Penguin-owned adapter contract; vendoring remains an escape hatch if upstream/package instability proves costly.
 
 ## Background
 
@@ -386,16 +387,15 @@ This is the hybrid architecture in practice:
 - Vendoring remains an escape hatch if dependency churn, release instability, or API drift becomes costly.
 
 Phase 4 tasks:
-
-- [ ] Verify browser-harness package source, release cadence, versioning, and install path.
-- [ ] Confirm license compatibility: MIT browser-harness under Penguin's AGPL distribution path.
-- [ ] Confirm Python/dependency constraints and document impact on Penguin's `>=3.9,<3.13` support window.
-- [ ] Decide optional extra name, likely `browser_harness`.
-- [ ] Add dependency only if package source/version story is real and stable enough.
-- [ ] Define the Penguin-owned browser backend adapter contract in docs.
-- [ ] Add backend import/version diagnostics to `browser_status`.
-- [ ] Document fallback matrix: harness available, harness unavailable, Chrome attach unavailable, PyDoll fallback.
-- [ ] Ensure browser-harness-specific assumptions do not leak outside adapter/tools/skill layers.
+- [x] Verify browser-harness package source, release cadence, versioning, and install path: local/source only for now; no PyPI package.
+- [x] Confirm license compatibility: MIT browser-harness under Penguin's AGPL distribution path.
+- [x] Confirm Python/dependency constraints and document impact on Penguin's `>=3.9,<3.13` support window.
+- [x] Decide optional extra name: keep `browser` as the user-facing extra and install the PyPI-available PyDoll fallback there.
+- [x] Do not add a fake browser-harness dependency while package source/version story is not PyPI-resolvable.
+- [x] Define the Penguin-owned browser backend adapter contract in docs: `context/decisions/browser-backend-contract.md`.
+- [x] Add backend import/version diagnostics to `browser_status`.
+- [x] Document fallback matrix: harness available, harness unavailable, Chrome attach unavailable, PyDoll fallback.
+- [x] Ensure browser-harness-specific assumptions do not leak outside adapter/tools/skill layers.
 
 Phase 4 exit criteria:
 

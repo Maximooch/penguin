@@ -566,3 +566,30 @@ def test_browser_harness_permission_operations() -> None:
     assert get_tool_operations("browser_js") == [Operation.NETWORK_POST]
     assert get_tool_operations("browser_wait") == [Operation.NETWORK_FETCH]
     assert get_tool_operations("browser_list_tabs") == [Operation.NETWORK_FETCH]
+
+
+def test_browser_harness_status_reports_backend_diagnostics(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    fake = _FakeBrowserHarnessModules(monkeypatch)
+    manager = ToolManager(
+        config={
+            "browser": {
+                "harness": {
+                    "ownership_path": str(tmp_path / "ownership.json"),
+                }
+            }
+        },
+        log_error_func=_dummy_log_error,
+        fast_startup=True,
+    )
+
+    result = manager.execute_tool("browser_status", {"include_page": False})
+
+    assert result["connected"] is True
+    assert result["backend"]["contract"] == "penguin-browser-tools-v1"
+    assert result["backend"]["browser_harness"]["pypi_published"] is False
+    assert "local checkout" in result["backend"]["browser_harness"]["install_hint"]
+    assert result["backend"]["pydoll_fallback"]["tool_prefix"] == "pydoll_browser_*"
+    assert fake.events[0][0] == "ensure_daemon"
