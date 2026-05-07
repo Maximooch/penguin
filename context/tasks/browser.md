@@ -297,46 +297,105 @@ Exit criteria:
 
 ### Phase 3 - Session/Subagent Isolation And Observability
 
+Completed baseline:
+
 - [x] Map each Penguin session/agent to deterministic `BU_NAME`.
 - [x] Support separate browser daemons for parallel subagents via per-agent/per-session browser identity.
-- [x] Track daemon ownership metadata: `started_by_penguin`, `session_id`, `agent_id`, `bu_name`, and `skills_dir`.
-- [ ] Add safe cleanup semantics for daemons started by Penguin only; never kill user/external daemons by default.
+- [x] Track runtime ownership metadata: `started_by_penguin`, `session_id`, `agent_id`, `bu_name`, and `skills_dir`.
 - [x] Add `browser_status` / doctor tool for active browser connection identity, environment, dependency, and page state.
-- [ ] Surface browser connection state in TUI/web where appropriate.
 
-Notes after Phase 3 partial implementation:
+Notes after Phase 3 baseline implementation:
 
 - `browser_status` reports active browser-harness identity, ownership, environment, dependency/connectivity, and optional page state.
 - Runtime browser tools derive identity per execution context, so separate session/agent contexts produce separate `BU_NAME` values.
-- Safe cleanup is intentionally still deferred until owned-daemon shutdown semantics are verified against browser-harness admin APIs.
+- Cleanup remains intentionally deferred until owned-daemon shutdown semantics are verified against browser-harness admin APIs.
 
-Phase 3 scope decision:
+#### Phase 3.1 - Real Parallel Isolation Test
 
-- Implement isolation and observability first; defer broad auto-shutdown until ownership is explicit and tested.
-- Cleanup must be opt-in for non-owned daemons and conservative for owned daemons.
+Priority: high.
 
-Exit criteria:
+Goal: prove real browser-harness sessions do not collide when Penguin runs multiple sessions/subagents.
 
-- Two subagents can run isolated browser sessions without tab/session collision.
+Acceptance criteria:
+
+- [ ] Start two execution contexts with different `session_id`/`agent_id` pairs.
+- [ ] Verify each context gets a distinct deterministic `BU_NAME`.
+- [ ] Open/page-info/screenshot through both contexts against real local Chrome.
+- [ ] Confirm no tab/session bleed between contexts.
+- [ ] Document any browser-harness daemon limitation if true parallelism fails.
+
+#### Phase 3.2 - Ownership Persistence
+
+Priority: high before cleanup.
+
+Goal: persist which browser-harness daemon identities Penguin started or owns.
+
+Acceptance criteria:
+
+- [ ] Persist ownership records under a workspace-controlled path, likely `context/browser_harness/ownership.json` or a runtime metadata store.
+- [ ] Record `bu_name`, `session_id`, `agent_id`, `started_by_penguin`, `skills_dir`, timestamps, and backend/version where available.
+- [ ] Make `browser_status` distinguish persisted owned identities from external/user-managed identities.
+- [ ] Survive Penguin restart without falsely claiming ownership of unrelated browser state.
+
+#### Phase 3.3 - Safe Cleanup Tool
+
+Priority: medium-high; blocked on Phase 3.2.
+
+Goal: clean only Penguin-owned browser-harness daemon state by default.
+
+Acceptance criteria:
+
+- [ ] Add `browser_cleanup` with default `owned_only=true`.
+- [ ] Refuse non-owned cleanup unless `force=true` and permission approval is present.
+- [ ] Never kill user Chrome blindly.
+- [ ] Use browser-harness admin APIs only after verifying exact semantics.
+- [ ] Test fake admin cleanup paths and at least one real local owned-daemon cleanup path.
+
+#### Phase 3.4 - TUI/Web Browser Status Surface
+
+Priority: medium.
+
+Goal: expose browser identity and connection state to humans while debugging browser/subagent workflows.
+
+Acceptance criteria:
+
+- [ ] Add or reuse a web/API route/event surface for `browser_status`.
+- [ ] Surface active backend, connection state, `BU_NAME`, `session_id`, and `agent_id` in TUI/web where appropriate.
+- [ ] Make failure states actionable: missing package, Chrome not debuggable, daemon unavailable, wrong identity.
+- [ ] Avoid polling aggressively; status should be explicit or low-frequency.
+
+Phase 3 exit criteria:
+
+- Two real subagents/sessions can run isolated browser sessions without tab/session collision.
 - Penguin can report browser identity/status and safely clean up only Penguin-owned daemon state.
 
-### Phase 4 - Decide Library vs Vendoring
+### Phase 4 - Optional Library With Stable Penguin Backend Contract
 
-After Phases 0-3, decide whether to:
+Decision: use browser-harness as an optional library now, while designing Penguin's browser surface as a stable backend contract that can later support vendoring or alternate backends.
 
-1. Continue depending on browser-harness as an optional external package.
-2. Vendor a small stable subset of its core helper/daemon code into Penguin.
-3. Upstream changes to browser-harness and keep Penguin thin.
-4. Maintain a hybrid: external dependency preferred, internal compatibility shim for core helpers.
+This is the hybrid architecture in practice:
 
-Decision criteria:
+- Penguin owns public tool contracts, artifact conventions, permission policy, session/agent identity, skill integration, error normalization, and fallback behavior.
+- browser-harness owns Chrome attach, CDP plumbing, daemon mechanics, and low-level browser helpers.
+- Vendoring remains an escape hatch if dependency churn, release instability, or API drift becomes costly.
 
-- dependency churn
-- Python version constraints
-- upstream release cadence
-- security posture
-- how much Penguin-specific behavior is needed
-- whether skills/daemon semantics need deeper integration than CLI/package usage allows
+Phase 4 tasks:
+
+- [ ] Verify browser-harness package source, release cadence, versioning, and install path.
+- [ ] Confirm license compatibility: MIT browser-harness under Penguin's AGPL distribution path.
+- [ ] Confirm Python/dependency constraints and document impact on Penguin's `>=3.9,<3.13` support window.
+- [ ] Decide optional extra name, likely `browser_harness`.
+- [ ] Add dependency only if package source/version story is real and stable enough.
+- [ ] Define the Penguin-owned browser backend adapter contract in docs.
+- [ ] Add backend import/version diagnostics to `browser_status`.
+- [ ] Document fallback matrix: harness available, harness unavailable, Chrome attach unavailable, PyDoll fallback.
+- [ ] Ensure browser-harness-specific assumptions do not leak outside adapter/tools/skill layers.
+
+Phase 4 exit criteria:
+
+- Penguin can install/use browser-harness as an optional dependency without affecting base installs.
+- Public browser tools remain Penguin-native and backend-agnostic enough to support future vendoring or alternate backend replacement.
+- A decision note records why optional library is current path and what evidence would trigger vendoring.
 
 ## Testing Strategy
 
