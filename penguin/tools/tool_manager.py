@@ -179,6 +179,14 @@ def _ensure_permission_imports():
 logger = logging.getLogger(__name__)  # Add logger
 
 
+def _browser_tool_log_info(message: str, *args: Any) -> None:
+    """Log browser tool diagnostics to app and uvicorn logs."""
+    logger.info(message, *args)
+    uvicorn_logger = logging.getLogger("uvicorn.error")
+    if uvicorn_logger is not logger:
+        uvicorn_logger.info(message, *args)
+
+
 class ToolManager:
     def __init__(
         self,
@@ -4399,11 +4407,29 @@ class ToolManager:
     ) -> Dict[str, Any]:
         """Capture a screenshot through optional browser-harness."""
         try:
-            return self._browser_harness_screenshot_tool_for_context(context).execute(
+            result = self._browser_harness_screenshot_tool_for_context(context).execute(
                 full,
                 max_dim,
                 output_dir,
             )
+            artifact = result.get("artifact") if isinstance(result, dict) else None
+            identity = result.get("identity") if isinstance(result, dict) else None
+            artifact_image_path = (
+                artifact.get("image_path") if isinstance(artifact, dict) else None
+            )
+            _browser_tool_log_info(
+                "browser.tool.used name=%s bu_name=%s session=%s agent=%s "
+                "filepath=%s artifact_image_path=%s image_artifact=%s status=%s",
+                "browser_harness_screenshot",
+                identity.get("bu_name") if isinstance(identity, dict) else None,
+                identity.get("session_id") if isinstance(identity, dict) else None,
+                identity.get("agent_id") if isinstance(identity, dict) else None,
+                result.get("filepath") if isinstance(result, dict) else None,
+                artifact_image_path,
+                bool(artifact_image_path),
+                "error" if isinstance(result, dict) and result.get("error") else "ok",
+            )
+            return result
         except Exception as e:
             error_message = f"Error capturing browser-harness screenshot: {str(e)}"
             logging.error(error_message)

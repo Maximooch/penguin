@@ -108,7 +108,7 @@ def test_browser_harness_missing_dependency_returns_actionable_error(
 
 
 def test_browser_harness_screenshot_returns_multimodal_artifact(
-    monkeypatch, tmp_path: Path
+    monkeypatch, tmp_path: Path, caplog
 ) -> None:
     fake_admin = types.ModuleType("browser_harness.admin")
     fake_helpers = types.ModuleType("browser_harness.helpers")
@@ -133,15 +133,18 @@ def test_browser_harness_screenshot_returns_multimodal_artifact(
         fast_startup=True,
     )
 
-    result = manager.execute_tool(
-        "browser_harness_screenshot",
-        {"output_dir": str(tmp_path), "max_dim": 1200},
-    )
+    with caplog.at_level("INFO"):
+        result = manager.execute_tool(
+            "browser_harness_screenshot",
+            {"output_dir": str(tmp_path), "max_dim": 1200},
+        )
 
     assert result["result"] == "Screenshot captured"
     assert Path(result["filepath"]).exists()
     assert result["artifact"]["type"] == "image"
     assert result["artifact"]["image_path"] == result["filepath"]
+    assert "browser.tool.used name=browser_harness_screenshot" in caplog.text
+    assert "image_artifact=True" in caplog.text
 
 
 def test_browser_harness_sets_env_before_importing_helpers(
@@ -605,6 +608,32 @@ async def test_read_image_actionxml_adds_multimodal_message(
     assert message["content"][1]["type"] == "image_url"
     assert message["content"][1]["image_path"] == str(image_path.resolve())
 
+
+
+@pytest.mark.asyncio
+async def test_browser_harness_screenshot_actionxml_logs_attachment(
+    monkeypatch, tmp_path: Path, caplog
+) -> None:
+    _FakeBrowserHarnessModules(monkeypatch)
+    manager = ToolManager(config={}, log_error_func=_dummy_log_error, fast_startup=True)
+    conversation = _CaptureConversation()
+    executor = ActionExecutor(
+        tool_manager=manager,
+        task_manager=None,
+        conversation_system=conversation,
+    )
+    payload = {"output_dir": str(tmp_path), "description": "Describe it"}
+
+    with caplog.at_level("INFO"):
+        result = await executor.execute_action(
+            CodeActAction(ActionType.BROWSER_HARNESS_SCREENSHOT, json.dumps(payload))
+        )
+
+    assert "added to conversation" in result
+    assert len(conversation.messages) == 1
+    assert conversation.messages[0]["content"][1]["type"] == "image_url"
+    assert "browser.tool.used name=browser_harness_screenshot" in caplog.text
+    assert "image_attached=True" in caplog.text
 
 def test_browser_harness_permission_operations() -> None:
     assert get_tool_operations("browser_click") == [Operation.NETWORK_POST]

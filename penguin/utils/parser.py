@@ -34,6 +34,14 @@ import os
 logger = logging.getLogger(__name__)
 
 
+def _browser_action_log_info(message: str, *args: Any) -> None:
+    """Log browser ActionXML diagnostics to app and uvicorn logs."""
+    logger.info(message, *args)
+    uvicorn_logger = logging.getLogger("uvicorn.error")
+    if uvicorn_logger is not logger:
+        uvicorn_logger.info(message, *args)
+
+
 class ActionType(Enum):
     # READ = "read"
     # WRITE = "write"
@@ -3954,12 +3962,30 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
                     {"type": "image_url", "image_path": result["filepath"]},
                 ]
 
+                image_attached = False
                 if add_message_fn:
                     add_message_fn(
                         role="user",
                         content=multimodal_content,
                         category=MessageCategory.DIALOG,
                     )
+                    image_attached = True
+
+                artifact = result.get("artifact") if isinstance(result, dict) else None
+                identity = result.get("identity") if isinstance(result, dict) else None
+                _browser_action_log_info(
+                    "browser.tool.used name=%s bu_name=%s session=%s agent=%s "
+                    "filepath=%s artifact_image_path=%s image_attached=%s source=%s",
+                    "browser_harness_screenshot",
+                    identity.get("bu_name") if isinstance(identity, dict) else None,
+                    identity.get("session_id") if isinstance(identity, dict) else None,
+                    identity.get("agent_id") if isinstance(identity, dict) else None,
+                    result["filepath"],
+                    artifact.get("image_path") if isinstance(artifact, dict) else None,
+                    image_attached,
+                    "actionxml",
+                )
+                if image_attached:
                     return f"browser-harness screenshot saved to {result['filepath']} and added to conversation"
                 return f"browser-harness screenshot saved to {result['filepath']} (conversation update skipped)"
 
