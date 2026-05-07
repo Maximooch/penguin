@@ -10,15 +10,19 @@ The goal is not "add another browser tool." The goal is to make Penguin's browse
 
 ## Current Recommendation
 
-Adopt browser-harness as Penguin's preferred canonical `browser_*` backend when it is installed locally/from source, while keeping PyDoll as the PyPI-available compatibility fallback.
+Adopt browser-harness as Penguin's preferred canonical `browser_*` backend. When Penguin is running on Python 3.11+ and browser-harness is available from the local/source install, Penguin should enable it by default. If Python is 3.11+ but browser-harness is unavailable, Penguin should warn clearly in console/status output and keep PyDoll available as the compatibility fallback.
 
-Do **not** hard-depend on browser-harness in Penguin's base install or extras while it is not published on PyPI.
+Do **not** add a fake PyPI dependency while browser-harness is unpublished. The install/default story needs to be honest:
+
+- Python 3.11+ with local/source browser-harness available: use browser-harness by default.
+- Python 3.11+ without browser-harness: show an actionable warning and fall back to `pydoll_browser_*` tools.
+- Python 3.9/3.10: do not try to install/import browser-harness; expose PyDoll fallback and explain the Python requirement only when browser tools/status are requested.
 
 Rationale:
 
 - Penguin supports Python `>=3.9,<3.13`; browser-harness requires newer Python.
-- Browser-harness is not published on PyPI, so `penguin-ai[browser]` cannot honestly install it yet.
-- The `[browser]` extra should install the PyPI-available fallback (`pydoll-python`) and document local/source browser-harness installation.
+- Browser-harness is not published on PyPI, so `penguin-ai[browser]` cannot honestly depend on it yet.
+- The `[browser]` extra should install the PyPI-available fallback (`pydoll-python`) and document local/source browser-harness installation until browser-harness is published or vendored.
 - Browser-harness is MIT-licensed, so copying/vendoring is legally feasible, but blindly forking it creates maintenance ownership immediately.
 - The best current path is optional local/source library integration behind a stable Penguin-owned adapter contract; vendoring remains an escape hatch if upstream/package instability proves costly.
 
@@ -396,47 +400,82 @@ Phase 4 tasks:
 - [x] Add backend import/version diagnostics to `browser_status`.
 - [x] Document fallback matrix: harness available, harness unavailable, Chrome attach unavailable, PyDoll fallback.
 - [x] Ensure browser-harness-specific assumptions do not leak outside adapter/tools/skill layers.
+- [ ] Default to browser-harness automatically on Python 3.11+ when the local/source package is importable.
+- [ ] Emit an actionable console/status warning on Python 3.11+ when browser-harness is missing, rather than failing silently.
+- [ ] Keep PyDoll installed by the `[browser]` extra as the guaranteed PyPI fallback while browser-harness remains unpublished.
 
 Phase 4 exit criteria:
 
 - Penguin can install/use browser-harness as an optional dependency without affecting base installs.
 - Public browser tools remain Penguin-native and backend-agnostic enough to support future vendoring or alternate backend replacement.
 - A decision note records why optional library is current path and what evidence would trigger vendoring.
+- Python/runtime behavior is explicit: 3.11+ prefers browser-harness when importable, warns when unavailable, and 3.9/3.10 uses fallback without import churn.
 
 ## Testing Strategy
 
-Unit tests:
+### Unit Tests
 
-- tool schema registration
-- backend selection config
-- missing optional dependency behavior
-- environment mapping for `BU_NAME` and `BH_AGENT_WORKSPACE`
-- permission metadata for risky tools
-- artifact metadata for screenshots
+- Tool schema registration for all `browser_*`, `pydoll_browser_*`, and `read_image` tools.
+- Backend selection/config defaults: Python 3.11+ importable harness, Python 3.11+ missing harness, Python 3.9/3.10 fallback behavior.
+- Missing optional dependency behavior returns actionable guidance and emits a warning surface rather than crashing.
+- Environment mapping for `BU_NAME`, `BH_AGENT_WORKSPACE`, `BH_DOMAIN_SKILLS`, session ID, and agent ID.
+- Ownership persistence: record create/read/update/remove, atomic writes, corrupt-file recovery, and no false ownership for unrelated names.
+- Permission metadata for risky tools: click/type/fill/JS/CDP/cleanup should be marked as side-effect-capable or approval-worthy.
+- Artifact metadata for screenshots and `read_image`: `filepath`, `artifact.image_path`, MIME type, dimensions, byte size.
+- Domain-skill lookup: disabled by default, hostname matching when enabled, no prompt injection of matched skill contents.
+- Helper import/reload behavior: `BU_NAME` must be set before importing browser-harness helpers, and sequential contexts must not bleed cached helper state.
 
-Integration tests:
+### Integration Tests With Mocked Browser-Harness
 
-- adapter with mocked browser-harness helper module
-- `browser_open_tab` happy path with fake helper responses
-- `browser_screenshot` returns valid path metadata
-- `browser_js` serializes primitives, lists, dicts, and errors
-- daemon-not-running path produces setup guidance
+- Adapter with mocked `browser_harness.admin` and `browser_harness.helpers` modules.
+- `browser_open_tab` happy path returns identity, target/page info, and domain-skill metadata.
+- `browser_harness_screenshot` writes a valid image artifact and can be promoted with `read_image`.
+- `browser_click`, `browser_type`, `browser_key`, `browser_fill`, and `browser_wait` dispatch to the expected helper calls.
+- `browser_js` serializes primitives, lists, dicts, and structured errors.
+- `browser_list_tabs` and `browser_switch_tab` preserve tab/session identity.
+- `browser_status` reports backend diagnostics, dependency state, ownership, and optional page info.
+- `browser_cleanup` refuses unowned daemons by default and cleans only persisted owned identities.
+- Daemon-not-running / Chrome-not-debuggable paths produce setup guidance.
 
-Manual smoke tests:
+### Real Local Chrome Smoke Tests
 
-- attach to local Chrome
-- open docs page in new tab
-- screenshot and click by coordinates
-- fill a simple form
-- navigate SPA and wait for network idle
-- switch tabs
-- stop/restart daemon
+Run these manually or in an opt-in integration job because they require local Chrome/CDP setup:
 
-Optional remote tests:
+- Attach to local Chrome with remote debugging enabled.
+- Open a docs/static page in a new tab and verify `browser_page_info`.
+- Capture screenshot, call `read_image`, and confirm a vision-capable model can describe the image.
+- Complete screenshot → coordinate click → screenshot verification against a simple local web app.
+- Fill a simple form and verify submitted/updated state.
+- Navigate an SPA and wait for load, element, and network-idle states.
+- Execute `browser_js` for DOM extraction and compare against visible page state.
+- List tabs, switch tabs, and verify no active-tab clobbering.
+- Start two execution contexts/subagents, open separate pages, screenshot both, and confirm no `BU_NAME`/tab/session bleed.
+- Run `browser_status` before and after daemon startup to verify diagnostics are actionable.
+- Run `browser_cleanup` for an owned daemon and verify records/daemon state are removed.
+- Attempt cleanup of an unowned daemon and verify refusal.
 
-- start remote browser only when `BROWSER_USE_API_KEY` is explicitly set
-- verify remote daemon shutdown
-- verify profile sync behavior if supported
+### Packaging / Install Matrix
+
+- Python 3.11+ with local/source browser-harness installed: `browser_status` selects/imports browser-harness and reports package path/version if available.
+- Python 3.11+ without browser-harness installed: console/status warning is emitted; PyDoll fallback tools remain registered.
+- Python 3.9/3.10: browser-harness import is skipped; browser status explains the Python requirement only when requested.
+- `pip install "penguin-ai[browser]"` installs PyDoll fallback and does not reference an unpublished browser-harness package.
+- `pip install -e /path/to/browser-harness` in the same environment enables canonical `browser_*` tools.
+- Wheel/sdist includes bundled browser skill markdown and interaction references.
+
+### TUI/Web/API Scenarios
+
+- `browser_status` can be surfaced through web/API without leaking credentials or screenshots.
+- SSE/OpenCode-compatible events can represent browser tool start/result/error states.
+- TUI/web can display active backend, connection state, `BU_NAME`, `session_id`, `agent_id`, and actionable failure hints.
+- Browser artifacts are linked or attached consistently across CLI, TUI, web/API, and Python client surfaces.
+
+### Optional Remote Browser Tests
+
+- Start remote browser only when `BROWSER_USE_API_KEY` is explicitly set.
+- Verify remote daemon shutdown and billing-leak prevention.
+- Verify profile sync behavior if supported.
+- Confirm remote mode is never selected silently over local Chrome.
 
 ## Open Questions
 
