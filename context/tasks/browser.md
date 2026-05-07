@@ -499,14 +499,18 @@ Run these manually or in an opt-in integration job because they require local Ch
 
 ## Acceptance Criteria For Initial PR
 
-- [ ] New optional browser-harness backend is added without changing base install requirements.
-- [ ] `browser_open_tab`, `browser_page_info`, and `browser_screenshot` work through ToolManager.
-- [ ] Missing dependency / missing Chrome permission produces actionable diagnostics.
-- [ ] PyDoll tools continue to register and work as before.
-- [ ] Browser backend selection is configurable.
-- [ ] Screenshot output is returned as a structured artifact/path, not just text.
-- [ ] Basic tests cover registration, config selection, missing dependency, and successful mocked execution.
-- [ ] Docs/task notes clearly state that domain skills are opt-in and not prompt-injected wholesale.
+- [x] New optional browser-harness backend is added without changing base install requirements.
+- [x] `browser_open_tab`, `browser_page_info`, and `browser_harness_screenshot` work through ToolManager.
+- [x] Missing dependency / missing Chrome permission produces actionable diagnostics through `browser_status` and tool errors.
+- [x] PyDoll tools continue to register and work as explicit fallback tools.
+- [x] Screenshot output is returned as structured artifact metadata, not just text.
+- [x] Domain skills are opt-in and not prompt-injected wholesale.
+- [ ] Re-run happy-path real Chrome smoke now that remote debugging is enabled: status → open tab → screenshot → `read_image` → cleanup.
+- [ ] Re-run ActionXML smoke for `browser_status`, `browser_open_tab`, `browser_harness_screenshot`, and `read_image`.
+- [ ] Verify missing-harness behavior in an environment without local/source browser-harness installed.
+- [ ] Verify package-data by building or inspecting wheel/sdist contents for bundled browser skill markdown.
+- [ ] Run focused unit/integration tests one final time.
+- [ ] Add short PR support/limitations note covering local browser-harness install, Python 3.11+, Chrome remote debugging, PyDoll fallback, safety, and opt-in domain skills.
 
 ## Related Files
 
