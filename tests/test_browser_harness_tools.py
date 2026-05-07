@@ -458,6 +458,57 @@ def test_browser_status_handles_missing_dependency_without_page(monkeypatch) -> 
     assert "browser-harness is not installed" in result["error"]
 
 
+def _native_tool_names(manager: ToolManager) -> set[str]:
+    names: set[str] = set()
+    for tool in manager.get_responses_tools(include_web_search=False):
+        name = tool.get("name")
+        if isinstance(name, str):
+            names.add(name)
+    return names
+
+
+def test_browser_harness_tools_are_exposed_to_native_tool_schema() -> None:
+    manager = ToolManager(config={}, log_error_func=_dummy_log_error, fast_startup=True)
+    names = _native_tool_names(manager)
+
+    assert "browser_status" in names
+    assert "browser_open_tab" in names
+    assert "browser_harness_screenshot" in names
+    assert "browser_click" in names
+    assert "read_image" in names
+
+
+def test_openrouter_native_kwargs_include_browser_tools() -> None:
+    from penguin.llm.model_config import ModelConfig
+    from penguin.llm.runtime import prepare_native_tool_kwargs
+
+    manager = ToolManager(config={}, log_error_func=_dummy_log_error, fast_startup=True)
+    config = ModelConfig(model="openai/gpt-5.5", provider="openrouter")
+
+    kwargs = prepare_native_tool_kwargs(config, manager)
+    names = {tool["function"]["name"] for tool in kwargs["tools"]}
+
+    assert "browser_open_tab" in names
+    assert "browser_harness_screenshot" in names
+    assert "read_image" in names
+
+
+def test_openai_responses_native_kwargs_include_browser_tools() -> None:
+    from penguin.llm.model_config import ModelConfig
+    from penguin.llm.runtime import prepare_native_tool_kwargs
+
+    manager = ToolManager(config={}, log_error_func=_dummy_log_error, fast_startup=True)
+    config = ModelConfig(model="gpt-5.5", provider="openai")
+    config.client_preference = "native"
+    config.use_responses_api = True
+
+    kwargs = prepare_native_tool_kwargs(config, manager)
+    names = {tool["name"] for tool in kwargs["tools"] if tool.get("type") == "function"}
+
+    assert "browser_open_tab" in names
+    assert "browser_harness_screenshot" in names
+    assert "read_image" in names
+
 def test_browser_harness_phase_1_tools_register() -> None:
     manager = ToolManager(config={}, log_error_func=_dummy_log_error, fast_startup=True)
     names = {schema["name"] for schema in manager.tools}

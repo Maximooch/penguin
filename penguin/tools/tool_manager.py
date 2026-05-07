@@ -2526,6 +2526,7 @@ class ToolManager:
             "create_file",
             "write_file",
             "read_file",
+            "read_image",
             "list_files",
             "find_file",
             "enhanced_diff",
@@ -2539,6 +2540,19 @@ class ToolManager:
             "finish_task",
             "list_skills",
             "activate_skill",
+            "browser_status",
+            "browser_cleanup",
+            "browser_open_tab",
+            "browser_page_info",
+            "browser_harness_screenshot",
+            "browser_click",
+            "browser_type",
+            "browser_key",
+            "browser_fill",
+            "browser_wait",
+            "browser_js",
+            "browser_list_tabs",
+            "browser_switch_tab",
         ]
         allowed = {
             self._canonical_tool_name(name)
