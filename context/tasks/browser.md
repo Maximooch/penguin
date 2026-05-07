@@ -4,6 +4,8 @@
 
 Evaluate and integrate `reference/browser-harness` as Penguin's next-generation browser automation backend.
 
+Canonical Penguin repository: https://github.com/Maximooch/penguin
+
 The goal is not "add another browser tool." The goal is to make Penguin's browser capability reliable enough for real web workflows: authenticated browser sessions, UI testing, scraping, documentation research, subagent/browser isolation, screenshots, CDP escape hatches, and reusable browser/domain skills.
 
 ## Current Recommendation
@@ -293,18 +295,30 @@ Exit criteria:
 - General interaction guidance is available without prompt bloat.
 - Domain skills are discoverable by hostname only when explicitly enabled.
 
-### Phase 3 - Session/Subagent Isolation
+### Phase 3 - Session/Subagent Isolation And Observability
 
-- [ ] Map each Penguin session/agent to deterministic `BU_NAME`.
-- [ ] Support separate browser daemons for parallel subagents.
-- [ ] Add cleanup semantics for daemons started by Penguin.
-- [ ] Add status/doctor tool for active browser connections.
+- [x] Map each Penguin session/agent to deterministic `BU_NAME`.
+- [x] Support separate browser daemons for parallel subagents via per-agent/per-session browser identity.
+- [x] Track daemon ownership metadata: `started_by_penguin`, `session_id`, `agent_id`, `bu_name`, and `skills_dir`.
+- [ ] Add safe cleanup semantics for daemons started by Penguin only; never kill user/external daemons by default.
+- [x] Add `browser_status` / doctor tool for active browser connection identity, environment, dependency, and page state.
 - [ ] Surface browser connection state in TUI/web where appropriate.
+
+Notes after Phase 3 partial implementation:
+
+- `browser_status` reports active browser-harness identity, ownership, environment, dependency/connectivity, and optional page state.
+- Runtime browser tools derive identity per execution context, so separate session/agent contexts produce separate `BU_NAME` values.
+- Safe cleanup is intentionally still deferred until owned-daemon shutdown semantics are verified against browser-harness admin APIs.
+
+Phase 3 scope decision:
+
+- Implement isolation and observability first; defer broad auto-shutdown until ownership is explicit and tested.
+- Cleanup must be opt-in for non-owned daemons and conservative for owned daemons.
 
 Exit criteria:
 
 - Two subagents can run isolated browser sessions without tab/session collision.
-- Penguin can report and clean up browser daemon state.
+- Penguin can report browser identity/status and safely clean up only Penguin-owned daemon state.
 
 ### Phase 4 - Decide Library vs Vendoring
 

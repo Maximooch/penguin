@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import sys
 import types
@@ -11,6 +12,10 @@ from PIL import Image
 from penguin.security.permission_engine import Operation
 from penguin.security.tool_permissions import get_tool_operations
 from penguin.system.conversation import MessageCategory
+from penguin.system.execution_context import (
+    ExecutionContext,
+    execution_context_scope,
+)
 from penguin.tools.browser_harness_tools import BrowserHarnessAdapter
 from penguin.tools.image_tools import ReadImageTool
 from penguin.tools.tool_manager import ToolManager
@@ -249,6 +254,77 @@ class _FakeBrowserHarnessModules:
     def _switch_tab(self, target_id):
         self.events.append(("switch_tab", target_id))
         return "session-1"
+
+
+def test_browser_harness_actionxml_tools_parse() -> None:
+    assert parse_action('<browser_status>{}</browser_status>')[0].action_type == (
+        ActionType.BROWSER_STATUS
+    )
+    open_tab_actions = parse_action(
+        '<browser_open_tab>{"url":"https://example.test"}</browser_open_tab>'
+    )
+    assert open_tab_actions[0].action_type == ActionType.BROWSER_OPEN_TAB
+    assert parse_action('<browser_click>{"x":10,"y":20}</browser_click>')[
+        0
+    ].action_type == ActionType.BROWSER_CLICK
+
+
+def test_browser_status_registers_and_reports_identity(monkeypatch) -> None:
+    fake = _FakeBrowserHarnessModules(monkeypatch)
+    manager = ToolManager(config={}, log_error_func=_dummy_log_error, fast_startup=True)
+    names = {schema["name"] for schema in manager.tools}
+
+    with execution_context_scope(
+        ExecutionContext(session_id="session/one", agent_id="agent.alpha")
+    ):
+        result = manager.execute_tool("browser_status", {"include_page": True})
+
+    assert "browser_status" in names
+    assert result["connected"] is True
+    assert result["identity"]["bu_name"] == "penguin-session-one-agent.alpha"
+    assert result["identity"]["session_id"] == "session/one"
+    assert result["identity"]["agent_id"] == "agent.alpha"
+    assert result["identity"]["started_by_penguin"] is True
+    assert result["identity"]["env"]["PENGUIN_BROWSER_OWNED"] == "1"
+    assert result["page_info"]["title"] == "Example"
+    assert fake.events[0][0] == "ensure_daemon"
+    assert fake.events[0][1] == "penguin-session-one-agent.alpha"
+
+
+def test_browser_tool_identity_is_derived_per_execution_context(monkeypatch) -> None:
+    _FakeBrowserHarnessModules(monkeypatch)
+    manager = ToolManager(config={}, log_error_func=_dummy_log_error, fast_startup=True)
+
+    with execution_context_scope(ExecutionContext(session_id="s1", agent_id="a1")):
+        first = manager.execute_tool("browser_page_info", {})
+    with execution_context_scope(ExecutionContext(session_id="s2", agent_id="a2")):
+        second = manager.execute_tool("browser_page_info", {})
+
+    assert first["identity"]["bu_name"] == "penguin-s1-a1"
+    assert second["identity"]["bu_name"] == "penguin-s2-a2"
+
+
+def test_browser_status_handles_missing_dependency_without_page(monkeypatch) -> None:
+    real_import = importlib.import_module
+
+    def fake_import(name, *args, **kwargs):
+        if name.startswith("browser_harness"):
+            raise ModuleNotFoundError(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("importlib.import_module", fake_import)
+    adapter = BrowserHarnessAdapter(
+        {"started_by_penguin": False},
+        execution_context={"session_id": "s1"},
+    )
+
+    result = adapter.status(include_page=False)
+
+    assert result["connected"] is False
+    assert result["identity"]["started_by_penguin"] is False
+    assert result["identity"]["bu_name"] == "penguin-s1"
+    assert result["identity"]["env"]["PENGUIN_BROWSER_OWNED"] == "0"
+    assert "browser-harness is not installed" in result["error"]
 
 
 def test_browser_harness_phase_1_tools_register() -> None:

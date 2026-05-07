@@ -122,7 +122,18 @@ class ActionType(Enum):
     BROWSER_INTERACT = "browser_interact"
     BROWSER_SCREENSHOT = "browser_screenshot"
     READ_IMAGE = "read_image"
+    BROWSER_STATUS = "browser_status"
+    BROWSER_OPEN_TAB = "browser_open_tab"
+    BROWSER_PAGE_INFO = "browser_page_info"
     BROWSER_HARNESS_SCREENSHOT = "browser_harness_screenshot"
+    BROWSER_CLICK = "browser_click"
+    BROWSER_TYPE = "browser_type"
+    BROWSER_KEY = "browser_key"
+    BROWSER_FILL = "browser_fill"
+    BROWSER_WAIT = "browser_wait"
+    BROWSER_JS = "browser_js"
+    BROWSER_LIST_TABS = "browser_list_tabs"
+    BROWSER_SWITCH_TAB = "browser_switch_tab"
     # PyDoll browser actions
     PYDOLL_BROWSER_NAVIGATE = "pydoll_browser_navigate"
     PYDOLL_BROWSER_INTERACT = "pydoll_browser_interact"
@@ -1612,7 +1623,40 @@ class ActionExecutor:
             ActionType.BROWSER_INTERACT: self._browser_interact,
             ActionType.BROWSER_SCREENSHOT: self._browser_screenshot,
             ActionType.READ_IMAGE: self._read_image,
+            ActionType.BROWSER_STATUS: lambda params: self._browser_harness_tool(
+                "browser_status", params
+            ),
+            ActionType.BROWSER_OPEN_TAB: lambda params: self._browser_harness_tool(
+                "browser_open_tab", params
+            ),
+            ActionType.BROWSER_PAGE_INFO: lambda params: self._browser_harness_tool(
+                "browser_page_info", params
+            ),
             ActionType.BROWSER_HARNESS_SCREENSHOT: self._browser_harness_screenshot,
+            ActionType.BROWSER_CLICK: lambda params: self._browser_harness_tool(
+                "browser_click", params
+            ),
+            ActionType.BROWSER_TYPE: lambda params: self._browser_harness_tool(
+                "browser_type", params
+            ),
+            ActionType.BROWSER_KEY: lambda params: self._browser_harness_tool(
+                "browser_key", params
+            ),
+            ActionType.BROWSER_FILL: lambda params: self._browser_harness_tool(
+                "browser_fill", params
+            ),
+            ActionType.BROWSER_WAIT: lambda params: self._browser_harness_tool(
+                "browser_wait", params
+            ),
+            ActionType.BROWSER_JS: lambda params: self._browser_harness_tool(
+                "browser_js", params
+            ),
+            ActionType.BROWSER_LIST_TABS: lambda params: self._browser_harness_tool(
+                "browser_list_tabs", params
+            ),
+            ActionType.BROWSER_SWITCH_TAB: lambda params: self._browser_harness_tool(
+                "browser_switch_tab", params
+            ),
             # PyDoll browser actions
             ActionType.PYDOLL_BROWSER_NAVIGATE: self._pydoll_browser_navigate,
             ActionType.PYDOLL_BROWSER_INTERACT: self._pydoll_browser_interact,
@@ -3849,6 +3893,24 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             return result.get("error", "Failed to load image")
         except Exception as e:
             return f"Error reading image: {str(e)}"
+
+    async def _browser_harness_tool(self, tool_name: str, params: str) -> str:
+        """Execute a browser-harness tool from ActionXML using JSON payloads."""
+        try:
+            payload = _parse_json_payload(params)
+            if payload is None:
+                stripped = params.strip()
+                if tool_name == "browser_open_tab" and stripped:
+                    payload = {"url": stripped}
+                else:
+                    payload = {}
+
+            result = self.tool_manager.execute_tool(tool_name, payload)
+            if isinstance(result, str):
+                return result
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return f"Error executing {tool_name}: {str(e)}"
 
     async def _browser_harness_screenshot(self, params: str) -> str:
         """Take a screenshot using browser-harness and add it to conversation."""

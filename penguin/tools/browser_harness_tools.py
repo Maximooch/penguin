@@ -10,9 +10,12 @@ import datetime
 import importlib
 import os
 import re
+import socket
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
+
+from penguin.system.execution_context import get_current_execution_context_dict
 
 
 class BrowserHarnessUnavailableError(RuntimeError):
@@ -27,13 +30,43 @@ def _slug(value: str) -> str:
 class BrowserHarnessAdapter:
     """Small adapter around browser-harness helpers and daemon startup."""
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
+    def __init__(
+        self,
+        config: Optional[Dict[str, Any]] = None,
+        execution_context: Optional[Dict[str, Any]] = None,
+    ):
         self.config = config or {}
+        self.execution_context = execution_context or {}
+
+    @property
+    def session_id(self) -> Optional[str]:
+        value = self.config.get("session_id") or self.execution_context.get(
+            "session_id"
+        )
+        return str(value) if value else None
+
+    @property
+    def agent_id(self) -> Optional[str]:
+        value = self.config.get("agent_id") or self.execution_context.get(
+            "agent_id"
+        )
+        return str(value) if value else None
 
     @property
     def name(self) -> str:
         configured = self.config.get("name") or self.config.get("bu_name")
-        return _slug(str(configured or os.environ.get("BU_NAME", "penguin-default")))
+        if configured:
+            return _slug(str(configured))
+        if self.session_id or self.agent_id:
+            identity = ":".join(
+                part for part in ["penguin", self.session_id, self.agent_id] if part
+            )
+            return _slug(identity)
+        return _slug(os.environ.get("BU_NAME", "penguin-default"))
+
+    @property
+    def started_by_penguin(self) -> bool:
+        return bool(self.config.get("started_by_penguin", True))
 
     @property
     def skills_dir(self) -> Optional[str]:
@@ -53,6 +86,11 @@ class BrowserHarnessAdapter:
 
     def _base_env(self) -> Dict[str, str]:
         env = {"BU_NAME": self.name}
+        env["PENGUIN_BROWSER_OWNED"] = "1" if self.started_by_penguin else "0"
+        if self.session_id:
+            env["PENGUIN_SESSION_ID"] = self.session_id
+        if self.agent_id:
+            env["PENGUIN_AGENT_ID"] = self.agent_id
         if self.skills_dir:
             env["BH_AGENT_WORKSPACE"] = str(Path(self.skills_dir).expanduser())
         if self.domain_skills_enabled:
@@ -172,6 +210,42 @@ class BrowserHarnessAdapter:
             ) from exc
         return helpers
 
+    def identity(self) -> Dict[str, Any]:
+        return {
+            "backend": "browser-harness",
+            "bu_name": self.name,
+            "session_id": self.session_id,
+            "agent_id": self.agent_id,
+            "skills_dir": self.skills_dir,
+            "domain_skills_enabled": self.domain_skills_enabled,
+            "started_by_penguin": self.started_by_penguin,
+            "env": self._base_env(),
+        }
+
+    def status(self, include_page: bool = True) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "result": "Browser harness status",
+            "identity": self.identity(),
+            "python": {"executable": os.sys.executable},
+            "host": {"hostname": socket.gethostname()},
+        }
+        try:
+            helpers = self._ensure_ready()
+        except BrowserHarnessUnavailableError as exc:
+            payload["connected"] = False
+            payload["error"] = str(exc)
+            return payload
+
+        payload["connected"] = True
+        if include_page:
+            info = helpers.page_info()
+            payload["page_info"] = info
+            if isinstance(info, dict):
+                payload["domain_skills"] = self.domain_skill_matches(
+                    info.get("url", "")
+                )
+        return payload
+
     def open_tab(
         self,
         url: str,
@@ -188,6 +262,7 @@ class BrowserHarnessAdapter:
             "loaded": loaded,
             "page_info": info,
             "backend": "browser-harness",
+            "identity": self.identity(),
         }
         domain_url = info.get("url") if isinstance(info, dict) else None
         result["domain_skills"] = self.domain_skill_matches(domain_url or url)
@@ -201,6 +276,7 @@ class BrowserHarnessAdapter:
             "page_info": info,
             "domain_skills": self.domain_skill_matches(info.get("url", "")),
             "backend": "browser-harness",
+            "identity": self.identity(),
         }
 
     def screenshot(
@@ -384,9 +460,24 @@ class BrowserHarnessAdapter:
         }
 
 
+class BrowserHarnessStatusTool:
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        self.config = config or {}
+
+    def execute(self, include_page: bool = True) -> Dict[str, Any]:
+        return _runtime_adapter(self.config).status(include_page=include_page)
+
+
+def _runtime_adapter(config: Optional[Dict[str, Any]] = None) -> BrowserHarnessAdapter:
+    return BrowserHarnessAdapter(
+        config=config,
+        execution_context=get_current_execution_context_dict(),
+    )
+
+
 class BrowserHarnessOpenTabTool:
     def __init__(self, config: Optional[Dict[str, Any]] = None):
-        self.adapter = BrowserHarnessAdapter(config)
+        self.config = config or {}
 
     def execute(
         self,
@@ -394,20 +485,24 @@ class BrowserHarnessOpenTabTool:
         wait: bool = True,
         timeout: float = 15.0,
     ) -> Dict[str, Any]:
-        return self.adapter.open_tab(url=url, wait=wait, timeout=timeout)
+        return _runtime_adapter(self.config).open_tab(
+            url=url,
+            wait=wait,
+            timeout=timeout,
+        )
 
 
 class BrowserHarnessPageInfoTool:
     def __init__(self, config: Optional[Dict[str, Any]] = None):
-        self.adapter = BrowserHarnessAdapter(config)
+        self.config = config or {}
 
     def execute(self) -> Dict[str, Any]:
-        return self.adapter.page_info()
+        return _runtime_adapter(self.config).page_info()
 
 
 class BrowserHarnessScreenshotTool:
     def __init__(self, config: Optional[Dict[str, Any]] = None):
-        self.adapter = BrowserHarnessAdapter(config)
+        self.config = config or {}
 
     def execute(
         self,
@@ -415,12 +510,16 @@ class BrowserHarnessScreenshotTool:
         max_dim: Optional[int] = None,
         output_dir: Optional[str] = None,
     ) -> Dict[str, Any]:
-        return self.adapter.screenshot(full=full, max_dim=max_dim, output_dir=output_dir)
+        return _runtime_adapter(self.config).screenshot(
+            full=full,
+            max_dim=max_dim,
+            output_dir=output_dir,
+        )
 
 
 class BrowserHarnessClickTool:
     def __init__(self, config: Optional[Dict[str, Any]] = None):
-        self.adapter = BrowserHarnessAdapter(config)
+        self.config = config or {}
 
     def execute(
         self,
@@ -430,28 +529,34 @@ class BrowserHarnessClickTool:
         clicks: int = 1,
         return_page_info: bool = True,
     ) -> Dict[str, Any]:
-        return self.adapter.click(x, y, button, clicks, return_page_info)
+        return _runtime_adapter(self.config).click(
+            x,
+            y,
+            button,
+            clicks,
+            return_page_info,
+        )
 
 
 class BrowserHarnessTypeTool:
     def __init__(self, config: Optional[Dict[str, Any]] = None):
-        self.adapter = BrowserHarnessAdapter(config)
+        self.config = config or {}
 
     def execute(self, text: str) -> Dict[str, Any]:
-        return self.adapter.type_text(text)
+        return _runtime_adapter(self.config).type_text(text)
 
 
 class BrowserHarnessKeyTool:
     def __init__(self, config: Optional[Dict[str, Any]] = None):
-        self.adapter = BrowserHarnessAdapter(config)
+        self.config = config or {}
 
     def execute(self, key: str, modifiers: int = 0) -> Dict[str, Any]:
-        return self.adapter.press_key(key, modifiers=modifiers)
+        return _runtime_adapter(self.config).press_key(key, modifiers=modifiers)
 
 
 class BrowserHarnessFillTool:
     def __init__(self, config: Optional[Dict[str, Any]] = None):
-        self.adapter = BrowserHarnessAdapter(config)
+        self.config = config or {}
 
     def execute(
         self,
@@ -460,12 +565,17 @@ class BrowserHarnessFillTool:
         clear_first: bool = True,
         timeout: float = 0.0,
     ) -> Dict[str, Any]:
-        return self.adapter.fill_input(selector, text, clear_first, timeout)
+        return _runtime_adapter(self.config).fill_input(
+            selector,
+            text,
+            clear_first,
+            timeout,
+        )
 
 
 class BrowserHarnessWaitTool:
     def __init__(self, config: Optional[Dict[str, Any]] = None):
-        self.adapter = BrowserHarnessAdapter(config)
+        self.config = config or {}
 
     def execute(
         self,
@@ -476,35 +586,42 @@ class BrowserHarnessWaitTool:
         idle_ms: int = 500,
         seconds: Optional[float] = None,
     ) -> Dict[str, Any]:
-        return self.adapter.wait(mode, timeout, selector, visible, idle_ms, seconds)
+        return _runtime_adapter(self.config).wait(
+            mode,
+            timeout,
+            selector,
+            visible,
+            idle_ms,
+            seconds,
+        )
 
 
 class BrowserHarnessJsTool:
     def __init__(self, config: Optional[Dict[str, Any]] = None):
-        self.adapter = BrowserHarnessAdapter(config)
+        self.config = config or {}
 
     def execute(
         self,
         expression: str,
         target_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        return self.adapter.js(expression, target_id=target_id)
+        return _runtime_adapter(self.config).js(expression, target_id=target_id)
 
 
 class BrowserHarnessListTabsTool:
     def __init__(self, config: Optional[Dict[str, Any]] = None):
-        self.adapter = BrowserHarnessAdapter(config)
+        self.config = config or {}
 
     def execute(self, include_chrome: bool = False) -> Dict[str, Any]:
-        return self.adapter.list_tabs(include_chrome=include_chrome)
+        return _runtime_adapter(self.config).list_tabs(include_chrome=include_chrome)
 
 
 class BrowserHarnessSwitchTabTool:
     def __init__(self, config: Optional[Dict[str, Any]] = None):
-        self.adapter = BrowserHarnessAdapter(config)
+        self.config = config or {}
 
     def execute(self, target_id: str) -> Dict[str, Any]:
-        return self.adapter.switch_tab(target_id=target_id)
+        return _runtime_adapter(self.config).switch_tab(target_id=target_id)
 
 
 __all__ = [
@@ -517,6 +634,7 @@ __all__ = [
     "BrowserHarnessOpenTabTool",
     "BrowserHarnessPageInfoTool",
     "BrowserHarnessScreenshotTool",
+    "BrowserHarnessStatusTool",
     "BrowserHarnessSwitchTabTool",
     "BrowserHarnessTypeTool",
     "BrowserHarnessUnavailableError",

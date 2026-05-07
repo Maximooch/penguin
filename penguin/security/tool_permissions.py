@@ -63,6 +63,7 @@ TOOL_OPERATION_MAP: dict[str, list[Operation]] = {
     "pydoll_browser_navigate": [Operation.NETWORK_FETCH],
     "pydoll_browser_interact": [Operation.NETWORK_FETCH],
     "pydoll_browser_screenshot": [Operation.FILESYSTEM_WRITE],
+    "browser_status": [Operation.NETWORK_FETCH],
     "browser_open_tab": [Operation.NETWORK_FETCH],
     "browser_page_info": [Operation.NETWORK_FETCH],
     "browser_harness_screenshot": [Operation.FILESYSTEM_WRITE],

@@ -53,6 +53,7 @@ from penguin.tools.browser_harness_tools import (
     BrowserHarnessOpenTabTool,
     BrowserHarnessPageInfoTool,
     BrowserHarnessScreenshotTool,
+    BrowserHarnessStatusTool,
     BrowserHarnessSwitchTabTool,
     BrowserHarnessTypeTool,
     BrowserHarnessWaitTool,
@@ -282,6 +283,7 @@ class ToolManager:
             self._browser_screenshot_tool = None
 
             # Browser-harness tools placeholders
+            self._browser_harness_status_tool = None
             self._browser_harness_open_tab_tool = None
             self._browser_harness_page_info_tool = None
             self._browser_harness_screenshot_tool = None
@@ -355,6 +357,7 @@ class ToolManager:
                 "pydoll_browser_interact": "self.pydoll_browser_interaction_tool.execute",
                 "pydoll_browser_screenshot": "self.pydoll_browser_screenshot_tool.execute",
                 "pydoll_browser_scroll": "self.pydoll_browser_scroll_tool.execute",
+                "browser_status": "self.browser_harness_status_tool.execute",
                 "browser_open_tab": "self.browser_harness_open_tab_tool.execute",
                 "browser_page_info": "self.browser_harness_page_info_tool.execute",
                 "browser_harness_screenshot": "self.browser_harness_screenshot_tool.execute",
@@ -931,6 +934,26 @@ class ToolManager:
                 "name": "pydoll_browser_screenshot",
                 "description": "Capture visible page content as image using PyDoll (no WebDriver required)",
                 "input_schema": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "browser_status",
+                "description": "Report browser-harness identity, ownership, dependency, connection, and optional page state for diagnostics.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "include_page": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "Include active page info when browser-harness can connect",
+                        }
+                    },
+                },
+                "x-penguin-permissions": {
+                    "mutates_state": False,
+                    "requires_approval": False,
+                    "parallel_safe": True,
+                    "risk": "low",
+                },
             },
             {
                 "name": "browser_open_tab",
@@ -2181,22 +2204,52 @@ class ToolManager:
         return harness_config if isinstance(harness_config, dict) else {}
 
     @property
+    def browser_harness_status_tool(self):
+        if self._browser_harness_status_tool is None:
+            self._browser_harness_status_tool = BrowserHarnessStatusTool(
+                self._browser_harness_config()
+            )
+        return self._browser_harness_status_tool
+
+    @property
     def browser_harness_open_tab_tool(self):
         if not self._lazy_initialized["browser_harness_tools"]:
             with profile_operation("ToolManager.lazy_load_browser_harness_tools"):
                 logger.debug("Lazy-loading browser-harness tools")
                 harness_config = self._browser_harness_config()
-                self._browser_harness_open_tab_tool = BrowserHarnessOpenTabTool(harness_config)
-                self._browser_harness_page_info_tool = BrowserHarnessPageInfoTool(harness_config)
-                self._browser_harness_screenshot_tool = BrowserHarnessScreenshotTool(harness_config)
-                self._browser_harness_click_tool = BrowserHarnessClickTool(harness_config)
-                self._browser_harness_type_tool = BrowserHarnessTypeTool(harness_config)
-                self._browser_harness_key_tool = BrowserHarnessKeyTool(harness_config)
-                self._browser_harness_fill_tool = BrowserHarnessFillTool(harness_config)
-                self._browser_harness_wait_tool = BrowserHarnessWaitTool(harness_config)
-                self._browser_harness_js_tool = BrowserHarnessJsTool(harness_config)
-                self._browser_harness_list_tabs_tool = BrowserHarnessListTabsTool(harness_config)
-                self._browser_harness_switch_tab_tool = BrowserHarnessSwitchTabTool(harness_config)
+                self._browser_harness_open_tab_tool = BrowserHarnessOpenTabTool(
+                    harness_config
+                )
+                self._browser_harness_page_info_tool = BrowserHarnessPageInfoTool(
+                    harness_config
+                )
+                self._browser_harness_screenshot_tool = BrowserHarnessScreenshotTool(
+                    harness_config
+                )
+                self._browser_harness_click_tool = BrowserHarnessClickTool(
+                    harness_config
+                )
+                self._browser_harness_type_tool = BrowserHarnessTypeTool(
+                    harness_config
+                )
+                self._browser_harness_key_tool = BrowserHarnessKeyTool(
+                    harness_config
+                )
+                self._browser_harness_fill_tool = BrowserHarnessFillTool(
+                    harness_config
+                )
+                self._browser_harness_wait_tool = BrowserHarnessWaitTool(
+                    harness_config
+                )
+                self._browser_harness_js_tool = BrowserHarnessJsTool(
+                    harness_config
+                )
+                self._browser_harness_list_tabs_tool = BrowserHarnessListTabsTool(
+                    harness_config
+                )
+                self._browser_harness_switch_tab_tool = BrowserHarnessSwitchTabTool(
+                    harness_config
+                )
                 self._lazy_initialized["browser_harness_tools"] = True
         return self._browser_harness_open_tab_tool
 
@@ -3645,6 +3698,9 @@ class ToolManager:
                 "pydoll_browser_screenshot": lambda: self._execute_async_tool(
                     self.execute_pydoll_browser_screenshot()
                 ),
+                "browser_status": lambda: self.execute_browser_harness_status(
+                    tool_input.get("include_page", True)
+                ),
                 "browser_open_tab": lambda: self.execute_browser_harness_open_tab(
                     tool_input["url"],
                     tool_input.get("wait", True),
@@ -4116,6 +4172,19 @@ class ToolManager:
             return result
         except Exception as e:
             error_message = f"Error capturing screenshot with PyDoll: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return {"error": error_message}
+
+    def execute_browser_harness_status(
+        self,
+        include_page: bool = True,
+    ) -> Dict[str, Any]:
+        """Return browser-harness status and ownership diagnostics."""
+        try:
+            return self.browser_harness_status_tool.execute(include_page)
+        except Exception as e:
+            error_message = f"Error getting browser-harness status: {str(e)}"
             logging.error(error_message)
             self.log_error(e, error_message)
             return {"error": error_message}

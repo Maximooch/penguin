@@ -1005,6 +1005,19 @@ If `browser_open_tab` or `browser_page_info` returns `domain_skills.matches`,
 use those paths as opt-in references only when the current hostname-specific
 problem needs them. Do not bulk-load or summarize all domain-skill files.
 
+### browser_status
+Report browser-harness identity, ownership, dependency, connection, and optional page state.
+
+**Native tool call:** call `browser_status` with `{}` or `{"include_page":false}`.
+
+**ActionXML fallback example:**
+```actionxml
+<browser_status>{"include_page":true}</browser_status>
+```
+
+Use this when browser setup fails, subagents may be sharing state accidentally,
+or you need to verify the active `BU_NAME`/session/agent identity.
+
 ### browser_open_tab
 Open a URL in a new browser-harness tab.
 
