@@ -406,6 +406,32 @@ def test_browser_cleanup_stops_owned_daemon_and_removes_record(
     assert json.loads(ownership_path.read_text())["records"] == {}
 
 
+def test_browser_execute_tool_context_argument_is_used_for_harness_identity(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _FakeBrowserHarnessModules(monkeypatch)
+    ownership_path = tmp_path / "owned.json"
+    manager = ToolManager(
+        config={"browser": {"harness": {"ownership_path": str(ownership_path)}}},
+        log_error_func=_dummy_log_error,
+        fast_startup=True,
+    )
+
+    context = {"session_id": "ctx-session", "agent_id": "ctx-agent"}
+    result = manager.execute_tool(
+        "browser_open_tab",
+        {"url": "https://context.test"},
+        context=context,
+    )
+    cleanup = manager.execute_tool("browser_cleanup", {}, context=context)
+
+    assert result["identity"]["bu_name"] == "penguin-ctx-session-ctx-agent"
+    assert result["identity"]["session_id"] == "ctx-session"
+    assert result["identity"]["agent_id"] == "ctx-agent"
+    assert cleanup["target"] == "penguin-ctx-session-ctx-agent"
+    assert json.loads(ownership_path.read_text())["records"] == {}
+
 def test_browser_status_handles_missing_dependency_without_page(monkeypatch) -> None:
     real_import = importlib.import_module
 
@@ -478,6 +504,7 @@ def test_browser_harness_phase_1_dispatch(monkeypatch) -> None:
 
     event_names = [event[0] for event in fake.events]
     assert "click_at_xy" in event_names
+
     assert "type_text" in event_names
     assert "press_key" in event_names
     assert "fill_input" in event_names
@@ -485,6 +512,24 @@ def test_browser_harness_phase_1_dispatch(monkeypatch) -> None:
     assert "js" in event_names
     assert "list_tabs" in event_names
     assert "switch_tab" in event_names
+
+
+def test_tool_manager_native_read_image_dispatch_loads_image(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("PENGUIN_CWD", str(tmp_path))
+    image_path = tmp_path / "native.png"
+    Image.new("RGB", (8, 6), color=(0, 0, 255)).save(image_path)
+    manager = ToolManager(config={}, log_error_func=_dummy_log_error, fast_startup=True)
+
+    result = manager.execute_tool("read_image", {"path": str(image_path)})
+
+    assert result["result"] == "Image loaded"
+    assert result["mime_type"] == "image/png"
+    assert result["width"] == 8
+    assert result["height"] == 6
+    assert result["artifact"]["image_path"] == str(image_path.resolve())
 
 
 def test_read_image_tool_returns_multimodal_artifact(

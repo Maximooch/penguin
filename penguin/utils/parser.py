@@ -3931,11 +3931,13 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
                 )
             description = description or "What can you see in this browser-harness screenshot?"
 
-            tool = BrowserHarnessScreenshotTool()
-            result = tool.execute(
-                full=bool(payload.get("full", False)),
-                max_dim=payload.get("max_dim"),
-                output_dir=payload.get("output_dir"),
+            result = self.tool_manager.execute_tool(
+                "browser_harness_screenshot",
+                {
+                    "full": bool(payload.get("full", False)),
+                    "max_dim": payload.get("max_dim"),
+                    "output_dir": payload.get("output_dir"),
+                },
             )
 
             if "filepath" in result and os.path.exists(result["filepath"]):

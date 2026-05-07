@@ -2236,9 +2236,67 @@ class ToolManager:
         return self._browser_screenshot_tool
 
     def _browser_harness_config(self) -> Dict[str, Any]:
-        browser_config = self.config.get("browser", {}) if isinstance(self.config, dict) else {}
-        harness_config = browser_config.get("harness", {}) if isinstance(browser_config, dict) else {}
+        browser_config = (
+            self.config.get("browser", {}) if isinstance(self.config, dict) else {}
+        )
+        harness_config = (
+            browser_config.get("harness", {})
+            if isinstance(browser_config, dict)
+            else {}
+        )
         return harness_config if isinstance(harness_config, dict) else {}
+
+    def _browser_harness_config_for_context(
+        self,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        harness_config = dict(self._browser_harness_config())
+        if isinstance(context, dict):
+            if context.get("session_id"):
+                harness_config["session_id"] = context["session_id"]
+            if context.get("agent_id"):
+                harness_config["agent_id"] = context["agent_id"]
+        return harness_config
+
+    def _browser_harness_status_tool_for_context(
+        self,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> BrowserHarnessStatusTool:
+        return BrowserHarnessStatusTool(
+            self._browser_harness_config_for_context(context)
+        )
+
+    def _browser_harness_cleanup_tool_for_context(
+        self,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> BrowserHarnessCleanupTool:
+        return BrowserHarnessCleanupTool(
+            self._browser_harness_config_for_context(context)
+        )
+
+    def _browser_harness_open_tab_tool_for_context(
+        self,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> BrowserHarnessOpenTabTool:
+        return BrowserHarnessOpenTabTool(
+            self._browser_harness_config_for_context(context)
+        )
+
+    def _browser_harness_page_info_tool_for_context(
+        self,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> BrowserHarnessPageInfoTool:
+        return BrowserHarnessPageInfoTool(
+            self._browser_harness_config_for_context(context)
+        )
+
+    def _browser_harness_screenshot_tool_for_context(
+        self,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> BrowserHarnessScreenshotTool:
+        return BrowserHarnessScreenshotTool(
+            self._browser_harness_config_for_context(context)
+        )
 
     @property
     def browser_harness_status_tool(self):
@@ -3656,6 +3714,11 @@ class ToolManager:
                 "read_file": lambda: self._execute_file_operation(
                     "read_file", tool_input, file_root=file_root
                 ),
+                "read_image": lambda: self.execute_read_image(
+                    tool_input.get("path", ""),
+                    tool_input.get("prompt"),
+                    tool_input.get("max_dim"),
+                ),
                 "list_files": lambda: self._execute_file_operation(
                     "list_files", tool_input, file_root=file_root
                 ),
@@ -3744,24 +3807,30 @@ class ToolManager:
                     self.execute_pydoll_browser_screenshot()
                 ),
                 "browser_status": lambda: self.execute_browser_harness_status(
-                    tool_input.get("include_page", True)
+                    tool_input.get("include_page", True),
+                    effective_context,
                 ),
                 "browser_cleanup": lambda: self.execute_browser_harness_cleanup(
                     tool_input.get("owned_only", True),
                     tool_input.get("force", False),
                     tool_input.get("name"),
                     tool_input.get("dry_run", False),
+                    effective_context,
                 ),
                 "browser_open_tab": lambda: self.execute_browser_harness_open_tab(
                     tool_input["url"],
                     tool_input.get("wait", True),
                     tool_input.get("timeout", 15.0),
+                    effective_context,
                 ),
-                "browser_page_info": lambda: self.execute_browser_harness_page_info(),
+                "browser_page_info": lambda: self.execute_browser_harness_page_info(
+                    effective_context
+                ),
                 "browser_harness_screenshot": lambda: self.execute_browser_harness_screenshot(
                     tool_input.get("full", False),
                     tool_input.get("max_dim"),
                     tool_input.get("output_dir"),
+                    effective_context,
                 ),
                 "browser_click": lambda: self.execute_browser_harness_click(
                     tool_input["x"],
@@ -3769,19 +3838,23 @@ class ToolManager:
                     tool_input.get("button", "left"),
                     tool_input.get("clicks", 1),
                     tool_input.get("return_page_info", True),
+                    effective_context,
                 ),
                 "browser_type": lambda: self.execute_browser_harness_type(
-                    tool_input["text"]
+                    tool_input["text"],
+                    effective_context,
                 ),
                 "browser_key": lambda: self.execute_browser_harness_key(
                     tool_input["key"],
                     tool_input.get("modifiers", 0),
+                    effective_context,
                 ),
                 "browser_fill": lambda: self.execute_browser_harness_fill(
                     tool_input["selector"],
                     tool_input["text"],
                     tool_input.get("clear_first", True),
                     tool_input.get("timeout", 0.0),
+                    effective_context,
                 ),
                 "browser_wait": lambda: self.execute_browser_harness_wait(
                     tool_input.get("mode", "load"),
@@ -3790,16 +3863,20 @@ class ToolManager:
                     tool_input.get("visible", False),
                     tool_input.get("idle_ms", 500),
                     tool_input.get("seconds"),
+                    effective_context,
                 ),
                 "browser_js": lambda: self.execute_browser_harness_js(
                     tool_input["expression"],
                     tool_input.get("target_id"),
+                    effective_context,
                 ),
                 "browser_list_tabs": lambda: self.execute_browser_harness_list_tabs(
-                    tool_input.get("include_chrome", False)
+                    tool_input.get("include_chrome", False),
+                    effective_context,
                 ),
                 "browser_switch_tab": lambda: self.execute_browser_harness_switch_tab(
-                    tool_input["target_id"]
+                    tool_input["target_id"],
+                    effective_context,
                 ),
                 "analyze_codebase": lambda: self.analyze_codebase(
                     tool_input.get("directory"),
@@ -4230,10 +4307,13 @@ class ToolManager:
     def execute_browser_harness_status(
         self,
         include_page: bool = True,
+        context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Return browser-harness status and ownership diagnostics."""
         try:
-            return self.browser_harness_status_tool.execute(include_page)
+            return self._browser_harness_status_tool_for_context(context).execute(
+                include_page
+            )
         except Exception as e:
             error_message = f"Error getting browser-harness status: {str(e)}"
             logging.error(error_message)
@@ -4246,10 +4326,11 @@ class ToolManager:
         force: bool = False,
         name: Optional[str] = None,
         dry_run: bool = False,
+        context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Safely clean up a browser-harness daemon."""
         try:
-            return self.browser_harness_cleanup_tool.execute(
+            return self._browser_harness_cleanup_tool_for_context(context).execute(
                 owned_only,
                 force,
                 name,
@@ -4266,20 +4347,28 @@ class ToolManager:
         url: str,
         wait: bool = True,
         timeout: float = 15.0,
+        context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Open a new tab through optional browser-harness."""
         try:
-            return self.browser_harness_open_tab_tool.execute(url, wait, timeout)
+            return self._browser_harness_open_tab_tool_for_context(context).execute(
+                url,
+                wait,
+                timeout,
+            )
         except Exception as e:
             error_message = f"Error opening browser-harness tab: {str(e)}"
             logging.error(error_message)
             self.log_error(e, error_message)
             return {"error": error_message}
 
-    def execute_browser_harness_page_info(self) -> Dict[str, Any]:
+    def execute_browser_harness_page_info(
+        self,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """Return active browser-harness page info."""
         try:
-            return self.browser_harness_page_info_tool.execute()
+            return self._browser_harness_page_info_tool_for_context(context).execute()
         except Exception as e:
             error_message = f"Error getting browser-harness page info: {str(e)}"
             logging.error(error_message)
@@ -4306,10 +4395,15 @@ class ToolManager:
         full: bool = False,
         max_dim: Optional[int] = None,
         output_dir: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Capture a screenshot through optional browser-harness."""
         try:
-            return self.browser_harness_screenshot_tool.execute(full, max_dim, output_dir)
+            return self._browser_harness_screenshot_tool_for_context(context).execute(
+                full,
+                max_dim,
+                output_dir,
+            )
         except Exception as e:
             error_message = f"Error capturing browser-harness screenshot: {str(e)}"
             logging.error(error_message)
@@ -4323,10 +4417,13 @@ class ToolManager:
         button: str = "left",
         clicks: int = 1,
         return_page_info: bool = True,
+        context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Click coordinates through optional browser-harness."""
         try:
-            return self.browser_harness_click_tool.execute(
+            return BrowserHarnessClickTool(
+                self._browser_harness_config_for_context(context)
+            ).execute(
                 x,
                 y,
                 button,
@@ -4339,10 +4436,16 @@ class ToolManager:
             self.log_error(e, error_message)
             return {"error": error_message}
 
-    def execute_browser_harness_type(self, text: str) -> Dict[str, Any]:
+    def execute_browser_harness_type(
+        self,
+        text: str,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """Type text through optional browser-harness."""
         try:
-            return self.browser_harness_type_tool.execute(text)
+            return BrowserHarnessTypeTool(
+                self._browser_harness_config_for_context(context)
+            ).execute(text)
         except Exception as e:
             error_message = f"Error typing with browser-harness: {str(e)}"
             logging.error(error_message)
@@ -4353,10 +4456,13 @@ class ToolManager:
         self,
         key: str,
         modifiers: int = 0,
+        context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Press a key through optional browser-harness."""
         try:
-            return self.browser_harness_key_tool.execute(key, modifiers)
+            return BrowserHarnessKeyTool(
+                self._browser_harness_config_for_context(context)
+            ).execute(key, modifiers)
         except Exception as e:
             error_message = f"Error pressing key with browser-harness: {str(e)}"
             logging.error(error_message)
@@ -4369,10 +4475,13 @@ class ToolManager:
         text: str,
         clear_first: bool = True,
         timeout: float = 0.0,
+        context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Fill an input through optional browser-harness."""
         try:
-            return self.browser_harness_fill_tool.execute(
+            return BrowserHarnessFillTool(
+                self._browser_harness_config_for_context(context)
+            ).execute(
                 selector,
                 text,
                 clear_first,
@@ -4392,10 +4501,13 @@ class ToolManager:
         visible: bool = False,
         idle_ms: int = 500,
         seconds: Optional[float] = None,
+        context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Wait through optional browser-harness."""
         try:
-            return self.browser_harness_wait_tool.execute(
+            return BrowserHarnessWaitTool(
+                self._browser_harness_config_for_context(context)
+            ).execute(
                 mode,
                 timeout,
                 selector,
@@ -4413,10 +4525,13 @@ class ToolManager:
         self,
         expression: str,
         target_id: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Evaluate JavaScript through optional browser-harness."""
         try:
-            return self.browser_harness_js_tool.execute(expression, target_id)
+            return BrowserHarnessJsTool(
+                self._browser_harness_config_for_context(context)
+            ).execute(expression, target_id)
         except Exception as e:
             error_message = f"Error evaluating JS with browser-harness: {str(e)}"
             logging.error(error_message)
@@ -4426,20 +4541,29 @@ class ToolManager:
     def execute_browser_harness_list_tabs(
         self,
         include_chrome: bool = False,
+        context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """List tabs through optional browser-harness."""
         try:
-            return self.browser_harness_list_tabs_tool.execute(include_chrome)
+            return BrowserHarnessListTabsTool(
+                self._browser_harness_config_for_context(context)
+            ).execute(include_chrome)
         except Exception as e:
             error_message = f"Error listing tabs with browser-harness: {str(e)}"
             logging.error(error_message)
             self.log_error(e, error_message)
             return {"error": error_message}
 
-    def execute_browser_harness_switch_tab(self, target_id: str) -> Dict[str, Any]:
+    def execute_browser_harness_switch_tab(
+        self,
+        target_id: str,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """Switch tabs through optional browser-harness."""
         try:
-            return self.browser_harness_switch_tab_tool.execute(target_id)
+            return BrowserHarnessSwitchTabTool(
+                self._browser_harness_config_for_context(context)
+            ).execute(target_id)
         except Exception as e:
             error_message = f"Error switching tabs with browser-harness: {str(e)}"
             logging.error(error_message)

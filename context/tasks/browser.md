@@ -505,12 +505,28 @@ Run these manually or in an opt-in integration job because they require local Ch
 - [x] PyDoll tools continue to register and work as explicit fallback tools.
 - [x] Screenshot output is returned as structured artifact metadata, not just text.
 - [x] Domain skills are opt-in and not prompt-injected wholesale.
-- [ ] Re-run happy-path real Chrome smoke now that remote debugging is enabled: status → open tab → screenshot → `read_image` → cleanup.
-- [ ] Re-run ActionXML smoke for `browser_status`, `browser_open_tab`, `browser_harness_screenshot`, and `read_image`.
-- [ ] Verify missing-harness behavior in an environment without local/source browser-harness installed.
-- [ ] Verify package-data by building or inspecting wheel/sdist contents for bundled browser skill markdown.
-- [ ] Run focused unit/integration tests one final time.
+- [x] Re-run happy-path real Chrome smoke now that remote debugging is enabled: status → open tab → screenshot → `read_image` → cleanup.
+- [x] Re-run ActionXML smoke for `browser_status`, `browser_open_tab`, `browser_harness_screenshot`, and `read_image`.
+- [x] Verify missing-harness behavior with import-blocked harness simulation: status/tool errors are actionable and mention local/source install.
+- [x] Verify package-data by building a wheel and inspecting bundled browser skill markdown.
+- [x] Run focused unit/integration tests one final time.
 - [ ] Add short PR support/limitations note covering local browser-harness install, Python 3.11+, Chrome remote debugging, PyDoll fallback, safety, and opt-in domain skills.
+
+### PR Readiness Validation - 2026-05-07
+
+Completed after enabling Chrome remote debugging:
+
+- Focused test suite: `pytest -q tests/test_browser_harness_tools.py tests/test_tool_manager_skills.py tests/test_skills_discovery.py tests/test_skills_manager.py tests/test_tool_manager_create_file_root.py -q` → 38 passed.
+- Missing-harness simulation: `BrowserHarnessAdapter.status(include_page=False)` with `browser_harness` import blocked returns an actionable install warning and does not crash.
+- Real Chrome happy path via native ToolManager calls: `browser_status` → `browser_open_tab` → `browser_harness_screenshot` → `read_image` → `browser_cleanup` passed with per-context `BU_NAME`.
+- ActionXML happy path: `<browser_status>`, `<browser_open_tab>`, `<browser_harness_screenshot>`, `<read_image>`, and `<browser_cleanup>` passed; screenshots/images were added as multimodal conversation messages.
+- Package-data sanity: built `penguin_ai-0.7.0-py3-none-any.whl`; verified `browser/SKILL.md`, `domain-skills/README.md`, and 17 interaction skill markdown files are included.
+
+Bugs found during validation and fixed before PR:
+
+- Native `read_image` schema existed but `ToolManager.execute_tool()` dispatch was missing.
+- Explicit `context=` passed to `ToolManager.execute_tool()` was not propagated into browser-harness tool instances, causing wrong/default `BU_NAME` in direct tool-manager usage.
+- ActionXML `browser_harness_screenshot` bypassed `ToolManager` config/context by constructing the screenshot tool directly.
 
 ## Related Files
 
