@@ -388,9 +388,12 @@ async def execute_tool_calls_serially(
                 results.append(output)
                 continue
             if isinstance(output, dict):
+                action_output = dict(output)
+                if not action_output.get("action") and not action_output.get("name"):
+                    action_output["action"] = tool_call.name
                 results.append(
                     tool_result_from_action_result(
-                        output,
+                        action_output,
                         call_id=tool_call.id,
                         started_at=started_at,
                         ended_at=ended_at,

@@ -760,3 +760,32 @@ def test_native_screenshot_tool_result_includes_read_image_hint() -> None:
     assert "filepath: /tmp/penguin-shot.png" in tool_result.output
     assert "image_path: /tmp/penguin-shot.png" in tool_result.output
     assert "call read_image" in tool_result.output
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_calls_uses_tool_name_for_browser_metadata() -> None:
+    from penguin.tools.runtime import ToolCall, execute_tool_calls_serially
+
+    results = await execute_tool_calls_serially(
+        [
+            ToolCall(
+                id="call_browser_open_tab",
+                name="browser_open_tab",
+                arguments={"url": "https://example.test/page"},
+                source="responses",
+            )
+        ],
+        lambda _tool_call: {
+            "result": "Opened browser tab",
+            "loaded": True,
+            "page_info": {
+                "url": "https://example.test/page",
+                "title": "Example Page",
+            },
+        },
+    )
+
+    assert len(results) == 1
+    assert results[0].name == "browser_open_tab"
+    assert "url: https://example.test/page" in results[0].output
+    assert "next: inspect page_info" in results[0].output
