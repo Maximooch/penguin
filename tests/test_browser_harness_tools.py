@@ -789,3 +789,111 @@ async def test_execute_tool_calls_uses_tool_name_for_browser_metadata() -> None:
     assert results[0].name == "browser_open_tab"
     assert "url: https://example.test/page" in results[0].output
     assert "next: inspect page_info" in results[0].output
+
+
+def test_image_artifacts_from_action_result_extracts_screenshot_artifact():
+    from penguin.tools.runtime import image_artifacts_from_action_result
+
+    artifacts = image_artifacts_from_action_result(
+        {
+            "action": "browser_harness_screenshot",
+            "artifact": {
+                "type": "image",
+                "image_path": "/tmp/screenshot.png",
+                "mime_type": "image/png",
+            },
+        }
+    )
+
+    assert artifacts == [
+        {
+            "source_action": "browser_harness_screenshot",
+            "image_path": "/tmp/screenshot.png",
+            "mime_type": "image/png",
+            "width": None,
+            "height": None,
+            "format": None,
+        }
+    ]
+
+
+def test_engine_persists_native_tool_image_artifact():
+    from penguin.engine import Engine
+
+    class FakeConversation:
+        def __init__(self):
+            self.messages = []
+
+        def add_message(self, role, content, category=None, metadata=None, **kwargs):
+            self.messages.append(
+                {
+                    "role": role,
+                    "content": content,
+                    "category": category,
+                    "metadata": metadata,
+                    "kwargs": kwargs,
+                }
+            )
+
+    class FakeManager:
+        def __init__(self):
+            self.conversation = FakeConversation()
+
+    engine = object.__new__(Engine)
+    manager = FakeManager()
+
+    engine._persist_tool_image_artifacts(
+        manager,
+        {
+            "action": "browser_harness_screenshot",
+            "artifact": {"type": "image", "image_path": "/tmp/shot.png"},
+        },
+    )
+
+    assert len(manager.conversation.messages) == 1
+    message = manager.conversation.messages[0]
+    assert message["role"] == "user"
+    assert message["content"][1] == {"type": "image_url", "image_path": "/tmp/shot.png"}
+    assert message["metadata"]["type"] == "tool_image_artifact"
+
+
+@pytest.mark.asyncio
+async def test_execute_pending_tool_calls_promotes_image_artifact_callback():
+    from penguin.llm.runtime import execute_pending_tool_calls
+
+    class FakeHandler:
+        def get_and_clear_pending_tool_calls(self):
+            return [
+                {
+                    "name": "browser_harness_screenshot",
+                    "arguments": "{}",
+                    "id": "call_1",
+                }
+            ]
+
+    class FakeApiClient:
+        client_handler = FakeHandler()
+        model_config = None
+
+    class FakeToolManager:
+        def execute_tool(self, name, args):
+            assert name == "browser_harness_screenshot"
+            return {
+                "result": "Screenshot captured",
+                "filepath": "/tmp/shot.png",
+                "artifact": {"type": "image", "image_path": "/tmp/shot.png"},
+            }
+
+    promoted = []
+    persisted = []
+
+    results = await execute_pending_tool_calls(
+        api_client=FakeApiClient(),
+        tool_manager=FakeToolManager(),
+        persist_action_result=lambda action, context: persisted.append((action, context)),
+        persist_image_artifacts=promoted.append,
+    )
+
+    assert results[0]["artifact"] == {"type": "image", "image_path": "/tmp/shot.png"}
+    assert promoted[0]["artifact"] == {"type": "image", "image_path": "/tmp/shot.png"}
+    assert persisted[0][0]["result"].startswith("Screenshot captured")

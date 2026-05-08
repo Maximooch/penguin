@@ -398,6 +398,7 @@ async def execute_tool_calls_serially(
                         started_at=started_at,
                         ended_at=ended_at,
                         structured_output={
+                            **action_output,
                             "tool_call_id": tool_call.id,
                             "tool_arguments": tool_call.arguments,
                         },
@@ -584,6 +585,61 @@ def tool_result_from_action_result(
     )
 
 
+def image_artifacts_from_action_result(
+    action_result: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Extract model-visible image artifacts from a tool result.
+
+    Args:
+        action_result: Structured tool result, usually from browser screenshot
+            or ``read_image`` tools.
+
+    Returns:
+        A list of image artifact dictionaries. Each dictionary includes at
+        least ``image_path`` when extraction succeeds. Returns an empty list
+        when the result has no image payload or the tool failed.
+    """
+
+    if not isinstance(action_result, dict) or action_result.get("error"):
+        return []
+
+    action = str(action_result.get("action") or action_result.get("name") or "")
+    artifacts: list[dict[str, Any]] = []
+
+    artifact = action_result.get("artifact")
+    if isinstance(artifact, dict) and artifact.get("type") == "image":
+        image_path = artifact.get("image_path") or artifact.get("path")
+        if isinstance(image_path, str) and image_path.strip():
+            artifacts.append(
+                {
+                    "source_action": action,
+                    "image_path": image_path.strip(),
+                    "mime_type": artifact.get("mime_type"),
+                    "width": artifact.get("width"),
+                    "height": artifact.get("height"),
+                    "format": artifact.get("format"),
+                }
+            )
+
+    fallback_path = action_result.get("image_path") or action_result.get("filepath")
+    if action in {"browser_harness_screenshot", "read_image"}:
+        if isinstance(fallback_path, str) and fallback_path.strip():
+            image_path = fallback_path.strip()
+            if not any(item.get("image_path") == image_path for item in artifacts):
+                artifacts.append(
+                    {
+                        "source_action": action,
+                        "image_path": image_path,
+                        "mime_type": action_result.get("mime_type"),
+                        "width": action_result.get("width"),
+                        "height": action_result.get("height"),
+                        "format": action_result.get("format"),
+                    }
+                )
+
+    return artifacts
+
+
 def legacy_action_result_from_tool_result(tool_result: ToolResult) -> dict[str, str]:
     """Convert a normalized tool result back to Penguin's current result shape."""
 
@@ -605,6 +661,7 @@ __all__ = [
     "ToolResultStatus",
     "execute_tool_calls_serially",
     "hash_tool_output",
+    "image_artifacts_from_action_result",
     "legacy_action_result_from_tool_result",
     "select_tool_calls_for_policy",
     "tool_call_from_responses_info",

@@ -412,6 +412,7 @@ async def execute_pending_tool_calls(
     emit_action_start: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     emit_action_result: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     emit_tool_timeline: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+    persist_image_artifacts: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> List[Dict[str, Any]]:
     """Execute all pending provider-captured tool calls using generic hooks."""
 
@@ -502,7 +503,9 @@ async def execute_pending_tool_calls(
             raw_args_text = raw_args_by_id.get(source_tool_call.id, "")
             tool_call_id = source_tool_call.id
             legacy_action_result = legacy_action_result_from_tool_result(tool_result)
+            structured_output = tool_result.structured_output or {}
             runtime_action_result = {
+                **structured_output,
                 **legacy_action_result,
                 "tool_call_id": source_tool_call.id,
                 "tool_arguments": raw_args_text,
@@ -516,6 +519,8 @@ async def execute_pending_tool_calls(
                         "tool_arguments": runtime_action_result["tool_arguments"],
                     },
                 )
+                if persist_image_artifacts is not None:
+                    persist_image_artifacts(runtime_action_result)
 
             if emit_action_result is not None and not suppress_ui_artifacts:
                 await emit_action_result(
