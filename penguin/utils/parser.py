@@ -21,6 +21,8 @@ from penguin.tools import ToolManager
 from penguin.utils.process_manager import ProcessManager
 from penguin.system.conversation import MessageCategory
 from penguin.system.execution_context import get_current_execution_context
+from penguin.tools.image_tools import ReadImageTool
+from penguin.tools.browser_harness_tools import BrowserHarnessScreenshotTool
 from penguin.tools.browser_tools import BrowserScreenshotTool, browser_manager
 from penguin.constants import (
     DELEGATE_EXPLORE_TASK_MAX_ITERATIONS_CAP,
@@ -30,6 +32,14 @@ from penguin.constants import (
 import os
 
 logger = logging.getLogger(__name__)
+
+
+def _browser_action_log_info(message: str, *args: Any) -> None:
+    """Log browser ActionXML diagnostics to app and uvicorn logs."""
+    logger.info(message, *args)
+    uvicorn_logger = logging.getLogger("uvicorn.error")
+    if uvicorn_logger is not logger:
+        uvicorn_logger.info(message, *args)
 
 
 class ActionType(Enum):
@@ -119,6 +129,20 @@ class ActionType(Enum):
     BROWSER_NAVIGATE = "browser_navigate"
     BROWSER_INTERACT = "browser_interact"
     BROWSER_SCREENSHOT = "browser_screenshot"
+    READ_IMAGE = "read_image"
+    BROWSER_STATUS = "browser_status"
+    BROWSER_CLEANUP = "browser_cleanup"
+    BROWSER_OPEN_TAB = "browser_open_tab"
+    BROWSER_PAGE_INFO = "browser_page_info"
+    BROWSER_HARNESS_SCREENSHOT = "browser_harness_screenshot"
+    BROWSER_CLICK = "browser_click"
+    BROWSER_TYPE = "browser_type"
+    BROWSER_KEY = "browser_key"
+    BROWSER_FILL = "browser_fill"
+    BROWSER_WAIT = "browser_wait"
+    BROWSER_JS = "browser_js"
+    BROWSER_LIST_TABS = "browser_list_tabs"
+    BROWSER_SWITCH_TAB = "browser_switch_tab"
     # PyDoll browser actions
     PYDOLL_BROWSER_NAVIGATE = "pydoll_browser_navigate"
     PYDOLL_BROWSER_INTERACT = "pydoll_browser_interact"
@@ -1607,6 +1631,44 @@ class ActionExecutor:
             ActionType.BROWSER_NAVIGATE: self._browser_navigate,
             ActionType.BROWSER_INTERACT: self._browser_interact,
             ActionType.BROWSER_SCREENSHOT: self._browser_screenshot,
+            ActionType.READ_IMAGE: self._read_image,
+            ActionType.BROWSER_STATUS: lambda params: self._browser_harness_tool(
+                "browser_status", params
+            ),
+            ActionType.BROWSER_CLEANUP: lambda params: self._browser_harness_tool(
+                "browser_cleanup", params
+            ),
+            ActionType.BROWSER_OPEN_TAB: lambda params: self._browser_harness_tool(
+                "browser_open_tab", params
+            ),
+            ActionType.BROWSER_PAGE_INFO: lambda params: self._browser_harness_tool(
+                "browser_page_info", params
+            ),
+            ActionType.BROWSER_HARNESS_SCREENSHOT: self._browser_harness_screenshot,
+            ActionType.BROWSER_CLICK: lambda params: self._browser_harness_tool(
+                "browser_click", params
+            ),
+            ActionType.BROWSER_TYPE: lambda params: self._browser_harness_tool(
+                "browser_type", params
+            ),
+            ActionType.BROWSER_KEY: lambda params: self._browser_harness_tool(
+                "browser_key", params
+            ),
+            ActionType.BROWSER_FILL: lambda params: self._browser_harness_tool(
+                "browser_fill", params
+            ),
+            ActionType.BROWSER_WAIT: lambda params: self._browser_harness_tool(
+                "browser_wait", params
+            ),
+            ActionType.BROWSER_JS: lambda params: self._browser_harness_tool(
+                "browser_js", params
+            ),
+            ActionType.BROWSER_LIST_TABS: lambda params: self._browser_harness_tool(
+                "browser_list_tabs", params
+            ),
+            ActionType.BROWSER_SWITCH_TAB: lambda params: self._browser_harness_tool(
+                "browser_switch_tab", params
+            ),
             # PyDoll browser actions
             ActionType.PYDOLL_BROWSER_NAVIGATE: self._pydoll_browser_navigate,
             ActionType.PYDOLL_BROWSER_INTERACT: self._pydoll_browser_interact,
@@ -3798,6 +3860,138 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
         if not await browser_manager.initialize():
             return "Failed to initialize browser"
         return await browser_manager.navigate_to(params)
+
+    async def _read_image(self, params: str) -> str:
+        """Load a local image and add it to conversation as multimodal content."""
+        try:
+            payload = _parse_json_payload(params)
+            if payload:
+                path = payload.get("path") or payload.get("file_path")
+                prompt = payload.get("prompt") or payload.get("description")
+                max_dim = payload.get("max_dim")
+            else:
+                path = params.strip()
+                prompt = None
+                max_dim = None
+
+            if not path:
+                return "Error reading image: path is required"
+
+            result = ReadImageTool().execute(str(path), prompt=prompt, max_dim=max_dim)
+            if "filepath" in result and os.path.exists(result["filepath"]):
+                description = result.get("prompt") or "What can you see in this image?"
+                add_message_fn = None
+                if callable(getattr(self.conversation_system, "add_message", None)):
+                    add_message_fn = self.conversation_system.add_message
+                elif hasattr(self.conversation_system, "conversation") and callable(
+                    getattr(self.conversation_system.conversation, "add_message", None)
+                ):
+                    add_message_fn = self.conversation_system.conversation.add_message
+
+                multimodal_content = [
+                    {"type": "text", "text": description},
+                    {"type": "image_url", "image_path": result["filepath"]},
+                ]
+
+                if add_message_fn:
+                    add_message_fn(
+                        role="user",
+                        content=multimodal_content,
+                        category=MessageCategory.DIALOG,
+                    )
+                    return f"Image loaded from {result['filepath']} and added to conversation"
+                return f"Image loaded from {result['filepath']} (conversation update skipped)"
+
+            return result.get("error", "Failed to load image")
+        except Exception as e:
+            return f"Error reading image: {str(e)}"
+
+    async def _browser_harness_tool(self, tool_name: str, params: str) -> str:
+        """Execute a browser-harness tool from ActionXML using JSON payloads."""
+        try:
+            payload = _parse_json_payload(params)
+            if payload is None:
+                stripped = params.strip()
+                if tool_name == "browser_open_tab" and stripped:
+                    payload = {"url": stripped}
+                else:
+                    payload = {}
+
+            result = self.tool_manager.execute_tool(tool_name, payload)
+            if isinstance(result, str):
+                return result
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return f"Error executing {tool_name}: {str(e)}"
+
+    async def _browser_harness_screenshot(self, params: str) -> str:
+        """Take a screenshot using browser-harness and add it to conversation."""
+        try:
+            payload = _parse_json_payload(params) or {}
+            description = (
+                payload.get("description")
+                if isinstance(payload.get("description"), str)
+                else params.strip()
+            )
+            if params.strip().startswith("{"):
+                description = payload.get(
+                    "description", "What can you see in this browser-harness screenshot?"
+                )
+            description = description or "What can you see in this browser-harness screenshot?"
+
+            result = self.tool_manager.execute_tool(
+                "browser_harness_screenshot",
+                {
+                    "full": bool(payload.get("full", False)),
+                    "max_dim": payload.get("max_dim"),
+                    "output_dir": payload.get("output_dir"),
+                },
+            )
+
+            if "filepath" in result and os.path.exists(result["filepath"]):
+                add_message_fn = None
+                if callable(getattr(self.conversation_system, "add_message", None)):
+                    add_message_fn = self.conversation_system.add_message
+                elif hasattr(self.conversation_system, "conversation") and callable(
+                    getattr(self.conversation_system.conversation, "add_message", None)
+                ):
+                    add_message_fn = self.conversation_system.conversation.add_message
+
+                multimodal_content = [
+                    {"type": "text", "text": description},
+                    {"type": "image_url", "image_path": result["filepath"]},
+                ]
+
+                image_attached = False
+                if add_message_fn:
+                    add_message_fn(
+                        role="user",
+                        content=multimodal_content,
+                        category=MessageCategory.DIALOG,
+                    )
+                    image_attached = True
+
+                artifact = result.get("artifact") if isinstance(result, dict) else None
+                identity = result.get("identity") if isinstance(result, dict) else None
+                _browser_action_log_info(
+                    "browser.tool.used name=%s bu_name=%s session=%s agent=%s "
+                    "filepath=%s artifact_image_path=%s image_attached=%s source=%s",
+                    "browser_harness_screenshot",
+                    identity.get("bu_name") if isinstance(identity, dict) else None,
+                    identity.get("session_id") if isinstance(identity, dict) else None,
+                    identity.get("agent_id") if isinstance(identity, dict) else None,
+                    result["filepath"],
+                    artifact.get("image_path") if isinstance(artifact, dict) else None,
+                    image_attached,
+                    "actionxml",
+                )
+                if image_attached:
+                    return f"browser-harness screenshot saved to {result['filepath']} and added to conversation"
+                return f"browser-harness screenshot saved to {result['filepath']} (conversation update skipped)"
+
+            return result.get("error", "Failed to capture browser-harness screenshot")
+        except Exception as e:
+            return f"Error taking browser-harness screenshot: {str(e)}"
 
     async def _pydoll_browser_navigate(self, params: str) -> str:
         """Navigate to a URL using PyDoll browser."""

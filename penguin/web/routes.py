@@ -1185,9 +1185,8 @@ def _extract_paths_from_parts(
     for part in parts:
         if not isinstance(part, dict):
             continue
-        if str(part.get("type", "")).strip().lower() != "file":
-            continue
 
+        part_type = str(part.get("type", "")).strip().lower()
         mime = part.get("mime")
         mime_value = mime.strip().lower() if isinstance(mime, str) else ""
 
@@ -1195,8 +1194,51 @@ def _extract_paths_from_parts(
         source_path = source.get("path") if isinstance(source, dict) else None
         source_path_value = source_path.strip() if isinstance(source_path, str) else ""
 
+        image_url = part.get("image_url")
+        image_url_path = None
+        image_url_value = None
+        if isinstance(image_url, dict):
+            for key in ("image_path", "path"):
+                value = image_url.get(key)
+                if isinstance(value, str) and value.strip():
+                    image_url_path = value.strip()
+                    break
+            url_candidate = image_url.get("url")
+            if isinstance(url_candidate, str):
+                image_url_value = url_candidate.strip()
+        elif isinstance(image_url, str):
+            image_url_value = image_url.strip()
+
+        direct_image_path = part.get("image_path")
+        direct_image_path_value = (
+            direct_image_path.strip() if isinstance(direct_image_path, str) else ""
+        )
+
         url = part.get("url")
         url_value = url.strip() if isinstance(url, str) else ""
+
+        def _add_image_candidate(candidate: str) -> bool:
+            candidate = candidate.strip()
+            if not candidate:
+                return False
+            if candidate not in image_paths:
+                image_paths.append(candidate)
+            return True
+
+        if part_type in {"image", "image_url", "input_image"}:
+            for candidate in (
+                direct_image_path_value,
+                image_url_path or "",
+                image_url_value or "",
+                source_path_value,
+                url_value,
+            ):
+                if _add_image_candidate(candidate):
+                    break
+            continue
+
+        if part_type != "file":
+            continue
 
         source_image_selected = False
         if source_path_value:
@@ -1207,13 +1249,8 @@ def _extract_paths_from_parts(
                     or source_path_value.startswith("../")
                     or source_path_value.startswith("~/")
                 )
-                if (
-                    candidate
-                    and not source_path_value.startswith("data:")
-                    and source_path_value not in image_paths
-                ):
-                    image_paths.append(source_path_value)
-                    source_image_selected = True
+                if candidate and not source_path_value.startswith("data:"):
+                    source_image_selected = _add_image_candidate(source_path_value)
             elif not source_path_value.startswith("data:"):
                 resolved = _resolve_context_file_path(
                     source_path_value,
@@ -1239,8 +1276,7 @@ def _extract_paths_from_parts(
             continue
         if not (mime_value.startswith("image/") or url_value.startswith("data:image/")):
             continue
-        if url_value not in image_paths:
-            image_paths.append(url_value)
+        _add_image_candidate(url_value)
 
     return context_files, image_paths
 

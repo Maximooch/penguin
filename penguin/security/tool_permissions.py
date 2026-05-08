@@ -28,6 +28,7 @@ TOOL_OPERATION_MAP: dict[str, list[Operation]] = {
     "list_files": [Operation.FILESYSTEM_LIST],
     "find_file": [Operation.FILESYSTEM_LIST],
     "get_file_map": [Operation.FILESYSTEM_LIST],
+    "read_image": [Operation.FILESYSTEM_READ],
     "enhanced_read": [Operation.FILESYSTEM_READ],
     # File write operations
     "create_folder": [Operation.FILESYSTEM_MKDIR],
@@ -62,6 +63,19 @@ TOOL_OPERATION_MAP: dict[str, list[Operation]] = {
     "pydoll_browser_navigate": [Operation.NETWORK_FETCH],
     "pydoll_browser_interact": [Operation.NETWORK_FETCH],
     "pydoll_browser_screenshot": [Operation.FILESYSTEM_WRITE],
+    "browser_status": [Operation.NETWORK_FETCH],
+    "browser_cleanup": [Operation.NETWORK_POST],
+    "browser_open_tab": [Operation.NETWORK_FETCH],
+    "browser_page_info": [Operation.NETWORK_FETCH],
+    "browser_harness_screenshot": [Operation.FILESYSTEM_WRITE],
+    "browser_click": [Operation.NETWORK_POST],
+    "browser_type": [Operation.NETWORK_POST],
+    "browser_key": [Operation.NETWORK_POST],
+    "browser_fill": [Operation.NETWORK_POST],
+    "browser_wait": [Operation.NETWORK_FETCH],
+    "browser_js": [Operation.NETWORK_POST],
+    "browser_list_tabs": [Operation.NETWORK_FETCH],
+    "browser_switch_tab": [Operation.NETWORK_POST],
     # Git operations
     "git_status": [Operation.GIT_READ],
     "git_diff": [Operation.GIT_READ],
@@ -117,8 +131,17 @@ def extract_resource_from_input(
         # For commands, the resource is the command itself
         return tool_input.get("command") or tool_input.get("code")
 
-    if tool_name in ("browser_navigate", "pydoll_browser_navigate"):
+    if tool_name in ("browser_navigate", "pydoll_browser_navigate", "browser_open_tab"):
         return tool_input.get("url")
+
+    if tool_name in ("browser_fill",):
+        return tool_input.get("selector")
+
+    if tool_name in ("browser_js",):
+        return tool_input.get("expression")
+
+    if tool_name in ("browser_switch_tab",):
+        return tool_input.get("target_id")
 
     if tool_name in ("grep_search",):
         return tool_input.get("pattern")

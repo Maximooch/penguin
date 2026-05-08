@@ -1,0 +1,791 @@
+from __future__ import annotations
+
+import importlib
+import json
+import sys
+import types
+from pathlib import Path
+
+import pytest
+from PIL import Image
+
+from penguin.security.permission_engine import Operation
+from penguin.security.tool_permissions import get_tool_operations
+from penguin.system.conversation import MessageCategory
+from penguin.system.execution_context import (
+    ExecutionContext,
+    execution_context_scope,
+)
+from penguin.tools.browser_harness_tools import BrowserHarnessAdapter
+from penguin.tools.image_tools import ReadImageTool
+from penguin.tools.tool_manager import ToolManager
+from penguin.utils.parser import ActionExecutor, ActionType, CodeActAction, parse_action
+
+
+def _dummy_log_error(exc: Exception, context: str = "") -> None:
+    del exc, context
+
+
+def test_browser_harness_config_uses_skills_dir_name() -> None:
+    adapter = BrowserHarnessAdapter(
+        {
+            "name": "session:one",
+            "skills_dir": "context/browser_harness",
+            "domain_skills": True,
+        }
+    )
+
+    env = adapter._base_env()
+
+    assert env["BU_NAME"] == "session-one"
+    assert env["BH_AGENT_WORKSPACE"].endswith("context/browser_harness")
+    assert env["BH_DOMAIN_SKILLS"] == "1"
+
+
+def test_browser_harness_domain_skill_lookup_is_gated(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "skills"
+    github_skill = skill_dir / "domain-skills" / "github"
+    github_skill.mkdir(parents=True)
+    (github_skill / "repo-actions.md").write_text("# GitHub repo actions\n")
+
+    disabled = BrowserHarnessAdapter({"skills_dir": str(skill_dir)})
+    enabled = BrowserHarnessAdapter(
+        {"skills_dir": str(skill_dir), "domain_skills": True}
+    )
+
+    assert disabled.domain_skill_matches("https://github.com/penguin-ai/penguin") == {
+        "enabled": False,
+        "hostname": "github.com",
+        "matches": [],
+    }
+
+    result = enabled.domain_skill_matches("https://www.github.com/penguin-ai/penguin")
+
+    assert result["enabled"] is True
+    assert result["hostname"] == "github.com"
+    assert "github" in result["candidate_slugs"]
+    assert result["matches"][0]["slug"] == "github"
+    assert result["matches"][0]["path"] == str(github_skill)
+    assert result["matches"][0]["files"] == [str(github_skill / "repo-actions.md")]
+
+
+def test_browser_harness_tools_register_without_optional_dependency() -> None:
+    manager = ToolManager(
+        config={},
+        log_error_func=_dummy_log_error,
+        fast_startup=True,
+    )
+    names = {schema["name"] for schema in manager.tools}
+
+    assert "browser_open_tab" in names
+    assert "browser_page_info" in names
+    assert "browser_harness_screenshot" in names
+    assert "browser_open_tab" in manager._tool_registry
+
+
+def test_browser_harness_missing_dependency_returns_actionable_error(
+    monkeypatch,
+) -> None:
+    manager = ToolManager(
+        config={},
+        log_error_func=_dummy_log_error,
+        fast_startup=True,
+    )
+
+    real_import = __import__
+
+    def fake_import(name, *args, **kwargs):
+        if name.startswith("browser_harness"):
+            raise ModuleNotFoundError(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("importlib.import_module", lambda name: fake_import(name))
+
+    result = manager.execute_tool("browser_page_info", {})
+
+    assert "error" in result
+    assert "browser-harness is not installed" in result["error"]
+
+
+def test_browser_harness_screenshot_returns_multimodal_artifact(
+    monkeypatch, tmp_path: Path, caplog
+) -> None:
+    fake_admin = types.ModuleType("browser_harness.admin")
+    fake_helpers = types.ModuleType("browser_harness.helpers")
+
+    def ensure_daemon(name=None, env=None, wait=60.0):
+        del name, env, wait
+
+    def capture_screenshot(path=None, full=False, max_dim=None):
+        del full, max_dim
+        output = Path(path)
+        output.write_bytes(b"fakepng")
+        return str(output)
+
+    fake_admin.ensure_daemon = ensure_daemon
+    fake_helpers.capture_screenshot = capture_screenshot
+    monkeypatch.setitem(sys.modules, "browser_harness.admin", fake_admin)
+    monkeypatch.setitem(sys.modules, "browser_harness.helpers", fake_helpers)
+
+    manager = ToolManager(
+        config={"browser": {"harness": {"skills_dir": str(tmp_path / "skills")}}},
+        log_error_func=_dummy_log_error,
+        fast_startup=True,
+    )
+
+    with caplog.at_level("INFO"):
+        result = manager.execute_tool(
+            "browser_harness_screenshot",
+            {"output_dir": str(tmp_path), "max_dim": 1200},
+        )
+
+    assert result["result"].startswith("Screenshot captured")
+    assert Path(result["filepath"]).exists()
+    assert result["artifact"]["type"] == "image"
+    assert result["artifact"]["image_path"] == result["filepath"]
+    assert "browser.tool.used name=browser_harness_screenshot" in caplog.text
+    assert "image_artifact=True" in caplog.text
+
+
+def test_browser_harness_sets_env_before_importing_helpers(
+    monkeypatch, tmp_path: Path
+) -> None:
+    captured = {}
+    fake_admin = types.ModuleType("browser_harness.admin")
+    fake_helpers = types.ModuleType("browser_harness.helpers")
+
+    def fake_import(name):
+        if name == "browser_harness.admin":
+            captured["admin_bu_name"] = __import__("os").environ.get("BU_NAME")
+            return fake_admin
+        if name == "browser_harness.helpers":
+            captured["helpers_bu_name"] = __import__("os").environ.get("BU_NAME")
+            captured["helpers_workspace"] = __import__("os").environ.get(
+                "BH_AGENT_WORKSPACE"
+            )
+            return fake_helpers
+        raise ModuleNotFoundError(name)
+
+    def ensure_daemon(name=None, env=None, wait=60.0):
+        captured["daemon"] = (name, dict(env or {}), wait)
+
+    fake_admin.ensure_daemon = ensure_daemon
+    monkeypatch.setattr("importlib.import_module", fake_import)
+    monkeypatch.delenv("BU_NAME", raising=False)
+    monkeypatch.delenv("BH_AGENT_WORKSPACE", raising=False)
+
+    adapter = BrowserHarnessAdapter(
+        {"name": "session:vision", "skills_dir": str(tmp_path / "skills")}
+    )
+
+    assert adapter._ensure_ready() is fake_helpers
+    assert captured["admin_bu_name"] == "session-vision"
+    assert captured["helpers_bu_name"] == "session-vision"
+    assert captured["helpers_workspace"] == str(tmp_path / "skills")
+    assert captured["daemon"][0] == "session-vision"
+
+
+class _FakeBrowserHarnessModules:
+    def __init__(self, monkeypatch):
+        self.events = []
+        self.admin = types.ModuleType("browser_harness.admin")
+        self.helpers = types.ModuleType("browser_harness.helpers")
+        self.helpers.page_info = self._page_info
+        self.helpers.new_tab = self._new_tab
+        self.helpers.wait_for_load = self._wait_for_load
+        self.helpers.capture_screenshot = self._capture_screenshot
+        self.helpers.click_at_xy = self._click_at_xy
+        self.helpers.type_text = self._type_text
+        self.helpers.press_key = self._press_key
+        self.helpers.fill_input = self._fill_input
+        self.helpers.wait_for_element = self._wait_for_element
+        self.helpers.wait_for_network_idle = self._wait_for_network_idle
+        self.helpers.wait = self._wait
+        self.helpers.js = self._js
+        self.helpers.list_tabs = self._list_tabs
+        self.helpers.current_tab = self._current_tab
+        self.helpers.switch_tab = self._switch_tab
+        self.admin.ensure_daemon = self._ensure_daemon
+        self.admin.restart_daemon = self._restart_daemon
+        monkeypatch.setitem(sys.modules, "browser_harness.admin", self.admin)
+        monkeypatch.setitem(sys.modules, "browser_harness.helpers", self.helpers)
+
+    def _page_info(self):
+        bu_name = __import__("os").environ.get("BU_NAME", "unknown")
+        self.events.append(("page_info", bu_name))
+        return {
+            "url": f"https://{bu_name}.example.test",
+            "title": f"Example {bu_name}",
+        }
+
+    def _ensure_daemon(self, name=None, env=None, wait=60.0):
+        self.events.append(("ensure_daemon", name, dict(env or {}), wait))
+
+    def _restart_daemon(self, name=None):
+        self.events.append(("restart_daemon", name))
+
+    def _new_tab(self, url):
+        self.events.append(("new_tab", url))
+        return "target-1"
+
+    def _wait_for_load(self, timeout=15.0):
+        self.events.append(("wait_for_load", timeout))
+        return True
+
+    def _capture_screenshot(self, path=None, full=False, max_dim=None):
+        self.events.append(("capture_screenshot", path, full, max_dim))
+        output = Path(path)
+        output.write_bytes(b"fakepng")
+        return str(output)
+
+    def _click_at_xy(self, x, y, button="left", clicks=1):
+        self.events.append(("click_at_xy", x, y, button, clicks))
+
+    def _type_text(self, text):
+        self.events.append(("type_text", text))
+
+    def _press_key(self, key, modifiers=0):
+        self.events.append(("press_key", key, modifiers))
+
+    def _fill_input(self, selector, text, clear_first=True, timeout=0.0):
+        self.events.append(("fill_input", selector, text, clear_first, timeout))
+
+    def _wait_for_element(self, selector, timeout=10.0, visible=False):
+        self.events.append(("wait_for_element", selector, timeout, visible))
+        return True
+
+    def _wait_for_network_idle(self, timeout=10.0, idle_ms=500):
+        self.events.append(("wait_for_network_idle", timeout, idle_ms))
+        return True
+
+    def _wait(self, seconds=1.0):
+        self.events.append(("wait", seconds))
+
+    def _js(self, expression, target_id=None):
+        self.events.append(("js", expression, target_id))
+        return 42
+
+    def _list_tabs(self, include_chrome=True):
+        self.events.append(("list_tabs", include_chrome))
+        return [{"targetId": "target-1", "url": "https://example.test"}]
+
+    def _current_tab(self):
+        self.events.append(("current_tab",))
+        return {"targetId": "target-1", "url": "https://example.test"}
+
+    def _switch_tab(self, target_id):
+        self.events.append(("switch_tab", target_id))
+        return "session-1"
+
+
+def test_browser_harness_actionxml_tools_parse() -> None:
+    assert parse_action('<browser_status>{}</browser_status>')[0].action_type == (
+        ActionType.BROWSER_STATUS
+    )
+    open_tab_actions = parse_action(
+        '<browser_open_tab>{"url":"https://example.test"}</browser_open_tab>'
+    )
+    assert open_tab_actions[0].action_type == ActionType.BROWSER_OPEN_TAB
+    assert parse_action('<browser_click>{"x":10,"y":20}</browser_click>')[
+        0
+    ].action_type == ActionType.BROWSER_CLICK
+    assert parse_action('<browser_cleanup>{}</browser_cleanup>')[0].action_type == (
+        ActionType.BROWSER_CLEANUP
+    )
+
+
+def test_browser_status_registers_and_reports_identity(monkeypatch) -> None:
+    fake = _FakeBrowserHarnessModules(monkeypatch)
+    manager = ToolManager(config={}, log_error_func=_dummy_log_error, fast_startup=True)
+    names = {schema["name"] for schema in manager.tools}
+
+    with execution_context_scope(
+        ExecutionContext(session_id="session/one", agent_id="agent.alpha")
+    ):
+        result = manager.execute_tool("browser_status", {"include_page": True})
+
+    assert "browser_status" in names
+    assert result["connected"] is True
+    assert result["identity"]["bu_name"] == "penguin-session-one-agent.alpha"
+    assert result["identity"]["session_id"] == "session/one"
+    assert result["identity"]["agent_id"] == "agent.alpha"
+    assert result["identity"]["started_by_penguin"] is True
+    assert result["identity"]["env"]["PENGUIN_BROWSER_OWNED"] == "1"
+    assert result["page_info"]["title"] == (
+        "Example penguin-session-one-agent.alpha"
+    )
+    assert fake.events[0][0] == "ensure_daemon"
+    assert fake.events[0][1] == "penguin-session-one-agent.alpha"
+
+
+def test_browser_tool_identity_is_derived_per_execution_context(monkeypatch) -> None:
+    _FakeBrowserHarnessModules(monkeypatch)
+    manager = ToolManager(config={}, log_error_func=_dummy_log_error, fast_startup=True)
+
+    with execution_context_scope(ExecutionContext(session_id="s1", agent_id="a1")):
+        first = manager.execute_tool("browser_page_info", {})
+    with execution_context_scope(ExecutionContext(session_id="s2", agent_id="a2")):
+        second = manager.execute_tool("browser_page_info", {})
+
+    assert first["identity"]["bu_name"] == "penguin-s1-a1"
+    assert second["identity"]["bu_name"] == "penguin-s2-a2"
+
+
+def test_browser_parallel_contexts_persist_separate_ownership(
+    monkeypatch, tmp_path: Path
+) -> None:
+    fake = _FakeBrowserHarnessModules(monkeypatch)
+    ownership_path = tmp_path / "ownership.json"
+    manager = ToolManager(
+        config={"browser": {"harness": {"ownership_path": str(ownership_path)}}},
+        log_error_func=_dummy_log_error,
+        fast_startup=True,
+    )
+
+    with execution_context_scope(ExecutionContext(session_id="s1", agent_id="a1")):
+        first = manager.execute_tool("browser_open_tab", {"url": "https://one.test"})
+    with execution_context_scope(ExecutionContext(session_id="s2", agent_id="a2")):
+        second = manager.execute_tool("browser_open_tab", {"url": "https://two.test"})
+
+    assert first["identity"]["bu_name"] == "penguin-s1-a1"
+    assert second["identity"]["bu_name"] == "penguin-s2-a2"
+    assert first["page_info"]["url"] == "https://penguin-s1-a1.example.test"
+    assert second["page_info"]["url"] == "https://penguin-s2-a2.example.test"
+
+    records = json.loads(ownership_path.read_text())["records"]
+    assert set(records) == {"penguin-s1-a1", "penguin-s2-a2"}
+    assert records["penguin-s1-a1"]["session_id"] == "s1"
+    assert records["penguin-s2-a2"]["agent_id"] == "a2"
+    expected_event = (
+        "ensure_daemon",
+        "penguin-s1-a1",
+        {
+            "BU_NAME": "penguin-s1-a1",
+            "PENGUIN_BROWSER_OWNED": "1",
+            "PENGUIN_SESSION_ID": "s1",
+            "PENGUIN_AGENT_ID": "a1",
+        },
+        60.0,
+    )
+    assert expected_event in fake.events
+
+
+def test_browser_cleanup_refuses_without_ownership(monkeypatch, tmp_path: Path) -> None:
+    fake = _FakeBrowserHarnessModules(monkeypatch)
+    manager = ToolManager(
+        config={
+            "browser": {
+                "harness": {"ownership_path": str(tmp_path / "owned.json")}
+            }
+        },
+        log_error_func=_dummy_log_error,
+        fast_startup=True,
+    )
+
+    result = manager.execute_tool("browser_cleanup", {"name": "external-daemon"})
+
+    assert "Refusing to clean up" in result["error"]
+    assert not any(event[0] == "restart_daemon" for event in fake.events)
+
+
+def test_browser_cleanup_stops_owned_daemon_and_removes_record(
+    monkeypatch, tmp_path: Path
+) -> None:
+    fake = _FakeBrowserHarnessModules(monkeypatch)
+    ownership_path = tmp_path / "owned.json"
+    manager = ToolManager(
+        config={"browser": {"harness": {"ownership_path": str(ownership_path)}}},
+        log_error_func=_dummy_log_error,
+        fast_startup=True,
+    )
+
+    with execution_context_scope(ExecutionContext(session_id="s1", agent_id="a1")):
+        manager.execute_tool("browser_page_info", {})
+        result = manager.execute_tool("browser_cleanup", {})
+
+    assert result["result"] == "Browser harness daemon cleanup completed"
+    assert result["target"] == "penguin-s1-a1"
+    assert ("restart_daemon", "penguin-s1-a1") in fake.events
+    assert json.loads(ownership_path.read_text())["records"] == {}
+
+
+def test_browser_execute_tool_context_argument_is_used_for_harness_identity(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _FakeBrowserHarnessModules(monkeypatch)
+    ownership_path = tmp_path / "owned.json"
+    manager = ToolManager(
+        config={"browser": {"harness": {"ownership_path": str(ownership_path)}}},
+        log_error_func=_dummy_log_error,
+        fast_startup=True,
+    )
+
+    context = {"session_id": "ctx-session", "agent_id": "ctx-agent"}
+    result = manager.execute_tool(
+        "browser_open_tab",
+        {"url": "https://context.test"},
+        context=context,
+    )
+    cleanup = manager.execute_tool("browser_cleanup", {}, context=context)
+
+    assert result["identity"]["bu_name"] == "penguin-ctx-session-ctx-agent"
+    assert result["identity"]["session_id"] == "ctx-session"
+    assert result["identity"]["agent_id"] == "ctx-agent"
+    assert cleanup["target"] == "penguin-ctx-session-ctx-agent"
+    assert json.loads(ownership_path.read_text())["records"] == {}
+
+def test_browser_status_handles_missing_dependency_without_page(monkeypatch) -> None:
+    real_import = importlib.import_module
+
+    def fake_import(name, *args, **kwargs):
+        if name.startswith("browser_harness"):
+            raise ModuleNotFoundError(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("importlib.import_module", fake_import)
+    adapter = BrowserHarnessAdapter(
+        {"started_by_penguin": False},
+        execution_context={"session_id": "s1"},
+    )
+
+    result = adapter.status(include_page=False)
+
+    assert result["connected"] is False
+    assert result["identity"]["started_by_penguin"] is False
+    assert result["identity"]["bu_name"] == "penguin-s1"
+    assert result["identity"]["env"]["PENGUIN_BROWSER_OWNED"] == "0"
+    assert "browser-harness is not installed" in result["error"]
+
+
+def _native_tool_names(manager: ToolManager) -> set[str]:
+    names: set[str] = set()
+    for tool in manager.get_responses_tools(include_web_search=False):
+        name = tool.get("name")
+        if isinstance(name, str):
+            names.add(name)
+    return names
+
+
+def test_browser_harness_tools_are_exposed_to_native_tool_schema() -> None:
+    manager = ToolManager(config={}, log_error_func=_dummy_log_error, fast_startup=True)
+    names = _native_tool_names(manager)
+
+    assert "browser_status" in names
+    assert "browser_open_tab" in names
+    assert "browser_harness_screenshot" in names
+    assert "browser_click" in names
+    assert "read_image" in names
+
+
+def test_openrouter_native_kwargs_include_browser_tools() -> None:
+    from penguin.llm.model_config import ModelConfig
+    from penguin.llm.runtime import prepare_native_tool_kwargs
+
+    manager = ToolManager(config={}, log_error_func=_dummy_log_error, fast_startup=True)
+    config = ModelConfig(model="openai/gpt-5.5", provider="openrouter")
+
+    kwargs = prepare_native_tool_kwargs(config, manager)
+    names = {tool["function"]["name"] for tool in kwargs["tools"]}
+
+    assert "browser_open_tab" in names
+    assert "browser_harness_screenshot" in names
+    assert "read_image" in names
+
+
+def test_openai_responses_native_kwargs_include_browser_tools() -> None:
+    from penguin.llm.model_config import ModelConfig
+    from penguin.llm.runtime import prepare_native_tool_kwargs
+
+    manager = ToolManager(config={}, log_error_func=_dummy_log_error, fast_startup=True)
+    config = ModelConfig(model="gpt-5.5", provider="openai")
+    config.client_preference = "native"
+    config.use_responses_api = True
+
+    kwargs = prepare_native_tool_kwargs(config, manager)
+    names = {tool["name"] for tool in kwargs["tools"] if tool.get("type") == "function"}
+
+    assert "browser_open_tab" in names
+    assert "browser_harness_screenshot" in names
+    assert "read_image" in names
+
+def test_browser_harness_phase_1_tools_register() -> None:
+    manager = ToolManager(config={}, log_error_func=_dummy_log_error, fast_startup=True)
+    names = {schema["name"] for schema in manager.tools}
+
+    expected = {
+        "browser_click",
+        "browser_type",
+        "browser_key",
+        "browser_fill",
+        "browser_wait",
+        "browser_js",
+        "browser_list_tabs",
+        "browser_switch_tab",
+    }
+
+    assert expected.issubset(names)
+    assert expected.issubset(manager._tool_registry)
+
+
+def test_browser_harness_phase_1_dispatch(monkeypatch) -> None:
+    fake = _FakeBrowserHarnessModules(monkeypatch)
+    manager = ToolManager(config={}, log_error_func=_dummy_log_error, fast_startup=True)
+
+    click_result = manager.execute_tool("browser_click", {"x": 10, "y": 20})
+    assert click_result["result"] == "Clicked browser coordinates"
+    assert manager.execute_tool("browser_type", {"text": "hello"})["text_length"] == 5
+    assert manager.execute_tool("browser_key", {"key": "Enter"})["key"] == "Enter"
+    assert manager.execute_tool(
+        "browser_fill",
+        {"selector": "#email", "text": "a@b.test", "timeout": 1.5},
+    )["selector"] == "#email"
+    assert manager.execute_tool(
+        "browser_wait",
+        {"mode": "element", "selector": "#done", "visible": True},
+    )["ok"] is True
+    assert (
+        manager.execute_tool("browser_js", {"expression": "1 + 1"})["value"]
+        == 42
+    )
+    tabs_result = manager.execute_tool("browser_list_tabs", {})
+    assert tabs_result["tabs"][0]["targetId"] == "target-1"
+    switch_result = manager.execute_tool(
+        "browser_switch_tab",
+        {"target_id": "target-1"},
+    )
+    assert switch_result["session_id"] == "session-1"
+
+    event_names = [event[0] for event in fake.events]
+    assert "click_at_xy" in event_names
+
+    assert "type_text" in event_names
+    assert "press_key" in event_names
+    assert "fill_input" in event_names
+    assert "wait_for_element" in event_names
+    assert "js" in event_names
+    assert "list_tabs" in event_names
+    assert "switch_tab" in event_names
+
+
+def test_tool_manager_native_read_image_dispatch_loads_image(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("PENGUIN_CWD", str(tmp_path))
+    image_path = tmp_path / "native.png"
+    Image.new("RGB", (8, 6), color=(0, 0, 255)).save(image_path)
+    manager = ToolManager(config={}, log_error_func=_dummy_log_error, fast_startup=True)
+
+    result = manager.execute_tool("read_image", {"path": str(image_path)})
+
+    assert result["result"] == "Image loaded"
+    assert result["mime_type"] == "image/png"
+    assert result["width"] == 8
+    assert result["height"] == 6
+    assert result["artifact"]["image_path"] == str(image_path.resolve())
+
+
+def test_read_image_tool_returns_multimodal_artifact(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("PENGUIN_CWD", str(tmp_path))
+    image_path = tmp_path / "sample.png"
+    Image.new("RGB", (16, 12), color=(255, 0, 0)).save(image_path)
+
+    result = ReadImageTool().execute(str(image_path), prompt="Describe this")
+
+    assert result["result"] == "Image loaded"
+    assert result["filepath"] == str(image_path.resolve())
+    assert result["artifact"]["type"] == "image"
+    assert result["artifact"]["image_path"] == str(image_path.resolve())
+    assert result["artifact"]["mime_type"] == "image/png"
+    assert result["width"] == 16
+    assert result["height"] == 12
+
+
+def test_read_image_registers_for_native_and_actionxml() -> None:
+    manager = ToolManager(config={}, log_error_func=_dummy_log_error, fast_startup=True)
+    names = {schema["name"] for schema in manager.tools}
+    actions = parse_action('<read_image>{"path":"sample.png"}</read_image>')
+
+    assert "read_image" in names
+    assert "read_image" in manager._tool_registry
+    assert get_tool_operations("read_image") == [Operation.FILESYSTEM_READ]
+    assert actions[0].action_type == ActionType.READ_IMAGE
+
+
+class _CaptureConversation:
+    def __init__(self) -> None:
+        self.messages = []
+
+    def add_message(self, **kwargs):
+        self.messages.append(kwargs)
+
+
+async def _run_read_image_action(image_path: Path, prompt: str):
+    manager = ToolManager(config={}, log_error_func=_dummy_log_error, fast_startup=True)
+    conversation = _CaptureConversation()
+    executor = ActionExecutor(
+        tool_manager=manager,
+        task_manager=None,
+        conversation_system=conversation,
+    )
+    payload = {"path": str(image_path), "prompt": prompt}
+    result = await executor.execute_action(
+        CodeActAction(ActionType.READ_IMAGE, json.dumps(payload))
+    )
+    return result, conversation
+
+
+@pytest.mark.asyncio
+async def test_read_image_actionxml_adds_multimodal_message(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("PENGUIN_CWD", str(tmp_path))
+    image_path = tmp_path / "sample.png"
+    Image.new("RGB", (10, 10), color=(0, 255, 0)).save(image_path)
+
+    result, conversation = await _run_read_image_action(image_path, "What color?")
+
+    assert "added to conversation" in result
+    assert len(conversation.messages) == 1
+    message = conversation.messages[0]
+    assert message["role"] == "user"
+    assert message["category"] == MessageCategory.DIALOG
+    assert message["content"][0] == {"type": "text", "text": "What color?"}
+    assert message["content"][1]["type"] == "image_url"
+    assert message["content"][1]["image_path"] == str(image_path.resolve())
+
+
+
+@pytest.mark.asyncio
+async def test_browser_harness_screenshot_actionxml_logs_attachment(
+    monkeypatch, tmp_path: Path, caplog
+) -> None:
+    _FakeBrowserHarnessModules(monkeypatch)
+    manager = ToolManager(config={}, log_error_func=_dummy_log_error, fast_startup=True)
+    conversation = _CaptureConversation()
+    executor = ActionExecutor(
+        tool_manager=manager,
+        task_manager=None,
+        conversation_system=conversation,
+    )
+    payload = {"output_dir": str(tmp_path), "description": "Describe it"}
+
+    with caplog.at_level("INFO"):
+        result = await executor.execute_action(
+            CodeActAction(ActionType.BROWSER_HARNESS_SCREENSHOT, json.dumps(payload))
+        )
+
+    assert "added to conversation" in result
+    assert len(conversation.messages) == 1
+    assert conversation.messages[0]["content"][1]["type"] == "image_url"
+    assert "browser.tool.used name=browser_harness_screenshot" in caplog.text
+    assert "image_attached=True" in caplog.text
+
+def test_browser_harness_permission_operations() -> None:
+    assert get_tool_operations("browser_click") == [Operation.NETWORK_POST]
+    assert get_tool_operations("browser_js") == [Operation.NETWORK_POST]
+    assert get_tool_operations("browser_wait") == [Operation.NETWORK_FETCH]
+    assert get_tool_operations("browser_list_tabs") == [Operation.NETWORK_FETCH]
+
+
+def test_browser_harness_status_reports_backend_diagnostics(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    fake = _FakeBrowserHarnessModules(monkeypatch)
+    manager = ToolManager(
+        config={
+            "browser": {
+                "harness": {
+                    "ownership_path": str(tmp_path / "ownership.json"),
+                }
+            }
+        },
+        log_error_func=_dummy_log_error,
+        fast_startup=True,
+    )
+
+    result = manager.execute_tool("browser_status", {"include_page": False})
+
+    assert result["connected"] is True
+    assert result["backend"]["contract"] == "penguin-browser-tools-v1"
+    assert result["backend"]["browser_harness"]["pypi_published"] is False
+    assert "local checkout" in result["backend"]["browser_harness"]["install_hint"]
+    assert result["backend"]["pydoll_fallback"]["tool_prefix"] == "pydoll_browser_*"
+    assert fake.events[0][0] == "ensure_daemon"
+
+
+def test_native_browser_tool_result_includes_page_metadata_for_model() -> None:
+    from penguin.tools.runtime import tool_result_from_action_result
+
+    tool_result = tool_result_from_action_result(
+        {
+            "action": "browser_open_tab",
+            "result": "Opened browser tab",
+            "loaded": True,
+            "page_info": {
+                "url": "https://example.test/page",
+                "title": "Example Page",
+                "viewport": {"width": 1200, "height": 800},
+            },
+        },
+        call_id="call_browser_open_tab",
+    )
+
+    assert "Opened browser tab" in tool_result.output
+    assert "url: https://example.test/page" in tool_result.output
+    assert "title: Example Page" in tool_result.output
+    assert "next: inspect page_info" in tool_result.output
+
+
+def test_native_screenshot_tool_result_includes_read_image_hint() -> None:
+    from penguin.tools.runtime import tool_result_from_action_result
+
+    tool_result = tool_result_from_action_result(
+        {
+            "action": "browser_harness_screenshot",
+            "result": "Screenshot captured",
+            "filepath": "/tmp/penguin-shot.png",
+            "size_bytes": 1234,
+        },
+        call_id="call_browser_harness_screenshot",
+    )
+
+    assert "Screenshot captured" in tool_result.output
+    assert "filepath: /tmp/penguin-shot.png" in tool_result.output
+    assert "image_path: /tmp/penguin-shot.png" in tool_result.output
+    assert "call read_image" in tool_result.output
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_calls_uses_tool_name_for_browser_metadata() -> None:
+    from penguin.tools.runtime import ToolCall, execute_tool_calls_serially
+
+    results = await execute_tool_calls_serially(
+        [
+            ToolCall(
+                id="call_browser_open_tab",
+                name="browser_open_tab",
+                arguments={"url": "https://example.test/page"},
+                source="responses",
+            )
+        ],
+        lambda _tool_call: {
+            "result": "Opened browser tab",
+            "loaded": True,
+            "page_info": {
+                "url": "https://example.test/page",
+                "title": "Example Page",
+            },
+        },
+    )
+
+    assert len(results) == 1
+    assert results[0].name == "browser_open_tab"
+    assert "url: https://example.test/page" in results[0].output
+    assert "next: inspect page_info" in results[0].output

@@ -388,9 +388,12 @@ async def execute_tool_calls_serially(
                 results.append(output)
                 continue
             if isinstance(output, dict):
+                action_output = dict(output)
+                if not action_output.get("action") and not action_output.get("name"):
+                    action_output["action"] = tool_call.name
                 results.append(
                     tool_result_from_action_result(
-                        output,
+                        action_output,
                         call_id=tool_call.id,
                         started_at=started_at,
                         ended_at=ended_at,
@@ -461,6 +464,88 @@ def tool_call_from_responses_info(tool_info: dict[str, Any]) -> Optional[ToolCal
     )
 
 
+def _format_browser_tool_output(action_result: dict[str, Any]) -> str:
+    """Return model-visible browser/read-image metadata for tool outputs.
+
+    Native function-call tool results only replay the legacy ``result`` string
+    back to the model. Browser tools need a little more: page URL/title after
+    navigation, screenshot filepath, and image metadata. Keep this concise and
+    stable so the tool loop guard can still recognize repeated no-op calls.
+    """
+
+    action = str(action_result.get("action") or action_result.get("name") or "")
+    result = str(action_result.get("result") or action_result.get("output") or "")
+    lines = [result] if result else [action]
+
+    page_info = action_result.get("page_info")
+    if isinstance(page_info, dict):
+        url = page_info.get("url")
+        title = page_info.get("title")
+        if url:
+            lines.append(f"url: {url}")
+        if title:
+            lines.append(f"title: {title}")
+        viewport = page_info.get("viewport")
+        if isinstance(viewport, dict):
+            width = viewport.get("width")
+            height = viewport.get("height")
+            if width and height:
+                lines.append(f"viewport: {width}x{height}")
+
+    if action == "browser_open_tab":
+        loaded = action_result.get("loaded")
+        if loaded is not None:
+            lines.append(f"loaded: {loaded}")
+        lines.append("next: inspect page_info or take a screenshot before retrying open_tab")
+
+    if action == "browser_harness_screenshot":
+        filepath = action_result.get("filepath")
+        size_bytes = action_result.get("size_bytes")
+        if filepath:
+            lines.append(f"filepath: {filepath}")
+            lines.append(f"image_path: {filepath}")
+            lines.append("next: call read_image with this filepath to inspect pixels")
+        if size_bytes is not None:
+            lines.append(f"size_bytes: {size_bytes}")
+
+    if action == "read_image":
+        filepath = action_result.get("filepath") or action_result.get("path")
+        if filepath:
+            lines.append(f"filepath: {filepath}")
+            lines.append(f"image_path: {filepath}")
+        width = action_result.get("width")
+        height = action_result.get("height")
+        if width and height:
+            lines.append(f"dimensions: {width}x{height}")
+        mime_type = action_result.get("mime_type")
+        if mime_type:
+            lines.append(f"mime_type: {mime_type}")
+
+    if action == "browser_list_tabs":
+        tabs = action_result.get("tabs")
+        if isinstance(tabs, list):
+            lines.append(f"tabs_count: {len(tabs)}")
+        current = action_result.get("current_tab")
+        if current:
+            lines.append(f"current_tab: {current}")
+
+    if action == "browser_cleanup":
+        for key in ("target", "cleaned", "removed_record", "refused", "reason"):
+            value = action_result.get(key)
+            if value is not None:
+                lines.append(f"{key}: {value}")
+
+    return "\n".join(dict.fromkeys(line for line in lines if line))
+
+
+def _model_visible_tool_output(action_result: dict[str, Any]) -> str:
+    action = str(action_result.get("action") or action_result.get("name") or "")
+    if action.startswith("browser_") or action == "read_image":
+        return _format_browser_tool_output(action_result)
+    raw_output = action_result.get("result", action_result.get("output", ""))
+    return str(raw_output if raw_output is not None else "")
+
+
 def tool_result_from_action_result(
     action_result: dict[str, Any],
     *,
@@ -472,9 +557,8 @@ def tool_result_from_action_result(
     """Convert a legacy action-result dict into a normalized tool result."""
 
     raw_name = action_result.get("action", action_result.get("name", ""))
-    raw_output = action_result.get("result", action_result.get("output", ""))
     name = str(raw_name).strip()
-    output = str(raw_output if raw_output is not None else "")
+    output = _model_visible_tool_output(action_result)
     raw_status = str(action_result.get("status") or "completed").strip().lower()
     status = cast(
         ToolResultStatus,
