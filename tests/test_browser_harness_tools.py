@@ -139,7 +139,7 @@ def test_browser_harness_screenshot_returns_multimodal_artifact(
             {"output_dir": str(tmp_path), "max_dim": 1200},
         )
 
-    assert result["result"] == "Screenshot captured"
+    assert result["result"].startswith("Screenshot captured")
     assert Path(result["filepath"]).exists()
     assert result["artifact"]["type"] == "image"
     assert result["artifact"]["image_path"] == result["filepath"]
@@ -718,3 +718,45 @@ def test_browser_harness_status_reports_backend_diagnostics(
     assert "local checkout" in result["backend"]["browser_harness"]["install_hint"]
     assert result["backend"]["pydoll_fallback"]["tool_prefix"] == "pydoll_browser_*"
     assert fake.events[0][0] == "ensure_daemon"
+
+
+def test_native_browser_tool_result_includes_page_metadata_for_model() -> None:
+    from penguin.tools.runtime import tool_result_from_action_result
+
+    tool_result = tool_result_from_action_result(
+        {
+            "action": "browser_open_tab",
+            "result": "Opened browser tab",
+            "loaded": True,
+            "page_info": {
+                "url": "https://example.test/page",
+                "title": "Example Page",
+                "viewport": {"width": 1200, "height": 800},
+            },
+        },
+        call_id="call_browser_open_tab",
+    )
+
+    assert "Opened browser tab" in tool_result.output
+    assert "url: https://example.test/page" in tool_result.output
+    assert "title: Example Page" in tool_result.output
+    assert "next: inspect page_info" in tool_result.output
+
+
+def test_native_screenshot_tool_result_includes_read_image_hint() -> None:
+    from penguin.tools.runtime import tool_result_from_action_result
+
+    tool_result = tool_result_from_action_result(
+        {
+            "action": "browser_harness_screenshot",
+            "result": "Screenshot captured",
+            "filepath": "/tmp/penguin-shot.png",
+            "size_bytes": 1234,
+        },
+        call_id="call_browser_harness_screenshot",
+    )
+
+    assert "Screenshot captured" in tool_result.output
+    assert "filepath: /tmp/penguin-shot.png" in tool_result.output
+    assert "image_path: /tmp/penguin-shot.png" in tool_result.output
+    assert "call read_image" in tool_result.output

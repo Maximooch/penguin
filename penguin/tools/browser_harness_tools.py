@@ -487,8 +487,13 @@ class BrowserHarnessAdapter:
         path = Path(saved_path)
         if not path.exists():
             return {"error": f"Screenshot was not saved: {saved_path}"}
+        size_bytes = path.stat().st_size
         return {
-            "result": "Screenshot captured",
+            "result": (
+                "Screenshot captured: "
+                f"filepath={path} image_path={path} size_bytes={size_bytes}. "
+                "Use read_image on this path when visual inspection is needed."
+            ),
             "filepath": str(path),
             "artifact": {
                 "type": "image",
@@ -501,7 +506,7 @@ class BrowserHarnessAdapter:
             "backend": "browser-harness",
             "full": full,
             "max_dim": resolved_max_dim,
-            "size_bytes": path.stat().st_size,
+            "size_bytes": size_bytes,
         }
 
     def click(
