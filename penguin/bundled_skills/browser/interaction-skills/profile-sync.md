@@ -1,6 +1,6 @@
 # Profile sync
 
-Start a remote browser already logged in by uploading cookies from a local Chrome profile.
+Make a remote Browser Use browser start already logged in, by uploading cookies from a local Chrome profile.
 
 ## One-time install
 

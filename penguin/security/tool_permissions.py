@@ -20,15 +20,6 @@ from penguin.security.permission_engine import Operation, PermissionResult
 
 logger = logging.getLogger(__name__)
 
-RAW_RESOURCE_TOOLS = {
-    "browser_navigate",
-    "pydoll_browser_navigate",
-    "browser_open_tab",
-    "browser_fill",
-    "browser_js",
-    "browser_switch_tab",
-}
-
 
 # Map tool names to their required operations
 # Tools can require multiple operations (e.g., apply_diff needs read + write)

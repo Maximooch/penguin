@@ -48,9 +48,7 @@ def get_skills_config(config: Any) -> Dict[str, Any]:
     if not isinstance(raw, dict):
         raw = {}
     scan_paths = raw.get("scan_paths", {})
-    if scan_paths is None:
-        scan_paths = {}
-    elif not isinstance(scan_paths, dict):
+    if scan_paths is not None and not isinstance(scan_paths, dict):
         logger.warning(
             "Ignoring invalid skills.scan_paths value %r of type %s; expected dict "
             "with keys like user, project, and bundled",

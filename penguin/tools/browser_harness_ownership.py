@@ -17,8 +17,6 @@ except ImportError:  # pragma: no cover - non-POSIX fallback
 
 from penguin.config import WORKSPACE_PATH
 
-__all__ = ["BrowserHarnessOwnershipStore"]
-
 
 class BrowserHarnessOwnershipStore:
     """Persist Penguin-owned browser-harness daemon identities.

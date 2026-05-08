@@ -398,7 +398,6 @@ async def execute_tool_calls_serially(
                         started_at=started_at,
                         ended_at=ended_at,
                         structured_output={
-                            **action_output,
                             "tool_call_id": tool_call.id,
                             "tool_arguments": tool_call.arguments,
                         },

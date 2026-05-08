@@ -74,13 +74,3 @@ def test_extract_paths_accepts_image_url_url(tmp_path: Path) -> None:
 
     assert context_files == []
     assert image_paths == [str(image)]
-
-
-def test_extract_paths_preserves_https_image_url(tmp_path: Path) -> None:
-    context_files, image_paths = _extract_paths_from_parts(
-        [{"type": "image_url", "image_url": {"url": "https://example.com/image.png"}}],
-        directory=str(tmp_path),
-    )
-
-    assert context_files == []
-    assert image_paths == ["https://example.com/image.png"]

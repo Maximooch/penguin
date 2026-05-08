@@ -28,15 +28,15 @@ CSS print media rules were applied.
 
 Some sites generate printable content only after a button click:
 
-1. use `browser_click` on the visible Print/Export button;
+1. click the visible Print/Export button;
 2. intercept or neutralize `window.print` if needed;
 3. wait for the printable DOM/route/tab;
 4. use `Page.printToPDF` on that final page.
 
 ```python
 js("window.__penguinPrintCalled=false; window.print=()=>{window.__penguinPrintCalled=true}")
-browser_click(print_x, print_y)
-browser_wait(mode="network_idle", timeout=10)
+click_at_xy(print_x, print_y)
+wait_for_network_idle(timeout=10)
 ```
 
 Avoid OS print dialogs in automation. If a headful dialog appears, prefer closing
