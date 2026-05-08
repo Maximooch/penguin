@@ -41,14 +41,6 @@ def test_manager_dedupe_is_per_session(tmp_path: Path) -> None:
 
 
 def test_manager_can_activate_bundled_browser_skill() -> None:
-    """Verify bundled browser skill activation.
-
-    Args:
-        None.
-
-    Returns:
-        None. Raises assertion errors if activation fails.
-    """
     manager = SkillManager({"skills": {"scan_paths": {"user": []}}})
 
     payload = manager.activate("browser", session_id="browser-test")

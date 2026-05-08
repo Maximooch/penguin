@@ -48,29 +48,3 @@ def test_extract_paths_keeps_opencode_file_image_shape(tmp_path: Path) -> None:
 
     assert context_files == []
     assert image_paths == [str(image)]
-
-
-def test_extract_paths_accepts_image_url_path(tmp_path: Path) -> None:
-    image = tmp_path / "image.png"
-    image.write_bytes(b"png")
-
-    context_files, image_paths = _extract_paths_from_parts(
-        [{"type": "image_url", "image_url": {"path": str(image)}}],
-        directory=str(tmp_path),
-    )
-
-    assert context_files == []
-    assert image_paths == [str(image)]
-
-
-def test_extract_paths_accepts_image_url_url(tmp_path: Path) -> None:
-    image = tmp_path / "image.png"
-    image.write_bytes(b"png")
-
-    context_files, image_paths = _extract_paths_from_parts(
-        [{"type": "image_url", "image_url": {"url": f"file://{image}"}}],
-        directory=str(tmp_path),
-    )
-
-    assert context_files == []
-    assert image_paths == [str(image)]

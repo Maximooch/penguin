@@ -465,14 +465,12 @@ def tool_call_from_responses_info(tool_info: dict[str, Any]) -> Optional[ToolCal
 
 
 def _format_browser_tool_output(action_result: dict[str, Any]) -> str:
-    """Format model-visible browser/read-image tool metadata.
+    """Return model-visible browser/read-image metadata for tool outputs.
 
-    Args:
-        action_result: Tool result dictionary from a browser/read-image action.
-
-    Returns:
-        Concise text containing stable metadata such as page URL/title,
-        screenshot path, image dimensions, and next-step hints.
+    Native function-call tool results only replay the legacy ``result`` string
+    back to the model. Browser tools need a little more: page URL/title after
+    navigation, screenshot filepath, and image metadata. Keep this concise and
+    stable so the tool loop guard can still recognize repeated no-op calls.
     """
 
     action = str(action_result.get("action") or action_result.get("name") or "")
@@ -541,16 +539,6 @@ def _format_browser_tool_output(action_result: dict[str, Any]) -> str:
 
 
 def _model_visible_tool_output(action_result: dict[str, Any]) -> str:
-    """Return the string replayed to the model for a tool result.
-
-    Args:
-        action_result: Tool action result dictionary.
-
-    Returns:
-        Model-visible output. Browser tools and ``read_image`` delegate to
-        ``_format_browser_tool_output``; other tools use legacy ``result`` then
-        ``output`` fields and return an empty string for absent/None values.
-    """
     action = str(action_result.get("action") or action_result.get("name") or "")
     if action.startswith("browser_") or action == "read_image":
         return _format_browser_tool_output(action_result)

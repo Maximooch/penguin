@@ -2,19 +2,12 @@
 
 from __future__ import annotations
 
-import logging
 import os
-from importlib import resources as importlib_resources
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 from penguin.skills.models import Skill, SkillDiagnostic
 from penguin.skills.parser import SkillParseError, parse_skill_file
-
-logger = logging.getLogger(__name__)
-
-
-
 
 DEFAULT_USER_SCAN_PATHS = [
     "~/.penguin/skills",
@@ -26,7 +19,7 @@ DEFAULT_PROJECT_SCAN_PATHS = [
     ".agents/skills",
 ]
 DEFAULT_BUNDLED_SCAN_PATHS = [
-    str(Path(str(importlib_resources.files("penguin.skills"))).parent / "bundled_skills"),
+    str(Path(__file__).resolve().parents[1] / "bundled_skills"),
 ]
 
 
@@ -48,18 +41,10 @@ def get_skills_config(config: Any) -> Dict[str, Any]:
     if not isinstance(raw, dict):
         raw = {}
     scan_paths = raw.get("scan_paths", {})
-    if scan_paths is not None and not isinstance(scan_paths, dict):
-        logger.warning(
-            "Ignoring invalid skills.scan_paths value %r of type %s; expected dict "
-            "with keys like user, project, and bundled",
-            scan_paths,
-            type(scan_paths).__name__,
-        )
-        scan_paths = {}
     return {
         "enabled": raw.get("enabled", True),
         "trust_project_skills": raw.get("trust_project_skills", False),
-        "scan_paths": scan_paths,
+        "scan_paths": scan_paths if isinstance(scan_paths, dict) else {},
         "include_bundled": raw.get("include_bundled", True),
         "max_scan_depth": int(raw.get("max_scan_depth", 6)),
         "max_skill_dirs": int(raw.get("max_skill_dirs", 2000)),
@@ -84,24 +69,17 @@ def configured_scan_roots(
     """Resolve configured scan roots as `(path, source)` tuples."""
     skills_config = get_skills_config(config)
     scan_paths = skills_config["scan_paths"]
-    project_base = Path(
-        project_root or os.environ.get("PENGUIN_PROJECT_ROOT") or os.getcwd()
-    ).resolve()
+    project_base = Path(project_root or os.environ.get("PENGUIN_PROJECT_ROOT") or os.getcwd()).resolve()
 
     user_paths = scan_paths.get("user", DEFAULT_USER_SCAN_PATHS)
     project_paths = scan_paths.get("project", DEFAULT_PROJECT_SCAN_PATHS)
     bundled_paths = scan_paths.get("bundled", DEFAULT_BUNDLED_SCAN_PATHS)
 
-    roots: List[Tuple[Path, str]] = [
-        (path, "user") for path in _expand_paths(user_paths)
-    ]
-    if skills_config["trust_project_skills"]:
-        roots.extend(
-            (path, "project")
-            for path in _expand_paths(project_paths, root=project_base)
-        )
+    roots: List[Tuple[Path, str]] = [(path, "user") for path in _expand_paths(user_paths)]
     if skills_config["include_bundled"]:
         roots.extend((path, "bundled") for path in _expand_paths(bundled_paths))
+    if skills_config["trust_project_skills"]:
+        roots.extend((path, "project") for path in _expand_paths(project_paths, root=project_base))
     return roots
 
 

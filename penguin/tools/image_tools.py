@@ -5,14 +5,12 @@ import mimetypes
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image
 
 from penguin.utils.path_utils import enforce_allowed_path
 
 
 SUPPORTED_IMAGE_FORMATS = {"JPEG", "PNG", "GIF", "WEBP", "BMP", "TIFF"}
-
-__all__ = ["ReadImageTool", "SUPPORTED_IMAGE_FORMATS"]
 
 
 class ReadImageTool:
@@ -24,32 +22,12 @@ class ReadImageTool:
         prompt: Optional[str] = None,
         max_dim: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Read an image file and return multimodal artifact metadata.
-
-        Args:
-            path: Local image path to read. The path must pass Penguin's
-                workspace/project allowlist policy.
-            prompt: Optional prompt text to pair with the image in a later
-                multimodal message.
-            max_dim: Optional maximum image dimension hint for downstream model
-                consumers. The file is not resized by this method.
-
-        Returns:
-            A dictionary containing ``result``, ``filepath``, ``prompt``,
-            ``artifact`` metadata, dimensions, MIME type, format, and byte size;
-            or ``{"error": "..."}`` when validation fails.
-
-        Raises:
-            This method catches expected path and image parsing errors and
-            returns them as ``error`` payloads. It performs filesystem I/O by
-            reading the image at ``path``.
-        """
         if not path:
             return {"error": "path is required"}
 
         try:
             image_path = enforce_allowed_path(Path(path), root_pref="auto")
-        except ValueError as exc:
+        except Exception as exc:
             return {"error": f"Image path is outside allowed roots: {exc}"}
 
         if not image_path.exists():
@@ -63,7 +41,7 @@ class ReadImageTool:
             with Image.open(image_path) as image:
                 width, height = image.size
                 image_format = image.format or "UNKNOWN"
-        except (UnidentifiedImageError, OSError, ValueError, SyntaxError) as exc:
+        except Exception as exc:
             return {"error": f"Unable to read image: {exc}"}
 
         if image_format.upper() not in SUPPORTED_IMAGE_FORMATS:

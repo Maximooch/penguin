@@ -229,7 +229,7 @@ penguin = [
     "cli/*.css",
     "bundled_skills/*/SKILL.md",
     "bundled_skills/*/interaction-skills/*.md",
-    "bundled_skills/*/domain-skills/**/*.md",
+    "bundled_skills/*/domain-skills/*.md",
 ]
 
 # Exclude specific files and patterns

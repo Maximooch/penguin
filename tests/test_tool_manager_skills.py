@@ -97,8 +97,6 @@ def test_tool_manager_list_skills_reports_current_session_active_state(tmp_path:
 
     assert payload["active"] == ["demo-skill"]
     demo_entry = next(
-        (skill for skill in payload["skills"] if skill["name"] == "demo-skill"),
-        None,
+        skill for skill in payload["skills"] if skill["name"] == "demo-skill"
     )
-    assert demo_entry is not None
     assert demo_entry["active"] is True
