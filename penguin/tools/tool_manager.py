@@ -44,7 +44,23 @@ from penguin.tools.editing.registry import (
     get_edit_tool_public_names,
     get_edit_tool_schemas,
 )
+from penguin.tools.browser_harness_tools import (
+    BrowserHarnessCleanupTool,
+    BrowserHarnessClickTool,
+    BrowserHarnessFillTool,
+    BrowserHarnessJsTool,
+    BrowserHarnessKeyTool,
+    BrowserHarnessListTabsTool,
+    BrowserHarnessOpenTabTool,
+    BrowserHarnessPageInfoTool,
+    BrowserHarnessScreenshotTool,
+    BrowserHarnessStatusTool,
+    BrowserHarnessSwitchTabTool,
+    BrowserHarnessTypeTool,
+    BrowserHarnessWaitTool,
+)
 from penguin.tools.providers.mcp import MCPToolProvider
+from penguin.tools.image_tools import ReadImageTool
 
 # Lazy import for PyDoll to avoid breaking if pydoll-python is not installed
 _pydoll_tools_imported = False
@@ -163,6 +179,14 @@ def _ensure_permission_imports():
 logger = logging.getLogger(__name__)  # Add logger
 
 
+def _browser_tool_log_info(message: str, *args: Any) -> None:
+    """Log browser tool diagnostics to app and uvicorn logs."""
+    logger.info(message, *args)
+    uvicorn_logger = logging.getLogger("uvicorn.error")
+    if uvicorn_logger is not logger:
+        uvicorn_logger.info(message, *args)
+
+
 class ToolManager:
     def __init__(
         self,
@@ -240,6 +264,7 @@ class ToolManager:
                 "memory_provider": False,
                 "memory_indexing": False,
                 "browser_tools": False,
+                "browser_harness_tools": False,
                 "pydoll_tools": False,
                 "skill_tools": False,
                 "task_tools": False,
@@ -265,6 +290,22 @@ class ToolManager:
             self._browser_navigation_tool = None
             self._browser_interaction_tool = None
             self._browser_screenshot_tool = None
+
+            # Browser-harness tools placeholders
+            self._browser_harness_status_tool = None
+            self._browser_harness_cleanup_tool = None
+            self._browser_harness_open_tab_tool = None
+            self._browser_harness_page_info_tool = None
+            self._browser_harness_screenshot_tool = None
+            self._browser_harness_click_tool = None
+            self._browser_harness_type_tool = None
+            self._browser_harness_key_tool = None
+            self._browser_harness_fill_tool = None
+            self._browser_harness_wait_tool = None
+            self._browser_harness_js_tool = None
+            self._browser_harness_list_tabs_tool = None
+            self._browser_harness_switch_tab_tool = None
+            self._read_image_tool = None
 
             # PyDoll tools placeholders
             self._pydoll_browser_navigation_tool = None
@@ -301,6 +342,7 @@ class ToolManager:
                 "create_file": "penguin.tools.core.support.create_file",
                 "write_file": "penguin.tools.core.support.enhanced_write_to_file",
                 "read_file": "penguin.tools.core.support.enhanced_read_file",
+                "read_image": "self.read_image_tool.execute",
                 "list_files": "penguin.tools.core.support.list_files_filtered",
                 "find_file": "penguin.tools.core.support.find_files_enhanced",
                 "encode_image_to_base64": "penguin.tools.core.support.encode_image_to_base64",
@@ -325,6 +367,19 @@ class ToolManager:
                 "pydoll_browser_interact": "self.pydoll_browser_interaction_tool.execute",
                 "pydoll_browser_screenshot": "self.pydoll_browser_screenshot_tool.execute",
                 "pydoll_browser_scroll": "self.pydoll_browser_scroll_tool.execute",
+                "browser_status": "self.browser_harness_status_tool.execute",
+                "browser_cleanup": "self.browser_harness_cleanup_tool.execute",
+                "browser_open_tab": "self.browser_harness_open_tab_tool.execute",
+                "browser_page_info": "self.browser_harness_page_info_tool.execute",
+                "browser_harness_screenshot": "self.browser_harness_screenshot_tool.execute",
+                "browser_click": "self.browser_harness_click_tool.execute",
+                "browser_type": "self.browser_harness_type_tool.execute",
+                "browser_key": "self.browser_harness_key_tool.execute",
+                "browser_fill": "self.browser_harness_fill_tool.execute",
+                "browser_wait": "self.browser_harness_wait_tool.execute",
+                "browser_js": "self.browser_harness_js_tool.execute",
+                "browser_list_tabs": "self.browser_harness_list_tabs_tool.execute",
+                "browser_switch_tab": "self.browser_harness_switch_tab_tool.execute",
                 "analyze_codebase": "self.analyze_codebase",
                 "reindex_workspace": "self.reindex_workspace",
                 "list_skills": "self.skill_tools.list_skills",
@@ -749,6 +804,34 @@ class ToolManager:
                 },
             },
             {
+                "name": "read_image",
+                "description": "Load a local image file into the conversation as a multimodal image artifact. Use this for screenshots, diagrams, UI captures, and other image files.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Path to an image file within allowed project/workspace roots",
+                        },
+                        "prompt": {
+                            "type": "string",
+                            "description": "Optional prompt/question to pair with the image",
+                        },
+                        "max_dim": {
+                            "type": "integer",
+                            "description": "Optional target max dimension hint for downstream image handling",
+                        },
+                    },
+                    "required": ["path"],
+                },
+                "x-penguin-permissions": {
+                    "mutates_state": False,
+                    "requires_approval": False,
+                    "parallel_safe": True,
+                    "risk": "low",
+                },
+            },
+            {
                 "name": "add_summary_note",
                 "description": "Add a summary note for the current session.",
                 "input_schema": {
@@ -862,6 +945,248 @@ class ToolManager:
                 "name": "pydoll_browser_screenshot",
                 "description": "Capture visible page content as image using PyDoll (no WebDriver required)",
                 "input_schema": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "browser_status",
+                "description": "Report browser-harness identity, ownership, dependency, connection, and optional page state for diagnostics.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "include_page": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "Include active page info when browser-harness can connect",
+                        }
+                    },
+                },
+                "x-penguin-permissions": {
+                    "mutates_state": False,
+                    "requires_approval": False,
+                    "parallel_safe": True,
+                    "risk": "low",
+                },
+            },
+            {
+                "name": "browser_cleanup",
+                "description": "Safely stop a browser-harness daemon. Defaults to Penguin-owned daemon records only.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "owned_only": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "Only clean up daemons with persisted Penguin ownership records",
+                        },
+                        "force": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Allow non-owned cleanup when approval policy permits it",
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "Optional BU_NAME target; defaults to current execution context identity",
+                        },
+                        "dry_run": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Report what would be cleaned without stopping the daemon",
+                        },
+                    },
+                },
+                "x-penguin-permissions": {
+                    "mutates_state": True,
+                    "requires_approval": True,
+                    "parallel_safe": False,
+                    "risk": "high",
+                },
+            },
+            {
+                "name": "browser_open_tab",
+                "description": "Open a URL in a new browser-harness controlled Chrome tab. Requires optional browser-harness setup.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "Full URL to open"},
+                        "wait": {"type": "boolean", "default": True},
+                        "timeout": {"type": "number", "default": 15.0},
+                    },
+                    "required": ["url"],
+                },
+            },
+            {
+                "name": "browser_page_info",
+                "description": "Return active browser-harness page URL, title, viewport, scroll position, and page size.",
+                "input_schema": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "browser_harness_screenshot",
+                "description": "Capture current browser-harness page as a PNG artifact/path suitable for multimodal follow-up.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "full": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Capture beyond viewport when supported",
+                        },
+                        "max_dim": {
+                            "type": "integer",
+                            "description": "Optional max image dimension for model-friendly screenshots",
+                        },
+                        "output_dir": {
+                            "type": "string",
+                            "description": "Optional screenshot output directory",
+                        },
+                    },
+                },
+            },
+            {
+                "name": "browser_click",
+                "description": "Click browser page coordinates through browser-harness. Mutates the attached real Chrome tab.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "x": {"type": "number"},
+                        "y": {"type": "number"},
+                        "button": {"type": "string", "default": "left"},
+                        "clicks": {"type": "integer", "default": 1},
+                        "return_page_info": {"type": "boolean", "default": True},
+                    },
+                    "required": ["x", "y"],
+                },
+                "x-penguin-permissions": {
+                    "mutates_state": True,
+                    "requires_approval": True,
+                    "parallel_safe": False,
+                    "risk": "medium",
+                },
+            },
+            {
+                "name": "browser_type",
+                "description": "Insert text into the active browser focus using browser-harness.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"text": {"type": "string"}},
+                    "required": ["text"],
+                },
+                "x-penguin-permissions": {
+                    "mutates_state": True,
+                    "requires_approval": True,
+                    "parallel_safe": False,
+                    "risk": "medium",
+                },
+            },
+            {
+                "name": "browser_key",
+                "description": "Press a key in the active browser tab using browser-harness.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "key": {"type": "string"},
+                        "modifiers": {"type": "integer", "default": 0},
+                    },
+                    "required": ["key"],
+                },
+                "x-penguin-permissions": {
+                    "mutates_state": True,
+                    "requires_approval": True,
+                    "parallel_safe": False,
+                    "risk": "medium",
+                },
+            },
+            {
+                "name": "browser_fill",
+                "description": "Fill a DOM input selector using browser-harness framework-aware input events.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "selector": {"type": "string"},
+                        "text": {"type": "string"},
+                        "clear_first": {"type": "boolean", "default": True},
+                        "timeout": {"type": "number", "default": 0.0},
+                    },
+                    "required": ["selector", "text"],
+                },
+                "x-penguin-permissions": {
+                    "mutates_state": True,
+                    "requires_approval": True,
+                    "parallel_safe": False,
+                    "risk": "medium",
+                },
+            },
+            {
+                "name": "browser_wait",
+                "description": "Wait for load, element, network idle, or sleep using browser-harness helpers.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "mode": {
+                            "type": "string",
+                            "enum": ["load", "element", "network_idle", "sleep"],
+                            "default": "load",
+                        },
+                        "timeout": {"type": "number", "default": 15.0},
+                        "selector": {"type": "string"},
+                        "visible": {"type": "boolean", "default": False},
+                        "idle_ms": {"type": "integer", "default": 500},
+                        "seconds": {"type": "number"},
+                    },
+                },
+                "x-penguin-permissions": {
+                    "mutates_state": False,
+                    "requires_approval": False,
+                    "parallel_safe": False,
+                    "risk": "low",
+                },
+            },
+            {
+                "name": "browser_js",
+                "description": "Evaluate JavaScript in the active browser tab. Use for inspection first; avoid state-changing scripts unless approved.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "expression": {"type": "string"},
+                        "target_id": {"type": "string"},
+                    },
+                    "required": ["expression"],
+                },
+                "x-penguin-permissions": {
+                    "mutates_state": True,
+                    "requires_approval": True,
+                    "parallel_safe": False,
+                    "risk": "high",
+                },
+            },
+            {
+                "name": "browser_list_tabs",
+                "description": "List browser-harness visible tabs and current tab metadata.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "include_chrome": {"type": "boolean", "default": False}
+                    },
+                },
+                "x-penguin-permissions": {
+                    "mutates_state": False,
+                    "requires_approval": False,
+                    "parallel_safe": False,
+                    "risk": "low",
+                },
+            },
+            {
+                "name": "browser_switch_tab",
+                "description": "Switch browser-harness control to a tab target_id from browser_list_tabs.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"target_id": {"type": "string"}},
+                    "required": ["target_id"],
+                },
+                "x-penguin-permissions": {
+                    "mutates_state": True,
+                    "requires_approval": True,
+                    "parallel_safe": False,
+                    "risk": "medium",
+                },
             },
             {
                 "name": "pydoll_browser_scroll",
@@ -1726,6 +2051,14 @@ class ToolManager:
         return self._perplexity_provider
 
     @property
+    def read_image_tool(self):
+        if self._read_image_tool is None:
+            with profile_operation("ToolManager.lazy_load_read_image_tool"):
+                logger.debug("Lazy-loading read_image tool")
+                self._read_image_tool = ReadImageTool()
+        return self._read_image_tool
+
+    @property
     def permission_enforcer(self):
         """Lazy load permission enforcer with workspace boundary policy."""
         if self._permission_enforcer is None and self._permission_enabled:
@@ -1910,6 +2243,187 @@ class ToolManager:
                 self._lazy_initialized["browser_tools"] = True
         return self._browser_screenshot_tool
 
+    def _browser_harness_config(self) -> Dict[str, Any]:
+        browser_config = (
+            self.config.get("browser", {}) if isinstance(self.config, dict) else {}
+        )
+        harness_config = (
+            browser_config.get("harness", {})
+            if isinstance(browser_config, dict)
+            else {}
+        )
+        return harness_config if isinstance(harness_config, dict) else {}
+
+    def _browser_harness_config_for_context(
+        self,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        harness_config = dict(self._browser_harness_config())
+        if isinstance(context, dict):
+            if context.get("session_id"):
+                harness_config["session_id"] = context["session_id"]
+            if context.get("agent_id"):
+                harness_config["agent_id"] = context["agent_id"]
+        return harness_config
+
+    def _browser_harness_status_tool_for_context(
+        self,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> BrowserHarnessStatusTool:
+        return BrowserHarnessStatusTool(
+            self._browser_harness_config_for_context(context)
+        )
+
+    def _browser_harness_cleanup_tool_for_context(
+        self,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> BrowserHarnessCleanupTool:
+        return BrowserHarnessCleanupTool(
+            self._browser_harness_config_for_context(context)
+        )
+
+    def _browser_harness_open_tab_tool_for_context(
+        self,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> BrowserHarnessOpenTabTool:
+        return BrowserHarnessOpenTabTool(
+            self._browser_harness_config_for_context(context)
+        )
+
+    def _browser_harness_page_info_tool_for_context(
+        self,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> BrowserHarnessPageInfoTool:
+        return BrowserHarnessPageInfoTool(
+            self._browser_harness_config_for_context(context)
+        )
+
+    def _browser_harness_screenshot_tool_for_context(
+        self,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> BrowserHarnessScreenshotTool:
+        return BrowserHarnessScreenshotTool(
+            self._browser_harness_config_for_context(context)
+        )
+
+    @property
+    def browser_harness_status_tool(self):
+        if self._browser_harness_status_tool is None:
+            self._browser_harness_status_tool = BrowserHarnessStatusTool(
+                self._browser_harness_config()
+            )
+        return self._browser_harness_status_tool
+
+    @property
+    def browser_harness_cleanup_tool(self):
+        if self._browser_harness_cleanup_tool is None:
+            self._browser_harness_cleanup_tool = BrowserHarnessCleanupTool(
+                self._browser_harness_config()
+            )
+        return self._browser_harness_cleanup_tool
+
+    @property
+    def browser_harness_open_tab_tool(self):
+        if not self._lazy_initialized["browser_harness_tools"]:
+            with profile_operation("ToolManager.lazy_load_browser_harness_tools"):
+                logger.debug("Lazy-loading browser-harness tools")
+                harness_config = self._browser_harness_config()
+                self._browser_harness_open_tab_tool = BrowserHarnessOpenTabTool(
+                    harness_config
+                )
+                self._browser_harness_page_info_tool = BrowserHarnessPageInfoTool(
+                    harness_config
+                )
+                self._browser_harness_screenshot_tool = BrowserHarnessScreenshotTool(
+                    harness_config
+                )
+                self._browser_harness_click_tool = BrowserHarnessClickTool(
+                    harness_config
+                )
+                self._browser_harness_type_tool = BrowserHarnessTypeTool(
+                    harness_config
+                )
+                self._browser_harness_key_tool = BrowserHarnessKeyTool(
+                    harness_config
+                )
+                self._browser_harness_fill_tool = BrowserHarnessFillTool(
+                    harness_config
+                )
+                self._browser_harness_wait_tool = BrowserHarnessWaitTool(
+                    harness_config
+                )
+                self._browser_harness_js_tool = BrowserHarnessJsTool(
+                    harness_config
+                )
+                self._browser_harness_list_tabs_tool = BrowserHarnessListTabsTool(
+                    harness_config
+                )
+                self._browser_harness_switch_tab_tool = BrowserHarnessSwitchTabTool(
+                    harness_config
+                )
+                self._lazy_initialized["browser_harness_tools"] = True
+        return self._browser_harness_open_tab_tool
+
+    @property
+    def browser_harness_page_info_tool(self):
+        if not self._lazy_initialized["browser_harness_tools"]:
+            _ = self.browser_harness_open_tab_tool
+        return self._browser_harness_page_info_tool
+
+    @property
+    def browser_harness_screenshot_tool(self):
+        if not self._lazy_initialized["browser_harness_tools"]:
+            _ = self.browser_harness_open_tab_tool
+        return self._browser_harness_screenshot_tool
+
+    @property
+    def browser_harness_click_tool(self):
+        if not self._lazy_initialized["browser_harness_tools"]:
+            _ = self.browser_harness_open_tab_tool
+        return self._browser_harness_click_tool
+
+    @property
+    def browser_harness_type_tool(self):
+        if not self._lazy_initialized["browser_harness_tools"]:
+            _ = self.browser_harness_open_tab_tool
+        return self._browser_harness_type_tool
+
+    @property
+    def browser_harness_key_tool(self):
+        if not self._lazy_initialized["browser_harness_tools"]:
+            _ = self.browser_harness_open_tab_tool
+        return self._browser_harness_key_tool
+
+    @property
+    def browser_harness_fill_tool(self):
+        if not self._lazy_initialized["browser_harness_tools"]:
+            _ = self.browser_harness_open_tab_tool
+        return self._browser_harness_fill_tool
+
+    @property
+    def browser_harness_wait_tool(self):
+        if not self._lazy_initialized["browser_harness_tools"]:
+            _ = self.browser_harness_open_tab_tool
+        return self._browser_harness_wait_tool
+
+    @property
+    def browser_harness_js_tool(self):
+        if not self._lazy_initialized["browser_harness_tools"]:
+            _ = self.browser_harness_open_tab_tool
+        return self._browser_harness_js_tool
+
+    @property
+    def browser_harness_list_tabs_tool(self):
+        if not self._lazy_initialized["browser_harness_tools"]:
+            _ = self.browser_harness_open_tab_tool
+        return self._browser_harness_list_tabs_tool
+
+    @property
+    def browser_harness_switch_tab_tool(self):
+        if not self._lazy_initialized["browser_harness_tools"]:
+            _ = self.browser_harness_open_tab_tool
+        return self._browser_harness_switch_tab_tool
+
     # PyDoll tools lazy loading
     @property
     def pydoll_browser_navigation_tool(self):
@@ -2012,6 +2526,7 @@ class ToolManager:
             "create_file",
             "write_file",
             "read_file",
+            "read_image",
             "list_files",
             "find_file",
             "enhanced_diff",
@@ -2025,6 +2540,19 @@ class ToolManager:
             "finish_task",
             "list_skills",
             "activate_skill",
+            "browser_status",
+            "browser_cleanup",
+            "browser_open_tab",
+            "browser_page_info",
+            "browser_harness_screenshot",
+            "browser_click",
+            "browser_type",
+            "browser_key",
+            "browser_fill",
+            "browser_wait",
+            "browser_js",
+            "browser_list_tabs",
+            "browser_switch_tab",
         ]
         allowed = {
             self._canonical_tool_name(name)
@@ -3208,6 +3736,11 @@ class ToolManager:
                 "read_file": lambda: self._execute_file_operation(
                     "read_file", tool_input, file_root=file_root
                 ),
+                "read_image": lambda: self.execute_read_image(
+                    tool_input.get("path", ""),
+                    tool_input.get("prompt"),
+                    tool_input.get("max_dim"),
+                ),
                 "list_files": lambda: self._execute_file_operation(
                     "list_files", tool_input, file_root=file_root
                 ),
@@ -3294,6 +3827,78 @@ class ToolManager:
                 ),
                 "pydoll_browser_screenshot": lambda: self._execute_async_tool(
                     self.execute_pydoll_browser_screenshot()
+                ),
+                "browser_status": lambda: self.execute_browser_harness_status(
+                    tool_input.get("include_page", True),
+                    effective_context,
+                ),
+                "browser_cleanup": lambda: self.execute_browser_harness_cleanup(
+                    tool_input.get("owned_only", True),
+                    tool_input.get("force", False),
+                    tool_input.get("name"),
+                    tool_input.get("dry_run", False),
+                    effective_context,
+                ),
+                "browser_open_tab": lambda: self.execute_browser_harness_open_tab(
+                    tool_input["url"],
+                    tool_input.get("wait", True),
+                    tool_input.get("timeout", 15.0),
+                    effective_context,
+                ),
+                "browser_page_info": lambda: self.execute_browser_harness_page_info(
+                    effective_context
+                ),
+                "browser_harness_screenshot": lambda: self.execute_browser_harness_screenshot(
+                    tool_input.get("full", False),
+                    tool_input.get("max_dim"),
+                    tool_input.get("output_dir"),
+                    effective_context,
+                ),
+                "browser_click": lambda: self.execute_browser_harness_click(
+                    tool_input["x"],
+                    tool_input["y"],
+                    tool_input.get("button", "left"),
+                    tool_input.get("clicks", 1),
+                    tool_input.get("return_page_info", True),
+                    effective_context,
+                ),
+                "browser_type": lambda: self.execute_browser_harness_type(
+                    tool_input["text"],
+                    effective_context,
+                ),
+                "browser_key": lambda: self.execute_browser_harness_key(
+                    tool_input["key"],
+                    tool_input.get("modifiers", 0),
+                    effective_context,
+                ),
+                "browser_fill": lambda: self.execute_browser_harness_fill(
+                    tool_input["selector"],
+                    tool_input["text"],
+                    tool_input.get("clear_first", True),
+                    tool_input.get("timeout", 0.0),
+                    effective_context,
+                ),
+                "browser_wait": lambda: self.execute_browser_harness_wait(
+                    tool_input.get("mode", "load"),
+                    tool_input.get("timeout", 15.0),
+                    tool_input.get("selector"),
+                    tool_input.get("visible", False),
+                    tool_input.get("idle_ms", 500),
+                    tool_input.get("seconds"),
+                    effective_context,
+                ),
+                "browser_js": lambda: self.execute_browser_harness_js(
+                    tool_input["expression"],
+                    tool_input.get("target_id"),
+                    effective_context,
+                ),
+                "browser_list_tabs": lambda: self.execute_browser_harness_list_tabs(
+                    tool_input.get("include_chrome", False),
+                    effective_context,
+                ),
+                "browser_switch_tab": lambda: self.execute_browser_harness_switch_tab(
+                    tool_input["target_id"],
+                    effective_context,
                 ),
                 "analyze_codebase": lambda: self.analyze_codebase(
                     tool_input.get("directory"),
@@ -3717,6 +4322,290 @@ class ToolManager:
             return result
         except Exception as e:
             error_message = f"Error capturing screenshot with PyDoll: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return {"error": error_message}
+
+    def execute_browser_harness_status(
+        self,
+        include_page: bool = True,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Return browser-harness status and ownership diagnostics."""
+        try:
+            return self._browser_harness_status_tool_for_context(context).execute(
+                include_page
+            )
+        except Exception as e:
+            error_message = f"Error getting browser-harness status: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return {"error": error_message}
+
+    def execute_browser_harness_cleanup(
+        self,
+        owned_only: bool = True,
+        force: bool = False,
+        name: Optional[str] = None,
+        dry_run: bool = False,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Safely clean up a browser-harness daemon."""
+        try:
+            return self._browser_harness_cleanup_tool_for_context(context).execute(
+                owned_only,
+                force,
+                name,
+                dry_run,
+            )
+        except Exception as e:
+            error_message = f"Error cleaning browser-harness daemon: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return {"error": error_message}
+
+    def execute_browser_harness_open_tab(
+        self,
+        url: str,
+        wait: bool = True,
+        timeout: float = 15.0,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Open a new tab through optional browser-harness."""
+        try:
+            return self._browser_harness_open_tab_tool_for_context(context).execute(
+                url,
+                wait,
+                timeout,
+            )
+        except Exception as e:
+            error_message = f"Error opening browser-harness tab: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return {"error": error_message}
+
+    def execute_browser_harness_page_info(
+        self,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Return active browser-harness page info."""
+        try:
+            return self._browser_harness_page_info_tool_for_context(context).execute()
+        except Exception as e:
+            error_message = f"Error getting browser-harness page info: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return {"error": error_message}
+
+    def execute_read_image(
+        self,
+        path: str,
+        prompt: Optional[str] = None,
+        max_dim: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Load a local image file as a multimodal artifact."""
+        try:
+            return self.read_image_tool.execute(path, prompt, max_dim)
+        except Exception as e:
+            error_message = f"Error reading image: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return {"error": error_message}
+
+    def execute_browser_harness_screenshot(
+        self,
+        full: bool = False,
+        max_dim: Optional[int] = None,
+        output_dir: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Capture a screenshot through optional browser-harness."""
+        try:
+            result = self._browser_harness_screenshot_tool_for_context(context).execute(
+                full,
+                max_dim,
+                output_dir,
+            )
+            artifact = result.get("artifact") if isinstance(result, dict) else None
+            identity = result.get("identity") if isinstance(result, dict) else None
+            artifact_image_path = (
+                artifact.get("image_path") if isinstance(artifact, dict) else None
+            )
+            _browser_tool_log_info(
+                "browser.tool.used name=%s bu_name=%s session=%s agent=%s "
+                "filepath=%s artifact_image_path=%s image_artifact=%s status=%s",
+                "browser_harness_screenshot",
+                identity.get("bu_name") if isinstance(identity, dict) else None,
+                identity.get("session_id") if isinstance(identity, dict) else None,
+                identity.get("agent_id") if isinstance(identity, dict) else None,
+                result.get("filepath") if isinstance(result, dict) else None,
+                artifact_image_path,
+                bool(artifact_image_path),
+                "error" if isinstance(result, dict) and result.get("error") else "ok",
+            )
+            return result
+        except Exception as e:
+            error_message = f"Error capturing browser-harness screenshot: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return {"error": error_message}
+
+    def execute_browser_harness_click(
+        self,
+        x: float,
+        y: float,
+        button: str = "left",
+        clicks: int = 1,
+        return_page_info: bool = True,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Click coordinates through optional browser-harness."""
+        try:
+            return BrowserHarnessClickTool(
+                self._browser_harness_config_for_context(context)
+            ).execute(
+                x,
+                y,
+                button,
+                clicks,
+                return_page_info,
+            )
+        except Exception as e:
+            error_message = f"Error clicking with browser-harness: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return {"error": error_message}
+
+    def execute_browser_harness_type(
+        self,
+        text: str,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Type text through optional browser-harness."""
+        try:
+            return BrowserHarnessTypeTool(
+                self._browser_harness_config_for_context(context)
+            ).execute(text)
+        except Exception as e:
+            error_message = f"Error typing with browser-harness: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return {"error": error_message}
+
+    def execute_browser_harness_key(
+        self,
+        key: str,
+        modifiers: int = 0,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Press a key through optional browser-harness."""
+        try:
+            return BrowserHarnessKeyTool(
+                self._browser_harness_config_for_context(context)
+            ).execute(key, modifiers)
+        except Exception as e:
+            error_message = f"Error pressing key with browser-harness: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return {"error": error_message}
+
+    def execute_browser_harness_fill(
+        self,
+        selector: str,
+        text: str,
+        clear_first: bool = True,
+        timeout: float = 0.0,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Fill an input through optional browser-harness."""
+        try:
+            return BrowserHarnessFillTool(
+                self._browser_harness_config_for_context(context)
+            ).execute(
+                selector,
+                text,
+                clear_first,
+                timeout,
+            )
+        except Exception as e:
+            error_message = f"Error filling input with browser-harness: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return {"error": error_message}
+
+    def execute_browser_harness_wait(
+        self,
+        mode: str = "load",
+        timeout: float = 15.0,
+        selector: Optional[str] = None,
+        visible: bool = False,
+        idle_ms: int = 500,
+        seconds: Optional[float] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Wait through optional browser-harness."""
+        try:
+            return BrowserHarnessWaitTool(
+                self._browser_harness_config_for_context(context)
+            ).execute(
+                mode,
+                timeout,
+                selector,
+                visible,
+                idle_ms,
+                seconds,
+            )
+        except Exception as e:
+            error_message = f"Error waiting with browser-harness: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return {"error": error_message}
+
+    def execute_browser_harness_js(
+        self,
+        expression: str,
+        target_id: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Evaluate JavaScript through optional browser-harness."""
+        try:
+            return BrowserHarnessJsTool(
+                self._browser_harness_config_for_context(context)
+            ).execute(expression, target_id)
+        except Exception as e:
+            error_message = f"Error evaluating JS with browser-harness: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return {"error": error_message}
+
+    def execute_browser_harness_list_tabs(
+        self,
+        include_chrome: bool = False,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """List tabs through optional browser-harness."""
+        try:
+            return BrowserHarnessListTabsTool(
+                self._browser_harness_config_for_context(context)
+            ).execute(include_chrome)
+        except Exception as e:
+            error_message = f"Error listing tabs with browser-harness: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return {"error": error_message}
+
+    def execute_browser_harness_switch_tab(
+        self,
+        target_id: str,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Switch tabs through optional browser-harness."""
+        try:
+            return BrowserHarnessSwitchTabTool(
+                self._browser_harness_config_for_context(context)
+            ).execute(target_id)
+        except Exception as e:
+            error_message = f"Error switching tabs with browser-harness: {str(e)}"
             logging.error(error_message)
             self.log_error(e, error_message)
             return {"error": error_message}

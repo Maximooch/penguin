@@ -21,7 +21,7 @@ def test_manager_catalog_and_activation_dedupe(tmp_path: Path) -> None:
     first = manager.activate("demo-skill", session_id="s1")
     second = manager.activate("demo-skill", session_id="s1")
 
-    assert catalog[0].name == "demo-skill"
+    assert any(entry.name == "demo-skill" for entry in catalog)
     assert first["status"] == "activated"
     assert first["duplicate"] is False
     assert '<skill_content name="demo-skill"' in first["content"]
@@ -38,3 +38,15 @@ def test_manager_dedupe_is_per_session(tmp_path: Path) -> None:
     other_session = manager.activate("demo-skill", session_id="s2")
 
     assert other_session["status"] == "activated"
+
+
+def test_manager_can_activate_bundled_browser_skill() -> None:
+    manager = SkillManager({"skills": {"scan_paths": {"user": []}}})
+
+    payload = manager.activate("browser", session_id="browser-test")
+
+    assert payload["status"] == "activated"
+    assert payload["skill"]["source"] == "bundled"
+    assert "browser_harness_screenshot" in payload["content"]
+    assert "interaction-skills/screenshots.md" in payload["content"]
+    assert "domain-skills/README.md" in payload["content"]

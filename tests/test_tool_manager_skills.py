@@ -69,7 +69,7 @@ async def test_action_executor_runs_list_skills_fallback_tag(tmp_path: Path) -> 
     )
     payload = json.loads(result)
 
-    assert payload["skills"][0]["name"] == "demo-skill"
+    assert any(skill["name"] == "demo-skill" for skill in payload["skills"])
 
 
 def test_tool_manager_list_skills_reports_current_session_active_state(tmp_path: Path) -> None:
@@ -96,4 +96,7 @@ def test_tool_manager_list_skills_reports_current_session_active_state(tmp_path:
     )
 
     assert payload["active"] == ["demo-skill"]
-    assert payload["skills"][0]["active"] is True
+    demo_entry = next(
+        skill for skill in payload["skills"] if skill["name"] == "demo-skill"
+    )
+    assert demo_entry["active"] is True

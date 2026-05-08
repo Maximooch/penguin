@@ -394,12 +394,38 @@ Compare two files with contextual diff output.
 """
 
 
+IMAGE_OPERATION_TOOLS = """
+### read_image
+Load a local image file into the conversation as model-visible multimodal content.
+
+**When to use:** Inspecting screenshots, diagrams, UI captures, generated images,
+or artifacts from MCP/browser/test tools that returned a local image path.
+
+**Native tool call:** call `read_image` with `{"path":"path/to/image.png"}`.
+
+**ActionXML fallback example:**
+```actionxml
+<read_image>{"path":"/path/to/screenshot.png","prompt":"Describe the visible UI state."}</read_image>
+```
+
+**Payload fields:**
+- `path` (required) - Image file path within allowed project/workspace roots.
+- `prompt` (optional) - Question/instruction to pair with the image.
+- `max_dim` (optional) - Max-dimension hint for downstream image handling.
+
+**Important:** Use `read_image` when you need to actually see an image. Reading a
+filename or JSON artifact path is not enough; promote the image into conversation
+context with this tool.
+"""
+
+
 def _build_file_operation_tools() -> str:
     return "\n\n".join(
         [
             "## File Operations",
             _render_tool_section("read_file", READ_FILE_HINT),
             FILE_OPERATION_STATIC_TOOLS,
+            IMAGE_OPERATION_TOOLS,
         ]
     )
 
@@ -960,9 +986,150 @@ then return a structured summary.
 # =============================================================================
 
 BROWSER_TOOLS = """
-## Browser Automation (PyDoll)
+## Browser Automation
 
-Enhanced browser control without WebDriver dependencies. Better for sites with anti-bot measures.
+Penguin has two browser paths:
+- `browser_*` tools backed by browser-harness when available. Prefer these for
+  real logged-in Chrome sessions, screenshot-first workflows, and CDP escape hatches.
+- `pydoll_browser_*` tools as the compatibility/fallback path.
+
+**Default workflow:** open or identify the page → screenshot/page info → act with
+coordinates or focused input → wait → screenshot/verify. Do not assume DOM state
+from text alone when the visual state matters.
+
+For documentation/static scraping, prefer scripting/HTTP/JS extraction over manual
+browser interaction. Actual browser interaction is strongest for testing software
+Penguin made, authenticated workflows, and dynamic UI verification.
+
+If `browser_open_tab` or `browser_page_info` returns `domain_skills.matches`,
+use those paths as opt-in references only when the current hostname-specific
+problem needs them. Do not bulk-load or summarize all domain-skill files.
+
+### browser_status
+Report browser-harness identity, ownership, dependency, connection, and optional page state.
+
+**Native tool call:** call `browser_status` with `{}` or `{"include_page":false}`.
+
+**ActionXML fallback example:**
+```actionxml
+<browser_status>{"include_page":true}</browser_status>
+```
+
+Use this when browser setup fails, subagents may be sharing state accidentally,
+or you need to verify the active `BU_NAME`/session/agent identity.
+
+### browser_cleanup
+Safely stop browser-harness daemon state. Defaults to Penguin-owned daemon records only.
+
+**Native tool call:** call `browser_cleanup` with `{}` or `{"owned_only":true}`.
+
+**ActionXML fallback example:**
+```actionxml
+<browser_cleanup>{"owned_only":true}</browser_cleanup>
+```
+
+Never use forced cleanup for user/external daemons unless explicitly approved.
+Prefer `browser_status` first to verify `BU_NAME`, ownership, and active page state.
+
+### browser_open_tab
+Open a URL in a new browser-harness tab.
+
+**Native tool call:** call `browser_open_tab` with `{"url":"https://example.com"}`.
+
+**ActionXML fallback example:**
+```actionxml
+<browser_open_tab>{"url":"https://example.com","wait":true}</browser_open_tab>
+```
+
+### browser_page_info
+Return active tab URL/title and page metadata.
+
+**Native tool call:** call `browser_page_info` with `{}`.
+
+**ActionXML fallback example:**
+```actionxml
+<browser_page_info>{}</browser_page_info>
+```
+
+### browser_harness_screenshot
+Capture visible browser state as an image artifact and add it to conversation
+when used through ActionXML.
+
+**Native tool call:** call `browser_harness_screenshot` with `{}`.
+
+**ActionXML fallback example:**
+```actionxml
+<browser_harness_screenshot>{"description":"What is visible on this page?"}</browser_harness_screenshot>
+```
+
+**Important:** If a screenshot or other tool returns only an image path/artifact,
+use `read_image` to make that image visible in a later turn.
+
+### browser_click
+Click browser viewport coordinates. Prefer this after inspecting a screenshot.
+
+**Native tool call:** call `browser_click` with `{"x":100,"y":200}`.
+
+**ActionXML fallback example:**
+```actionxml
+<browser_click>{"x":100,"y":200,"button":"left","clicks":1}</browser_click>
+```
+
+### browser_type / browser_key / browser_fill
+Enter text, press keys, or fill a selector-backed input.
+
+**Native tool call examples:**
+- `browser_type` with `{"text":"hello"}`
+- `browser_key` with `{"key":"Enter"}`
+- `browser_fill` with `{"selector":"#email","text":"user@example.com"}`
+
+**ActionXML fallback examples:**
+```actionxml
+<browser_type>{"text":"hello"}</browser_type>
+<browser_key>{"key":"Enter"}</browser_key>
+<browser_fill>{"selector":"#email","text":"user@example.com"}</browser_fill>
+```
+
+### browser_wait
+Wait for load, element, network idle, or a short sleep.
+
+**Native tool call:** call `browser_wait` with
+`{"mode":"load"}` / `{"mode":"element","selector":"#done"}` /
+`{"mode":"network_idle"}` / `{"mode":"sleep","seconds":1}`.
+
+**ActionXML fallback example:**
+```actionxml
+<browser_wait>{"mode":"element","selector":"#done","timeout":10,"visible":true}</browser_wait>
+```
+
+### browser_js
+Evaluate JavaScript in the active tab. Use this as an escape hatch after visual
+inspection, not as a replacement for user-visible verification.
+
+**Native tool call:** call `browser_js` with `{"expression":"document.title"}`.
+
+**ActionXML fallback example:**
+```actionxml
+<browser_js>{"expression":"document.title"}</browser_js>
+```
+
+### browser_list_tabs / browser_switch_tab
+Inspect and switch browser-harness tabs.
+
+**Native tool call examples:**
+- `browser_list_tabs` with `{}`
+- `browser_switch_tab` with `{"target_id":"..."}`
+
+**ActionXML fallback examples:**
+```actionxml
+<browser_list_tabs>{}</browser_list_tabs>
+<browser_switch_tab>{"target_id":"target-1"}</browser_switch_tab>
+```
+
+### PyDoll Compatibility Tools
+
+Enhanced browser control without WebDriver dependencies. Better for sites with
+anti-bot measures when browser-harness is unavailable or inappropriate.
 
 ### pydoll_browser_navigate
 Navigate to a URL.

@@ -18,6 +18,9 @@ DEFAULT_PROJECT_SCAN_PATHS = [
     ".penguin/skills",
     ".agents/skills",
 ]
+DEFAULT_BUNDLED_SCAN_PATHS = [
+    str(Path(__file__).resolve().parents[1] / "bundled_skills"),
+]
 
 
 def _config_get(config: Any, *keys: str, default: Any = None) -> Any:
@@ -37,10 +40,12 @@ def get_skills_config(config: Any) -> Dict[str, Any]:
     raw = _config_get(config, "skills", default={}) or {}
     if not isinstance(raw, dict):
         raw = {}
+    scan_paths = raw.get("scan_paths", {})
     return {
         "enabled": raw.get("enabled", True),
         "trust_project_skills": raw.get("trust_project_skills", False),
-        "scan_paths": raw.get("scan_paths", {}) if isinstance(raw.get("scan_paths", {}), dict) else {},
+        "scan_paths": scan_paths if isinstance(scan_paths, dict) else {},
+        "include_bundled": raw.get("include_bundled", True),
         "max_scan_depth": int(raw.get("max_scan_depth", 6)),
         "max_skill_dirs": int(raw.get("max_skill_dirs", 2000)),
     }
@@ -68,8 +73,11 @@ def configured_scan_roots(
 
     user_paths = scan_paths.get("user", DEFAULT_USER_SCAN_PATHS)
     project_paths = scan_paths.get("project", DEFAULT_PROJECT_SCAN_PATHS)
+    bundled_paths = scan_paths.get("bundled", DEFAULT_BUNDLED_SCAN_PATHS)
 
     roots: List[Tuple[Path, str]] = [(path, "user") for path in _expand_paths(user_paths)]
+    if skills_config["include_bundled"]:
+        roots.extend((path, "bundled") for path in _expand_paths(bundled_paths))
     if skills_config["trust_project_skills"]:
         roots.extend((path, "project") for path in _expand_paths(project_paths, root=project_base))
     return roots

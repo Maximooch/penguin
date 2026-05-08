@@ -56,6 +56,7 @@ from penguin.tools import ToolManager  # type: ignore
 from penguin.tools.runtime import (
     ToolExecutionPolicy,
     execute_tool_calls_serially,
+    image_artifacts_from_action_result,
     legacy_action_result_from_tool_result,
     tool_calls_from_codeact_actions,
     tool_results_loop_identity,
@@ -2300,7 +2301,53 @@ class Engine:
             emit_tool_timeline=lambda action_result: self._emit_tool_event(
                 cm, action_result
             ),
+            persist_image_artifacts=lambda action_result: (
+                self._persist_tool_image_artifacts(cm, action_result)
+            ),
         )
+
+    def _persist_tool_image_artifacts(
+        self, cm: ConversationManager, action_result: Dict[str, Any]
+    ) -> None:
+        """Persist image artifacts from native tool results as visible images."""
+
+        artifacts = image_artifacts_from_action_result(action_result)
+        if not artifacts:
+            return
+
+        conversation = getattr(cm, "conversation", None)
+        if conversation is None or not hasattr(conversation, "add_message"):
+            return
+
+        for artifact in artifacts:
+            image_path = artifact.get("image_path")
+            if not isinstance(image_path, str) or not image_path.strip():
+                continue
+            source_action = artifact.get("source_action") or action_result.get("action")
+            content = [
+                {
+                    "type": "text",
+                    "text": (
+                        f"Image artifact from {source_action}: {image_path}. "
+                        "Use this image for the next response."
+                    ),
+                },
+                {"type": "image_url", "image_path": image_path},
+            ]
+            try:
+                conversation.add_message(
+                    "user",
+                    content,
+                    MessageCategory.SYSTEM_OUTPUT,
+                    {
+                        "type": "tool_image_artifact",
+                        "action": source_action,
+                        "filepath": image_path,
+                    },
+                    message_type="action",
+                )
+            except Exception as exc:
+                logger.warning("Failed to persist tool image artifact: %s", exc)
 
     async def _emit_tool_event(
         self, cm: ConversationManager, action_result: Dict[str, Any]
