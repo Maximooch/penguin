@@ -21,8 +21,6 @@ from penguin.tools import ToolManager
 from penguin.utils.process_manager import ProcessManager
 from penguin.system.conversation import MessageCategory
 from penguin.system.execution_context import get_current_execution_context
-from penguin.tools.image_tools import ReadImageTool
-from penguin.tools.browser_harness_tools import BrowserHarnessScreenshotTool
 from penguin.tools.browser_tools import BrowserScreenshotTool, browser_manager
 from penguin.constants import (
     DELEGATE_EXPLORE_TASK_MAX_ITERATIONS_CAP,
@@ -1057,6 +1055,20 @@ class ActionExecutor:
         self._ui_action_metadata: Dict[str, Dict[str, Any]] = {}
         self._registry_action_map = self._build_registry_action_map()
         # No direct initialization of expensive tools, we'll use tool_manager's properties
+
+
+    @staticmethod
+    def _normalize_tool_result(result: Any) -> Dict[str, Any]:
+        """Normalize ToolManager results before dictionary access."""
+        if isinstance(result, dict):
+            return result
+        if isinstance(result, str):
+            try:
+                parsed = json.loads(result)
+            except json.JSONDecodeError:
+                return {"error": result}
+            return parsed if isinstance(parsed, dict) else {"error": result}
+        return {"error": str(result) if result is not None else "Tool returned no result"}
 
     def _build_registry_action_map(self) -> Dict[ActionType, Callable[[Any], Any]]:
         """Build cached handlers for registry-backed ActionXML routes."""
@@ -3877,10 +3889,12 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             if not path:
                 return "Error reading image: path is required"
 
-            result = self.tool_manager.execute_tool(
+            raw_result = await asyncio.to_thread(
+                self.tool_manager.execute_tool,
                 "read_image",
                 {"path": str(path), "prompt": prompt, "max_dim": max_dim},
             )
+            result = self._normalize_tool_result(raw_result)
             if "filepath" in result and os.path.exists(result["filepath"]):
                 description = result.get("prompt") or "What can you see in this image?"
                 add_message_fn = None
@@ -3920,7 +3934,11 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
                 else:
                     payload = {}
 
-            result = self.tool_manager.execute_tool(tool_name, payload)
+            result = await asyncio.to_thread(
+                self.tool_manager.execute_tool,
+                tool_name,
+                payload,
+            )
             if isinstance(result, str):
                 return result
             return json.dumps(result, indent=2, default=str)
@@ -3942,7 +3960,8 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
                 )
             description = description or "What can you see in this browser-harness screenshot?"
 
-            result = self.tool_manager.execute_tool(
+            raw_result = await asyncio.to_thread(
+                self.tool_manager.execute_tool,
                 "browser_harness_screenshot",
                 {
                     "full": bool(payload.get("full", False)),
@@ -3950,6 +3969,7 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
                     "output_dir": payload.get("output_dir"),
                 },
             )
+            result = self._normalize_tool_result(raw_result)
 
             if "filepath" in result and os.path.exists(result["filepath"]):
                 add_message_fn = None
