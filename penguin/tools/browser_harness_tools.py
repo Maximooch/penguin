@@ -13,6 +13,7 @@ import importlib.util
 import os
 import re
 import socket
+import uuid
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -262,6 +263,9 @@ class BrowserHarnessAdapter:
         return payload
 
     def _load_modules(self, env: Optional[Dict[str, str]] = None):
+        """Load browser-harness modules; caller must hold _HELPERS_LOCK."""
+        """Load browser-harness modules while caller holds _HELPERS_LOCK."""
+        """Load browser-harness modules after caller acquires _HELPERS_LOCK."""
         for key, value in (env or {}).items():
             os.environ[key] = value
         try:
@@ -402,9 +406,10 @@ class BrowserHarnessAdapter:
 
         env = self._base_env()
         env["BU_NAME"] = target_name
-        admin, _helpers = self._load_modules(env)
         try:
-            admin.restart_daemon(target_name)
+            with _HELPERS_LOCK:
+                admin, _helpers = self._load_modules(env)
+                admin.restart_daemon(target_name)
         except Exception as exc:
             return {
                 "error": (
@@ -472,8 +477,9 @@ class BrowserHarnessAdapter:
             or Path.cwd() / "screenshots"
         )
         directory.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filepath = directory / f"browser_harness_screenshot_{timestamp}.png"
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        unique_id = uuid.uuid4().hex[:8]
+        filepath = directory / f"browser_harness_screenshot_{timestamp}_{unique_id}.png"
         resolved_max_dim = self.screenshot_max_dim if max_dim is None else max_dim
 
         with _HELPERS_LOCK:
@@ -844,6 +850,7 @@ class BrowserHarnessSwitchTabTool:
 
 __all__ = [
     "BrowserHarnessAdapter",
+    "BrowserHarnessCleanupTool",
     "BrowserHarnessClickTool",
     "BrowserHarnessFillTool",
     "BrowserHarnessJsTool",

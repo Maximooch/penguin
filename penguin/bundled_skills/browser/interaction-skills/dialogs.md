@@ -55,8 +55,9 @@ Fires when navigating away from a page with unsaved changes (forms, editors, upl
 goto_url("https://new-url.com")
 try:
     cdp("Page.handleJavaScriptDialog", accept=True)  # click "Leave"
-except:
-    pass  # no dialog — normal
+except Exception as exc:
+    # Usually means no dialog was present; investigate if connection errors repeat.
+    print(f"No JavaScript dialog handled: {exc}")
 
 # Option B: prevent before navigating (JS injection, detectable)
 js("window.onbeforeunload=null")

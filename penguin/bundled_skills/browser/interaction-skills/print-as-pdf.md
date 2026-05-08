@@ -1,3 +1,50 @@
 # Print As PDF
 
-Cover both direct PDF generation via CDP and sites that only expose a visible "Print" button which must be clicked before handling the browser print flow.
+Prefer CDP PDF generation when the page can be printed directly. Use UI-driven
+print flows only when the site requires clicking a visible Print/Export button to
+prepare printable content.
+
+## CDP `Page.printToPDF`
+
+Use Chrome DevTools Protocol for deterministic PDF output:
+
+```python
+pdf = cdp(
+    "Page.printToPDF",
+    printBackground=True,
+    landscape=False,
+    scale=1.0,
+    marginTop=0.4,
+    marginBottom=0.4,
+    marginLeft=0.4,
+    marginRight=0.4,
+)
+```
+
+The response contains base64 PDF data. Verify page count, file size, and whether
+CSS print media rules were applied.
+
+## Site Print Button Flow
+
+Some sites generate printable content only after a button click:
+
+1. click the visible Print/Export button;
+2. intercept or neutralize `window.print` if needed;
+3. wait for the printable DOM/route/tab;
+4. use `Page.printToPDF` on that final page.
+
+```python
+js("window.__penguinPrintCalled=false; window.print=()=>{window.__penguinPrintCalled=true}")
+click_at_xy(print_x, print_y)
+wait_for_network_idle(timeout=10)
+```
+
+Avoid OS print dialogs in automation. If a headful dialog appears, prefer closing
+it and using CDP rather than trying to click native UI.
+
+## Testing Tips
+
+- Check headers/footers if the site expects them.
+- Verify pagination and page breaks.
+- Confirm `@media print` CSS is active.
+- Compare visible page content with PDF content before declaring success.

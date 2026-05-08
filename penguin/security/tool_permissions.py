@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
@@ -131,7 +132,11 @@ def extract_resource_from_input(
         # For commands, the resource is the command itself
         return tool_input.get("command") or tool_input.get("code")
 
-    if tool_name in ("browser_navigate", "pydoll_browser_navigate", "browser_open_tab"):
+    if tool_name in (
+        "browser_navigate",
+        "pydoll_browser_navigate",
+        "browser_open_tab",
+    ):
         return tool_input.get("url")
 
     if tool_name in ("browser_fill",):
@@ -157,6 +162,8 @@ def _resolve_resource_path(resource: str, context: Optional[dict[str, Any]]) -> 
     """Resolve relative resource paths against request-scoped directory hints."""
     text = str(resource or "").strip()
     if not text:
+        return text
+    if urlparse(text).scheme in {"http", "https", "data", "file"}:
         return text
 
     candidate = Path(text).expanduser()
@@ -225,7 +232,14 @@ def extract_resources_from_input(
 
     single = extract_resource_from_input(tool_name, tool_input)
     if single:
-        resources.append(_resolve_resource_path(single, context))
+        if tool_name in (
+        "browser_navigate",
+        "pydoll_browser_navigate",
+        "browser_open_tab",
+    ):
+            resources.append(str(single))
+        else:
+            resources.append(_resolve_resource_path(single, context))
 
     deduped: list[str] = []
     seen: set[str] = set()

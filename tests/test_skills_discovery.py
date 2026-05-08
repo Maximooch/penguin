@@ -27,6 +27,14 @@ def test_discover_nested_skills(tmp_path: Path) -> None:
 
 
 def test_discover_includes_bundled_browser_skill_by_default() -> None:
+    """Verify bundled browser skill discovery.
+
+    Args:
+        None.
+
+    Returns:
+        None. Raises assertion errors if discovery omits the browser skill.
+    """
     skills, diagnostics = discover_skills({"skills": {"scan_paths": {"user": []}}})
 
     browser = next(skill for skill in skills if skill.name == "browser")

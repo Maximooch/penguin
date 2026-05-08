@@ -367,19 +367,19 @@ class ToolManager:
                 "pydoll_browser_interact": "self.pydoll_browser_interaction_tool.execute",
                 "pydoll_browser_screenshot": "self.pydoll_browser_screenshot_tool.execute",
                 "pydoll_browser_scroll": "self.pydoll_browser_scroll_tool.execute",
-                "browser_status": "self.browser_harness_status_tool.execute",
-                "browser_cleanup": "self.browser_harness_cleanup_tool.execute",
-                "browser_open_tab": "self.browser_harness_open_tab_tool.execute",
-                "browser_page_info": "self.browser_harness_page_info_tool.execute",
-                "browser_harness_screenshot": "self.browser_harness_screenshot_tool.execute",
-                "browser_click": "self.browser_harness_click_tool.execute",
-                "browser_type": "self.browser_harness_type_tool.execute",
-                "browser_key": "self.browser_harness_key_tool.execute",
-                "browser_fill": "self.browser_harness_fill_tool.execute",
-                "browser_wait": "self.browser_harness_wait_tool.execute",
-                "browser_js": "self.browser_harness_js_tool.execute",
-                "browser_list_tabs": "self.browser_harness_list_tabs_tool.execute",
-                "browser_switch_tab": "self.browser_harness_switch_tab_tool.execute",
+                "browser_status": "self.execute_browser_harness_status",
+                "browser_cleanup": "self.execute_browser_harness_cleanup",
+                "browser_open_tab": "self.execute_browser_harness_open_tab",
+                "browser_page_info": "self.execute_browser_harness_page_info",
+                "browser_harness_screenshot": "self.execute_browser_harness_screenshot",
+                "browser_click": "self.execute_browser_harness_click",
+                "browser_type": "self.execute_browser_harness_type",
+                "browser_key": "self.execute_browser_harness_key",
+                "browser_fill": "self.execute_browser_harness_fill",
+                "browser_wait": "self.execute_browser_harness_wait",
+                "browser_js": "self.execute_browser_harness_js",
+                "browser_list_tabs": "self.execute_browser_harness_list_tabs",
+                "browser_switch_tab": "self.execute_browser_harness_switch_tab",
                 "analyze_codebase": "self.analyze_codebase",
                 "reindex_workspace": "self.reindex_workspace",
                 "list_skills": "self.skill_tools.list_skills",
@@ -2244,15 +2244,21 @@ class ToolManager:
         return self._browser_screenshot_tool
 
     def _browser_harness_config(self) -> Dict[str, Any]:
-        browser_config = (
-            self.config.get("browser", {}) if isinstance(self.config, dict) else {}
-        )
-        harness_config = (
-            browser_config.get("harness", {})
-            if isinstance(browser_config, dict)
-            else {}
-        )
-        return harness_config if isinstance(harness_config, dict) else {}
+        if isinstance(self.config, dict):
+            browser_config = self.config.get("browser", {})
+        else:
+            browser_config = getattr(self.config, "browser", {})
+
+        if isinstance(browser_config, dict):
+            harness_config = browser_config.get("harness", {})
+        else:
+            harness_config = getattr(browser_config, "harness", {})
+
+        if isinstance(harness_config, dict):
+            return dict(harness_config)
+        if hasattr(harness_config, "__dict__"):
+            return dict(vars(harness_config))
+        return {}
 
     def _browser_harness_config_for_context(
         self,

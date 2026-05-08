@@ -182,7 +182,8 @@ Under the hood, the `latest` targets override the project default with `--exclud
 | `[all]` | Everything above that is available from PyPI |
 
 Browser-harness is Penguin's preferred `browser_*` backend on this branch, but it
-is currently a local/source dependency rather than a PyPI package. For local
+requires Python 3.11+ and is currently a local/source dependency rather than a
+PyPI package. For local
 browser-harness testing, install Penguin's browser extra for the PyPI-available
 fallback and then install browser-harness into the same environment from a source
 checkout:

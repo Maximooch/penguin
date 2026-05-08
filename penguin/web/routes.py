@@ -1221,6 +1221,9 @@ def _extract_paths_from_parts(
             candidate = candidate.strip()
             if not candidate:
                 return False
+            parsed = urlparse(candidate)
+            if parsed.scheme == "file":
+                candidate = unquote(parsed.path)
             if candidate not in image_paths:
                 image_paths.append(candidate)
             return True

@@ -43,6 +43,7 @@ Cookies are real auth. Don't sync or pick a profile unilaterally.
 for p in list_cloud_profiles():
     print(f"{p['name']:25}  {len(p['cookieDomains']):3} domains  {p['id']}")
 ```
+
 → Agent: *"You have these cloud profiles (<N> domains each). Want to reuse one, sync a local profile, or start clean?"*
 
 ```python
@@ -53,6 +54,7 @@ start_remote_daemon("work", profileName="browser-use.com")
 for lp in list_local_profiles():
     print(lp["DisplayName"])
 ```
+
 → Agent: *"Which local profile?"* → user picks → before syncing, inspect domain-level cookie counts with `profile-use inspect --profile <name>` (or `--verbose` for individual cookies) and report the summary; never dump 500 cookies into chat.
 
 ```python

@@ -3877,7 +3877,10 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             if not path:
                 return "Error reading image: path is required"
 
-            result = ReadImageTool().execute(str(path), prompt=prompt, max_dim=max_dim)
+            result = self.tool_manager.execute_tool(
+                "read_image",
+                {"path": str(path), "prompt": prompt, "max_dim": max_dim},
+            )
             if "filepath" in result and os.path.exists(result["filepath"]):
                 description = result.get("prompt") or "What can you see in this image?"
                 add_message_fn = None
