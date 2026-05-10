@@ -13,7 +13,6 @@ from typing import (
     runtime_checkable,
 )
 
-
 StreamCallback = Callable[[str, str], Any]
 
 
@@ -54,6 +53,41 @@ class ErrorCategory(str, Enum):
     PROVIDER_UNAVAILABLE = "provider_unavailable"
     RUNTIME = "runtime"
     UNKNOWN = "unknown"
+
+
+class ProviderRequestStatus(str, Enum):
+    """Canonical lifecycle states for one provider model request."""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    STREAMING = "streaming"
+    DISCONNECTED = "disconnected"
+    RETRYING = "retrying"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+@dataclass
+class LLMRequestLifecycle:
+    """Observable lifecycle metadata for one provider model request."""
+
+    request_id: str
+    provider: str
+    model: str
+    status: ProviderRequestStatus = ProviderRequestStatus.PENDING
+    stream: bool = False
+    transport: str = ""
+    request_payload_hash: Optional[str] = None
+    attempt: int = 1
+    started_at: float = 0.0
+    last_event_at: float = 0.0
+    ended_at: Optional[float] = None
+    provider_response_id: Optional[str] = None
+    last_event_type: Optional[str] = None
+    finish_reason: Optional[FinishReason] = None
+    error: Optional[LLMError] = None
+    provider_data: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -267,6 +301,13 @@ class ErrorReportingRuntime(Protocol):
 
 
 @runtime_checkable
+class RequestLifecycleRuntime(Protocol):
+    """Optional runtime extension for provider request lifecycle diagnostics."""
+
+    def get_last_request_lifecycle(self) -> Optional[LLMRequestLifecycle]: ...
+
+
+@runtime_checkable
 class ResultMetadataRuntime(Protocol):
     """Optional runtime extension for normalized finish/reasoning state."""
 
@@ -282,11 +323,14 @@ __all__ = [
     "LLMError",
     "LLMProviderError",
     "LLMRequest",
+    "LLMRequestLifecycle",
     "LLMResult",
     "LLMStreamEvent",
     "LLMToolCall",
     "LLMUsage",
+    "ProviderRequestStatus",
     "ProviderRuntime",
+    "RequestLifecycleRuntime",
     "ResultMetadataRuntime",
     "StreamCallback",
     "StreamEventType",

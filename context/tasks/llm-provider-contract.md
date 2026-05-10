@@ -49,10 +49,33 @@ Key architectural lessons to adopt from OpenCode:
 - one canonical stream/result grammar
 - one centralized usage/error/retry model
 
+Tool-runtime lessons from Codex/OpenCode are tracked in
+`context/tasks/tool-call-runtime-architecture.md`. This provider-contract plan
+should own wire-format normalization, provider-specific request shaping, stream
+events, finish reasons, usage, and error semantics. It should not duplicate the
+scheduler, permission, truncation, or process-runtime plan.
+
+Provider reliability lessons from Codex/OpenCode should be adopted at the
+contract level where they are provider-agnostic:
+
+- a model turn should have a request lifecycle record, not just an awaited HTTP
+  call
+- stream completion must be explicit; a socket close without a provider
+  completion event is an incomplete response, not a successful empty response
+- provider errors must release the current turn so the next user turn can
+  proceed
+- retry/recovery decisions should use provider capability metadata and request
+  identity, not ad hoc string matching
+- provider-specific resumability, such as OpenAI background responses, should
+  be a capability behind the common lifecycle record
+
 Important constraint:
 
 - adopt the architecture, not the dependency; Penguin should remain provider-agnostic and local-inference-friendly rather than coupling itself to Vercel's AI SDK
 - provider-specific behavior must live in `penguin/llm` provider modules and shared LLM runtime layers, not in `engine.py`, `core.py`, `web/routes.py`, or tool implementations
+- provider adapters may translate provider-native tool-call wire formats into
+  canonical calls/results, but tool risk, permissions, scheduling, truncation,
+  and process execution belong to the tool runtime
 
 ## Progress Snapshot
 
@@ -89,6 +112,59 @@ Important constraint:
 - [x] Add explicit fixtures for streaming + tool-call edge cases
 - [x] Add reasoning-token cases where relevant
 - [x] Verify the same contract against native, gateway, and local-inference-compatible adapters
+- [ ] Add incomplete-stream and turn-release contract cases for provider
+      transports that stream
+
+## Provider Request Lifecycle Contract
+
+The provider contract should expose one lifecycle model for all model calls,
+even when a specific provider has extra recovery features.
+
+Canonical states:
+
+- `pending`: Penguin has created the request record but has not sent traffic yet.
+- `running`: the provider request has been sent.
+- `streaming`: Penguin has received at least one stream event.
+- `disconnected`: transport ended before the provider emitted a completion
+  event or equivalent terminal signal.
+- `retrying`: Penguin is retrying or reconnecting under the provider policy.
+- `completed`: the provider emitted a terminal completion and Penguin recorded
+  final content/tool calls/usage.
+- `failed`: the provider request ended with a normalized failure.
+- `cancelled`: Penguin or the user cancelled the request.
+
+Minimum request-record fields:
+
+- Penguin session/conversation id and turn id
+- provider, adapter, model, and endpoint/transport family
+- request payload hash and request-shape version
+- attempt count, start time, last event time, and terminal time
+- provider response id or equivalent continuation id when available
+- last stream event type and provider finish reason when available
+- canonical error category plus provider-native error metadata
+
+Contract expectations:
+
+- providers that stream must distinguish completed streams from incomplete
+  streams
+- incomplete streams must either retry/recover or surface a structured
+  recoverable failure
+- failures must emit a terminal lifecycle event so the engine/session is not
+  left busy
+- provider adapters should expose whether a request can be resumed, polled, or
+  safely retried from canonical history
+- incremental identifiers such as `previous_response_id` should only be reused
+  when the adapter can prove the next request is a safe prefix extension of the
+  prior request
+
+OpenAI-specific notes:
+
+- `background=true` and `store=true` are capabilities for server-side
+  continuation/retrieval, not the general lifecycle model.
+- Foreground stateless requests still need long-stream timeout/stall handling
+  and explicit incomplete-stream detection.
+- Stateless reasoning continuity still depends on the encrypted reasoning
+  content path when Penguin is not using stored provider state.
 
 ## Verification Targets
 
@@ -132,6 +208,11 @@ Important constraint:
 ## Post-Phase 3 Implementation Notes
 
 - Canonical error metadata now flows through `LLMError` / `LLMProviderError` plus handler `get_last_error()` hooks.
+- Canonical provider request lifecycle metadata now lives in
+  `ProviderRequestStatus`, `LLMRequestLifecycle`, and
+  `RequestLifecycleRuntime`.
+- OpenAI/Codex OAuth SSE is the first lifecycle adopter, including disconnected
+  incomplete-stream handling and long-stream timeout policy.
 - `APIClient` now prefers canonical handler error metadata over provider-specific placeholder strings when formatting user-visible failures.
 - Retry, timeout, rate-limit, and upstream-unavailable cases now normalize onto canonical categories for active handler paths.
 - `Retry-After` / retry timing is normalized where handlers expose it.
@@ -219,6 +300,16 @@ Phase 3 follow-up items that are useful but not required to consider the validat
 - [x] Standardize retry, timeout, and rate-limit handling semantics behind canonical error categories
 - [x] Normalize `Retry-After` and retryability metadata where providers expose them
 - [x] Stop relying on provider-specific returned error strings as the main failure contract
+- [ ] Add provider request lifecycle records for model calls so retries,
+      disconnects, completions, cancellations, and failures share one
+      observable state machine
+- [ ] Replace fixed streaming read-timeout behavior with provider-aware
+      timeout/stall policy: bounded connect/write/pool timeouts, long or
+      disabled read timeout for active streams, and Penguin-owned cancellation
+      watchdogs
+- [ ] Normalize incomplete stream handling so a transport close without a
+      provider completion event is retryable/disconnected rather than a
+      successful empty response
 
 ### 2. Finish tool-call and reasoning normalization
 
@@ -234,6 +325,12 @@ Phase 3 follow-up items that are useful but not required to consider the validat
 - [x] Stop using `penguin/core.py` to compensate for provider/runtime-specific tool event naming or metadata gaps
 - [ ] Move provider-specific request shaping and response quirks out of shared call sites where possible
 - [ ] Keep `Engine` and higher-level runtime code ignorant of provider-specific branching
+- [ ] Keep provider-specific native tool replay at the adapter edge while
+  consuming canonical `ToolCall` / `ToolResult` records from the tool runtime
+- [ ] Add provider-contract coverage for completed, failed, cancelled, and
+  interrupted tool-call replay, including provider-specific id normalization
+- [ ] Add provider-contract coverage for incomplete stream recovery and
+  stream-error turn release
 - [ ] Finish the unchecked Phase 2 item: keep provider-specific quirks at the adapter edge
 
 ### 4. Expand or consciously narrow coverage

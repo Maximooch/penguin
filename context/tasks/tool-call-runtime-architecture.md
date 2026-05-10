@@ -92,6 +92,43 @@ Key ideas worth borrowing:
 Penguin does not need to clone Codex internals, but it should adopt the same
 separation of concerns.
 
+## Reference Harness Takeaways
+
+Local references reviewed:
+
+- `reference/codex`
+- `reference/opencode`
+
+Useful design lessons for Penguin:
+
+- Tool calls should be durable runtime objects, not assistant text conventions.
+  Codex carries `call_id`, tool name, payload, session, turn context,
+  cancellation token, and diff/output tracking through dispatch and persistence.
+- Tool output truncation should be universal, explicit, and artifact-backed.
+  OpenCode wraps tools with a default truncation layer, preserves the full
+  output locally, and returns model-visible hints for reading/searching the
+  saved output.
+- Parallelism needs scheduler-owned metadata. Codex only runs calls in parallel
+  when the configured tool explicitly supports it; other calls take an
+  exclusive gate. Penguin should keep serial execution as the default until
+  read-only, mutating, approval, streaming, and retry metadata are reliable.
+- Permission checks belong in the runtime path. Codex and OpenCode both attach
+  approval prompts, cached approvals, and permission context to tool execution
+  rather than relying only on prompt instructions.
+- Shell/process tools are a runtime family, not a generic function call. They
+  need cwd/env tracking, timeout/cancellation, stdout streaming, sandbox and
+  network approval, exit-code metadata, and persistent process state.
+- Tool history replay must be provider-safe. Dangling or interrupted tool calls
+  should replay as explicit error/cancelled tool results so providers with
+  strict adjacency rules never receive unresolved tool-use blocks.
+- Tool calls should be recorded before execution starts. Codex persists model
+  output items before dispatching tools, which keeps recovery coherent if the
+  process is cancelled, interrupted, or disconnected between call capture and
+  result persistence.
+- Provider quirks should stay at the adapter edge. Higher layers should see
+  canonical tool calls/results/events, while adapters handle provider-specific
+  tool-call IDs, message ordering, schemas, and finish reasons.
+
 ## Target Architecture
 
 Introduce a provider-neutral intermediate representation:
@@ -128,6 +165,8 @@ ToolResult(
     started_at: float,
     ended_at: float,
     output_hash: str,
+    output_path: str | None,
+    truncated: bool,
 )
 ```
 
@@ -187,6 +226,7 @@ Responsibilities:
 - serialize mutating calls
 - preserve deterministic result ordering
 - support cancellation and timeouts
+- enforce per-tool and aggregate output limits before model replay
 - emit start/end UI events consistently
 
 The first scheduler should be deliberately conservative:
@@ -202,9 +242,15 @@ Parallel execution can be added once the metadata and persistence are reliable.
 Responsibilities:
 
 - persist tool call id, name, arguments, status, output, and output hash
+- persist the call record before tool execution so cancellation/interruption can
+  replay the call as a cancelled or failed result instead of losing it
+- persist truncation metadata and a full-output artifact/reference when output
+  is too large for model-visible replay
 - distinguish assistant text from tool calls and tool results
 - make repeated-loop detection use tool identity and arguments
 - support reconstruction/debugging of a model turn
+- replay interrupted, cancelled, or failed tool calls as explicit tool results
+  rather than leaving provider-native tool calls dangling
 
 This should avoid relying on the first 200 characters of output as the primary
 identity for progress detection.
@@ -218,6 +264,8 @@ Responsibilities:
 - decide whether another model turn is needed
 - handle malformed tool syntax repair
 - handle empty tool-only loops based on `ToolCall`/`ToolResult` identity
+- retry empty non-tool continuations after tool-heavy turns with compacted tool
+  output before surfacing a terminal diagnostic
 
 The loop controller should not know individual tool semantics. It should reason
 about call/result metadata.
@@ -497,14 +545,110 @@ Related future work:
   terminal/session handling, debugger tools, dev-server process tools, result
   paging, richer metadata, and test/code-navigation suites.
 
+### Phase 6.5: Universal Tool Output Truncation And Replay Safety
+
+Goals:
+
+- persist native/provider tool-call records before dispatching tools
+- apply a single truncation policy to all model-visible tool outputs
+- preserve full raw output in a local artifact/result store when truncated
+- include line count, byte count, truncation direction, output hash, and output
+  artifact path/reference in `ToolResult`
+- enforce an aggregate per-turn model-visible tool-output cap in addition to
+  per-tool caps
+- make provider replay reconstruct native tool-call and tool-result adjacency
+  from persisted `ToolCall` / `ToolResult` records
+- convert interrupted, pending, or cancelled historical tool calls into
+  explicit error/cancelled tool results during replay
+
+Acceptance criteria:
+
+- if Penguin stops between tool-call capture and tool completion, replay can
+  reconstruct the pending call and emit an explicit cancelled/failed result
+- large command/read/search outputs do not get injected wholesale into the next
+  model turn
+- the model receives a concise truncation notice plus a safe way to inspect the
+  full output by result id or artifact path
+- empty-response recovery after tool-heavy turns retries once with compacted
+  recent tool output before returning a structured diagnostic
+- OpenAI/Codex, OpenRouter/OpenAI-compatible, and Anthropic replay tests cover
+  completed, failed, cancelled, and interrupted tool calls
+- repeated-loop detection uses normalized arguments and output hashes from
+  `ToolResult`, not text previews
+
+Reference points:
+
+- OpenCode's tool wrapper truncates all tool outputs and stores full output
+  under a local tool-output directory.
+- Codex's `ToolOutput` boundary owns conversion to provider response items and
+  truncates function output before model replay.
+
+### Phase 7: Runtime Permissions And Tool Metadata
+
+Goals:
+
+- move read-only/mutating, approval, external-state, network, destructive,
+  long-running, streaming, retry-safe, and parallel-safe metadata into the
+  registry/descriptor layer
+- make scheduler decisions consume registry metadata rather than adapter
+  guesses
+- require permission/approval checks in the runtime dispatch path
+- cache approvals by normalized tool name, arguments, cwd, sandbox/network
+  scope, and affected paths where applicable
+- surface permission-required and approval-denied outcomes as `ToolResult`
+  statuses that can be replayed to the model
+
+Acceptance criteria:
+
+- provider adapters only extract calls; they do not decide tool risk
+- mutating/unsafe calls are serialized by default
+- approval-denied and permission-required paths produce structured results and
+  UI events
+- tests cover denied, approved-once, approved-for-session, and unavailable-tool
+  behavior
+
+### Phase 8: Terminal/Process Runtime Foundation
+
+Goals:
+
+- define shell/process tool calls as a runtime family with lifecycle state
+- support persistent PTY/process sessions, stdin writes, output polling,
+  cancellation, interrupt/kill, cwd/env tracking, and exit-code/duration
+  metadata
+- stream stdout/stderr progress to UI events without dumping unbounded output
+  into conversation history
+- integrate sandbox, network approval, and permission metadata with process
+  execution
+- keep one-shot command execution as a compatibility wrapper over the process
+  runtime where practical
+
+Acceptance criteria:
+
+- long-running commands can remain running without blocking or losing process
+  identity
+- process output is page-able/reusable by result/session id
+- command timeout, cancellation, and user abort are distinguishable statuses
+- dev-server/test-watcher/REPL workflows do not require rerunning commands just
+  to recover state
+
+Related plan:
+
+- Larger terminal/process, debugger, dev-server, test-intelligence, and
+  code-navigation tool suites remain tracked in
+  `context/tasks/tool-system-future-improvements.md`. This phase only builds
+  the runtime foundation those suites need.
+
 ## Non-Goals
 
 - Do not remove ActionXML before a replacement path is stable.
 - Do not enable provider parallel tool calls before the scheduler can handle
   them safely.
-- Do not rewrite every tool implementation as part of Phase 1.
+- Do not rewrite every tool implementation as part of the early IR/scheduler
+  phases.
 - Do not make the engine depend on OpenAI/Codex-specific types.
 - Do not preserve the current giant action map as the long-term routing layer.
+- Do not build debugger/dev-server/test-intelligence suites before the process
+  runtime and tool-result persistence are stable.
 
 ## Risks
 
@@ -530,6 +674,33 @@ Mitigation:
 - make mutating tools serialized by default
 - test denied, approval-needed, and read-only paths
 
+### Tool Output Pressure
+
+Large or noisy tool outputs can destabilize provider continuations, especially
+after read/search/command-heavy turns.
+
+Mitigation:
+
+- enforce per-tool and aggregate model-visible output caps
+- persist full output outside conversation history
+- expose paging/search-by-result-id tools before encouraging large-output
+  workflows
+- add empty-response recovery for tool-heavy turns
+
+### Provider Replay Drift
+
+Native providers have different tool-call adjacency and id constraints.
+Incomplete or malformed replay can turn successful tool execution into provider
+errors or empty continuations.
+
+Mitigation:
+
+- persist canonical call/result pairs with stable ids
+- persist call records before execution starts
+- make adapters reconstruct provider-specific replay at the edge
+- synthesize explicit failed/cancelled results for interrupted tool calls
+- keep provider contract tests for replay ordering and id normalization
+
 ### Over-Abstracting Too Early
 
 A generic runtime can become another abstraction layer without removing the old
@@ -540,14 +711,48 @@ Mitigation:
 - start with minimal IR and serial scheduler
 - migrate one path at a time
 - delete compatibility layers when their callers are gone
+- keep the near-term tool-call IR under the tool runtime unless shared
+  cross-domain execution primitives justify a broader runtime package
+
+## Future Consideration: Shared Runtime Package
+
+Do not introduce a generic `penguin/runtime/` package just to make the tool-call
+IR feel more general. Keep the current work scoped to the tool-call execution
+runtime until Penguin has shared lifecycle primitives that are useful across
+tools, LLM/provider continuations, process sessions, sub-agents, approvals, and
+replay.
+
+A broader runtime package may make sense later if it can own concrete
+cross-domain primitives such as:
+
+- durable result records and artifact references
+- cancellation tokens
+- persistent process/session handles
+- approval records and cached permission decisions
+- execution leases
+- replay records for interrupted, failed, cancelled, or resumable work
+
+Until those primitives exist, `penguin/runtime/` risks becoming a vague bucket.
+The safer near-term boundary is:
+
+- `penguin.tools.runtime`: tool-call IR, tool-result IR, scheduling, truncation,
+  replay, and dispatch-facing policy
+- `penguin.llm.runtime`: provider/request helpers, native tool kwargs,
+  provider-output diagnostics, and adapter-adjacent logic
+- event/message buses: observation and routing, not execution lifecycle
+  ownership
 
 ## Open Questions
 
-- Should the IR live under `penguin/llm/runtime.py`, `penguin/tools/`, or a new
-  `penguin/runtime/` package?
+- Should the IR stay under `penguin/tools/` until shared runtime primitives
+  justify introducing `penguin/runtime/`?
 - Should ActionXML multiple-call execution remain opt-in at first?
 - Which tools are safe enough to mark parallel-safe initially?
 - Should model-visible tool schemas come entirely from the registry?
 - How should long-running process tools stream output into `ToolResult` records?
 - Should tool results be persisted as first-class session records rather than
   action-result messages?
+- Should full tool output artifacts live in conversation storage, workspace
+  artifacts, or a dedicated result store with retention cleanup?
+- What aggregate per-turn model-visible tool-output cap should Penguin enforce
+  by default?

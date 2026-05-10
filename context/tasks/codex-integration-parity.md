@@ -28,8 +28,18 @@ behavior.
 
 - Upstream Codex request construction:
   `reference/codex/codex-rs/core/src/client.rs`
+- Upstream Codex turn-scoped client/session state:
+  `reference/codex/codex-rs/core/src/client.rs`
+  `reference/codex/codex-rs/core/src/client_common.rs`
 - Upstream Codex model metadata:
   `reference/codex/codex-rs/protocol/src/openai_models.rs`
+- Upstream Codex stream recovery tests:
+  `reference/codex/codex-rs/core/tests/suite/stream_no_completed.rs`
+  `reference/codex/codex-rs/core/tests/suite/stream_error_allows_next_turn.rs`
+- Upstream Codex tool replay/truncation references:
+  `reference/codex/codex-rs/core/src/tools/parallel.rs`
+  `reference/codex/codex-rs/core/src/tools/handlers/shell.rs`
+  `reference/codex/codex-rs/core/tests/suite/shell_serialization.rs`
 - Penguin Codex OAuth request construction:
   `penguin/llm/adapters/openai.py`
 - Penguin model catalog merge path:
@@ -177,6 +187,70 @@ Expected Penguin behavior:
 - tune thresholds by mode when needed
 - surface continuation affordances when the guard stops a run
 
+### 9. Provider Request Lifecycle / Abrupt Stop Recovery
+
+The recurring abrupt-stop reports look more like provider transport lifecycle
+problems than context-window-management truncation. The observed logs show
+large request histories, `store=False`, fixed HTTP client timeouts, and
+timeout-style failures. Penguin's CWM can still affect stability indirectly by
+changing tool replay pressure, but it is unlikely to be the direct cause of
+network `ReadTimeout` failures.
+
+Codex's reference client is useful here because it treats a model turn as a
+tracked provider request, not just a synchronous HTTP call. It keeps per-turn
+state, records incomplete streams, releases the turn after stream errors, and
+only reuses incremental `previous_response_id`-style state when the request is
+known to be a safe prefix extension.
+
+Expected Penguin behavior:
+
+- create a provider request record before sending OpenAI/Codex traffic
+- track lifecycle states such as pending, running, streaming, disconnected,
+  retrying, completed, failed, and cancelled
+- record request payload hash, provider/model, session/turn id, attempt count,
+  provider response id when available, and last received stream event
+- distinguish no-completion stream drops from completed responses with no text
+- retry or recover incomplete streams without leaving the engine/session stuck
+- emit a structured failure and turn-complete signal when recovery is not
+  possible, so the next user turn can proceed normally
+- gate `previous_response_id` reuse on a payload-prefix/hash contract; fall
+  back to a full request after errors, shape changes, or non-prefix history
+  changes
+
+### 10. OpenAI Background / Stored Response Capability
+
+OpenAI background mode and `store=true` are provider-specific recovery tools,
+not the provider-agnostic foundation. They are useful when Penguin wants
+OpenAI to keep a long-running response alive server-side so Penguin can poll or
+reconnect after a client/network interruption.
+
+Expected Penguin behavior:
+
+- implement provider request lifecycle tracking before relying on background
+  mode
+- keep background mode opt-in per provider/model/task until costs and UX are
+  clear
+- use `store=true` only when Penguin intentionally needs provider-side
+  resumability or response retrieval
+- keep stateless encrypted reasoning handling intact for non-stored requests
+- fall back to canonical conversation/tool replay for providers that do not
+  offer stored response recovery
+
+Pros:
+
+- better recovery from long-running requests and local network interruptions
+- clearer polling/reconnect semantics for OpenAI Responses requests
+- less need to repeat expensive long-running model work after a disconnect
+
+Cons:
+
+- provider-specific behavior that should not leak into the general contract
+- potential persistence/privacy implications because the provider stores the
+  response
+- more lifecycle states to expose and test
+- not a replacement for timeout policy, stream completion checks, or tool
+  replay correctness
+
 ## Suggested Implementation Order
 
 ### Phase 1: Low-Risk Request Parity
@@ -207,6 +281,67 @@ Expected Penguin behavior:
 3. Consider WebSocket/incremental transport only if SSE latency remains a real
    bottleneck.
 
+### Phase 5: OpenAI/Codex Request Lifecycle Stability
+
+1. Add a provider request record around Codex OAuth Responses calls.
+2. Replace fixed read timeouts with an explicit streaming timeout/stall policy:
+   bounded connect/write/pool timeouts, long or disabled read timeout for active
+   streams, and a Penguin-owned cancellation/stall watchdog.
+3. Add incomplete-stream detection for streams that end without
+   `response.completed`.
+4. Retry safe incomplete streams or return a structured recoverable failure
+   without leaving the current turn locked.
+5. Add regression tests mirroring Codex's stream closes before completion and
+   stream error allows next turn cases.
+6. Gate `previous_response_id` reuse on payload-prefix/hash safety.
+
+Phase 5 implementation note:
+
+- `penguin.llm.contracts` now exposes `ProviderRequestStatus`,
+  `LLMRequestLifecycle`, and `RequestLifecycleRuntime` as the shared lifecycle
+  contract.
+- OpenAI/Codex OAuth SSE requests now record pending, running, streaming,
+  completed, disconnected, and failed states with request id, payload hash,
+  provider/model, stream transport, last event, provider response id when
+  available, finish reason, and canonical error metadata.
+- Codex OAuth HTTP clients now use bounded connect/write/pool timeouts without
+  a fixed active-stream read timeout.
+- Empty Codex streams that end before `response.completed` without text or a
+  tool call now raise a retryable provider error and record a disconnected
+  lifecycle instead of returning a silent empty response.
+- Regression coverage verifies incomplete empty streams and confirms a later
+  turn can still succeed after the disconnected request.
+- Compatibility note: streams that produce text/tool calls but omit
+  `response.completed` still return successfully for now. Tighten that after
+  all provider fixtures and adapters consistently emit provider completion
+  events.
+
+### Phase 6: OpenAI/Codex Tool Replay Stability
+
+1. Persist native tool calls as canonical runtime records before executing the
+   tools.
+2. Persist completed, failed, denied, cancelled, and interrupted tool results
+   with provider call ids.
+3. Reconstruct OpenAI Responses `function_call` / `function_call_output`
+   adjacency from persisted records instead of loose message text.
+4. Synthesize explicit failed/cancelled tool outputs for dangling historical
+   calls during replay.
+5. Apply universal model-visible tool-output truncation before replay, with
+   full output stored locally.
+6. Retry empty non-tool continuations after tool-heavy turns once with compacted
+   recent tool output before returning a structured diagnostic.
+
+### Phase 7: Optional OpenAI Background Recovery
+
+1. Add capability-gated `background=true` / `store=true` support for
+   OpenAI/Codex only after request lifecycle tracking exists.
+2. Record provider response ids and polling/reconnect state in the request
+   record.
+3. Prefer background mode for long-running Codex tasks where replay would be
+   expensive or unsafe.
+4. Keep foreground stateless mode as the default until the UX and privacy trade
+   offs are settled.
+
 ## Non-Goals
 
 - Do not make Penguin depend on Codex internals directly.
@@ -215,6 +350,10 @@ Expected Penguin behavior:
 - Do not mirror upstream client metadata unless it has a clear benefit.
 - Do not hardcode latest model names where authenticated catalog metadata can
   answer the question.
+- Do not treat OpenAI background mode as the general solution for provider
+  reliability.
+- Do not reuse `previous_response_id` after ambiguous failures unless the next
+  request is provably a safe prefix extension.
 
 ## Open Questions
 
@@ -226,3 +365,6 @@ Expected Penguin behavior:
   provide speed-oriented UI grouping?
 - Which Penguin tools are safe candidates for eventual parallel tool calls?
 - Should the repeated empty tool-only guard be configurable per mode?
+- Which request lifecycle fields should be persisted in conversation/session
+  storage versus transient diagnostics?
+- What tasks should opt into OpenAI background recovery by default, if any?

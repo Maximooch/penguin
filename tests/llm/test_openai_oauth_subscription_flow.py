@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import json
-import os
 import logging
+import os
 from typing import Any
 
 import pytest
 
 from penguin.llm.adapters.openai import OpenAIAdapter
+from penguin.llm.contracts import (
+    ErrorCategory,
+    LLMProviderError,
+    ProviderRequestStatus,
+)
 from penguin.llm.model_config import ModelConfig
 from penguin.web.services.provider_auth import ProviderOAuthError
 
@@ -92,8 +97,9 @@ async def test_oauth_request_uses_stored_record_without_env_access(
     seen: dict[str, Any] = {}
 
     class _FakeAsyncClient:
-        def __init__(self, timeout: float) -> None:
+        def __init__(self, timeout: Any) -> None:
             self.timeout = timeout
+            seen["timeout"] = timeout
 
         async def __aenter__(self) -> _FakeAsyncClient:
             return self
@@ -167,8 +173,9 @@ async def test_oauth_request_routes_to_codex_with_required_headers(
     seen: dict[str, Any] = {}
 
     class _FakeAsyncClient:
-        def __init__(self, timeout: float) -> None:
+        def __init__(self, timeout: Any) -> None:
             self.timeout = timeout
+            seen["timeout"] = timeout
 
         async def __aenter__(self) -> _FakeAsyncClient:
             return self
@@ -225,6 +232,8 @@ async def test_oauth_request_routes_to_codex_with_required_headers(
     assert seen["headers"]["ChatGPT-Account-Id"] == "acct-1"
     assert seen["json"]["store"] is False
     assert seen["json"]["stream"] is True
+    assert getattr(seen["timeout"], "read", object()) is None
+    assert getattr(seen["timeout"], "connect", None) == 30.0
     assert "max_output_tokens" not in seen["json"]
     assert isinstance(seen["json"]["input"], list)
     assert all(item.get("role") != "system" for item in seen["json"]["input"])
@@ -1114,3 +1123,160 @@ async def test_oauth_codex_status_error_emits_diag_and_trace(
     assert "status=503" in message
     assert "service unavailable" in message
     assert "trace={'x-request-id': 'req_123', 'cf-ray': 'ray_456'}" in message
+    lifecycle = adapter.get_last_request_lifecycle()
+    assert lifecycle is not None
+    assert lifecycle.status == ProviderRequestStatus.FAILED
+    assert lifecycle.error is not None
+    assert lifecycle.error.category == ErrorCategory.PROVIDER_UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_oauth_codex_incomplete_empty_stream_records_disconnected_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_OAUTH_ACCESS_TOKEN", "oauth-access")
+    monkeypatch.setattr("penguin.llm.adapters.openai.AsyncOpenAI", _SDKClient)
+    monkeypatch.setattr(
+        "penguin.llm.adapters.openai.get_provider_credential",
+        lambda provider_id: {
+            "type": "oauth",
+            "access": "oauth-access",
+            "refresh": "oauth-refresh",
+            "expires": 9_999_999_999_000,
+            "accountId": "acct-1",
+        }
+        if provider_id == "openai"
+        else None,
+    )
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout: Any) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self) -> _FakeAsyncClient:
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> bool:  # type: ignore[no-untyped-def]
+            del exc_type, exc, tb
+            return False
+
+        def stream(self, method: str, url: str, headers=None, json=None):  # type: ignore[no-untyped-def]
+            del method, url, headers, json
+            return _FakeStreamContext(
+                _FakeResponse(
+                    200,
+                    lines=["data: [DONE]"],
+                )
+            )
+
+    monkeypatch.setattr(
+        "penguin.llm.adapters.openai.httpx.AsyncClient", _FakeAsyncClient
+    )
+
+    model_config = ModelConfig(
+        model="gpt-5.2",
+        provider="openai",
+        client_preference="native",
+        api_key="sk-test",
+        streaming_enabled=False,
+    )
+    adapter = OpenAIAdapter(model_config)
+
+    with pytest.raises(LLMProviderError) as exc:
+        await adapter.get_response(
+            [{"role": "user", "content": "hello"}],
+            stream=False,
+        )
+
+    assert "stream_incomplete" in str(exc.value)
+    lifecycle = adapter.get_last_request_lifecycle()
+    assert lifecycle is not None
+    assert lifecycle.status == ProviderRequestStatus.DISCONNECTED
+    assert lifecycle.stream is True
+    assert lifecycle.transport == "sse"
+    assert lifecycle.last_event_type == "stream_incomplete"
+    assert lifecycle.request_payload_hash
+    assert lifecycle.error is not None
+    assert lifecycle.error.category == ErrorCategory.NETWORK
+    assert lifecycle.error.retryable is True
+
+
+@pytest.mark.asyncio
+async def test_oauth_codex_incomplete_stream_does_not_lock_next_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_OAUTH_ACCESS_TOKEN", "oauth-access")
+    monkeypatch.setattr("penguin.llm.adapters.openai.AsyncOpenAI", _SDKClient)
+    monkeypatch.setattr(
+        "penguin.llm.adapters.openai.get_provider_credential",
+        lambda provider_id: {
+            "type": "oauth",
+            "access": "oauth-access",
+            "refresh": "oauth-refresh",
+            "expires": 9_999_999_999_000,
+            "accountId": "acct-1",
+        }
+        if provider_id == "openai"
+        else None,
+    )
+
+    responses = [
+        _FakeResponse(200, lines=["data: [DONE]"]),
+        _FakeResponse(
+            200,
+            lines=[
+                'data: {"type":"response.output_text.delta","delta":"recovered"}',
+                (
+                    'data: {"type":"response.completed","response":'
+                    '{"id":"resp_recovered","usage":{"input_tokens":1,'
+                    '"output_tokens":1,"total_tokens":2}}}'
+                ),
+                "data: [DONE]",
+            ],
+        ),
+    ]
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout: Any) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self) -> _FakeAsyncClient:
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> bool:  # type: ignore[no-untyped-def]
+            del exc_type, exc, tb
+            return False
+
+        def stream(self, method: str, url: str, headers=None, json=None):  # type: ignore[no-untyped-def]
+            del method, url, headers, json
+            return _FakeStreamContext(responses.pop(0))
+
+    monkeypatch.setattr(
+        "penguin.llm.adapters.openai.httpx.AsyncClient", _FakeAsyncClient
+    )
+
+    model_config = ModelConfig(
+        model="gpt-5.2",
+        provider="openai",
+        client_preference="native",
+        api_key="sk-test",
+        streaming_enabled=False,
+    )
+    adapter = OpenAIAdapter(model_config)
+
+    with pytest.raises(LLMProviderError):
+        await adapter.get_response(
+            [{"role": "user", "content": "first"}],
+            stream=False,
+        )
+
+    result = await adapter.get_response(
+        [{"role": "user", "content": "second"}],
+        stream=False,
+    )
+
+    assert result == "recovered"
+    lifecycle = adapter.get_last_request_lifecycle()
+    assert lifecycle is not None
+    assert lifecycle.status == ProviderRequestStatus.COMPLETED
+    assert lifecycle.provider_response_id == "resp_recovered"
