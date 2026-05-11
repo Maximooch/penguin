@@ -423,7 +423,10 @@ class ContextWindowManager:
             id=session.id,
             created_at=session.created_at,
             last_active=session.last_active,
-            metadata=session.metadata.copy()
+            metadata=session.metadata.copy(),
+            llm_request_lifecycles=[
+                dict(record) for record in session.llm_request_lifecycles
+            ],
         )
             
         # Analyze current message state
@@ -616,7 +619,10 @@ class ContextWindowManager:
                 created_at=session.created_at,
                 last_active=session.last_active,
                 metadata=session.metadata.copy(),
-                messages=[msg for msg in session.messages]
+                messages=[msg for msg in session.messages],
+                llm_request_lifecycles=[
+                    dict(record) for record in session.llm_request_lifecycles
+                ],
             )
 
         # Sort by timestamp to identify oldest vs newest
@@ -633,7 +639,10 @@ class ContextWindowManager:
             id=session.id,
             created_at=session.created_at,
             last_active=session.last_active,
-            metadata=session.metadata.copy()
+            metadata=session.metadata.copy(),
+            llm_request_lifecycles=[
+                dict(record) for record in session.llm_request_lifecycles
+            ],
         )
 
         # Process each message
@@ -773,8 +782,16 @@ class ContextWindowManager:
                     created_at=trimmed_session.created_at,
                     last_active=trimmed_session.last_active,
                     metadata=trimmed_session.metadata.copy(),
-                    messages=system_msgs + [msg for msg in trimmed_session.messages 
-                                           if msg.category != MessageCategory.SYSTEM]
+                    messages=system_msgs
+                    + [
+                        msg
+                        for msg in trimmed_session.messages
+                        if msg.category != MessageCategory.SYSTEM
+                    ],
+                    llm_request_lifecycles=[
+                        dict(record)
+                        for record in trimmed_session.llm_request_lifecycles
+                    ],
                 )
                 
                 # Use fixed session instead

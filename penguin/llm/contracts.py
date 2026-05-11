@@ -89,6 +89,76 @@ class LLMRequestLifecycle:
     error: Optional[LLMError] = None
     provider_data: Dict[str, Any] = field(default_factory=dict)
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize lifecycle metadata for session storage."""
+
+        return {
+            "request_id": self.request_id,
+            "provider": self.provider,
+            "model": self.model,
+            "status": self.status.value,
+            "stream": self.stream,
+            "transport": self.transport,
+            "request_payload_hash": self.request_payload_hash,
+            "attempt": self.attempt,
+            "started_at": self.started_at,
+            "last_event_at": self.last_event_at,
+            "ended_at": self.ended_at,
+            "provider_response_id": self.provider_response_id,
+            "last_event_type": self.last_event_type,
+            "finish_reason": self.finish_reason.value
+            if isinstance(self.finish_reason, FinishReason)
+            else self.finish_reason,
+            "error": self.error.to_dict()
+            if isinstance(self.error, LLMError)
+            else None,
+            "provider_data": dict(self.provider_data or {}),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Dict[str, Any]) -> "LLMRequestLifecycle":
+        """Deserialize lifecycle metadata from session storage."""
+
+        status = payload.get("status") or ProviderRequestStatus.PENDING
+        if not isinstance(status, ProviderRequestStatus):
+            try:
+                status = ProviderRequestStatus(str(status))
+            except Exception:
+                status = ProviderRequestStatus.PENDING
+
+        finish_reason = payload.get("finish_reason")
+        if finish_reason is not None and not isinstance(finish_reason, FinishReason):
+            try:
+                finish_reason = FinishReason(str(finish_reason))
+            except Exception:
+                finish_reason = FinishReason.UNKNOWN
+
+        error_payload = payload.get("error")
+        error = (
+            LLMError.from_dict(error_payload)
+            if isinstance(error_payload, dict)
+            else None
+        )
+
+        return cls(
+            request_id=str(payload.get("request_id") or ""),
+            provider=str(payload.get("provider") or ""),
+            model=str(payload.get("model") or ""),
+            status=status,
+            stream=bool(payload.get("stream", False)),
+            transport=str(payload.get("transport") or ""),
+            request_payload_hash=payload.get("request_payload_hash"),
+            attempt=int(payload.get("attempt") or 1),
+            started_at=float(payload.get("started_at") or 0.0),
+            last_event_at=float(payload.get("last_event_at") or 0.0),
+            ended_at=payload.get("ended_at"),
+            provider_response_id=payload.get("provider_response_id"),
+            last_event_type=payload.get("last_event_type"),
+            finish_reason=finish_reason,
+            error=error,
+            provider_data=dict(payload.get("provider_data") or {}),
+        )
+
 
 @dataclass
 class LLMToolCall:
@@ -178,6 +248,53 @@ class LLMError:
     model: Optional[str] = None
     finish_reason: Optional[FinishReason] = None
     provider_data: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize canonical error metadata for diagnostics and storage."""
+
+        return {
+            "message": self.message,
+            "category": self.category.value,
+            "retryable": self.retryable,
+            "retry_after_seconds": self.retry_after_seconds,
+            "status_code": self.status_code,
+            "provider": self.provider,
+            "model": self.model,
+            "finish_reason": self.finish_reason.value
+            if isinstance(self.finish_reason, FinishReason)
+            else self.finish_reason,
+            "provider_data": dict(self.provider_data or {}),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Dict[str, Any]) -> "LLMError":
+        """Deserialize canonical error metadata from storage."""
+
+        category = payload.get("category") or ErrorCategory.UNKNOWN
+        if not isinstance(category, ErrorCategory):
+            try:
+                category = ErrorCategory(str(category))
+            except Exception:
+                category = ErrorCategory.UNKNOWN
+
+        finish_reason = payload.get("finish_reason")
+        if finish_reason is not None and not isinstance(finish_reason, FinishReason):
+            try:
+                finish_reason = FinishReason(str(finish_reason))
+            except Exception:
+                finish_reason = FinishReason.UNKNOWN
+
+        return cls(
+            message=str(payload.get("message") or ""),
+            category=category,
+            retryable=bool(payload.get("retryable", False)),
+            retry_after_seconds=payload.get("retry_after_seconds"),
+            status_code=payload.get("status_code"),
+            provider=payload.get("provider"),
+            model=payload.get("model"),
+            finish_reason=finish_reason,
+            provider_data=dict(payload.get("provider_data") or {}),
+        )
 
 
 class LLMProviderError(RuntimeError):

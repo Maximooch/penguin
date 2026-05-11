@@ -4,12 +4,9 @@ import io
 import logging
 import os
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable, Union
 
 import httpx
-import yaml  # type: ignore
-import tiktoken  # type: ignore
 
 # TODO: decouple litellm from api_client. # Been done for quite a while.
 # TODO: greatly simplify api_client while maintaining full functionality
@@ -19,7 +16,7 @@ import tiktoken  # type: ignore
 # from litellm import acompletion, completion, token_counter, cost_per_token, completion_cost
 from PIL import Image  # type: ignore
 
-from .contracts import ErrorCategory, LLMError, LLMProviderError
+from .contracts import ErrorCategory, LLMError, LLMProviderError, LLMRequestLifecycle
 from .model_config import ModelConfig
 from .provider_registry import ProviderRegistry
 from .provider_transform import apply_model_config_transforms, build_llm_error
@@ -46,7 +43,8 @@ def _log_error(message: str, *args: Any, exc_info: bool = False) -> None:
 # Connection Pool Management for Parallel LLM Calls
 # ==============================================================================
 
-# TODO: review max_keepalive_connections and max_connections defaults based on expected concurrency and provider limits. 
+
+# TODO: review max_keepalive_connections and max_connections defaults based on expected concurrency and provider limits.
 # These seem like magic numbers and might need tuning based on real-world usage patterns and provider guidelines.
 # Much less configurable than the old connection pool, but also much simpler. We can always add more config options later if needed.
 class ConnectionPoolConfig:
@@ -487,6 +485,20 @@ class APIClient:
             return None
         return self._last_error
 
+    def get_last_request_lifecycle(self) -> Optional[LLMRequestLifecycle]:
+        """Return lifecycle metadata from the latest provider request."""
+
+        handler = getattr(self, "client_handler", None)
+        getter = getattr(handler, "get_last_request_lifecycle", None)
+        if not callable(getter):
+            return None
+        try:
+            lifecycle = getter()
+        except Exception:
+            self.logger.debug("Failed to get handler request lifecycle", exc_info=True)
+            return None
+        return lifecycle if isinstance(lifecycle, LLMRequestLifecycle) else None
+
     def get_reasoning_debug_snapshot(self) -> Dict[str, Any]:
         """Return handler-provided reasoning debug details when available."""
 
@@ -524,8 +536,7 @@ class APIClient:
                 and "codex with a chatgpt account" in provider_detail
             ):
                 reason = (
-                    "Selected model is not available through ChatGPT-backed "
-                    "Codex auth"
+                    "Selected model is not available through ChatGPT-backed Codex auth"
                 )
             else:
                 reason = (

@@ -381,9 +381,18 @@ These should drive test design more than raw line coverage.
 
 ### Provider And Tool Reliability Suite
 
-This is the high-assurance suite needed for OpenAI/Codex, OpenRouter,
-Anthropic, and future provider stability work. It should be deterministic and
-offline by default, with live providers used only as opt-in smoke tests.
+This is the authoritative high-assurance checklist for OpenAI/Codex,
+OpenRouter, Anthropic, and future provider stability work. It should be
+deterministic and offline by default, with live providers used only as opt-in
+smoke tests.
+
+Scope decision:
+
+- First-class suite: OpenAI/Codex OAuth, native OpenAI, OpenAI-compatible,
+  Anthropic, and OpenRouter.
+- Deferred suite: Link end-to-end transport and LiteLLM full matrix parity.
+- Deferred does not mean ignored; it means these paths should not block the
+  current provider/runtime cleanup branch.
 
 Codex reference patterns worth copying:
 
@@ -421,6 +430,88 @@ Critical provider lifecycle cases:
 - retry is exhausted
 - next user turn works after failure
 
+Exhaustive provider/runtime matrix:
+
+- request starts with a lifecycle record before provider traffic is sent
+- request status reaches `running` after dispatch
+- streamed request status reaches `streaming` after the first provider event
+- completed stream records provider response id where available
+- completed stream records final finish reason, usage, reasoning, and terminal
+  event type
+- disconnected stream records canonical network/timeout error metadata
+- failed stream records provider-native error metadata without leaving stale
+  pending tool calls
+- cancelled request records `cancelled` separately from failed/disconnected
+- retry attempt records request identity, attempt number, and previous failure
+- lifecycle terminal states are idempotent and never regress to running
+- lifecycle records can be read through the shared runtime hook on every
+  first-class provider
+- lifecycle metadata survives adapter errors that surface through `APIClient`
+- lifecycle metadata is clear about whether a request can be resumed, polled,
+  retried, or must be replayed from canonical history
+- provider-specific continuation ids such as `previous_response_id` are used
+  only when the adapter can prove the next request is a safe prefix extension
+- provider request payload hash changes when model-visible history changes
+- provider request payload hash ignores irrelevant local-only metadata
+- provider request lifecycle records are ready to be persisted once session
+  storage owns first-class records
+
+Streaming and event grammar matrix:
+
+- text start/delta/end or equivalent provider events assemble in order
+- reasoning start/delta/end or equivalent provider events assemble in order
+- text and reasoning deltas interleaved by the provider remain separately
+  typed in Penguin
+- multiple text deltas preserve ordering and exact content
+- empty text deltas are ignored without changing finish state
+- provider terminal completion with no usage still completes cleanly
+- provider terminal completion with usage updates normalized usage
+- provider terminal completion after a native tool call returns a tool
+  interrupt, not an empty assistant response
+- provider terminal completion after partial text and a native tool call
+  preserves text and pending call state consistently
+- provider error event before output produces a structured provider failure
+- provider error event after text output returns/surfaces partial output only
+  when the policy explicitly allows it
+- malformed event payloads fail closed with canonical diagnostics
+- unknown non-terminal provider events are ignored or preserved as provider
+  metadata without crashing
+- duplicate terminal events do not duplicate output or regress lifecycle state
+- duplicate text/tool deltas are handled according to provider id/index rules
+- out-of-order tool deltas fail closed or normalize only when provider ids make
+  reconstruction unambiguous
+- missing terminal event after text is disconnected/retryable, not completed
+- missing terminal event after tool call clears unsafe pending state unless the
+  call is durably persisted for replay
+- direct HTTP SSE and SDK stream paths obey the same semantic contract
+
+Retry, timeout, and recovery matrix:
+
+- retryable network, timeout, rate-limit, and provider-unavailable failures
+  normalize to retryable `LLMError`
+- non-retryable bad-request, auth, model-not-found, and schema failures surface
+  immediately
+- retry is attempted only when no assistant chunk has been shown to the user
+- retry is skipped when a provider-native tool call is pending
+- retry is skipped after partial output unless explicit partial-output replay
+  policy exists
+- retry is bounded by policy and cannot loop indefinitely
+- retry exhaustion surfaces one structured recoverable failure
+- retry after stream disconnect clears stale provider stream accumulators
+- retry after partial tool-call disconnect clears unsafe pending tool state
+- retry after provider error leaves the next user turn able to proceed
+- retry after HTTP 429 respects `Retry-After` metadata where available
+- idle-stream timeout is distinct from total request timeout
+- connect/write/pool timeouts are bounded even when read timeout is long or
+  disabled for active streams
+- active-stream watchdog cancels only stalled streams, not long-running streams
+  that are still producing provider events
+- user cancellation records cancellation and releases the session
+- process shutdown or task cancellation does not persist a dangling running
+  lifecycle record as completed
+- provider-specific background/retrieval features are tested as optional
+  capabilities, not required for the common lifecycle contract
+
 Critical tool replay cases:
 
 - completed tool call/result replay
@@ -431,6 +522,71 @@ Critical tool replay cases:
 - large tool output truncated before model replay with full output persisted
 - CWM category-priority truncation does not create unresolved provider-native
   tool calls
+
+Provider-native request/replay matrix:
+
+- OpenAI/Codex Responses input items preserve valid completed
+  function_call/function_call_output adjacency
+- OpenAI/Codex unresolved function calls are dropped or repaired before replay
+- OpenAI/Codex metadata-rich output-only records synthesize valid replay pairs
+- OpenAI/Codex encrypted reasoning continuity is preserved only when the
+  provider contract allows it
+- OpenAI-compatible/OpenRouter assistant `tool_calls` are replayed only when
+  matching `tool` results survive
+- OpenAI-compatible/OpenRouter orphaned tool results synthesize a valid
+  assistant tool call when metadata is sufficient
+- OpenAI-compatible/OpenRouter orphaned assistant tool calls are flattened or
+  repaired before provider submission
+- Anthropic tool_use/tool_result adjacency is reconstructed from canonical
+  records
+- Anthropic failed/cancelled/interrupted tool results set provider-native
+  `is_error`
+- provider call ids remain stable across replay when safe
+- provider call ids are regenerated or normalized when duplicates would violate
+  provider constraints
+- replay preserves tool name, arguments, status, result preview, full-output
+  artifact reference, and truncation metadata
+- replay never sends provider-native call ids inside user-visible prose as a
+  substitute for native provider tool records
+- replay after CWM category-priority truncation is provider-valid for every
+  first-class provider
+- replay after failed tool execution shows an explicit failed result rather than
+  re-executing the tool silently
+- replay after interrupted tool execution shows an explicit interrupted or
+  cancelled result unless the scheduler owns a resumable process session
+- replay fixtures include minimized real bug/log transcripts, not only
+  synthetic happy paths
+
+Tool output and artifact matrix:
+
+- per-tool model-visible output truncation is deterministic
+- aggregate per-turn model-visible tool-output cap is enforced before provider
+  replay
+- full raw tool output is persisted outside the model-visible prompt when
+  truncated
+- tool result records include byte count, line count, truncation direction,
+  output hash, and artifact reference
+- model-visible truncated output includes enough context to continue safely
+- binary/image artifacts are referenced, not inlined into text tool output
+- huge outputs cannot cause provider request construction to exceed configured
+  model-visible limits
+- output hashes make repeated-loop detection stable without depending on full
+  output text
+
+Conversation and CWM matrix:
+
+- Penguin's CWM truncates message categories by priority and recency; it never
+  compacts or summarizes
+- truncation before a provider request cannot create malformed native tool
+  history
+- truncation of assistant tool call while result survives is repaired
+- truncation of tool result while assistant call survives is repaired
+- truncation of large tool outputs preserves artifact references
+- truncation keeps system/developer/tool-schema messages according to their
+  configured priority
+- truncation after provider failure leaves enough canonical history for the
+  next turn to proceed
+- request capture tests assert final provider-native payload shape after CWM
 
 The success bar is "prove the failure modes," not only "cover the lines." For
 provider/tool runtime changes, every bug fixed from logs should become a
@@ -443,6 +599,29 @@ Current provider-reliability progress:
 - Codex tests now cover incomplete empty, partial text, partial native tool,
   mid-stream provider error, completed native tool, next-turn release, and
   CWM-truncated native tool replay shapes.
+- The shared first-class provider matrix now covers completed lifecycle
+  metadata, provider response ids where available, ordered multiple text
+  deltas, cancellation as a distinct lifecycle terminal state, retry success,
+  retry exhaustion, retry skip when native tool calls are pending, incomplete
+  stream disconnects, and next-turn release after failures.
+- Provider lifecycle records are now first-class session records: canonical
+  `LLMRequestLifecycle` objects serialize through `Session`, `APIClient`
+  exposes the shared lifecycle hook, and `Engine` persists the latest provider
+  lifecycle after each LLM attempt, including failed attempts. CWM session
+  clones preserve those records without exposing them as model-visible content.
+- OpenRouter now has explicit chunk-stall and total-stream watchdog tests,
+  including provider-specific timeout environment handling.
+- Tool-output truncation now has deterministic unit/property coverage for
+  model-visible caps, byte/line/hash metadata, full-output artifact writes, and
+  artifact-safe IDs.
+- Initial Hypothesis property tests now cover retry policy, lifecycle
+  serialization, and tool-output truncation metadata. Initial state-machine
+  coverage now exercises provider lifecycle serialization and terminal-state
+  invariants.
+- Mutation testing is still a later opt-in gate; no mutation runner has been
+  wired into the default suite yet.
+- OpenRouter replay tests now reject duplicate assistant tool-call ids by
+  flattening malformed native history before provider submission.
 
 ### Project And Run Mode
 
@@ -524,6 +703,9 @@ uv run pytest tests -q --cov=penguin --cov-report=term-missing
 
 ### Phase 4 - Add Property And State-Machine Testing
 
+- [x] Initial provider/tool reliability property tests for retry policy,
+      lifecycle serialization, and tool-output truncation.
+- [x] Initial provider lifecycle state-machine tests.
 - [ ] Hypothesis tests for parser inputs.
 - [ ] Hypothesis tests for path policy.
 - [ ] Hypothesis tests for tool argument coercion.

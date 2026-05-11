@@ -15,6 +15,7 @@ import json
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, Optional, Union, cast
 
 from penguin.utils.parser import CodeActAction, parse_action
@@ -53,10 +54,50 @@ class ToolResult:
     started_at: float = field(default_factory=time.time)
     ended_at: float = field(default_factory=time.time)
     output_hash: str = ""
+    byte_count: int = 0
+    line_count: int = 0
+    truncated: bool = False
+    truncation_direction: str = "none"
+    artifact_path: Optional[str] = None
 
     def __post_init__(self) -> None:
+        output_text = str(self.output if self.output is not None else "")
         if not self.output_hash:
-            object.__setattr__(self, "output_hash", hash_tool_output(self.output))
+            object.__setattr__(self, "output_hash", hash_tool_output(output_text))
+        if self.byte_count <= 0 and output_text:
+            object.__setattr__(self, "byte_count", len(output_text.encode("utf-8")))
+        if self.line_count <= 0 and output_text:
+            object.__setattr__(self, "line_count", output_text.count("\n") + 1)
+
+
+@dataclass(frozen=True)
+class ToolOutputView:
+    """Model-visible preview plus full-output artifact metadata."""
+
+    model_output: str
+    full_output: str
+    truncated: bool
+    byte_count: int
+    line_count: int
+    output_hash: str
+    truncation_direction: str = "none"
+    artifact_path: Optional[str] = None
+    artifact_id: Optional[str] = None
+    max_chars: Optional[int] = None
+
+    def to_metadata(self) -> dict[str, Any]:
+        """Return serializable output metadata for tool result records."""
+
+        return {
+            "truncated": self.truncated,
+            "byte_count": self.byte_count,
+            "line_count": self.line_count,
+            "output_hash": self.output_hash,
+            "truncation_direction": self.truncation_direction,
+            "artifact_path": self.artifact_path,
+            "artifact_id": self.artifact_id,
+            "max_chars": self.max_chars,
+        }
 
 
 @dataclass(frozen=True)
@@ -81,6 +122,128 @@ def hash_tool_output(output: Any) -> str:
 
     output_text = str(output if output is not None else "")
     return hashlib.sha256(output_text.encode()).hexdigest()
+
+
+def _line_count(output_text: str) -> int:
+    """Count model-visible output lines without treating empty output as one line."""
+
+    return output_text.count("\n") + 1 if output_text else 0
+
+
+def _safe_artifact_id(artifact_id: Optional[str], output_hash: str) -> str:
+    """Return a filesystem-safe artifact id."""
+
+    raw_id = str(artifact_id or "").strip()
+    if raw_id and all(char.isalnum() or char in {"-", "_", "."} for char in raw_id):
+        return raw_id[:96]
+    return output_hash[:16]
+
+
+def _truncate_output_preview(
+    output_text: str,
+    *,
+    budget: int,
+    direction: Literal["head", "tail", "middle"],
+) -> str:
+    """Return a deterministic preview that fits the provided character budget."""
+
+    if budget <= 0:
+        return ""
+    if len(output_text) <= budget:
+        return output_text
+    if direction == "head":
+        return output_text[:budget]
+    if direction == "middle":
+        left = max(budget // 2, 0)
+        right = max(budget - left, 0)
+        return f"{output_text[:left]}{output_text[-right:]}"[:budget]
+    return output_text[-budget:]
+
+
+def prepare_model_visible_tool_output(
+    output: Any,
+    *,
+    max_chars: Optional[int] = None,
+    artifact_dir: Optional[Union[str, Path]] = None,
+    artifact_id: Optional[str] = None,
+    truncation_direction: Literal["head", "tail", "middle"] = "tail",
+) -> ToolOutputView:
+    """Build a capped model-visible tool output and optional full artifact.
+
+    Args:
+        output: Raw full tool output.
+        max_chars: Maximum characters to expose to the model. ``None`` means
+            no truncation.
+        artifact_dir: Directory where full output should be written when
+            truncation occurs.
+        artifact_id: Optional stable id for the artifact filename.
+        truncation_direction: Which part of the output should be retained in
+            the model-visible preview.
+
+    Returns:
+        A ``ToolOutputView`` with preview, full-output metadata, and optional
+        artifact path.
+    """
+
+    full_output = str(output if output is not None else "")
+    output_hash = hash_tool_output(full_output)
+    byte_count = len(full_output.encode("utf-8"))
+    line_count = _line_count(full_output)
+
+    if max_chars is None or len(full_output) <= max_chars:
+        return ToolOutputView(
+            model_output=full_output,
+            full_output=full_output,
+            truncated=False,
+            byte_count=byte_count,
+            line_count=line_count,
+            output_hash=output_hash,
+            artifact_id=artifact_id,
+            max_chars=max_chars,
+        )
+
+    artifact_path: Optional[str] = None
+    safe_id = _safe_artifact_id(artifact_id, output_hash)
+    if artifact_dir is not None:
+        directory = Path(artifact_dir)
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"tool-output-{safe_id}.txt"
+        path.write_text(full_output, encoding="utf-8")
+        artifact_path = str(path)
+
+    effective_max = max(int(max_chars), 0)
+    notice_parts = [
+        "Tool output truncated",
+        f"bytes={byte_count}",
+        f"lines={line_count}",
+        f"hash={output_hash}",
+    ]
+    if artifact_path:
+        notice_parts.append(f"artifact={artifact_path}")
+    notice = "\n\n[" + " ".join(notice_parts) + "]"
+    preview_budget = max(effective_max - len(notice), 0)
+    preview = _truncate_output_preview(
+        full_output,
+        budget=preview_budget,
+        direction=truncation_direction,
+    )
+    if preview_budget <= 0:
+        model_output = notice[:effective_max]
+    else:
+        model_output = f"{preview}{notice}"[:effective_max]
+
+    return ToolOutputView(
+        model_output=model_output,
+        full_output=full_output,
+        truncated=True,
+        byte_count=byte_count,
+        line_count=line_count,
+        output_hash=output_hash,
+        truncation_direction=truncation_direction,
+        artifact_path=artifact_path,
+        artifact_id=safe_id,
+        max_chars=max_chars,
+    )
 
 
 def _stable_json(value: Any) -> str:
@@ -147,6 +310,15 @@ def _metadata_from_result(action_result: dict[str, Any]) -> dict[str, Any]:
     return metadata if isinstance(metadata, dict) else {}
 
 
+def _coerce_int(value: Any, default: int = 0) -> int:
+    """Convert metadata values to ints without raising on malformed records."""
+
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
 def _tool_result_to_action_result(tool_result: ToolResult) -> dict[str, Any]:
     """Convert a normalized tool result into a legacy action-result dict.
 
@@ -163,16 +335,23 @@ def _tool_result_to_action_result(tool_result: ToolResult) -> dict[str, Any]:
     """
 
     structured_output = tool_result.structured_output or {}
-    tool_arguments = _first_non_none(
-        structured_output, ("tool_arguments", "arguments")
-    )
+    tool_arguments = _first_non_none(structured_output, ("tool_arguments", "arguments"))
+    metadata = {
+        **structured_output,
+        "output_hash": tool_result.output_hash,
+        "byte_count": tool_result.byte_count,
+        "line_count": tool_result.line_count,
+        "truncated": tool_result.truncated,
+        "truncation_direction": tool_result.truncation_direction,
+        "artifact_path": tool_result.artifact_path,
+    }
     return {
         "action": tool_result.name,
         "result": tool_result.output,
         "status": tool_result.status,
         "tool_call_id": tool_result.call_id,
         "output_hash": tool_result.output_hash,
-        "metadata": structured_output,
+        "metadata": metadata,
         "tool_arguments": tool_arguments,
     }
 
@@ -208,9 +387,7 @@ def tool_loop_signature(action_result: Any) -> dict[str, Any]:
         action_result, ("tool_arguments", "arguments", "params")
     )
     if arguments is None:
-        arguments = _first_non_none(
-            metadata, ("tool_arguments", "arguments", "params")
-        )
+        arguments = _first_non_none(metadata, ("tool_arguments", "arguments", "params"))
     normalized_arguments = _normalize_arguments(arguments)
     argument_fields = (
         normalized_arguments if isinstance(normalized_arguments, dict) else {}
@@ -448,9 +625,7 @@ def tool_call_from_responses_info(tool_info: dict[str, Any]) -> Optional[ToolCal
         or f"call_{uuid.uuid4().hex}"
     )
     raw_args = (
-        tool_info.get("arguments")
-        if tool_info.get("arguments") is not None
-        else "{}"
+        tool_info.get("arguments") if tool_info.get("arguments") is not None else "{}"
     )
     arguments: ToolArguments = (
         raw_args if isinstance(raw_args, (dict, str)) else str(raw_args)
@@ -497,7 +672,9 @@ def _format_browser_tool_output(action_result: dict[str, Any]) -> str:
         loaded = action_result.get("loaded")
         if loaded is not None:
             lines.append(f"loaded: {loaded}")
-        lines.append("next: inspect page_info or take a screenshot before retrying open_tab")
+        lines.append(
+            "next: inspect page_info or take a screenshot before retrying open_tab"
+        )
 
     if action == "browser_harness_screenshot":
         filepath = action_result.get("filepath")
@@ -560,6 +737,7 @@ def tool_result_from_action_result(
     raw_name = action_result.get("action", action_result.get("name", ""))
     name = str(raw_name).strip()
     output = _model_visible_tool_output(action_result)
+    metadata = _metadata_from_result(action_result)
     raw_status = str(action_result.get("status") or "completed").strip().lower()
     status = cast(
         ToolResultStatus,
@@ -582,6 +760,35 @@ def tool_result_from_action_result(
         structured_output=structured_output,
         started_at=started_at if started_at is not None else time.time(),
         ended_at=ended_at if ended_at is not None else time.time(),
+        byte_count=_coerce_int(
+            action_result.get("byte_count", metadata.get("byte_count")),
+            default=0,
+        ),
+        line_count=_coerce_int(
+            action_result.get("line_count", metadata.get("line_count")),
+            default=0,
+        ),
+        truncated=bool(
+            action_result.get("truncated", metadata.get("truncated", False))
+        ),
+        truncation_direction=str(
+            action_result.get(
+                "truncation_direction",
+                metadata.get("truncation_direction", "none"),
+            )
+            or "none"
+        ),
+        artifact_path=(
+            str(
+                action_result.get(
+                    "artifact_path",
+                    metadata.get("artifact_path"),
+                )
+            )
+            if action_result.get("artifact_path", metadata.get("artifact_path"))
+            is not None
+            else None
+        ),
     )
 
 
@@ -657,12 +864,14 @@ __all__ = [
     "ToolExecutionPolicy",
     "ToolExecutor",
     "ToolLoopIdentity",
+    "ToolOutputView",
     "ToolResult",
     "ToolResultStatus",
     "execute_tool_calls_serially",
     "hash_tool_output",
     "image_artifacts_from_action_result",
     "legacy_action_result_from_tool_result",
+    "prepare_model_visible_tool_output",
     "select_tool_calls_for_policy",
     "tool_call_from_responses_info",
     "tool_calls_from_actionxml",

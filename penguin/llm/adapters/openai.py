@@ -27,6 +27,7 @@ from penguin.web.services.provider_credentials import (
 
 from ..api_client import ConnectionPoolManager
 from ..contracts import (
+    ErrorCategory,
     FinishReason,
     LLMError,
     LLMProviderError,
@@ -193,6 +194,77 @@ class OpenAIAdapter(BaseAdapter):
 
     def get_last_finish_reason(self) -> FinishReason:
         return self._last_finish_reason
+
+    def _responses_stream_error_detail(self, event: Any) -> str:
+        payload = event if isinstance(event, dict) else {}
+        error_payload: Any = payload.get("error") if payload else None
+        response_payload: Any = payload.get("response") if payload else None
+        if error_payload is None and event is not None:
+            error_payload = getattr(event, "error", None)
+        if response_payload is None and event is not None:
+            response_payload = getattr(event, "response", None)
+
+        detail_payload = (
+            error_payload
+            if error_payload is not None
+            else response_payload
+            if response_payload is not None
+            else event
+        )
+        if isinstance(detail_payload, dict):
+            message = detail_payload.get("message")
+            if isinstance(message, str) and message.strip():
+                return message.strip()
+            try:
+                return json.dumps(detail_payload, default=str)[:500]
+            except Exception:
+                return str(detail_payload)[:500]
+
+        message = getattr(detail_payload, "message", None)
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+        return str(detail_payload)[:500]
+
+    def _raise_responses_stream_error(self, event: Any) -> None:
+        detail = self._responses_stream_error_detail(event)
+        error = build_llm_error(
+            message=detail,
+            provider=self.provider,
+            model=getattr(self.model_config, "model", None),
+            finish_reason=FinishReason.ERROR,
+        )
+        self._set_last_finish_reason(FinishReason.ERROR)
+        self._set_last_error(error)
+        self._update_request_lifecycle(
+            status=ProviderRequestStatus.FAILED,
+            finish_reason=FinishReason.ERROR,
+            error=error,
+        )
+        raise LLMProviderError(error)
+
+    def _raise_responses_stream_incomplete(self, output_state: str) -> None:
+        detail = (
+            "OpenAI Responses stream ended before response.completed "
+            f"(output_state={output_state})"
+        )
+        error = build_llm_error(
+            message=detail,
+            provider=self.provider,
+            model=getattr(self.model_config, "model", None),
+            category=ErrorCategory.NETWORK,
+            retryable=True,
+            finish_reason=FinishReason.ERROR,
+        )
+        self._set_last_finish_reason(FinishReason.ERROR)
+        self._set_last_error(error)
+        if output_state == "tool_call":
+            self._reset_tool_call_state()
+        self._update_request_lifecycle(
+            status=ProviderRequestStatus.DISCONNECTED,
+            finish_reason=FinishReason.ERROR,
+            error=error,
+        )
+        raise LLMProviderError(error)
 
     def _append_reasoning(self, reasoning_text: str) -> None:
         if reasoning_text:
@@ -648,19 +720,56 @@ class OpenAIAdapter(BaseAdapter):
         if not uses_effort_style:
             request_params["temperature"] = temp_val
 
+        self._start_request_lifecycle(
+            request_id=f"openai-{int(time.time() * 1000)}",
+            model_id=self.model_config.model,
+            payload=request_params,
+            stream=stream,
+            transport="sdk",
+            model_fallback=False,
+        )
+        self._update_request_lifecycle(status=ProviderRequestStatus.RUNNING)
+
         if stream:
             # Note: `stream_options.include_usage` is a Chat Completions option and is
             # not supported by the Responses API. Additionally, some OpenAI SDK
             # versions don't accept `stream_options` on `responses.stream`, so we
             # intentionally ignore any user-provided `stream_options` here.
             try:
-                return await self._stream_with_sdk(request_params, stream_callback)
+                result = await self._stream_with_sdk(request_params, stream_callback)
+                self._update_request_lifecycle(
+                    status=ProviderRequestStatus.COMPLETED,
+                    finish_reason=self.get_last_finish_reason(),
+                )
+                return result
+            except LLMProviderError:
+                raise
             except Exception as e:
                 logger.warning(f"SDK streaming failed, falling back to HTTP SSE: {e}")
-                return await self._stream_with_http(request_params, stream_callback)
+                result = await self._stream_with_http(request_params, stream_callback)
+                self._update_request_lifecycle(
+                    status=ProviderRequestStatus.COMPLETED,
+                    finish_reason=self.get_last_finish_reason(),
+                )
+                return result
 
         # Non-streaming
-        resp = await self.client.responses.create(**request_params)
+        try:
+            resp = await self.client.responses.create(**request_params)
+        except Exception as exc:
+            error = build_llm_error(
+                message=str(exc),
+                provider=self.provider,
+                model=getattr(self.model_config, "model", None),
+                finish_reason=FinishReason.ERROR,
+            )
+            self._set_last_error(error)
+            self._update_request_lifecycle(
+                status=ProviderRequestStatus.FAILED,
+                finish_reason=FinishReason.ERROR,
+                error=error,
+            )
+            raise
         self._set_last_usage(getattr(resp, "usage", None))
         self._append_reasoning(self._extract_reasoning_from_response_object(resp))
         tool_calls = self._extract_function_calls_from_response_object(resp)
@@ -672,6 +781,10 @@ class OpenAIAdapter(BaseAdapter):
             self._set_last_finish_reason(FinishReason.STOP)
 
         output_text = getattr(resp, "output_text", None)
+        self._update_request_lifecycle(
+            status=ProviderRequestStatus.COMPLETED,
+            finish_reason=self.get_last_finish_reason(),
+        )
         if isinstance(output_text, str):
             return output_text
         return self._extract_text_from_response_object(resp) or ""
@@ -686,29 +799,46 @@ class OpenAIAdapter(BaseAdapter):
         **kwargs: Any,
     ) -> str:
         """Unified interface expected by APIClient/BaseAdapter."""
-        if stream:
-            accumulated = await self.create_completion(
+        try:
+            if stream:
+                accumulated = await self.create_completion(
+                    messages=messages,
+                    max_output_tokens=max_output_tokens,
+                    temperature=temperature,
+                    stream=True,
+                    stream_callback=stream_callback,
+                    **kwargs,
+                )
+                return accumulated or ""
+            # Non-streaming path
+            resp = await self.create_completion(
                 messages=messages,
                 max_output_tokens=max_output_tokens,
                 temperature=temperature,
-                stream=True,
-                stream_callback=stream_callback,
+                stream=False,
+                stream_callback=None,
                 **kwargs,
             )
-            return accumulated or ""
-        # Non-streaming path
-        resp = await self.create_completion(
-            messages=messages,
-            max_output_tokens=max_output_tokens,
-            temperature=temperature,
-            stream=False,
-            stream_callback=None,
-            **kwargs,
-        )
-        # create_completion returns text for non-streaming
-        if isinstance(resp, str):
-            return resp
-        return str(resp)
+            # create_completion returns text for non-streaming
+            if isinstance(resp, str):
+                return resp
+            return str(resp)
+        except asyncio.CancelledError:
+            error = build_llm_error(
+                message="OpenAI request was cancelled",
+                provider=self.provider,
+                model=getattr(self.model_config, "model", None),
+                category=ErrorCategory.RUNTIME,
+                retryable=False,
+                finish_reason=FinishReason.ERROR,
+            )
+            self._set_last_error(error)
+            self._update_request_lifecycle(
+                status=ProviderRequestStatus.CANCELLED,
+                finish_reason=FinishReason.ERROR,
+                error=error,
+            )
+            raise
 
     async def _resolve_oauth_record_for_request(self) -> Dict[str, Any] | None:
         record = get_provider_credential("openai")
@@ -871,7 +1001,7 @@ class OpenAIAdapter(BaseAdapter):
         finish_reason: FinishReason | None = None,
         error: LLMError | None = None,
     ) -> None:
-        lifecycle = self._last_request_lifecycle
+        lifecycle = getattr(self, "_last_request_lifecycle", None)
         if lifecycle is None:
             return
         now = time.time()
@@ -2110,6 +2240,7 @@ class OpenAIAdapter(BaseAdapter):
         """Stream using the official OpenAI SDK responses.stream API."""
         accumulated_content: List[str] = []
         accumulated_reasoning = ""
+        saw_completed_event = False
         try:
             # Async streaming context
             async with self.client.responses.stream(**request_params) as stream:  # type: ignore[attr-defined]
@@ -2119,6 +2250,20 @@ class OpenAIAdapter(BaseAdapter):
                         self._set_last_finish_reason(FinishReason.TOOL_CALLS)
 
                     etype = getattr(event, "type", None)
+                    provider_response_id = None
+                    response_payload = getattr(event, "response", None)
+                    if response_payload is not None:
+                        provider_response_id = getattr(response_payload, "id", None)
+                    self._update_request_lifecycle(
+                        status=ProviderRequestStatus.STREAMING,
+                        event_type=str(etype) if etype else None,
+                        provider_response_id=provider_response_id,
+                    )
+                    if etype in {"error", "response.failed", "response.error"}:
+                        self._raise_responses_stream_error(event)
+                    if etype == "response.completed":
+                        saw_completed_event = True
+                        continue
                     if etype == "response.output_text.delta":
                         delta = getattr(event, "delta", "")
                         if delta:
@@ -2146,7 +2291,20 @@ class OpenAIAdapter(BaseAdapter):
                                 reasoning_delta,
                                 "reasoning",
                             )
+                if not saw_completed_event:
+                    output_state = (
+                        "tool_call"
+                        if self.has_pending_tool_call()
+                        else "text"
+                        if accumulated_content
+                        else "empty"
+                    )
+                    self._raise_responses_stream_incomplete(output_state)
                 final = await stream.get_final_response()
+                self._update_request_lifecycle(
+                    status=ProviderRequestStatus.STREAMING,
+                    provider_response_id=getattr(final, "id", None),
+                )
                 self._set_last_usage(getattr(final, "usage", None))
                 final_reasoning = self._extract_reasoning_from_response_object(final)
                 if final_reasoning and not accumulated_reasoning.strip():
@@ -2206,6 +2364,7 @@ class OpenAIAdapter(BaseAdapter):
 
         accumulated_content: List[str] = []
         completed_text = ""
+        saw_completed_event = False
 
         # Use connection pool for efficient parallel LLM calls
         pool = ConnectionPoolManager.get_instance()
@@ -2237,6 +2396,8 @@ class OpenAIAdapter(BaseAdapter):
                         self._set_last_finish_reason(FinishReason.TOOL_CALLS)
 
                     etype = data.get("type")
+                    if etype in {"error", "response.failed", "response.error"}:
+                        self._raise_responses_stream_error(data)
                     if etype == "response.output_text.delta":
                         delta = data.get("delta", "")
                         if delta:
@@ -2250,6 +2411,7 @@ class OpenAIAdapter(BaseAdapter):
                         if isinstance(done_text, str) and done_text:
                             completed_text = done_text
                     elif etype == "response.completed":
+                        saw_completed_event = True
                         response_obj = data.get("response")
                         if isinstance(response_obj, dict):
                             self._set_last_usage(response_obj.get("usage"))
@@ -2279,6 +2441,15 @@ class OpenAIAdapter(BaseAdapter):
                     # Skip malformed lines
                     continue
         pending_tool_call = self.has_pending_tool_call()
+        if not saw_completed_event:
+            output_state = (
+                "tool_call"
+                if pending_tool_call
+                else "text"
+                if completed_text or accumulated_content
+                else "empty"
+            )
+            self._raise_responses_stream_incomplete(output_state)
         if pending_tool_call:
             self._set_last_finish_reason(FinishReason.TOOL_CALLS)
             if self._interrupt_on_tool_call():

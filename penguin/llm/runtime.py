@@ -14,6 +14,7 @@ from penguin.tools.runtime import (
 )
 from penguin.utils.errors import LLMEmptyResponseError
 
+from .contracts import LLMError
 from .provider_transform import (
     native_tool_format,
     normalize_anthropic_tools,
@@ -28,6 +29,38 @@ _REASONING_EFFORT_VARIANTS = {"none", "minimal", "low", "medium", "high", "xhigh
 _REASONING_MAX_VARIANTS = {"max"}
 _REASONING_DISABLE_VARIANTS = {"off"}
 logger = logging.getLogger(__name__)
+
+
+def _get_last_provider_error(api_client: Any) -> Optional[LLMError]:
+    try:
+        getter = getattr(api_client, "get_last_error", None)
+        provider_error = getter() if callable(getter) else None
+    except Exception:
+        return None
+    return provider_error if isinstance(provider_error, LLMError) else None
+
+
+def _is_provider_error_response(response: Optional[str]) -> bool:
+    if not isinstance(response, str):
+        return False
+    stripped = response.strip()
+    return stripped.startswith("[Error:") or stripped.startswith("Error:")
+
+
+def should_retry_provider_failure(
+    *,
+    provider_error: Optional[LLMError],
+    response: Optional[str],
+    streamed_assistant_chunk: bool,
+    pending_tool_call: bool,
+) -> bool:
+    """Return whether a failed provider call is safe to replay once."""
+
+    if provider_error is None or not provider_error.retryable:
+        return False
+    if streamed_assistant_chunk or pending_tool_call:
+        return False
+    return not response or not response.strip() or _is_provider_error_response(response)
 
 
 def _get_tool_payload(
@@ -290,10 +323,30 @@ async def call_with_retry(
         **extra_kwargs,
     )
 
+    pending_tool_call = handler_has_pending_tool_call(api_client)
+    provider_error = _get_last_provider_error(api_client)
+    if should_retry_provider_failure(
+        provider_error=provider_error,
+        response=assistant_response,
+        streamed_assistant_chunk=streamed_assistant_chunk,
+        pending_tool_call=pending_tool_call,
+    ):
+        assistant_response = await api_client.get_response(messages, stream=False)
+        if (
+            streaming
+            and stream_callback
+            and assistant_response
+            and assistant_response.strip()
+        ):
+            await _tracked_stream_callback(assistant_response, "assistant")
+            replayed_retry_response = True
+        pending_tool_call = handler_has_pending_tool_call(api_client)
+        provider_error = _get_last_provider_error(api_client)
+
     if not assistant_response or not assistant_response.strip():
         if streamed_assistant_chunk:
             return assistant_response or ""
-        if handler_has_pending_tool_call(api_client):
+        if pending_tool_call:
             return assistant_response or ""
         assistant_response = await api_client.get_response(messages, stream=False)
         if (
@@ -304,16 +357,12 @@ async def call_with_retry(
         ):
             await _tracked_stream_callback(assistant_response, "assistant")
             replayed_retry_response = True
+        pending_tool_call = handler_has_pending_tool_call(api_client)
+        provider_error = _get_last_provider_error(api_client)
 
     if not assistant_response or not assistant_response.strip():
-        if handler_has_pending_tool_call(api_client):
+        if pending_tool_call:
             return assistant_response or ""
-        provider_error = None
-        try:
-            getter = getattr(api_client, "get_last_error", None)
-            provider_error = getter() if callable(getter) else None
-        except Exception:
-            provider_error = None
         diagnostics = build_empty_response_diagnostics(
             messages=messages,
             raw_response=assistant_response,

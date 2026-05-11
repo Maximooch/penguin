@@ -34,15 +34,28 @@ def test_clean_conversation_preserves_valid_assistant_tool_calls() -> None:
                     },
                 }
             ],
-        }
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_patch_123",
+            "content": '{"ok":true}',
+            "name": "patch_files",
+        },
     ]
 
     cleaned = gateway._clean_conversation_format(messages)
 
-    assert cleaned == messages
+    assert cleaned == [
+        messages[0],
+        {
+            "role": "tool",
+            "tool_call_id": "call_patch_123",
+            "content": '{"ok":true}',
+        },
+    ]
 
 
-def test_clean_conversation_preserves_valid_tool_result_messages() -> None:
+def test_clean_conversation_synthesizes_call_for_orphaned_tool_result() -> None:
     gateway = _gateway()
 
     messages = [
@@ -52,6 +65,7 @@ def test_clean_conversation_preserves_valid_tool_result_messages() -> None:
             "content": '{"error":"permission_denied"}',
             "name": "patch_files",
             "tool_arguments": '{"path":"a.ts"}',
+            "status": "failed",
         }
     ]
 
@@ -59,10 +73,101 @@ def test_clean_conversation_preserves_valid_tool_result_messages() -> None:
 
     assert cleaned == [
         {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_patch_123",
+                    "type": "function",
+                    "function": {
+                        "name": "patch_files",
+                        "arguments": '{"path":"a.ts"}',
+                    },
+                }
+            ],
+        },
+        {
             "role": "tool",
             "tool_call_id": "call_patch_123",
             "content": '{"error":"permission_denied"}',
         }
+    ]
+
+
+def test_clean_conversation_flattens_orphaned_assistant_tool_calls() -> None:
+    gateway = _gateway()
+
+    messages = [
+        {
+            "role": "assistant",
+            "content": "Trying individual patch operations instead.",
+            "tool_calls": [
+                {
+                    "id": "call_patch_123",
+                    "type": "function",
+                    "function": {
+                        "name": "patch_files",
+                        "arguments": '{"path":"a.ts","patch":"..."}',
+                    },
+                }
+            ],
+        }
+    ]
+
+    cleaned = gateway._clean_conversation_format(messages)
+
+    assert cleaned == [
+        {
+            "role": "assistant",
+            "content": "Trying individual patch operations instead.",
+        }
+    ]
+
+
+def test_clean_conversation_flattens_duplicate_assistant_tool_call_ids() -> None:
+    gateway = _gateway()
+
+    messages = [
+        {
+            "role": "assistant",
+            "content": "Running two operations.",
+            "tool_calls": [
+                {
+                    "id": "call_dup",
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": '{"path":"README.md"}',
+                    },
+                },
+                {
+                    "id": "call_dup",
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": '{"path":"architecture.md"}',
+                    },
+                },
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_dup",
+            "content": "# README",
+        },
+    ]
+
+    cleaned = gateway._clean_conversation_format(messages)
+
+    assert cleaned == [
+        {
+            "role": "assistant",
+            "content": "Running two operations.",
+        },
+        {
+            "role": "user",
+            "content": "# README",
+        },
     ]
 
 

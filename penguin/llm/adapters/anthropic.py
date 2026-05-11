@@ -12,7 +12,14 @@ import anthropic
 from anthropic import AsyncAnthropic
 
 from .base import BaseAdapter
-from ..contracts import FinishReason, LLMError, LLMUsage
+from ..contracts import (
+    ErrorCategory,
+    FinishReason,
+    LLMError,
+    LLMRequestLifecycle,
+    LLMUsage,
+    ProviderRequestStatus,
+)
 from ..model_config import ModelConfig
 from ..provider_transform import build_llm_error, normalize_finish_reason
 
@@ -43,6 +50,7 @@ class AnthropicAdapter(BaseAdapter):
         self._last_tool_call: Optional[Dict[str, Any]] = None
         self._pending_tool_calls: List[Dict[str, Any]] = []
         self._tool_use_accs: Dict[int, Dict[str, Any]] = {}
+        self._last_request_lifecycle: Optional[LLMRequestLifecycle] = None
 
         # Add a logger for the adapter
         self.logger = logging.getLogger(__name__)
@@ -66,12 +74,125 @@ class AnthropicAdapter(BaseAdapter):
     def get_last_error(self) -> Optional[LLMError]:
         return self._last_error if isinstance(self._last_error, LLMError) else None
 
+    def get_last_request_lifecycle(self) -> Optional[LLMRequestLifecycle]:
+        return self._last_request_lifecycle
+
+    def _start_request_lifecycle(
+        self,
+        *,
+        stream: bool,
+        messages: List[Dict[str, Any]],
+    ) -> None:
+        now = time.time()
+        self._last_request_lifecycle = LLMRequestLifecycle(
+            request_id=f"anthropic-{int(now * 1000)}",
+            provider=self.provider,
+            model=getattr(self.model_config, "model", ""),
+            status=ProviderRequestStatus.RUNNING,
+            stream=stream,
+            transport="sdk",
+            started_at=now,
+            last_event_at=now,
+            provider_data={"message_count": len(messages)},
+        )
+
+    def _update_request_lifecycle(
+        self,
+        *,
+        status: ProviderRequestStatus,
+        finish_reason: Optional[FinishReason] = None,
+        error: Optional[LLMError] = None,
+        event_type: Optional[str] = None,
+        provider_response_id: Optional[str] = None,
+    ) -> None:
+        lifecycle = getattr(self, "_last_request_lifecycle", None)
+        if lifecycle is None:
+            return
+        now = time.time()
+        lifecycle.status = status
+        lifecycle.last_event_at = now
+        if status in {
+            ProviderRequestStatus.COMPLETED,
+            ProviderRequestStatus.DISCONNECTED,
+            ProviderRequestStatus.FAILED,
+            ProviderRequestStatus.CANCELLED,
+        }:
+            lifecycle.ended_at = now
+        if finish_reason is not None:
+            lifecycle.finish_reason = finish_reason
+        if error is not None:
+            lifecycle.error = error
+        if event_type:
+            lifecycle.last_event_type = event_type
+        if provider_response_id:
+            lifecycle.provider_response_id = provider_response_id
+
+    def _finish_request_lifecycle_from_state(self) -> None:
+        error = self.get_last_error()
+        if error is not None:
+            status = (
+                ProviderRequestStatus.DISCONNECTED
+                if error.category in {ErrorCategory.NETWORK, ErrorCategory.TIMEOUT}
+                else ProviderRequestStatus.FAILED
+            )
+            self._update_request_lifecycle(
+                status=status,
+                finish_reason=error.finish_reason or self.get_last_finish_reason(),
+                error=error,
+            )
+            return
+        self._update_request_lifecycle(
+            status=ProviderRequestStatus.COMPLETED,
+            finish_reason=self.get_last_finish_reason(),
+        )
+
     def _set_last_finish_reason(self, finish_reason: Any) -> FinishReason:
         self._last_finish_reason = normalize_finish_reason(finish_reason)
         return self._last_finish_reason
 
     def get_last_finish_reason(self) -> FinishReason:
         return self._last_finish_reason
+
+    def _anthropic_stream_error_detail(self, chunk: Any) -> str:
+        error_payload = getattr(chunk, "error", None)
+        if isinstance(error_payload, dict):
+            message = error_payload.get("message")
+            if isinstance(message, str) and message.strip():
+                return message.strip()
+            return str(error_payload)[:500]
+        message = getattr(error_payload, "message", None)
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+        return str(error_payload or chunk)[:500]
+
+    def _record_anthropic_stream_error(self, chunk: Any) -> LLMError:
+        error = build_llm_error(
+            message=self._anthropic_stream_error_detail(chunk),
+            provider=self.provider,
+            model=getattr(self.model_config, "model", None),
+            finish_reason=FinishReason.ERROR,
+        )
+        self._set_last_error(error)
+        self._set_last_finish_reason(FinishReason.ERROR)
+        return error
+
+    def _record_anthropic_stream_incomplete(self, output_state: str) -> LLMError:
+        error = build_llm_error(
+            message=(
+                "Anthropic stream ended before message_stop "
+                f"(output_state={output_state})"
+            ),
+            provider=self.provider,
+            model=getattr(self.model_config, "model", None),
+            category=ErrorCategory.NETWORK,
+            retryable=True,
+            finish_reason=FinishReason.ERROR,
+        )
+        self._set_last_error(error)
+        self._set_last_finish_reason(FinishReason.ERROR)
+        self._pending_tool_calls = []
+        self._last_tool_call = None
+        return error
 
     def _append_reasoning(self, text: str) -> None:
         if text:
@@ -422,30 +543,64 @@ class AnthropicAdapter(BaseAdapter):
         - Non-streaming: calls create_completion and processes the response
         """
         self._reset_response_state()
-        if stream:
-            # Ensure callback is callable; pass through directly
-            final_text = await self.create_completion(
+        self._start_request_lifecycle(stream=stream, messages=messages)
+        try:
+            if stream:
+                # Ensure callback is callable; pass through directly
+                final_text = await self.create_completion(
+                    messages=messages,
+                    max_output_tokens=max_output_tokens,
+                    temperature=temperature,
+                    stream=True,
+                    stream_callback=stream_callback,
+                    **kwargs,
+                )
+                self._finish_request_lifecycle_from_state()
+                # create_completion returns a string when streaming
+                return final_text or ""
+
+            # Non-streaming path
+            response = await self.create_completion(
                 messages=messages,
                 max_output_tokens=max_output_tokens,
                 temperature=temperature,
-                stream=True,
-                stream_callback=stream_callback,
+                stream=False,
+                stream_callback=None,
                 **kwargs,
             )
-            # create_completion returns a string when streaming
-            return final_text or ""
-
-        # Non-streaming path
-        response = await self.create_completion(
-            messages=messages,
-            max_output_tokens=max_output_tokens,
-            temperature=temperature,
-            stream=False,
-            stream_callback=None,
-            **kwargs,
-        )
-        content, _ = self.process_response(response)
-        return content or ""
+            content, _ = self.process_response(response)
+            self._finish_request_lifecycle_from_state()
+            return content or ""
+        except asyncio.CancelledError:
+            error = build_llm_error(
+                message="Anthropic request was cancelled",
+                provider=self.provider,
+                model=getattr(self.model_config, "model", None),
+                category=ErrorCategory.RUNTIME,
+                retryable=False,
+                finish_reason=FinishReason.ERROR,
+            )
+            self._set_last_error(error)
+            self._update_request_lifecycle(
+                status=ProviderRequestStatus.CANCELLED,
+                finish_reason=FinishReason.ERROR,
+                error=error,
+            )
+            raise
+        except Exception as exc:
+            error = self.get_last_error() or build_llm_error(
+                message=str(exc),
+                provider=self.provider,
+                model=getattr(self.model_config, "model", None),
+                finish_reason=FinishReason.ERROR,
+            )
+            self._set_last_error(error)
+            self._update_request_lifecycle(
+                status=ProviderRequestStatus.FAILED,
+                finish_reason=error.finish_reason or FinishReason.ERROR,
+                error=error,
+            )
+            raise
 
     async def _handle_streaming(
         self,
@@ -463,6 +618,7 @@ class AnthropicAdapter(BaseAdapter):
         usage_info = None  # To store usage info if available
         chunk_count = 0
         received_content = False
+        saw_message_stop = False
 
         try:
             # Create the streaming response
@@ -476,6 +632,10 @@ class AnthropicAdapter(BaseAdapter):
             async for chunk in stream:
                 last_chunk_time = time.time()
                 chunk_count += 1
+                self._update_request_lifecycle(
+                    status=ProviderRequestStatus.STREAMING,
+                    event_type=str(getattr(chunk, "type", "")) or None,
+                )
 
                 # Extract text content based on chunk type
                 content = None
@@ -487,6 +647,7 @@ class AnthropicAdapter(BaseAdapter):
                     )
                     if hasattr(chunk, "type"):
                         if chunk.type == "message_stop":
+                            saw_message_stop = True
                             # Capture the final response object from the stream if possible
                             # Note: The structure might vary, need to check Anthropic docs/examples
                             # For now, just log that we stopped. The final object might not be in the chunk itself.
@@ -494,6 +655,13 @@ class AnthropicAdapter(BaseAdapter):
                                 "Stream processing stopped due to 'message_stop' event."
                             )
                             # We might get the final message object *after* the loop, see below
+                        elif chunk.type == "error":
+                            stream_error = self._record_anthropic_stream_error(chunk)
+                            self.logger.error(
+                                "Anthropic stream error event: %s",
+                                stream_error.message,
+                            )
+                            break
 
                         elif chunk.type == "content_block_delta" and hasattr(
                             chunk, "delta"
@@ -592,6 +760,12 @@ class AnthropicAdapter(BaseAdapter):
                     # Extract final stop reason and usage if not already captured
                     if not stop_reason:
                         stop_reason = final_response_object.stop_reason
+                    self._update_request_lifecycle(
+                        status=ProviderRequestStatus.STREAMING,
+                        provider_response_id=getattr(
+                            final_response_object, "id", None
+                        ),
+                    )
                     self._set_last_finish_reason(stop_reason)
                     if not usage_info:
                         usage_info = final_response_object.usage
@@ -610,6 +784,29 @@ class AnthropicAdapter(BaseAdapter):
 
             # Join all chunks to get the complete response
             complete_response = "".join(accumulated_response)
+
+            if not saw_message_stop and stream_error is None:
+                output_state = (
+                    "tool_call"
+                    if self.has_pending_tool_call()
+                    else "text"
+                    if complete_response
+                    else "empty"
+                )
+                stream_error = self._record_anthropic_stream_incomplete(output_state)
+
+            if stream_error:
+                error_message = str(stream_error)
+                if isinstance(stream_error, LLMError):
+                    error_message = stream_error.message
+                    self._set_last_error(stream_error)
+                self._set_last_finish_reason(FinishReason.ERROR)
+                if complete_response:
+                    return (
+                        f"{complete_response}\n\n"
+                        f"[Error: Stream interrupted by Anthropic: {error_message}]"
+                    )
+                return f"Error during response generation: {error_message}"
 
             if not complete_response.strip() and self.has_pending_tool_call():
                 self._set_last_finish_reason(FinishReason.TOOL_CALLS)
@@ -1027,7 +1224,7 @@ class AnthropicAdapter(BaseAdapter):
                             "content": tool_result_content,
                         }
                         status = str(tool_msg.get("status") or "").lower()
-                        if status in {"error", "failed"}:
+                        if status in {"error", "failed", "cancelled", "interrupted"}:
                             block["is_error"] = True
                         tool_result_blocks.append(block)
                     else:

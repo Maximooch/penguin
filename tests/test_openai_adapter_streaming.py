@@ -38,6 +38,7 @@ class _DummyResponseStream:
                 _DummyStreamEvent(type="response.output_text.delta", delta=d)
                 for d in (deltas or [])
             ]
+            self._events.append(_DummyStreamEvent(type="response.completed"))
         self._idx = 0
         self._final_text = final_text
 
@@ -93,6 +94,7 @@ class _DummyResponsesWithReasoning(_DummyResponses):
                     delta="thinking...",
                 ),
                 _DummyStreamEvent(type="response.output_text.delta", delta="answer"),
+                _DummyStreamEvent(type="response.completed"),
             ],
             final_text="answer",
         )
@@ -129,6 +131,7 @@ class _DummyResponsesWithToolCall(_DummyResponses):
                         "status": "completed",
                     },
                 ),
+                _DummyStreamEvent(type="response.completed"),
             ],
             final_text="",
         )

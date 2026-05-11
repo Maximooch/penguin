@@ -576,6 +576,22 @@ Acceptance criteria:
 - repeated-loop detection uses normalized arguments and output hashes from
   `ToolResult`, not text previews
 
+Provider replay progress note:
+
+- `ToolResult` now carries byte count, line count, truncation direction,
+  output hash, and optional artifact path metadata, and
+  `prepare_model_visible_tool_output` provides a deterministic per-tool preview
+  plus full-output artifact write path.
+- Tool-output truncation has unit/property coverage for deterministic caps,
+  artifact writes, metadata preservation, and artifact-safe IDs.
+- Anthropic now marks `error`, `failed`, `cancelled`, and `interrupted`
+  historical tool results as provider-native `is_error` tool results.
+- OpenRouter/OpenAI-compatible chat replay now repairs CWM-truncated native
+  tool history at the adapter edge: complete assistant-tool/tool-result pairs
+  are preserved, orphaned assistant tool calls are flattened, and
+  metadata-rich tool-result-only records synthesize a valid assistant tool call
+  before replaying the tool result.
+
 Reference points:
 
 - OpenCode's tool wrapper truncates all tool outputs and stores full output

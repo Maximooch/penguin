@@ -139,6 +139,7 @@ class LoopConfig:
     # Default completion status when loop ends without explicit signal
     default_completion_status: str = "completed"
 
+
 @dataclass
 class LoopState:
     """Consolidated state for iteration loops (run_response, run_task).
@@ -1127,7 +1128,9 @@ class Engine:
             conversation = getattr(cm, "conversation", None)
             session = getattr(conversation, "session", None)
             messages = getattr(session, "messages", None)
-            last_message = messages[-1] if isinstance(messages, list) and messages else None
+            last_message = (
+                messages[-1] if isinstance(messages, list) and messages else None
+            )
             if (
                 last_message is not None
                 and getattr(last_message, "role", None) == "assistant"
@@ -1136,7 +1139,9 @@ class Engine:
                 messages.pop()
                 if hasattr(conversation, "_modified"):
                     conversation._modified = True
-                if getattr(conversation, "session_manager", None) and getattr(session, "id", None):
+                if getattr(conversation, "session_manager", None) and getattr(
+                    session, "id", None
+                ):
                     try:
                         conversation.session_manager.mark_session_modified(session.id)
                     except Exception:
@@ -1448,7 +1453,9 @@ class Engine:
                 if (
                     last_response
                     and config.completion_phrases
-                    and any(phrase in last_response for phrase in config.completion_phrases)
+                    and any(
+                        phrase in last_response for phrase in config.completion_phrases
+                    )
                     and not termination_detected
                 ):
                     logger.info(
@@ -1456,9 +1463,15 @@ class Engine:
                         config.mode,
                     )
                     completion_status = (
-                        "pending_review" if config.mode == "task" else config.default_completion_status
+                        "pending_review"
+                        if config.mode == "task"
+                        else config.default_completion_status
                     )
-                    if config.mode == "task" and config.enable_events and config.task_metadata:
+                    if (
+                        config.mode == "task"
+                        and config.enable_events
+                        and config.task_metadata
+                    ):
                         await self._publish_task_event(
                             "COMPLETED",
                             config.task_metadata,
@@ -2238,6 +2251,59 @@ class Engine:
             logger.error("[EMPTY_RESPONSE] Details: %s", diagnostics)
             raise
 
+    def _persist_llm_request_lifecycle(
+        self,
+        cm: ConversationManager,
+        api_client: APIClient,
+    ) -> None:
+        """Persist latest provider request lifecycle on the active session."""
+
+        getter = getattr(api_client, "get_last_request_lifecycle", None)
+        if not callable(getter):
+            return
+        try:
+            lifecycle = getter()
+        except Exception:
+            logger.debug("Failed to read provider request lifecycle", exc_info=True)
+            return
+        if lifecycle is None:
+            return
+
+        session = None
+        session_getter = getattr(cm, "get_current_session", None)
+        if callable(session_getter):
+            try:
+                session = session_getter()
+            except Exception:
+                logger.debug("Failed to get current session", exc_info=True)
+                session = None
+        if session is None:
+            conversation = getattr(cm, "conversation", None)
+            session = getattr(conversation, "session", None)
+        if session is None:
+            return
+
+        try:
+            add_lifecycle = getattr(session, "add_llm_request_lifecycle", None)
+            if callable(add_lifecycle):
+                add_lifecycle(lifecycle)
+                return
+
+            record = (
+                lifecycle.to_dict()
+                if hasattr(lifecycle, "to_dict") and callable(lifecycle.to_dict)
+                else lifecycle
+            )
+            if not isinstance(record, dict):
+                return
+            metadata = getattr(session, "metadata", None)
+            if isinstance(metadata, dict):
+                records = metadata.setdefault("llm_request_lifecycles", [])
+                if isinstance(records, list):
+                    records.append(dict(record))
+        except Exception:
+            logger.debug("Failed to persist provider request lifecycle", exc_info=True)
+
     async def _handle_responses_tool_call(
         self,
         api_client: APIClient,
@@ -2754,9 +2820,12 @@ class Engine:
         extra_kwargs = self._prepare_responses_tools(tool_manager)
 
         # Step 2: Call LLM with retry on empty response
-        assistant_response = await self._call_llm_with_retry(
-            api_client, messages, streaming, stream_callback, extra_kwargs
-        )
+        try:
+            assistant_response = await self._call_llm_with_retry(
+                api_client, messages, streaming, stream_callback, extra_kwargs
+            )
+        finally:
+            self._persist_llm_request_lifecycle(cm, api_client)
 
         # Step 3: Finalize streaming response and persist message.
         # This must happen before Responses tool execution so any provider

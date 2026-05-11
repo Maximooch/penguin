@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from ..contracts import FinishReason, LLMError
+from ..contracts import FinishReason, LLMError, LLMRequestLifecycle
 
 
 class BaseAdapter(ABC):
@@ -101,6 +101,10 @@ class BaseAdapter(ABC):
 
     def get_last_error(self) -> Optional[LLMError]:
         """Return canonical error metadata from the latest request when available."""
+        return None
+
+    def get_last_request_lifecycle(self) -> Optional[LLMRequestLifecycle]:
+        """Return lifecycle metadata from the latest provider request when available."""
         return None
 
     def get_last_finish_reason(self) -> FinishReason:
