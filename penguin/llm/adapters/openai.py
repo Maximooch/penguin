@@ -1532,6 +1532,26 @@ class OpenAIAdapter(BaseAdapter):
 
                         self._record_reasoning_debug_event(data.get("type"), data)
 
+                        if etype in {"error", "response.failed", "response.error"}:
+                            error_payload = data.get("error")
+                            response_payload = data.get("response")
+                            detail_payload = (
+                                error_payload
+                                if error_payload is not None
+                                else response_payload
+                                if response_payload is not None
+                                else data
+                            )
+                            detail = json.dumps(detail_payload, default=str)[:500]
+                            self._raise_codex_transport_error(
+                                error=RuntimeError(detail),
+                                payload=stream_payload,
+                                model_id=model_id,
+                                model_fallback=model_fallback,
+                                stage="stream_event_error",
+                                diag_id=diag_id,
+                            )
+
                         if self._capture_responses_tool_event(data):
                             self._set_last_finish_reason(FinishReason.TOOL_CALLS)
                         if (
@@ -1633,16 +1653,20 @@ class OpenAIAdapter(BaseAdapter):
         assert response is not None
 
         pending_tool_call = self.has_pending_tool_call()
-        if (
-            not saw_completed_event
-            and not pending_tool_call
-            and not completed_text
-            and not accumulated_content
-        ):
-            detail = (
-                "Codex stream ended before response.completed and produced no "
-                f"text or tool call (saw_done_marker={saw_done_marker})"
+        if not saw_completed_event:
+            output_state = (
+                "tool_call"
+                if pending_tool_call
+                else "text"
+                if completed_text or accumulated_content
+                else "empty"
             )
+            detail = (
+                "Codex stream ended before response.completed "
+                f"(output_state={output_state}, saw_done_marker={saw_done_marker})"
+            )
+            if pending_tool_call:
+                self._reset_tool_call_state()
             self._raise_codex_transport_error(
                 error=RuntimeError(detail),
                 payload=stream_payload,

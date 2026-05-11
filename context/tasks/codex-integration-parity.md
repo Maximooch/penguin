@@ -311,12 +311,13 @@ Phase 5 implementation note:
 - Empty Codex streams that end before `response.completed` without text or a
   tool call now raise a retryable provider error and record a disconnected
   lifecycle instead of returning a silent empty response.
-- Regression coverage verifies incomplete empty streams and confirms a later
-  turn can still succeed after the disconnected request.
-- Compatibility note: streams that produce text/tool calls but omit
-  `response.completed` still return successfully for now. Tighten that after
-  all provider fixtures and adapters consistently emit provider completion
-  events.
+- Streams that produce text or native tool-call bytes but end before
+  `response.completed` now fail as disconnected incomplete streams rather than
+  being treated as successful partial responses.
+- Regression coverage verifies incomplete empty streams, incomplete partial
+  text streams, incomplete partial native tool-call streams, mid-stream
+  provider error events, and a later turn succeeding after a disconnected
+  request.
 
 ### Phase 5.5: Codex Reliability Test Harness
 
@@ -342,6 +343,27 @@ Acceptance criteria:
 - Provider errors and incomplete streams always release the current turn.
 - CWM category-priority truncation does not create malformed OpenAI Responses
   tool-call adjacency.
+
+Phase 5.5 implementation note:
+
+- `tests/llm/test_openai_oauth_subscription_flow.py` now has reusable fake
+  Codex SSE helpers and request-capturing transport fixtures factored through
+  `tests/llm/codex_oauth_fixtures.py` for deterministic OpenAI/Codex OAuth
+  tests.
+- Successful Codex OAuth fixtures now emit explicit `response.completed`
+  events instead of relying on text plus `[DONE]`.
+- Incomplete streams after partial text or partial native tool calls now record
+  disconnected lifecycle failures instead of being treated as completed
+  responses.
+- Partial native tool calls from incomplete streams are cleared so they cannot
+  be executed as replay-safe pending tools.
+- Completed native tool-call streams still preserve pending tool calls for the
+  runtime to execute.
+- Mid-stream provider error events now produce failed lifecycle records.
+- Request-shape coverage now verifies CWM-truncated tool history does not send
+  unresolved Codex `function_call` items, complete tool pairs replay in order,
+  and tool-result-only records with enough metadata can synthesize a valid
+  replay pair.
 
 ### Phase 6: OpenAI/Codex Tool Replay Stability
 

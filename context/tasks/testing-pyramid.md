@@ -436,6 +436,14 @@ The success bar is "prove the failure modes," not only "cover the lines." For
 provider/tool runtime changes, every bug fixed from logs should become a
 minimal deterministic fixture.
 
+Current provider-reliability progress:
+
+- OpenAI/Codex OAuth has a reusable fake SSE/request-capture fixture module for
+  hermetic lifecycle and request-shape tests.
+- Codex tests now cover incomplete empty, partial text, partial native tool,
+  mid-stream provider error, completed native tool, next-turn release, and
+  CWM-truncated native tool replay shapes.
+
 ### Project And Run Mode
 
 - Tasks cannot reach completed state without required validation gates.

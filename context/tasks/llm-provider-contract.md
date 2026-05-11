@@ -213,6 +213,21 @@ The contract suite should use real log/bug cases as minimized fixtures where
 possible, especially `context/bugs/*` and `misc/web-server-logs-*`. Do not use
 live provider requests as the proof that a contract path is correct.
 
+Current implementation note:
+
+- OpenAI/Codex OAuth is the first adapter with deterministic lifecycle
+  fault-injection coverage for empty incomplete streams, partial text streams,
+  partial native tool-call streams, completed native tool-call streams,
+  mid-stream provider error events, and next-turn release after a disconnected
+  request.
+- OpenAI/Codex OAuth now also has deterministic request-shape coverage for
+  CWM-truncated native tool history: unresolved function calls are dropped,
+  complete call/output pairs are replayed in order, and metadata-rich
+  tool-result-only records synthesize valid replay pairs.
+- Broader provider matrix coverage should extend these same cases to
+  OpenRouter/OpenAI-compatible and Anthropic before enabling provider-specific
+  replay enforcement outside Codex.
+
 ## Phase 2 Notes
 
 - Added canonical types in `penguin/llm/contracts.py` for request/result/event/error/usage/tool-call modeling.
