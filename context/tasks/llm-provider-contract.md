@@ -55,6 +55,10 @@ should own wire-format normalization, provider-specific request shaping, stream
 events, finish reasons, usage, and error semantics. It should not duplicate the
 scheduler, permission, truncation, or process-runtime plan.
 
+Testing strategy is tracked in `context/tasks/testing-pyramid.md`. Provider
+contract work should use deterministic fake-provider and fault-injection tests
+as the confidence gate; live provider tests are opt-in smoke tests only.
+
 Provider reliability lessons from Codex/OpenCode should be adopted at the
 contract level where they are provider-agnostic:
 
@@ -180,6 +184,34 @@ OpenAI-specific notes:
 - LiteLLM cleanup/runtime tests
 - streaming tests
 - provider adapter tests
+
+## Provider Reliability Test Matrix
+
+Phase 2/3 provider work should add hermetic fixtures before tightening runtime
+behavior. The fake-provider contract suite should cover:
+
+- completed text streams
+- completed native tool-call streams
+- terminal empty responses
+- stream closes before terminal event with no output
+- stream closes before terminal event after text output
+- stream closes before terminal event after a tool call
+- provider errors before and during streaming
+- timeout and idle-stream behavior
+- retry succeeds and retry exhausted behavior
+- next-turn release after failures
+- request replay after CWM category-priority truncation
+
+Provider-native tool replay tests should cover:
+
+- completed, failed, cancelled, and interrupted tool results
+- dangling tool calls repaired into explicit failed/cancelled outputs
+- provider-specific id normalization and adjacency rules
+- large tool outputs truncated before model replay with full output persisted
+
+The contract suite should use real log/bug cases as minimized fixtures where
+possible, especially `context/bugs/*` and `misc/web-server-logs-*`. Do not use
+live provider requests as the proof that a contract path is correct.
 
 ## Phase 2 Notes
 

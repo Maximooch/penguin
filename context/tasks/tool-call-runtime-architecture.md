@@ -264,7 +264,7 @@ Responsibilities:
 - decide whether another model turn is needed
 - handle malformed tool syntax repair
 - handle empty tool-only loops based on `ToolCall`/`ToolResult` identity
-- retry empty non-tool continuations after tool-heavy turns with compacted tool
+- retry empty non-tool continuations after tool-heavy turns with bounded tool
   output before surfacing a terminal diagnostic
 
 The loop controller should not know individual tool semantics. It should reason
@@ -569,7 +569,7 @@ Acceptance criteria:
   model turn
 - the model receives a concise truncation notice plus a safe way to inspect the
   full output by result id or artifact path
-- empty-response recovery after tool-heavy turns retries once with compacted
+- empty-response recovery after tool-heavy turns retries once with bounded
   recent tool output before returning a structured diagnostic
 - OpenAI/Codex, OpenRouter/OpenAI-compatible, and Anthropic replay tests cover
   completed, failed, cancelled, and interrupted tool calls

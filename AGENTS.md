@@ -31,6 +31,8 @@ Style and Conventions
 - Errors: raise specific exceptions, no bare except; add context; never swallow; log via logging with appropriate level.
 - Logging: use logging.getLogger(__name__); avoid printing in library code.
 - Tests: pytest, aim for high coverage; add async tests with pytest-asyncio where needed; keep unit tests deterministic. Tests go in tests/, NEVER in penguin/ source dirs.
+- Provider/tool/runtime reliability changes must follow `context/tasks/testing-pyramid.md`: prefer deterministic fake-provider, contract, state-machine, and fault-injection tests before live-provider checks. Cover incomplete streams, provider errors, retry/release behavior, native tool replay adjacency, and CWM category-priority truncation where relevant. Live provider tests are opt-in smoke tests, not the proof of correctness.
+- Penguin's context window manager trims message categories by priority and recency; it does not summarize or compact conversation content. Do not describe current CWM behavior as compaction unless you are explicitly discussing a future or external compaction feature.
 - Files to avoid committing: see .gitignore; add .crush/ local artifacts.
 - Docs: keep README and docs/ in sync when changing public API.
 

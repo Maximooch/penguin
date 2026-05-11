@@ -45,6 +45,8 @@ behavior.
 - Penguin model catalog merge path:
   `penguin/web/services/provider_catalog.py`
   `penguin/web/services/opencode_provider.py`
+- Penguin testing strategy:
+  `context/tasks/testing-pyramid.md`
 
 ## Parity Gaps
 
@@ -316,6 +318,31 @@ Phase 5 implementation note:
   all provider fixtures and adapters consistently emit provider completion
   events.
 
+### Phase 5.5: Codex Reliability Test Harness
+
+1. Build a deterministic fake Codex Responses/SSE fixture layer inspired by
+   Codex's Rust `core/tests/common/responses.rs` helpers.
+2. Add captured-request assertions for input items, instructions, native tool
+   calls, function-call outputs, reasoning includes, service tier, and
+   `previous_response_id` safety.
+3. Add fault injection for incomplete streams, early close after text, early
+   close after tool call, provider error mid-stream, timeout/stall, malformed
+   event, duplicate event, and partial function-call arguments.
+4. Convert representative `context/bugs/*` and `misc/web-server-logs-*` cases
+   into minimized deterministic fixtures.
+5. Keep live OpenAI/Codex checks opt-in and cheap; they prove credentials and
+   transport, not correctness of the lifecycle contract.
+
+Acceptance criteria:
+
+- Phase 6 replay work starts only after fake-provider fixtures can express the
+  failure modes being enforced.
+- No incomplete stream is treated as completed merely because it emitted some
+  text or tool bytes.
+- Provider errors and incomplete streams always release the current turn.
+- CWM category-priority truncation does not create malformed OpenAI Responses
+  tool-call adjacency.
+
 ### Phase 6: OpenAI/Codex Tool Replay Stability
 
 1. Persist native tool calls as canonical runtime records before executing the
@@ -328,7 +355,7 @@ Phase 5 implementation note:
    calls during replay.
 5. Apply universal model-visible tool-output truncation before replay, with
    full output stored locally.
-6. Retry empty non-tool continuations after tool-heavy turns once with compacted
+6. Retry empty non-tool continuations after tool-heavy turns once with bounded
    recent tool output before returning a structured diagnostic.
 
 ### Phase 7: Optional OpenAI Background Recovery
