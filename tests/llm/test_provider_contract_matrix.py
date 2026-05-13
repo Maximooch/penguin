@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
 
-from penguin.llm.contracts import FinishReason
+from penguin.llm.contracts import (
+    ErrorCategory,
+    FinishReason,
+    LLMProviderError,
+    ProviderRequestStatus,
+)
 
 from .provider_contract_fixtures import (
     ANTHROPIC_USAGE,
@@ -46,7 +52,8 @@ def _build_handler(
         )
         if scenario == "nonstream":
             events = [
-                OpenAIStreamEvent(type="response.output_text.delta", delta="answer")
+                OpenAIStreamEvent(type="response.output_text.delta", delta="answer"),
+                OpenAIStreamEvent(type="response.completed"),
             ]
             return build_openai_handler(
                 provider=provider_id,
@@ -56,12 +63,34 @@ def _build_handler(
             )
         if scenario == "stream_text":
             events = [
-                OpenAIStreamEvent(type="response.output_text.delta", delta="answer")
+                OpenAIStreamEvent(type="response.created"),
+                OpenAIStreamEvent(type="response.output_text.delta", delta="answer"),
+                OpenAIStreamEvent(type="response.completed"),
             ]
             return build_openai_handler(
                 provider=provider_id,
                 stream_events=events,
                 final_text="answer",
+                usage=OPENAI_USAGE,
+            )
+        if scenario == "cancelled_stream":
+            return build_openai_handler(
+                provider=provider_id,
+                stream_events=[asyncio.CancelledError()],
+                final_text="",
+                usage=OPENAI_USAGE,
+            )
+        if scenario == "multi_delta":
+            return build_openai_handler(
+                provider=provider_id,
+                stream_events=[
+                    OpenAIStreamEvent(
+                        type="response.output_text.delta", delta="hello "
+                    ),
+                    OpenAIStreamEvent(type="response.output_text.delta", delta="world"),
+                    OpenAIStreamEvent(type="response.completed"),
+                ],
+                final_text="hello world",
                 usage=OPENAI_USAGE,
             )
         if scenario == "reasoning":
@@ -71,6 +100,7 @@ def _build_handler(
                     delta="thinking...",
                 ),
                 OpenAIStreamEvent(type="response.output_text.delta", delta="answer"),
+                OpenAIStreamEvent(type="response.completed"),
             ]
             return build_openai_handler(
                 provider=provider_id,
@@ -107,11 +137,129 @@ def _build_handler(
                         "status": "completed",
                     },
                 ),
+                OpenAIStreamEvent(type="response.completed"),
             ]
             return build_openai_handler(
                 provider=provider_id,
                 stream_events=events,
                 final_text="",
+                usage=OPENAI_USAGE,
+                interrupt_on_tool_call=True,
+            )
+        if scenario == "stream_error":
+            return build_openai_handler(
+                provider=provider_id,
+                stream_events=[
+                    OpenAIStreamEvent(
+                        type="error",
+                        error={
+                            "code": "server_error",
+                            "message": "synthetic OpenAI stream error",
+                        },
+                    )
+                ],
+                final_text="",
+                usage=OPENAI_USAGE,
+            )
+        if scenario == "incomplete_empty":
+            return build_openai_handler(
+                provider=provider_id,
+                stream_events=[],
+                final_text="",
+                usage=OPENAI_USAGE,
+            )
+        if scenario == "incomplete_partial_text":
+            return build_openai_handler(
+                provider=provider_id,
+                stream_events=[
+                    OpenAIStreamEvent(
+                        type="response.output_text.delta",
+                        delta="partial",
+                    )
+                ],
+                final_text="partial",
+                usage=OPENAI_USAGE,
+            )
+        if scenario == "incomplete_partial_tool":
+            return build_openai_handler(
+                provider=provider_id,
+                stream_events=[
+                    OpenAIStreamEvent(
+                        type="response.output_item.added",
+                        item={
+                            "type": "function_call",
+                            "id": "item_1",
+                            "call_id": "call_incomplete",
+                            "name": "read_file",
+                            "arguments": "",
+                        },
+                    ),
+                    OpenAIStreamEvent(
+                        type="response.function_call_arguments.delta",
+                        item_id="item_1",
+                        delta='{"path":"README.md"}',
+                    ),
+                ],
+                final_text="",
+                usage=OPENAI_USAGE,
+                interrupt_on_tool_call=True,
+            )
+        if scenario == "stream_error_then_success":
+            return build_openai_handler(
+                provider=provider_id,
+                stream_events=[],
+                stream_event_sequences=[
+                    [
+                        OpenAIStreamEvent(
+                            type="error",
+                            error={
+                                "code": "server_error",
+                                "message": "synthetic OpenAI stream error",
+                            },
+                        )
+                    ],
+                    [
+                        OpenAIStreamEvent(
+                            type="response.output_text.delta",
+                            delta="recovered",
+                        ),
+                        OpenAIStreamEvent(type="response.completed"),
+                    ],
+                ],
+                final_text="recovered",
+                usage=OPENAI_USAGE,
+            )
+        if scenario == "incomplete_partial_tool_then_success":
+            return build_openai_handler(
+                provider=provider_id,
+                stream_events=[],
+                stream_event_sequences=[
+                    [
+                        OpenAIStreamEvent(
+                            type="response.output_item.added",
+                            item={
+                                "type": "function_call",
+                                "id": "item_1",
+                                "call_id": "call_incomplete",
+                                "name": "read_file",
+                                "arguments": "",
+                            },
+                        ),
+                        OpenAIStreamEvent(
+                            type="response.function_call_arguments.delta",
+                            item_id="item_1",
+                            delta='{"path":"README.md"}',
+                        ),
+                    ],
+                    [
+                        OpenAIStreamEvent(
+                            type="response.output_text.delta",
+                            delta="recovered",
+                        ),
+                        OpenAIStreamEvent(type="response.completed"),
+                    ],
+                ],
+                final_text="recovered",
                 usage=OPENAI_USAGE,
                 interrupt_on_tool_call=True,
             )
@@ -126,6 +274,7 @@ def _build_handler(
         if scenario == "stream_text":
             return build_anthropic_handler(
                 stream_chunks=[
+                    AnthropicStreamChunk("message_start"),
                     AnthropicStreamChunk(
                         "content_block_delta",
                         AnthropicStreamDelta("text_delta", text="answer"),
@@ -133,6 +282,28 @@ def _build_handler(
                     AnthropicStreamChunk("message_stop"),
                 ],
                 final_text="answer",
+                usage=ANTHROPIC_USAGE,
+            )
+        if scenario == "cancelled_stream":
+            return build_anthropic_handler(
+                stream_chunks=[asyncio.CancelledError()],
+                final_text="",
+                usage=ANTHROPIC_USAGE,
+            )
+        if scenario == "multi_delta":
+            return build_anthropic_handler(
+                stream_chunks=[
+                    AnthropicStreamChunk(
+                        "content_block_delta",
+                        AnthropicStreamDelta("text_delta", text="hello "),
+                    ),
+                    AnthropicStreamChunk(
+                        "content_block_delta",
+                        AnthropicStreamDelta("text_delta", text="world"),
+                    ),
+                    AnthropicStreamChunk("message_stop"),
+                ],
+                final_text="hello world",
                 usage=ANTHROPIC_USAGE,
             )
         if scenario == "reasoning":
@@ -177,6 +348,113 @@ def _build_handler(
                 usage=ANTHROPIC_USAGE,
                 interrupt_on_tool_call=True,
             )
+        if scenario == "stream_error":
+            return build_anthropic_handler(
+                stream_chunks=[
+                    AnthropicStreamChunk(
+                        "error",
+                        error={
+                            "type": "overloaded_error",
+                            "message": "synthetic Anthropic stream error",
+                        },
+                    )
+                ],
+                final_text="",
+                usage=ANTHROPIC_USAGE,
+            )
+        if scenario == "incomplete_empty":
+            return build_anthropic_handler(
+                stream_chunks=[],
+                final_text="",
+                usage=ANTHROPIC_USAGE,
+            )
+        if scenario == "incomplete_partial_text":
+            return build_anthropic_handler(
+                stream_chunks=[
+                    AnthropicStreamChunk(
+                        "content_block_delta",
+                        AnthropicStreamDelta("text_delta", text="partial"),
+                    ),
+                ],
+                final_text="partial",
+                usage=ANTHROPIC_USAGE,
+            )
+        if scenario == "incomplete_partial_tool":
+            return build_anthropic_handler(
+                stream_chunks=[
+                    AnthropicStreamChunk(
+                        "content_block_start",
+                        content_block=type(
+                            "ToolUseBlock",
+                            (),
+                            {
+                                "type": "tool_use",
+                                "id": "toolu_incomplete",
+                                "name": "read_file",
+                                "input": {"path": "README.md"},
+                            },
+                        )(),
+                    ),
+                ],
+                final_text="",
+                usage=ANTHROPIC_USAGE,
+                interrupt_on_tool_call=True,
+            )
+        if scenario == "stream_error_then_success":
+            return build_anthropic_handler(
+                stream_chunks=[],
+                stream_chunk_sequences=[
+                    [
+                        AnthropicStreamChunk(
+                            "error",
+                            error={
+                                "type": "overloaded_error",
+                                "message": "synthetic Anthropic stream error",
+                            },
+                        )
+                    ],
+                    [
+                        AnthropicStreamChunk(
+                            "content_block_delta",
+                            AnthropicStreamDelta("text_delta", text="recovered"),
+                        ),
+                        AnthropicStreamChunk("message_stop"),
+                    ],
+                ],
+                final_text="recovered",
+                usage=ANTHROPIC_USAGE,
+            )
+        if scenario == "incomplete_partial_tool_then_success":
+            return build_anthropic_handler(
+                stream_chunks=[],
+                stream_chunk_sequences=[
+                    [
+                        AnthropicStreamChunk(
+                            "content_block_start",
+                            content_block=type(
+                                "ToolUseBlock",
+                                (),
+                                {
+                                    "type": "tool_use",
+                                    "id": "toolu_incomplete",
+                                    "name": "read_file",
+                                    "input": {"path": "README.md"},
+                                },
+                            )(),
+                        ),
+                    ],
+                    [
+                        AnthropicStreamChunk(
+                            "content_block_delta",
+                            AnthropicStreamDelta("text_delta", text="recovered"),
+                        ),
+                        AnthropicStreamChunk("message_stop"),
+                    ],
+                ],
+                final_text="recovered",
+                usage=ANTHROPIC_USAGE,
+                interrupt_on_tool_call=True,
+            )
 
     if provider_id == "openrouter":
         if scenario == "nonstream":
@@ -192,12 +470,42 @@ def _build_handler(
                 stream_chunks=[
                     make_openrouter_chunk(
                         model="openai/gpt-4.1-mini",
+                        content="",
+                    ),
+                    make_openrouter_chunk(
+                        model="openai/gpt-4.1-mini",
                         content="answer",
                         finish_reason="stop",
                         usage=OPENROUTER_USAGE,
                     )
                 ],
                 final_text="answer",
+                usage=OPENROUTER_USAGE,
+            )
+        if scenario == "cancelled_stream":
+            return build_openrouter_handler(
+                monkeypatch,
+                stream_chunks=[asyncio.CancelledError()],
+                final_text="",
+                usage=OPENROUTER_USAGE,
+            )
+        if scenario == "multi_delta":
+            return build_openrouter_handler(
+                monkeypatch,
+                stream_chunks=[
+                    make_openrouter_chunk(
+                        model="openai/gpt-4.1-mini",
+                        content="hello ",
+                        usage=OPENROUTER_USAGE,
+                    ),
+                    make_openrouter_chunk(
+                        model="openai/gpt-4.1-mini",
+                        content="world",
+                        finish_reason="stop",
+                        usage=OPENROUTER_USAGE,
+                    ),
+                ],
+                final_text="hello world",
                 usage=OPENROUTER_USAGE,
             )
         if scenario == "reasoning":
@@ -237,10 +545,135 @@ def _build_handler(
                                 },
                             }
                         ],
+                        finish_reason="tool_calls",
                         usage=OPENROUTER_USAGE,
                     )
                 ],
                 final_text="",
+                usage=OPENROUTER_USAGE,
+                interrupt_on_tool_call=True,
+            )
+        if scenario == "stream_error":
+            return build_openrouter_handler(
+                monkeypatch,
+                stream_chunks=[
+                    make_openrouter_chunk(
+                        model="openai/gpt-4.1-mini",
+                        finish_reason="error",
+                        error={
+                            "code": "server_error",
+                            "message": "synthetic OpenRouter stream error",
+                            "metadata": {"provider_name": "fixture-provider"},
+                        },
+                    )
+                ],
+                final_text="",
+                usage=OPENROUTER_USAGE,
+            )
+        if scenario == "incomplete_empty":
+            return build_openrouter_handler(
+                monkeypatch,
+                stream_chunks=[],
+                final_text="",
+                usage=OPENROUTER_USAGE,
+            )
+        if scenario == "incomplete_partial_text":
+            return build_openrouter_handler(
+                monkeypatch,
+                stream_chunks=[
+                    make_openrouter_chunk(
+                        model="openai/gpt-4.1-mini",
+                        content="partial",
+                        usage=OPENROUTER_USAGE,
+                    )
+                ],
+                final_text="partial",
+                usage=OPENROUTER_USAGE,
+            )
+        if scenario == "incomplete_partial_tool":
+            return build_openrouter_handler(
+                monkeypatch,
+                stream_chunks=[
+                    make_openrouter_chunk(
+                        model="openai/gpt-4.1-mini",
+                        tool_calls=[
+                            {
+                                "index": 0,
+                                "id": "call_incomplete",
+                                "type": "function",
+                                "function": {
+                                    "name": "read_file",
+                                    "arguments": '{"path":"README.md"}',
+                                },
+                            }
+                        ],
+                        usage=OPENROUTER_USAGE,
+                    )
+                ],
+                final_text="",
+                usage=OPENROUTER_USAGE,
+                interrupt_on_tool_call=True,
+            )
+        if scenario == "stream_error_then_success":
+            return build_openrouter_handler(
+                monkeypatch,
+                stream_chunks=[],
+                stream_chunk_sequences=[
+                    [
+                        make_openrouter_chunk(
+                            model="openai/gpt-4.1-mini",
+                            finish_reason="error",
+                            error={
+                                "code": "server_error",
+                                "message": "synthetic OpenRouter stream error",
+                                "metadata": {"provider_name": "fixture-provider"},
+                            },
+                        )
+                    ],
+                    [
+                        make_openrouter_chunk(
+                            model="openai/gpt-4.1-mini",
+                            content="recovered",
+                            finish_reason="stop",
+                            usage=OPENROUTER_USAGE,
+                        )
+                    ],
+                ],
+                final_text="recovered",
+                usage=OPENROUTER_USAGE,
+            )
+        if scenario == "incomplete_partial_tool_then_success":
+            return build_openrouter_handler(
+                monkeypatch,
+                stream_chunks=[],
+                stream_chunk_sequences=[
+                    [
+                        make_openrouter_chunk(
+                            model="openai/gpt-4.1-mini",
+                            tool_calls=[
+                                {
+                                    "index": 0,
+                                    "id": "call_incomplete",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "read_file",
+                                        "arguments": '{"path":"README.md"}',
+                                    },
+                                }
+                            ],
+                            usage=OPENROUTER_USAGE,
+                        )
+                    ],
+                    [
+                        make_openrouter_chunk(
+                            model="openai/gpt-4.1-mini",
+                            content="recovered",
+                            finish_reason="stop",
+                            usage=OPENROUTER_USAGE,
+                        )
+                    ],
+                ],
+                final_text="recovered",
                 usage=OPENROUTER_USAGE,
                 interrupt_on_tool_call=True,
             )
@@ -299,6 +732,43 @@ async def test_provider_contract_streaming_callback_matrix(
 
     assert result == "answer"
     assert chunks == [("answer", "assistant")]
+    lifecycle = handler.get_last_request_lifecycle()
+    assert lifecycle is not None
+    assert lifecycle.provider == provider_id
+    assert lifecycle.model
+    assert lifecycle.stream is True
+    assert lifecycle.status == ProviderRequestStatus.COMPLETED
+    assert lifecycle.finish_reason == FinishReason.STOP
+    assert lifecycle.last_event_type is not None
+    assert lifecycle.provider_response_id is not None
+    assert lifecycle.ended_at is not None
+    assert lifecycle.ended_at >= lifecycle.started_at
+
+
+@pytest.mark.parametrize(
+    "provider_id",
+    ["openai", "openai_compatible", "anthropic", "openrouter"],
+)
+@pytest.mark.asyncio
+async def test_provider_contract_multiple_text_deltas_preserve_order(
+    provider_id: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handler = _build_handler(provider_id, monkeypatch, scenario="multi_delta")
+    chunks: list[tuple[str, str]] = []
+
+    async def on_chunk(chunk: str, message_type: str) -> None:
+        chunks.append((chunk, message_type))
+
+    result = await handler.get_response(
+        [{"role": "user", "content": "hello"}],
+        stream=True,
+        stream_callback=on_chunk,
+    )
+
+    assert result == "hello world"
+    assert chunks == [("hello ", "assistant"), ("world", "assistant")]
+    assert handler.get_last_finish_reason() == FinishReason.STOP
 
 
 @pytest.mark.parametrize(
@@ -358,6 +828,176 @@ async def test_provider_contract_tool_call_interrupt_matrix(
     assert tool_call["name"] == "read_file"
     assert tool_call["arguments"] == '{"path":"README.md"}'
     assert handler.get_and_clear_last_tool_call() is None
+
+
+@pytest.mark.parametrize(
+    "provider_id",
+    ["openai", "openai_compatible", "anthropic", "openrouter"],
+)
+@pytest.mark.asyncio
+async def test_provider_contract_mid_stream_error_matrix(
+    provider_id: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handler = _build_handler(provider_id, monkeypatch, scenario="stream_error")
+    chunks: list[tuple[str, str]] = []
+
+    async def on_chunk(chunk: str, message_type: str) -> None:
+        chunks.append((chunk, message_type))
+
+    try:
+        result = await handler.get_response(
+            [{"role": "user", "content": "hello"}],
+            stream=True,
+            stream_callback=on_chunk,
+        )
+    except LLMProviderError as exc:
+        result = str(exc)
+
+    last_error = handler.get_last_error()
+    assert last_error is not None
+    assert "synthetic" in last_error.message
+    assert "synthetic" in result
+    assert handler.get_last_finish_reason() == FinishReason.ERROR
+    assert handler.has_pending_tool_call() is False
+    assert chunks == []
+
+
+@pytest.mark.parametrize(
+    ("scenario", "expected_chunk"),
+    [
+        ("incomplete_empty", None),
+        ("incomplete_partial_text", ("partial", "assistant")),
+        ("incomplete_partial_tool", None),
+    ],
+)
+@pytest.mark.parametrize(
+    "provider_id",
+    ["openai", "openai_compatible", "anthropic", "openrouter"],
+)
+@pytest.mark.asyncio
+async def test_provider_contract_incomplete_stream_matrix(
+    provider_id: str,
+    scenario: str,
+    expected_chunk: tuple[str, str] | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handler = _build_handler(provider_id, monkeypatch, scenario=scenario)
+    chunks: list[tuple[str, str]] = []
+
+    async def on_chunk(chunk: str, message_type: str) -> None:
+        chunks.append((chunk, message_type))
+
+    try:
+        result = await handler.get_response(
+            [{"role": "user", "content": "hello"}],
+            stream=True,
+            stream_callback=on_chunk,
+        )
+    except LLMProviderError as exc:
+        result = str(exc)
+
+    last_error = handler.get_last_error()
+    assert last_error is not None
+    assert last_error.category == ErrorCategory.NETWORK
+    assert last_error.retryable is True
+    assert "ended before" in last_error.message
+    assert "ended before" in result
+    assert handler.get_last_finish_reason() == FinishReason.ERROR
+    assert handler.has_pending_tool_call() is False
+    if expected_chunk is None:
+        assert chunks == []
+    else:
+        assert expected_chunk in chunks
+    lifecycle = handler.get_last_request_lifecycle()
+    assert lifecycle is not None
+    assert lifecycle.status == ProviderRequestStatus.DISCONNECTED
+    assert lifecycle.error is not None
+    assert lifecycle.error.category == ErrorCategory.NETWORK
+
+
+@pytest.mark.parametrize(
+    "provider_id",
+    ["openai", "openai_compatible", "anthropic", "openrouter"],
+)
+@pytest.mark.asyncio
+async def test_provider_contract_cancelled_stream_lifecycle_matrix(
+    provider_id: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handler = _build_handler(provider_id, monkeypatch, scenario="cancelled_stream")
+
+    with pytest.raises(asyncio.CancelledError):
+        await handler.get_response(
+            [{"role": "user", "content": "cancel"}],
+            stream=True,
+            stream_callback=lambda *_args: None,
+        )
+
+    lifecycle = handler.get_last_request_lifecycle()
+    assert lifecycle is not None
+    assert lifecycle.status == ProviderRequestStatus.CANCELLED
+    assert lifecycle.ended_at is not None
+    assert lifecycle.error is not None
+    assert lifecycle.error.retryable is False
+    assert handler.get_last_error() is lifecycle.error
+    assert handler.has_pending_tool_call() is False
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    ["stream_error_then_success", "incomplete_partial_tool_then_success"],
+)
+@pytest.mark.parametrize(
+    "provider_id",
+    ["openai", "openai_compatible", "anthropic", "openrouter"],
+)
+@pytest.mark.asyncio
+async def test_provider_contract_failure_releases_next_turn_matrix(
+    provider_id: str,
+    scenario: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handler = _build_handler(provider_id, monkeypatch, scenario=scenario)
+
+    first_chunks: list[tuple[str, str]] = []
+
+    async def on_first_chunk(chunk: str, message_type: str) -> None:
+        first_chunks.append((chunk, message_type))
+
+    try:
+        first_result = await handler.get_response(
+            [{"role": "user", "content": "first"}],
+            stream=True,
+            stream_callback=on_first_chunk,
+        )
+    except LLMProviderError as exc:
+        first_result = str(exc)
+
+    first_error = handler.get_last_error()
+    assert first_error is not None
+    assert handler.get_last_finish_reason() == FinishReason.ERROR
+    assert handler.has_pending_tool_call() is False
+    assert handler.get_and_clear_pending_tool_calls() == []
+    assert first_result
+
+    second_chunks: list[tuple[str, str]] = []
+
+    async def on_second_chunk(chunk: str, message_type: str) -> None:
+        second_chunks.append((chunk, message_type))
+
+    second_result = await handler.get_response(
+        [{"role": "user", "content": "second"}],
+        stream=True,
+        stream_callback=on_second_chunk,
+    )
+
+    assert second_result == "recovered"
+    assert ("recovered", "assistant") in second_chunks
+    assert handler.get_last_error() is None
+    assert handler.get_last_finish_reason() == FinishReason.STOP
+    assert handler.has_pending_tool_call() is False
+    assert handler.get_and_clear_pending_tool_calls() == []
 
 
 @pytest.mark.asyncio
@@ -588,6 +1228,53 @@ def test_anthropic_repairs_orphaned_tool_result_adjacency() -> None:
                     "type": "tool_result",
                     "tool_use_id": "toolu_1",
                     "content": "/tmp/project",
+                }
+            ],
+        },
+    ]
+
+
+@pytest.mark.parametrize("status", ["error", "failed", "cancelled", "interrupted"])
+def test_anthropic_marks_failed_tool_replay_statuses_as_errors(status: str) -> None:
+    handler = build_anthropic_handler(
+        stream_chunks=[AnthropicStreamChunk("message_stop")],
+        final_text="answer",
+        usage=ANTHROPIC_USAGE,
+    )
+
+    formatted = handler.format_messages(
+        [
+            {
+                "role": "tool",
+                "tool_call_id": "toolu_failed",
+                "name": "shell",
+                "tool_arguments": '{"command":"long-running"}',
+                "content": f"tool execution {status}",
+                "status": status,
+            },
+        ]
+    )
+
+    assert formatted == [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_failed",
+                    "name": "shell",
+                    "input": {"command": "long-running"},
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_failed",
+                    "content": f"tool execution {status}",
+                    "is_error": True,
                 }
             ],
         },

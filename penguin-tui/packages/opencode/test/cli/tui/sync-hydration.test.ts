@@ -341,7 +341,7 @@ describe("sync hydration", () => {
     ])
   })
 
-  test("orders new live penguin messages by creation time", () => {
+  test("keeps live assistant response after its parent user when timestamps skew", () => {
     const optimistic = {
       ...user,
       id: "msg_local_user",
@@ -350,14 +350,60 @@ describe("sync hydration", () => {
     const streamed = {
       ...assistant,
       id: "msg_streamed_assistant",
+      parentID: "msg_local_user",
       time: { created: 10, completed: 11 },
     }
 
     const merged = upsertPenguinMessage([optimistic], streamed)
 
     expect(merged.map((item) => item.id)).toEqual([
-      "msg_streamed_assistant",
       "msg_local_user",
+      "msg_streamed_assistant",
+    ])
+  })
+
+  test("does not move messages without timestamps above current user turns", () => {
+    const optimistic = {
+      ...user,
+      id: "msg_1778539630840_00",
+      time: { created: 1_778_539_630_840 },
+    }
+    const streamed = {
+      ...assistant,
+      id: "msg_streamed_without_time",
+      time: undefined as unknown as Message["time"],
+    }
+
+    const merged = upsertPenguinMessage([optimistic], streamed)
+
+    expect(merged.map((item) => item.id)).toEqual([
+      "msg_1778539630840_00",
+      "msg_streamed_without_time",
+    ])
+  })
+
+  test("reorders corrected live assistant update after parent user", () => {
+    const parent = {
+      ...user,
+      id: "msg_parent_user",
+      time: { created: 20 },
+    }
+    const placeholder = {
+      ...assistant,
+      id: "msg_streamed_assistant",
+      time: undefined as unknown as Message["time"],
+    }
+    const updated = {
+      ...placeholder,
+      parentID: "msg_parent_user",
+      time: { created: 10, completed: 11 },
+    }
+
+    const merged = upsertPenguinMessage([placeholder, parent], updated)
+
+    expect(merged.map((item) => item.id)).toEqual([
+      "msg_parent_user",
+      "msg_streamed_assistant",
     ])
   })
 
@@ -396,6 +442,7 @@ describe("sync hydration", () => {
     const first = {
       ...assistant,
       id: "msg_streamed_assistant",
+      parentID: "msg_user_1",
       time: { created: 10 },
     }
     const updated = {

@@ -40,6 +40,8 @@
 
 - `context/rationale/llm_provider_contract_design_patterns.md`
 - `context/rationale/llm_provider_contract_audit.md`
+- OpenCode `packages/llm` on `dev`:
+  `https://github.com/anomalyco/opencode/tree/dev/packages/llm`
 
 Key architectural lessons to adopt from OpenCode:
 
@@ -49,10 +51,88 @@ Key architectural lessons to adopt from OpenCode:
 - one canonical stream/result grammar
 - one centralized usage/error/retry model
 
+Additional OpenCode `packages/llm` patterns worth borrowing:
+
+- Split provider integration into clearer layers:
+  - `Protocol`: semantic API contract, provider-native body construction,
+    provider event decoding, and stream state machine
+  - `Route`: protocol plus endpoint, auth, framing, headers, defaults, and
+    request preparation
+  - `Provider`: model factory, identity, capabilities, and provider-specific
+    typed options
+- Add a first-class `prepare(request)` boundary that compiles a canonical
+  Penguin request into the provider-native request body and transport metadata
+  without sending network traffic. This should become the main fixture,
+  debugging, replay-validation, and TUI request-inspection boundary.
+- Treat OpenRouter, OpenAI-compatible gateways, and local compatible servers as
+  provider/routes over a shared `openai_chat` protocol where possible, with
+  provider-specific body overlays rather than forked full adapters.
+- Layer request options by stability:
+  - portable generation settings
+  - typed provider-specific options
+  - raw HTTP/body/header overlays as the last-resort escape hatch
+- Expose model/provider capabilities from the provider contract so the TUI can
+  stay provider-agnostic: native tools, streaming, reasoning, cache hints,
+  context/output limits, resumability, and background/retrieval support.
+- Keep the provider package fixture-first: protocol/body compilation tests,
+  stream-event normalization tests, route/request preparation tests, and
+  separate opt-in recorded/live-provider smoke tests.
+
+Do not copy wholesale:
+
+- Effect/TypeScript runtime mechanics. Penguin should implement the same
+  boundaries with Python dataclasses/Pydantic/protocol classes.
+- OpenCode's tool runtime as-is. It is a useful comparison point, but Penguin's
+  tool runtime needs stronger permission, approval, process-session, CWM, and
+  durable-result semantics.
+- Prompt caching policy before the current provider lifecycle/replay/timeout
+  stability work is finished.
+
+Tool-runtime lessons from Codex/OpenCode are tracked in
+`context/tasks/tool-call-runtime-architecture.md`. This provider-contract plan
+should own wire-format normalization, provider-specific request shaping, stream
+events, finish reasons, usage, and error semantics. It should not duplicate the
+scheduler, permission, truncation, or process-runtime plan.
+
+Testing strategy is tracked in `context/tasks/testing-pyramid.md`. The
+exhaustive provider/tool reliability checklist lives there. This file should
+track provider-contract implementation phases and progress against that
+checklist, not duplicate the entire test matrix. Provider contract work should
+use deterministic fake-provider and fault-injection tests as the confidence
+gate; live provider tests are opt-in smoke tests only.
+
+Provider reliability lessons from Codex/OpenCode should be adopted at the
+contract level where they are provider-agnostic:
+
+- a model turn should have a request lifecycle record, not just an awaited HTTP
+  call
+- stream completion must be explicit; a socket close without a provider
+  completion event is an incomplete response, not a successful empty response
+- provider errors must release the current turn so the next user turn can
+  proceed
+- retry/recovery decisions should use provider capability metadata and request
+  identity, not ad hoc string matching
+- provider-specific resumability, such as OpenAI background responses, should
+  be a capability behind the common lifecycle record
+
+Provider documentation checked for the streaming/error contract:
+
+- OpenAI Responses streaming documents typed stream events including
+  `response.completed` and `error`.
+- Anthropic Messages streaming documents a final `message_stop` event and
+  possible in-stream `error` events.
+- OpenRouter streaming/error docs describe pre-stream JSON errors and
+  mid-stream SSE errors with `finish_reason: "error"`; its Responses-compatible
+  endpoint may also emit typed error events such as `response.failed`,
+  `response.error`, or `error`.
+
 Important constraint:
 
 - adopt the architecture, not the dependency; Penguin should remain provider-agnostic and local-inference-friendly rather than coupling itself to Vercel's AI SDK
 - provider-specific behavior must live in `penguin/llm` provider modules and shared LLM runtime layers, not in `engine.py`, `core.py`, `web/routes.py`, or tool implementations
+- provider adapters may translate provider-native tool-call wire formats into
+  canonical calls/results, but tool risk, permissions, scheduling, truncation,
+  and process execution belong to the tool runtime
 
 ## Progress Snapshot
 
@@ -81,7 +161,7 @@ Important constraint:
 - [x] Add a single provider registry/resolver instead of overlapping entry points
 - [x] Centralize normalization where possible
 - [x] Add a shared transform layer for request shaping and provider quirks
-- [ ] Keep provider-specific quirks at the adapter edge
+- [x] Keep provider-specific quirks at the adapter edge
 - [x] Preserve a first-class `openai_compatible` path for local inference backends and compatible gateways
 
 ### Phase 3 - Validation
@@ -89,6 +169,59 @@ Important constraint:
 - [x] Add explicit fixtures for streaming + tool-call edge cases
 - [x] Add reasoning-token cases where relevant
 - [x] Verify the same contract against native, gateway, and local-inference-compatible adapters
+- [x] Add incomplete-stream and turn-release contract cases for provider
+      transports that stream
+
+## Provider Request Lifecycle Contract
+
+The provider contract should expose one lifecycle model for all model calls,
+even when a specific provider has extra recovery features.
+
+Canonical states:
+
+- `pending`: Penguin has created the request record but has not sent traffic yet.
+- `running`: the provider request has been sent.
+- `streaming`: Penguin has received at least one stream event.
+- `disconnected`: transport ended before the provider emitted a completion
+  event or equivalent terminal signal.
+- `retrying`: Penguin is retrying or reconnecting under the provider policy.
+- `completed`: the provider emitted a terminal completion and Penguin recorded
+  final content/tool calls/usage.
+- `failed`: the provider request ended with a normalized failure.
+- `cancelled`: Penguin or the user cancelled the request.
+
+Minimum request-record fields:
+
+- Penguin session/conversation id and turn id
+- provider, adapter, model, and endpoint/transport family
+- request payload hash and request-shape version
+- attempt count, start time, last event time, and terminal time
+- provider response id or equivalent continuation id when available
+- last stream event type and provider finish reason when available
+- canonical error category plus provider-native error metadata
+
+Contract expectations:
+
+- providers that stream must distinguish completed streams from incomplete
+  streams
+- incomplete streams must either retry/recover or surface a structured
+  recoverable failure
+- failures must emit a terminal lifecycle event so the engine/session is not
+  left busy
+- provider adapters should expose whether a request can be resumed, polled, or
+  safely retried from canonical history
+- incremental identifiers such as `previous_response_id` should only be reused
+  when the adapter can prove the next request is a safe prefix extension of the
+  prior request
+
+OpenAI-specific notes:
+
+- `background=true` and `store=true` are capabilities for server-side
+  continuation/retrieval, not the general lifecycle model.
+- Foreground stateless requests still need long-stream timeout/stall handling
+  and explicit incomplete-stream detection.
+- Stateless reasoning continuity still depends on the encrypted reasoning
+  content path when Penguin is not using stored provider state.
 
 ## Verification Targets
 
@@ -104,6 +237,92 @@ Important constraint:
 - LiteLLM cleanup/runtime tests
 - streaming tests
 - provider adapter tests
+
+## Provider Reliability Test Matrix
+
+Phase 2/3 provider work should add hermetic fixtures before tightening runtime
+behavior. The fake-provider contract suite should cover:
+
+- completed text streams
+- completed native tool-call streams
+- terminal empty responses
+- stream closes before terminal event with no output
+- stream closes before terminal event after text output
+- stream closes before terminal event after a tool call
+- provider errors before and during streaming
+- timeout and idle-stream behavior
+- retry succeeds and retry exhausted behavior
+- next-turn release after failures
+- request replay after CWM category-priority truncation
+
+Provider-native tool replay tests should cover:
+
+- completed, failed, cancelled, and interrupted tool results
+- dangling tool calls repaired into explicit failed/cancelled outputs
+- provider-specific id normalization and adjacency rules
+- large tool outputs truncated before model replay with full output persisted
+
+The contract suite should use real log/bug cases as minimized fixtures where
+possible, especially `context/bugs/*` and `misc/web-server-logs-*`. Do not use
+live provider requests as the proof that a contract path is correct.
+
+Current implementation note:
+
+- OpenAI/Codex OAuth is the first adapter with deterministic lifecycle
+  fault-injection coverage for empty incomplete streams, partial text streams,
+  partial native tool-call streams, completed native tool-call streams,
+  mid-stream provider error events, and next-turn release after a disconnected
+  request.
+- OpenAI/Codex OAuth now also has deterministic request-shape coverage for
+  CWM-truncated native tool history: unresolved function calls are dropped,
+  complete call/output pairs are replayed in order, and metadata-rich
+  tool-result-only records synthesize valid replay pairs.
+- The shared provider contract matrix now covers documented mid-stream provider
+  error events across native OpenAI, OpenAI-compatible, Anthropic, and
+  OpenRouter paths.
+- The shared provider contract matrix now covers incomplete streams across
+  native OpenAI, OpenAI-compatible, Anthropic, and OpenRouter paths when a
+  stream ends before the provider's terminal signal after empty output, partial
+  text, or partial native tool-call output.
+- The shared provider contract matrix now covers next-turn release after
+  provider failures: the same handler instance can recover from a mid-stream
+  provider error or partial native tool-call disconnect and then complete a
+  later successful streamed request without stale pending tool calls or stale
+  error metadata.
+- The shared runtime now has explicit retry-policy coverage: retryable
+  canonical provider errors are replayed once only when no assistant text has
+  streamed and no provider-native tool call is pending; non-retryable failures
+  surface immediately.
+- Native OpenAI/OpenAI-compatible, Anthropic, and OpenRouter now expose
+  `LLMRequestLifecycle` records for completed and disconnected/failed streamed
+  calls in the shared provider matrix, extending the Codex OAuth lifecycle
+  work to typical provider paths.
+- Native OpenAI/OpenAI-compatible, Anthropic, and OpenRouter now expose
+  provider-neutral prepared requests with protocol/route/provider ids,
+  transport metadata, stable payload hashes, sanitized headers, diagnostics,
+  and model/provider capability metadata.
+- `Session`, `APIClient`, and `Engine` now have the first provider lifecycle
+  persistence path: the active session stores serialized
+  `LLMRequestLifecycle` records after each LLM attempt, including failures, and
+  CWM trimming preserves those records outside model-visible history.
+- The shared matrix now also asserts provider response ids where fixtures
+  expose them, ordered multi-delta streaming, and cancellation as a distinct
+  terminal lifecycle state across first-class providers.
+- Runtime retry tests now cover retry success, retry exhaustion, and retry
+  suppression when a provider-native tool call is pending.
+- OpenRouter now has provider-aware stream watchdog tests for chunk stalls,
+  total-stream budgets, and timeout environment parsing.
+- Provider-native replay repair has started outside Codex: Anthropic marks
+  failed, cancelled, and interrupted replayed tool results as provider-native
+  error results, and OpenRouter repairs CWM-truncated chat history by
+  preserving only complete assistant-tool/tool-result pairs or synthesizing a
+  valid assistant tool call when a metadata-rich tool result survives alone.
+- OpenRouter replay tests now also reject duplicate assistant tool-call ids by
+  flattening malformed native tool history before provider submission.
+- Initial property/state-machine coverage now exercises retry-policy safety,
+  lifecycle serialization, lifecycle terminal-state invariants, and
+  tool-output truncation metadata. Mutation testing remains an explicit later
+  opt-in gate.
 
 ## Phase 2 Notes
 
@@ -132,6 +351,11 @@ Important constraint:
 ## Post-Phase 3 Implementation Notes
 
 - Canonical error metadata now flows through `LLMError` / `LLMProviderError` plus handler `get_last_error()` hooks.
+- Canonical provider request lifecycle metadata now lives in
+  `ProviderRequestStatus`, `LLMRequestLifecycle`, and
+  `RequestLifecycleRuntime`.
+- OpenAI/Codex OAuth SSE is the first lifecycle adopter, including disconnected
+  incomplete-stream handling and long-stream timeout policy.
 - `APIClient` now prefers canonical handler error metadata over provider-specific placeholder strings when formatting user-visible failures.
 - Retry, timeout, rate-limit, and upstream-unavailable cases now normalize onto canonical categories for active handler paths.
 - `Retry-After` / retry timing is normalized where handlers expose it.
@@ -190,8 +414,8 @@ That means:
 
 - LiteLLM is currently treated as a secondary compatibility path, not a first-class provider in the contract matrix.
 - It now exposes canonical error/usage/finish-reason hooks, but it is not yet gated by the same full matrix as `openai`, `anthropic`, `openrouter`, and `openai_compatible`.
-- LiteLLM follow-up work is deferred until after Phase 5 structural cleanup.
-- Link integration is not part of the current verification target.
+- LiteLLM follow-up work is explicitly deferred until after the current provider/tool reliability suite is built out for first-class providers.
+- Link integration is explicitly deferred and is not part of the current verification target.
 - The current priority is making typical `openai` and `openrouter` behavior solid before touching Link-specific end-to-end behavior.
 - Link-specific verification should be treated as Phase 6 work after the provider contract and module consolidation work are in a healthier state.
 
@@ -208,9 +432,10 @@ That means:
 
 Phase 3 follow-up items that are useful but not required to consider the validation phase complete:
 
-- add Link transport/integration coverage against the shared runtime path
-- decide whether LiteLLM should be upgraded to the same contract matrix or remain outside the first-class contract set
-- add Codex OAuth regression coverage after `context/tasks/openai-codex-oauth-tool-schema-fix.md` is implemented
+- build out the exhaustive provider/tool reliability suite from
+  `context/tasks/testing-pyramid.md`
+- keep Link transport/integration coverage deferred
+- keep LiteLLM full matrix parity deferred
 
 ## Overall Remaining Plan
 
@@ -219,6 +444,26 @@ Phase 3 follow-up items that are useful but not required to consider the validat
 - [x] Standardize retry, timeout, and rate-limit handling semantics behind canonical error categories
 - [x] Normalize `Retry-After` and retryability metadata where providers expose them
 - [x] Stop relying on provider-specific returned error strings as the main failure contract
+- [x] Add provider request lifecycle records for model calls so retries,
+      disconnects, completions, cancellations, and failures share one
+      observable state machine
+- [ ] Replace fixed streaming read-timeout behavior with provider-aware
+      timeout/stall policy: bounded connect/write/pool timeouts, long or
+      disabled read timeout for active streams, and Penguin-owned cancellation
+      watchdogs
+- [x] Normalize incomplete stream handling so a transport close without a
+      provider completion event is retryable/disconnected rather than a
+      successful empty response
+- [x] Add a provider-neutral request preparation boundary, similar to
+      OpenCode's `LLMClient.prepare`, that returns provider-native body,
+      protocol id, route/provider id, transport metadata, request payload hash,
+      and validation diagnostics without sending network traffic.
+- [ ] Use prepared-request capture as the default contract test boundary for
+      replay repair, CWM-truncated history, provider-native tool adjacency, and
+      TUI/debug inspection.
+  Initial provider-body capture exists for native OpenAI/OpenAI-compatible,
+  Anthropic, OpenRouter, and `APIClient`; the remaining work is to move the
+  replay/adjacency regression matrix onto this boundary.
 
 ### 2. Finish tool-call and reasoning normalization
 
@@ -232,17 +477,32 @@ Phase 3 follow-up items that are useful but not required to consider the validat
 - [x] Move OpenAI/Responses-specific tool-call orchestration out of `penguin/engine.py`
 - [x] Move provider-specific reasoning fallback/debug shaping out of `penguin/web/routes.py`
 - [x] Stop using `penguin/core.py` to compensate for provider/runtime-specific tool event naming or metadata gaps
-- [ ] Move provider-specific request shaping and response quirks out of shared call sites where possible
-- [ ] Keep `Engine` and higher-level runtime code ignorant of provider-specific branching
-- [ ] Finish the unchecked Phase 2 item: keep provider-specific quirks at the adapter edge
+- [x] Move provider-specific request shaping and response quirks out of shared call sites where possible
+- [x] Keep `Engine` and higher-level runtime code ignorant of provider-specific branching
+- [ ] Keep provider-specific native tool replay at the adapter edge while
+  consuming canonical `ToolCall` / `ToolResult` records from the tool runtime
+- [x] Add provider-contract coverage for completed, failed, cancelled, and
+  interrupted tool-call replay, including provider-specific id normalization
+- [x] Add provider-contract coverage for incomplete stream recovery and
+  stream-error turn release
+- [x] Finish the unchecked Phase 2 item: keep provider-specific quirks at the adapter edge
+- [x] Introduce explicit `Protocol` / `Route` / `Provider` terminology, or the
+      Python equivalent, so shared wire protocols such as OpenAI Chat can be
+      reused by OpenRouter, OpenAI-compatible gateways, and local inference
+      backends without duplicating full adapter logic.
+- [x] Move provider capability metadata into the provider/model contract so
+      engine, web, and TUI layers consume capabilities instead of checking
+      provider names.
+  `LLMPreparedRequest` now carries `protocol`, `route`, `provider`,
+  `transport`, request hash, diagnostics, and `LLMProviderCapabilities`.
 
 ### 4. Expand or consciously narrow coverage
 
 - [x] Decide whether LiteLLM is part of the long-term first-class provider contract or a secondary compatibility path
 - [ ] If LiteLLM remains in scope, add the same contract hooks and matrix coverage there
-  Deferred until after Phase 5 structural cleanup.
+  Deferred until after the first-class provider/tool reliability suite is built out.
 - [ ] Add Link-specific runtime/integration verification on top of the shared provider runtime
-  Deferred to Phase 6. Current focus is typical `openai` and `openrouter` behavior.
+  Deferred. Current focus is first-class provider reliability without Link-specific transport.
 
 ### 5. Structural cleanup after behavior stabilizes
 

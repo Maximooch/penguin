@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import (
@@ -13,8 +15,19 @@ from typing import (
     runtime_checkable,
 )
 
-
 StreamCallback = Callable[[str, str], Any]
+
+
+def stable_payload_hash(payload: Any) -> str:
+    """Return a stable diagnostic hash for provider request payloads."""
+
+    payload_text = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(payload_text.encode("utf-8")).hexdigest()
 
 
 class FinishReason(str, Enum):
@@ -54,6 +67,187 @@ class ErrorCategory(str, Enum):
     PROVIDER_UNAVAILABLE = "provider_unavailable"
     RUNTIME = "runtime"
     UNKNOWN = "unknown"
+
+
+class ProviderRequestStatus(str, Enum):
+    """Canonical lifecycle states for one provider model request."""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    STREAMING = "streaming"
+    DISCONNECTED = "disconnected"
+    RETRYING = "retrying"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+@dataclass
+class LLMProviderCapabilities:
+    """Provider/model capabilities consumed by higher-level runtime layers."""
+
+    provider: str = ""
+    model: str = ""
+    native_tools: bool = False
+    streaming: bool = True
+    reasoning: bool = False
+    vision: bool = False
+    prompt_cache: bool = False
+    resumable: bool = False
+    background: bool = False
+    max_context_tokens: Optional[int] = None
+    max_output_tokens: Optional[int] = None
+    provider_data: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize capability metadata for diagnostics/UI payloads."""
+
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "native_tools": self.native_tools,
+            "streaming": self.streaming,
+            "reasoning": self.reasoning,
+            "vision": self.vision,
+            "prompt_cache": self.prompt_cache,
+            "resumable": self.resumable,
+            "background": self.background,
+            "max_context_tokens": self.max_context_tokens,
+            "max_output_tokens": self.max_output_tokens,
+            "provider_data": dict(self.provider_data or {}),
+        }
+
+
+@dataclass
+class LLMPreparedRequest:
+    """Provider-native request shape prepared without sending network traffic."""
+
+    provider: str
+    model: str
+    protocol: str
+    route: str
+    body: Dict[str, Any]
+    transport: str = ""
+    headers: Dict[str, str] = field(default_factory=dict)
+    request_payload_hash: str = ""
+    capabilities: Optional[LLMProviderCapabilities] = None
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
+    provider_data: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.request_payload_hash:
+            self.request_payload_hash = stable_payload_hash(self.body)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize prepared request metadata for tests and inspection."""
+
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "protocol": self.protocol,
+            "route": self.route,
+            "body": dict(self.body or {}),
+            "transport": self.transport,
+            "headers": dict(self.headers or {}),
+            "request_payload_hash": self.request_payload_hash,
+            "capabilities": self.capabilities.to_dict()
+            if isinstance(self.capabilities, LLMProviderCapabilities)
+            else None,
+            "diagnostics": dict(self.diagnostics or {}),
+            "provider_data": dict(self.provider_data or {}),
+        }
+
+
+@dataclass
+class LLMRequestLifecycle:
+    """Observable lifecycle metadata for one provider model request."""
+
+    request_id: str
+    provider: str
+    model: str
+    status: ProviderRequestStatus = ProviderRequestStatus.PENDING
+    stream: bool = False
+    transport: str = ""
+    request_payload_hash: Optional[str] = None
+    attempt: int = 1
+    started_at: float = 0.0
+    last_event_at: float = 0.0
+    ended_at: Optional[float] = None
+    provider_response_id: Optional[str] = None
+    last_event_type: Optional[str] = None
+    finish_reason: Optional[FinishReason] = None
+    error: Optional[LLMError] = None
+    provider_data: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize lifecycle metadata for session storage."""
+
+        return {
+            "request_id": self.request_id,
+            "provider": self.provider,
+            "model": self.model,
+            "status": self.status.value,
+            "stream": self.stream,
+            "transport": self.transport,
+            "request_payload_hash": self.request_payload_hash,
+            "attempt": self.attempt,
+            "started_at": self.started_at,
+            "last_event_at": self.last_event_at,
+            "ended_at": self.ended_at,
+            "provider_response_id": self.provider_response_id,
+            "last_event_type": self.last_event_type,
+            "finish_reason": self.finish_reason.value
+            if isinstance(self.finish_reason, FinishReason)
+            else self.finish_reason,
+            "error": self.error.to_dict()
+            if isinstance(self.error, LLMError)
+            else None,
+            "provider_data": dict(self.provider_data or {}),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Dict[str, Any]) -> "LLMRequestLifecycle":
+        """Deserialize lifecycle metadata from session storage."""
+
+        status = payload.get("status") or ProviderRequestStatus.PENDING
+        if not isinstance(status, ProviderRequestStatus):
+            try:
+                status = ProviderRequestStatus(str(status))
+            except Exception:
+                status = ProviderRequestStatus.PENDING
+
+        finish_reason = payload.get("finish_reason")
+        if finish_reason is not None and not isinstance(finish_reason, FinishReason):
+            try:
+                finish_reason = FinishReason(str(finish_reason))
+            except Exception:
+                finish_reason = FinishReason.UNKNOWN
+
+        error_payload = payload.get("error")
+        error = (
+            LLMError.from_dict(error_payload)
+            if isinstance(error_payload, dict)
+            else None
+        )
+
+        return cls(
+            request_id=str(payload.get("request_id") or ""),
+            provider=str(payload.get("provider") or ""),
+            model=str(payload.get("model") or ""),
+            status=status,
+            stream=bool(payload.get("stream", False)),
+            transport=str(payload.get("transport") or ""),
+            request_payload_hash=payload.get("request_payload_hash"),
+            attempt=int(payload.get("attempt") or 1),
+            started_at=float(payload.get("started_at") or 0.0),
+            last_event_at=float(payload.get("last_event_at") or 0.0),
+            ended_at=payload.get("ended_at"),
+            provider_response_id=payload.get("provider_response_id"),
+            last_event_type=payload.get("last_event_type"),
+            finish_reason=finish_reason,
+            error=error,
+            provider_data=dict(payload.get("provider_data") or {}),
+        )
 
 
 @dataclass
@@ -144,6 +338,53 @@ class LLMError:
     model: Optional[str] = None
     finish_reason: Optional[FinishReason] = None
     provider_data: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize canonical error metadata for diagnostics and storage."""
+
+        return {
+            "message": self.message,
+            "category": self.category.value,
+            "retryable": self.retryable,
+            "retry_after_seconds": self.retry_after_seconds,
+            "status_code": self.status_code,
+            "provider": self.provider,
+            "model": self.model,
+            "finish_reason": self.finish_reason.value
+            if isinstance(self.finish_reason, FinishReason)
+            else self.finish_reason,
+            "provider_data": dict(self.provider_data or {}),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Dict[str, Any]) -> "LLMError":
+        """Deserialize canonical error metadata from storage."""
+
+        category = payload.get("category") or ErrorCategory.UNKNOWN
+        if not isinstance(category, ErrorCategory):
+            try:
+                category = ErrorCategory(str(category))
+            except Exception:
+                category = ErrorCategory.UNKNOWN
+
+        finish_reason = payload.get("finish_reason")
+        if finish_reason is not None and not isinstance(finish_reason, FinishReason):
+            try:
+                finish_reason = FinishReason(str(finish_reason))
+            except Exception:
+                finish_reason = FinishReason.UNKNOWN
+
+        return cls(
+            message=str(payload.get("message") or ""),
+            category=category,
+            retryable=bool(payload.get("retryable", False)),
+            retry_after_seconds=payload.get("retry_after_seconds"),
+            status_code=payload.get("status_code"),
+            provider=payload.get("provider"),
+            model=payload.get("model"),
+            finish_reason=finish_reason,
+            provider_data=dict(payload.get("provider_data") or {}),
+        )
 
 
 class LLMProviderError(RuntimeError):
@@ -267,6 +508,13 @@ class ErrorReportingRuntime(Protocol):
 
 
 @runtime_checkable
+class RequestLifecycleRuntime(Protocol):
+    """Optional runtime extension for provider request lifecycle diagnostics."""
+
+    def get_last_request_lifecycle(self) -> Optional[LLMRequestLifecycle]: ...
+
+
+@runtime_checkable
 class ResultMetadataRuntime(Protocol):
     """Optional runtime extension for normalized finish/reasoning state."""
 
@@ -280,16 +528,22 @@ __all__ = [
     "ErrorReportingRuntime",
     "FinishReason",
     "LLMError",
+    "LLMPreparedRequest",
+    "LLMProviderCapabilities",
     "LLMProviderError",
     "LLMRequest",
+    "LLMRequestLifecycle",
     "LLMResult",
     "LLMStreamEvent",
     "LLMToolCall",
     "LLMUsage",
+    "ProviderRequestStatus",
     "ProviderRuntime",
+    "RequestLifecycleRuntime",
     "ResultMetadataRuntime",
     "StreamCallback",
     "StreamEventType",
     "ToolCallRuntime",
     "UsageReportingRuntime",
+    "stable_payload_hash",
 ]

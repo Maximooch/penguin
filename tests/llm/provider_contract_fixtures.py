@@ -20,6 +20,7 @@ class OpenAIStreamEvent:
     part: Any = None
     item: Any = None
     item_id: str = ""
+    error: Any = None
 
 
 class OpenAIResponse:
@@ -28,7 +29,9 @@ class OpenAIResponse:
         *,
         output_text: str,
         usage: dict[str, Any] | None = None,
+        response_id: str = "resp-test",
     ) -> None:
+        self.id = response_id
         self.output_text = output_text
         self.usage = dict(usage or {})
 
@@ -59,6 +62,8 @@ class OpenAIResponseStream:
             raise StopAsyncIteration
         event = self._events[self._idx]
         self._idx += 1
+        if isinstance(event, BaseException):
+            raise event
         return event
 
     async def get_final_response(self) -> OpenAIResponse:
@@ -69,16 +74,24 @@ class OpenAIResponsesStub:
     def __init__(
         self,
         *,
-        stream_response: OpenAIResponseStream,
+        stream_response: OpenAIResponseStream | list[OpenAIResponseStream],
         create_response: OpenAIResponse,
     ) -> None:
-        self.stream_response = stream_response
+        self.stream_responses = (
+            list(stream_response)
+            if isinstance(stream_response, list)
+            else [stream_response]
+        )
+        self.stream_response = self.stream_responses[0]
         self.create_response = create_response
         self.last_stream_kwargs: dict[str, Any] | None = None
         self.last_create_kwargs: dict[str, Any] | None = None
 
     def stream(self, **kwargs: Any) -> OpenAIResponseStream:
         self.last_stream_kwargs = dict(kwargs)
+        if not self.stream_responses:
+            raise AssertionError("No queued OpenAI stream response")
+        self.stream_response = self.stream_responses.pop(0)
         return self.stream_response
 
     async def create(self, **kwargs: Any) -> OpenAIResponse:
@@ -109,11 +122,13 @@ class AnthropicStreamChunk:
         *,
         content_block: Any = None,
         index: int = 0,
+        error: Any = None,
     ) -> None:
         self.type = chunk_type
         self.delta = delta
         self.content_block = content_block
         self.index = index
+        self.error = error
 
 
 class AnthropicCountResponse:
@@ -143,7 +158,9 @@ class AnthropicResponse:
         text: str,
         usage: AnthropicUsage,
         stop_reason: str = "end_turn",
+        response_id: str = "msg-test",
     ) -> None:
+        self.id = response_id
         self.content = [SimpleNamespace(type="text", text=text)]
         self.stop_reason = stop_reason
         self.usage = usage
@@ -172,7 +189,10 @@ class AnthropicStream:
     async def __anext__(self) -> AnthropicStreamChunk:
         if not self._chunks:
             raise StopAsyncIteration
-        return self._chunks.pop(0)
+        chunk = self._chunks.pop(0)
+        if isinstance(chunk, BaseException):
+            raise chunk
+        return chunk
 
     async def get_final_message(self) -> AnthropicResponse:
         return self._final_message
@@ -182,16 +202,24 @@ class AnthropicMessagesStub:
     def __init__(
         self,
         *,
-        stream_response: AnthropicStream,
+        stream_response: AnthropicStream | list[AnthropicStream],
         create_response: AnthropicResponse,
     ) -> None:
-        self.stream_response = stream_response
+        self.stream_responses = (
+            list(stream_response)
+            if isinstance(stream_response, list)
+            else [stream_response]
+        )
+        self.stream_response = self.stream_responses[0]
         self.create_response = create_response
         self.last_kwargs: dict[str, Any] | None = None
 
     async def create(self, **kwargs: Any) -> Any:
         self.last_kwargs = dict(kwargs)
         if kwargs.get("stream"):
+            if not self.stream_responses:
+                raise AssertionError("No queued Anthropic stream response")
+            self.stream_response = self.stream_responses.pop(0)
             return self.stream_response
         return self.create_response
 
@@ -215,24 +243,34 @@ class OpenRouterStream:
             raise StopAsyncIteration
         chunk = self._chunks[self._idx]
         self._idx += 1
+        if isinstance(chunk, BaseException):
+            raise chunk
         return chunk
 
 
 class OpenRouterCompletionsStub:
-    def __init__(self, *, stream_response: Any, create_response: Any) -> None:
-        self.stream_response = stream_response
+    def __init__(self, *, stream_response: Any | list[Any], create_response: Any) -> None:
+        self.stream_responses = (
+            list(stream_response)
+            if isinstance(stream_response, list)
+            else [stream_response]
+        )
+        self.stream_response = self.stream_responses[0]
         self.create_response = create_response
         self.last_kwargs: dict[str, Any] | None = None
 
     async def create(self, **kwargs: Any) -> Any:
         self.last_kwargs = dict(kwargs)
         if kwargs.get("stream"):
+            if not self.stream_responses:
+                raise AssertionError("No queued OpenRouter stream response")
+            self.stream_response = self.stream_responses.pop(0)
             return self.stream_response
         return self.create_response
 
 
 class OpenRouterClientStub:
-    def __init__(self, *, stream_response: Any, create_response: Any) -> None:
+    def __init__(self, *, stream_response: Any | list[Any], create_response: Any) -> None:
         self.chat = SimpleNamespace(
             completions=OpenRouterCompletionsStub(
                 stream_response=stream_response,
@@ -251,10 +289,12 @@ def make_openrouter_chunk(
     tool_calls: list[dict[str, Any]] | None = None,
     finish_reason: str | None = None,
     usage: dict[str, Any] | None = None,
+    error: dict[str, Any] | None = None,
 ) -> Any:
     return SimpleNamespace(
         id="chatcmpl-test",
         model=model,
+        error=error,
         choices=[
             {
                 "delta": {
@@ -277,6 +317,7 @@ def build_openai_handler(
     usage: dict[str, Any],
     interrupt_on_tool_call: bool = False,
     reasoning_enabled: bool = False,
+    stream_event_sequences: Iterable[Iterable[OpenAIStreamEvent]] | None = None,
 ) -> OpenAIAdapter:
     config = ModelConfig(
         model="gpt-5.4",
@@ -290,11 +331,19 @@ def build_openai_handler(
     )
     adapter_cls = OpenAIAdapter if provider == "openai" else OpenAICompatibleAdapter
     adapter = adapter_cls(config)
+    event_sequences = (
+        list(stream_event_sequences)
+        if stream_event_sequences is not None
+        else [stream_events]
+    )
     responses = OpenAIResponsesStub(
-        stream_response=OpenAIResponseStream(
-            events=stream_events,
-            final_response=OpenAIResponse(output_text=final_text, usage=usage),
-        ),
+        stream_response=[
+            OpenAIResponseStream(
+                events=events,
+                final_response=OpenAIResponse(output_text=final_text, usage=usage),
+            )
+            for events in event_sequences
+        ],
         create_response=OpenAIResponse(output_text=final_text, usage=usage),
     )
     adapter.client = OpenAIClientStub(responses)  # type: ignore[assignment]
@@ -308,6 +357,7 @@ def build_anthropic_handler(
     usage: AnthropicUsage,
     reasoning_enabled: bool = False,
     interrupt_on_tool_call: bool = False,
+    stream_chunk_sequences: Iterable[Iterable[AnthropicStreamChunk]] | None = None,
 ) -> AnthropicAdapter:
     config = ModelConfig(
         model="claude-sonnet-4-6",
@@ -323,14 +373,29 @@ def build_anthropic_handler(
     adapter.model_config = config
     adapter.logger = logging.getLogger(__name__)
     adapter._last_usage = {}
+    adapter._last_error = None
+    adapter._last_finish_reason = FinishReason.UNKNOWN
+    adapter._last_reasoning = ""
+    adapter._last_tool_call = None
+    adapter._pending_tool_calls = []
+    adapter._tool_use_accs = {}
+    adapter._last_request_lifecycle = None
+    chunk_sequences = (
+        list(stream_chunk_sequences)
+        if stream_chunk_sequences is not None
+        else [stream_chunks]
+    )
     adapter.async_client = cast(
         Any,
         SimpleNamespace(
             messages=AnthropicMessagesStub(
-                stream_response=AnthropicStream(
-                    chunks=stream_chunks,
-                    final_message=AnthropicResponse(text=final_text, usage=usage),
-                ),
+                stream_response=[
+                    AnthropicStream(
+                        chunks=chunks,
+                        final_message=AnthropicResponse(text=final_text, usage=usage),
+                    )
+                    for chunks in chunk_sequences
+                ],
                 create_response=AnthropicResponse(text=final_text, usage=usage),
             )
         ),
@@ -351,8 +416,14 @@ def build_openrouter_handler(
     reasoning_enabled: bool = False,
     interrupt_on_tool_call: bool = False,
     model_id: str = "openai/gpt-4.1-mini",
+    stream_chunk_sequences: Iterable[Iterable[Any]] | None = None,
 ) -> OpenRouterGateway:
-    stream_response = OpenRouterStream(stream_chunks)
+    chunk_sequences = (
+        list(stream_chunk_sequences)
+        if stream_chunk_sequences is not None
+        else [stream_chunks]
+    )
+    stream_response = [OpenRouterStream(chunks) for chunks in chunk_sequences]
     create_response = SimpleNamespace(
         choices=[
             SimpleNamespace(

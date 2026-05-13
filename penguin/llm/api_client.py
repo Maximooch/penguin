@@ -4,12 +4,9 @@ import io
 import logging
 import os
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable, Union
 
 import httpx
-import yaml  # type: ignore
-import tiktoken  # type: ignore
 
 # TODO: decouple litellm from api_client. # Been done for quite a while.
 # TODO: greatly simplify api_client while maintaining full functionality
@@ -19,7 +16,14 @@ import tiktoken  # type: ignore
 # from litellm import acompletion, completion, token_counter, cost_per_token, completion_cost
 from PIL import Image  # type: ignore
 
-from .contracts import ErrorCategory, LLMError, LLMProviderError
+from .contracts import (
+    ErrorCategory,
+    LLMError,
+    LLMPreparedRequest,
+    LLMProviderCapabilities,
+    LLMProviderError,
+    LLMRequestLifecycle,
+)
 from .model_config import ModelConfig
 from .provider_registry import ProviderRegistry
 from .provider_transform import apply_model_config_transforms, build_llm_error
@@ -46,7 +50,8 @@ def _log_error(message: str, *args: Any, exc_info: bool = False) -> None:
 # Connection Pool Management for Parallel LLM Calls
 # ==============================================================================
 
-# TODO: review max_keepalive_connections and max_connections defaults based on expected concurrency and provider limits. 
+
+# TODO: review max_keepalive_connections and max_connections defaults based on expected concurrency and provider limits.
 # These seem like magic numbers and might need tuning based on real-world usage patterns and provider guidelines.
 # Much less configurable than the old connection pool, but also much simpler. We can always add more config options later if needed.
 class ConnectionPoolConfig:
@@ -487,6 +492,96 @@ class APIClient:
             return None
         return self._last_error
 
+    def get_last_request_lifecycle(self) -> Optional[LLMRequestLifecycle]:
+        """Return lifecycle metadata from the latest provider request."""
+
+        handler = getattr(self, "client_handler", None)
+        getter = getattr(handler, "get_last_request_lifecycle", None)
+        if not callable(getter):
+            return None
+        try:
+            lifecycle = getter()
+        except Exception:
+            self.logger.debug("Failed to get handler request lifecycle", exc_info=True)
+            return None
+        return lifecycle if isinstance(lifecycle, LLMRequestLifecycle) else None
+
+    def get_provider_capabilities(self) -> LLMProviderCapabilities:
+        """Return provider/model capabilities from the active handler."""
+
+        handler = getattr(self, "client_handler", None)
+        getter = getattr(handler, "get_capabilities", None)
+        if callable(getter):
+            try:
+                capabilities = getter()
+            except Exception:
+                self.logger.debug(
+                    "Failed to get handler capabilities",
+                    exc_info=True,
+                )
+            else:
+                if isinstance(capabilities, LLMProviderCapabilities):
+                    return capabilities
+
+        return LLMProviderCapabilities(
+            provider=str(getattr(self.model_config, "provider", "") or ""),
+            model=str(getattr(self.model_config, "model", "") or ""),
+            streaming=bool(getattr(self.model_config, "streaming_enabled", True)),
+            max_context_tokens=getattr(
+                self.model_config,
+                "max_context_window_tokens",
+                None,
+            ),
+            max_output_tokens=getattr(self.model_config, "max_output_tokens", None),
+        )
+
+    async def prepare_request(
+        self,
+        messages: List[Dict[str, Any]],
+        max_output_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        stream: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> LLMPreparedRequest:
+        """Prepare the provider-native request without sending network traffic."""
+
+        if not self.client_handler:
+            raise RuntimeError("APIClient handler not initialized.")
+
+        legacy_max_tokens = kwargs.pop("max_tokens", None)
+        if max_output_tokens is None and legacy_max_tokens is not None:
+            max_output_tokens = legacy_max_tokens
+
+        use_streaming = (
+            stream if stream is not None else self.model_config.streaming_enabled
+        )
+        prepared_messages = self._prepare_messages_with_system_prompt(messages)
+        preparer = getattr(self.client_handler, "prepare_request", None)
+        if not callable(preparer):
+            raise RuntimeError(
+                f"Handler {type(self.client_handler).__name__} does not support "
+                "request preparation"
+            )
+
+        prepared = preparer(
+            messages=prepared_messages,
+            max_output_tokens=max_output_tokens
+            or self.model_config.max_output_tokens,
+            temperature=temperature
+            if temperature is not None
+            else self.model_config.temperature,
+            stream=bool(use_streaming),
+            **kwargs,
+        )
+        if asyncio.iscoroutine(prepared):
+            prepared = await prepared
+        if not isinstance(prepared, LLMPreparedRequest):
+            raise RuntimeError(
+                f"Handler {type(self.client_handler).__name__} returned invalid "
+                "prepared request"
+            )
+        return prepared
+
     def get_reasoning_debug_snapshot(self) -> Dict[str, Any]:
         """Return handler-provided reasoning debug details when available."""
 
@@ -524,8 +619,7 @@ class APIClient:
                 and "codex with a chatgpt account" in provider_detail
             ):
                 reason = (
-                    "Selected model is not available through ChatGPT-backed "
-                    "Codex auth"
+                    "Selected model is not available through ChatGPT-backed Codex auth"
                 )
             else:
                 reason = (

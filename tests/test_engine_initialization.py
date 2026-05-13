@@ -9,7 +9,15 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from penguin.engine import Engine, EngineSettings
+from penguin.llm.contracts import (
+    ErrorCategory,
+    FinishReason,
+    LLMError,
+    LLMRequestLifecycle,
+    ProviderRequestStatus,
+)
 from penguin.system.execution_context import ExecutionContext, execution_context_scope
+from penguin.system.state import Session
 
 
 def test_engine_initializes_without_run_state_attribute_error() -> None:
@@ -187,6 +195,291 @@ async def test_call_llm_with_retry_replays_non_stream_retry_into_stream_callback
     assert result == "fallback answer"
     assert streamed == [("fallback answer", "assistant")]
     assert api_client.get_response.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_call_llm_with_retry_replays_retryable_provider_failure_once() -> None:
+    engine = Engine(
+        EngineSettings(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+    )
+    retryable_error = LLMError(
+        message="stream disconnected",
+        category=ErrorCategory.NETWORK,
+        retryable=True,
+        provider="openai",
+        model="gpt-test",
+    )
+    current_error: LLMError | None = None
+
+    async def _fake_get_response(messages, stream=None, stream_callback=None, **kwargs):
+        nonlocal current_error
+        del messages, stream_callback, kwargs
+        if stream:
+            current_error = retryable_error
+            return "Error: LLM network request failed. Diagnostic ID: test"
+        current_error = None
+        return "recovered answer"
+
+    api_client = SimpleNamespace(
+        get_response=AsyncMock(side_effect=_fake_get_response),
+        get_last_error=lambda: current_error,
+        client_handler=SimpleNamespace(),
+    )
+
+    result = await engine._call_llm_with_retry(
+        cast(Any, api_client),
+        [{"role": "user", "content": "hi"}],
+        streaming=True,
+        stream_callback=None,
+        extra_kwargs={},
+    )
+
+    assert result == "recovered answer"
+    assert api_client.get_response.await_count == 2
+    assert api_client.get_response.await_args_list[1].kwargs["stream"] is False
+
+
+@pytest.mark.asyncio
+async def test_call_llm_with_retry_surfaces_non_retryable_provider_failure() -> None:
+    engine = Engine(
+        EngineSettings(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+    )
+    current_error = LLMError(
+        message="bad request",
+        category=ErrorCategory.BAD_REQUEST,
+        retryable=False,
+        provider="openai",
+        model="gpt-test",
+    )
+
+    async def _fake_get_response(messages, stream=None, stream_callback=None, **kwargs):
+        del messages, stream, stream_callback, kwargs
+        return "Error: LLM upstream rejected the request. Diagnostic ID: test"
+
+    api_client = SimpleNamespace(
+        get_response=AsyncMock(side_effect=_fake_get_response),
+        get_last_error=lambda: current_error,
+        client_handler=SimpleNamespace(),
+    )
+
+    result = await engine._call_llm_with_retry(
+        cast(Any, api_client),
+        [{"role": "user", "content": "hi"}],
+        streaming=True,
+        stream_callback=None,
+        extra_kwargs={},
+    )
+
+    assert result == "Error: LLM upstream rejected the request. Diagnostic ID: test"
+    assert api_client.get_response.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_call_llm_with_retry_skips_retryable_failure_when_tool_pending() -> None:
+    engine = Engine(
+        EngineSettings(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+    )
+    current_error = LLMError(
+        message="stream disconnected after tool call",
+        category=ErrorCategory.NETWORK,
+        retryable=True,
+        provider="openai",
+        model="gpt-test",
+    )
+
+    async def _fake_get_response(messages, stream=None, stream_callback=None, **kwargs):
+        del messages, stream, stream_callback, kwargs
+        return "Error: LLM network request failed. Diagnostic ID: test"
+
+    api_client = SimpleNamespace(
+        get_response=AsyncMock(side_effect=_fake_get_response),
+        get_last_error=lambda: current_error,
+        client_handler=SimpleNamespace(has_pending_tool_call=lambda: True),
+    )
+
+    result = await engine._call_llm_with_retry(
+        cast(Any, api_client),
+        [{"role": "user", "content": "hi"}],
+        streaming=True,
+        stream_callback=None,
+        extra_kwargs={},
+    )
+
+    assert result == "Error: LLM network request failed. Diagnostic ID: test"
+    assert api_client.get_response.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_call_llm_with_retry_surfaces_retry_exhaustion_once() -> None:
+    engine = Engine(
+        EngineSettings(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+    )
+    retryable_error = LLMError(
+        message="stream disconnected",
+        category=ErrorCategory.NETWORK,
+        retryable=True,
+        provider="openai",
+        model="gpt-test",
+    )
+    responses = [
+        "Error: LLM network request failed. Diagnostic ID: first",
+        "Error: LLM network request failed. Diagnostic ID: second",
+    ]
+
+    async def _fake_get_response(messages, stream=None, stream_callback=None, **kwargs):
+        del messages, stream, stream_callback, kwargs
+        return responses.pop(0)
+
+    api_client = SimpleNamespace(
+        get_response=AsyncMock(side_effect=_fake_get_response),
+        get_last_error=lambda: retryable_error,
+        client_handler=SimpleNamespace(),
+    )
+
+    result = await engine._call_llm_with_retry(
+        cast(Any, api_client),
+        [{"role": "user", "content": "hi"}],
+        streaming=True,
+        stream_callback=None,
+        extra_kwargs={},
+    )
+
+    assert result == "Error: LLM network request failed. Diagnostic ID: second"
+    assert api_client.get_response.await_count == 2
+
+
+def test_session_persists_llm_request_lifecycle_records() -> None:
+    lifecycle = LLMRequestLifecycle(
+        request_id="req-lifecycle-1",
+        provider="openai",
+        model="gpt-test",
+        status=ProviderRequestStatus.COMPLETED,
+        stream=True,
+        transport="responses",
+        attempt=2,
+        started_at=10.0,
+        last_event_at=12.0,
+        ended_at=12.5,
+        provider_response_id="resp_1",
+        last_event_type="response.completed",
+        finish_reason=FinishReason.STOP,
+        provider_data={"message_count": 3},
+    )
+
+    session = Session()
+    session.add_llm_request_lifecycle(lifecycle)
+    session.add_llm_request_lifecycle(
+        {
+            **lifecycle.to_dict(),
+            "status": ProviderRequestStatus.FAILED.value,
+        }
+    )
+
+    assert len(session.llm_request_lifecycles) == 1
+    assert session.llm_request_lifecycles[0]["status"] == "failed"
+    assert session.metadata["llm_request_lifecycle_count"] == 1
+
+    reloaded = Session.from_dict(session.to_dict())
+
+    assert reloaded.llm_request_lifecycles == session.llm_request_lifecycles
+
+
+def test_engine_persists_latest_provider_lifecycle_on_active_session() -> None:
+    engine = Engine(
+        EngineSettings(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+    )
+    lifecycle = LLMRequestLifecycle(
+        request_id="req-engine-1",
+        provider="openrouter",
+        model="openai/gpt-test",
+        status=ProviderRequestStatus.DISCONNECTED,
+        stream=True,
+        started_at=20.0,
+        last_event_at=21.0,
+        ended_at=21.0,
+        error=LLMError(
+            message="stream stalled",
+            category=ErrorCategory.TIMEOUT,
+            retryable=True,
+        ),
+    )
+    session = Session()
+    cm = SimpleNamespace(get_current_session=lambda: session)
+    api_client = SimpleNamespace(get_last_request_lifecycle=lambda: lifecycle)
+
+    engine._persist_llm_request_lifecycle(cast(Any, cm), cast(Any, api_client))
+
+    assert session.llm_request_lifecycles == [lifecycle.to_dict()]
+
+
+@pytest.mark.asyncio
+async def test_llm_step_persists_lifecycle_even_when_provider_raises() -> None:
+    session = Session()
+    conversation = SimpleNamespace(
+        get_formatted_messages=MagicMock(
+            return_value=[{"role": "user", "content": "hi"}]
+        ),
+        session=session,
+        add_assistant_message=MagicMock(),
+    )
+    conversation_manager = SimpleNamespace(
+        conversation=conversation,
+        core=None,
+        get_current_session=lambda: session,
+    )
+    lifecycle = LLMRequestLifecycle(
+        request_id="req-failed-1",
+        provider="anthropic",
+        model="claude-test",
+        status=ProviderRequestStatus.FAILED,
+        stream=False,
+        started_at=30.0,
+        last_event_at=30.1,
+        ended_at=30.1,
+        error=LLMError(
+            message="upstream rejected request",
+            category=ErrorCategory.BAD_REQUEST,
+            retryable=False,
+        ),
+    )
+    api_client = SimpleNamespace(
+        get_response=AsyncMock(side_effect=RuntimeError("boom")),
+        get_last_request_lifecycle=lambda: lifecycle,
+        get_last_error=lambda: lifecycle.error,
+        client_handler=SimpleNamespace(),
+    )
+    engine = Engine(
+        EngineSettings(),
+        cast(Any, conversation_manager),
+        cast(Any, api_client),
+        MagicMock(),
+        MagicMock(),
+    )
+
+    with pytest.raises(RuntimeError):
+        await engine._llm_step(tools_enabled=False, streaming=False)
+
+    assert session.llm_request_lifecycles == [lifecycle.to_dict()]
 
 
 def test_scoped_conversation_manager_clones_default_agent_session() -> None:

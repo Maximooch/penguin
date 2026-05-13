@@ -2,6 +2,7 @@ import os
 import logging
 import asyncio
 import json
+import time
 from typing import List, Dict, Optional, Any, Union, Callable, AsyncIterator
 
 # --- Added Imports for Vision Handling ---
@@ -17,7 +18,15 @@ from openai import AsyncOpenAI, APIError  # type: ignore
 
 # Connection pooling for parallel LLM calls
 from penguin.llm.api_client import ConnectionPoolManager
-from penguin.llm.contracts import FinishReason, LLMError
+from penguin.llm.contracts import (
+    ErrorCategory,
+    FinishReason,
+    LLMError,
+    LLMPreparedRequest,
+    LLMProviderCapabilities,
+    LLMRequestLifecycle,
+    ProviderRequestStatus,
+)
 from penguin.llm.provider_transform import (
     build_llm_error,
     extract_retry_after_seconds,
@@ -84,6 +93,7 @@ class OpenRouterGateway:
         self._last_error: Optional[LLMError] = None
         self._last_finish_reason = FinishReason.UNKNOWN
         self._last_reasoning = ""
+        self._last_request_lifecycle: Optional[LLMRequestLifecycle] = None
 
         # --- Determine Base URL (before API key check) ---
         # Priority: explicit param > model_config > OpenRouter env override >
@@ -167,6 +177,12 @@ class OpenRouterGateway:
             self.logger.debug(
                 f"Request headers configured: {list(self.extra_headers.keys())}"
             )
+
+    @property
+    def provider(self) -> str:
+        """Return the provider identifier for the shared runtime contract."""
+
+        return "openrouter"
 
     def _stream_timeout_seconds(self, env_name: str, default: float) -> float:
         """Read a positive streaming timeout from the environment."""
@@ -336,6 +352,184 @@ class OpenRouterGateway:
     def get_last_error(self) -> Optional[LLMError]:
         return self._last_error if isinstance(self._last_error, LLMError) else None
 
+    def get_last_request_lifecycle(self) -> Optional[LLMRequestLifecycle]:
+        return self._last_request_lifecycle
+
+    def get_capabilities(self) -> LLMProviderCapabilities:
+        """Return OpenRouter Chat Completions capability metadata."""
+
+        return LLMProviderCapabilities(
+            provider=self.provider,
+            model=str(getattr(self.model_config, "model", "") or ""),
+            native_tools=True,
+            streaming=bool(getattr(self.model_config, "streaming_enabled", True)),
+            reasoning=bool(
+                getattr(self.model_config, "reasoning_enabled", False)
+                or self.model_config.get_reasoning_config()
+            ),
+            vision=self.supports_vision(),
+            max_context_tokens=getattr(
+                self.model_config,
+                "max_context_window_tokens",
+                None,
+            ),
+            max_output_tokens=getattr(self.model_config, "max_output_tokens", None),
+            provider_data={
+                "api": "chat_completions",
+                "base_url": self.base_url,
+            },
+        )
+
+    async def prepare_request(
+        self,
+        messages: List[Dict[str, Any]],
+        max_output_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        stream: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> LLMPreparedRequest:
+        """Prepare the OpenRouter request without sending it."""
+
+        legacy_max_tokens = kwargs.pop("max_tokens", None)
+        if max_output_tokens is None and legacy_max_tokens is not None:
+            max_output_tokens = legacy_max_tokens
+
+        use_streaming = (
+            stream if stream is not None else self.model_config.streaming_enabled
+        )
+        processed_messages = await self._process_messages_for_vision(messages)
+        processed_messages = self._clean_conversation_format(processed_messages)
+        reasoning_config = self.model_config.get_reasoning_config()
+
+        request_params: Dict[str, Any] = {
+            "model": self.model_config.model,
+            "messages": processed_messages,
+            "max_tokens": max_output_tokens or self.model_config.max_output_tokens,
+            "temperature": temperature
+            if temperature is not None
+            else self.model_config.temperature,
+            "stream": use_streaming,
+            "extra_headers": self.extra_headers,
+            **kwargs,
+        }
+        if use_streaming:
+            raw_stream_options = request_params.get("stream_options")
+            stream_options = (
+                dict(raw_stream_options) if isinstance(raw_stream_options, dict) else {}
+            )
+            stream_options["include_usage"] = True
+            request_params["stream_options"] = stream_options
+        if reasoning_config:
+            request_params["reasoning"] = (
+                reasoning_config
+                if isinstance(reasoning_config, dict)
+                else {"enabled": True}
+            )
+
+        request_params = {
+            key: value for key, value in request_params.items() if value is not None
+        }
+        body = {
+            key: value
+            for key, value in request_params.items()
+            if key != "extra_headers"
+        }
+        transport = (
+            "http_sse"
+            if reasoning_config and use_streaming
+            else "http"
+            if reasoning_config
+            else "sdk_stream"
+            if use_streaming
+            else "sdk"
+        )
+        return LLMPreparedRequest(
+            provider=self.provider,
+            model=str(self.model_config.model),
+            protocol="openai_chat_completions",
+            route="openrouter.chat_completions",
+            body=body,
+            transport=transport,
+            headers=dict(self.extra_headers or {}),
+            capabilities=self.get_capabilities(),
+            diagnostics={
+                "message_count": len(messages),
+                "processed_message_count": len(processed_messages),
+                "stream": bool(use_streaming),
+                "reasoning_transport": bool(reasoning_config),
+            },
+            provider_data={"base_url": self.base_url},
+        )
+
+    def _start_request_lifecycle(
+        self,
+        *,
+        stream: bool,
+        messages: List[Dict[str, Any]],
+    ) -> None:
+        now = time.time()
+        self._last_request_lifecycle = LLMRequestLifecycle(
+            request_id=f"openrouter-{int(now * 1000)}",
+            provider="openrouter",
+            model=getattr(self.model_config, "model", ""),
+            status=ProviderRequestStatus.RUNNING,
+            stream=stream,
+            transport="sdk",
+            started_at=now,
+            last_event_at=now,
+            provider_data={"message_count": len(messages), "base_url": self.base_url},
+        )
+
+    def _update_request_lifecycle(
+        self,
+        *,
+        status: ProviderRequestStatus,
+        finish_reason: Optional[FinishReason] = None,
+        error: Optional[LLMError] = None,
+        event_type: Optional[str] = None,
+        provider_response_id: Optional[str] = None,
+    ) -> None:
+        lifecycle = getattr(self, "_last_request_lifecycle", None)
+        if lifecycle is None:
+            return
+        now = time.time()
+        lifecycle.status = status
+        lifecycle.last_event_at = now
+        if status in {
+            ProviderRequestStatus.COMPLETED,
+            ProviderRequestStatus.DISCONNECTED,
+            ProviderRequestStatus.FAILED,
+            ProviderRequestStatus.CANCELLED,
+        }:
+            lifecycle.ended_at = now
+        if finish_reason is not None:
+            lifecycle.finish_reason = finish_reason
+        if error is not None:
+            lifecycle.error = error
+        if event_type:
+            lifecycle.last_event_type = event_type
+        if provider_response_id:
+            lifecycle.provider_response_id = provider_response_id
+
+    def _finish_request_lifecycle_from_state(self) -> None:
+        error = self.get_last_error()
+        if error is not None:
+            status = (
+                ProviderRequestStatus.DISCONNECTED
+                if error.category in {ErrorCategory.NETWORK, ErrorCategory.TIMEOUT}
+                else ProviderRequestStatus.FAILED
+            )
+            self._update_request_lifecycle(
+                status=status,
+                finish_reason=error.finish_reason or self.get_last_finish_reason(),
+                error=error,
+            )
+            return
+        self._update_request_lifecycle(
+            status=ProviderRequestStatus.COMPLETED,
+            finish_reason=self.get_last_finish_reason(),
+        )
+
     def _set_last_finish_reason(self, finish_reason: Any) -> FinishReason:
         self._last_finish_reason = normalize_finish_reason(finish_reason)
         return self._last_finish_reason
@@ -358,18 +552,50 @@ class OpenRouterGateway:
         retry_after_seconds: Optional[float] = None,
         finish_reason: Any = None,
         provider_data: Optional[Dict[str, Any]] = None,
+        category: Any = None,
+        retryable: Optional[bool] = None,
     ) -> None:
-        self._set_last_error(
-            build_llm_error(
-                message=message,
-                provider="openrouter",
-                model=self.model_config.model,
-                status_code=status_code,
-                retry_after_seconds=retry_after_seconds,
-                finish_reason=finish_reason,
-                provider_data=provider_data,
-            )
+        error = build_llm_error(
+            message=message,
+            provider="openrouter",
+            model=self.model_config.model,
+            status_code=status_code,
+            retry_after_seconds=retry_after_seconds,
+            finish_reason=finish_reason,
+            provider_data=provider_data,
+            category=category,
+            retryable=retryable,
         )
+        self._set_last_error(error)
+        status = (
+            ProviderRequestStatus.DISCONNECTED
+            if error.category in {ErrorCategory.NETWORK, ErrorCategory.TIMEOUT}
+            else ProviderRequestStatus.FAILED
+        )
+        self._update_request_lifecycle(
+            status=status,
+            finish_reason=error.finish_reason or self.get_last_finish_reason(),
+            error=error,
+        )
+
+    def _record_stream_incomplete(self, output_state: str) -> str:
+        message = (
+            "OpenRouter stream ended before finish_reason "
+            f"(output_state={output_state})"
+        )
+        self._record_error(
+            message=message,
+            finish_reason=FinishReason.ERROR,
+            category=ErrorCategory.NETWORK,
+            retryable=True,
+        )
+        self._set_last_finish_reason(FinishReason.ERROR)
+        self._pending_tool_calls = []
+        self._last_tool_call = None
+        self._tool_call_acc = {"name": None, "arguments": ""}
+        self._tool_call_accs = {}
+        self._finish_request_lifecycle_from_state()
+        return f"[Error: {message}]"
 
     def _tool_call_payload(self, tool_call: Any) -> Dict[str, Any]:
         payload = tool_call if isinstance(tool_call, dict) else {}
@@ -897,8 +1123,39 @@ class OpenRouterGateway:
         malformed tool context that can trigger SDK validation errors.
         """
         reformatted_messages = []
+        available_tool_call_ids: set[str] = set()
 
-        for message in messages:
+        def _following_tool_result_ids(start_index: int) -> set[str]:
+            result_ids: set[str] = set()
+            cursor = start_index
+            while cursor < len(messages) and messages[cursor].get("role") == "tool":
+                tool_call_id = str(
+                    messages[cursor].get("tool_call_id") or ""
+                ).strip()
+                if tool_call_id:
+                    result_ids.add(tool_call_id)
+                cursor += 1
+            return result_ids
+
+        def _tool_call_from_tool_message(
+            tool_message: Dict[str, Any]
+        ) -> Optional[Dict[str, Any]]:
+            tool_call_id = str(tool_message.get("tool_call_id") or "").strip()
+            name = str(
+                tool_message.get("name") or tool_message.get("action_type") or ""
+            ).strip()
+            if not tool_call_id or not name:
+                return None
+            arguments = tool_message.get("tool_arguments")
+            if not isinstance(arguments, str) or not arguments.strip():
+                arguments = "{}"
+            return {
+                "id": tool_call_id,
+                "type": "function",
+                "function": {"name": name, "arguments": arguments},
+            }
+
+        for index, message in enumerate(messages):
             reformatted_message = message.copy()
 
             # Handle content field
@@ -932,7 +1189,18 @@ class OpenRouterGateway:
                     and str(tool_call.get("function", {}).get("name") or "").strip()
                     for tool_call in tool_calls
                 )
-                if valid_tool_calls:
+                tool_call_ids = {
+                    str(tool_call.get("id") or "").strip()
+                    for tool_call in tool_calls
+                    if isinstance(tool_call, dict)
+                }
+                unique_tool_call_ids = len(tool_call_ids) == len(tool_calls)
+                following_tool_ids = _following_tool_result_ids(index + 1)
+                if (
+                    valid_tool_calls
+                    and unique_tool_call_ids
+                    and tool_call_ids.issubset(following_tool_ids)
+                ):
                     self.logger.debug(
                         "Preserving assistant tool_calls for OpenRouter continuity"
                     )
@@ -944,9 +1212,10 @@ class OpenRouterGateway:
                     for key, value in message.items():
                         if key not in ["role", "content", "tool_calls"]:
                             reformatted_message[key] = value
+                    available_tool_call_ids.update(tool_call_ids)
                 else:
                     self.logger.debug(
-                        "Flattening malformed assistant tool_calls to plain text"
+                        "Flattening orphaned or malformed assistant tool_calls to plain text"
                     )
                     reformatted_message = {
                         "role": "assistant",
@@ -958,7 +1227,7 @@ class OpenRouterGateway:
 
             elif message.get("role") == "tool":
                 tool_call_id = str(message.get("tool_call_id") or "").strip()
-                if tool_call_id:
+                if tool_call_id and tool_call_id in available_tool_call_ids:
                     self.logger.debug(
                         "Preserving tool message with tool_call_id for OpenRouter continuity"
                     )
@@ -967,6 +1236,33 @@ class OpenRouterGateway:
                         "tool_call_id": tool_call_id,
                         "content": message.get("content", ""),
                     }
+                    available_tool_call_ids.discard(tool_call_id)
+                elif tool_call_id:
+                    synthesized_tool_call = _tool_call_from_tool_message(message)
+                    if synthesized_tool_call:
+                        self.logger.debug(
+                            "Synthesizing assistant tool_call for orphaned OpenRouter tool message"
+                        )
+                        reformatted_messages.append(
+                            {
+                                "role": "assistant",
+                                "content": "",
+                                "tool_calls": [synthesized_tool_call],
+                            }
+                        )
+                        reformatted_message = {
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "content": message.get("content", ""),
+                        }
+                    else:
+                        self.logger.debug(
+                            "Flattening orphaned tool message without replay metadata"
+                        )
+                        reformatted_message = {
+                            "role": "user",
+                            "content": message.get("content", ""),
+                        }
                 else:
                     self.logger.debug(
                         "Flattening malformed tool message without tool_call_id"
@@ -1038,6 +1334,7 @@ class OpenRouterGateway:
         use_streaming = (
             stream if stream is not None else self.model_config.streaming_enabled
         )
+        self._start_request_lifecycle(stream=bool(use_streaming), messages=messages)
 
         legacy_max_tokens = kwargs.pop("max_tokens", None)
         if max_output_tokens is None and legacy_max_tokens is not None:
@@ -1205,6 +1502,11 @@ class OpenRouterGateway:
                             "No chunks were received before timeout. Try again or switch models.]"
                         )
 
+                    self._update_request_lifecycle(
+                        status=ProviderRequestStatus.STREAMING,
+                        event_type="chat.completion.chunk",
+                        provider_response_id=getattr(chunk, "id", None),
+                    )
                     self._set_last_usage(getattr(chunk, "usage", None))
                     raw_choices = getattr(chunk, "choices", None)
                     choice = (
@@ -1236,7 +1538,18 @@ class OpenRouterGateway:
                         if chunk_finish_reason == "error":
                             # Try to extract error info from the chunk
                             error_info = getattr(chunk, "error", None)
-                            if error_info:
+                            if isinstance(error_info, dict):
+                                error_message = (
+                                    error_info.get("message")
+                                    or "Unknown streaming error"
+                                )
+                                metadata = error_info.get("metadata")
+                                provider_name = (
+                                    metadata.get("provider_name")
+                                    if isinstance(metadata, dict)
+                                    else None
+                                ) or "unknown provider"
+                            elif error_info:
                                 error_message = (
                                     getattr(error_info, "message", None)
                                     or "Unknown streaming error"
@@ -1462,6 +1775,16 @@ class OpenRouterGateway:
                         return f"{full_response_content}\n\n[Error: Stream interrupted by {provider}: {error_msg}]"
                     return f"[Error: {provider} returned mid-stream error: {error_msg}]"
 
+                if sdk_last_finish_reason is None:
+                    output_state = (
+                        "tool_call"
+                        if self.has_pending_tool_call() or self._tool_call_accs
+                        else "text"
+                        if full_response_content
+                        else "empty"
+                    )
+                    return self._record_stream_incomplete(output_state)
+
                 # For streaming responses, we return only the content part
                 # The reasoning was already streamed via callback
                 if not full_response_content:
@@ -1491,8 +1814,10 @@ class OpenRouterGateway:
                     self.logger.warning(
                         f"[OpenRouterGateway] SDK streaming response was truncated (finish_reason='length'). Model: {self.model_config.model}"
                     )
+                    self._finish_request_lifecycle_from_state()
                     return f"{full_response_content}\n\n[Note: Response was truncated due to token limits. Consider increasing max_output_tokens or breaking your request into smaller parts.]"
 
+                self._finish_request_lifecycle_from_state()
                 return full_response_content
 
             else:  # Not streaming
@@ -1647,10 +1972,28 @@ class OpenRouterGateway:
                     self.logger.warning(
                         f"[OpenRouterGateway] SDK non-streaming response was truncated (finish_reason='length'). Model: {self.model_config.model}"
                     )
+                    self._finish_request_lifecycle_from_state()
                     return f"{full_response_content}\n\n[Note: Response was truncated due to token limits. Consider increasing max_output_tokens or breaking your request into smaller parts.]"
 
+                self._finish_request_lifecycle_from_state()
                 return full_response_content or ""  # Ensure string return
 
+        except asyncio.CancelledError:
+            error = build_llm_error(
+                message="OpenRouter request was cancelled",
+                provider="openrouter",
+                model=getattr(self.model_config, "model", None),
+                category=ErrorCategory.RUNTIME,
+                retryable=False,
+                finish_reason=FinishReason.ERROR,
+            )
+            self._set_last_error(error)
+            self._update_request_lifecycle(
+                status=ProviderRequestStatus.CANCELLED,
+                finish_reason=FinishReason.ERROR,
+                error=error,
+            )
+            raise
         except APIError as e:
             self.logger.error(f"OpenRouter API error: {e}", exc_info=True)
             # Safely extract attributes - OpenAI SDK APIError may have different structure
@@ -1783,6 +2126,7 @@ class OpenRouterGateway:
         stream_error: Optional[Dict[str, Any]] = None
         interrupted_reason: Optional[str] = None
         generation_id: Optional[str] = None
+        saw_done_marker = False
         stream_started_at = asyncio.get_running_loop().time()
         chunk_timeout_seconds = self._stream_chunk_timeout_seconds()
         total_timeout_seconds = self._stream_total_timeout_seconds()
@@ -1842,6 +2186,7 @@ class OpenRouterGateway:
                     data_str = line[6:]  # Remove "data: " prefix
 
                     if data_str.strip() == "[DONE]":
+                        saw_done_marker = True
                         break
 
                     try:
@@ -2023,6 +2368,16 @@ class OpenRouterGateway:
             if full_content:
                 return f"{full_content}\n\n[Error: Stream interrupted by {provider}: {error_msg}]"
             return f"[Error: {provider} returned mid-stream error: {error_msg}]"
+
+        if not interrupted_reason and (not saw_done_marker or last_finish_reason is None):
+            output_state = (
+                "tool_call"
+                if self.has_pending_tool_call() or self._tool_call_accs
+                else "text"
+                if full_content
+                else "empty"
+            )
+            return self._record_stream_incomplete(output_state)
 
         # Check for empty content and provide helpful message
         if not full_content:
