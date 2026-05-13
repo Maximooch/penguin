@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import hashlib
 import io
 import json
 import logging
@@ -30,10 +29,13 @@ from ..contracts import (
     ErrorCategory,
     FinishReason,
     LLMError,
+    LLMPreparedRequest,
     LLMProviderError,
+    LLMProviderCapabilities,
     LLMRequestLifecycle,
     LLMUsage,
     ProviderRequestStatus,
+    stable_payload_hash,
 )
 from ..model_config import ModelConfig, normalize_openai_service_tier
 from ..provider_transform import (
@@ -580,6 +582,192 @@ class OpenAIAdapter(BaseAdapter):
     def _interrupt_on_tool_call(self) -> bool:
         return bool(getattr(self.model_config, "interrupt_on_tool_call", False))
 
+    def get_capabilities(self) -> LLMProviderCapabilities:
+        """Return OpenAI/Responses capability metadata."""
+
+        return LLMProviderCapabilities(
+            provider=self.provider,
+            model=str(getattr(self.model_config, "model", "") or ""),
+            native_tools=True,
+            streaming=bool(getattr(self.model_config, "streaming_enabled", True)),
+            reasoning=bool(
+                getattr(self.model_config, "reasoning_enabled", False)
+                or self.model_config.get_reasoning_config()
+            ),
+            vision=self.supports_vision(),
+            resumable=True,
+            max_context_tokens=getattr(
+                self.model_config,
+                "max_context_window_tokens",
+                None,
+            ),
+            max_output_tokens=getattr(self.model_config, "max_output_tokens", None),
+            provider_data={
+                "api": "responses",
+                "oauth_codex_supported": True,
+                "service_tier": self._get_service_tier(),
+            },
+        )
+
+    def _build_native_responses_request_params(
+        self,
+        *,
+        processed_messages: List[Dict[str, Any]],
+        max_output_tokens: Optional[int],
+        temperature: Optional[float],
+        reasoning_config: Optional[Dict[str, Any]],
+        instructions: Optional[str],
+        previous_response_id: Optional[str],
+        conversation_id: Optional[str],
+        response_format: Optional[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]],
+        tool_choice: Optional[Union[str, Dict[str, Any]]],
+        service_tier: Optional[str],
+    ) -> Dict[str, Any]:
+        """Build the native Responses API request body."""
+
+        input_parts = self._build_input_parts(processed_messages)
+        if input_parts is not None:
+            request_params: Dict[str, Any] = {
+                "model": self.model_config.model,
+                "input": input_parts,
+                **(
+                    {"max_output_tokens": max_output_tokens}
+                    if max_output_tokens
+                    else {}
+                ),
+                **({"reasoning": reasoning_config} if reasoning_config else {}),
+            }
+        else:
+            input_text = self._build_transcript_input(processed_messages)
+            request_params = {
+                "model": self.model_config.model,
+                "input": input_text,
+                **(
+                    {"max_output_tokens": max_output_tokens}
+                    if max_output_tokens
+                    else {}
+                ),
+                **({"reasoning": reasoning_config} if reasoning_config else {}),
+            }
+
+        if instructions:
+            request_params["instructions"] = instructions
+        if previous_response_id:
+            request_params["previous_response_id"] = previous_response_id
+        if conversation_id:
+            request_params["conversation"] = conversation_id
+        if response_format:
+            request_params["response_format"] = response_format
+        if tools:
+            request_params["tools"] = tools
+        if tool_choice:
+            request_params["tool_choice"] = tool_choice
+        if service_tier:
+            request_params["service_tier"] = service_tier
+
+        try:
+            uses_effort_style = bool(self.model_config._uses_effort_style())
+        except Exception:
+            uses_effort_style = False
+        if not uses_effort_style:
+            request_params["temperature"] = temperature
+
+        return request_params
+
+    async def prepare_request(
+        self,
+        messages: List[Dict[str, Any]],
+        max_output_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        stream: bool = False,
+        **kwargs: Any,
+    ) -> LLMPreparedRequest:
+        """Prepare the OpenAI provider request without sending it."""
+
+        legacy_max_tokens = kwargs.pop("max_tokens", None)
+        if max_output_tokens is None and legacy_max_tokens is not None:
+            max_output_tokens = legacy_max_tokens
+
+        processed_messages = await self._process_messages_for_vision(messages)
+        reasoning_config = self._prepare_reasoning_config(
+            self.model_config.get_reasoning_config(),
+            stream=stream,
+        )
+        temp_val = (
+            temperature if temperature is not None else self.model_config.temperature
+        )
+
+        instructions: Optional[str] = kwargs.get("instructions")
+        previous_response_id: Optional[str] = kwargs.get("previous_response_id")
+        conversation_id: Optional[str] = kwargs.get("conversation")
+        response_format: Optional[Dict[str, Any]] = kwargs.get("response_format")
+        tools = normalize_openai_responses_tools(kwargs.get("tools"))
+        tool_choice = normalize_openai_responses_tool_choice(kwargs.get("tool_choice"))
+        service_tier = self._get_service_tier()
+
+        oauth_record = self._peek_oauth_record_for_prepare()
+        if oauth_record is not None:
+            payload, model_id, model_fallback = self._build_codex_oauth_payload(
+                processed_messages=processed_messages,
+                temperature=temp_val,
+                reasoning_config=reasoning_config,
+                instructions=instructions,
+                previous_response_id=previous_response_id,
+                conversation_id=conversation_id,
+                response_format=response_format,
+                tools=tools,
+                tool_choice=tool_choice,
+                service_tier=service_tier,
+            )
+            return LLMPreparedRequest(
+                provider=self.provider,
+                model=model_id,
+                protocol="openai_responses",
+                route="openai.codex_oauth.responses",
+                body=payload,
+                transport="http_sse",
+                capabilities=self.get_capabilities(),
+                diagnostics={
+                    "message_count": len(messages),
+                    "processed_message_count": len(processed_messages),
+                    "model_fallback": model_fallback,
+                    "stream": stream,
+                },
+                provider_data={
+                    "endpoint": _OPENAI_CODEX_RESPONSES_URL,
+                    "header_names": ["Authorization", "Content-Type"],
+                },
+            )
+
+        request_params = self._build_native_responses_request_params(
+            processed_messages=processed_messages,
+            max_output_tokens=max_output_tokens,
+            temperature=temp_val,
+            reasoning_config=reasoning_config,
+            instructions=instructions,
+            previous_response_id=previous_response_id,
+            conversation_id=conversation_id,
+            response_format=response_format,
+            tools=tools,
+            tool_choice=tool_choice,
+            service_tier=service_tier,
+        )
+        return LLMPreparedRequest(
+            provider=self.provider,
+            model=str(self.model_config.model),
+            protocol="openai_responses",
+            route="openai.responses",
+            body=request_params,
+            transport="sdk_stream" if stream else "sdk",
+            capabilities=self.get_capabilities(),
+            diagnostics={
+                "message_count": len(messages),
+                "processed_message_count": len(processed_messages),
+                "stream": stream,
+            },
+        )
+
     async def create_completion(
         self,
         messages: List[Dict[str, Any]],
@@ -669,56 +857,19 @@ class OpenAIAdapter(BaseAdapter):
             bool(self.client.api_key),
         )
 
-        # Build input either as a compact string, or as structured content parts
-        # when images are present.
-        input_parts = self._build_input_parts(processed_messages)
-        if input_parts is not None:
-            request_params: Dict[str, Any] = {
-                "model": self.model_config.model,
-                "input": input_parts,
-                **(
-                    {"max_output_tokens": max_output_tokens}
-                    if max_output_tokens
-                    else {}
-                ),
-                **({"reasoning": reasoning_config} if reasoning_config else {}),
-            }
-        else:
-            input_text = self._build_transcript_input(processed_messages)
-            request_params = {
-                "model": self.model_config.model,
-                "input": input_text,
-                **(
-                    {"max_output_tokens": max_output_tokens}
-                    if max_output_tokens
-                    else {}
-                ),
-                **({"reasoning": reasoning_config} if reasoning_config else {}),
-            }
-
-        # Optional top-level params
-        if instructions:
-            request_params["instructions"] = instructions
-        if previous_response_id:
-            request_params["previous_response_id"] = previous_response_id
-        if conversation_id:
-            request_params["conversation"] = conversation_id
-        if response_format:
-            request_params["response_format"] = response_format
-        if tools:
-            request_params["tools"] = tools
-        if tool_choice:
-            request_params["tool_choice"] = tool_choice
-        if service_tier:
-            request_params["service_tier"] = service_tier
-        # Per OpenAI Responses API, o-/gpt-5 style reasoning models do not accept
-        # temperature.
-        try:
-            uses_effort_style = bool(self.model_config._uses_effort_style())
-        except Exception:
-            uses_effort_style = False
-        if not uses_effort_style:
-            request_params["temperature"] = temp_val
+        request_params = self._build_native_responses_request_params(
+            processed_messages=processed_messages,
+            max_output_tokens=max_output_tokens,
+            temperature=temp_val,
+            reasoning_config=reasoning_config,
+            instructions=instructions,
+            previous_response_id=previous_response_id,
+            conversation_id=conversation_id,
+            response_format=response_format,
+            tools=tools,
+            tool_choice=tool_choice,
+            service_tier=service_tier,
+        )
 
         self._start_request_lifecycle(
             request_id=f"openai-{int(time.time() * 1000)}",
@@ -927,6 +1078,37 @@ class OpenAIAdapter(BaseAdapter):
         self._apply_oauth_record_to_runtime(oauth_record)
         return oauth_record
 
+    def _peek_oauth_record_for_prepare(self) -> Dict[str, Any] | None:
+        """Read OAuth route metadata for request preparation without refresh."""
+
+        record = get_provider_credential("openai")
+        if isinstance(record, dict) and record.get("type") == "oauth":
+            access = record.get("access")
+            if isinstance(access, str) and access.strip():
+                return dict(record)
+
+        oauth_access = str(os.getenv("OPENAI_OAUTH_ACCESS_TOKEN") or "").strip()
+        if not oauth_access:
+            return None
+
+        oauth_record: Dict[str, Any] = {
+            "type": "oauth",
+            "access": oauth_access,
+        }
+        refresh = str(os.getenv("OPENAI_OAUTH_REFRESH_TOKEN") or "").strip()
+        if refresh:
+            oauth_record["refresh"] = refresh
+        expires_raw = str(os.getenv("OPENAI_OAUTH_EXPIRES_AT_MS") or "").strip()
+        if expires_raw:
+            try:
+                oauth_record["expires"] = int(expires_raw)
+            except ValueError:
+                pass
+        account_id = str(os.getenv("OPENAI_ACCOUNT_ID") or "").strip()
+        if account_id:
+            oauth_record["accountId"] = account_id
+        return oauth_record
+
     def _apply_oauth_record_to_runtime(self, oauth_record: Dict[str, Any]) -> None:
         access = oauth_record.get("access")
         if isinstance(access, str) and access.strip():
@@ -957,8 +1139,7 @@ class OpenAIAdapter(BaseAdapter):
         return httpx.Timeout(connect=30.0, read=None, write=60.0, pool=30.0)
 
     def _codex_payload_hash(self, payload: Dict[str, Any]) -> str:
-        payload_text = json.dumps(payload, sort_keys=True, default=str)
-        return hashlib.sha256(payload_text.encode("utf-8")).hexdigest()
+        return stable_payload_hash(payload)
 
     def _start_request_lifecycle(
         self,
@@ -1309,15 +1490,11 @@ class OpenAIAdapter(BaseAdapter):
 
         return sanitized
 
-    async def _create_oauth_codex_completion(
+    def _build_codex_oauth_payload(
         self,
         *,
         processed_messages: List[Dict[str, Any]],
-        oauth_record: Dict[str, Any],
-        max_output_tokens: int | None,
         temperature: float,
-        stream: bool,
-        stream_callback: Optional[Callable[[str], None]],
         reasoning_config: Dict[str, Any] | None,
         instructions: str | None,
         previous_response_id: str | None,
@@ -1326,9 +1503,12 @@ class OpenAIAdapter(BaseAdapter):
         tools: List[Dict[str, Any]] | None,
         tool_choice: Union[str, Dict[str, Any]] | None,
         service_tier: str | None,
-    ) -> str:
-        diag_id = self._new_codex_diag_id()
-        model_id, model_fallback = self._codex_model_for_oauth(self.model_config.model)
+    ) -> tuple[Dict[str, Any], str, bool]:
+        """Build the Codex OAuth Responses payload without sending it."""
+
+        model_id, model_fallback = self._codex_model_for_oauth(
+            self.model_config.model
+        )
         resolved_instructions, codex_messages = (
             self._prepare_codex_messages_and_instructions(
                 instructions,
@@ -1376,6 +1556,40 @@ class OpenAIAdapter(BaseAdapter):
         if not uses_effort_style:
             payload["temperature"] = temperature
 
+        return payload, model_id, model_fallback
+
+    async def _create_oauth_codex_completion(
+        self,
+        *,
+        processed_messages: List[Dict[str, Any]],
+        oauth_record: Dict[str, Any],
+        max_output_tokens: int | None,
+        temperature: float,
+        stream: bool,
+        stream_callback: Optional[Callable[[str], None]],
+        reasoning_config: Dict[str, Any] | None,
+        instructions: str | None,
+        previous_response_id: str | None,
+        conversation_id: str | None,
+        response_format: Dict[str, Any] | None,
+        tools: List[Dict[str, Any]] | None,
+        tool_choice: Union[str, Dict[str, Any]] | None,
+        service_tier: str | None,
+    ) -> str:
+        diag_id = self._new_codex_diag_id()
+        payload, model_id, model_fallback = self._build_codex_oauth_payload(
+            processed_messages=processed_messages,
+            temperature=temperature,
+            reasoning_config=reasoning_config,
+            instructions=instructions,
+            previous_response_id=previous_response_id,
+            conversation_id=conversation_id,
+            response_format=response_format,
+            tools=tools,
+            tool_choice=tool_choice,
+            service_tier=service_tier,
+        )
+
         access = str(oauth_record.get("access") or "").strip()
         account_id = str(oauth_record.get("accountId") or "").strip()
         headers: Dict[str, str] = {
@@ -1397,8 +1611,10 @@ class OpenAIAdapter(BaseAdapter):
             True,
             model_id,
             model_fallback,
-            len(input_items),
-            bool(resolved_instructions),
+            len(payload.get("input", []))
+            if isinstance(payload.get("input"), list)
+            else 0,
+            bool(payload.get("instructions")),
             payload.get("store"),
             service_tier,
             bool(account_id),

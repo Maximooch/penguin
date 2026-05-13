@@ -416,6 +416,11 @@ provider traffic:
   CWM-truncated history shape
 - replay fixtures minimized from `context/bugs/*` and `misc/web-server-logs-*`
 
+Initial request-capture coverage now exists through `LLMPreparedRequest` for
+native OpenAI/OpenAI-compatible, Anthropic, OpenRouter, and `APIClient`.
+The next expansion is to port the replay/adjacency/CWM-truncation matrix onto
+that prepared-request boundary so failures are caught before provider traffic.
+
 Critical provider lifecycle cases:
 
 - terminal event with text

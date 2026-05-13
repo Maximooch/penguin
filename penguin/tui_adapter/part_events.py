@@ -4,14 +4,13 @@ This module provides dataclasses and adapters to convert Penguin's internal
 streaming events to OpenCode-compatible message/part events for the TUI.
 """
 
-from dataclasses import dataclass, field
-from typing import Literal, Optional, Dict, Any, Tuple, Callable, Awaitable
-from enum import Enum
 import json
 import os
 import re
 import time
-import uuid
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Awaitable, Callable, Dict, Literal, Optional, Tuple
 
 
 class PartType(Enum):
@@ -73,7 +72,8 @@ class EventEnvelope:
 
     def to_sse(self) -> str:
         """Convert to Server-Sent Event format."""
-        return f"data: {json.dumps({'type': self.type, 'properties': self.properties})}\n\n"
+        payload = {"type": self.type, "properties": self.properties}
+        return f"data: {json.dumps(payload)}\n\n"
 
 
 class PartEventAdapter:
@@ -96,6 +96,7 @@ class PartEventAdapter:
         self._current_message_id: Optional[str] = None
         self._current_reasoning_part_id: Optional[str] = None
         self._current_text_part_id: Optional[str] = None
+        self._last_user_message_id: Optional[str] = None
         self._stream_active: bool = False
         self._active_tool_parts: set[str] = set()
         self._active_tool_counts_by_message: Dict[str, int] = {}
@@ -117,6 +118,8 @@ class PartEventAdapter:
 
     def set_session(self, session_id: str):
         """Set current session ID for all subsequent events."""
+        if self._session_id != session_id:
+            self._last_user_message_id = None
         self._session_id = session_id
 
     def set_directory(self, directory: Optional[str]) -> None:
@@ -137,6 +140,9 @@ class PartEventAdapter:
             pass
         cwd = self._default_directory or os.getenv("PENGUIN_CWD") or os.getcwd()
         return {"cwd": cwd, "root": cwd}
+
+    def _assistant_parent_id(self) -> str:
+        return self._last_user_message_id or "root"
 
     def _mode(self) -> str:
         """Resolve OpenCode message mode from execution context."""
@@ -321,7 +327,7 @@ class PartEventAdapter:
             provider_id=provider_id,
             variant=variant,
             agent_id=agent_id,
-            parent_id="root",
+            parent_id=self._assistant_parent_id(),
             path=self._path(),
             mode=self._mode(),
         )
@@ -383,7 +389,7 @@ class PartEventAdapter:
                 provider_id=provider_id,
                 variant=variant,
                 agent_id=agent_id,
-                parent_id="root",
+                parent_id=self._assistant_parent_id(),
                 path=self._path(),
                 mode=self._mode(),
             )
@@ -703,6 +709,7 @@ class PartEventAdapter:
             path=self._path(),
             mode=self._mode(),
         )
+        self._last_user_message_id = resolved_message_id
 
         # Create text part for user message
         part_id = self._next_id("part")
@@ -738,7 +745,7 @@ class PartEventAdapter:
                 time_created=time.time(),
                 time_completed=time.time(),
                 agent_id="default",
-                parent_id="root",
+                parent_id=self._assistant_parent_id(),
                 path=self._path(),
                 mode=self._mode(),
             )
@@ -828,4 +835,4 @@ class PartEventAdapter:
         )
 
 
-__all__ = ["PartType", "Part", "Message", "EventEnvelope", "PartEventAdapter"]
+__all__ = ["EventEnvelope", "Message", "Part", "PartEventAdapter", "PartType"]

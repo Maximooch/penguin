@@ -518,6 +518,10 @@ Phase 5.6 implementation note:
   the provider/model may still report reasoning-token usage. Audit provider and
   model capability metadata later so controllable reasoning config is applied
   only where the selected provider contract supports it.
+- Provider capability metadata now exists in `LLMProviderCapabilities` and is
+  attached to prepared provider requests. The remaining audit is model-level:
+  verify which specific endpoints/models should set native-tool, reasoning,
+  vision, resumable, and background flags.
 - LiteLLM, Gemini, Ollama, and other providers intentionally remain on the
   ActionXML fallback path until their native tool contracts are audited and
   tested.

@@ -22,6 +22,8 @@ from penguin.llm.contracts import (
     ErrorCategory,
     FinishReason,
     LLMError,
+    LLMPreparedRequest,
+    LLMProviderCapabilities,
     LLMRequestLifecycle,
     ProviderRequestStatus,
 )
@@ -175,6 +177,12 @@ class OpenRouterGateway:
             self.logger.debug(
                 f"Request headers configured: {list(self.extra_headers.keys())}"
             )
+
+    @property
+    def provider(self) -> str:
+        """Return the provider identifier for the shared runtime contract."""
+
+        return "openrouter"
 
     def _stream_timeout_seconds(self, env_name: str, default: float) -> float:
         """Read a positive streaming timeout from the environment."""
@@ -346,6 +354,112 @@ class OpenRouterGateway:
 
     def get_last_request_lifecycle(self) -> Optional[LLMRequestLifecycle]:
         return self._last_request_lifecycle
+
+    def get_capabilities(self) -> LLMProviderCapabilities:
+        """Return OpenRouter Chat Completions capability metadata."""
+
+        return LLMProviderCapabilities(
+            provider=self.provider,
+            model=str(getattr(self.model_config, "model", "") or ""),
+            native_tools=True,
+            streaming=bool(getattr(self.model_config, "streaming_enabled", True)),
+            reasoning=bool(
+                getattr(self.model_config, "reasoning_enabled", False)
+                or self.model_config.get_reasoning_config()
+            ),
+            vision=self.supports_vision(),
+            max_context_tokens=getattr(
+                self.model_config,
+                "max_context_window_tokens",
+                None,
+            ),
+            max_output_tokens=getattr(self.model_config, "max_output_tokens", None),
+            provider_data={
+                "api": "chat_completions",
+                "base_url": self.base_url,
+            },
+        )
+
+    async def prepare_request(
+        self,
+        messages: List[Dict[str, Any]],
+        max_output_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        stream: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> LLMPreparedRequest:
+        """Prepare the OpenRouter request without sending it."""
+
+        legacy_max_tokens = kwargs.pop("max_tokens", None)
+        if max_output_tokens is None and legacy_max_tokens is not None:
+            max_output_tokens = legacy_max_tokens
+
+        use_streaming = (
+            stream if stream is not None else self.model_config.streaming_enabled
+        )
+        processed_messages = await self._process_messages_for_vision(messages)
+        processed_messages = self._clean_conversation_format(processed_messages)
+        reasoning_config = self.model_config.get_reasoning_config()
+
+        request_params: Dict[str, Any] = {
+            "model": self.model_config.model,
+            "messages": processed_messages,
+            "max_tokens": max_output_tokens or self.model_config.max_output_tokens,
+            "temperature": temperature
+            if temperature is not None
+            else self.model_config.temperature,
+            "stream": use_streaming,
+            "extra_headers": self.extra_headers,
+            **kwargs,
+        }
+        if use_streaming:
+            raw_stream_options = request_params.get("stream_options")
+            stream_options = (
+                dict(raw_stream_options) if isinstance(raw_stream_options, dict) else {}
+            )
+            stream_options["include_usage"] = True
+            request_params["stream_options"] = stream_options
+        if reasoning_config:
+            request_params["reasoning"] = (
+                reasoning_config
+                if isinstance(reasoning_config, dict)
+                else {"enabled": True}
+            )
+
+        request_params = {
+            key: value for key, value in request_params.items() if value is not None
+        }
+        body = {
+            key: value
+            for key, value in request_params.items()
+            if key != "extra_headers"
+        }
+        transport = (
+            "http_sse"
+            if reasoning_config and use_streaming
+            else "http"
+            if reasoning_config
+            else "sdk_stream"
+            if use_streaming
+            else "sdk"
+        )
+        return LLMPreparedRequest(
+            provider=self.provider,
+            model=str(self.model_config.model),
+            protocol="openai_chat_completions",
+            route="openrouter.chat_completions",
+            body=body,
+            transport=transport,
+            headers=dict(self.extra_headers or {}),
+            capabilities=self.get_capabilities(),
+            diagnostics={
+                "message_count": len(messages),
+                "processed_message_count": len(processed_messages),
+                "stream": bool(use_streaming),
+                "reasoning_transport": bool(reasoning_config),
+            },
+            provider_data={"base_url": self.base_url},
+        )
 
     def _start_request_lifecycle(
         self,

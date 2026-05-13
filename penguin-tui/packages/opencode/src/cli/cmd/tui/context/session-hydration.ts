@@ -40,10 +40,31 @@ type SessionHydrationOptions = {
 
 function messageCreatedAt(message: Message): number {
   const value = message.time?.created
-  return typeof value === "number" ? value : 0
+  if (typeof value === "number") return value
+
+  const match = /^msg_(\d{10,13})(?:[._]\d+)?/.exec(message.id)
+  if (!match) return Number.MAX_SAFE_INTEGER
+
+  const raw = match[1]
+  const stamp = Number(raw)
+  if (!Number.isFinite(stamp)) return Number.MAX_SAFE_INTEGER
+  return raw.length === 10 ? stamp * 1000 : stamp
+}
+
+function parentID(message: Message): string | undefined {
+  if (message.role !== "assistant") return undefined
+  const value = message.parentID
+  if (!value || value === "root") return undefined
+  return value
 }
 
 export function compareMessagesByCreated(left: Message, right: Message): number {
+  const leftParent = parentID(left)
+  if (leftParent && leftParent === right.id) return 1
+
+  const rightParent = parentID(right)
+  if (rightParent && rightParent === left.id) return -1
+
   const diff = messageCreatedAt(left) - messageCreatedAt(right)
   if (diff !== 0) return diff
   return left.id.localeCompare(right.id)
@@ -52,15 +73,14 @@ export function compareMessagesByCreated(left: Message, right: Message): number 
 export function upsertPenguinMessage(existing: Message[] | undefined, incoming: Message): Message[] {
   if (!Array.isArray(existing) || existing.length === 0) return [incoming]
   const match = existing.findIndex((item) => item.id === incoming.id)
-  if (match !== -1) return existing.map((item, index) => (index === match ? incoming : item))
+  if (match !== -1) return existing.map((item, index) => (index === match ? incoming : item)).toSorted(compareMessagesByCreated)
   return [...existing, incoming].toSorted(compareMessagesByCreated)
 }
 
 function insertPreservedMessages(hydrated: Message[], preserved: Message[]): Message[] {
   const merged = [...hydrated]
   for (const message of preserved.toSorted(compareMessagesByCreated)) {
-    const messageTime = messageCreatedAt(message)
-    const insertAt = merged.findIndex((item) => messageTime < messageCreatedAt(item))
+    const insertAt = merged.findIndex((item) => compareMessagesByCreated(message, item) < 0)
     if (insertAt === -1) {
       merged.push(message)
       continue

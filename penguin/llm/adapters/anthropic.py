@@ -16,6 +16,8 @@ from ..contracts import (
     ErrorCategory,
     FinishReason,
     LLMError,
+    LLMPreparedRequest,
+    LLMProviderCapabilities,
     LLMRequestLifecycle,
     LLMUsage,
     ProviderRequestStatus,
@@ -239,6 +241,90 @@ class AnthropicAdapter(BaseAdapter):
         if not isinstance(getattr(self, "_last_usage", None), dict):
             return {}
         return dict(self._last_usage)
+
+    def get_capabilities(self) -> LLMProviderCapabilities:
+        """Return Anthropic Messages capability metadata."""
+
+        return LLMProviderCapabilities(
+            provider=self.provider,
+            model=str(getattr(self.model_config, "model", "") or ""),
+            native_tools=True,
+            streaming=bool(getattr(self.model_config, "streaming_enabled", True)),
+            reasoning=bool(
+                getattr(self.model_config, "reasoning_enabled", False)
+                or self.model_config.get_reasoning_config()
+            ),
+            vision=self.supports_vision(),
+            max_context_tokens=getattr(
+                self.model_config,
+                "max_context_window_tokens",
+                None,
+            ),
+            max_output_tokens=getattr(self.model_config, "max_output_tokens", None),
+            provider_data={"api": "messages"},
+        )
+
+    async def prepare_request(
+        self,
+        messages: List[Dict[str, Any]],
+        max_output_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        stream: bool = False,
+        **kwargs: Any,
+    ) -> LLMPreparedRequest:
+        """Prepare an Anthropic Messages request without sending it."""
+
+        legacy_max_tokens = kwargs.pop("max_tokens", None)
+        if max_output_tokens is None and legacy_max_tokens is not None:
+            max_output_tokens = legacy_max_tokens
+
+        formatted_messages = self.format_messages(messages)
+        system_message = None
+        for msg in messages:
+            if msg.get("role") == "system":
+                system_message = msg.get("content", "")
+                if system_message:
+                    system_message = str(system_message).rstrip()
+                break
+
+        request_params: Dict[str, Any] = {
+            "model": self.model_config.model,
+            "messages": formatted_messages,
+            "max_tokens": max_output_tokens
+            or self.model_config.max_output_tokens
+            or 4096,
+            "temperature": temperature or self.model_config.temperature or 0.7,
+            "stream": stream,
+        }
+        if system_message:
+            request_params["system"] = system_message
+        if kwargs.get("tools"):
+            request_params["tools"] = kwargs["tools"]
+        if kwargs.get("tool_choice"):
+            request_params["tool_choice"] = kwargs["tool_choice"]
+
+        reasoning_config = self.model_config.get_reasoning_config()
+        self._apply_output_effort(request_params, reasoning_config)
+        self._ensure_no_trailing_whitespace(request_params)
+
+        return LLMPreparedRequest(
+            provider=self.provider,
+            model=str(self.model_config.model),
+            protocol="anthropic_messages",
+            route="anthropic.messages",
+            body={
+                key: value
+                for key, value in request_params.items()
+                if value is not None
+            },
+            transport="sdk_stream" if stream else "sdk",
+            capabilities=self.get_capabilities(),
+            diagnostics={
+                "message_count": len(messages),
+                "formatted_message_count": len(formatted_messages),
+                "stream": stream,
+            },
+        )
 
     def has_pending_tool_call(self) -> bool:
         return bool(

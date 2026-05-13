@@ -72,6 +72,29 @@ async def test_part_adapter_user_message_preserves_supplied_message_id() -> None
 
 
 @pytest.mark.asyncio
+async def test_part_adapter_assistant_message_uses_last_user_as_parent() -> None:
+    bus = _EventBus()
+    adapter = PartEventAdapter(bus)
+    adapter.set_session("session_parent")
+
+    await adapter.on_user_message_with_metadata(
+        "hello",
+        message_id="msg_client_parent",
+        agent_id="build",
+    )
+    await adapter.on_stream_start(agent_id="build")
+
+    assistant_updates = [
+        item
+        for item in _opencode_events(bus, "message.updated")
+        if item.get("role") == "assistant"
+    ]
+
+    assert assistant_updates
+    assert assistant_updates[-1]["parentID"] == "msg_client_parent"
+
+
+@pytest.mark.asyncio
 async def test_tool_only_lifecycle_balances_session_status_and_completes_message():
     bus = _EventBus()
     adapter = PartEventAdapter(bus)

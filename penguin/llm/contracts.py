@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import (
@@ -14,6 +16,18 @@ from typing import (
 )
 
 StreamCallback = Callable[[str, str], Any]
+
+
+def stable_payload_hash(payload: Any) -> str:
+    """Return a stable diagnostic hash for provider request payloads."""
+
+    payload_text = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(payload_text.encode("utf-8")).hexdigest()
 
 
 class FinishReason(str, Enum):
@@ -66,6 +80,82 @@ class ProviderRequestStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+
+@dataclass
+class LLMProviderCapabilities:
+    """Provider/model capabilities consumed by higher-level runtime layers."""
+
+    provider: str = ""
+    model: str = ""
+    native_tools: bool = False
+    streaming: bool = True
+    reasoning: bool = False
+    vision: bool = False
+    prompt_cache: bool = False
+    resumable: bool = False
+    background: bool = False
+    max_context_tokens: Optional[int] = None
+    max_output_tokens: Optional[int] = None
+    provider_data: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize capability metadata for diagnostics/UI payloads."""
+
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "native_tools": self.native_tools,
+            "streaming": self.streaming,
+            "reasoning": self.reasoning,
+            "vision": self.vision,
+            "prompt_cache": self.prompt_cache,
+            "resumable": self.resumable,
+            "background": self.background,
+            "max_context_tokens": self.max_context_tokens,
+            "max_output_tokens": self.max_output_tokens,
+            "provider_data": dict(self.provider_data or {}),
+        }
+
+
+@dataclass
+class LLMPreparedRequest:
+    """Provider-native request shape prepared without sending network traffic."""
+
+    provider: str
+    model: str
+    protocol: str
+    route: str
+    body: Dict[str, Any]
+    transport: str = ""
+    headers: Dict[str, str] = field(default_factory=dict)
+    request_payload_hash: str = ""
+    capabilities: Optional[LLMProviderCapabilities] = None
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
+    provider_data: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.request_payload_hash:
+            self.request_payload_hash = stable_payload_hash(self.body)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize prepared request metadata for tests and inspection."""
+
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "protocol": self.protocol,
+            "route": self.route,
+            "body": dict(self.body or {}),
+            "transport": self.transport,
+            "headers": dict(self.headers or {}),
+            "request_payload_hash": self.request_payload_hash,
+            "capabilities": self.capabilities.to_dict()
+            if isinstance(self.capabilities, LLMProviderCapabilities)
+            else None,
+            "diagnostics": dict(self.diagnostics or {}),
+            "provider_data": dict(self.provider_data or {}),
+        }
 
 
 @dataclass
@@ -438,6 +528,8 @@ __all__ = [
     "ErrorReportingRuntime",
     "FinishReason",
     "LLMError",
+    "LLMPreparedRequest",
+    "LLMProviderCapabilities",
     "LLMProviderError",
     "LLMRequest",
     "LLMRequestLifecycle",
@@ -453,4 +545,5 @@ __all__ = [
     "StreamEventType",
     "ToolCallRuntime",
     "UsageReportingRuntime",
+    "stable_payload_hash",
 ]

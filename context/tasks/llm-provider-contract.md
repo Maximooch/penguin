@@ -297,6 +297,10 @@ Current implementation note:
   `LLMRequestLifecycle` records for completed and disconnected/failed streamed
   calls in the shared provider matrix, extending the Codex OAuth lifecycle
   work to typical provider paths.
+- Native OpenAI/OpenAI-compatible, Anthropic, and OpenRouter now expose
+  provider-neutral prepared requests with protocol/route/provider ids,
+  transport metadata, stable payload hashes, sanitized headers, diagnostics,
+  and model/provider capability metadata.
 - `Session`, `APIClient`, and `Engine` now have the first provider lifecycle
   persistence path: the active session stores serialized
   `LLMRequestLifecycle` records after each LLM attempt, including failures, and
@@ -450,13 +454,16 @@ Phase 3 follow-up items that are useful but not required to consider the validat
 - [x] Normalize incomplete stream handling so a transport close without a
       provider completion event is retryable/disconnected rather than a
       successful empty response
-- [ ] Add a provider-neutral request preparation boundary, similar to
+- [x] Add a provider-neutral request preparation boundary, similar to
       OpenCode's `LLMClient.prepare`, that returns provider-native body,
       protocol id, route/provider id, transport metadata, request payload hash,
       and validation diagnostics without sending network traffic.
 - [ ] Use prepared-request capture as the default contract test boundary for
       replay repair, CWM-truncated history, provider-native tool adjacency, and
       TUI/debug inspection.
+  Initial provider-body capture exists for native OpenAI/OpenAI-compatible,
+  Anthropic, OpenRouter, and `APIClient`; the remaining work is to move the
+  replay/adjacency regression matrix onto this boundary.
 
 ### 2. Finish tool-call and reasoning normalization
 
@@ -479,13 +486,15 @@ Phase 3 follow-up items that are useful but not required to consider the validat
 - [x] Add provider-contract coverage for incomplete stream recovery and
   stream-error turn release
 - [x] Finish the unchecked Phase 2 item: keep provider-specific quirks at the adapter edge
-- [ ] Introduce explicit `Protocol` / `Route` / `Provider` terminology, or the
+- [x] Introduce explicit `Protocol` / `Route` / `Provider` terminology, or the
       Python equivalent, so shared wire protocols such as OpenAI Chat can be
       reused by OpenRouter, OpenAI-compatible gateways, and local inference
       backends without duplicating full adapter logic.
-- [ ] Move provider capability metadata into the provider/model contract so
+- [x] Move provider capability metadata into the provider/model contract so
       engine, web, and TUI layers consume capabilities instead of checking
       provider names.
+  `LLMPreparedRequest` now carries `protocol`, `route`, `provider`,
+  `transport`, request hash, diagnostics, and `LLMProviderCapabilities`.
 
 ### 4. Expand or consciously narrow coverage
 
