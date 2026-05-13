@@ -24,7 +24,27 @@ def test_context_window_trim_preserves_llm_request_lifecycle_records() -> None:
             "status": "completed",
         }
     )
+    session.add_tool_call_record(
+        {
+            "record_type": "tool_call",
+            "call_id": "call-cwm-1",
+            "name": "read_file",
+            "source": "responses",
+            "arguments_hash": "args-hash",
+        }
+    )
+    session.add_tool_result_record(
+        {
+            "record_type": "tool_result",
+            "call_id": "call-cwm-1",
+            "name": "read_file",
+            "status": "completed",
+            "output_hash": "out-hash",
+        }
+    )
 
     trimmed = cwm.trim_session(session)
 
     assert trimmed.llm_request_lifecycles == session.llm_request_lifecycles
+    assert trimmed.tool_call_records == session.tool_call_records
+    assert trimmed.tool_result_records == session.tool_result_records

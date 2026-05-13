@@ -427,6 +427,12 @@ class ContextWindowManager:
             llm_request_lifecycles=[
                 dict(record) for record in session.llm_request_lifecycles
             ],
+            tool_call_records=[
+                dict(record) for record in session.tool_call_records
+            ],
+            tool_result_records=[
+                dict(record) for record in session.tool_result_records
+            ],
         )
             
         # Analyze current message state
@@ -623,6 +629,12 @@ class ContextWindowManager:
                 llm_request_lifecycles=[
                     dict(record) for record in session.llm_request_lifecycles
                 ],
+                tool_call_records=[
+                    dict(record) for record in session.tool_call_records
+                ],
+                tool_result_records=[
+                    dict(record) for record in session.tool_result_records
+                ],
             )
 
         # Sort by timestamp to identify oldest vs newest
@@ -642,6 +654,12 @@ class ContextWindowManager:
             metadata=session.metadata.copy(),
             llm_request_lifecycles=[
                 dict(record) for record in session.llm_request_lifecycles
+            ],
+            tool_call_records=[
+                dict(record) for record in session.tool_call_records
+            ],
+            tool_result_records=[
+                dict(record) for record in session.tool_result_records
             ],
         )
 
@@ -791,6 +809,14 @@ class ContextWindowManager:
                     llm_request_lifecycles=[
                         dict(record)
                         for record in trimmed_session.llm_request_lifecycles
+                    ],
+                    tool_call_records=[
+                        dict(record)
+                        for record in trimmed_session.tool_call_records
+                    ],
+                    tool_result_records=[
+                        dict(record)
+                        for record in trimmed_session.tool_result_records
                     ],
                 )
                 

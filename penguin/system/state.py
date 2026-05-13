@@ -184,6 +184,8 @@ class Session:
     last_active: str = field(default_factory=lambda: datetime.now().isoformat())
     metadata: Dict[str, Any] = field(default_factory=dict)
     llm_request_lifecycles: List[Dict[str, Any]] = field(default_factory=list)
+    tool_call_records: List[Dict[str, Any]] = field(default_factory=list)
+    tool_result_records: List[Dict[str, Any]] = field(default_factory=list)
 
     @property
     def message_count(self) -> int:
@@ -234,6 +236,68 @@ class Session:
         self.last_active = datetime.now().isoformat()
         self.metadata["llm_request_lifecycle_count"] = len(self.llm_request_lifecycles)
 
+    def _coerce_record(self, record: Any, *, record_name: str) -> Dict[str, Any]:
+        """Convert a record-like object into a dictionary."""
+
+        if hasattr(record, "to_dict") and callable(record.to_dict):
+            resolved = record.to_dict()
+        elif isinstance(record, dict):
+            resolved = dict(record)
+        else:
+            raise TypeError(f"{record_name} must be a dictionary or to_dict object")
+
+        if not isinstance(resolved, dict):
+            raise TypeError(f"{record_name}.to_dict() must return a dictionary")
+        return dict(resolved)
+
+    def _replace_record_by_call_id(
+        self,
+        records: List[Dict[str, Any]],
+        record: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Replace an existing call-id record while preserving older fields."""
+
+        call_id = str(record.get("call_id") or "").strip()
+        if not call_id:
+            return [*records, record]
+
+        merged_records: List[Dict[str, Any]] = []
+        replaced = False
+        for existing in records:
+            existing_call_id = str(existing.get("call_id") or "").strip()
+            if existing_call_id == call_id:
+                merged = dict(existing)
+                merged.update(record)
+                merged_records.append(merged)
+                replaced = True
+            else:
+                merged_records.append(existing)
+        if not replaced:
+            merged_records.append(record)
+        return merged_records
+
+    def add_tool_call_record(self, record: Any) -> None:
+        """Persist or update one lightweight tool-call record."""
+
+        resolved = self._coerce_record(record, record_name="tool_call_record")
+        self.tool_call_records = self._replace_record_by_call_id(
+            self.tool_call_records,
+            resolved,
+        )
+        self.last_active = datetime.now().isoformat()
+        self.metadata["tool_call_record_count"] = len(self.tool_call_records)
+
+    def add_tool_result_record(self, record: Any) -> None:
+        """Persist or update one lightweight tool-result record."""
+
+        resolved = self._coerce_record(record, record_name="tool_result_record")
+        self.tool_result_records = self._replace_record_by_call_id(
+            self.tool_result_records,
+            resolved,
+        )
+        self.last_active = datetime.now().isoformat()
+        self.metadata["tool_result_record_count"] = len(self.tool_result_records)
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert session to a dictionary for serialization."""
         return {
@@ -245,6 +309,10 @@ class Session:
             "llm_request_lifecycles": [
                 dict(record) for record in self.llm_request_lifecycles
             ],
+            "tool_call_records": [dict(record) for record in self.tool_call_records],
+            "tool_result_records": [
+                dict(record) for record in self.tool_result_records
+            ],
         }
 
     @classmethod
@@ -254,12 +322,24 @@ class Session:
         # Handle the messages separately
         messages_data = data.pop("messages", [])
         lifecycles_data = data.pop("llm_request_lifecycles", [])
+        tool_call_records_data = data.pop("tool_call_records", [])
+        tool_result_records_data = data.pop("tool_result_records", [])
         session = cls(**data)
 
         # Add the messages
         session.messages = [Message.from_dict(msg) for msg in messages_data]
         session.llm_request_lifecycles = [
             dict(record) for record in lifecycles_data if isinstance(record, dict)
+        ]
+        session.tool_call_records = [
+            dict(record)
+            for record in tool_call_records_data
+            if isinstance(record, dict)
+        ]
+        session.tool_result_records = [
+            dict(record)
+            for record in tool_result_records_data
+            if isinstance(record, dict)
         ]
         return session
 

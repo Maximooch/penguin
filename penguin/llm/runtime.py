@@ -7,7 +7,9 @@ import logging
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from penguin.tools.runtime import (
+    ToolCall,
     ToolExecutionPolicy,
+    ToolResult,
     execute_tool_calls_serially,
     legacy_action_result_from_tool_result,
     tool_call_from_responses_info,
@@ -28,6 +30,7 @@ from .reasoning_variants import native_reasoning_efforts
 _REASONING_EFFORT_VARIANTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
 _REASONING_MAX_VARIANTS = {"max"}
 _REASONING_DISABLE_VARIANTS = {"off"}
+_NATIVE_RESPONSE_COMPLETION_TOOLS = {"finish_response"}
 logger = logging.getLogger(__name__)
 
 
@@ -83,6 +86,37 @@ def _get_tool_payload(
     return list(tools_payload or [])
 
 
+def _native_tool_name(tool: Dict[str, Any]) -> str:
+    function_payload = tool.get("function")
+    if isinstance(function_payload, dict):
+        return str(function_payload.get("name") or tool.get("name") or "")
+    return str(tool.get("name") or "")
+
+
+def _filter_native_loop_control_tools(
+    tools_payload: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Remove model-callable loop controls from native provider schemas."""
+
+    filtered: List[Dict[str, Any]] = []
+    omitted: set[str] = set()
+    for tool in tools_payload:
+        if not isinstance(tool, dict):
+            continue
+        tool_name = _native_tool_name(tool)
+        if tool_name in _NATIVE_RESPONSE_COMPLETION_TOOLS:
+            omitted.add(tool_name)
+            continue
+        filtered.append(tool)
+
+    if omitted:
+        logger.debug(
+            "Omitted native response completion tool(s) from provider schema: %s",
+            sorted(omitted),
+        )
+    return filtered
+
+
 def prepare_native_tool_kwargs(
     model_config: Any, tool_manager: Any
 ) -> Dict[str, Any]:
@@ -100,6 +134,7 @@ def prepare_native_tool_kwargs(
         tool_manager,
         include_web_search=tool_format == "openai_responses",
     )
+    tools_payload = _filter_native_loop_control_tools(tools_payload)
     if not tools_payload:
         return extra_kwargs
 
@@ -390,6 +425,11 @@ async def execute_pending_tool_call(
     api_client: Any,
     tool_manager: Any,
     persist_action_result: Callable[[Dict[str, Any], Dict[str, Any]], None],
+    persist_tool_call_record: Optional[Callable[[ToolCall], None]] = None,
+    persist_tool_result_record: Optional[
+        Callable[[ToolCall, ToolResult], None]
+    ] = None,
+    execution_policy: Optional[ToolExecutionPolicy] = None,
     emit_action_start: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     emit_action_result: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     emit_tool_timeline: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
@@ -400,6 +440,9 @@ async def execute_pending_tool_call(
         api_client=api_client,
         tool_manager=tool_manager,
         persist_action_result=persist_action_result,
+        persist_tool_call_record=persist_tool_call_record,
+        persist_tool_result_record=persist_tool_result_record,
+        execution_policy=execution_policy,
         emit_action_start=emit_action_start,
         emit_action_result=emit_action_result,
         emit_tool_timeline=emit_tool_timeline,
@@ -458,6 +501,11 @@ async def execute_pending_tool_calls(
     api_client: Any,
     tool_manager: Any,
     persist_action_result: Callable[[Dict[str, Any], Dict[str, Any]], None],
+    persist_tool_call_record: Optional[Callable[[ToolCall], None]] = None,
+    persist_tool_result_record: Optional[
+        Callable[[ToolCall, ToolResult], None]
+    ] = None,
+    execution_policy: Optional[ToolExecutionPolicy] = None,
     emit_action_start: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     emit_action_result: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     emit_tool_timeline: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
@@ -475,6 +523,10 @@ async def execute_pending_tool_calls(
     ]
     if not tool_calls:
         return []
+
+    if persist_tool_call_record is not None:
+        for tool_call in tool_calls:
+            persist_tool_call_record(tool_call)
 
     parsed_args_by_id: Dict[str, Dict[str, Any]] = {}
     raw_args_by_id: Dict[str, str] = {}
@@ -523,6 +575,7 @@ async def execute_pending_tool_calls(
             )
 
     try:
+        base_policy = execution_policy or ToolExecutionPolicy()
         scheduler_results = await execute_tool_calls_serially(
             tool_calls,
             lambda current_tool_call: tool_manager.execute_tool(
@@ -532,6 +585,9 @@ async def execute_pending_tool_calls(
             policy=ToolExecutionPolicy(
                 max_calls=len(tool_calls),
                 catch_exceptions=True,
+                max_output_chars=base_policy.max_output_chars,
+                artifact_dir=base_policy.artifact_dir,
+                truncation_direction=base_policy.truncation_direction,
             ),
         )
         if not scheduler_results:
@@ -548,6 +604,8 @@ async def execute_pending_tool_calls(
             )
             if source_tool_call is None:
                 continue
+            if persist_tool_result_record is not None:
+                persist_tool_result_record(source_tool_call, tool_result)
             suppress_ui_artifacts = source_tool_call.name == "finish_response"
             raw_args_text = raw_args_by_id.get(source_tool_call.id, "")
             tool_call_id = source_tool_call.id

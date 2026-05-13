@@ -1198,20 +1198,24 @@ Enable/disable detailed debugging.
 COMPLETION_TOOLS = """
 ## Completion Signals
 
-**Call these tools to signal completion. Do not output them as text.**
+**Normal conversation turns complete when you return final assistant text and
+make no further tool calls. Do not output completion tools as text.**
 
-If native provider tools are available, call `finish_response` or `finish_task`
-through the provider tool channel. If only ActionXML is available, use the XML
-syntax shown below.
+If native provider tools are available, use the provider tool channel for work
+tools. For formal task work, call `finish_task` through that tool channel when
+the task is ready for human review. If only ActionXML is available, use the XML
+syntax shown below for legacy completion signals.
 
 ### finish_response
-**Purpose:** End the conversation turn.
-**When to use:** Done answering a question or providing information.
-**Native tool call:** call `finish_response` with no parameters.
+**Purpose:** Legacy fallback signal for ending a conversation turn.
+**When to use:** Only when native provider tools are unavailable and the
+ActionXML fallback protocol requires an explicit completion signal.
+**Native tool call:** Not used for normal native-tool conversations.
 **ActionXML fallback syntax:** `<finish_response></finish_response>`
 **Parameters:** None
 
-**Important:** Put the final answer in normal assistant content before calling `finish_response`. Do not pass summary text here; summaries belong on `finish_task`.
+**Important:** Put the final answer in normal assistant content. Do not pass
+summary text here; summaries belong on `finish_task`.
 
 ### finish_task  
 **Purpose:** Signal that formal task work is ready for human review.

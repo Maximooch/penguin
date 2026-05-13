@@ -274,30 +274,38 @@ about call/result metadata.
 
 ### Current Position
 
-Penguin is implemented through Phase 5.6 for the first-class provider/tool
-runtime path:
+Penguin is implemented through the Phase 7 metadata foundation for the
+first-class provider/tool runtime path:
 
-- ActionXML and native provider tool calls can both normalize into
-  `ToolCall`/`ToolResult` records.
+- ActionXML and native provider tool calls both normalize into
+  `ToolCall`/`ToolResult` before legacy action-result compatibility views are
+  persisted.
 - The current loop guard uses IR-aware identity rather than text previews.
 - OpenAI/Codex, OpenRouter/OpenAI-compatible, and Anthropic native tool paths
   have provider-aware preparation, capture, and replay repair coverage.
-- Universal tool-output truncation and replay safety from Phase 6.5 are
-  partially in place through the provider-contract work.
+- Phase 5.5 prompt guidance already prefers native provider tool calls when
+  schemas are available, keeps ActionXML documented as fallback, and removes
+  native `finish_response` exposure so normal turns end by returning text with
+  no further tool calls.
+- Phase 6.5 now persists lightweight first-class tool call/result session
+  records for all tool paths, preserves those records through CWM trimming, and
+  applies a shared artifact-backed per-tool model-output cap in the serial
+  scheduler.
+- Phase 7 now has a minimum model-visible schema contract and conservative
+  runtime metadata extraction. The scheduler can consume that metadata later,
+  but no parallel execution is enabled yet.
 
-The next practical slice should be Phase 6.5, not Phase 6. Safe parallel tool
-calls should remain blocked until Phase 7 metadata and approval semantics are
-audited. In other words:
+Phase 6 parallel tool execution remains blocked until the safe-tool audit,
+approval semantics, cancellation behavior, and registry metadata are complete.
+The remaining practical order is:
 
-1. Do a small Phase 5.5 prompt/instruction audit.
-2. Move all tools to lightweight first-class call/result session records while
-   preserving legacy action-result message views during migration.
-3. Finish Phase 6.5 durable call/result replay and artifact-backed truncation.
-4. Add Phase 7 registry metadata for risk, approval, streaming, long-running,
-   retry-safe, and parallel-safe behavior.
-5. Defer aggregate per-turn tool-output caps until after the record/replay
-   boundary is stable.
-6. Enable Phase 6 parallel execution only for explicitly audited safe subsets.
+1. Audit concrete first-pass tools for read-only and parallel-safe behavior.
+2. Expand registry metadata coverage for approval, long-running/streaming
+   process behavior, retry safety, provider support, and UI presentation.
+3. Add runtime permission/approval outcomes as structured `ToolResult` statuses.
+4. Defer aggregate per-turn model-visible tool-output caps until after the
+   record/replay boundary remains stable under real workloads.
+5. Enable Phase 6 parallel execution only for explicitly audited safe subsets.
 
 ### Phase 0: Document and Test Current Behavior
 
@@ -501,8 +509,27 @@ Acceptance criteria:
   exposed natively
 - ActionXML remains documented for providers or modes without native tool
   support
-- completion-tool guidance does not conflict with native `finish_response` and
-  `finish_task` calls
+- normal conversation turns complete by returning assistant text with no tool
+  calls, while formal task runs still use `finish_task`
+- native provider schemas do not expose `finish_response` as a model-callable
+  stop tool
+
+Phase 5.5 implementation note:
+
+- `penguin.prompt_actions` now presents native provider tools as the preferred
+  path when schemas are available and labels ActionXML as the compatibility
+  fallback path.
+- Native provider schemas now omit `finish_response`; this matches Codex,
+  OpenCode, and Hermes-style loops where "no tool calls" is the normal
+  conversation-turn completion signal. `finish_response` remains available as a
+  legacy ActionXML compatibility signal.
+- Completion guidance now reserves native `finish_task` for formal task work
+  and avoids telling normal conversation turns to call a stop tool.
+- `tests/test_prompt_actions.py` covers native-tool preference, fallback
+  wording, alias rendering, and completion-tool guidance.
+- `tests/test_engine_responses_tool_calls.py` covers provider schema filtering
+  so OpenAI/Codex, OpenRouter, and Anthropic native schemas do not advertise
+  `finish_response`.
 
 ### Phase 5.6: Extend Native Tool Support Across Providers
 
@@ -627,6 +654,25 @@ Provider replay progress note:
   output hash, and optional artifact path metadata, and
   `prepare_model_visible_tool_output` provides a deterministic per-tool preview
   plus full-output artifact write path.
+- `ToolCallRecord` and `ToolResultRecord` are lightweight first-class session
+  records. They store call id, name, source, normalized arguments/hash, status,
+  timing, output hash, byte/line counts, truncation metadata, bounded previews,
+  and optional artifact references without making full output a required
+  conversation payload.
+- ActionXML and native provider tool paths persist the call record before
+  dispatch and the result record after scheduler completion. Legacy
+  `role=tool` action-result messages are still written as the compatibility
+  view for existing UI, TUI, adapter, and history consumers.
+- `ConversationSystem.get_formatted_messages()` can repair provider-native
+  replay metadata for tool result messages from first-class records when an
+  assistant tool-call message was trimmed or historical metadata is incomplete.
+- The serial scheduler can apply a shared per-tool model-visible output policy.
+  Penguin defaults to a generous 24k-character per-tool cap, can disable it
+  with `PENGUIN_TOOL_OUTPUT_MAX_CHARS=0`, and writes full truncated outputs to
+  workspace-local `conversations/tool-results/<session-id>/` artifacts when a
+  conversation manager has a workspace path.
+- Context-window trimming preserves provider lifecycle records and first-class
+  tool call/result records even when lower-priority messages are dropped.
 - Tool-output truncation has unit/property coverage for deterministic caps,
   artifact writes, metadata preservation, and artifact-safe IDs.
 - Anthropic now marks `error`, `failed`, `cancelled`, and `interrupted`
@@ -667,6 +713,21 @@ Acceptance criteria:
   UI events
 - tests cover denied, approved-once, approved-for-session, and unavailable-tool
   behavior
+
+Phase 7 implementation note:
+
+- `penguin.tools.schema_contract` defines the minimum model-visible tool schema
+  contract: canonical name, description, input schema, and concise generated
+  usage guidance.
+- `ToolManager.get_model_visible_tools()` exposes that normalized contract
+  without changing the legacy `get_tools()` schema shape that existing edit
+  registry and UI tests compare exactly.
+- `ToolRuntimeMetadata` extracts conservative runtime flags from tool schemas:
+  mutating by default, approval-required by default, not parallel-safe by
+  default, plus placeholders for risk, long-running, streaming, and retry-safe
+  behavior.
+- This metadata is intentionally observational for now. It does not enable
+  parallel scheduling, bypass approval checks, or mark any unaudited tool safe.
 
 ### Phase 8: Terminal/Process Runtime Foundation
 

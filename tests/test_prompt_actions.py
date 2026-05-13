@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from penguin.prompt_actions import get_tool_guide
+from penguin.prompt_workflow import get_workflow_guide
 from penguin.tools.editing.registry import (
     get_edit_tool_public_names,
     get_edit_tool_schema_map,
@@ -22,6 +23,18 @@ def test_tool_guide_documents_native_tool_protocol_first() -> None:
     assert "Native provider tools" in guide
     assert "ActionXML fallback" in guide
     assert "Use native tool calls first" in guide
+
+
+def test_completion_guidance_prefers_natural_turn_completion() -> None:
+    guide = get_tool_guide()
+    workflow = get_workflow_guide()
+
+    assert "Normal conversation turns complete" in guide
+    assert "Not used for normal native-tool conversations" in guide
+    assert "return final assistant text and\nmake no further tool calls" in workflow
+    assert "Never rely on implicit completion" not in workflow
+    assert "call `finish_response` or `finish_task`" not in guide
+    assert "call `finish_response` or\n  `finish_task`" not in workflow
 
 
 def test_tool_guide_uses_schema_derived_aliases_and_required_fields() -> None:

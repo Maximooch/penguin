@@ -23,6 +23,9 @@ from penguin.utils.parser import CodeActAction, parse_action
 ToolCallSource = Literal["action_xml", "responses", "mcp", "internal"]
 ToolResultStatus = Literal["completed", "error", "cancelled", "requires_approval"]
 ToolArguments = Union[dict[str, Any], str]
+TOOL_RECORD_OUTPUT_PREVIEW_CHARS = 500
+TOOL_RECORD_ARGUMENT_PREVIEW_CHARS = 500
+DEFAULT_TOOL_MODEL_OUTPUT_MAX_CHARS = 24_000
 
 
 @dataclass(frozen=True)
@@ -71,6 +74,84 @@ class ToolResult:
 
 
 @dataclass(frozen=True)
+class ToolCallRecord:
+    """Lightweight persisted envelope for a captured tool call."""
+
+    call_id: str
+    name: str
+    source: ToolCallSource
+    arguments_hash: str
+    arguments: Any = None
+    arguments_preview: str = ""
+    mutates_state: bool = True
+    parallel_safe: bool = False
+    requires_approval: bool = True
+    created_at: float = field(default_factory=time.time)
+    raw_type: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-serializable tool-call record."""
+
+        return {
+            "record_type": "tool_call",
+            "call_id": self.call_id,
+            "name": self.name,
+            "source": self.source,
+            "arguments": self.arguments,
+            "arguments_hash": self.arguments_hash,
+            "arguments_preview": self.arguments_preview,
+            "mutates_state": self.mutates_state,
+            "parallel_safe": self.parallel_safe,
+            "requires_approval": self.requires_approval,
+            "created_at": self.created_at,
+            "raw_type": self.raw_type,
+        }
+
+
+@dataclass(frozen=True)
+class ToolResultRecord:
+    """Lightweight persisted envelope for a completed tool result."""
+
+    call_id: str
+    name: str
+    status: ToolResultStatus
+    output_hash: str
+    started_at: float
+    ended_at: float
+    byte_count: int
+    line_count: int
+    source: Optional[ToolCallSource] = None
+    duration_ms: float = 0.0
+    truncated: bool = False
+    truncation_direction: str = "none"
+    artifact_path: Optional[str] = None
+    arguments_hash: Optional[str] = None
+    output_preview: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-serializable tool-result record."""
+
+        return {
+            "record_type": "tool_result",
+            "call_id": self.call_id,
+            "name": self.name,
+            "source": self.source,
+            "status": self.status,
+            "started_at": self.started_at,
+            "ended_at": self.ended_at,
+            "duration_ms": self.duration_ms,
+            "output_hash": self.output_hash,
+            "byte_count": self.byte_count,
+            "line_count": self.line_count,
+            "truncated": self.truncated,
+            "truncation_direction": self.truncation_direction,
+            "artifact_path": self.artifact_path,
+            "arguments_hash": self.arguments_hash,
+            "output_preview": self.output_preview,
+        }
+
+
+@dataclass(frozen=True)
 class ToolOutputView:
     """Model-visible preview plus full-output artifact metadata."""
 
@@ -115,6 +196,9 @@ class ToolExecutionPolicy:
 
     max_calls: Optional[int] = None
     catch_exceptions: bool = False
+    max_output_chars: Optional[int] = None
+    artifact_dir: Optional[Union[str, Path]] = None
+    truncation_direction: Literal["head", "tail", "middle"] = "tail"
 
 
 def hash_tool_output(output: Any) -> str:
@@ -122,6 +206,132 @@ def hash_tool_output(output: Any) -> str:
 
     output_text = str(output if output is not None else "")
     return hashlib.sha256(output_text.encode()).hexdigest()
+
+
+def hash_tool_arguments(arguments: Any) -> str:
+    """Return a stable hash for normalized tool arguments."""
+
+    return hashlib.sha256(
+        _stable_json(_normalize_arguments(arguments)).encode()
+    ).hexdigest()
+
+
+def _preview_text(value: Any, *, max_chars: int) -> str:
+    """Return a bounded text preview for lightweight persisted records."""
+
+    text = str(value if value is not None else "")
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text[: max(max_chars, 0)] if max_chars >= 0 else text
+    return text[:max_chars]
+
+
+def _render_arguments(arguments: Any) -> str:
+    """Render normalized arguments as stable text for previews/replay metadata."""
+
+    normalized = _normalize_arguments(arguments)
+    if isinstance(normalized, (dict, list)):
+        return _stable_json(normalized)
+    return str(normalized if normalized is not None else "")
+
+
+def tool_call_record_from_tool_call(tool_call: ToolCall) -> ToolCallRecord:
+    """Build a lightweight persisted record for a captured tool call."""
+
+    normalized_arguments = _normalize_arguments(tool_call.arguments)
+    rendered_arguments = _render_arguments(normalized_arguments)
+    return ToolCallRecord(
+        call_id=tool_call.id,
+        name=tool_call.name,
+        source=tool_call.source,
+        arguments=normalized_arguments,
+        arguments_hash=hash_tool_arguments(normalized_arguments),
+        arguments_preview=_preview_text(
+            rendered_arguments,
+            max_chars=TOOL_RECORD_ARGUMENT_PREVIEW_CHARS,
+        ),
+        mutates_state=tool_call.mutates_state,
+        parallel_safe=tool_call.parallel_safe,
+        requires_approval=tool_call.requires_approval,
+        raw_type=type(tool_call.raw).__name__ if tool_call.raw is not None else "",
+    )
+
+
+def tool_result_record_from_tool_result(
+    tool_result: ToolResult,
+    *,
+    tool_call: Optional[ToolCall] = None,
+    arguments: Any = None,
+) -> ToolResultRecord:
+    """Build a lightweight persisted record for a normalized tool result."""
+
+    resolved_arguments = tool_call.arguments if tool_call is not None else arguments
+    arguments_hash = (
+        hash_tool_arguments(resolved_arguments)
+        if resolved_arguments is not None
+        else None
+    )
+    duration_ms = max((tool_result.ended_at - tool_result.started_at) * 1000, 0.0)
+    return ToolResultRecord(
+        call_id=tool_result.call_id,
+        name=tool_result.name,
+        source=tool_call.source if tool_call is not None else None,
+        status=tool_result.status,
+        started_at=tool_result.started_at,
+        ended_at=tool_result.ended_at,
+        duration_ms=duration_ms,
+        output_hash=tool_result.output_hash,
+        byte_count=tool_result.byte_count,
+        line_count=tool_result.line_count,
+        truncated=tool_result.truncated,
+        truncation_direction=tool_result.truncation_direction,
+        artifact_path=tool_result.artifact_path,
+        arguments_hash=arguments_hash,
+        output_preview=_preview_text(
+            tool_result.output,
+            max_chars=TOOL_RECORD_OUTPUT_PREVIEW_CHARS,
+        ),
+    )
+
+
+def tool_result_with_model_output_policy(
+    tool_result: ToolResult,
+    *,
+    max_chars: Optional[int] = None,
+    artifact_dir: Optional[Union[str, Path]] = None,
+    artifact_id: Optional[str] = None,
+    truncation_direction: Literal["head", "tail", "middle"] = "tail",
+) -> ToolResult:
+    """Return a tool result whose output is bounded for model replay."""
+
+    if max_chars is None:
+        return tool_result
+
+    view = prepare_model_visible_tool_output(
+        tool_result.output,
+        max_chars=max_chars,
+        artifact_dir=artifact_dir,
+        artifact_id=artifact_id or tool_result.call_id,
+        truncation_direction=truncation_direction,
+    )
+    structured_output = {
+        **(tool_result.structured_output or {}),
+        **view.to_metadata(),
+    }
+    return ToolResult(
+        call_id=tool_result.call_id,
+        name=tool_result.name,
+        status=tool_result.status,
+        output=view.model_output,
+        structured_output=structured_output,
+        started_at=tool_result.started_at,
+        ended_at=tool_result.ended_at,
+        output_hash=view.output_hash,
+        byte_count=view.byte_count,
+        line_count=view.line_count,
+        truncated=view.truncated,
+        truncation_direction=view.truncation_direction,
+        artifact_path=view.artifact_path,
+    )
 
 
 def _line_count(output_text: str) -> int:
@@ -562,47 +772,76 @@ async def execute_tool_calls_serially(
                 output = await output
             ended_at = time.time()
             if isinstance(output, ToolResult):
-                results.append(output)
+                results.append(
+                    tool_result_with_model_output_policy(
+                        output,
+                        max_chars=active_policy.max_output_chars,
+                        artifact_dir=active_policy.artifact_dir,
+                        artifact_id=tool_call.id,
+                        truncation_direction=active_policy.truncation_direction,
+                    )
+                )
                 continue
             if isinstance(output, dict):
                 action_output = dict(output)
                 if not action_output.get("action") and not action_output.get("name"):
                     action_output["action"] = tool_call.name
+                tool_result = tool_result_from_action_result(
+                    action_output,
+                    call_id=tool_call.id,
+                    started_at=started_at,
+                    ended_at=ended_at,
+                    structured_output={
+                        **action_output,
+                        "tool_call_id": tool_call.id,
+                        "tool_arguments": tool_call.arguments,
+                    },
+                )
                 results.append(
-                    tool_result_from_action_result(
-                        action_output,
-                        call_id=tool_call.id,
-                        started_at=started_at,
-                        ended_at=ended_at,
-                        structured_output={
-                            **action_output,
-                            "tool_call_id": tool_call.id,
-                            "tool_arguments": tool_call.arguments,
-                        },
+                    tool_result_with_model_output_policy(
+                        tool_result,
+                        max_chars=active_policy.max_output_chars,
+                        artifact_dir=active_policy.artifact_dir,
+                        artifact_id=tool_call.id,
+                        truncation_direction=active_policy.truncation_direction,
                     )
                 )
                 continue
+            tool_result = ToolResult(
+                call_id=tool_call.id,
+                name=tool_call.name,
+                status="completed",
+                output=str(output if output is not None else ""),
+                started_at=started_at,
+                ended_at=ended_at,
+            )
             results.append(
-                ToolResult(
-                    call_id=tool_call.id,
-                    name=tool_call.name,
-                    status="completed",
-                    output=str(output if output is not None else ""),
-                    started_at=started_at,
-                    ended_at=ended_at,
+                tool_result_with_model_output_policy(
+                    tool_result,
+                    max_chars=active_policy.max_output_chars,
+                    artifact_dir=active_policy.artifact_dir,
+                    artifact_id=tool_call.id,
+                    truncation_direction=active_policy.truncation_direction,
                 )
             )
         except Exception as exc:
             if not active_policy.catch_exceptions:
                 raise
+            tool_result = ToolResult(
+                call_id=tool_call.id,
+                name=tool_call.name,
+                status="error",
+                output=f"Error executing tool {tool_call.name}: {exc}",
+                started_at=started_at,
+                ended_at=time.time(),
+            )
             results.append(
-                ToolResult(
-                    call_id=tool_call.id,
-                    name=tool_call.name,
-                    status="error",
-                    output=f"Error executing tool {tool_call.name}: {exc}",
-                    started_at=started_at,
-                    ended_at=time.time(),
+                tool_result_with_model_output_policy(
+                    tool_result,
+                    max_chars=active_policy.max_output_chars,
+                    artifact_dir=active_policy.artifact_dir,
+                    artifact_id=tool_call.id,
+                    truncation_direction=active_policy.truncation_direction,
                 )
             )
     return results
@@ -859,25 +1098,32 @@ def legacy_action_result_from_tool_result(tool_result: ToolResult) -> dict[str, 
 
 __all__ = [
     "ToolArguments",
+    "DEFAULT_TOOL_MODEL_OUTPUT_MAX_CHARS",
     "ToolCall",
+    "ToolCallRecord",
     "ToolCallSource",
     "ToolExecutionPolicy",
     "ToolExecutor",
     "ToolLoopIdentity",
     "ToolOutputView",
     "ToolResult",
+    "ToolResultRecord",
     "ToolResultStatus",
     "execute_tool_calls_serially",
+    "hash_tool_arguments",
     "hash_tool_output",
     "image_artifacts_from_action_result",
     "legacy_action_result_from_tool_result",
     "prepare_model_visible_tool_output",
     "select_tool_calls_for_policy",
+    "tool_call_record_from_tool_call",
     "tool_call_from_responses_info",
     "tool_calls_from_actionxml",
     "tool_calls_from_codeact_actions",
     "tool_loop_signature",
+    "tool_result_record_from_tool_result",
     "tool_result_from_action_result",
+    "tool_result_with_model_output_policy",
     "tool_results_loop_identity",
     "tool_results_loop_signature",
 ]

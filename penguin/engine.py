@@ -12,11 +12,13 @@ remains test‑friendly and avoids hidden globals.
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import json
+import os
 import uuid
 import asyncio
 import copy
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
+from pathlib import Path
 from penguin.constants import UI_ASYNC_SLEEP_SECONDS
 import re
 import time
@@ -54,11 +56,16 @@ from penguin.llm.runtime import (
 )
 from penguin.tools import ToolManager  # type: ignore
 from penguin.tools.runtime import (
+    DEFAULT_TOOL_MODEL_OUTPUT_MAX_CHARS,
+    ToolCall,
     ToolExecutionPolicy,
+    ToolResult,
     execute_tool_calls_serially,
     image_artifacts_from_action_result,
     legacy_action_result_from_tool_result,
+    tool_call_record_from_tool_call,
     tool_calls_from_codeact_actions,
+    tool_result_record_from_tool_result,
     tool_results_loop_identity,
 )
 from penguin.config import TASK_COMPLETION_PHRASE  # Add this import
@@ -387,6 +394,24 @@ class _ScopedConversationManager:
                 cloned_session.messages = list(session.messages)
             if isinstance(getattr(session, "metadata", None), dict):
                 cloned_session.metadata = dict(session.metadata)
+            if isinstance(getattr(session, "llm_request_lifecycles", None), list):
+                cloned_session.llm_request_lifecycles = [
+                    dict(record)
+                    for record in session.llm_request_lifecycles
+                    if isinstance(record, dict)
+                ]
+            if isinstance(getattr(session, "tool_call_records", None), list):
+                cloned_session.tool_call_records = [
+                    dict(record)
+                    for record in session.tool_call_records
+                    if isinstance(record, dict)
+                ]
+            if isinstance(getattr(session, "tool_result_records", None), list):
+                cloned_session.tool_result_records = [
+                    dict(record)
+                    for record in session.tool_result_records
+                    if isinstance(record, dict)
+                ]
             cloned.session = cloned_session
         except Exception:
             return cloned
@@ -1703,8 +1728,8 @@ class Engine:
         Multi-step conversational loop for natural conversation flow.
 
         Termination conditions (in priority order):
-        1. Explicit `finish_response` tool call (preferred)
-        2. No actions taken in an iteration (implicit completion fallback)
+        1. No actions taken in an iteration (natural provider completion)
+        2. Legacy `finish_response` compatibility signal
         3. Max iterations reached
 
         Each iteration creates separate messages in the conversation.
@@ -1831,14 +1856,18 @@ class Engine:
                 if iteration_results:
                     all_action_results.extend(iteration_results)
 
-                # Check for explicit finish_response signal (primary termination)
+                # Check legacy finish_response compatibility signal.
+                # Normal native-provider turns now complete by returning final text
+                # with no tool calls, matching Codex/OpenCode/Hermes loop shape.
                 # NOTE: Only check finish_response here - finish_task is for task mode (run_task)
                 finish_response_called = any(
                     isinstance(r, dict) and r.get("action") == "finish_response"
                     for r in iteration_results
                 )
                 if finish_response_called:
-                    logger.debug("Response completion: finish_response tool called")
+                    logger.debug(
+                        "Response completion: legacy finish_response tool called"
+                    )
                     break
 
                 # Debug: Check if LLM mentioned finish_response but didn't format it correctly
@@ -2327,6 +2356,64 @@ class Engine:
         )
         return results[0] if results else None
 
+    def _resolve_tool_output_max_chars(self) -> Optional[int]:
+        """Resolve the per-tool model-visible output cap."""
+
+        raw_value = os.environ.get("PENGUIN_TOOL_OUTPUT_MAX_CHARS")
+        if raw_value is None:
+            return DEFAULT_TOOL_MODEL_OUTPUT_MAX_CHARS
+        try:
+            value = int(raw_value)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid PENGUIN_TOOL_OUTPUT_MAX_CHARS=%r; using default %s",
+                raw_value,
+                DEFAULT_TOOL_MODEL_OUTPUT_MAX_CHARS,
+            )
+            return DEFAULT_TOOL_MODEL_OUTPUT_MAX_CHARS
+        return value if value > 0 else None
+
+    def _tool_output_artifact_dir(self, cm: ConversationManager) -> Optional[Path]:
+        """Return the workspace-local artifact directory for tool outputs."""
+
+        try:
+            session = (
+                cm.get_current_session() if hasattr(cm, "get_current_session") else None
+            )
+            session_id = str(getattr(session, "id", "") or "unknown").strip()
+            workspace_path = getattr(cm, "workspace_path", None)
+            if workspace_path is None:
+                return None
+            return (
+                Path(workspace_path)
+                / "conversations"
+                / "tool-results"
+                / session_id
+            )
+        except Exception:
+            return None
+
+    def _tool_execution_policy(
+        self,
+        cm: ConversationManager,
+        *,
+        max_calls: Optional[int] = None,
+        catch_exceptions: bool = False,
+    ) -> ToolExecutionPolicy:
+        """Build the conservative serial tool execution policy."""
+
+        max_output_chars = self._resolve_tool_output_max_chars()
+        return ToolExecutionPolicy(
+            max_calls=max_calls,
+            catch_exceptions=catch_exceptions,
+            max_output_chars=max_output_chars,
+            artifact_dir=(
+                self._tool_output_artifact_dir(cm)
+                if max_output_chars is not None
+                else None
+            ),
+        )
+
     async def _handle_responses_tool_calls(
         self,
         api_client: APIClient,
@@ -2346,6 +2433,20 @@ class Engine:
         return await execute_pending_tool_calls(
             api_client=api_client,
             tool_manager=tool_manager,
+            persist_tool_call_record=lambda tool_call: self._persist_tool_call_record(
+                cm,
+                tool_call,
+            ),
+            persist_tool_result_record=lambda tool_call,
+            tool_result: self._persist_tool_result_record(
+                cm,
+                tool_call,
+                tool_result,
+            ),
+            execution_policy=self._tool_execution_policy(
+                cm,
+                catch_exceptions=True,
+            ),
             persist_action_result=lambda action_result,
             tool_context: cm.add_action_result(
                 action_type=action_result["action"],
@@ -2371,6 +2472,46 @@ class Engine:
                 self._persist_tool_image_artifacts(cm, action_result)
             ),
         )
+
+    def _persist_tool_call_record(
+        self,
+        cm: ConversationManager,
+        tool_call: ToolCall,
+    ) -> None:
+        """Persist one lightweight tool-call record on the current session."""
+
+        try:
+            session = (
+                cm.get_current_session() if hasattr(cm, "get_current_session") else None
+            )
+            add_record = getattr(session, "add_tool_call_record", None)
+            if callable(add_record):
+                add_record(tool_call_record_from_tool_call(tool_call))
+        except Exception as exc:
+            logger.warning("Failed to persist tool call record: %s", exc)
+
+    def _persist_tool_result_record(
+        self,
+        cm: ConversationManager,
+        tool_call: ToolCall,
+        tool_result: ToolResult,
+    ) -> None:
+        """Persist one lightweight tool-result record on the current session."""
+
+        try:
+            session = (
+                cm.get_current_session() if hasattr(cm, "get_current_session") else None
+            )
+            add_record = getattr(session, "add_tool_result_record", None)
+            if callable(add_record):
+                add_record(
+                    tool_result_record_from_tool_result(
+                        tool_result,
+                        tool_call=tool_call,
+                    )
+                )
+        except Exception as exc:
+            logger.warning("Failed to persist tool result record: %s", exc)
 
     def _persist_tool_image_artifacts(
         self, cm: ConversationManager, action_result: Dict[str, Any]
@@ -2673,17 +2814,21 @@ class Engine:
         logger.debug(
             "[AUTO-CONTINUE FIX] Parsed %s actions from response", len(tool_calls)
         )
+        scheduled_tool_calls = tool_calls[:1]
+        for tool_call in scheduled_tool_calls:
+            self._persist_tool_call_record(cm, tool_call)
 
         async def _execute_actionxml_call(tool_call: Any) -> Any:
             return await action_executor.execute_action(tool_call.raw)
 
         scheduler_results = await execute_tool_calls_serially(
-            tool_calls,
+            scheduled_tool_calls,
             _execute_actionxml_call,
-            policy=ToolExecutionPolicy(max_calls=1),
+            policy=self._tool_execution_policy(cm, max_calls=1),
         )
 
-        for tool_call, tool_result in zip(tool_calls[:1], scheduler_results):
+        for tool_call, tool_result in zip(scheduled_tool_calls, scheduler_results):
+            self._persist_tool_result_record(cm, tool_call, tool_result)
             legacy_action_result = legacy_action_result_from_tool_result(tool_result)
             tool_arguments_text = (
                 tool_call.arguments

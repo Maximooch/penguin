@@ -41,6 +41,57 @@ def test_prepare_responses_tools_enables_openai_native_tools() -> None:
     assert engine_like.model_config.interrupt_on_tool_call is True
 
 
+def test_prepare_responses_tools_hides_native_finish_response() -> None:
+    tool_payload = [
+        {"type": "function", "name": "read_file"},
+        {"type": "function", "name": "finish_response"},
+        {"type": "function", "name": "finish_task"},
+    ]
+
+    cases = [
+        SimpleNamespace(
+            provider="openai",
+            client_preference="native",
+            use_responses_api=False,
+            interrupt_on_tool_call=False,
+        ),
+        SimpleNamespace(
+            provider="openrouter",
+            client_preference="openrouter",
+            use_responses_api=False,
+            interrupt_on_tool_call=False,
+        ),
+        SimpleNamespace(
+            provider="anthropic",
+            client_preference="native",
+            use_responses_api=False,
+            interrupt_on_tool_call=False,
+        ),
+    ]
+
+    for model_config in cases:
+        engine_like = SimpleNamespace(
+            model_config=model_config,
+            _get_runtime_model_config=lambda config=model_config: config,
+        )
+        tool_manager = SimpleNamespace(
+            get_responses_tools=lambda **_kwargs: list(tool_payload)
+        )
+
+        extra_kwargs = Engine._prepare_responses_tools(engine_like, tool_manager)
+        names = set()
+        for tool in extra_kwargs["tools"]:
+            function_payload = tool.get("function")
+            names.add(
+                function_payload["name"]
+                if isinstance(function_payload, dict)
+                else tool["name"]
+            )
+
+        assert "finish_response" not in names
+        assert {"read_file", "finish_task"} <= names
+
+
 def test_prepare_responses_tools_enables_openrouter_chat_tools() -> None:
     model_config = SimpleNamespace(
         provider="openrouter",

@@ -60,6 +60,10 @@ from penguin.tools.browser_harness_tools import (
     BrowserHarnessWaitTool,
 )
 from penguin.tools.providers.mcp import MCPToolProvider
+from penguin.tools.schema_contract import (
+    normalize_model_visible_tool_schema,
+    runtime_metadata_from_tool_schema,
+)
 from penguin.tools.image_tools import ReadImageTool
 
 # Lazy import for PyDoll to avoid breaking if pydoll-python is not installed
@@ -2483,6 +2487,14 @@ class ToolManager:
         tools.extend(self._mcp_provider.get_tool_schemas())
         return tools
 
+    def get_model_visible_tools(self) -> List[Dict[str, Any]]:
+        """Return tool schemas normalized to Penguin's model-visible contract."""
+
+        return [
+            normalize_model_visible_tool_schema(tool)
+            for tool in self.get_tools()
+        ]
+
     def get_mcp_status(self) -> Dict[str, Any]:
         """Return MCP provider diagnostics."""
         return self._mcp_provider.status()
@@ -2502,6 +2514,15 @@ class ToolManager:
     def get_tool_aliases(self) -> Dict[str, str]:
         """Return centralized legacy-to-canonical tool aliases."""
         return dict(self._tool_aliases)
+
+    def get_tool_runtime_metadata(self, tool_name: str) -> Dict[str, Any]:
+        """Return conservative runtime metadata for a registered tool."""
+
+        canonical_name = self._canonical_tool_name(tool_name)
+        for schema in self.get_model_visible_tools():
+            if schema.get("name") == canonical_name:
+                return runtime_metadata_from_tool_schema(schema).to_dict()
+        return runtime_metadata_from_tool_schema({}).to_dict()
 
     def _canonical_tool_name(self, tool_name: str) -> str:
         """Resolve a requested tool name to its canonical public name."""

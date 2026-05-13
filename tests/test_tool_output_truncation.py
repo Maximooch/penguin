@@ -2,8 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from penguin.tools.runtime import (
+    ToolCall,
+    ToolExecutionPolicy,
     ToolResult,
+    execute_tool_calls_serially,
     hash_tool_output,
     legacy_action_result_from_tool_result,
     prepare_model_visible_tool_output,
@@ -106,3 +111,29 @@ def test_action_result_to_tool_result_preserves_output_metadata() -> None:
     assert result.truncated is True
     assert result.truncation_direction == "tail"
     assert result.artifact_path == "/tmp/full.txt"
+
+
+@pytest.mark.asyncio
+async def test_serial_scheduler_applies_model_output_policy(tmp_path: Path) -> None:
+    [result] = await execute_tool_calls_serially(
+        [
+            ToolCall(
+                id="call_long",
+                name="execute_command",
+                arguments="printf long",
+                source="responses",
+            )
+        ],
+        lambda _tool_call: "line\n" * 100,
+        policy=ToolExecutionPolicy(
+            max_output_chars=160,
+            artifact_dir=tmp_path,
+            truncation_direction="tail",
+        ),
+    )
+
+    assert result.truncated is True
+    assert len(result.output) <= 160
+    assert "Tool output truncated" in result.output
+    assert result.artifact_path is not None
+    assert Path(result.artifact_path).read_text(encoding="utf-8") == "line\n" * 100

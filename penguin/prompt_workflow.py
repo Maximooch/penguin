@@ -252,7 +252,7 @@ TOOL_RESULTS = """
 **For Implementation:**
 - Acknowledge critical modifications
 - Continue to next step
-- Call `<finish_response>` when done
+- Return final assistant text with no further tool calls when done
 
 **Critical:** Check previous message before executing—do not duplicate tool calls.
 """
@@ -559,12 +559,14 @@ If you want to remember something past this session, WRITE IT TO A FILE.
 COMPLETION_GUIDE = """
 ## Completion Signals
 
-**You MUST explicitly signal when done.**
+**Normal conversation turns complete when you return final assistant text and
+make no further tool calls.**
 
-- If native provider tools are available, call `finish_response` or
-  `finish_task` through the provider tool channel
-- If native tools are not available, call `<finish_response></finish_response>`
-  to end a conversation turn
+- If native provider tools are available, use the provider tool channel for work
+  tools and call `finish_task` only when formal task work is ready for human
+  review
+- If native tools are not available and the ActionXML fallback protocol
+  requires an explicit turn terminator, call `<finish_response></finish_response>`
 - If native tools are not available, call
   `<finish_task>{"status":"done","summary":"..."}</finish_task>` when task
   work satisfies acceptance criteria and is ready for human review
@@ -574,8 +576,6 @@ COMPLETION_GUIDE = """
 - `done` (default): Task objective achieved
 - `partial`: Made progress but not complete
 - `blocked`: Cannot proceed, need human intervention
-
-**Never rely on implicit completion.**
 """
 
 # =============================================================================
