@@ -272,6 +272,33 @@ about call/result metadata.
 
 ## Migration Plan
 
+### Current Position
+
+Penguin is implemented through Phase 5.6 for the first-class provider/tool
+runtime path:
+
+- ActionXML and native provider tool calls can both normalize into
+  `ToolCall`/`ToolResult` records.
+- The current loop guard uses IR-aware identity rather than text previews.
+- OpenAI/Codex, OpenRouter/OpenAI-compatible, and Anthropic native tool paths
+  have provider-aware preparation, capture, and replay repair coverage.
+- Universal tool-output truncation and replay safety from Phase 6.5 are
+  partially in place through the provider-contract work.
+
+The next practical slice should be Phase 6.5, not Phase 6. Safe parallel tool
+calls should remain blocked until Phase 7 metadata and approval semantics are
+audited. In other words:
+
+1. Do a small Phase 5.5 prompt/instruction audit.
+2. Move all tools to lightweight first-class call/result session records while
+   preserving legacy action-result message views during migration.
+3. Finish Phase 6.5 durable call/result replay and artifact-backed truncation.
+4. Add Phase 7 registry metadata for risk, approval, streaming, long-running,
+   retry-safe, and parallel-safe behavior.
+5. Defer aggregate per-turn tool-output caps until after the record/replay
+   boundary is stable.
+6. Enable Phase 6 parallel execution only for explicitly audited safe subsets.
+
 ### Phase 0: Document and Test Current Behavior
 
 Goals:
@@ -528,6 +555,13 @@ Phase 5.6 implementation note:
 
 ### Phase 6: Safe Parallel Tool Calls
 
+Status:
+
+- Deferred until Phase 7 metadata exists.
+- Do not send provider `parallel_tool_calls` just because a model supports it.
+  Penguin must first know which tools are safe to run concurrently and how to
+  order, cancel, persist, and replay each result.
+
 Goals:
 
 - add parallel execution only for tools marked safe
@@ -554,12 +588,14 @@ Related future work:
 Goals:
 
 - persist native/provider tool-call records before dispatching tools
+- persist lightweight first-class tool call/result session records for all
+  tools, not only native provider tools
 - apply a single truncation policy to all model-visible tool outputs
 - preserve full raw output in a local artifact/result store when truncated
 - include line count, byte count, truncation direction, output hash, and output
   artifact path/reference in `ToolResult`
-- enforce an aggregate per-turn model-visible tool-output cap in addition to
-  per-tool caps
+- leave room for an aggregate per-turn model-visible tool-output cap, but defer
+  enforcement until durable records and replay are stable
 - make provider replay reconstruct native tool-call and tool-result adjacency
   from persisted `ToolCall` / `ToolResult` records
 - convert interrupted, pending, or cancelled historical tool calls into
@@ -567,6 +603,11 @@ Goals:
 
 Acceptance criteria:
 
+- every tool execution has a stable call/result record with id, tool name,
+  normalized argument hash, status, timing, output hash, truncation metadata,
+  and optional artifact reference
+- legacy action-result messages remain as compatibility views until UI, TUI,
+  and replay consumers move to first-class records
 - if Penguin stops between tool-call capture and tool completion, replay can
   reconstruct the pending call and emit an explicit cancelled/failed result
 - large command/read/search outputs do not get injected wholesale into the next
@@ -764,15 +805,38 @@ The safer near-term boundary is:
 
 ## Open Questions
 
-- Should the IR stay under `penguin/tools/` until shared runtime primitives
-  justify introducing `penguin/runtime/`?
-- Should ActionXML multiple-call execution remain opt-in at first?
-- Which tools are safe enough to mark parallel-safe initially?
-- Should model-visible tool schemas come entirely from the registry?
-- How should long-running process tools stream output into `ToolResult` records?
-- Should tool results be persisted as first-class session records rather than
-  action-result messages?
-- Should full tool output artifacts live in conversation storage, workspace
-  artifacts, or a dedicated result store with retention cleanup?
-- What aggregate per-turn model-visible tool-output cap should Penguin enforce
-  by default?
+Working decisions:
+
+- Keep the near-term IR under `penguin.tools.runtime`. Revisit
+  `penguin/runtime/` only when shared cross-domain primitives exist.
+- Keep ActionXML multiple-call execution opt-in at first.
+- Treat parallel-safe tool metadata as audit-required. No tool should become
+  parallel-safe by default.
+- Enforce a minimum registry contract before model-visible schemas come from
+  the registry: canonical name, description, input schema, and concise
+  model-facing usage guidance. Additional runtime fields such as handlers,
+  aliases, risk metadata, approval policy, output policy, provider support,
+  and UI presentation can remain incremental, but the minimum model-visible
+  surface should be testable for every exposed tool.
+- Adopt first-class session records as the long-term tool-result direction for
+  all tools. Start with lightweight envelopes for every tool execution and
+  store full outputs only when needed for truncation, artifacts, native replay,
+  or process/session-backed workflows.
+- Store full tool-output artifacts near Penguin workspace/conversation storage,
+  with a dedicated result/artifact namespace and retention cleanup when the
+  storage policy exists.
+- Long-running process output should not be solved with one fixed output
+  limit. It needs process/session records, pageable output, cancellation, and
+  model-visible `ToolResult` references to current output slices.
+- Defer aggregate per-turn model-visible tool-output caps until the first-class
+  record and replay boundary is stable. When implemented, express the policy as
+  a percentage of usable provider context plus an absolute ceiling, but split it
+  into a later PR because it is less urgent than durable records and replay
+  correctness.
+
+Remaining questions:
+
+- Which concrete first-pass tools are read-only enough to mark parallel-safe
+  after audit?
+- Which registry fields are required before model-visible schemas can come
+  entirely from the registry beyond the minimum model-visible contract?
