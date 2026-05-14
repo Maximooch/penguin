@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from penguin.tools.runtime import (
@@ -154,6 +156,31 @@ async def test_serial_scheduler_preserves_current_one_call_policy() -> None:
 
     assert executed == ["read_file"]
     assert [result.name for result in results] == ["read_file"]
+
+
+@pytest.mark.asyncio
+async def test_serial_scheduler_logs_tool_timing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    calls = [
+        ToolCall(
+            id="call_1",
+            name="read_file",
+            arguments={"path": "README.md"},
+            source="responses",
+        )
+    ]
+
+    with caplog.at_level(logging.INFO, logger="penguin.tools.runtime"):
+        results = await execute_tool_calls_serially(
+            calls,
+            lambda tool_call: {"action": tool_call.name, "result": "ok"},
+        )
+
+    assert results[0].status == "completed"
+    assert "tool.exec.start" in caplog.text
+    assert "tool.exec.done" in caplog.text
+    assert "args_chars=" in caplog.text
 
 
 def test_tool_loop_identity_ignores_provider_call_id_but_keeps_args() -> None:

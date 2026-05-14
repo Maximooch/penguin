@@ -4147,7 +4147,12 @@ async def handle_chat_message(
             "response": process_result.get("assistant_response", ""),
             "action_results": process_result.get("action_results", []),
             "aborted": bool(process_result.get("aborted")),
+            "status": process_result.get("status"),
         }
+        if "recoverable" in process_result:
+            resp["recoverable"] = bool(process_result.get("recoverable"))
+        if isinstance(process_result.get("error"), dict):
+            resp["error"] = process_result.get("error")
         reasoning_text = "".join(reasoning_buf) if include_reasoning else ""
         reasoning_note = _build_reasoning_visibility_note(
             include_reasoning=include_reasoning,

@@ -39,6 +39,28 @@ def test_runtime_metadata_defaults_are_conservative_before_safe_parallelism() ->
     assert metadata["retry_safe"] is False
 
 
+def test_runtime_metadata_parses_boolean_strings() -> None:
+    metadata = runtime_metadata_from_tool_schema(
+        {
+            "x-penguin-permissions": {
+                "mutates_state": "false",
+                "requires_approval": "no",
+                "parallel_safe": "true",
+                "long_running": "1",
+                "streams_output": "0",
+                "retry_safe": 1,
+            }
+        }
+    ).to_dict()
+
+    assert metadata["mutates_state"] is False
+    assert metadata["requires_approval"] is False
+    assert metadata["parallel_safe"] is True
+    assert metadata["long_running"] is True
+    assert metadata["streams_output"] is False
+    assert metadata["retry_safe"] is True
+
+
 def test_tool_manager_exposes_minimum_schema_contract_for_registered_tools() -> None:
     manager = ToolManager({}, lambda *_args, **_kwargs: None, fast_startup=True)
     tools = manager.get_model_visible_tools()

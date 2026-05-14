@@ -1,0 +1,79 @@
+Last login: Wed May  6 22:39:36 on ttys020
+(base) maximusputnam@mac penguin % uv run penguin
+(base) maximusputnam@mac penguin % uv run penguin-web
+
+=== Penguin Server ===
+Visit http://127.0.0.1:9000 to start using Penguin!
+API documentation: http://127.0.0.1:9000/api/docs
+
+Penguin local web auth is enabled.
+Browser/dashboard only: open this local authorization URL once for this browser.
+  http://127.0.0.1:9000/authorize#local_token=-Dwr-nL5ew3xLObgVulOk-auMYx4qblc
+Startup token (debug fallback): -Dwr-nL5ew3xLObgVulOk-auMYx4qblc
+TUI/CLI: local Penguin sessions authenticate automatically.
+CI/headless: use PENGUIN_API_KEYS with X-API-Key header auth.
+To explicitly run local-only without auth: PENGUIN_AUTH_ENABLED=false uv run penguin-web
+
+INFO:     Started server process [64028]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:9000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:53808 - "GET /api/v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53810 - "GET /api/v1/events/sse?directory=%2FUsers%2Fmaximusputnam%2FCode%2FPenguin%2Fpenguin HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53811 - "GET /config/providers HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53812 - "GET /provider HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53813 - "GET /config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53814 - "GET /provider/auth HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53815 - "GET /session?directory=%2FUsers%2Fmaximusputnam%2FCode%2FPenguin%2Fpenguin&limit=50 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53816 - "GET /api/v1/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53812 - "GET /lsp?directory=%2FUsers%2Fmaximusputnam%2FCode%2FPenguin%2Fpenguin HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53815 - "GET /formatter?directory=%2FUsers%2Fmaximusputnam%2FCode%2FPenguin%2Fpenguin HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53811 - "GET /vcs?directory=%2FUsers%2Fmaximusputnam%2FCode%2FPenguin%2Fpenguin HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53813 - "GET /path?directory=%2FUsers%2Fmaximusputnam%2FCode%2FPenguin%2Fpenguin HTTP/1.1" 200 OK
+INFO:     session.directory.bind session=session_20260507_163548_4743410b source=new requested=/Users/maximusputnam/Code/Penguin/penguin resolved=/Users/maximusputnam/Code/Penguin/penguin total=1
+INFO:     127.0.0.1:53831 - "POST /session?directory=%2FUsers%2Fmaximusputnam%2FCode%2FPenguin%2Fpenguin HTTP/1.1" 200 OK
+INFO:     session.directory.bind session=session_20260507_163548_4743410b source=existing requested=/Users/maximusputnam/Code/Penguin/penguin existing=/Users/maximusputnam/Code/Penguin/penguin resolved=/Users/maximusputnam/Code/Penguin/penguin
+INFO:     chat.mode.request session=session_20260507_163548_4743410b agent=default mode=build directory=/Users/maximusputnam/Code/Penguin/penguin
+INFO:     chat.trace.track request=starlette.middleware.base.BaseHTTPMiddleware.__call__.<locals>.call_next.<locals>.coro session=session_20260507_163548_4743410b task=0x10ba63640 tracked=True session_tasks=1
+INFO:     chat.trace.start request=ad5e2b5c-2c40-4b66-8523-32912c8b1126 session=session_20260507_163548_4743410b agent=default mode=build dir=/Users/maximusputnam/Code/Penguin/penguin model=openai/gpt-5.5 streaming=True client_msg=msg_1778189748135_00 prompt='to test use your browser tools to go to this url, take a screenshot, and tell me what image you see:\\nhttps://github.com...'
+INFO:     chat.service_tier.request session=session_20260507_163548_4743410b model=gpt-5.5 service_tier=priority
+INFO:     chat.reasoning.request session=session_20260507_163548_4743410b model=gpt-5.5 variant=high reasoning={'effort': 'high'}
+INFO:     chat.trace.before_process request=ad5e2b5c-2c40-4b66-8523-32912c8b1126 session=session_20260507_163548_4743410b gate=0x10f89fe90 gate_locked=False active=0 cm=0x10aee8450 tracked=True ctx={'session_id': 'session_20260507_163548_4743410b', 'conversation_id': 'session_20260507_163548_4743410b', 'agent_id': 'default', 'agent_mode': 'build', 'directory': '/Users/maximusputnam/Code/Penguin/penguin', 'project_root': '/Users/maximusputnam/Code/Penguin/penguin', 'workspace_root': '/Users/maximusputnam/Code/Penguin/penguin', 'request_id': 'ad5e2b5c-2c40-4b66-8523-32912c8b1126'}
+INFO:     chat.trace.gate_acquired request=ad5e2b5c-2c40-4b66-8523-32912c8b1126 session=session_20260507_163548_4743410b gate=0x10f89fe90 wait_ms=0.04 tracked=True
+INFO:     engine.scope.create request=ad5e2b5c-2c40-4b66-8523-32912c8b1126 session=session_20260507_163548_4743410b agent=default cache=none base_cm=0x10aee8450 scoped_cm=0x10f89ca50 scoped_session=session_20260507_163514_6b6b4f13
+INFO:     core.process.trace.start request=ad5e2b5c-2c40-4b66-8523-32912c8b1126 session=session_20260507_163548_4743410b conversation=session_20260507_163548_4743410b agent=default cm=0x10f89ca50 conv=0x10f89d0d0 conv_session=session_20260507_163514_6b6b4f13 msg_len=202 context_files=0 images=0 streaming=True multi_step=True
+INFO:     core.process.trace.load request=ad5e2b5c-2c40-4b66-8523-32912c8b1126 session=session_20260507_163548_4743410b conversation=session_20260507_163548_4743410b via=conversation ok=True conv_session=session_20260507_163548_4743410b
+INFO:     127.0.0.1:53832 - "GET /session/session_20260507_163548_4743410b HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53833 - "GET /session/session_20260507_163548_4743410b/message?limit=300 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53834 - "GET /session/session_20260507_163548_4743410b/todo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53835 - "GET /session/session_20260507_163548_4743410b/diff HTTP/1.1" 200 OK
+INFO:     engine.scope.prime request=ad5e2b5c-2c40-4b66-8523-32912c8b1126 session=session_20260507_163548_4743410b agent=default scoped_cm=0x10f89ca50 scoped_session=session_20260507_163548_4743410b
+INFO:     core.process.trace.engine request=ad5e2b5c-2c40-4b66-8523-32912c8b1126 session=session_20260507_163548_4743410b conversation=session_20260507_163548_4743410b agent=default formal_task=False cm=0x10f89ca50 conv=0x10f89d0d0 conv_session=session_20260507_163548_4743410b
+INFO:     engine.scope.adopt request=ad5e2b5c-2c40-4b66-8523-32912c8b1126 session=session_20260507_163548_4743410b agent=default cache=1 base_cm=0x10aee8450 scoped_cm=0x10f89ca50 scoped_session=session_20260507_163548_4743410b
+INFO:     engine.scope.reuse request=ad5e2b5c-2c40-4b66-8523-32912c8b1126 session=session_20260507_163548_4743410b agent=default cache=1 base_cm=0x10aee8450 scoped_cm=0x10f89ca50 scoped_session=session_20260507_163548_4743410b
+INFO:     engine.scope.reuse request=ad5e2b5c-2c40-4b66-8523-32912c8b1126 session=session_20260507_163548_4743410b agent=default cache=1 base_cm=0x10aee8450 scoped_cm=0x10f89ca50 scoped_session=session_20260507_163548_4743410b
+INFO:     engine.llm_step.start request=ad5e2b5c-2c40-4b66-8523-32912c8b1126 session=session_20260507_163548_4743410b agent=default cm=0x10f89ca50 conv=0x10f89d0d0 conv_session=session_20260507_163548_4743410b msgs=2 last_role=user last_preview='to test use your browser tools to go to this url, take a screenshot, and tell me what image you see:\\nhttps://github....' streaming=True tools=True
+INFO:     openai.oauth.resolve source=store_oauth has_access=True has_refresh=True has_expires=True has_account=True
+INFO:     openai.request.route route=oauth_codex model=gpt-5.5 stream=True service_tier=priority has_access=True has_refresh=True has_expires=True has_account=True
+INFO:     openai.oauth.codex.request_start diag_id=oaoc_6f5284dd0b requested_stream=True transport_stream=True model=gpt-5.5 model_fallback=False input_items=1 instructions_present=True store=False service_tier=priority has_account_id=True has_reasoning=True
+INFO:     127.0.0.1:53832 - "GET /api/v1/events/sse?session_id=session_20260507_163548_4743410b&directory=%2FUsers%2Fmaximusputnam%2FCode%2FPenguin%2Fpenguin HTTP/1.1" 200 OK
+INFO:     openai.oauth.codex.request_success diag_id=oaoc_6f5284dd0b stage=stream status=200 latency_ms=16972 model=gpt-5.5 model_fallback=False service_tier=priority output_chars=466 trace={'cf-ray': '9f835b47be6c14ec-IAH'}
+INFO:     openai.oauth.codex.reasoning_debug diag_id=oaoc_6f5284dd0b model=gpt-5.5 visible_reasoning_chars=822 summary_returned=True reasoning_tokens=439 reasoning_events=['response.reasoning_summary_part.added', 'response.reasoning_summary_text.delta', 'response.reasoning_summary_text.done', 'response.reasoning_summary_part.done'] event_types=['response.created', 'response.in_progress', 'response.output_item.added', 'response.output_item.done', 'response.content_part.added', 'response.output_text.delta', 'response.output_text.done', 'response.content_part.done', 'response.web_search_call.in_progress', 'response.web_search_call.searching', 'response.web_search_call.completed', 'response.reasoning_summary_part.added', 'response.reasoning_summary_text.delta', 'response.reasoning_summary_text.done', 'response.reasoning_summary_part.done', 'response.completed']
+INFO:     engine.stream.finalize.start request=ad5e2b5c-2c40-4b66-8523-32912c8b1126 session=session_20260507_163548_4743410b agent=default conv_session=session_20260507_163548_4743410b streaming=True response_len=466
+INFO:     core.stream.persist session=session_20260507_163548_4743410b agent=default manager=0x10aeeb910 message_id=msg_1778189765.29812 saved=True message_len=539 category=MessageCategory.DIALOG
+INFO:     core.stream.finalize request=ad5e2b5c-2c40-4b66-8523-32912c8b1126 session=session_20260507_163548_4743410b conversation=session_20260507_163548_4743410b agent=default effective_conv_session=session_20260507_163548_4743410b persisted=True message_len=539 events=1 empty=False
+INFO:     engine.stream.finalize.done request=ad5e2b5c-2c40-4b66-8523-32912c8b1126 session=session_20260507_163548_4743410b agent=default conv_session=session_20260507_163548_4743410b response_len=539 finalized=True
+INFO:     engine.llm_step.done request=ad5e2b5c-2c40-4b66-8523-32912c8b1126 session=session_20260507_163548_4743410b agent=default conv_session=session_20260507_163548_4743410b response_len=539 actions=0 usage={'input_tokens': 20790, 'output_tokens': 584, 'reasoning_tokens': 439, 'cache_read_tokens': 3968, 'cache_write_tokens': 0, 'total_tokens': 21374, 'cost': 0.0}
+INFO:     127.0.0.1:53845 - "GET /session/session_20260507_163548_4743410b HTTP/1.1" 200 OK
+INFO:     core.process.trace.done request=ad5e2b5c-2c40-4b66-8523-32912c8b1126 session=session_20260507_163548_4743410b conversation=session_20260507_163548_4743410b status=completed iterations=1 actions=0 usage={'input_tokens': 20790, 'output_tokens': 584, 'reasoning_tokens': 439, 'cache_read_tokens': 3968, 'cache_write_tokens': 0, 'total_tokens': 21374, 'cost': 0.0} response_len=539
+INFO:     opencode.usage.applied session=session_20260507_163548_4743410b message=msg_session_20260507_163548_4743410b_1778189753288_00 input=20790 output=584 reasoning=439 cache_read=3968 cache_write=0 total=21374 cost=0.0
+INFO:     chat.trace.after_process request=ad5e2b5c-2c40-4b66-8523-32912c8b1126 session=session_20260507_163548_4743410b status=completed iterations=1 response_len=539 actions=0 usage={'input_tokens': 20790, 'output_tokens': 584, 'reasoning_tokens': 439, 'cache_read_tokens': 3968, 'cache_write_tokens': 0, 'total_tokens': 21374, 'cost': 0.0} process_ms=17236.72 preview='I don’t have browser-harness exposed here, so I’ll verify via web access.The image shows an **Imgur page** in dark mode....'
+INFO:     session.title.auto_refresh session=session_20260507_163548_4743410b status=scheduled
+INFO:     chat.trace.response request=ad5e2b5c-2c40-4b66-8523-32912c8b1126 session=session_20260507_163548_4743410b response_len=539 reasoning_len=822 aborted=False preview='I don’t have browser-harness exposed here, so I’ll verify via web access.The image shows an **Imgur page** in dark mode....'
+INFO:     openai.oauth.resolve source=store_oauth has_access=True has_refresh=True has_expires=True has_account=True
+INFO:     openai.request.route route=oauth_codex model=gpt-5.5 stream=False service_tier=priority has_access=True has_refresh=True has_expires=True has_account=True
+INFO:     openai.oauth.codex.request_start diag_id=oaoc_039087585f requested_stream=False transport_stream=True model=gpt-5.5 model_fallback=False input_items=1 instructions_present=True store=False service_tier=priority has_account_id=True has_reasoning=False
+INFO:     127.0.0.1:53831 - "POST /api/v1/chat/message HTTP/1.1" 200 OK
+INFO:     openai.oauth.codex.request_success diag_id=oaoc_039087585f stage=stream status=200 latency_ms=1025 model=gpt-5.5 model_fallback=False service_tier=priority output_chars=31 trace={'cf-ray': '9f835bb2ce365c89-IAH'}
+INFO:     openai.oauth.codex.reasoning_debug diag_id=oaoc_039087585f model=gpt-5.5 visible_reasoning_chars=0 summary_returned=False reasoning_tokens=0 reasoning_events=[] event_types=['response.created', 'response.in_progress', 'response.output_item.added', 'response.content_part.added', 'response.output_text.delta', 'response.output_text.done', 'response.content_part.done', 'response.output_item.done', 'response.completed']
+INFO:     session.title.auto_refresh session=session_20260507_163548_4743410b attempt=1 status=updated source=generated snippets=1 fallback=False title='Inspect GitHub Screenshot Image'

@@ -44,7 +44,7 @@ For each feature increment:
 
 #### 2.1 Implement
 - Write minimal code to satisfy ONE acceptance criterion
-- Use <patch_file> or <patch_files> for changes
+- Use <edit_file> for exact replacements or <apply_patch> for contextual hunks
 - Keep changes focused and atomic
 
 #### 2.2 Test
@@ -116,7 +116,7 @@ Focus on quality:
 4. Provide actionable feedback
 
 ### 4. File Management Best Practices
-- Always use <patch_file> for single-file edits (automatic backups)
+- Prefer <edit_file> for exact single-file edits and <apply_patch> for contextual changes
 - Check file existence before creating
 - Use enhanced tools for better error messages
 - Keep atomic changes for easy rollback
@@ -163,7 +163,7 @@ For each feature increment:
 
 ### 1. Implement
 Write minimal code to satisfy ONE acceptance criterion.
-- Use <patch_file> or <patch_files> for changes
+- Use <edit_file> for exact replacements or <apply_patch> for contextual hunks
 - Keep changes atomic and focused
 - Match existing code style
 - Commit with descriptive message (see Git Commits below)
@@ -582,34 +582,23 @@ make no further tool calls.**
 # ASSEMBLE COMPLETE WORKFLOW GUIDE
 # =============================================================================
 
-WORKFLOW_GUIDE = (
-    JOURNAL_247
-    + "\n\n"
-    + RALPH_PERSISTENCE
-    + "\\n\\n"
-    + ITUV_WORKFLOW
-    + "\\n\\n"
-    + INVESTIGATION_WORKFLOW
-    + "\\n\\n"
-    + EXECUTION_WORKFLOW
-    + "\\n\\n"
-    + TOOL_RESULTS
-    + "\\n\\n"
-    + GIT_COMMITS
-    + "\\n\\n"
-    + DOCS_CACHE
-    + "\\n\\n"
-    + CONTEXT_MANAGEMENT
-    + "\\n\\n"
-    + LARGE_CODEBASE
-    + "\\n\\n"
-    + CODE_FORMATTING
-    + "\\n\\n"
-    + TODO_WORKFLOW
-    + "\\n\\n"
-    + SKILLS_WORKFLOW
-    + "\\n\\n"
-    + COMPLETION_GUIDE
+WORKFLOW_GUIDE = "\n\n".join(
+    [
+        JOURNAL_247,
+        RALPH_PERSISTENCE,
+        ITUV_WORKFLOW,
+        INVESTIGATION_WORKFLOW,
+        EXECUTION_WORKFLOW,
+        TOOL_RESULTS,
+        GIT_COMMITS,
+        DOCS_CACHE,
+        CONTEXT_MANAGEMENT,
+        LARGE_CODEBASE,
+        CODE_FORMATTING,
+        TODO_WORKFLOW,
+        SKILLS_WORKFLOW,
+        COMPLETION_GUIDE,
+    ]
 )
 
 

@@ -1181,6 +1181,7 @@ class OpenAIAdapter(BaseAdapter):
         provider_response_id: str | None = None,
         finish_reason: FinishReason | None = None,
         error: LLMError | None = None,
+        provider_data: Dict[str, Any] | None = None,
     ) -> None:
         lifecycle = getattr(self, "_last_request_lifecycle", None)
         if lifecycle is None:
@@ -1203,6 +1204,8 @@ class OpenAIAdapter(BaseAdapter):
             lifecycle.finish_reason = finish_reason
         if error is not None:
             lifecycle.error = error
+        if provider_data:
+            lifecycle.provider_data.update(dict(provider_data))
 
     def _codex_model_for_oauth(self, model_id: str) -> tuple[str, bool]:
         value = str(model_id or "").strip()
@@ -1506,9 +1509,7 @@ class OpenAIAdapter(BaseAdapter):
     ) -> tuple[Dict[str, Any], str, bool]:
         """Build the Codex OAuth Responses payload without sending it."""
 
-        model_id, model_fallback = self._codex_model_for_oauth(
-            self.model_config.model
-        )
+        model_id, model_fallback = self._codex_model_for_oauth(self.model_config.model)
         resolved_instructions, codex_messages = (
             self._prepare_codex_messages_and_instructions(
                 instructions,
@@ -1797,6 +1798,18 @@ class OpenAIAdapter(BaseAdapter):
         completed_text = ""
         accumulated_reasoning = ""
         started = time.monotonic()
+        event_counts: Dict[str, int] = {}
+        first_event_ms: Optional[int] = None
+        first_text_ms: Optional[int] = None
+        first_tool_args_ms: Optional[int] = None
+        completed_ms: Optional[int] = None
+        max_event_gap_ms = 0
+        last_event_at: Optional[float] = None
+        text_delta_count = 0
+        text_delta_chars = 0
+        tool_arg_delta_count = 0
+        tool_arg_chars = 0
+        tool_arg_chars_by_item: Dict[str, int] = {}
         response: httpx.Response | None = None
         saw_done_marker = False
         saw_completed_event = False
@@ -1864,6 +1877,20 @@ class OpenAIAdapter(BaseAdapter):
 
                         etype = data.get("type")
                         event_type = str(etype or "").strip()
+                        event_now = time.monotonic()
+                        event_elapsed_ms = int((event_now - started) * 1000)
+                        if first_event_ms is None:
+                            first_event_ms = event_elapsed_ms
+                        if last_event_at is not None:
+                            max_event_gap_ms = max(
+                                max_event_gap_ms,
+                                int((event_now - last_event_at) * 1000),
+                            )
+                        last_event_at = event_now
+                        if event_type:
+                            event_counts[event_type] = (
+                                event_counts.get(event_type, 0) + 1
+                            )
                         response_obj_for_lifecycle = data.get("response")
                         provider_response_id = None
                         if isinstance(response_obj_for_lifecycle, dict):
@@ -1909,6 +1936,10 @@ class OpenAIAdapter(BaseAdapter):
                         if etype == "response.output_text.delta":
                             delta = data.get("delta", "")
                             if delta:
+                                if first_text_ms is None:
+                                    first_text_ms = event_elapsed_ms
+                                text_delta_count += 1
+                                text_delta_chars += len(str(delta))
                                 accumulated_content.append(delta)
                                 if stream_callback:
                                     await self._safe_invoke_callback(
@@ -1916,6 +1947,22 @@ class OpenAIAdapter(BaseAdapter):
                                         str(delta),
                                         "assistant",
                                     )
+                            continue
+
+                        if etype == "response.function_call_arguments.delta":
+                            delta = data.get("delta")
+                            if isinstance(delta, str) and delta:
+                                if first_tool_args_ms is None:
+                                    first_tool_args_ms = event_elapsed_ms
+                                tool_arg_delta_count += 1
+                                tool_arg_chars += len(delta)
+                                raw_item_id = data.get("item_id") or data.get(
+                                    "output_index"
+                                )
+                                item_id = str(raw_item_id or "unknown")
+                                tool_arg_chars_by_item[item_id] = (
+                                    tool_arg_chars_by_item.get(item_id, 0) + len(delta)
+                                )
                             continue
 
                         if etype == "response.output_text.done":
@@ -1926,6 +1973,7 @@ class OpenAIAdapter(BaseAdapter):
 
                         if etype == "response.completed":
                             saw_completed_event = True
+                            completed_ms = event_elapsed_ms
                             response_obj = data.get("response")
                             if isinstance(response_obj, dict):
                                 self._set_last_usage(response_obj.get("usage"))
@@ -2000,6 +2048,7 @@ class OpenAIAdapter(BaseAdapter):
 
         pending_tool_call = self.has_pending_tool_call()
         if not saw_completed_event:
+            latency_ms = int((time.monotonic() - started) * 1000)
             output_state = (
                 "tool_call"
                 if pending_tool_call
@@ -2010,6 +2059,25 @@ class OpenAIAdapter(BaseAdapter):
             detail = (
                 "Codex stream ended before response.completed "
                 f"(output_state={output_state}, saw_done_marker={saw_done_marker})"
+            )
+            _log_info(
+                "openai.oauth.codex.stream_breakdown diag_id=%s model=%s "
+                "latency_ms=%s incomplete=True first_event_ms=%s first_text_ms=%s "
+                "first_tool_args_ms=%s max_event_gap_ms=%s text_delta_count=%s "
+                "text_delta_chars=%s tool_arg_delta_count=%s tool_arg_chars=%s "
+                "event_counts=%s",
+                diag_id,
+                model_id,
+                latency_ms,
+                first_event_ms,
+                first_text_ms,
+                first_tool_args_ms,
+                max_event_gap_ms,
+                text_delta_count,
+                text_delta_chars,
+                tool_arg_delta_count,
+                tool_arg_chars,
+                dict(sorted(event_counts.items())),
             )
             if pending_tool_call:
                 self._reset_tool_call_state()
@@ -2025,6 +2093,22 @@ class OpenAIAdapter(BaseAdapter):
         latency_ms = int((time.monotonic() - started) * 1000)
         trace = self._trace_headers(response)
         output_chars = len(completed_text) or len("".join(accumulated_content))
+        stream_breakdown = {
+            "latency_ms": latency_ms,
+            "first_event_ms": first_event_ms,
+            "first_text_ms": first_text_ms,
+            "first_tool_args_ms": first_tool_args_ms,
+            "completed_ms": completed_ms,
+            "max_event_gap_ms": max_event_gap_ms,
+            "text_delta_count": text_delta_count,
+            "text_delta_chars": text_delta_chars,
+            "tool_arg_delta_count": tool_arg_delta_count,
+            "tool_arg_chars": tool_arg_chars,
+            "tool_arg_chars_by_item": dict(tool_arg_chars_by_item),
+            "saw_done_marker": saw_done_marker,
+            "saw_completed_event": saw_completed_event,
+            "event_counts": dict(sorted(event_counts.items())),
+        }
         _log_info(
             "openai.oauth.codex.request_success diag_id=%s stage=stream status=%s "
             "latency_ms=%s model=%s model_fallback=%s service_tier=%s "
@@ -2037,6 +2121,31 @@ class OpenAIAdapter(BaseAdapter):
             stream_payload.get("service_tier"),
             output_chars,
             trace,
+        )
+        _log_info(
+            "openai.oauth.codex.stream_breakdown diag_id=%s model=%s latency_ms=%s "
+            "first_event_ms=%s first_text_ms=%s first_tool_args_ms=%s "
+            "completed_ms=%s max_event_gap_ms=%s text_delta_count=%s "
+            "text_delta_chars=%s tool_arg_delta_count=%s tool_arg_chars=%s "
+            "tool_arg_chars_by_item=%s event_counts=%s",
+            diag_id,
+            model_id,
+            latency_ms,
+            first_event_ms,
+            first_text_ms,
+            first_tool_args_ms,
+            completed_ms,
+            max_event_gap_ms,
+            text_delta_count,
+            text_delta_chars,
+            tool_arg_delta_count,
+            tool_arg_chars,
+            dict(tool_arg_chars_by_item),
+            dict(sorted(event_counts.items())),
+        )
+        self._update_request_lifecycle(
+            status=ProviderRequestStatus.STREAMING,
+            provider_data={"stream_breakdown": stream_breakdown},
         )
         self._finalize_reasoning_debug_snapshot(
             visible_reasoning_chars=len(self.get_last_reasoning()),
@@ -2256,9 +2365,15 @@ class OpenAIAdapter(BaseAdapter):
             },
         )
         self._set_last_error(llm_error)
+        stream_disconnect_stages = {
+            "stream_incomplete",
+            "stream_response",
+            "stream_timeout",
+            "stream_transport",
+        }
         lifecycle_status = (
             ProviderRequestStatus.DISCONNECTED
-            if stage == "stream_incomplete"
+            if stage in stream_disconnect_stages
             else ProviderRequestStatus.FAILED
         )
         self._update_request_lifecycle(

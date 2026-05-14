@@ -59,7 +59,24 @@ class EditService:
         replace_all: bool = False,
         warnings: Optional[List[str]] = None,
     ) -> FileEditResult:
-        """Replace exact text in one file after matching current contents."""
+        """Replace exact text in one file after matching current contents.
+
+        Args:
+            path: File path to edit, resolved inside the workspace root when set.
+            old_string: Exact current text that must be present before writing.
+            new_string: Replacement text to write in place of ``old_string``.
+            replace_all: When true, replace every exact match; otherwise exactly
+                one match is required.
+            warnings: Parser/runtime warnings to attach to the edit result.
+
+        Returns:
+            FileEditResult describing success, failure, changed files, and diff.
+
+        Raises:
+            ValueError: If exact_replace validation fails or the path escapes the
+                workspace.
+            OSError: If reading or writing the target file fails.
+        """
 
         operation = EditOperation(
             type="exact_replace",
@@ -80,7 +97,21 @@ class EditService:
         *,
         warnings: Optional[List[str]] = None,
     ) -> FileEditResult:
-        """Apply a Codex-style contextual patch after validating all hunks."""
+        """Apply a Codex-style contextual patch after validating all hunks.
+
+        Args:
+            patch: Codex-style patch text containing add, delete, update, or move
+                hunks with surrounding context.
+            warnings: Parser/runtime warnings to attach to the edit result.
+
+        Returns:
+            FileEditResult describing success, failure, changed files, and diff.
+
+        Raises:
+            ValueError: If patch syntax or hunk context validation fails, or if
+                any target path escapes the workspace.
+            OSError: If reading or writing any touched file fails.
+        """
 
         operation = EditOperation(
             type="apply_patch",
@@ -143,7 +174,15 @@ class EditService:
         raise ValueError(f"Unsupported edit operation type: {operation.type}")
 
     def _execute_write(self, operation: EditOperation) -> FileEditResult:
-        resolved_path = self._resolve_target_path(operation.path)
+        try:
+            resolved_path = self._resolve_target_path(operation.path)
+        except ValueError as exc:
+            return self._failure_result(
+                "write_file",
+                str(exc),
+                requested_paths=[operation.path],
+                warnings=operation.warnings,
+            )
         content = str(operation.payload.get("content", ""))
         return self._write_full_content(
             requested_path=operation.path,
@@ -155,7 +194,15 @@ class EditService:
         )
 
     def _execute_exact_replace(self, operation: EditOperation) -> FileEditResult:
-        resolved_path = self._resolve_target_path(operation.path)
+        try:
+            resolved_path = self._resolve_target_path(operation.path)
+        except ValueError as exc:
+            return self._failure_result(
+                "edit_file",
+                str(exc),
+                requested_paths=[operation.path],
+                warnings=operation.warnings,
+            )
         old_string = operation.payload.get("old_string")
         new_string = operation.payload.get("new_string")
         replace_all = bool(operation.payload.get("replace_all", False))
@@ -923,9 +970,22 @@ class EditService:
 
     def _resolve_target_path(self, requested_path: str) -> Path:
         path_obj = Path(requested_path).expanduser()
-        if not path_obj.is_absolute() and self.workspace_root:
-            path_obj = Path(self.workspace_root) / path_obj
-        return path_obj.resolve()
+        workspace_root = (
+            Path(self.workspace_root).expanduser().resolve()
+            if self.workspace_root
+            else None
+        )
+        if not path_obj.is_absolute() and workspace_root is not None:
+            path_obj = workspace_root / path_obj
+        resolved_path = path_obj.resolve()
+        if workspace_root is not None:
+            try:
+                resolved_path.relative_to(workspace_root)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Path escapes workspace root: {requested_path}"
+                ) from exc
+        return resolved_path
 
     def _display_path(self, requested_path: str, resolved_path: Path) -> str:
         requested = (requested_path or "").strip()

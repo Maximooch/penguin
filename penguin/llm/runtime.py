@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import json
 import logging
+import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from penguin.tools.runtime import (
@@ -16,7 +17,13 @@ from penguin.tools.runtime import (
 )
 from penguin.utils.errors import LLMEmptyResponseError
 
-from .contracts import LLMError
+from .contracts import (
+    ErrorCategory,
+    LLMCallResult,
+    LLMCallStatus,
+    LLMError,
+    LLMProviderError,
+)
 from .provider_transform import (
     native_tool_format,
     normalize_anthropic_tools,
@@ -34,6 +41,17 @@ _NATIVE_RESPONSE_COMPLETION_TOOLS = {"finish_response"}
 logger = logging.getLogger(__name__)
 
 
+def _tool_arguments_chars(arguments: Any) -> int:
+    """Return a bounded-diagnostic argument size in characters."""
+
+    if isinstance(arguments, str):
+        return len(arguments)
+    try:
+        return len(json.dumps(arguments, sort_keys=True, default=str))
+    except Exception:
+        return len(str(arguments))
+
+
 def _get_last_provider_error(api_client: Any) -> Optional[LLMError]:
     try:
         getter = getattr(api_client, "get_last_error", None)
@@ -41,6 +59,83 @@ def _get_last_provider_error(api_client: Any) -> Optional[LLMError]:
     except Exception:
         return None
     return provider_error if isinstance(provider_error, LLMError) else None
+
+
+def _get_last_call_result(api_client: Any) -> Optional[LLMCallResult]:
+    try:
+        getter = getattr(api_client, "get_last_response_result", None)
+        result = getter() if callable(getter) else None
+    except Exception:
+        return None
+    return result if isinstance(result, LLMCallResult) else None
+
+
+async def _get_response_result(
+    *,
+    api_client: Any,
+    messages: List[Dict[str, Any]],
+    stream: Optional[bool],
+    stream_callback: Optional[Callable[..., Any]],
+    extra_kwargs: Dict[str, Any],
+) -> LLMCallResult:
+    result_getter = getattr(api_client, "get_response_result", None)
+    if callable(result_getter):
+        result = await result_getter(
+            messages,
+            stream=stream,
+            stream_callback=stream_callback,
+            **extra_kwargs,
+        )
+        if isinstance(result, LLMCallResult):
+            return result
+
+    text = await api_client.get_response(
+        messages,
+        stream=stream,
+        stream_callback=stream_callback,
+        **extra_kwargs,
+    )
+    result = _get_last_call_result(api_client)
+    if result is not None:
+        return result
+    provider_error = _get_last_provider_error(api_client)
+    return LLMCallResult(
+        text=str(text or ""),
+        status=(
+            LLMCallStatus.RETRYABLE_ERROR
+            if provider_error is not None and provider_error.retryable
+            else LLMCallStatus.FATAL_ERROR
+            if provider_error is not None
+            else LLMCallStatus.COMPLETED
+        ),
+        error=provider_error,
+    )
+
+
+def _call_result_failed(result: Optional[LLMCallResult]) -> bool:
+    return isinstance(result, LLMCallResult) and result.status in {
+        LLMCallStatus.RETRYABLE_ERROR,
+        LLMCallStatus.FATAL_ERROR,
+        LLMCallStatus.CANCELLED,
+    }
+
+
+def _raise_provider_failure(
+    result: Optional[LLMCallResult],
+    provider_error: Optional[LLMError],
+) -> None:
+    error = (
+        result.error
+        if isinstance(result, LLMCallResult) and isinstance(result.error, LLMError)
+        else provider_error
+    )
+    if error is None:
+        error = LLMError(
+            message="Provider request failed",
+            category=ErrorCategory.UNKNOWN,
+            retryable=False,
+        )
+    raise LLMProviderError(error)
 
 
 def _is_provider_error_response(response: Optional[str]) -> bool:
@@ -63,7 +158,7 @@ def should_retry_provider_failure(
         return False
     if streamed_assistant_chunk or pending_tool_call:
         return False
-    return not response or not response.strip() or _is_provider_error_response(response)
+    return True
 
 
 def _get_tool_payload(
@@ -117,9 +212,7 @@ def _filter_native_loop_control_tools(
     return filtered
 
 
-def prepare_native_tool_kwargs(
-    model_config: Any, tool_manager: Any
-) -> Dict[str, Any]:
+def prepare_native_tool_kwargs(model_config: Any, tool_manager: Any) -> Dict[str, Any]:
     """Build native tool kwargs for providers that support structured tool calls."""
 
     extra_kwargs: Dict[str, Any] = {}
@@ -347,53 +440,78 @@ async def call_with_retry(
         except TypeError:
             stream_callback(chunk)
 
-    assistant_response = await api_client.get_response(
-        messages,
+    call_result = await _get_response_result(
+        api_client=api_client,
+        messages=messages,
         stream=streaming,
         stream_callback=(
             _tracked_stream_callback
             if streaming and stream_callback
             else stream_callback
         ),
-        **extra_kwargs,
+        extra_kwargs=extra_kwargs,
     )
+    assistant_response = call_result.text
 
     pending_tool_call = handler_has_pending_tool_call(api_client)
-    provider_error = _get_last_provider_error(api_client)
-    if should_retry_provider_failure(
-        provider_error=provider_error,
-        response=assistant_response,
-        streamed_assistant_chunk=streamed_assistant_chunk,
-        pending_tool_call=pending_tool_call,
-    ):
-        assistant_response = await api_client.get_response(messages, stream=False)
+    provider_error = call_result.error or _get_last_provider_error(api_client)
+    if _call_result_failed(call_result):
+        if should_retry_provider_failure(
+            provider_error=provider_error,
+            response=assistant_response,
+            streamed_assistant_chunk=streamed_assistant_chunk,
+            pending_tool_call=pending_tool_call,
+        ):
+            call_result = await _get_response_result(
+                api_client=api_client,
+                messages=messages,
+                stream=False,
+                stream_callback=None,
+                extra_kwargs={},
+            )
+            assistant_response = call_result.text
+        else:
+            _raise_provider_failure(call_result, provider_error)
         if (
             streaming
             and stream_callback
             and assistant_response
             and assistant_response.strip()
+            and call_result.succeeded
         ):
             await _tracked_stream_callback(assistant_response, "assistant")
             replayed_retry_response = True
         pending_tool_call = handler_has_pending_tool_call(api_client)
-        provider_error = _get_last_provider_error(api_client)
+        provider_error = call_result.error or _get_last_provider_error(api_client)
+        if _call_result_failed(call_result):
+            _raise_provider_failure(call_result, provider_error)
 
     if not assistant_response or not assistant_response.strip():
         if streamed_assistant_chunk:
             return assistant_response or ""
         if pending_tool_call:
             return assistant_response or ""
-        assistant_response = await api_client.get_response(messages, stream=False)
+        call_result = await _get_response_result(
+            api_client=api_client,
+            messages=messages,
+            stream=False,
+            stream_callback=None,
+            extra_kwargs={},
+        )
+        assistant_response = call_result.text
         if (
             streaming
             and stream_callback
             and assistant_response
             and assistant_response.strip()
+            and call_result.succeeded
         ):
             await _tracked_stream_callback(assistant_response, "assistant")
             replayed_retry_response = True
         pending_tool_call = handler_has_pending_tool_call(api_client)
-        provider_error = _get_last_provider_error(api_client)
+        provider_error = call_result.error or _get_last_provider_error(api_client)
+        if _call_result_failed(call_result):
+            _raise_provider_failure(call_result, provider_error)
 
     if not assistant_response or not assistant_response.strip():
         if pending_tool_call:
@@ -426,9 +544,7 @@ async def execute_pending_tool_call(
     tool_manager: Any,
     persist_action_result: Callable[[Dict[str, Any], Dict[str, Any]], None],
     persist_tool_call_record: Optional[Callable[[ToolCall], None]] = None,
-    persist_tool_result_record: Optional[
-        Callable[[ToolCall, ToolResult], None]
-    ] = None,
+    persist_tool_result_record: Optional[Callable[[ToolCall, ToolResult], None]] = None,
     execution_policy: Optional[ToolExecutionPolicy] = None,
     emit_action_start: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     emit_action_result: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
@@ -502,9 +618,7 @@ async def execute_pending_tool_calls(
     tool_manager: Any,
     persist_action_result: Callable[[Dict[str, Any], Dict[str, Any]], None],
     persist_tool_call_record: Optional[Callable[[ToolCall], None]] = None,
-    persist_tool_result_record: Optional[
-        Callable[[ToolCall, ToolResult], None]
-    ] = None,
+    persist_tool_result_record: Optional[Callable[[ToolCall, ToolResult], None]] = None,
     execution_policy: Optional[ToolExecutionPolicy] = None,
     emit_action_start: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     emit_action_result: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
@@ -523,6 +637,16 @@ async def execute_pending_tool_calls(
     ]
     if not tool_calls:
         return []
+
+    batch_started = time.perf_counter()
+    logger.info(
+        "llm.tool_batch.start provider=%s model=%s count=%s names=%s args_chars=%s",
+        getattr(getattr(api_client, "model_config", None), "provider", None),
+        getattr(getattr(api_client, "model_config", None), "model", None),
+        len(tool_calls),
+        [tool_call.name for tool_call in tool_calls],
+        sum(_tool_arguments_chars(tool_call.arguments) for tool_call in tool_calls),
+    )
 
     if persist_tool_call_record is not None:
         for tool_call in tool_calls:
@@ -591,6 +715,14 @@ async def execute_pending_tool_calls(
             ),
         )
         if not scheduler_results:
+            logger.info(
+                "llm.tool_batch.done provider=%s model=%s count=%s results=0 "
+                "duration_ms=%.2f",
+                getattr(getattr(api_client, "model_config", None), "provider", None),
+                getattr(getattr(api_client, "model_config", None), "model", None),
+                len(tool_calls),
+                (time.perf_counter() - batch_started) * 1000,
+            )
             return []
         action_results: List[Dict[str, Any]] = []
         for tool_result in scheduler_results:
@@ -644,8 +776,27 @@ async def execute_pending_tool_calls(
             action_results.append(
                 legacy_action_result if suppress_ui_artifacts else runtime_action_result
             )
+        logger.info(
+            "llm.tool_batch.done provider=%s model=%s count=%s results=%s "
+            "duration_ms=%.2f statuses=%s",
+            getattr(getattr(api_client, "model_config", None), "provider", None),
+            getattr(getattr(api_client, "model_config", None), "model", None),
+            len(tool_calls),
+            len(action_results),
+            (time.perf_counter() - batch_started) * 1000,
+            [result.status for result in scheduler_results],
+        )
         return action_results
     except Exception as exc:
+        logger.warning(
+            "llm.tool_batch.error provider=%s model=%s count=%s duration_ms=%.2f "
+            "error=%s",
+            getattr(getattr(api_client, "model_config", None), "provider", None),
+            getattr(getattr(api_client, "model_config", None), "model", None),
+            len(tool_calls),
+            (time.perf_counter() - batch_started) * 1000,
+            exc,
+        )
         if emit_action_result is not None:
             for tool_call in visible_tool_calls:
                 await emit_action_result(

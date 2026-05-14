@@ -32,7 +32,7 @@ in terms of short/long term memory.
 
 # Also worth having a features / roadmap / competitors analysis.md files, for Penguin and what others are doing.
 
-# TODO: 
+# TODO:
 # - Add a function to get the total token usage for a session
 # - Add a function to get the token usage for a specific category
 # - Add a function to get the token usage as a percentage of the total budget
@@ -59,9 +59,34 @@ from penguin.constants import get_default_context_window_emergency_fallback_toke
 
 logger = logging.getLogger(__name__)
 
+
+def _category_name(category: Any) -> str:
+    """Return a stable category name for diagnostics."""
+
+    return getattr(category, "name", str(category or "UNKNOWN"))
+
+
+def _content_chars(value: Any) -> int:
+    """Return content size in characters for context diagnostics."""
+
+    if isinstance(value, str):
+        return len(value)
+    return len(str(value))
+
+
+def _message_preview(value: Any, limit: int = 120) -> str:
+    """Return a compact single-line message preview for logs."""
+
+    text = str(value or "").replace("\n", "\\n")
+    if len(text) <= limit:
+        return text
+    return text[: max(limit - 3, 0)] + "..."
+
+
 @dataclass
 class TokenBudget:
     """Token budget for a message category"""
+
     # Minimum tokens guaranteed for this category
     min_tokens: int
     # Maximum tokens this category can consume
@@ -82,6 +107,7 @@ class TokenBudget:
 @dataclass
 class TruncationEvent:
     """Record of a context window truncation event"""
+
     category: MessageCategory
     messages_removed: int
     tokens_freed: int
@@ -108,7 +134,7 @@ class TruncationTracker:
         messages_removed: int,
         tokens_freed: int,
         total_messages_before: int,
-        total_messages_after: int
+        total_messages_after: int,
     ) -> TruncationEvent:
         """Record a truncation event and return it"""
         event = TruncationEvent(
@@ -117,7 +143,7 @@ class TruncationTracker:
             tokens_freed=tokens_freed,
             timestamp=datetime.now().isoformat(),
             total_messages_before=total_messages_before,
-            total_messages_after=total_messages_after
+            total_messages_after=total_messages_after,
         )
 
         self.events.append(event)
@@ -150,12 +176,13 @@ class TruncationTracker:
         self.session_total_messages_removed = 0
         self.session_total_tokens_freed = 0
 
+
 class ContextWindowManager:
     """Manages token budgeting and content trimming for conversation context"""
 
     def __init__(
         self,
-        model_config = None,
+        model_config=None,
         token_counter: Optional[Callable[[Any], int]] = None,
         api_client=None,
         config_obj: Optional[Any] = None,
@@ -175,7 +202,12 @@ class ContextWindowManager:
 
         # Max images to keep in context (trim oldest when exceeded)
         from penguin.constants import DEFAULT_MAX_CONTEXT_IMAGES
-        self.max_context_images = max_context_images if max_context_images is not None else DEFAULT_MAX_CONTEXT_IMAGES
+
+        self.max_context_images = (
+            max_context_images
+            if max_context_images is not None
+            else DEFAULT_MAX_CONTEXT_IMAGES
+        )
 
         # Context window budget - get from config.yml model.context_window
         # NOTE: context_window = INPUT capacity (history), max_output_tokens = OUTPUT limit (generation)
@@ -184,12 +216,17 @@ class ContextWindowManager:
         try:
             from penguin.config import config
             from penguin.llm.model_config import safe_context_window
-            if 'model' in config and isinstance(config['model'], dict):
-                raw_context_window = config['model'].get('context_window')
+
+            if "model" in config and isinstance(config["model"], dict):
+                raw_context_window = config["model"].get("context_window")
                 if raw_context_window:
                     # Apply 85% safety fraction to leave headroom for prompts/responses
-                    self.max_context_window_tokens = safe_context_window(raw_context_window)
-                    logger.info(f"Context window: {self.max_context_window_tokens} tokens (85% of {raw_context_window})")
+                    self.max_context_window_tokens = safe_context_window(
+                        raw_context_window
+                    )
+                    logger.info(
+                        f"Context window: {self.max_context_window_tokens} tokens (85% of {raw_context_window})"
+                    )
         except (ImportError, AttributeError):
             pass
 
@@ -198,32 +235,43 @@ class ContextWindowManager:
                 "No context_window configured! Set 'model.context_window' in config.yml. "
                 f"Using emergency fallback of {get_default_context_window_emergency_fallback_tokens()} tokens."
             )
-            self.max_context_window_tokens = get_default_context_window_emergency_fallback_tokens()
+            self.max_context_window_tokens = (
+                get_default_context_window_emergency_fallback_tokens()
+            )
 
         # Try to get token counter with clearer logging
         if token_counter:
             logger.info("Using explicit token counter")
             self.token_counter = token_counter
-        elif api_client and hasattr(api_client, 'count_tokens'):
-            logger.info(f"Using API client token counter from {getattr(api_client.client_handler, 'provider', 'unknown') if hasattr(api_client, 'client_handler') else 'unknown'}")
+        elif api_client and hasattr(api_client, "count_tokens"):
+            logger.info(
+                f"Using API client token counter from {getattr(api_client.client_handler, 'provider', 'unknown') if hasattr(api_client, 'client_handler') else 'unknown'}"
+            )
             self.token_counter = api_client.count_tokens
-        elif model_config and hasattr(model_config, 'api_client') and model_config.api_client:
+        elif (
+            model_config
+            and hasattr(model_config, "api_client")
+            and model_config.api_client
+        ):
             logger.info(f"Using model_config.api_client token counter")
             self.token_counter = model_config.api_client.count_tokens
         else:
             # No API client, make a best effort
             try:
                 from penguin.utils.diagnostics import diagnostics
+
                 self.token_counter = diagnostics.count_tokens
                 logger.info("Using tiktoken via diagnostics for token counting")
             except (ImportError, AttributeError):
                 # Last resort: Use fallback counter
                 self.token_counter = self._default_token_counter
-                logger.warning("Using fallback token counter - counts may be inaccurate")
-            
+                logger.warning(
+                    "Using fallback token counter - counts may be inaccurate"
+                )
+
         self._budgets = {}
         self._initialize_token_budgets()
-        
+
     def _default_token_counter(self, content: Any) -> int:
         """Default token counter when none is provided"""
         # This is a very simplistic fallback that should rarely be used
@@ -233,7 +281,10 @@ class ContextWindowManager:
             # Handle potential image content with more realistic estimates
             total = 0
             for item in content:
-                if isinstance(item, dict) and item.get("type") in ["image", "image_url"]:
+                if isinstance(item, dict) and item.get("type") in [
+                    "image",
+                    "image_url",
+                ]:
                     # Much more realistic image token estimates - Claude models use ~4000 tokens per image
                     total += 4000  # Higher default for safety
                     # TODO: Make this dynamic based on the model used
@@ -244,37 +295,37 @@ class ContextWindowManager:
             return total
         else:
             return len(str(content)) // 4
-        
+
     def _initialize_token_budgets(self):
         """Initialize default token budgets for different message categories"""
         total_budget = self.max_context_window_tokens
-        
+
         # Default allocation percentages (can be made configurable)
         allocations = {
-            MessageCategory.SYSTEM: 0.10,     # 10% - highest priority (only system prompt)
-            MessageCategory.CONTEXT: 0.30,    # 30% - high priority
-            MessageCategory.DIALOG: 0.40,     # 40% - medium priority
-            MessageCategory.SYSTEM_OUTPUT: 0.20  # 20% - lowest priority (renamed from ACTIONS)
+            MessageCategory.SYSTEM: 0.10,  # 10% - highest priority (only system prompt)
+            MessageCategory.CONTEXT: 0.30,  # 30% - high priority
+            MessageCategory.DIALOG: 0.40,  # 40% - medium priority
+            MessageCategory.SYSTEM_OUTPUT: 0.20,  # 20% - lowest priority (renamed from ACTIONS)
         }
-        # This needs room for large messages, like images, audio, and files. 
+        # This needs room for large messages, like images, audio, and files.
         # It also needs to be dynamic based on letting some categories have more budget than others until they are full?
-        
+
         # Create token budgets based on percentages
         for category, percentage in allocations.items():
             budget = int(total_budget * percentage)
-            
+
             # Set minimum tokens to a reasonable value but never higher than the budget itself
             if category == MessageCategory.SYSTEM:
-                min_tokens = min(1000, budget)  # Use 1000 or budget, whichever is smaller
+                min_tokens = min(
+                    1000, budget
+                )  # Use 1000 or budget, whichever is smaller
             else:
                 min_tokens = 0
-            
+
             self._budgets[category] = TokenBudget(
-                min_tokens=min_tokens,
-                max_category_tokens=budget,
-                current_tokens=0
+                min_tokens=min_tokens, max_category_tokens=budget, current_tokens=0
             )
-        
+
         # ------------------------------------------------------------------
         # Ensure **all** MessageCategory values have a budget entry.
         # Some categories (e.g. ERROR, INTERNAL, UNKNOWN) were previously
@@ -291,7 +342,7 @@ class ContextWindowManager:
                     max_category_tokens=default_max,
                     current_tokens=0,
                 )
-    
+
     @property
     def total_budget(self) -> int:
         """Get the total token budget"""
@@ -316,22 +367,22 @@ class ContextWindowManager:
         )
         self.max_context_window_tokens = int(value)
         self._initialize_token_budgets()
-    
+
     @property
     def available_tokens(self) -> int:
         """Get the number of available tokens"""
         used_tokens = sum(budget.current_tokens for budget in self._budgets.values())
         return max(0, self.max_context_window_tokens - used_tokens)
-    
+
     def get_budget(self, category: MessageCategory) -> TokenBudget:
         """Get the token budget for a specific category"""
         return self._budgets.get(category)
-    
+
     def update_usage(self, category: MessageCategory, tokens: int) -> None:
         """Update token usage for a category"""
         if category in self._budgets:
             self._budgets[category].current_tokens += tokens
-            
+
     def reset_usage(self, category: Optional[MessageCategory] = None) -> None:
         """Reset token usage for a category or all categories"""
         if category:
@@ -340,7 +391,7 @@ class ContextWindowManager:
         else:
             for budget in self._budgets.values():
                 budget.current_tokens = 0
-                
+
     def is_over_budget(self, category: Optional[MessageCategory] = None) -> bool:
         """Check if a category or the entire context is over budget"""
         if category:
@@ -348,75 +399,85 @@ class ContextWindowManager:
                 self._budgets[category].current_tokens
                 > self._budgets[category].max_category_tokens
             )
-        
-        return sum(budget.current_tokens for budget in self._budgets.values()) > self.max_context_window_tokens
-    
+
+        return (
+            sum(budget.current_tokens for budget in self._budgets.values())
+            > self.max_context_window_tokens
+        )
+
     def analyze_session(self, session: Session) -> Dict[str, Any]:
         """
         Analyze a session for token usage statistics and multimodal content.
-        
+
         Args:
             session: Session object containing messages
-            
+
         Returns:
             Dict with token counts, image counts, and other statistics
         """
         total_tokens = 0
         per_category_tokens = {category: 0 for category in MessageCategory}
         image_count = 0
-        
+
         for msg in session.messages:
             category = msg.category
             content = msg.content
-            
+
             # Use existing token count or calculate new one
             token_count = msg.tokens
             if token_count == 0:
                 token_count = self.token_counter(content)
                 # Update message token count for future reference
                 msg.tokens = token_count
-                
+
             total_tokens += token_count
-            
+
             # Count images in multimodal content
             if isinstance(content, list):
                 for part in content:
-                    if isinstance(part, dict) and part.get("type") in ["image", "image_url"]:
+                    if isinstance(part, dict) and part.get("type") in [
+                        "image",
+                        "image_url",
+                    ]:
                         image_count += 1
-            
+
             # Update per-category counts
             if category in per_category_tokens:
                 per_category_tokens[category] += token_count
-                
+
         # Add a warning log if images exceed or approach limit
         if image_count > self.max_context_images:
-            logger.warning(f"Image count ({image_count}) exceeds limit ({self.max_context_images}). Oldest will be trimmed.")
+            logger.warning(
+                f"Image count ({image_count}) exceeds limit ({self.max_context_images}). Oldest will be trimmed."
+            )
         elif image_count > 1:
-            logger.debug(f"Multiple images in context ({image_count}/{self.max_context_images} max).")
-        
+            logger.debug(
+                f"Multiple images in context ({image_count}/{self.max_context_images} max)."
+            )
+
         return {
             "total_tokens": total_tokens,
             "per_category": per_category_tokens,
             "image_count": image_count,
             "over_budget": total_tokens > self.max_context_window_tokens,
-            "message_count": len(session.messages)
+            "message_count": len(session.messages),
         }
-    
+
     def trim_session(self, session: Session, preserve_recency: bool = True) -> Session:
         """
         Trim session messages to fit within token budget.
-        
+
         Args:
             session: Session object to trim
             preserve_recency: Whether to prioritize keeping recent messages
                 (if False, messages would be selected arbitrarily for removal)
-            
+
         Returns:
             New Session object with trimmed messages
         """
         if not session.messages:
             return session
-            
+
         # Create a new session to avoid modifying the original
         # This maintains immutability principles
         result_session = Session(
@@ -427,14 +488,12 @@ class ContextWindowManager:
             llm_request_lifecycles=[
                 dict(record) for record in session.llm_request_lifecycles
             ],
-            tool_call_records=[
-                dict(record) for record in session.tool_call_records
-            ],
+            tool_call_records=[dict(record) for record in session.tool_call_records],
             tool_result_records=[
                 dict(record) for record in session.tool_result_records
             ],
         )
-            
+
         # Analyze current message state
         stats = self.analyze_session(session)
 
@@ -446,27 +505,30 @@ class ContextWindowManager:
             # Re-analyze after image trimming
             stats = self.analyze_session(session_with_image_placeholders)
             session = session_with_image_placeholders
-        
+
         # Group messages by category
         categorized = {}
         for category in MessageCategory:
             categorized[category] = [
-                msg for msg in session.messages 
-                if msg.category == category
+                msg for msg in session.messages if msg.category == category
             ]
-            
+
         # Get the order for trimming based on our priority (from lowest to highest priority)
         # SYSTEM_OUTPUT (4) trimmed first, then DIALOG (3), then CONTEXT (2), then SYSTEM (1)
         trim_order = [
-            MessageCategory.SYSTEM_OUTPUT,   # Trim first - lowest priority
-            MessageCategory.DIALOG,          # Trim second
-            MessageCategory.CONTEXT,         # Trim third
+            MessageCategory.SYSTEM_OUTPUT,  # Trim first - lowest priority
+            MessageCategory.DIALOG,  # Trim second
+            MessageCategory.CONTEXT,  # Trim third
         ]
-            
+
         # Check if total is over budget
         total_over_budget = stats["total_tokens"] > self.max_context_window_tokens
-        tokens_to_trim = max(0, stats["total_tokens"] - self.max_context_window_tokens) if total_over_budget else 0
-        
+        tokens_to_trim = (
+            max(0, stats["total_tokens"] - self.max_context_window_tokens)
+            if total_over_budget
+            else 0
+        )
+
         # Trim categories in priority order
         for category in trim_order:
             budget = self._budgets.get(category)
@@ -474,24 +536,27 @@ class ContextWindowManager:
                 continue
             category_msgs = categorized[category]
             category_tokens = stats["per_category"].get(category, 0)
-            
+
             # If this category is over its individual budget, trim it regardless of total
             if category_tokens > budget.max_category_tokens:
                 # Determine how much to trim
                 category_excess = category_tokens - budget.max_category_tokens
-                
+
                 # If the overall budget is also exceeded, we might need to trim even more
                 if total_over_budget:
-                    category_excess = max(category_excess, min(tokens_to_trim, category_tokens - budget.min_tokens))
-                    
+                    category_excess = max(
+                        category_excess,
+                        min(tokens_to_trim, category_tokens - budget.min_tokens),
+                    )
+
                 # Always preserve recency by sorting oldest first for trimming
                 # This is now a required behavior for coherent trimming
                 category_msgs.sort(key=lambda m: m.timestamp)
-                
+
                 # Strictly chronological trimming - remove oldest messages first
                 remaining_msgs = []
                 tokens_removed = 0
-                
+
                 # First pass: Remove oldest messages until we reach our token target
                 msgs_to_keep = []
                 for msg in category_msgs:
@@ -503,7 +568,9 @@ class ContextWindowManager:
                         # Update the overall token trimming target
                         tokens_to_trim = max(0, tokens_to_trim - msg_tokens)
                         # Log the removed message
-                        logger.debug(f"Trimmed {category.name} message: {msg.id} ({msg_tokens} tokens)")
+                        logger.debug(
+                            f"Trimmed {category.name} message: {msg.id} ({msg_tokens} tokens)"
+                        )
                     else:
                         # Keep this message
                         msgs_to_keep.append(msg)
@@ -519,67 +586,81 @@ class ContextWindowManager:
                 messages_removed_count = len(category_msgs) - len(msgs_to_keep)
 
                 # Log the trimming operation
-                logger.debug(f"Trimmed {category.name}: removed {tokens_removed} tokens " +
-                            f"({messages_removed_count} messages)")
+                logger.debug(
+                    f"Trimmed {category.name}: removed {tokens_removed} tokens "
+                    + f"({messages_removed_count} messages)"
+                )
 
                 # Record truncation event if messages were actually removed
                 if messages_removed_count > 0:
                     total_messages_before = len(session.messages)
-                    total_messages_after = total_messages_before - messages_removed_count
+                    total_messages_after = (
+                        total_messages_before - messages_removed_count
+                    )
 
                     self.truncation_tracker.record_truncation(
                         category=category,
                         messages_removed=messages_removed_count,
                         tokens_freed=tokens_removed,
                         total_messages_before=total_messages_before,
-                        total_messages_after=total_messages_after
+                        total_messages_after=total_messages_after,
                     )
-                
+
                 # Check if we've trimmed enough overall
                 if tokens_to_trim <= 0:
                     total_over_budget = False
-        
+
         # Add SYSTEM messages without any trimming (preserve all of them)
         system_messages = categorized.get(MessageCategory.SYSTEM, [])
-        
+
         # Reconstruct the message list preserving original order
         # We'll use a dictionary to track which messages to keep
         kept_messages = {}
-        
+
         # First add ALL system messages (guaranteed to be kept)
         for msg in system_messages:
             kept_messages[msg.id] = msg
-        
+
         # Then add messages from other categories that survived trimming
-        for category in [MessageCategory.CONTEXT, MessageCategory.DIALOG, MessageCategory.SYSTEM_OUTPUT]:
+        for category in [
+            MessageCategory.CONTEXT,
+            MessageCategory.DIALOG,
+            MessageCategory.SYSTEM_OUTPUT,
+        ]:
             for msg in categorized[category]:
                 kept_messages[msg.id] = msg
-                
+
         # Build the result session maintaining original order
-        result_session.messages = [msg for msg in session.messages if msg.id in kept_messages]
-        
+        result_session.messages = [
+            msg for msg in session.messages if msg.id in kept_messages
+        ]
+
         # Update message counts in metadata
         result_session.metadata["message_count"] = len(result_session.messages)
-        dialog_count = sum(1 for msg in result_session.messages 
-                          if msg.category == MessageCategory.DIALOG)
+        dialog_count = sum(
+            1
+            for msg in result_session.messages
+            if msg.category == MessageCategory.DIALOG
+        )
         result_session.metadata["dialog_message_count"] = dialog_count
-                
+
         return result_session
-    
+
     def _contains_image(self, content: Any) -> bool:
         """Check if content contains an image."""
         if not isinstance(content, list):
             return False
-        return any(isinstance(part, dict) and 
-                  (part.get("type") in ["image", "image_url"] or 
-                   "image_path" in part)
-                  for part in content)
-                
+        return any(
+            isinstance(part, dict)
+            and (part.get("type") in ["image", "image_url"] or "image_path" in part)
+            for part in content
+        )
+
     def _create_placeholder_message(self, msg: Message) -> Message:
         """Create a message with image replaced by placeholder text."""
         if not isinstance(msg.content, list):
             return msg
-            
+
         new_content = []
         for part in msg.content:
             if isinstance(part, dict) and part.get("type") in ["image", "image_url"]:
@@ -590,7 +671,7 @@ class ContextWindowManager:
                 new_content.append(new_part)
             else:
                 new_content.append(part)
-        
+
         return Message(
             role=msg.role,
             content=new_content,
@@ -598,9 +679,9 @@ class ContextWindowManager:
             id=msg.id,
             timestamp=msg.timestamp,
             metadata={**msg.metadata, "image_replaced": True},
-            tokens=self.token_counter(new_content)
+            tokens=self.token_counter(new_content),
         )
-    
+
     def _handle_image_trimming(self, session: Session) -> Session:
         """
         Replace oldest images with placeholders, keeping up to max_context_images.
@@ -615,8 +696,11 @@ class ContextWindowManager:
             return session
 
         # Find messages with images
-        image_messages = [(i, msg) for i, msg in enumerate(session.messages)
-                          if self._contains_image(msg.content)]
+        image_messages = [
+            (i, msg)
+            for i, msg in enumerate(session.messages)
+            if self._contains_image(msg.content)
+        ]
 
         # Nothing to trim if within limit
         if len(image_messages) <= self.max_context_images:
@@ -641,10 +725,14 @@ class ContextWindowManager:
         image_messages.sort(key=lambda x: x[1].timestamp)
 
         # Keep the N most recent images (last N in sorted list)
-        messages_to_keep = {msg.id for _, msg in image_messages[-self.max_context_images:]}
+        messages_to_keep = {
+            msg.id for _, msg in image_messages[-self.max_context_images :]
+        }
         trimmed_count = len(image_messages) - self.max_context_images
 
-        logger.info(f"Trimming {trimmed_count} oldest images, keeping {self.max_context_images} most recent")
+        logger.info(
+            f"Trimming {trimmed_count} oldest images, keeping {self.max_context_images} most recent"
+        )
 
         # Create result with replaced images
         result = Session(
@@ -655,9 +743,7 @@ class ContextWindowManager:
             llm_request_lifecycles=[
                 dict(record) for record in session.llm_request_lifecycles
             ],
-            tool_call_records=[
-                dict(record) for record in session.tool_call_records
-            ],
+            tool_call_records=[dict(record) for record in session.tool_call_records],
             tool_result_records=[
                 dict(record) for record in session.tool_result_records
             ],
@@ -673,18 +759,18 @@ class ContextWindowManager:
                 result.messages.append(msg)
 
         return result
-    
+
     def get_current_allocations(self) -> Dict[MessageCategory, float]:
         """Get the current token allocations as percentages"""
         total_used = sum(budget.current_tokens for budget in self._budgets.values())
         if total_used == 0:
             return {category: 0.0 for category in self._budgets}
-            
+
         return {
-            category: budget.current_tokens / total_used 
+            category: budget.current_tokens / total_used
             for category, budget in self._budgets.items()
         }
-    
+
     def get_token_usage(self) -> Dict[str, int]:
         """Get token usage dictionary for tracking"""
         # Get base usage stats
@@ -692,43 +778,52 @@ class ContextWindowManager:
             "total": sum(budget.current_tokens for budget in self._budgets.values()),
             "available": self.available_tokens,
             "max": self.max_context_window_tokens,
-            **{str(category): budget.current_tokens for category, budget in self._budgets.items()}
+            **{
+                str(category): budget.current_tokens
+                for category, budget in self._budgets.items()
+            },
         }
-        
+
         # Add extra debug info
-        usage["usage_percentage"] = (usage["total"] / self.max_context_window_tokens) * 100 if self.max_context_window_tokens else 0
-        
+        usage["usage_percentage"] = (
+            (usage["total"] / self.max_context_window_tokens) * 100
+            if self.max_context_window_tokens
+            else 0
+        )
+
         return usage
-        
+
     def process_session(self, session: Session) -> Session:
         """
         Process a session through token budgeting and trimming.
         Main entry point for integration with conversation system.
-        
+
         Args:
             session: Session object to process
-            
+
         Returns:
             Processed session (trimmed if needed)
         """
         # Analyze token usage
         stats = self.analyze_session(session)
-        
+
         # Reset budgets to match the actual session content
         self.reset_usage()
-        
+
         # Update budget tracking
         for msg in session.messages:
             self.update_usage(msg.category, msg.tokens)
-        
+
         # Check if any categories exceed their individual budgets
         # Start with lowest priority first (SYSTEM_OUTPUT)
         categories_over_budget = []
-        for category in reversed(list(MessageCategory)):  # Reversed to start with lowest priority
+        for category in reversed(
+            list(MessageCategory)
+        ):  # Reversed to start with lowest priority
             # Skip SYSTEM messages - NEVER consider them for trimming
             if category == MessageCategory.SYSTEM:
                 continue
-                
+
             budget = self._budgets.get(category)
             # Skip categories that do not have an explicit budget (safety)
             if budget is None:
@@ -737,16 +832,51 @@ class ContextWindowManager:
             if category_tokens > budget.max_category_tokens:
                 categories_over_budget.append(category)
                 logger.info(
-                    f"Category {category.name} is over budget: {category_tokens} tokens " +
-                    f"(exceeds by {category_tokens - budget.max_category_tokens})"
+                    f"Category {category.name} is over budget: {category_tokens} tokens "
+                    + f"(exceeds by {category_tokens - budget.max_category_tokens})"
                 )
-        
+
         # If total is over budget or any non-SYSTEM categories are over budget, trim
         # For total budget, subtract SYSTEM tokens as those are never trimmed
         system_tokens = stats["per_category"].get(MessageCategory.SYSTEM, 0)
         adjusted_total = stats["total_tokens"] - system_tokens
         adjusted_budget = self.max_context_window_tokens - system_tokens
         total_over_budget = adjusted_total > adjusted_budget
+        largest_messages = sorted(
+            [
+                {
+                    "id": getattr(msg, "id", ""),
+                    "role": getattr(msg, "role", ""),
+                    "category": _category_name(getattr(msg, "category", None)),
+                    "tokens": int(getattr(msg, "tokens", 0) or 0),
+                    "chars": _content_chars(getattr(msg, "content", "")),
+                    "preview": _message_preview(getattr(msg, "content", "")),
+                }
+                for msg in session.messages
+            ],
+            key=lambda item: item["tokens"],
+            reverse=True,
+        )[:5]
+        logger.info(
+            "cwm.snapshot session=%s messages=%s total_tokens=%s system_tokens=%s "
+            "adjusted_total=%s adjusted_budget=%s max_tokens=%s "
+            "categories=%s categories_over_budget=%s total_over_budget=%s "
+            "largest=%s",
+            session.id,
+            len(session.messages),
+            stats["total_tokens"],
+            system_tokens,
+            adjusted_total,
+            adjusted_budget,
+            self.max_context_window_tokens,
+            {
+                _category_name(category): tokens
+                for category, tokens in stats["per_category"].items()
+            },
+            [_category_name(category) for category in categories_over_budget],
+            total_over_budget,
+            largest_messages,
+        )
 
         # Try dynamic rebalancing before trimming
         if total_over_budget or categories_over_budget:
@@ -769,31 +899,58 @@ class ContextWindowManager:
             # Perform trimming
             if total_over_budget:
                 logger.info(
-                    f"Trimming session {session.id}: {adjusted_total} tokens " +
-                    f"(over adjusted budget by {adjusted_total - adjusted_budget})"
+                    f"Trimming session {session.id}: {adjusted_total} tokens "
+                    + f"(over adjusted budget by {adjusted_total - adjusted_budget})"
                 )
             else:
                 logger.info(
                     f"Trimming session {session.id} categories: {[c.name for c in categories_over_budget]}"
                 )
-            
+
             trimmed_session = self.trim_session(session)
-            
+
             # Calculate how many messages were removed
             messages_removed = len(session.messages) - len(trimmed_session.messages)
             logger.info(f"Removed {messages_removed} messages during trimming")
-            
+            trimmed_stats = self.analyze_session(trimmed_session)
+            logger.info(
+                "cwm.trim.done session=%s removed_messages=%s before_tokens=%s "
+                "after_tokens=%s tokens_freed=%s remaining_messages=%s",
+                session.id,
+                messages_removed,
+                stats["total_tokens"],
+                trimmed_stats["total_tokens"],
+                stats["total_tokens"] - trimmed_stats["total_tokens"],
+                len(trimmed_session.messages),
+            )
+
             # Double-check that SYSTEM messages were preserved
-            original_system_count = len([msg for msg in session.messages 
-                                         if msg.category == MessageCategory.SYSTEM])
-            trimmed_system_count = len([msg for msg in trimmed_session.messages 
-                                        if msg.category == MessageCategory.SYSTEM])
-            
+            original_system_count = len(
+                [
+                    msg
+                    for msg in session.messages
+                    if msg.category == MessageCategory.SYSTEM
+                ]
+            )
+            trimmed_system_count = len(
+                [
+                    msg
+                    for msg in trimmed_session.messages
+                    if msg.category == MessageCategory.SYSTEM
+                ]
+            )
+
             if original_system_count != trimmed_system_count:
-                logger.error(f"SYSTEM messages were incorrectly trimmed! Before: {original_system_count}, After: {trimmed_system_count}")
+                logger.error(
+                    f"SYSTEM messages were incorrectly trimmed! Before: {original_system_count}, After: {trimmed_system_count}"
+                )
                 # Fix by restoring all SYSTEM messages
-                system_msgs = [msg for msg in session.messages if msg.category == MessageCategory.SYSTEM]
-                
+                system_msgs = [
+                    msg
+                    for msg in session.messages
+                    if msg.category == MessageCategory.SYSTEM
+                ]
+
                 # Create a new session with SYSTEM messages preserved
                 fixed_session = Session(
                     id=trimmed_session.id,
@@ -811,33 +968,31 @@ class ContextWindowManager:
                         for record in trimmed_session.llm_request_lifecycles
                     ],
                     tool_call_records=[
-                        dict(record)
-                        for record in trimmed_session.tool_call_records
+                        dict(record) for record in trimmed_session.tool_call_records
                     ],
                     tool_result_records=[
-                        dict(record)
-                        for record in trimmed_session.tool_result_records
+                        dict(record) for record in trimmed_session.tool_result_records
                     ],
                 )
-                
+
                 # Use fixed session instead
                 trimmed_session = fixed_session
                 logger.info("Restored all SYSTEM messages after trimming")
-            
+
             # Update budget tracking for trimmed session
             self.reset_usage()
             for msg in trimmed_session.messages:
                 self.update_usage(msg.category, msg.tokens)
-            
+
             return trimmed_session
-        
+
         # If we get here, no trimming needed
         return session
-    
+
     def format_token_usage(self) -> str:
         """
         Format token usage in a human-readable format for CLI display.
-        
+
         Returns:
             String representation of token usage by category
         """
@@ -845,18 +1000,20 @@ class ContextWindowManager:
         total = usage.get("total", 0)
         available = usage.get("available", 0)
         max_context_window_tokens = usage.get("max", 0)
-        
+
         # Calculate percentage of total budget used
         percentage = (
-            (total / max_context_window_tokens * 100) if max_context_window_tokens > 0 else 0
+            (total / max_context_window_tokens * 100)
+            if max_context_window_tokens > 0
+            else 0
         )
-        
+
         output = [
             f"Token Usage: {total:,}/{max_context_window_tokens:,} ({percentage:.1f}%)",
             f"Available: {available:,} tokens",
-            "\nBy Category:"
+            "\nBy Category:",
         ]
-        
+
         # Add category breakdowns
         for category in MessageCategory:
             category_tokens = usage.get(str(category), 0)
@@ -865,50 +1022,54 @@ class ContextWindowManager:
                 if category in self._budgets
                 else 0
             )
-            category_pct = (category_tokens / category_max * 100) if category_max > 0 else 0
-            
-            output.append(f"  {category.name}: {category_tokens:,}/{category_max:,} ({category_pct:.1f}%)")
-        
+            category_pct = (
+                (category_tokens / category_max * 100) if category_max > 0 else 0
+            )
+
+            output.append(
+                f"  {category.name}: {category_tokens:,}/{category_max:,} ({category_pct:.1f}%)"
+            )
+
         return "\n".join(output)
-    
+
     def format_token_usage_rich(self) -> str:
         """
         Format token usage with rich for prettier CLI output.
-        
+
         Returns:
             Rich console markup for token usage
         """
         try:
-            from rich.console import Console # type: ignore
-            from rich.table import Table # type: ignore
-            from rich.text import Text # type: ignore
+            from rich.console import Console  # type: ignore
+            from rich.table import Table  # type: ignore
+            from rich.text import Text  # type: ignore
             from rich.box import Box, SIMPLE  # Import Box objects # type: ignore
-            
+
             usage = self.get_token_usage()
             total = usage.get("total", 0)
             available = usage.get("available", 0)
             max_context_window_tokens = usage.get("max", 0)
-            
+
             # Create rich table with proper Box object
             table = Table(
-                title=f"Token Usage: {total:,}/{max_context_window_tokens:,} ({total/max_context_window_tokens*100:.1f}%)",
+                title=f"Token Usage: {total:,}/{max_context_window_tokens:,} ({total / max_context_window_tokens * 100:.1f}%)",
                 expand=False,
                 box=SIMPLE,  # Use SIMPLE box instead of boolean
-                safe_box=True  # Prevents rendering issues
+                safe_box=True,  # Prevents rendering issues
             )
-            
+
             # Add columns with fixed width
             table.add_column("Category", style="cyan", width=15)
             table.add_column("Tokens", style="green", width=8, justify="right")
             table.add_column("Allocation", style="yellow", width=12)
             table.add_column("Budget", style="blue", width=7, justify="right")
             table.add_column("Usage", style="magenta", width=30)
-            
+
             # Add rows for each category
             for category in MessageCategory:
                 category_tokens = usage.get(str(category), 0)
                 category_budget = self._budgets.get(category)
-                
+
                 if category_budget:
                     # Create progress bar with clean rendering
                     category_max = category_budget.max_category_tokens
@@ -916,17 +1077,17 @@ class ContextWindowManager:
                         usage_pct = min(100, category_tokens / category_max * 100)
                         bar_width = 20
                         filled = int(usage_pct / 100 * bar_width)
-                        
+
                         # Create a simple string for the progress bar
                         progress_bar = f"[{'█' * filled}{' ' * (bar_width - filled)}] {usage_pct:.1f}%"
-                        
+
                         # Add row as simple strings
                         table.add_row(
                             category.name,
                             f"{category_tokens:,}",
                             f"{category_budget.min_tokens:,}-{category_max:,}",
-                            f"{category_max/self.max_context_window_tokens*100:.1f}%",
-                            progress_bar
+                            f"{category_max / self.max_context_window_tokens * 100:.1f}%",
+                            progress_bar,
                         )
                     else:
                         # Handle zero case
@@ -934,47 +1095,51 @@ class ContextWindowManager:
                             category.name,
                             f"{category_tokens:,}",
                             f"{category_budget.min_tokens:,}-{category_max:,}",
-                            f"{category_max/self.max_context_window_tokens*100:.1f}%",
-                            "[" + " " * 20 + "] 0.0%"
+                            f"{category_max / self.max_context_window_tokens * 100:.1f}%",
+                            "[" + " " * 20 + "] 0.0%",
                         )
-                
+
             # Add summary row with simple string progress bar
-            total_progress_bar = f"[{'█' * int(total/self.max_context_window_tokens*20)}{' ' * (20 - int(total/self.max_context_window_tokens*20))}] {total/self.max_context_window_tokens*100:.1f}%"
-            
+            total_progress_bar = f"[{'█' * int(total / self.max_context_window_tokens * 20)}{' ' * (20 - int(total / self.max_context_window_tokens * 20))}] {total / self.max_context_window_tokens * 100:.1f}%"
+
             table.add_row(
-                "TOTAL", 
+                "TOTAL",
                 f"{total:,}",
                 f"0-{self.max_context_window_tokens:,}",
                 "100.0%",
                 total_progress_bar,
-                style="bold"
+                style="bold",
             )
-            
+
             # Render table to string
             console = Console(width=80, record=True)
             console.print(table)
             return console.export_text()
-            
+
         except ImportError:
             # Fallback if rich is not installed
             return self.format_token_usage_simple()
-        
+
     def format_token_usage_simple(self) -> str:
         """Simple token usage formatting without dependencies"""
         usage = self.get_token_usage()
         total = usage.get("total", 0)
         available = usage.get("available", 0)
         max_context_window_tokens = usage.get("max", 0)
-        
+
         # Calculate percentage of total budget used
-        percentage = (total / max_context_window_tokens * 100) if max_context_window_tokens else 0
-        
+        percentage = (
+            (total / max_context_window_tokens * 100)
+            if max_context_window_tokens
+            else 0
+        )
+
         output = [
             f"Token Usage: {total:,}/{max_context_window_tokens:,} ({percentage:.1f}%)",
             f"Available: {available:,} tokens",
-            "\nBy Category:"
+            "\nBy Category:",
         ]
-        
+
         # Add category breakdowns
         for category in MessageCategory:
             category_tokens = usage.get(str(category), 0)
@@ -988,69 +1153,73 @@ class ContextWindowManager:
                 output.append(
                     f"  {category.name}: {category_tokens:,}/{budget.max_category_tokens:,} ({category_pct:.1f}%)"
                 )
-        
+
         return "\n".join(output)
-    
+
     def get_usage(self, category: MessageCategory) -> int:
         """Get current token usage for a specific category."""
         budget = self._budgets.get(category)
         return budget.current_tokens if budget else 0
-    
+
     # =================================================================
     # Phase 2 Extensions: Dynamic Reallocation and Context Contributors
     # =================================================================
-    
+
     def get_available_tokens(self, category: MessageCategory) -> int:
         """Get available tokens for a category (max - current)"""
         budget = self._budgets.get(category)
         if not budget:
             return 0
         return max(0, budget.max_category_tokens - budget.current_tokens)
-    
-    def borrow_tokens(self, from_category: MessageCategory, to_category: MessageCategory, amount: int) -> bool:
+
+    def borrow_tokens(
+        self, from_category: MessageCategory, to_category: MessageCategory, amount: int
+    ) -> bool:
         """
         Borrow unused tokens from one category to another.
-        
+
         Args:
             from_category: Category to borrow tokens from
             to_category: Category to lend tokens to
             amount: Number of tokens to borrow
-            
+
         Returns:
             True if borrowing was successful
         """
         from_budget = self._budgets.get(from_category)
         to_budget = self._budgets.get(to_category)
-        
+
         if not from_budget or not to_budget:
             return False
-        
+
         # Check if from_category has enough unused tokens
         available_from = from_budget.max_category_tokens - from_budget.current_tokens
         if available_from < amount:
             return False
-        
+
         # Perform the borrowing
         from_budget.max_category_tokens -= amount
         to_budget.max_category_tokens += amount
-        
-        logger.debug(f"Borrowed {amount} tokens from {from_category.name} to {to_category.name}")
+
+        logger.debug(
+            f"Borrowed {amount} tokens from {from_category.name} to {to_category.name}"
+        )
         return True
-    
+
     def auto_rebalance_budgets(self) -> Dict[str, int]:
         """
         Automatically rebalance budgets based on current usage patterns.
         Working files can borrow from DIALOG when needed.
-        
+
         Returns:
             Dict showing token movements
         """
         movements = {}
-        
+
         # Priority for borrowing: CONTEXT (working files) can borrow from DIALOG
         context_budget = self._budgets.get(MessageCategory.CONTEXT)
         dialog_budget = self._budgets.get(MessageCategory.DIALOG)
-        
+
         if context_budget and dialog_budget:
             # If CONTEXT is over budget and DIALOG has unused tokens
             context_over = (
@@ -1059,59 +1228,67 @@ class ContextWindowManager:
             dialog_available = (
                 dialog_budget.max_category_tokens - dialog_budget.current_tokens
             )
-            
+
             if context_over > 0 and dialog_available > 0:
                 # Borrow up to what's needed or available
-                borrow_amount = min(context_over, dialog_available, dialog_available // 2)  # Max 50% of available
-                
-                if self.borrow_tokens(MessageCategory.DIALOG, MessageCategory.CONTEXT, borrow_amount):
+                borrow_amount = min(
+                    context_over, dialog_available, dialog_available // 2
+                )  # Max 50% of available
+
+                if self.borrow_tokens(
+                    MessageCategory.DIALOG, MessageCategory.CONTEXT, borrow_amount
+                ):
                     movements[f"DIALOG -> CONTEXT"] = borrow_amount
-        
+
         return movements
-    
-    def load_project_instructions(self, workspace_root: str = ".") -> Tuple[str, Dict[str, Any]]:
+
+    def load_project_instructions(
+        self, workspace_root: str = "."
+    ) -> Tuple[str, Dict[str, Any]]:
         """
         Load project instruction files (PENGUIN.md, AGENTS.md, README.md) with simple autoloading.
         Simplified version without complex contributor system.
-        
+
         Args:
             workspace_root: Root directory of the workspace
-            
+
         Returns:
             Tuple of (project_content, debug_info)
         """
         from pathlib import Path
-        
+
         workspace = Path(workspace_root).resolve()
         content_parts = []
         loaded_files = []
-        
-        # Priority order: PENGUIN.md > AGENTS.md > README.md  
+
+        # Priority order: PENGUIN.md > AGENTS.md > README.md
         doc_files = [
             ("PENGUIN.md", "Project Instructions", 2400),  # 600 tokens worth
-            ("AGENTS.md", "Agent Specifications", 2000),   # 500 tokens worth
-            ("README.md", "Project Overview", 1200)        # 300 tokens worth  
+            ("AGENTS.md", "Agent Specifications", 2000),  # 500 tokens worth
+            ("README.md", "Project Overview", 1200),  # 300 tokens worth
         ]
-        
+
         for filename, section_title, max_chars in doc_files:
             doc_path = workspace / filename
             if doc_path.exists():
                 try:
-                    with open(doc_path, 'r', encoding='utf-8') as f:
+                    with open(doc_path, "r", encoding="utf-8") as f:
                         content = f.read()
                         # Limit content to prevent context overflow
                         if len(content) > max_chars:
                             content = content[:max_chars] + "\n... (truncated)"
-                        content_parts.append(f"## {section_title} ({filename})\n{content}")
+                        content_parts.append(
+                            f"## {section_title} ({filename})\n{content}"
+                        )
                         loaded_files.append(filename)
-                        
+
                         # If we found PENGUIN.md or AGENTS.md, don't fall back to README
                         if filename in ["PENGUIN.md", "AGENTS.md"]:
                             break
-                            
+
                 except Exception as e:
                     logger.warning(f"Failed to read {filename}: {e}")
-        
+
         assembled_content = "\n\n".join(content_parts) if content_parts else ""
         token_count = self.token_counter(assembled_content) if assembled_content else 0
 
@@ -1122,19 +1299,22 @@ class ContextWindowManager:
         try:
             # If any chosen file's content was longer than its max_chars, we appended
             # the marker; use that as a reliable signal.
-            truncated = any(part.endswith("... (truncated)") or "(truncated)" in part for part in content_parts)
+            truncated = any(
+                part.endswith("... (truncated)") or "(truncated)" in part
+                for part in content_parts
+            )
         except Exception:
             truncated = False
-        
+
         debug_info = {
             "loaded_files": loaded_files,
             "total_tokens": token_count,
             "files_checked": [f[0] for f in doc_files],
             "truncated": truncated,
         }
-        
+
         return assembled_content, debug_info
-    
+
     def get_allocation_report(self) -> Dict[str, Any]:
         """
         Generate a detailed allocation report for debugging.
@@ -1143,9 +1323,9 @@ class ContextWindowManager:
         report = {
             "total_budget": self.max_context_window_tokens,
             "categories": {},
-            "utilization": {}
+            "utilization": {},
         }
-        
+
         total_used = 0
         for category, budget in self._budgets.items():
             category_info = {
@@ -1161,9 +1341,15 @@ class ContextWindowManager:
             }
             report["categories"][category.name] = category_info
             total_used += budget.current_tokens
-        
+
         report["utilization"]["total_used"] = total_used
-        report["utilization"]["total_available"] = self.max_context_window_tokens - total_used
-        report["utilization"]["overall_pct"] = (total_used / self.max_context_window_tokens * 100) if self.max_context_window_tokens else 0
-        
-        return report 
+        report["utilization"]["total_available"] = (
+            self.max_context_window_tokens - total_used
+        )
+        report["utilization"]["overall_pct"] = (
+            (total_used / self.max_context_window_tokens * 100)
+            if self.max_context_window_tokens
+            else 0
+        )
+
+        return report

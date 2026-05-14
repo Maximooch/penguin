@@ -93,7 +93,7 @@ class MultiEdit:
                 success = False
         return success
 
-    def cleanup_backups(self, edits: List[FileEdit], keep_backups: bool = True) -> None:
+    def cleanup_backups(self, edits: List[FileEdit]) -> None:
         for edit in edits:
             edit.original_bytes = None
 

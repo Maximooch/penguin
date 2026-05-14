@@ -94,6 +94,18 @@ def _write_file_input(params: Any) -> dict[str, Any]:
 
 
 def _edit_file_input(params: Any) -> dict[str, Any]:
+    """Parse canonical exact-edit tool input.
+
+    Args:
+        params: Raw ActionXML or native-tool parameters accepted by
+            parse_edit_file_payload.
+
+    Returns:
+        A dict containing ``path``, ``old_string``, ``new_string``,
+        ``replace_all``, and ``_warnings`` when parsing succeeds. Parser error
+        dictionaries containing ``error`` are forwarded unchanged.
+    """
+
     parsed = parse_edit_file_payload(params)
     if "error" in parsed:
         return parsed
@@ -107,6 +119,17 @@ def _edit_file_input(params: Any) -> dict[str, Any]:
 
 
 def _apply_patch_input(params: Any) -> dict[str, Any]:
+    """Parse canonical contextual patch tool input.
+
+    Args:
+        params: Raw ActionXML or native-tool parameters accepted by
+            parse_apply_patch_payload.
+
+    Returns:
+        A dict containing ``patch`` and ``_warnings`` when parsing succeeds.
+        Parser error dictionaries containing ``error`` are forwarded unchanged.
+    """
+
     parsed = parse_apply_patch_payload(params)
     if "error" in parsed:
         return parsed

@@ -220,6 +220,20 @@ def test_map_action_result_metadata_extracts_diff_for_replace_lines() -> None:
     assert "+++ b/src/main.py" in metadata["diff"]
 
 
+def test_map_action_result_metadata_extracts_diff_for_canonical_edit() -> None:
+    core = PenguinCore.__new__(PenguinCore)
+    result = "--- a/src/main.py\n+++ b/src/main.py\n@@ -1 +1 @@\n-old\n+new\n"
+
+    metadata = core._map_action_result_metadata(
+        "edit",
+        result,
+        tool_input={"path": "src/main.py"},
+    )
+
+    assert metadata["filePath"] == "src/main.py"
+    assert metadata["diff"].startswith("--- a/src/main.py")
+
+
 def test_map_action_result_metadata_sets_output_for_code_execution() -> None:
     core = PenguinCore.__new__(PenguinCore)
 
@@ -669,6 +683,21 @@ def test_map_action_result_metadata_moves_diff_to_attempted_diff_on_error() -> N
         "Error applying diff",
         existing={"diff": "--- a/file.txt\n+++ b/file.txt\n@@\n-old\n+new\n"},
         tool_input={"filePath": "file.txt"},
+        status="error",
+    )
+
+    assert "diff" not in metadata
+    assert metadata["attemptedDiff"].startswith("--- a/file.txt")
+
+
+def test_map_action_result_metadata_keeps_apply_patch_attempted_diff_on_error() -> None:
+    core = PenguinCore.__new__(PenguinCore)
+
+    metadata = core._map_action_result_metadata(
+        "apply_patch",
+        "Error applying patch",
+        existing={"diff": "--- a/file.txt\n+++ b/file.txt\n@@\n-old\n+new\n"},
+        tool_input={"path": "file.txt"},
         status="error",
     )
 

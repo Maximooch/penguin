@@ -91,6 +91,34 @@ def test_apply_patch_contextual_hunk_success_without_backup(
     assert _bak_files(tmp_path) == []
 
 
+def test_edit_file_rejects_paths_outside_workspace(tmp_path: Path) -> None:
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.txt"
+    outside.write_text("old\n", encoding="utf-8")
+    service = EditService(workspace_root=str(tmp_path))
+
+    result = service.edit_file(str(outside), "old\n", "new\n")
+
+    assert result.ok is False
+    assert "escapes workspace root" in result.error
+    assert outside.read_text(encoding="utf-8") == "old\n"
+
+
+def test_apply_patch_rejects_paths_outside_workspace(tmp_path: Path) -> None:
+    service = EditService(workspace_root=str(tmp_path))
+    outside_name = f"{tmp_path.name}-patch-outside.txt"
+    patch = f"""*** Begin Patch
+*** Add File: ../{outside_name}
++content
+*** End Patch
+"""
+
+    result = service.apply_patch(patch)
+
+    assert result.ok is False
+    assert "escapes workspace root" in result.error
+    assert not (tmp_path.parent / outside_name).exists()
+
+
 def test_apply_patch_missing_context_fails_atomically(tmp_path: Path) -> None:
     first = tmp_path / "a.txt"
     second = tmp_path / "b.txt"

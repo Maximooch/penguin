@@ -1261,6 +1261,8 @@ class ActionExecutor:
         """Return True if action can modify files and should refresh LSP state."""
         return action_type in {
             ActionType.APPLY_DIFF,
+            ActionType.EDIT_FILE,
+            ActionType.APPLY_PATCH,
             ActionType.PATCH_FILE,
             ActionType.MULTIEDIT,
             ActionType.PATCH_FILES,
@@ -1299,6 +1301,33 @@ class ActionExecutor:
                 if isinstance(path, str) and path.strip():
                     return [self._normalize_lsp_path(path.strip())]
             return []
+
+        if action.action_type == ActionType.EDIT_FILE:
+            payload = parse_edit_file_payload(action.params)
+            if isinstance(payload, dict):
+                path = payload.get("path") or payload.get("file_path")
+                if isinstance(path, str) and path.strip():
+                    return [self._normalize_lsp_path(path.strip())]
+            return []
+
+        if action.action_type == ActionType.APPLY_PATCH:
+            payload = parse_apply_patch_payload(action.params)
+            patch = payload.get("patch") if isinstance(payload, dict) else None
+            if not isinstance(patch, str):
+                return []
+            files = []
+            for line in patch.splitlines():
+                match = re.match(
+                    r"^\*\*\* (?:Add|Delete|Update) File: (.+)$",
+                    line,
+                )
+                if match:
+                    files.append(self._normalize_lsp_path(match.group(1).strip()))
+                    continue
+                move_match = re.match(r"^\*\*\* Move to: (.+)$", line)
+                if move_match:
+                    files.append(self._normalize_lsp_path(move_match.group(1).strip()))
+            return list(dict.fromkeys(file for file in files if file))
 
         if action.action_type in {
             ActionType.REPLACE_LINES,

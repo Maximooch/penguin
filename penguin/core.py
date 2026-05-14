@@ -4380,6 +4380,9 @@ class PenguinCore:
                     resolved_session_id or resolved_conversation_id
                 )
                 event_data["conversation_id"] = resolved_conversation_id
+            elif resolved_session_id:
+                event_data["session_id"] = resolved_session_id
+                event_data["conversation_id"] = resolved_session_id
             else:
                 event_data["session_id"] = "unknown"
                 event_data["conversation_id"] = "unknown"
@@ -5647,7 +5650,10 @@ class PenguinCore:
         if isinstance(event_metadata, dict):
             metadata.update(event_metadata)
         action_name = (action or "").strip().lower()
-        if status == "error" and action_name in {
+        edit_actions = {
+            "edit",
+            "edit_file",
+            "apply_patch",
             "patch_file",
             "patch_files",
             "apply_diff",
@@ -5658,7 +5664,8 @@ class PenguinCore:
             "insert_lines",
             "delete_lines",
             "multiedit",
-        }:
+        }
+        if status == "error" and action_name in edit_actions:
             raw_diff = metadata.pop("diff", None)
             if isinstance(raw_diff, str) and raw_diff.strip():
                 metadata["attemptedDiff"] = raw_diff
@@ -5669,17 +5676,7 @@ class PenguinCore:
             todos = self._extract_todos_from_result(result)
             if todos:
                 metadata["todos"] = todos
-        if status != "error" and action_name in {
-            "patch_file",
-            "replace_lines",
-            "edit_with_pattern",
-            "write_file",
-            "enhanced_write",
-            "insert_lines",
-            "delete_lines",
-            "patch_files",
-            "multiedit",
-        }:
+        if status != "error" and action_name in edit_actions:
             file_path = self._extract_tool_file_path(tool_input)
             if file_path:
                 metadata.setdefault("filePath", file_path)

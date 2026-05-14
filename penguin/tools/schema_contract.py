@@ -7,6 +7,8 @@ from typing import Any, Dict, List, Optional
 
 
 MODEL_VISIBLE_TOOL_REQUIRED_FIELDS = ("name", "description", "input_schema")
+_TRUE_STRINGS = {"1", "true", "yes", "y", "on"}
+_FALSE_STRINGS = {"0", "false", "no", "n", "off"}
 
 
 @dataclass(frozen=True)
@@ -103,6 +105,24 @@ def validate_model_visible_tool_schema(
     return errors
 
 
+def _parse_boolean(value: Any, *, default: bool) -> bool:
+    """Parse common JSON/YAML-style boolean values with a safe default."""
+
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in _TRUE_STRINGS:
+            return True
+        if normalized in _FALSE_STRINGS:
+            return False
+    return default
+
+
 def runtime_metadata_from_tool_schema(
     tool_schema: Dict[str, Any],
 ) -> ToolRuntimeMetadata:
@@ -112,13 +132,16 @@ def runtime_metadata_from_tool_schema(
     metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
     risk = str(metadata.get("risk") or "unknown").strip() or "unknown"
     return ToolRuntimeMetadata(
-        mutates_state=bool(metadata.get("mutates_state", True)),
-        requires_approval=bool(metadata.get("requires_approval", True)),
-        parallel_safe=bool(metadata.get("parallel_safe", False)),
+        mutates_state=_parse_boolean(metadata.get("mutates_state"), default=True),
+        requires_approval=_parse_boolean(
+            metadata.get("requires_approval"),
+            default=True,
+        ),
+        parallel_safe=_parse_boolean(metadata.get("parallel_safe"), default=False),
         risk=risk,
-        long_running=bool(metadata.get("long_running", False)),
-        streams_output=bool(metadata.get("streams_output", False)),
-        retry_safe=bool(metadata.get("retry_safe", False)),
+        long_running=_parse_boolean(metadata.get("long_running"), default=False),
+        streams_output=_parse_boolean(metadata.get("streams_output"), default=False),
+        retry_safe=_parse_boolean(metadata.get("retry_safe"), default=False),
     )
 
 

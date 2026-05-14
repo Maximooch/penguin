@@ -847,6 +847,8 @@ def apply_diff_to_file(
         except Exception as e:
             return f"Error reading file: {str(e)}"
 
+        write_happened = False
+
         # Parse and apply the diff
         try:
             diff_content = _strip_diff_fences(diff_content)
@@ -917,8 +919,10 @@ def apply_diff_to_file(
                 if modified_content.endswith("\n"):
                     normed += newline
                 target_path.write_bytes(normed.encode("utf-8"))
+                write_happened = True
             else:
                 target_path.write_text(modified_content, encoding="utf-8")
+                write_happened = True
 
             logging.getLogger(__name__).debug(
                 f"Diff applied successfully to: {target_path}"
@@ -943,10 +947,11 @@ def apply_diff_to_file(
                 return f"{summary}\n{rendered_patch}" if rendered_patch else summary
 
         except Exception as e:
-            try:
-                target_path.write_text(original_content, encoding="utf-8")
-            except Exception:
-                pass
+            if write_happened:
+                try:
+                    target_path.write_bytes(raw)
+                except Exception:
+                    pass
             # Log unexpected failure
             log_path = _log_diff_failure(
                 file_path, diff_content, original_content, workspace_path

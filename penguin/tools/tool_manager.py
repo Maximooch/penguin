@@ -3722,6 +3722,48 @@ class ToolManager:
                 normalized[key] = self._resolve_path_in_root(value, file_root)
         return normalized
 
+    def _redact_tool_input_for_diagnostics(
+        self,
+        tool_name: str,
+        tool_input: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Return a diagnostics-safe copy of tool input."""
+
+        sensitive_keys = {
+            "content",
+            "diff",
+            "diff_content",
+            "new_string",
+            "old_string",
+            "patch",
+            "replacement",
+        }
+        if tool_name not in {
+            "apply_patch",
+            "edit_file",
+            "patch_file",
+            "patch_files",
+            "write_file",
+        }:
+            return dict(tool_input)
+
+        def _redact(value: Any) -> Any:
+            if isinstance(value, dict):
+                return {
+                    key: (
+                        f"<redacted:{len(str(nested_value))} chars>"
+                        if key in sensitive_keys
+                        else _redact(nested_value)
+                    )
+                    for key, nested_value in value.items()
+                }
+            if isinstance(value, list):
+                return [_redact(item) for item in value]
+            return value
+
+        redacted = _redact(tool_input)
+        return redacted if isinstance(redacted, dict) else {}
+
     def execute_tool(
         self, tool_name: str, tool_input: dict, context: dict = None
     ) -> Union[str, dict]:
@@ -3846,7 +3888,10 @@ class ToolManager:
                                     reason=reason,
                                     session_id=session_id,
                                     context={
-                                        "tool_input": tool_input,
+                                        "tool_input": self._redact_tool_input_for_diagnostics(
+                                            tool_name,
+                                            tool_input,
+                                        ),
                                         "agent_id": (
                                             effective_context.get("agent_id")
                                             if effective_context
@@ -4197,11 +4242,15 @@ class ToolManager:
                 ),
             }
 
+            diagnostic_tool_input = self._redact_tool_input_for_diagnostics(
+                tool_name,
+                tool_input,
+            )
             logging.info(
                 "Executing tool: %s (canonical=%s) with input: %s",
                 requested_tool_name,
                 tool_name,
-                tool_input,
+                diagnostic_tool_input,
             )
             if tool_name not in tool_map:
                 error_message = f"Unknown tool: {tool_name}"

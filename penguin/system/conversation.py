@@ -343,54 +343,39 @@ class ConversationSystem:
             )
 
         try:
-            existing_call_ids = {
-                str(record.get("call_id") or "").strip()
-                for record in getattr(self.session, "tool_call_records", [])
-                if isinstance(record, dict)
-            }
-            if resolved_tool_call_id not in existing_call_ids:
-                from penguin.tools.runtime import (
-                    ToolCall,
-                    tool_call_record_from_tool_call,
-                )
+            from penguin.tools.runtime import (
+                ToolCall,
+                tool_call_record_from_tool_call,
+                tool_result_from_action_result,
+                tool_result_record_from_tool_result,
+            )
 
-                self.session.add_tool_call_record(
-                    tool_call_record_from_tool_call(
-                        ToolCall(
-                            id=resolved_tool_call_id,
-                            name=action_type,
-                            arguments=tool_arguments or "{}",
-                            source="internal",
-                        )
-                    )
-                )
-
-            existing_result_ids = {
-                str(record.get("call_id") or "").strip()
-                for record in getattr(self.session, "tool_result_records", [])
-                if isinstance(record, dict)
-            }
-            if resolved_tool_call_id not in existing_result_ids:
-                from penguin.tools.runtime import (
-                    tool_result_from_action_result,
-                    tool_result_record_from_tool_result,
-                )
-
-                tool_result = tool_result_from_action_result(
-                    {
-                        "action": action_type,
-                        "result": result,
-                        "status": status,
-                    },
-                    call_id=resolved_tool_call_id,
-                    structured_output={"tool_arguments": tool_arguments or "{}"},
-                )
-                self.session.add_tool_result_record(
-                    tool_result_record_from_tool_result(
-                        tool_result,
+            self.session.add_tool_call_record(
+                tool_call_record_from_tool_call(
+                    ToolCall(
+                        id=resolved_tool_call_id,
+                        name=action_type,
                         arguments=tool_arguments or "{}",
+                        source="internal",
                     )
                 )
+            )
+
+            tool_result = tool_result_from_action_result(
+                {
+                    "action": action_type,
+                    "result": result,
+                    "status": status,
+                },
+                call_id=resolved_tool_call_id,
+                structured_output={"tool_arguments": tool_arguments or "{}"},
+            )
+            self.session.add_tool_result_record(
+                tool_result_record_from_tool_result(
+                    tool_result,
+                    arguments=tool_arguments or "{}",
+                )
+            )
         except Exception as exc:
             logger.warning("Failed to persist tool runtime records: %s", exc)
 

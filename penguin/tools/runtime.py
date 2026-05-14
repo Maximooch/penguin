@@ -12,13 +12,17 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import logging
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, Optional, Union, cast
 
+from penguin.system.execution_context import get_current_execution_context
 from penguin.utils.parser import CodeActAction, parse_action
+
+logger = logging.getLogger(__name__)
 
 ToolCallSource = Literal["action_xml", "responses", "mcp", "internal"]
 ToolResultStatus = Literal["completed", "error", "cancelled", "requires_approval"]
@@ -217,11 +221,15 @@ def hash_tool_arguments(arguments: Any) -> str:
 
 
 def _preview_text(value: Any, *, max_chars: int) -> str:
-    """Return a bounded text preview for lightweight persisted records."""
+    """Return a bounded text preview for lightweight persisted records.
 
+    Negative ``max_chars`` values are treated as 0 and produce an empty preview.
+    """
+
+    max_chars = max(0, max_chars)
     text = str(value if value is not None else "")
-    if max_chars <= 0 or len(text) <= max_chars:
-        return text[: max(max_chars, 0)] if max_chars >= 0 else text
+    if len(text) <= max_chars:
+        return text
     return text[:max_chars]
 
 
@@ -754,6 +762,52 @@ def select_tool_calls_for_policy(
     return list(tool_calls[: max(active_policy.max_calls, 0)])
 
 
+def _current_trace_fields() -> dict[str, str]:
+    """Return active request/session fields for runtime diagnostics."""
+
+    context = get_current_execution_context()
+    if context is None:
+        return {"request_id": "unknown", "session_id": "unknown"}
+    return {
+        "request_id": context.request_id or "unknown",
+        "session_id": context.session_id or context.conversation_id or "unknown",
+    }
+
+
+def _argument_size(arguments: Any) -> int:
+    """Return argument size in characters using stable JSON where possible."""
+
+    return len(_render_arguments(arguments))
+
+
+def _log_tool_runtime_result(
+    *,
+    tool_call: ToolCall,
+    tool_result: ToolResult,
+    duration_ms: float,
+) -> None:
+    """Emit a compact structured tool runtime summary."""
+
+    fields = _current_trace_fields()
+    logger.info(
+        "tool.exec.done request=%s session=%s call_id=%s tool=%s source=%s "
+        "status=%s duration_ms=%.2f args_chars=%s output_bytes=%s "
+        "output_lines=%s truncated=%s artifact=%s",
+        fields["request_id"],
+        fields["session_id"],
+        tool_call.id,
+        tool_call.name,
+        tool_call.source,
+        tool_result.status,
+        duration_ms,
+        _argument_size(tool_call.arguments),
+        tool_result.byte_count,
+        tool_result.line_count,
+        tool_result.truncated,
+        tool_result.artifact_path,
+    )
+
+
 async def execute_tool_calls_serially(
     tool_calls: list[ToolCall],
     execute_call: ToolExecutor,
@@ -766,21 +820,40 @@ async def execute_tool_calls_serially(
     results: list[ToolResult] = []
     for tool_call in select_tool_calls_for_policy(tool_calls, active_policy):
         started_at = time.time()
+        started_perf = time.perf_counter()
+        trace_fields = _current_trace_fields()
+        logger.info(
+            "tool.exec.start request=%s session=%s call_id=%s tool=%s source=%s "
+            "args_chars=%s parallel_safe=%s mutates_state=%s",
+            trace_fields["request_id"],
+            trace_fields["session_id"],
+            tool_call.id,
+            tool_call.name,
+            tool_call.source,
+            _argument_size(tool_call.arguments),
+            tool_call.parallel_safe,
+            tool_call.mutates_state,
+        )
         try:
             output = execute_call(tool_call)
             if inspect.isawaitable(output):
                 output = await output
             ended_at = time.time()
+            duration_ms = (time.perf_counter() - started_perf) * 1000
             if isinstance(output, ToolResult):
-                results.append(
-                    tool_result_with_model_output_policy(
-                        output,
-                        max_chars=active_policy.max_output_chars,
-                        artifact_dir=active_policy.artifact_dir,
-                        artifact_id=tool_call.id,
-                        truncation_direction=active_policy.truncation_direction,
-                    )
+                result = tool_result_with_model_output_policy(
+                    output,
+                    max_chars=active_policy.max_output_chars,
+                    artifact_dir=active_policy.artifact_dir,
+                    artifact_id=tool_call.id,
+                    truncation_direction=active_policy.truncation_direction,
                 )
+                _log_tool_runtime_result(
+                    tool_call=tool_call,
+                    tool_result=result,
+                    duration_ms=duration_ms,
+                )
+                results.append(result)
                 continue
             if isinstance(output, dict):
                 action_output = dict(output)
@@ -797,15 +870,19 @@ async def execute_tool_calls_serially(
                         "tool_arguments": tool_call.arguments,
                     },
                 )
-                results.append(
-                    tool_result_with_model_output_policy(
-                        tool_result,
-                        max_chars=active_policy.max_output_chars,
-                        artifact_dir=active_policy.artifact_dir,
-                        artifact_id=tool_call.id,
-                        truncation_direction=active_policy.truncation_direction,
-                    )
+                result = tool_result_with_model_output_policy(
+                    tool_result,
+                    max_chars=active_policy.max_output_chars,
+                    artifact_dir=active_policy.artifact_dir,
+                    artifact_id=tool_call.id,
+                    truncation_direction=active_policy.truncation_direction,
                 )
+                _log_tool_runtime_result(
+                    tool_call=tool_call,
+                    tool_result=result,
+                    duration_ms=duration_ms,
+                )
+                results.append(result)
                 continue
             tool_result = ToolResult(
                 call_id=tool_call.id,
@@ -815,16 +892,33 @@ async def execute_tool_calls_serially(
                 started_at=started_at,
                 ended_at=ended_at,
             )
-            results.append(
-                tool_result_with_model_output_policy(
-                    tool_result,
-                    max_chars=active_policy.max_output_chars,
-                    artifact_dir=active_policy.artifact_dir,
-                    artifact_id=tool_call.id,
-                    truncation_direction=active_policy.truncation_direction,
-                )
+            result = tool_result_with_model_output_policy(
+                tool_result,
+                max_chars=active_policy.max_output_chars,
+                artifact_dir=active_policy.artifact_dir,
+                artifact_id=tool_call.id,
+                truncation_direction=active_policy.truncation_direction,
             )
+            _log_tool_runtime_result(
+                tool_call=tool_call,
+                tool_result=result,
+                duration_ms=duration_ms,
+            )
+            results.append(result)
         except Exception as exc:
+            duration_ms = (time.perf_counter() - started_perf) * 1000
+            logger.warning(
+                "tool.exec.error request=%s session=%s call_id=%s tool=%s "
+                "source=%s duration_ms=%.2f args_chars=%s error=%s",
+                trace_fields["request_id"],
+                trace_fields["session_id"],
+                tool_call.id,
+                tool_call.name,
+                tool_call.source,
+                duration_ms,
+                _argument_size(tool_call.arguments),
+                exc,
+            )
             if not active_policy.catch_exceptions:
                 raise
             tool_result = ToolResult(
@@ -835,15 +929,19 @@ async def execute_tool_calls_serially(
                 started_at=started_at,
                 ended_at=time.time(),
             )
-            results.append(
-                tool_result_with_model_output_policy(
-                    tool_result,
-                    max_chars=active_policy.max_output_chars,
-                    artifact_dir=active_policy.artifact_dir,
-                    artifact_id=tool_call.id,
-                    truncation_direction=active_policy.truncation_direction,
-                )
+            result = tool_result_with_model_output_policy(
+                tool_result,
+                max_chars=active_policy.max_output_chars,
+                artifact_dir=active_policy.artifact_dir,
+                artifact_id=tool_call.id,
+                truncation_direction=active_policy.truncation_direction,
             )
+            _log_tool_runtime_result(
+                tool_call=tool_call,
+                tool_result=result,
+                duration_ms=duration_ms,
+            )
+            results.append(result)
     return results
 
 
