@@ -11,11 +11,8 @@ import os
 import traceback
 from pathlib import Path
 from penguin.utils.path_utils import enforce_allowed_path, get_default_write_root
-import glob
 import fnmatch
-import stat
 import time
-import shutil
 from collections import defaultdict
 from typing import Optional, Dict
 
@@ -400,7 +397,7 @@ def enhanced_diff(file1, file2, context_lines=3, semantic=True):
                 except UnicodeDecodeError:
                     continue
             else:
-                return f"Error: Unable to decode files with common encodings"
+                return "Error: Unable to decode files with common encodings"
 
         # Generate unified diff
         diff = list(
@@ -643,7 +640,7 @@ def analyze_project_structure(
                     if include_external or not _is_external_import(imp):
                         dependency_graph[str(relative_path)].add(imp)
 
-            except (SyntaxError, UnicodeDecodeError) as e:
+            except (SyntaxError, UnicodeDecodeError):
                 # Skip files we can't parse
                 continue
 
@@ -830,11 +827,8 @@ def apply_diff_to_file(
         if not target_path.exists():
             return f"Error: File does not exist: {target_path}"
 
-        # Create backup if requested
-        if backup:
-            backup_path = target_path.with_suffix(target_path.suffix + ".bak")
-            shutil.copy2(target_path, backup_path)
-            logging.getLogger(__name__).debug(f"Backup created: {backup_path}")
+        # The legacy backup flag is accepted for compatibility, but repo-local
+        # .bak files are no longer created. Rollback uses in-memory snapshots.
 
         # Read original content without newline translation to detect CRLF
         try:
@@ -849,7 +843,7 @@ def apply_diff_to_file(
                     except UnicodeDecodeError:
                         continue
                 else:
-                    return f"Error: Unable to decode file with common encodings"
+                    return "Error: Unable to decode file with common encodings"
         except Exception as e:
             return f"Error reading file: {str(e)}"
 
@@ -887,16 +881,6 @@ def apply_diff_to_file(
                     except Exception:
                         fallback_result = None
 
-                # Restore from backup if we created one
-                if backup:
-                    try:
-                        backup_path = target_path.with_suffix(
-                            target_path.suffix + ".bak"
-                        )
-                        if backup_path.exists():
-                            shutil.copy2(backup_path, target_path)
-                    except Exception:
-                        pass
                 # Log failure details for reproduction
                 log_path = _log_diff_failure(
                     file_path, diff_content, original_content, workspace_path
@@ -940,14 +924,12 @@ def apply_diff_to_file(
                 f"Diff applied successfully to: {target_path}"
             )
             if return_json:
-                import json
-
                 analysis = _analyze_diff(diff_content)
                 result = {
                     "status": "success",
                     "file": str(target_path),
                     "newline_style": "CRLF" if newline == "\r\n" else "LF",
-                    "backup_created": bool(backup),
+                    "backup_created": False,
                     "analysis": analysis,
                 }
                 return json.dumps(result)
@@ -961,14 +943,10 @@ def apply_diff_to_file(
                 return f"{summary}\n{rendered_patch}" if rendered_patch else summary
 
         except Exception as e:
-            # Attempt to restore from backup
-            if backup:
-                try:
-                    backup_path = target_path.with_suffix(target_path.suffix + ".bak")
-                    if backup_path.exists():
-                        shutil.copy2(backup_path, target_path)
-                except Exception:
-                    pass
+            try:
+                target_path.write_text(original_content, encoding="utf-8")
+            except Exception:
+                pass
             # Log unexpected failure
             log_path = _log_diff_failure(
                 file_path, diff_content, original_content, workspace_path
@@ -1176,7 +1154,6 @@ def _split_multifile_unified_patch(patch_text: str) -> list[dict]:
     lines = patch_text.splitlines()
     parts = []
     i = 0
-    current = None
     buf = []
     from_path = to_path = None
     while i < len(lines):
@@ -1305,8 +1282,8 @@ def apply_unified_patch(
 ) -> str:
     """Apply a unified patch that may contain multiple files.
 
-    Performs best-effort transactional behavior: if any file fails, previously-applied
-    files are restored from their backups.
+    Performs best-effort transactional behavior: if any file fails,
+    previously-applied files are restored from in-memory snapshots.
     """
     file_patches = _split_multifile_unified_patch(patch_text)
     if not file_patches:
@@ -1314,6 +1291,7 @@ def apply_unified_patch(
 
     applied: list[str] = []
     created: list[str] = []
+    snapshots: Dict[str, bytes] = {}
     results = []
 
     # Optional robust backend via git apply --check / --3way (guarded by env)
@@ -1369,9 +1347,8 @@ def apply_unified_patch(
                 tgt = (base / to_path).resolve()
                 exists = tgt.exists()
                 existing_before[str(tgt)] = exists
-                if exists and backup:
-                    bak = tgt.with_suffix(tgt.suffix + ".bak")
-                    shutil.copy2(tgt, bak)
+                if exists:
+                    snapshots[str(tgt)] = tgt.read_bytes()
 
             # Normalize patch paths to be relative to the git base
             normalized_text = _normalize_unified_patch_paths(file_patches, base)
@@ -1405,8 +1382,6 @@ def apply_unified_patch(
                     conflicts = _detect_git_conflicts(base)
                     if conflicts:
                         if return_json:
-                            import json
-
                             return json.dumps(
                                 {
                                     "status": "conflict",
@@ -1420,7 +1395,7 @@ def apply_unified_patch(
                             "Conflict applying patch via git --3way. Conflicted files: "
                             + ", ".join(conflicts)
                         )
-                    # Restore from backups and delete created files
+                    # Restore from in-memory snapshots and delete created files
                     for path_str, existed in existing_before.items():
                         p = Path(path_str)
                         if not existed and p.exists():
@@ -1429,10 +1404,10 @@ def apply_unified_patch(
                             except Exception:
                                 pass
                         elif existed:
-                            bak = p.with_suffix(p.suffix + ".bak")
-                            if bak.exists():
+                            snapshot = snapshots.get(str(p))
+                            if snapshot is not None:
                                 try:
-                                    shutil.copy2(bak, p)
+                                    p.write_bytes(snapshot)
                                 except Exception:
                                     pass
                     log_path = _log_diff_failure(
@@ -1444,8 +1419,6 @@ def apply_unified_patch(
                         or "git apply --3way failed"
                     )
                     if return_json:
-                        import json
-
                         return json.dumps(
                             {"status": "error", "error": err, "log": log_path}
                         )
@@ -1471,8 +1444,6 @@ def apply_unified_patch(
                     conflicts = _detect_git_conflicts(base)
                     if conflicts:
                         if return_json:
-                            import json
-
                             return json.dumps(
                                 {
                                     "status": "conflict",
@@ -1486,7 +1457,7 @@ def apply_unified_patch(
                             "Conflict applying patch via git apply. Conflicted files: "
                             + ", ".join(conflicts)
                         )
-                    # Restore from backups and delete created files
+                    # Restore from in-memory snapshots and delete created files
                     for path_str, existed in existing_before.items():
                         p = Path(path_str)
                         if not existed and p.exists():
@@ -1495,10 +1466,10 @@ def apply_unified_patch(
                             except Exception:
                                 pass
                         elif existed:
-                            bak = p.with_suffix(p.suffix + ".bak")
-                            if bak.exists():
+                            snapshot = snapshots.get(str(p))
+                            if snapshot is not None:
                                 try:
-                                    shutil.copy2(bak, p)
+                                    p.write_bytes(snapshot)
                                 except Exception:
                                     pass
                     log_path = _log_diff_failure(
@@ -1506,8 +1477,6 @@ def apply_unified_patch(
                     )
                     err = app.stderr.strip() or app.stdout.strip() or "git apply failed"
                     if return_json:
-                        import json
-
                         return json.dumps(
                             {"status": "error", "error": err, "log": log_path}
                         )
@@ -1599,8 +1568,6 @@ def apply_unified_patch(
                     or "git apply --check failed"
                 )
                 if return_json:
-                    import json
-
                     return json.dumps(
                         {
                             "status": "error",
@@ -1624,8 +1591,6 @@ def apply_unified_patch(
             if app.returncode != 0:
                 err = app.stderr.strip() or app.stdout.strip() or "git apply failed"
                 if return_json:
-                    import json
-
                     return json.dumps(
                         {
                             "status": "error",
@@ -1671,8 +1636,6 @@ def apply_unified_patch(
                 if f.strip()
             ]
             if return_json:
-                import json
-
                 return json.dumps(
                     {
                         "status": "success",
@@ -1751,9 +1714,9 @@ def apply_unified_patch(
                         if prev in created and p.exists():
                             p.unlink()
                         else:
-                            bak = p.with_suffix(p.suffix + ".bak")
-                            if bak.exists():
-                                shutil.copy2(bak, p)
+                            snapshot = snapshots.get(str(p))
+                            if snapshot is not None:
+                                p.write_bytes(snapshot)
                     except Exception:
                         pass
                 log_path = _log_diff_failure(to_path, fp["content"], "", workspace_path)
@@ -1763,6 +1726,11 @@ def apply_unified_patch(
                 return msg
         else:
             # Apply patch to existing file using robust single-file editor
+            if target.exists() and str(target) not in snapshots:
+                try:
+                    snapshots[str(target)] = target.read_bytes()
+                except Exception:
+                    pass
             res = apply_diff_to_file(
                 str(target),
                 fp["content"],
@@ -1780,9 +1748,9 @@ def apply_unified_patch(
                         if prev in created and p.exists():
                             p.unlink()
                         else:
-                            bak = p.with_suffix(p.suffix + ".bak")
-                            if bak.exists():
-                                shutil.copy2(bak, p)
+                            snapshot = snapshots.get(str(p))
+                            if snapshot is not None:
+                                p.write_bytes(snapshot)
                     except Exception:
                         pass
                 return res
@@ -1790,8 +1758,6 @@ def apply_unified_patch(
                 applied.append(str(target))
 
     if return_json:
-        import json
-
         return json.dumps({"status": "success", "files": applied, "created": created})
     return f"Successfully applied patch to {len(applied)} file(s)"
 
@@ -1863,11 +1829,8 @@ def edit_file_with_pattern(
         if not target_path.exists():
             return f"Error: File does not exist: {target_path}"
 
-        # Create backup if requested
-        if backup:
-            backup_path = target_path.with_suffix(target_path.suffix + ".bak")
-            shutil.copy2(target_path, backup_path)
-            logging.getLogger(__name__).debug(f"Backup created: {backup_path}")
+        # Legacy backup flag is accepted for compatibility; no repo-local
+        # .bak file is created.
 
         # Read, modify, and write content
         try:
@@ -1880,7 +1843,7 @@ def edit_file_with_pattern(
                 except UnicodeDecodeError:
                     continue
             else:
-                return f"Error: Unable to decode file with common encodings"
+                return "Error: Unable to decode file with common encodings"
 
         # Apply pattern replacement
         import re
@@ -1943,7 +1906,7 @@ def edit_file_at_line(
         line_number: Line number to edit (1-based)
         new_content: New content for the line
         operation: "replace", "insert_before", "insert_after", or "delete"
-        backup: Create backup file
+        backup: Deprecated compatibility flag; ignored.
         workspace_path: Workspace path for relative paths
     """
     try:
@@ -1963,11 +1926,8 @@ def edit_file_at_line(
         if not target_path.exists():
             return f"Error: File does not exist: {target_path}"
 
-        # Create backup if requested
-        if backup:
-            backup_path = target_path.with_suffix(target_path.suffix + ".bak")
-            shutil.copy2(target_path, backup_path)
-            logging.getLogger(__name__).debug(f"Backup created: {backup_path}")
+        # Legacy backup flag is accepted for compatibility; no repo-local
+        # .bak file is created.
 
         # Read original content
         try:
@@ -1980,7 +1940,7 @@ def edit_file_at_line(
                 except UnicodeDecodeError:
                     continue
             else:
-                return f"Error: Unable to decode file with common encodings"
+                return "Error: Unable to decode file with common encodings"
 
         original_lines = original_content.splitlines()
 
@@ -2054,11 +2014,8 @@ def enhanced_write_to_file(path, content, backup=True, workspace_path=None):
         # Create parent directories if needed
         target_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Check if file exists and create backup if requested
-        if target_path.exists() and backup:
-            backup_path = target_path.with_suffix(target_path.suffix + ".bak")
-            backup_path.write_text(target_path.read_text())
-            logging.getLogger(__name__).debug(f"Backup created: {backup_path}")
+        # Legacy backup flag is accepted for compatibility; no repo-local
+        # .bak file is created.
 
         # Try different encodings
         encodings = ["utf-8", "latin-1", "utf-16"]
@@ -2260,11 +2217,6 @@ def replace_lines(
         start_idx = start_line - 1
         end_idx = end_line  # exclusive
 
-        # Create backup
-        backup_path = str(safe_path) + ".bak"
-        with open(backup_path, "w", encoding="utf-8") as f:
-            f.writelines(lines)
-
         # Replace lines
         new_lines_list = new_content.splitlines()
         # Ensure newline at end
@@ -2295,11 +2247,11 @@ def replace_lines(
             new_hash = hashlib.md5(verify_content.encode()).hexdigest()[:8]
             summary = (
                 f"Replaced lines {start_line}-{end_line} in {safe_path} "
-                f"(backup: {backup_path}) [verify: {new_hash}]"
+                f"[verify: {new_hash}]"
             )
             return f"{summary}\n{diff}" if diff else summary
 
-        summary = f"Replaced lines {start_line}-{end_line} in {safe_path} (backup: {backup_path})"
+        summary = f"Replaced lines {start_line}-{end_line} in {safe_path}"
         return f"{summary}\n{diff}" if diff else summary
 
     except Exception as e:
@@ -2337,11 +2289,6 @@ def insert_lines(
         if insert_idx < 0 or insert_idx > len(lines):
             return f"Error: after_line ({after_line}) out of range (0-{len(lines)})"
 
-        # Create backup
-        backup_path = str(safe_path) + ".bak"
-        with open(backup_path, "w", encoding="utf-8") as f:
-            f.writelines(lines)
-
         # Insert new lines
         new_lines_list = new_content.splitlines()
         formatted_new_lines = []
@@ -2362,7 +2309,10 @@ def insert_lines(
             modified_content,
             _diff_display_path(path, safe_path, workspace_path),
         )
-        summary = f"Inserted {len(new_lines_list)} lines after line {after_line} in {safe_path} (backup: {backup_path})"
+        summary = (
+            f"Inserted {len(new_lines_list)} lines after line {after_line} "
+            f"in {safe_path}"
+        )
         return f"{summary}\n{diff}" if diff else summary
 
     except Exception as e:
@@ -2398,11 +2348,6 @@ def delete_lines(
         if start_line < 1 or end_line > len(lines) or start_line > end_line:
             return f"Error: Invalid line range {start_line}-{end_line} (file has {len(lines)} lines)"
 
-        # Create backup
-        backup_path = str(safe_path) + ".bak"
-        with open(backup_path, "w", encoding="utf-8") as f:
-            f.writelines(lines)
-
         # Delete lines (convert to 0-indexed)
         start_idx = start_line - 1
         end_idx = end_line
@@ -2420,7 +2365,10 @@ def delete_lines(
             modified_content,
             _diff_display_path(path, safe_path, workspace_path),
         )
-        summary = f"Deleted lines {start_line}-{end_line} ({deleted_count} lines) from {safe_path} (backup: {backup_path})"
+        summary = (
+            f"Deleted lines {start_line}-{end_line} ({deleted_count} lines) "
+            f"from {safe_path}"
+        )
         return f"{summary}\n{diff}" if diff else summary
 
     except Exception as e:

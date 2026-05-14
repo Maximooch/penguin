@@ -116,7 +116,7 @@ def test_apply_diff_roundtrip(tmp: Path) -> bool:
     )
 
     backup = target.with_suffix(target.suffix + ".bak")
-    return ok and assert_true(backup.exists(), "backup file created")
+    return ok and assert_true(not backup.exists(), "no backup file created")
 
 
 def test_apply_diff_multihunk_and_context(tmp: Path) -> bool:
@@ -157,8 +157,8 @@ def test_edit_file_with_pattern(tmp: Path) -> bool:
             "BETA" in after and "beta" not in after, "pattern replaced in file"
         )
         and assert_true(
-            target.with_suffix(target.suffix + ".bak").exists(),
-            "backup created for pattern edit",
+            not target.with_suffix(target.suffix + ".bak").exists(),
+            "pattern edit did not create backup",
         )
     )
 

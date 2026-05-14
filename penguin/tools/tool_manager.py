@@ -345,6 +345,8 @@ class ToolManager:
                 "create_folder": "penguin.tools.core.support.create_folder",
                 "create_file": "penguin.tools.core.support.create_file",
                 "write_file": "penguin.tools.core.support.enhanced_write_to_file",
+                "edit_file": "self._execute_edit_file",
+                "apply_patch": "self._execute_apply_patch",
                 "read_file": "penguin.tools.core.support.enhanced_read_file",
                 "read_image": "self.read_image_tool.execute",
                 "list_files": "penguin.tools.core.support.list_files_filtered",
@@ -1839,7 +1841,10 @@ class ToolManager:
             },
         ]
 
-        edit_tool_names = set(get_edit_tool_public_names())
+        edit_tool_names = set(get_edit_tool_public_names()) | {
+            "patch_file",
+            "patch_files",
+        }
         schemas = [
             schema for schema in schemas if schema.get("name") not in edit_tool_names
         ]
@@ -2344,21 +2349,11 @@ class ToolManager:
                 self._browser_harness_click_tool = BrowserHarnessClickTool(
                     harness_config
                 )
-                self._browser_harness_type_tool = BrowserHarnessTypeTool(
-                    harness_config
-                )
-                self._browser_harness_key_tool = BrowserHarnessKeyTool(
-                    harness_config
-                )
-                self._browser_harness_fill_tool = BrowserHarnessFillTool(
-                    harness_config
-                )
-                self._browser_harness_wait_tool = BrowserHarnessWaitTool(
-                    harness_config
-                )
-                self._browser_harness_js_tool = BrowserHarnessJsTool(
-                    harness_config
-                )
+                self._browser_harness_type_tool = BrowserHarnessTypeTool(harness_config)
+                self._browser_harness_key_tool = BrowserHarnessKeyTool(harness_config)
+                self._browser_harness_fill_tool = BrowserHarnessFillTool(harness_config)
+                self._browser_harness_wait_tool = BrowserHarnessWaitTool(harness_config)
+                self._browser_harness_js_tool = BrowserHarnessJsTool(harness_config)
                 self._browser_harness_list_tabs_tool = BrowserHarnessListTabsTool(
                     harness_config
                 )
@@ -2490,10 +2485,7 @@ class ToolManager:
     def get_model_visible_tools(self) -> List[Dict[str, Any]]:
         """Return tool schemas normalized to Penguin's model-visible contract."""
 
-        return [
-            normalize_model_visible_tool_schema(tool)
-            for tool in self.get_tools()
-        ]
+        return [normalize_model_visible_tool_schema(tool) for tool in self.get_tools()]
 
     def get_mcp_status(self) -> Dict[str, Any]:
         """Return MCP provider diagnostics."""
@@ -2546,14 +2538,14 @@ class ToolManager:
             "create_folder",
             "create_file",
             "write_file",
+            "edit_file",
+            "apply_patch",
             "read_file",
             "read_image",
             "list_files",
             "find_file",
             "enhanced_diff",
             "analyze_project",
-            "patch_file",
-            "patch_files",
             "code_execution",
             "execute_command",
             "grep_search",
@@ -2657,6 +2649,25 @@ class ToolManager:
             )
         elif operation_name in {"write_to_file", "write_file"}:
             warnings = self._extract_internal_warnings(tool_input)
+            try:
+                from .editing.contracts import EditOperation
+
+                self._log_edit_parse(
+                    "write_file",
+                    [
+                        EditOperation(
+                            type="write",
+                            path=str(tool_input.get("path", "")),
+                            payload={"content": tool_input.get("content", "")},
+                            backup=bool(tool_input.get("backup", True)),
+                            warnings=warnings,
+                        )
+                    ],
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to log write_file parse diagnostics", exc_info=True
+                )
             result = self._execute_canonical_edit(
                 "write_file",
                 lambda service: service.write_file(
@@ -2709,9 +2720,10 @@ class ToolManager:
     ) -> Any:
         """Run one canonical edit operation with shared timeout handling."""
 
+        import threading
+
         from .editing.contracts import FileEditResult
         from .editing.service import EditService
-        import threading
 
         effective_root = file_root or self._file_root
 
@@ -2726,6 +2738,19 @@ class ToolManager:
             default_timeout = 180
 
         result_container = {"done": False, "result": None, "error": None}
+        started = time.perf_counter()
+        trace_context = get_current_execution_context_dict()
+        logger.info(
+            "tool.edit.exec.start request=%s session=%s tool=%s root=%s "
+            "timeout_seconds=%s",
+            trace_context.get("request_id") or "unknown",
+            trace_context.get("session_id")
+            or trace_context.get("conversation_id")
+            or "unknown",
+            operation_name,
+            effective_root,
+            default_timeout,
+        )
 
         def _runner() -> None:
             try:
@@ -2746,6 +2771,17 @@ class ToolManager:
                 "tool": operation_name,
                 "timeout_seconds": default_timeout,
             }
+            logger.warning(
+                "tool.edit.exec.timeout request=%s session=%s tool=%s "
+                "duration_ms=%.2f timeout_seconds=%s",
+                trace_context.get("request_id") or "unknown",
+                trace_context.get("session_id")
+                or trace_context.get("conversation_id")
+                or "unknown",
+                operation_name,
+                (time.perf_counter() - started) * 1000,
+                default_timeout,
+            )
             return FileEditResult(
                 ok=False,
                 message=json.dumps(payload),
@@ -2755,6 +2791,17 @@ class ToolManager:
 
         if result_container["error"] is not None:
             payload = {"error": result_container["error"], "tool": operation_name}
+            logger.warning(
+                "tool.edit.exec.error request=%s session=%s tool=%s "
+                "duration_ms=%.2f error=%s",
+                trace_context.get("request_id") or "unknown",
+                trace_context.get("session_id")
+                or trace_context.get("conversation_id")
+                or "unknown",
+                operation_name,
+                (time.perf_counter() - started) * 1000,
+                result_container["error"],
+            )
             return FileEditResult(
                 ok=False,
                 message=str(result_container["error"]),
@@ -2764,6 +2811,20 @@ class ToolManager:
 
         result = result_container["result"]
         if isinstance(result, FileEditResult):
+            logger.info(
+                "tool.edit.exec.done request=%s session=%s tool=%s ok=%s "
+                "duration_ms=%.2f files=%s backups=%s error=%s",
+                trace_context.get("request_id") or "unknown",
+                trace_context.get("session_id")
+                or trace_context.get("conversation_id")
+                or "unknown",
+                operation_name,
+                result.ok,
+                (time.perf_counter() - started) * 1000,
+                result.files,
+                result.backup_paths,
+                result.error,
+            )
             return result
 
         payload = {
@@ -2775,6 +2836,42 @@ class ToolManager:
             message=payload["error"],
             error=payload["error"],
             data={"legacy_output": json.dumps(payload)},
+        )
+
+    def _edit_payload_chars(self, payload: Any) -> int:
+        """Return payload size in characters for edit diagnostics."""
+
+        try:
+            return len(json.dumps(payload, sort_keys=True, default=str))
+        except Exception:
+            return len(str(payload))
+
+    def _log_edit_parse(self, tool_name: str, operations: List[Any]) -> None:
+        """Log parsed edit operation shape without dumping payload contents."""
+
+        trace_context = get_current_execution_context_dict()
+        summaries = []
+        for operation in operations:
+            payload = getattr(operation, "payload", {})
+            summaries.append(
+                {
+                    "type": getattr(operation, "type", None),
+                    "path": getattr(operation, "path", None),
+                    "payload_chars": self._edit_payload_chars(payload),
+                    "warnings": getattr(operation, "warnings", []),
+                }
+            )
+        logger.info(
+            "tool.edit.parse request=%s session=%s tool=%s operations=%s "
+            "total_payload_chars=%s details=%s",
+            trace_context.get("request_id") or "unknown",
+            trace_context.get("session_id")
+            or trace_context.get("conversation_id")
+            or "unknown",
+            tool_name,
+            len(operations),
+            sum(item["payload_chars"] for item in summaries),
+            summaries,
         )
 
     def _build_patch_operation(self, tool_input: dict) -> Any:
@@ -3037,6 +3134,56 @@ class ToolManager:
             result.append(text)
         return result
 
+    def _execute_edit_file(
+        self, tool_input: dict, *, file_root: Optional[str] = None
+    ) -> str:
+        """Execute exact old_string/new_string replacement."""
+        path = tool_input.get("path") or tool_input.get("file_path") or ""
+        old_string = tool_input.get("old_string")
+        new_string = tool_input.get("new_string")
+        warnings = self._extract_internal_warnings(tool_input)
+        if not isinstance(path, str) or not path.strip():
+            return json.dumps({"error": "edit_file requires 'path'", "tool": "edit_file"})
+        if not isinstance(old_string, str):
+            return json.dumps(
+                {"error": "edit_file requires 'old_string'", "tool": "edit_file"}
+            )
+        if not isinstance(new_string, str):
+            return json.dumps(
+                {"error": "edit_file requires 'new_string'", "tool": "edit_file"}
+            )
+
+        result = self._execute_canonical_edit(
+            "edit_file",
+            lambda service: service.edit_file(
+                path,
+                old_string,
+                new_string,
+                replace_all=bool(tool_input.get("replace_all", False)),
+                warnings=warnings,
+            ),
+            file_root=file_root,
+        )
+        return result.render_legacy_output()
+
+    def _execute_apply_patch(
+        self, tool_input: dict, *, file_root: Optional[str] = None
+    ) -> str:
+        """Execute a Codex-style contextual patch."""
+        patch = tool_input.get("patch")
+        warnings = self._extract_internal_warnings(tool_input)
+        if not isinstance(patch, str):
+            return json.dumps(
+                {"error": "apply_patch requires 'patch'", "tool": "apply_patch"}
+            )
+
+        result = self._execute_canonical_edit(
+            "apply_patch",
+            lambda service: service.apply_patch(patch, warnings=warnings),
+            file_root=file_root,
+        )
+        return result.render_legacy_output()
+
     def _execute_patch_file(
         self, tool_input: dict, *, file_root: Optional[str] = None
     ) -> str:
@@ -3045,6 +3192,7 @@ class ToolManager:
             operation = self._build_patch_operation(tool_input)
         except Exception as exc:
             return json.dumps({"error": str(exc), "tool": "patch_file"})
+        self._log_edit_parse("patch_file", [operation])
         result = self._execute_canonical_edit(
             "patch_file",
             lambda service: service.patch_file(operation),
@@ -3062,6 +3210,16 @@ class ToolManager:
             )
         except Exception as exc:
             return json.dumps({"error": str(exc), "tool": "patch_files"})
+        self._log_edit_parse("patch_files", list(operations))
+        logger.info(
+            "tool.edit.patch_files.options operations=%s apply=%s backup=%s "
+            "content_chars=%s warnings=%s",
+            len(operations),
+            apply,
+            backup,
+            len(str(tool_input.get("content", ""))),
+            warnings,
+        )
         result = self._execute_canonical_edit(
             "patch_files",
             lambda service: service.patch_files(
@@ -3753,6 +3911,12 @@ class ToolManager:
                 ),
                 "write_file": lambda: self._execute_file_operation(
                     "write_file", tool_input, file_root=file_root
+                ),
+                "edit_file": lambda: self._execute_edit_file(
+                    tool_input, file_root=file_root
+                ),
+                "apply_patch": lambda: self._execute_apply_patch(
+                    tool_input, file_root=file_root
                 ),
                 "read_file": lambda: self._execute_file_operation(
                     "read_file", tool_input, file_root=file_root
@@ -5558,7 +5722,9 @@ class ToolManager:
         """
         self._core = core
         conversation_manager = getattr(core, "conversation_manager", None)
-        if conversation_manager is not None and hasattr(conversation_manager, "skill_manager"):
+        if conversation_manager is not None and hasattr(
+            conversation_manager, "skill_manager"
+        ):
             self.skill_manager = conversation_manager.skill_manager
         if self._lazy_initialized.get("skill_tools") and self._skill_tools is not None:
             self._skill_tools.conversation_manager = getattr(

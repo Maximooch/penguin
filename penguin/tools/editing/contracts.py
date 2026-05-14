@@ -4,9 +4,10 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional
 
-
 EditOpType = Literal[
     "write",
+    "exact_replace",
+    "apply_patch",
     "unified_diff",
     "replace_lines",
     "insert_lines",

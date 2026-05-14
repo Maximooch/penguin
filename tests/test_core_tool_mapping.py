@@ -446,6 +446,50 @@ def test_map_action_to_tool_supports_canonical_patch_file_payload() -> None:
     assert metadata == {}
 
 
+def test_map_action_to_tool_supports_edit_file_payload() -> None:
+    core = PenguinCore.__new__(PenguinCore)
+
+    mapped_tool, tool_input, metadata = core._map_action_to_tool(
+        "edit_file",
+        {
+            "path": "src/main.py",
+            "old_string": "old\n",
+            "new_string": "new\n",
+            "replace_all": True,
+        },
+    )
+
+    assert mapped_tool == "edit"
+    assert tool_input == {
+        "filePath": "src/main.py",
+        "oldString": "old\n",
+        "newString": "new\n",
+        "replaceAll": True,
+    }
+    assert metadata == {}
+
+
+def test_map_action_to_tool_supports_apply_patch_payload() -> None:
+    core = PenguinCore.__new__(PenguinCore)
+
+    patch = (
+        "*** Begin Patch\n"
+        "*** Update File: src/main.py\n"
+        "@@\n"
+        "-old\n"
+        "+new\n"
+        "*** End Patch\n"
+    )
+    mapped_tool, tool_input, metadata = core._map_action_to_tool(
+        "apply_patch",
+        {"patch": patch},
+    )
+
+    assert mapped_tool == "edit"
+    assert tool_input == {"filePath": "(patch)", "patch": patch}
+    assert metadata == {"files": ["src/main.py"]}
+
+
 def test_map_action_to_tool_supports_canonical_patch_files_payload() -> None:
     core = PenguinCore.__new__(PenguinCore)
 

@@ -65,6 +65,8 @@ class ActionType(Enum):
     ENHANCED_READ = "enhanced_read"
     ENHANCED_WRITE = "enhanced_write"
     WRITE_FILE = "write_file"
+    EDIT_FILE = "edit_file"
+    APPLY_PATCH = "apply_patch"
     APPLY_DIFF = "apply_diff"
     PATCH_FILE = "patch_file"
     MULTIEDIT = "multiedit"
@@ -174,6 +176,8 @@ class ActionType(Enum):
 CANONICAL_EDIT_ACTION_TYPES = {
     ActionType.READ_FILE,
     ActionType.WRITE_FILE,
+    ActionType.EDIT_FILE,
+    ActionType.APPLY_PATCH,
     ActionType.PATCH_FILE,
     ActionType.PATCH_FILES,
 }
@@ -468,6 +472,60 @@ def parse_write_file_payload(params: Any) -> Dict[str, Any]:
         )
     ]
     return parsed
+
+
+def parse_edit_file_payload(params: Any) -> Dict[str, Any]:
+    """Parse exact old_string/new_string edit payloads."""
+    payload = _parse_json_payload(params)
+    if payload is None:
+        return {"error": "edit_file requires JSON payload"}
+
+    path = payload.get("path") or payload.get("file_path") or ""
+    old_string = payload.get("old_string")
+    new_string = payload.get("new_string")
+    warnings: List[str] = []
+    if not isinstance(path, str) or not path.strip():
+        return {"error": "edit_file requires 'path'"}
+    if not isinstance(old_string, str):
+        return {"error": "edit_file requires 'old_string'"}
+    if not isinstance(new_string, str):
+        return {"error": "edit_file requires 'new_string'"}
+    if "file_path" in payload and "path" not in payload:
+        warnings.append(
+            _deprecated_payload_warning(
+                "edit_file",
+                "use 'path' instead of legacy 'file_path'",
+            )
+        )
+    return {
+        "path": path.strip(),
+        "old_string": old_string,
+        "new_string": new_string,
+        "replace_all": bool(payload.get("replace_all", False)),
+        "warnings": warnings,
+    }
+
+
+def parse_apply_patch_payload(params: Any) -> Dict[str, Any]:
+    """Parse Codex-style apply_patch payloads."""
+    payload = _parse_json_payload(params)
+    if payload is not None:
+        patch = payload.get("patch")
+        if not isinstance(patch, str):
+            return {"error": "apply_patch requires 'patch'"}
+        return {"patch": patch, "warnings": []}
+
+    if isinstance(params, str) and params.strip():
+        return {
+            "patch": params,
+            "warnings": [
+                _deprecated_payload_warning(
+                    "apply_patch",
+                    "use JSON object payloads with a 'patch' field",
+                )
+            ],
+        }
+    return {"error": "apply_patch requires JSON payload or patch text"}
 
 
 def parse_read_file_payload(params: Any) -> Dict[str, Any]:
@@ -1695,6 +1753,8 @@ class ActionExecutor:
             ActionType.ENHANCED_READ: self._enhanced_read,
             ActionType.WRITE_FILE: self._write_file,
             ActionType.ENHANCED_WRITE: self._enhanced_write,
+            ActionType.EDIT_FILE: self._edit_file,
+            ActionType.APPLY_PATCH: self._apply_patch,
             ActionType.PATCH_FILE: self._patch_file,
             ActionType.APPLY_DIFF: self._apply_diff,
             ActionType.PATCH_FILES: self._patch_files,
@@ -4331,6 +4391,39 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
     def _enhanced_write(self, params: Any) -> str:
         """Legacy enhanced_write alias routed through write_file."""
         return self._write_file(params)
+
+    def _edit_file(self, params: Any) -> str:
+        """Handle exact old_string/new_string edit_file requests."""
+        parsed = parse_edit_file_payload(params)
+        error = parsed.get("error")
+        if isinstance(error, str) and error.strip():
+            return f"Error: {error.strip()}"
+
+        return self.tool_manager.execute_tool(
+            "edit_file",
+            {
+                "path": parsed["path"],
+                "old_string": parsed["old_string"],
+                "new_string": parsed["new_string"],
+                "replace_all": parsed["replace_all"],
+                "_warnings": parsed.get("warnings", []),
+            },
+        )
+
+    def _apply_patch(self, params: Any) -> str:
+        """Handle Codex-style apply_patch requests."""
+        parsed = parse_apply_patch_payload(params)
+        error = parsed.get("error")
+        if isinstance(error, str) and error.strip():
+            return f"Error: {error.strip()}"
+
+        return self.tool_manager.execute_tool(
+            "apply_patch",
+            {
+                "patch": parsed["patch"],
+                "_warnings": parsed.get("warnings", []),
+            },
+        )
 
     def _patch_file(self, params: Any) -> str:
         """Handle canonical patch_file requests with nested JSON payloads."""

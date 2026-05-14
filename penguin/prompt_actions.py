@@ -13,8 +13,6 @@ from typing import Dict, List
 from penguin.tools.editing.registry import (
     get_edit_tool_aliases,
     get_edit_tool_schema,
-    get_patch_files_item_schema,
-    get_patch_operation_types,
 )
 
 
@@ -107,23 +105,11 @@ def _render_schema_facts(tool_name: str) -> str:
         canonical_fields = ["path", "show_line_numbers", "max_lines"]
     elif tool_name == "write_file":
         canonical_fields = ["path", "content", "backup"]
-    elif tool_name == "patch_file":
-        canonical_fields = ["path", "operation", "backup"]
-    elif tool_name == "patch_files":
-        canonical_fields = ["operations", "apply", "backup"]
+    elif tool_name == "edit_file":
+        canonical_fields = ["path", "old_string", "new_string", "replace_all"]
+    elif tool_name == "apply_patch":
+        canonical_fields = ["patch"]
     lines.append(f"- Canonical fields: {_format_code_items(canonical_fields)}")
-
-    if tool_name == "patch_file":
-        lines.append(
-            f"- Operation types: {_format_code_items(get_patch_operation_types())}"
-        )
-    if tool_name == "patch_files":
-        item_schema = get_patch_files_item_schema()
-        item_required = list(item_schema.get("required", []))
-        if item_required:
-            lines.append(
-                f"- Each `operations[]` item requires {_format_code_items(item_required)}"
-            )
 
     if aliases:
         lines.append(f"- Legacy aliases: {_format_code_items(aliases)}")
@@ -238,100 +224,61 @@ EDIT_TOOL_HINTS: Dict[str, ToolPromptHint] = {
     "write_file": ToolPromptHint(
         when_to_use="Creating new files or replacing full file contents.",
         strategy_notes=[
-            "Prefer this when replacing an entire file instead of editing fragments.",
-            "Use `backup=true` unless you have a specific reason not to.",
+            "Prefer `edit_file` or `apply_patch` for partial edits.",
+            "The `backup` flag is accepted only for compatibility; Penguin does not create `.bak` files.",
         ],
         examples=[
             ToolPromptExample(
                 title="Write a file",
                 body="""<write_file>{
   "path": "README.md",
-  "content": "# Project Name\n\nDescription here.\n",
-  "backup": true
+  "content": "# Project Name\n\nDescription here.\n"
 }</write_file>""",
             )
         ],
         migration_note="Legacy `enhanced_write` and `write_to_file` payloads remain accepted temporarily, but JSON `write_file` is preferred.",
     ),
-    "patch_file": ToolPromptHint(
-        when_to_use="Any single-file edit, including unified diffs, regex replacements, and line-based edits.",
+    "edit_file": ToolPromptHint(
+        when_to_use="A small or medium single-file edit where you can provide exact current text.",
         strategy_notes=[
-            "Prefer the nested `operation` object over flat legacy fields.",
-            "Use `unified_diff` when you need precise context-aware edits.",
-            "Use `regex_replace` or line operations when that is clearer than a diff.",
+            "Provide enough surrounding context in `old_string` for a unique match.",
+            "Leave `replace_all=false` unless every identical occurrence should change.",
         ],
         examples=[
             ToolPromptExample(
-                title="Unified diff",
-                body="""<patch_file>{
-  "path": "src/utils.py",
-  "backup": true,
-  "operation": {
-    "type": "unified_diff",
-    "diff_content": "--- a/src/utils.py\n+++ b/src/utils.py\n@@ -15,6 +15,10 @@\n def existing_func():\n     return 42\n \n+def new_helper():\n+    \\\"\\\"\\\"Helper function.\\\"\\\"\\\"\n+    return True\n+\n def another_func():\n     pass\n"
-  }
-}</patch_file>""",
-            ),
-            ToolPromptExample(
-                title="Replace lines",
-                body="""<patch_file>{
+                title="Exact replacement",
+                body="""<edit_file>{
   "path": "src/main.py",
-  "operation": {
-    "type": "replace_lines",
-    "start_line": 10,
-    "end_line": 12,
-    "new_content": "def new_function():\n    return calculate() * 2\n",
-    "verify": true
-  },
-  "backup": true
-}</patch_file>""",
+  "old_string": "def old_function():\n    return 1\n",
+  "new_string": "def old_function():\n    return calculate()\n",
+  "replace_all": false
+}</edit_file>""",
             ),
         ],
-        migration_note="Legacy `apply_diff`, `edit_with_pattern`, `replace_lines`, `insert_lines`, and `delete_lines` still work temporarily as compatibility aliases.",
+        migration_note="Line-coordinate edit aliases are deprecated because they can drift after earlier edits.",
     ),
-    "patch_files": ToolPromptHint(
-        when_to_use="Coordinated changes across multiple files that should be applied together.",
+    "apply_patch": ToolPromptHint(
+        when_to_use="Contextual edits, coordinated edits, file additions, deletions, or moves.",
         strategy_notes=[
-            "Prefer the structured `operations` array over raw patch text.",
-            "Use `apply=false` for dry-run previews when you want to validate the plan first.",
+            "Use Codex-style `*** Begin Patch` / `*** End Patch` hunks.",
+            "Each update hunk must include exact context from the current file.",
         ],
         examples=[
             ToolPromptExample(
-                title="Structured multi-file patch",
-                body="""<patch_files>{
-  "apply": true,
-  "backup": true,
-  "operations": [
-    {
-      "path": "src/models.py",
-      "operation": {
-        "type": "replace_lines",
-        "start_line": 25,
-        "end_line": 25,
-        "new_content": "class UserService:",
-        "verify": true
-      }
-    },
-    {
-      "path": "src/api.py",
-      "operation": {
-        "type": "regex_replace",
-        "search_pattern": "UserManager",
-        "replacement": "UserService"
-      }
-    }
-  ]
-}</patch_files>""",
+                title="Contextual patch",
+                body="""<apply_patch>{
+  "patch": "*** Begin Patch\n*** Update File: src/main.py\n@@\n def existing():\n-    return 1\n+    return 2\n*** End Patch\n"
+}</apply_patch>""",
             )
         ],
-        migration_note="Legacy `multiedit` / `multiedit_apply` raw patch content still works temporarily, but the structured `operations` array is now canonical.",
+        migration_note="Legacy `patch_file`, `patch_files`, `apply_diff`, and line-coordinate edit tags return deprecation errors.",
     ),
 }
 
 
 def _build_file_editing_tools() -> str:
     sections = ["## File Editing"]
-    for tool_name in ["write_file", "patch_file", "patch_files"]:
+    for tool_name in ["write_file", "edit_file", "apply_patch"]:
         sections.append(_render_tool_section(tool_name, EDIT_TOOL_HINTS[tool_name]))
     return "\n\n".join(sections)
 
@@ -469,7 +416,7 @@ else:
 </execute>
 ```
 
-**Priority:** Prefer specialized tools (<patch_file>, <patch_files>, <write_file>, etc.) first. Use <execute> when those don't work or for complex logic that requires Python.
+**Priority:** Prefer specialized tools (<edit_file>, <apply_patch>, <write_file>, etc.) first. Use <execute> when those don't work or for complex logic that requires Python.
 
 
 ### execute_command

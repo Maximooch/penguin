@@ -37,6 +37,8 @@ TOOL_OPERATION_MAP: dict[str, list[Operation]] = {
     "write_to_file": [Operation.FILESYSTEM_WRITE],
     "enhanced_write": [Operation.FILESYSTEM_WRITE],
     # File operations that read and write
+    "edit_file": [Operation.FILESYSTEM_READ, Operation.FILESYSTEM_WRITE],
+    "apply_patch": [Operation.FILESYSTEM_READ, Operation.FILESYSTEM_WRITE],
     "patch_file": [Operation.FILESYSTEM_READ, Operation.FILESYSTEM_WRITE],
     "patch_files": [Operation.FILESYSTEM_READ, Operation.FILESYSTEM_WRITE],
     "apply_diff": [Operation.FILESYSTEM_READ, Operation.FILESYSTEM_WRITE],
@@ -198,12 +200,29 @@ def _extract_patch_files_content_paths(content: str) -> list[str]:
     return paths
 
 
+def _extract_apply_patch_paths(content: str) -> list[str]:
+    """Extract file paths from Codex-style apply_patch headers."""
+    paths: list[str] = []
+    for line in content.splitlines():
+        match = re.match(
+            r"^\*\*\* (?:Add|Update|Delete) File:\s+(.+?)\s*$",
+            line,
+        )
+        if match:
+            paths.append(match.group(1).strip())
+            continue
+        move_match = re.match(r"^\*\*\* Move to:\s+(.+?)\s*$", line)
+        if move_match:
+            paths.append(move_match.group(1).strip())
+    return paths
+
+
 def extract_resources_from_input(
     tool_name: str,
     tool_input: dict[str, Any],
     context: Optional[dict[str, Any]] = None,
 ) -> list[str]:
-    """Extract all primary resources from tool input, normalized for permission checks."""
+    """Extract primary tool resources normalized for permission checks."""
     resources: list[str] = []
 
     if tool_name == "patch_files":
@@ -221,6 +240,13 @@ def extract_resources_from_input(
             resources.extend(
                 _resolve_resource_path(path_value, context)
                 for path_value in _extract_patch_files_content_paths(content)
+            )
+    elif tool_name == "apply_patch":
+        patch = tool_input.get("patch")
+        if isinstance(patch, str) and patch.strip():
+            resources.extend(
+                _resolve_resource_path(path_value, context)
+                for path_value in _extract_apply_patch_paths(patch)
             )
 
     single = extract_resource_from_input(tool_name, tool_input)
@@ -367,9 +393,13 @@ def check_tool_permission(
     # If any ASK, return ASK
     for result, operation, resource_candidate in results:
         if result == PermissionResult.ASK:
+            message = (
+                f"Operation '{operation.value}' requires approval for "
+                f"'{resource_candidate}'"
+            )
             return (
                 result,
-                f"Operation '{operation.value}' requires approval for '{resource_candidate}'",
+                message,
             )
 
     # Check if agent policy said ASK

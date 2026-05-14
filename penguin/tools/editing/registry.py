@@ -1,40 +1,15 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any, Dict, List, Optional
-
-
-_PATCH_OPERATION_SCHEMA: Dict[str, Any] = {
-    "type": "object",
-    "description": "Canonical nested patch operation object",
-    "properties": {
-        "type": {
-            "type": "string",
-            "enum": [
-                "unified_diff",
-                "replace_lines",
-                "insert_lines",
-                "delete_lines",
-                "regex_replace",
-            ],
-        },
-        "diff_content": {"type": "string"},
-        "search_pattern": {"type": "string"},
-        "replacement": {"type": "string"},
-        "start_line": {"type": "integer"},
-        "end_line": {"type": "integer"},
-        "after_line": {"type": "integer"},
-        "new_content": {"type": "string"},
-        "verify": {"type": "boolean"},
-    },
-    "required": ["type"],
-}
-
+from typing import Any, Dict, List
 
 EDIT_TOOL_SCHEMAS: List[Dict[str, Any]] = [
     {
         "name": "read_file",
-        "description": "Read file contents with optional line numbers and truncation. Always shows the exact path being read.",
+        "description": (
+            "Read file contents with optional line numbers and truncation. "
+            "Always shows the exact path being read."
+        ),
         "aliases": ["enhanced_read"],
         "input_schema": {
             "type": "object",
@@ -61,7 +36,10 @@ EDIT_TOOL_SCHEMAS: List[Dict[str, Any]] = [
     },
     {
         "name": "write_file",
-        "description": "Write a file with optional backup support. Accepts full file content and uses the canonical edit contract.",
+        "description": (
+            "Write full file content. This preflights in memory and never "
+            "creates .bak files; prefer edit_file or apply_patch for partial edits."
+        ),
         "aliases": ["write_to_file", "enhanced_write"],
         "input_schema": {
             "type": "object",
@@ -76,7 +54,10 @@ EDIT_TOOL_SCHEMAS: List[Dict[str, Any]] = [
                 },
                 "backup": {
                     "type": "boolean",
-                    "description": "Create backup of existing file (default: true)",
+                    "description": (
+                        "Deprecated compatibility flag; ignored because Penguin "
+                        "no longer creates in-repo .bak files"
+                    ),
                 },
                 "file_path": {
                     "type": "string",
@@ -87,15 +68,12 @@ EDIT_TOOL_SCHEMAS: List[Dict[str, Any]] = [
         },
     },
     {
-        "name": "patch_file",
-        "description": "Patch a single file. Prefer the nested JSON operation object; flat legacy fields remain supported temporarily.",
-        "aliases": [
-            "apply_diff",
-            "edit_with_pattern",
-            "replace_lines",
-            "insert_lines",
-            "delete_lines",
-        ],
+        "name": "edit_file",
+        "description": (
+            "Safely edit one file by replacing exact old_string text with "
+            "new_string. Fails without writing if the old string is missing "
+            "or ambiguous."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -103,95 +81,45 @@ EDIT_TOOL_SCHEMAS: List[Dict[str, Any]] = [
                     "type": "string",
                     "description": "Path to the file to edit",
                 },
-                "operation": deepcopy(_PATCH_OPERATION_SCHEMA),
-                "operation_type": {
+                "old_string": {
                     "type": "string",
-                    "description": "Legacy flat alias for operation.type during migration",
+                    "description": (
+                        "Exact current file text to replace. Must be non-empty."
+                    ),
                 },
-                "diff_content": {
+                "new_string": {
                     "type": "string",
-                    "description": "Legacy flat alias for unified diffs during migration",
+                    "description": "Replacement text",
                 },
-                "search_pattern": {
-                    "type": "string",
-                    "description": "Legacy flat alias for regex replacements during migration",
-                },
-                "replacement": {
-                    "type": "string",
-                    "description": "Legacy flat alias for regex replacements during migration",
-                },
-                "start_line": {
-                    "type": "integer",
-                    "description": "Legacy flat alias for line-based operations during migration",
-                },
-                "end_line": {
-                    "type": "integer",
-                    "description": "Legacy flat alias for line-based operations during migration",
-                },
-                "after_line": {
-                    "type": "integer",
-                    "description": "Legacy flat alias for insert_lines during migration",
-                },
-                "new_content": {
-                    "type": "string",
-                    "description": "Legacy flat alias for line-based operations during migration",
-                },
-                "verify": {
+                "replace_all": {
                     "type": "boolean",
-                    "description": "Legacy flat alias for replace_lines verification during migration",
-                },
-                "backup": {
-                    "type": "boolean",
-                    "description": "Create backup of original file (default: true)",
-                },
-                "file_path": {
-                    "type": "string",
-                    "description": "Legacy alias for `path` during migration",
+                    "description": (
+                        "Replace every occurrence. Default false requires exactly "
+                        "one match."
+                    ),
                 },
             },
-            "required": ["path", "operation"],
+            "required": ["path", "old_string", "new_string"],
         },
     },
     {
-        "name": "patch_files",
-        "description": "Patch multiple files atomically. Prefer a structured JSON operations array; legacy raw patch content remains supported temporarily.",
-        "aliases": ["multiedit_apply", "multiedit"],
+        "name": "apply_patch",
+        "description": (
+            "Apply a Codex-style contextual patch. Penguin validates all hunks "
+            "against current file contents before writing any file."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "apply": {
-                    "type": "boolean",
-                    "description": "Apply changes now (default: false for dry-run)",
-                },
-                "backup": {
-                    "type": "boolean",
-                    "description": "Default backup behavior for structured operations (default: true)",
-                },
-                "operations": {
-                    "type": "array",
-                    "description": "Canonical structured edit operations for multi-file patching",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "path": {
-                                "type": "string",
-                                "description": "Target file path",
-                            },
-                            "operation": deepcopy(_PATCH_OPERATION_SCHEMA),
-                            "backup": {
-                                "type": "boolean",
-                                "description": "Optional per-operation backup override",
-                            },
-                        },
-                        "required": ["path", "operation"],
-                    },
-                },
-                "content": {
+                "patch": {
                     "type": "string",
-                    "description": "Legacy multiedit/unified patch content kept temporarily for migration",
+                    "description": (
+                        "Patch text beginning with *** Begin Patch and ending "
+                        "with *** End Patch"
+                    ),
                 },
             },
-            "required": [],
+            "required": ["patch"],
         },
     },
 ]
@@ -230,20 +158,10 @@ def get_edit_tool_aliases(name: str) -> List[str]:
 
 
 def get_patch_operation_types() -> List[str]:
-    """Return supported canonical patch operation types."""
-    schema = get_edit_tool_schema("patch_file")
-    operation = (
-        schema.get("input_schema", {}).get("properties", {}).get("operation", {})
-    )
-    return list(operation.get("properties", {}).get("type", {}).get("enum", []))
+    """Return supported legacy patch operation types."""
+    return []
 
 
 def get_patch_files_item_schema() -> Dict[str, Any]:
-    """Return the schema for one `patch_files.operations[]` entry."""
-    schema = get_edit_tool_schema("patch_files")
-    return deepcopy(
-        schema.get("input_schema", {})
-        .get("properties", {})
-        .get("operations", {})
-        .get("items", {})
-    )
+    """Return the deprecated `patch_files.operations[]` schema."""
+    return {"type": "object", "properties": {}, "required": []}

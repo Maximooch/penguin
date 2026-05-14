@@ -107,6 +107,7 @@ import asyncio
 import copy
 import inspect
 import logging
+import re
 import time
 import traceback
 import os
@@ -207,6 +208,8 @@ from penguin.utils.log_error import log_error
 from penguin.utils.parser import (
     ActionExecutor,
     parse_action,
+    parse_apply_patch_payload,
+    parse_edit_file_payload,
     parse_patch_file_payload,
     parse_patch_files_payload,
     parse_read_file_payload,
@@ -235,6 +238,7 @@ EventHandler = Callable[[str, Dict[str, Any]], Union[Awaitable[None], None]]
 
 if TYPE_CHECKING:
     from penguin.chat.cli import PenguinCLI
+    from penguin.config import RuntimeConfig
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -4318,6 +4322,82 @@ class PenguinCore:
 
         return message.to_dict()
 
+    def abort_streaming_message(
+        self,
+        agent_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        stream_scope_id: Optional[str] = None,
+    ) -> bool:
+        """Abort an uncommitted streaming message without persisting dialog."""
+
+        execution_context = get_current_execution_context()
+        if agent_id is None:
+            if execution_context and execution_context.agent_id:
+                agent_id = execution_context.agent_id
+            else:
+                agent_id = getattr(
+                    self.conversation_manager,
+                    "current_agent_id",
+                    "default",
+                )
+        resolved_agent_id = agent_id or "default"
+        resolved_conversation_id = conversation_id
+        resolved_session_id = session_id or conversation_id
+        if execution_context:
+            resolved_conversation_id = (
+                execution_context.conversation_id
+                or execution_context.session_id
+                or resolved_conversation_id
+            )
+            resolved_session_id = (
+                execution_context.session_id
+                or resolved_conversation_id
+                or resolved_session_id
+            )
+
+        resolved_stream_scope_id = stream_scope_id
+        if not resolved_stream_scope_id and resolved_session_id:
+            resolved_stream_scope_id = f"{resolved_session_id}:{resolved_agent_id}"
+        if not resolved_stream_scope_id:
+            resolved_stream_scope_id = self._resolve_stream_scope_id(
+                execution_context,
+                resolved_agent_id,
+            )
+
+        events = self._stream_manager.abort(agent_id=resolved_stream_scope_id)
+        if not events:
+            return False
+
+        for event in events:
+            event_data = (
+                dict(event.data)
+                if isinstance(event.data, dict)
+                else {"data": event.data}
+            )
+            if resolved_conversation_id:
+                event_data["session_id"] = (
+                    resolved_session_id or resolved_conversation_id
+                )
+                event_data["conversation_id"] = resolved_conversation_id
+            else:
+                event_data["session_id"] = "unknown"
+                event_data["conversation_id"] = "unknown"
+            event_data["agent_id"] = resolved_agent_id
+            event_data = self._filter_internal_markers_from_event(event_data)
+            asyncio.create_task(self.emit_ui_event(event.event_type, event_data))
+
+        _trace_log_info(
+            "core.stream.abort request=%s session=%s conversation=%s agent=%s scope=%s events=%s",
+            execution_context.request_id if execution_context else "unknown",
+            resolved_session_id or "unknown",
+            resolved_conversation_id or "",
+            resolved_agent_id,
+            resolved_stream_scope_id,
+            len(events),
+        )
+        return True
+
     def _persist_finalized_message(
         self,
         *,
@@ -5197,6 +5277,39 @@ class PenguinCore:
                         diff_content = diff_part
             tool_input = {"filePath": file_path}
             metadata["diff"] = self._ensure_unified_diff(file_path, diff_content)
+            return "edit", tool_input, metadata
+
+        if action_name == "edit_file":
+            parsed = parse_edit_file_payload(params)
+            error = parsed.get("error") if isinstance(parsed, dict) else None
+            if isinstance(error, str):
+                return "edit", {"filePath": ""}, metadata
+            tool_input = {
+                "filePath": parsed.get("path", ""),
+                "oldString": parsed.get("old_string", ""),
+                "newString": parsed.get("new_string", ""),
+                "replaceAll": bool(parsed.get("replace_all", False)),
+            }
+            return "edit", tool_input, metadata
+
+        if action_name == "apply_patch":
+            parsed = parse_apply_patch_payload(params)
+            error = parsed.get("error") if isinstance(parsed, dict) else None
+            if isinstance(error, str):
+                return "edit", {"filePath": "(patch)"}, metadata
+            patch = parsed.get("patch", "")
+            tool_input = {"filePath": "(patch)", "patch": patch}
+            if isinstance(patch, str):
+                files = []
+                for line in patch.splitlines():
+                    match = re.match(
+                        r"^\*\*\* (?:Add|Update|Delete) File:\s+(.+?)\s*$",
+                        line,
+                    )
+                    if match:
+                        files.append(match.group(1).strip())
+                if files:
+                    metadata["files"] = files
             return "edit", tool_input, metadata
 
         if action_name == "patch_file":

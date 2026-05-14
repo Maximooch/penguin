@@ -14,6 +14,8 @@ from typing import Any, Callable, Optional
 
 from penguin.utils.parser import (
     ActionType,
+    parse_apply_patch_payload,
+    parse_edit_file_payload,
     parse_patch_file_payload,
     parse_patch_files_payload,
     parse_read_file_payload,
@@ -91,6 +93,29 @@ def _write_file_input(params: Any) -> dict[str, Any]:
     }
 
 
+def _edit_file_input(params: Any) -> dict[str, Any]:
+    parsed = parse_edit_file_payload(params)
+    if "error" in parsed:
+        return parsed
+    return {
+        "path": parsed["path"],
+        "old_string": parsed["old_string"],
+        "new_string": parsed["new_string"],
+        "replace_all": parsed["replace_all"],
+        "_warnings": parsed.get("warnings", []),
+    }
+
+
+def _apply_patch_input(params: Any) -> dict[str, Any]:
+    parsed = parse_apply_patch_payload(params)
+    if "error" in parsed:
+        return parsed
+    return {
+        "patch": parsed["patch"],
+        "_warnings": parsed.get("warnings", []),
+    }
+
+
 def _patch_file_input(
     params: Any,
     *,
@@ -159,6 +184,12 @@ def create_default_action_tool_registry() -> ActionToolRegistry:
             "write_file",
             _write_file_input,
             canonical_action_type=ActionType.WRITE_FILE,
+        ),
+        ActionToolRoute(ActionType.EDIT_FILE, "edit_file", _edit_file_input),
+        ActionToolRoute(
+            ActionType.APPLY_PATCH,
+            "apply_patch",
+            _apply_patch_input,
         ),
         ActionToolRoute(ActionType.PATCH_FILE, "patch_file", _patch_file_input),
         ActionToolRoute(

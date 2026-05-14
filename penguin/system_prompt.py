@@ -183,7 +183,7 @@ MODE_GUIDANCE = """**Task Types:**
 SAFETY_RULES = """**Safety:**
 
 - Check file existence before writing: `Path(file).exists()`
-- Use `patch_file` or `patch_files` for edits (auto-backup)
+- Use `edit_file` for exact replacements or `apply_patch` for contextual hunks
 - Never blind overwrite without verification
 - Respect permission boundaries
 

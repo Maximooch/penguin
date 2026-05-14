@@ -2,32 +2,26 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import shutil
+import re
+import time
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
-from ..core.support import (
-    apply_diff_to_file,
-    delete_lines,
-    edit_file_with_pattern,
-    enhanced_write_to_file,
-    insert_lines,
-    replace_lines,
-)
-
+from ..core.support import generate_diff_patch
 from .contracts import EditOperation, FileEditResult
-from .legacy_multifile import MultiEditResult, apply_multiedit
 
 logger = logging.getLogger(__name__)
 
 _PATCH_FILE_OPERATION_TYPES = {
+    "exact_replace",
+    "apply_patch",
     "unified_diff",
     "replace_lines",
     "insert_lines",
     "delete_lines",
     "regex_replace",
 }
+_EDIT_SHAPE_MAX_BYTES = 2_000_000
 
 
 class EditService:
@@ -52,6 +46,46 @@ class EditService:
             path=path,
             payload={"content": content},
             backup=backup,
+            warnings=list(warnings or []),
+        )
+        return self.execute(operation)
+
+    def edit_file(
+        self,
+        path: str,
+        old_string: str,
+        new_string: str,
+        *,
+        replace_all: bool = False,
+        warnings: Optional[List[str]] = None,
+    ) -> FileEditResult:
+        """Replace exact text in one file after matching current contents."""
+
+        operation = EditOperation(
+            type="exact_replace",
+            path=path,
+            payload={
+                "old_string": old_string,
+                "new_string": new_string,
+                "replace_all": replace_all,
+            },
+            backup=False,
+            warnings=list(warnings or []),
+        )
+        return self.execute(operation)
+
+    def apply_patch(
+        self,
+        patch: str,
+        *,
+        warnings: Optional[List[str]] = None,
+    ) -> FileEditResult:
+        """Apply a Codex-style contextual patch after validating all hunks."""
+
+        operation = EditOperation(
+            type="apply_patch",
+            payload={"patch": patch},
+            backup=False,
             warnings=list(warnings or []),
         )
         return self.execute(operation)
@@ -90,6 +124,10 @@ class EditService:
 
         if operation.type == "write":
             return self._execute_write(operation)
+        if operation.type == "exact_replace":
+            return self._execute_exact_replace(operation)
+        if operation.type == "apply_patch":
+            return self._execute_context_patch(operation)
         if operation.type == "multifile_patch":
             return self._execute_multifile_patch(operation)
         if operation.type == "unified_diff":
@@ -105,431 +143,771 @@ class EditService:
         raise ValueError(f"Unsupported edit operation type: {operation.type}")
 
     def _execute_write(self, operation: EditOperation) -> FileEditResult:
-        return self._execute_single_file_operation(
-            operation,
-            executor=lambda op, _resolved_path: enhanced_write_to_file(
-                op.path,
-                op.payload.get("content", ""),
-                backup=op.backup,
-                workspace_path=self.workspace_root,
-            ),
-            backup_enabled=operation.backup,
-            backup_strategy="suffix",
+        resolved_path = self._resolve_target_path(operation.path)
+        content = str(operation.payload.get("content", ""))
+        return self._write_full_content(
+            requested_path=operation.path,
+            resolved_path=resolved_path,
+            new_content=content,
+            tool_name="write_file",
+            warnings=operation.warnings,
+            success_message_prefix="Wrote",
         )
 
-    def _execute_unified_diff(self, operation: EditOperation) -> FileEditResult:
-        return self._execute_single_file_operation(
-            operation,
-            executor=lambda op, _resolved_path: apply_diff_to_file(
-                file_path=op.path,
-                diff_content=op.payload.get("diff_content", ""),
-                backup=op.backup,
-                workspace_path=self.workspace_root,
-                return_json=False,
-            ),
-            backup_enabled=operation.backup,
-            backup_strategy="suffix",
-        )
+    def _execute_exact_replace(self, operation: EditOperation) -> FileEditResult:
+        resolved_path = self._resolve_target_path(operation.path)
+        old_string = operation.payload.get("old_string")
+        new_string = operation.payload.get("new_string")
+        replace_all = bool(operation.payload.get("replace_all", False))
 
-    def _execute_replace_lines(self, operation: EditOperation) -> FileEditResult:
-        return self._execute_single_file_operation(
-            operation,
-            executor=lambda op, resolved_path: replace_lines(
-                path=str(resolved_path),
-                start_line=int(op.payload["start_line"]),
-                end_line=int(op.payload["end_line"]),
-                new_content=op.payload.get("new_content", ""),
-                verify=bool(op.payload.get("verify", True)),
-                workspace_path=self.workspace_root,
-            ),
-            backup_enabled=True,
-            backup_strategy="append",
-        )
-
-    def _execute_insert_lines(self, operation: EditOperation) -> FileEditResult:
-        return self._execute_single_file_operation(
-            operation,
-            executor=lambda op, resolved_path: insert_lines(
-                path=str(resolved_path),
-                after_line=int(op.payload["after_line"]),
-                new_content=op.payload.get("new_content", ""),
-                workspace_path=self.workspace_root,
-            ),
-            backup_enabled=True,
-            backup_strategy="append",
-        )
-
-    def _execute_delete_lines(self, operation: EditOperation) -> FileEditResult:
-        return self._execute_single_file_operation(
-            operation,
-            executor=lambda op, resolved_path: delete_lines(
-                path=str(resolved_path),
-                start_line=int(op.payload["start_line"]),
-                end_line=int(op.payload["end_line"]),
-                workspace_path=self.workspace_root,
-            ),
-            backup_enabled=True,
-            backup_strategy="append",
-        )
-
-    def _execute_regex_replace(self, operation: EditOperation) -> FileEditResult:
-        return self._execute_single_file_operation(
-            operation,
-            executor=lambda op, _resolved_path: edit_file_with_pattern(
-                file_path=op.path,
-                search_pattern=op.payload.get("search_pattern", ""),
-                replacement=op.payload.get("replacement", ""),
-                backup=op.backup,
-                workspace_path=self.workspace_root,
-            ),
-            backup_enabled=operation.backup,
-            backup_strategy="suffix",
-        )
-
-    def _execute_multifile_patch(self, operation: EditOperation) -> FileEditResult:
-        operations_payload = operation.payload.get("operations")
-        if isinstance(operations_payload, list) and operations_payload:
-            return self._execute_structured_multifile_patch(
-                operations_payload,
-                apply=bool(operation.payload.get("apply", False)),
+        if not isinstance(old_string, str) or old_string == "":
+            return self._failure_result(
+                "edit_file",
+                "edit_file requires a non-empty old_string",
+                requested_paths=[operation.path],
+                warnings=operation.warnings,
+            )
+        if not isinstance(new_string, str):
+            return self._failure_result(
+                "edit_file",
+                "edit_file requires new_string",
+                requested_paths=[operation.path],
+                warnings=operation.warnings,
+            )
+        if old_string == new_string:
+            return self._failure_result(
+                "edit_file",
+                "edit_file old_string and new_string are identical",
+                requested_paths=[operation.path],
                 warnings=operation.warnings,
             )
 
-        content = str(operation.payload.get("content", ""))
-        do_apply = bool(operation.payload.get("apply", False))
-        workspace_root = self.workspace_root or os.getcwd()
-        result = apply_multiedit(
-            content,
-            dry_run=(not do_apply),
-            workspace_root=workspace_root,
-        )
-        return self._normalize_multiedit_result(
-            result,
-            apply=do_apply,
-            warnings=operation.warnings,
-        )
+        try:
+            original = self._read_required_text(resolved_path)
+        except ValueError as exc:
+            return self._failure_result(
+                "edit_file",
+                str(exc),
+                requested_paths=[operation.path],
+                warnings=operation.warnings,
+            )
 
-    def _execute_single_file_operation(
-        self,
-        operation: EditOperation,
-        *,
-        executor: Callable[[EditOperation, Path], Any],
-        backup_enabled: bool,
-        backup_strategy: str,
-    ) -> FileEditResult:
-        """Execute one file operation and normalize the result in one place."""
-        resolved_path = self._resolve_target_path(operation.path)
-        existed_before = resolved_path.exists()
-        raw_output = executor(operation, resolved_path)
-        return self._normalize_single_file_result(
-            requested_path=operation.path,
-            resolved_path=resolved_path,
-            raw_output=raw_output,
-            warnings=operation.warnings,
-            backup_paths=self._expected_backup_paths(
-                resolved_path,
-                existed_before,
-                backup_enabled,
-                strategy=backup_strategy,
-            ),
-            existed_before=existed_before,
-        )
-
-    def _execute_structured_multifile_patch(
-        self,
-        operations: List[Any],
-        *,
-        apply: bool,
-        warnings: Optional[List[str]] = None,
-    ) -> FileEditResult:
-        base_warnings = list(warnings or [])
-        edit_operations = [op for op in operations if isinstance(op, EditOperation)]
-        normalized_files = self._normalize_paths(
-            [operation.path for operation in edit_operations if operation.path]
-        )
-
-        if not edit_operations:
-            message = "No valid operations provided for patch_files"
-            return FileEditResult(
-                ok=False,
-                files=[],
-                message=message,
-                warnings=base_warnings,
-                error=message,
-                data={
-                    "applied": apply,
-                    "rollback_performed": False,
-                    "legacy_output": json.dumps(
-                        {
-                            "success": False,
-                            "files": [],
-                            "files_edited": [],
-                            "files_failed": [],
-                            "error_messages": {"operations": message},
-                            "backup_paths": {},
-                            "rollback_performed": False,
-                            "applied": apply,
-                            "warnings": base_warnings,
-                        }
-                    ),
+        occurrences = original.count(old_string)
+        if occurrences == 0:
+            return self._failure_result(
+                "edit_file",
+                "edit_file old_string was not found in current file contents",
+                requested_paths=[operation.path],
+                warnings=operation.warnings,
+            )
+        if occurrences > 1 and not replace_all:
+            return self._failure_result(
+                "edit_file",
+                "edit_file old_string matched multiple locations; "
+                "set replace_all=true or provide more context",
+                requested_paths=[operation.path],
+                warnings=operation.warnings,
+                diagnostics={
+                    self._display_path(operation.path, resolved_path): [
+                        {"matches": occurrences}
+                    ]
                 },
             )
 
-        if not apply:
-            operation_warnings: List[str] = []
-            for operation in edit_operations:
-                operation_warnings.extend(operation.warnings)
-            dry_run_warnings = [*base_warnings, *operation_warnings, "dry-run"]
-            message = (
-                f"Prepared structured multi-file patch affecting {len(normalized_files)} "
-                "file(s)"
-            )
-            return FileEditResult(
-                ok=True,
-                files=normalized_files,
-                message=message,
-                warnings=dry_run_warnings,
-                data={
-                    "applied": False,
-                    "rollback_performed": False,
-                    "legacy_output": json.dumps(
-                        {
-                            "success": True,
-                            "files": normalized_files,
-                            "files_edited": normalized_files,
-                            "files_failed": [],
-                            "error_messages": {},
-                            "backup_paths": {},
-                            "rollback_performed": False,
-                            "applied": False,
-                            "warnings": dry_run_warnings,
-                        }
-                    ),
-                },
-            )
+        if replace_all:
+            new_content = original.replace(old_string, new_string)
+        else:
+            new_content = original.replace(old_string, new_string, 1)
 
-        applied_records: List[Dict[str, Any]] = []
-        files: List[str] = []
-        backup_paths: List[str] = []
-        diagnostics: Dict[str, List[Dict[str, Any]]] = {}
-        aggregated_warnings = list(base_warnings)
-
-        for operation in edit_operations:
-            resolved_path = self._resolve_target_path(operation.path)
-            existed_before = resolved_path.exists()
-            result = self.execute(operation)
-            aggregated_warnings.extend(result.warnings)
-
-            if not result.ok:
-                rollback_performed = self._rollback_structured_multifile(
-                    applied_records
-                )
-                failed_files = self._normalize_paths([operation.path])
-                error_message = (
-                    result.error or result.message or "Structured patch failed"
-                )
-                legacy_payload = {
-                    "success": False,
-                    "files": list(files),
-                    "files_edited": list(files),
-                    "files_failed": failed_files,
-                    "error_messages": {
-                        failed_files[0]
-                        if failed_files
-                        else "patch_files": error_message
-                    },
-                    "backup_paths": {
-                        record["file"]: record["backup_path"]
-                        for record in applied_records
-                        if record.get("backup_path")
-                    },
-                    "rollback_performed": rollback_performed,
-                    "applied": True,
-                    "warnings": aggregated_warnings,
-                }
-                return FileEditResult(
-                    ok=False,
-                    files=list(files),
-                    message=error_message,
-                    diagnostics=diagnostics,
-                    backup_paths=list(backup_paths),
-                    warnings=self._unique_strings(aggregated_warnings),
-                    error=error_message,
-                    data={
-                        "applied": True,
-                        "rollback_performed": rollback_performed,
-                        "legacy_output": json.dumps(legacy_payload),
-                    },
-                )
-
-            for file_path in result.files:
-                if file_path not in files:
-                    files.append(file_path)
-            for backup_path in result.backup_paths:
-                if backup_path not in backup_paths:
-                    backup_paths.append(backup_path)
-            diagnostics.update(result.diagnostics)
-            applied_records.append(
+        display_path = self._display_path(operation.path, resolved_path)
+        return self._commit_text_changes(
+            [
                 {
-                    "file": result.files[0]
-                    if result.files
-                    else self._display_path(operation.path, resolved_path),
+                    "requested_path": operation.path,
                     "resolved_path": resolved_path,
-                    "existed_before": existed_before,
-                    "backup_path": result.backup_paths[0]
-                    if result.backup_paths
-                    else None,
+                    "old_content": original,
+                    "new_content": new_content,
+                    "existed_before": True,
                 }
+            ],
+            tool_name="edit_file",
+            warnings=operation.warnings,
+            success_message=(
+                f"Edited {display_path} with exact replacement"
+            ),
+            data={
+                "replace_all": replace_all,
+                "matches_replaced": occurrences if replace_all else 1,
+            },
+        )
+
+    def _execute_context_patch(self, operation: EditOperation) -> FileEditResult:
+        patch_text = operation.payload.get("patch")
+        if not isinstance(patch_text, str) or not patch_text.strip():
+            return self._failure_result(
+                "apply_patch",
+                "apply_patch requires non-empty patch text",
+                warnings=operation.warnings,
             )
 
-        success_message = (
-            f"Applied structured multi-file patch affecting {len(files)} file(s)"
-        )
-        legacy_payload = {
-            "success": True,
-            "files": list(files),
-            "files_edited": list(files),
-            "files_failed": [],
-            "error_messages": {},
-            "backup_paths": {
-                record["file"]: record["backup_path"]
-                for record in applied_records
-                if record.get("backup_path")
-            },
-            "rollback_performed": False,
-            "applied": True,
-            "warnings": self._unique_strings(aggregated_warnings),
-        }
-        return FileEditResult(
-            ok=True,
-            files=list(files),
-            message=success_message,
-            diagnostics=diagnostics,
-            backup_paths=list(backup_paths),
-            warnings=self._unique_strings(aggregated_warnings),
-            data={
-                "applied": True,
-                "rollback_performed": False,
-                "legacy_output": json.dumps(legacy_payload),
-            },
+        try:
+            planned_changes = self._plan_context_patch(patch_text)
+        except ValueError as exc:
+            return self._failure_result(
+                "apply_patch",
+                str(exc),
+                warnings=operation.warnings,
+            )
+
+        return self._commit_text_changes(
+            planned_changes,
+            tool_name="apply_patch",
+            warnings=operation.warnings,
+            success_message=f"Applied patch to {len(planned_changes)} file(s)",
+            data={"patch_chars": len(patch_text)},
         )
 
-    def _normalize_single_file_result(
+    def _execute_unified_diff(self, operation: EditOperation) -> FileEditResult:
+        return self._deprecated_edit_result(
+            operation,
+            "unified_diff is deprecated; use apply_patch with Codex-style "
+            "contextual hunks",
+        )
+
+    def _execute_replace_lines(self, operation: EditOperation) -> FileEditResult:
+        return self._deprecated_edit_result(
+            operation,
+            "replace_lines is deprecated because line coordinates go stale; "
+            "use edit_file or apply_patch",
+        )
+
+    def _execute_insert_lines(self, operation: EditOperation) -> FileEditResult:
+        return self._deprecated_edit_result(
+            operation,
+            "insert_lines is deprecated because line coordinates go stale; "
+            "use edit_file or apply_patch",
+        )
+
+    def _execute_delete_lines(self, operation: EditOperation) -> FileEditResult:
+        return self._deprecated_edit_result(
+            operation,
+            "delete_lines is deprecated because line coordinates go stale; "
+            "use edit_file or apply_patch",
+        )
+
+    def _execute_regex_replace(self, operation: EditOperation) -> FileEditResult:
+        return self._deprecated_edit_result(
+            operation,
+            "regex_replace is deprecated; use edit_file with exact "
+            "old_string/new_string or apply_patch",
+        )
+
+    def _execute_multifile_patch(self, operation: EditOperation) -> FileEditResult:
+        return self._failure_result(
+            "patch_files",
+            "patch_files is deprecated; use apply_patch for contextual "
+            "multi-file patches",
+            requested_paths=[
+                op.path
+                for op in operation.payload.get("operations", [])
+                if isinstance(op, EditOperation)
+            ],
+            warnings=operation.warnings,
+        )
+
+    def _write_full_content(
         self,
         *,
         requested_path: str,
         resolved_path: Path,
-        raw_output: Any,
+        new_content: str,
+        tool_name: str,
         warnings: List[str],
-        backup_paths: List[str],
-        existed_before: bool,
+        success_message_prefix: str,
     ) -> FileEditResult:
-        message = raw_output if isinstance(raw_output, str) else str(raw_output)
-        payload = self._parse_payload(raw_output)
-        ok = self._is_success(payload, message)
-        error = self._extract_error(payload, message)
-        diagnostics = self._extract_diagnostics(payload)
-        files = self._extract_files_from_payload(payload)
+        if resolved_path.exists() and not resolved_path.is_file():
+            return self._failure_result(
+                tool_name,
+                f"{requested_path or resolved_path} is not a file",
+                requested_paths=[requested_path],
+                warnings=warnings,
+            )
 
-        if not files and ok and self._result_indicates_change(payload, message):
+        old_content = (
+            resolved_path.read_text(encoding="utf-8")
+            if resolved_path.exists()
+            else ""
+        )
+        display_path = self._display_path(requested_path, resolved_path)
+        action = "created" if not resolved_path.exists() else "updated"
+        return self._commit_text_changes(
+            [
+                {
+                    "requested_path": requested_path,
+                    "resolved_path": resolved_path,
+                    "old_content": old_content,
+                    "new_content": new_content,
+                    "existed_before": resolved_path.exists(),
+                }
+            ],
+            tool_name=tool_name,
+            warnings=warnings,
+            success_message=f"{success_message_prefix} {display_path} ({action})",
+        )
+
+    def _deprecated_edit_result(
+        self, operation: EditOperation, message: str
+    ) -> FileEditResult:
+        warnings = self._unique_strings([*operation.warnings, message])
+        return self._failure_result(
+            operation.type,
+            message,
+            requested_paths=[operation.path],
+            warnings=warnings,
+        )
+
+    def _read_required_text(self, resolved_path: Path) -> str:
+        if not resolved_path.exists():
+            raise ValueError(f"{resolved_path} does not exist")
+        if not resolved_path.is_file():
+            raise ValueError(f"{resolved_path} is not a file")
+        return resolved_path.read_text(encoding="utf-8")
+
+    def _commit_text_changes(
+        self,
+        changes: List[Dict[str, Any]],
+        *,
+        tool_name: str,
+        warnings: List[str],
+        success_message: str,
+        data: Optional[Dict[str, Any]] = None,
+    ) -> FileEditResult:
+        if not changes:
+            return self._failure_result(
+                tool_name,
+                f"{tool_name} produced no file changes",
+                warnings=warnings,
+            )
+
+        markdown_errors: List[str] = []
+        for change in changes:
+            new_content = change.get("new_content")
+            if not isinstance(new_content, str):
+                continue
+            markdown_errors.extend(
+                self._markdown_sanity_errors(
+                    Path(change["resolved_path"]),
+                    self._display_path(
+                        str(change.get("requested_path", "")),
+                        Path(change["resolved_path"]),
+                    ),
+                    new_content,
+                )
+            )
+        if markdown_errors:
+            return self._failure_result(
+                tool_name,
+                "Markdown sanity check failed: " + "; ".join(markdown_errors),
+                requested_paths=[
+                    str(change.get("requested_path", "")) for change in changes
+                ],
+                warnings=warnings,
+            )
+
+        display_files: List[str] = []
+        resolved_files: List[str] = []
+        diffs: List[str] = []
+        snapshots: List[Dict[str, Any]] = []
+        started = time.perf_counter()
+
+        for change in changes:
+            requested_path = str(change.get("requested_path", ""))
+            resolved_path = Path(change["resolved_path"])
+            old_content = str(change.get("old_content", ""))
+            new_content = change.get("new_content")
             display_path = self._display_path(requested_path, resolved_path)
-            if display_path:
-                files = [display_path]
+            display_files.append(display_path)
+            resolved_files.append(str(resolved_path))
+            diff_new_content = new_content if isinstance(new_content, str) else ""
+            diff = generate_diff_patch(old_content, diff_new_content, display_path)
+            if diff:
+                diffs.append(diff)
+            snapshots.append(
+                {
+                    "resolved_path": resolved_path,
+                    "old_content": old_content,
+                    "existed_before": bool(change.get("existed_before", False)),
+                }
+            )
 
+        logger.info(
+            "edit.safe.commit.start tool=%s files=%s warnings=%s",
+            tool_name,
+            display_files,
+            warnings,
+        )
+        written: List[Dict[str, Any]] = []
+        try:
+            for change, snapshot in zip(changes, snapshots):
+                resolved_path = Path(change["resolved_path"])
+                new_content = change.get("new_content")
+                resolved_path.parent.mkdir(parents=True, exist_ok=True)
+                if isinstance(new_content, str):
+                    resolved_path.write_text(new_content, encoding="utf-8")
+                else:
+                    resolved_path.unlink()
+                written.append(snapshot)
+        except Exception as exc:
+            for snapshot in reversed(written):
+                path = Path(snapshot["resolved_path"])
+                try:
+                    if snapshot["existed_before"]:
+                        path.write_text(str(snapshot["old_content"]), encoding="utf-8")
+                    elif path.exists():
+                        path.unlink()
+                except Exception:
+                    logger.exception("Failed to rollback safe edit for %s", path)
+            return self._failure_result(
+                tool_name,
+                f"{tool_name} failed while writing files: {exc}",
+                requested_paths=display_files,
+                warnings=warnings,
+            )
+
+        after_shapes = {
+            display: self._safe_file_shape(Path(resolved))
+            for display, resolved in zip(display_files, resolved_files)
+        }
+        diff_text = "\n".join(diffs)
+        legacy_payload = {
+            "success": True,
+            "tool": tool_name,
+            "files": display_files,
+            "files_edited": display_files,
+            "files_failed": [],
+            "backup_paths": {},
+            "warnings": self._unique_strings(warnings),
+            "diff": diff_text,
+        }
+        result_data = {
+            "legacy_output": json.dumps(legacy_payload),
+            "resolved_files": resolved_files,
+            "after_shapes": after_shapes,
+            "duration_ms": (time.perf_counter() - started) * 1000,
+        }
+        result_data.update(data or {})
+        logger.info(
+            "edit.safe.commit.done tool=%s files=%s duration_ms=%.2f",
+            tool_name,
+            display_files,
+            result_data["duration_ms"],
+        )
         return FileEditResult(
-            ok=ok,
+            ok=True,
+            files=display_files,
+            message=success_message,
+            backup_paths=[],
+            warnings=self._unique_strings(warnings),
+            data=result_data,
+        )
+
+    def _failure_result(
+        self,
+        tool_name: str,
+        message: str,
+        *,
+        requested_paths: Optional[List[str]] = None,
+        warnings: Optional[List[str]] = None,
+        diagnostics: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+    ) -> FileEditResult:
+        files = self._normalize_paths(requested_paths or [])
+        unique_warnings = self._unique_strings(warnings or [])
+        legacy_payload = {
+            "success": False,
+            "tool": tool_name,
+            "files": files,
+            "files_edited": [],
+            "files_failed": files,
+            "error": message,
+            "error_messages": {path or tool_name: message for path in files}
+            or {tool_name: message},
+            "backup_paths": {},
+            "warnings": unique_warnings,
+        }
+        return FileEditResult(
+            ok=False,
             files=files,
             message=message,
-            diagnostics=diagnostics,
-            backup_paths=backup_paths,
-            warnings=list(warnings),
-            error=(None if ok else error),
-            data={
-                "legacy_output": message,
-                "resolved_files": [str(resolved_path)],
-                "existed_before": existed_before,
-            },
+            diagnostics=diagnostics or {},
+            backup_paths=[],
+            warnings=unique_warnings,
+            error=message,
+            data={"legacy_output": json.dumps(legacy_payload)},
         )
 
-    def _normalize_multiedit_result(
-        self,
-        result: MultiEditResult,
-        *,
-        apply: bool,
-        warnings: Optional[List[str]] = None,
-    ) -> FileEditResult:
-        normalized_files = self._normalize_paths(result.files_edited)
-        normalized_failed = self._normalize_paths(result.files_failed)
-        backup_paths = [str(path) for path in result.backup_paths.values()]
-        result_warnings = list(warnings or [])
-        if not apply:
-            result_warnings.append("dry-run")
-        error = self._first_error_message(result.error_messages)
+    def _markdown_sanity_errors(
+        self, resolved_path: Path, display_path: str, content: str
+    ) -> List[str]:
+        if resolved_path.suffix.lower() not in {".md", ".mdx"}:
+            return []
 
-        if result.success:
-            action = "Applied" if apply else "Prepared"
-            message = (
-                f"{action} multi-file patch affecting {len(normalized_files)} file(s)"
-            )
-        else:
-            message = error or "Multi-file patch failed"
-
-        legacy_payload = {
-            "success": result.success,
-            "files": normalized_files,
-            "files_edited": list(result.files_edited),
-            "files_failed": list(result.files_failed),
-            "error_messages": dict(result.error_messages),
-            "backup_paths": dict(result.backup_paths),
-            "rollback_performed": result.rollback_performed,
-            "applied": apply,
-            "warnings": self._unique_strings(result_warnings),
-        }
-
-        return FileEditResult(
-            ok=result.success,
-            files=normalized_files,
-            message=message,
-            diagnostics={},
-            backup_paths=backup_paths,
-            warnings=self._unique_strings(result_warnings),
-            error=(None if result.success else error),
-            data={
-                "applied": apply,
-                "files_failed": normalized_failed,
-                "error_messages": dict(result.error_messages),
-                "rollback_performed": result.rollback_performed,
-                "legacy_output": json.dumps(legacy_payload),
-            },
-        )
-
-    def _rollback_structured_multifile(
-        self, applied_records: List[Dict[str, Any]]
-    ) -> bool:
-        """Rollback structured multi-file edits using backups or file deletion."""
-        success = True
-        for record in reversed(applied_records):
-            resolved_path = record.get("resolved_path")
-            if not isinstance(resolved_path, Path):
-                success = False
+        errors: List[str] = []
+        lines = content.splitlines()
+        active_fence: Optional[tuple[str, int, int]] = None
+        for line_number, line in enumerate(lines, start=1):
+            match = re.match(r"^\s*(```+|~~~+)", line)
+            if not match:
                 continue
-            existed_before = bool(record.get("existed_before"))
-            backup_path = record.get("backup_path")
-            try:
-                if existed_before:
-                    if isinstance(backup_path, str) and Path(backup_path).exists():
-                        shutil.copy2(backup_path, resolved_path)
-                    else:
-                        success = False
-                else:
-                    if resolved_path.exists():
-                        resolved_path.unlink()
-            except Exception:
-                logger.exception(
-                    "Failed to rollback structured edit for %s", resolved_path
+            marker = match.group(1)
+            marker_char = marker[0]
+            marker_len = len(marker)
+            if active_fence is None:
+                active_fence = (marker_char, marker_len, line_number)
+            elif marker_char == active_fence[0] and marker_len >= active_fence[1]:
+                active_fence = None
+        if active_fence is not None:
+            errors.append(
+                f"{display_path} has an unclosed fenced code block opened "
+                f"on line {active_fence[2]}"
+            )
+
+        previous_heading: Optional[str] = None
+        previous_heading_line = 0
+        nonblank_since_heading = 0
+        for line_number, line in enumerate(lines, start=1):
+            heading_match = re.match(r"^\s{0,3}(#{1,6})\s+(.+?)\s*$", line)
+            if heading_match:
+                heading_text = re.sub(r"\s+", " ", heading_match.group(2).strip())
+                heading_key = f"{len(heading_match.group(1))}:{heading_text.lower()}"
+                if (
+                    previous_heading == heading_key
+                    and nonblank_since_heading <= 2
+                ):
+                    errors.append(
+                        f"{display_path} has duplicate nearby heading "
+                        f"'{heading_text}' on lines {previous_heading_line} "
+                        f"and {line_number}"
+                    )
+                previous_heading = heading_key
+                previous_heading_line = line_number
+                nonblank_since_heading = 0
+            elif line.strip():
+                nonblank_since_heading += 1
+
+        for line_number, line in enumerate(lines, start=1):
+            if not self._is_markdown_table_separator(line):
+                continue
+            previous_line = self._nearest_nonblank_line(lines, line_number - 2, -1)
+            next_line = self._nearest_nonblank_line(lines, line_number, 1)
+            if previous_line is None or "|" not in previous_line:
+                errors.append(
+                    f"{display_path} has a table separator without a header "
+                    f"near line {line_number}"
                 )
-                success = False
-        return success
+            if next_line is None or "|" not in next_line:
+                errors.append(
+                    f"{display_path} has a table separator without rows "
+                    f"near line {line_number}"
+                )
+        return errors
+
+    def _is_markdown_table_separator(self, line: str) -> bool:
+        stripped = line.strip()
+        if "|" not in stripped:
+            return False
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if len(cells) < 2:
+            return False
+        return all(re.fullmatch(r":?-{3,}:?", cell or "") for cell in cells)
+
+    def _nearest_nonblank_line(
+        self, lines: List[str], start_index: int, direction: int
+    ) -> Optional[str]:
+        index = start_index
+        while 0 <= index < len(lines):
+            if lines[index].strip():
+                return lines[index]
+            index += direction
+        return None
+
+    def _plan_context_patch(self, patch_text: str) -> List[Dict[str, Any]]:
+        actions = self._parse_context_patch(patch_text)
+        originals: Dict[Path, Dict[str, Any]] = {}
+        current_contents: Dict[Path, Optional[str]] = {}
+        requested_paths: Dict[Path, str] = {}
+
+        for action in actions:
+            kind = action["kind"]
+            path = self._resolve_target_path(str(action["path"]))
+            requested_path = str(action["path"])
+            requested_paths.setdefault(path, requested_path)
+
+            if path not in originals:
+                existed = path.exists()
+                old_content = self._read_required_text(path) if existed else ""
+                originals[path] = {
+                    "old_content": old_content,
+                    "existed_before": existed,
+                }
+                current_contents[path] = old_content if existed else None
+
+            if kind == "add":
+                if current_contents.get(path) is not None:
+                    raise ValueError(
+                        f"Add File target already exists: {requested_path}"
+                    )
+                current_contents[path] = "".join(action["lines"])
+                continue
+
+            if kind == "delete":
+                if current_contents.get(path) is None:
+                    raise ValueError(
+                        f"Delete File target does not exist: {requested_path}"
+                    )
+                current_contents[path] = None
+                continue
+
+            if kind != "update":
+                raise ValueError(f"Unsupported patch action: {kind}")
+            current_content = current_contents.get(path)
+            if current_content is None:
+                raise ValueError(f"Update File target does not exist: {requested_path}")
+            updated_content = self._apply_update_hunks(
+                current_content,
+                action["hunks"],
+                requested_path,
+            )
+            move_to = action.get("move_to")
+            if isinstance(move_to, str) and move_to.strip():
+                target_path = self._resolve_target_path(move_to)
+                requested_paths.setdefault(target_path, move_to)
+                if target_path not in originals:
+                    existed = target_path.exists()
+                    old_content = (
+                        self._read_required_text(target_path) if existed else ""
+                    )
+                    originals[target_path] = {
+                        "old_content": old_content,
+                        "existed_before": existed,
+                    }
+                    current_contents[target_path] = old_content if existed else None
+                if current_contents.get(target_path) is not None:
+                    raise ValueError(f"Move target already exists: {move_to}")
+                current_contents[path] = None
+                current_contents[target_path] = updated_content
+            else:
+                current_contents[path] = updated_content
+
+        changes: List[Dict[str, Any]] = []
+        for path, original in originals.items():
+            new_content = current_contents.get(path)
+            old_content = str(original["old_content"])
+            if new_content == old_content:
+                continue
+            changes.append(
+                {
+                    "requested_path": requested_paths.get(path, str(path)),
+                    "resolved_path": path,
+                    "old_content": old_content,
+                    "new_content": new_content,
+                    "existed_before": bool(original["existed_before"]),
+                }
+            )
+        if not changes:
+            raise ValueError("apply_patch produced no file changes")
+        return changes
+
+    def _parse_context_patch(self, patch_text: str) -> List[Dict[str, Any]]:
+        lines = patch_text.splitlines(keepends=True)
+        if len(lines) < 2:
+            raise ValueError("apply_patch requires Begin Patch and End Patch markers")
+        if lines[0].rstrip("\r\n") != "*** Begin Patch":
+            raise ValueError("apply_patch must start with *** Begin Patch")
+        if lines[-1].rstrip("\r\n") != "*** End Patch":
+            raise ValueError("apply_patch must end with *** End Patch")
+
+        actions: List[Dict[str, Any]] = []
+        index = 1
+        while index < len(lines) - 1:
+            header = lines[index].rstrip("\r\n")
+            if not header:
+                index += 1
+                continue
+            if header.startswith("*** Add File: "):
+                path = self._parse_patch_path(header, "*** Add File: ")
+                index += 1
+                added_lines: List[str] = []
+                while index < len(lines) - 1 and not self._is_context_patch_header(
+                    lines[index]
+                ):
+                    raw_line = lines[index]
+                    if not raw_line.startswith("+"):
+                        raise ValueError(
+                            f"Add File {path} contains a line without '+' prefix"
+                        )
+                    added_lines.append(raw_line[1:])
+                    index += 1
+                actions.append({"kind": "add", "path": path, "lines": added_lines})
+                continue
+            if header.startswith("*** Delete File: "):
+                path = self._parse_patch_path(header, "*** Delete File: ")
+                actions.append({"kind": "delete", "path": path})
+                index += 1
+                continue
+            if header.startswith("*** Update File: "):
+                path = self._parse_patch_path(header, "*** Update File: ")
+                index += 1
+                move_to: Optional[str] = None
+                if index < len(lines) - 1:
+                    move_header = lines[index].rstrip("\r\n")
+                    if move_header.startswith("*** Move to: "):
+                        move_to = self._parse_patch_path(move_header, "*** Move to: ")
+                        index += 1
+                hunks: List[Dict[str, List[str]]] = []
+                current_hunk: Optional[Dict[str, List[str]]] = None
+                while index < len(lines) - 1 and not self._is_context_patch_header(
+                    lines[index]
+                ):
+                    raw_line = lines[index]
+                    stripped = raw_line.rstrip("\r\n")
+                    if stripped.startswith("@@"):
+                        current_hunk = {"old": [], "new": []}
+                        hunks.append(current_hunk)
+                        index += 1
+                        continue
+                    if stripped == "*** End of File":
+                        index += 1
+                        continue
+                    if stripped.startswith("\\ No newline at end of file"):
+                        index += 1
+                        continue
+                    if current_hunk is None:
+                        current_hunk = {"old": [], "new": []}
+                        hunks.append(current_hunk)
+                    if raw_line.startswith(" "):
+                        content = raw_line[1:]
+                        current_hunk["old"].append(content)
+                        current_hunk["new"].append(content)
+                    elif raw_line.startswith("-"):
+                        current_hunk["old"].append(raw_line[1:])
+                    elif raw_line.startswith("+"):
+                        current_hunk["new"].append(raw_line[1:])
+                    else:
+                        raise ValueError(
+                            f"Update File {path} contains an invalid hunk line: "
+                            f"{stripped[:80]}"
+                        )
+                    index += 1
+                if not hunks:
+                    raise ValueError(f"Update File {path} has no hunks")
+                actions.append(
+                    {
+                        "kind": "update",
+                        "path": path,
+                        "move_to": move_to,
+                        "hunks": hunks,
+                    }
+                )
+                continue
+            raise ValueError(f"Unsupported apply_patch header: {header}")
+        return actions
+
+    def _parse_patch_path(self, header: str, prefix: str) -> str:
+        path = header[len(prefix) :].strip()
+        if not path:
+            raise ValueError(f"{prefix.strip()} requires a path")
+        return path
+
+    def _is_context_patch_header(self, line: str) -> bool:
+        stripped = line.rstrip("\r\n")
+        return (
+            stripped.startswith("*** Add File: ")
+            or stripped.startswith("*** Delete File: ")
+            or stripped.startswith("*** Update File: ")
+            or stripped.startswith("*** End Patch")
+        )
+
+    def _apply_update_hunks(
+        self,
+        content: str,
+        hunks: List[Dict[str, List[str]]],
+        display_path: str,
+    ) -> str:
+        current_lines = content.splitlines(keepends=True)
+        cursor = 0
+        for hunk_index, hunk in enumerate(hunks, start=1):
+            old_lines = hunk.get("old", [])
+            new_lines = hunk.get("new", [])
+            if not old_lines:
+                raise ValueError(
+                    f"Patch hunk {hunk_index} for {display_path} has no context; "
+                    "add exact context lines"
+                )
+            matches = self._find_line_sequence_matches(
+                current_lines,
+                old_lines,
+                start_index=cursor,
+            )
+            if not matches:
+                raise ValueError(
+                    f"Patch context for {display_path} hunk {hunk_index} was not found"
+                )
+            if len(matches) > 1:
+                raise ValueError(
+                    f"Patch context for {display_path} hunk {hunk_index} is ambiguous"
+                )
+            match_index = matches[0]
+            current_lines = (
+                current_lines[:match_index]
+                + new_lines
+                + current_lines[match_index + len(old_lines) :]
+            )
+            cursor = match_index + len(new_lines)
+        return "".join(current_lines)
+
+    def _find_line_sequence_matches(
+        self,
+        haystack: List[str],
+        needle: List[str],
+        *,
+        start_index: int,
+    ) -> List[int]:
+        if not needle or len(needle) > len(haystack):
+            return []
+        matches: List[int] = []
+        max_index = len(haystack) - len(needle)
+        for index in range(max(0, start_index), max_index + 1):
+            if haystack[index : index + len(needle)] == needle:
+                matches.append(index)
+        return matches
+
+    def _safe_file_shape(self, path: Path) -> Dict[str, Any]:
+        """Return bounded file size/line diagnostics without reading huge files."""
+
+        if not path.exists() or not path.is_file():
+            return {"exists": False, "bytes": 0, "chars": 0, "lines": 0}
+        try:
+            size = path.stat().st_size
+        except Exception:
+            return {"exists": True, "bytes": None, "chars": None, "lines": None}
+        if size > _EDIT_SHAPE_MAX_BYTES:
+            return {
+                "exists": True,
+                "bytes": size,
+                "chars": None,
+                "lines": None,
+                "skipped": "file_too_large",
+            }
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return {"exists": True, "bytes": size, "chars": None, "lines": None}
+        return {
+            "exists": True,
+            "bytes": size,
+            "chars": len(content),
+            "lines": len(content.splitlines()),
+        }
 
     def _unique_strings(self, values: Iterable[str]) -> List[str]:
         """Return deduplicated non-empty strings in insertion order."""
@@ -584,129 +962,3 @@ class EditService:
             normalized.append(normalized_path)
             seen.add(normalized_path)
         return normalized
-
-    def _expected_backup_paths(
-        self,
-        resolved_path: Path,
-        existed_before: bool,
-        backup: bool,
-        *,
-        strategy: str,
-    ) -> List[str]:
-        if not backup or not existed_before:
-            return []
-        if strategy == "append":
-            return [f"{resolved_path}.bak"]
-        return [str(resolved_path.with_suffix(resolved_path.suffix + ".bak"))]
-
-    def _parse_payload(self, raw_output: Any) -> Optional[Dict[str, Any]]:
-        if isinstance(raw_output, dict):
-            return raw_output
-        if not isinstance(raw_output, str):
-            return None
-        stripped = raw_output.strip()
-        if not stripped.startswith("{"):
-            return None
-        try:
-            payload = json.loads(stripped)
-        except Exception:
-            return None
-        return payload if isinstance(payload, dict) else None
-
-    def _is_success(self, payload: Optional[Dict[str, Any]], message: str) -> bool:
-        if isinstance(payload, dict):
-            success = payload.get("success")
-            if isinstance(success, bool):
-                return success
-            status = payload.get("status")
-            if isinstance(status, str):
-                return status.lower() in {"success", "created"}
-            if payload.get("error") is not None:
-                return False
-        return not message.strip().lower().startswith("error")
-
-    def _extract_error(
-        self,
-        payload: Optional[Dict[str, Any]],
-        message: str,
-    ) -> Optional[str]:
-        if isinstance(payload, dict):
-            explicit_error = payload.get("error")
-            if isinstance(explicit_error, str) and explicit_error.strip():
-                return explicit_error.strip()
-            status = payload.get("status")
-            if isinstance(status, str) and status.lower() not in {"success", "created"}:
-                structured_message = payload.get("message")
-                if isinstance(structured_message, str) and structured_message.strip():
-                    return structured_message.strip()
-        if message.strip().lower().startswith("error"):
-            return message.strip()
-        return None
-
-    def _extract_diagnostics(
-        self, payload: Optional[Dict[str, Any]]
-    ) -> Dict[str, List[Dict[str, Any]]]:
-        if not isinstance(payload, dict):
-            return {}
-        diagnostics = payload.get("diagnostics")
-        if not isinstance(diagnostics, dict):
-            return {}
-
-        normalized: Dict[str, List[Dict[str, Any]]] = {}
-        for raw_path, entries in diagnostics.items():
-            if not isinstance(entries, list):
-                continue
-            path_key = self._normalize_path(str(raw_path))
-            if not path_key:
-                continue
-            normalized[path_key] = [
-                entry for entry in entries if isinstance(entry, dict)
-            ]
-        return normalized
-
-    def _extract_files_from_payload(
-        self, payload: Optional[Dict[str, Any]]
-    ) -> List[str]:
-        if not isinstance(payload, dict):
-            return []
-
-        raw_paths: List[str] = []
-        for key in ("file",):
-            value = payload.get(key)
-            if isinstance(value, str) and value.strip():
-                raw_paths.append(value)
-
-        for key in ("files", "created"):
-            value = payload.get(key)
-            if isinstance(value, list):
-                raw_paths.extend(str(item) for item in value if isinstance(item, str))
-
-        return self._normalize_paths(raw_paths)
-
-    def _result_indicates_change(
-        self, payload: Optional[Dict[str, Any]], message: str
-    ) -> bool:
-        if isinstance(payload, dict):
-            success = payload.get("success")
-            if isinstance(success, bool) and payload.get("files_edited") is not None:
-                return bool(payload.get("files_edited"))
-            status = payload.get("status")
-            if isinstance(status, str):
-                return status.lower() in {"success", "created"}
-
-        lowered = message.strip().lower()
-        if not lowered:
-            return False
-        if lowered.startswith("error"):
-            return False
-        if lowered.startswith("no matches found"):
-            return False
-        if lowered.startswith("no changes detected"):
-            return False
-        return True
-
-    def _first_error_message(self, error_messages: Dict[str, str]) -> Optional[str]:
-        for value in error_messages.values():
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        return None

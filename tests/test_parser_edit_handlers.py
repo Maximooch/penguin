@@ -4,9 +4,30 @@ import json
 from types import SimpleNamespace
 from typing import Any, cast
 
-import pytest
-
 from penguin.utils.parser import ActionExecutor
+
+LEGACY_WRITE_WARNING = (
+    "Deprecated write_file payload: use JSON object payloads instead of "
+    "colon-delimited strings"
+)
+LEGACY_APPLY_PATCH_WARNING = (
+    "Deprecated apply_patch payload: use JSON object payloads with a 'patch' field"
+)
+LEGACY_REPLACE_LINES_WARNING = (
+    "Deprecated patch_file payload: legacy replace_lines strings are deprecated; "
+    "use JSON payloads"
+)
+LEGACY_EDIT_PATTERN_WARNING = (
+    "Deprecated patch_file payload: legacy edit_with_pattern strings are "
+    "deprecated; use JSON payloads"
+)
+LEGACY_PATCH_FILE_FLAT_WARNING = (
+    "Deprecated patch_file payload: flat JSON payloads are deprecated; "
+    "use a nested operation object"
+)
+LEGACY_FILE_PATH_WARNING = (
+    "Deprecated patch_file payload: use 'path' instead of legacy 'file_path'"
+)
 
 
 class _CaptureToolManager:
@@ -43,9 +64,7 @@ def test_enhanced_write_handler_parses_trailing_backup_flag() -> None:
                 "path": "README.md",
                 "content": "url: http://localhost:3000\nmode: build",
                 "backup": False,
-                "_warnings": [
-                    "Deprecated write_file payload: use JSON object payloads instead of colon-delimited strings"
-                ],
+                "_warnings": [LEGACY_WRITE_WARNING],
             },
         )
     ]
@@ -104,6 +123,53 @@ def test_write_file_handler_accepts_canonical_json_payload() -> None:
     ]
 
 
+def test_edit_file_handler_accepts_canonical_json_payload() -> None:
+    executor, tool_manager = _build_executor()
+
+    result = executor._edit_file(
+        json.dumps(
+            {
+                "path": "README.md",
+                "old_string": "old\n",
+                "new_string": "new\n",
+                "replace_all": True,
+            }
+        )
+    )
+
+    assert json.loads(result)["status"] == "ok"
+    assert tool_manager.calls == [
+        (
+            "edit_file",
+            {
+                "path": "README.md",
+                "old_string": "old\n",
+                "new_string": "new\n",
+                "replace_all": True,
+                "_warnings": [],
+            },
+        )
+    ]
+
+
+def test_apply_patch_handler_accepts_patch_text_payload() -> None:
+    executor, tool_manager = _build_executor()
+    patch = "*** Begin Patch\n*** Add File: a.txt\n+hello\n*** End Patch\n"
+
+    result = executor._apply_patch(patch)
+
+    assert json.loads(result)["status"] == "ok"
+    assert tool_manager.calls == [
+        (
+            "apply_patch",
+            {
+                "patch": patch,
+                "_warnings": [LEGACY_APPLY_PATCH_WARNING],
+            },
+        )
+    ]
+
+
 def test_replace_lines_handler_preserves_colons_in_new_content() -> None:
     executor, tool_manager = _build_executor()
 
@@ -125,9 +191,7 @@ def test_replace_lines_handler_preserves_colons_in_new_content() -> None:
                     "verify": False,
                 },
                 "backup": True,
-                "_warnings": [
-                    "Deprecated patch_file payload: legacy replace_lines strings are deprecated; use JSON payloads"
-                ],
+                "_warnings": [LEGACY_REPLACE_LINES_WARNING],
             },
         )
     ]
@@ -152,9 +216,7 @@ def test_edit_with_pattern_handler_preserves_colons_in_replacement() -> None:
                     "replacement": "http://localhost:8000",
                 },
                 "backup": False,
-                "_warnings": [
-                    "Deprecated patch_file payload: legacy edit_with_pattern strings are deprecated; use JSON payloads"
-                ],
+                "_warnings": [LEGACY_EDIT_PATTERN_WARNING],
             },
         )
     ]
@@ -179,9 +241,7 @@ def test_edit_with_pattern_handler_preserves_colons_in_search_pattern() -> None:
                     "replacement": "http://localhost:8000",
                 },
                 "backup": False,
-                "_warnings": [
-                    "Deprecated patch_file payload: legacy edit_with_pattern strings are deprecated; use JSON payloads"
-                ],
+                "_warnings": [LEGACY_EDIT_PATTERN_WARNING],
             },
         )
     ]
@@ -214,8 +274,8 @@ def test_edit_with_pattern_handler_accepts_json_payload() -> None:
                 },
                 "backup": False,
                 "_warnings": [
-                    "Deprecated patch_file payload: flat JSON payloads are deprecated; use a nested operation object",
-                    "Deprecated patch_file payload: use 'path' instead of legacy 'file_path'",
+                    LEGACY_PATCH_FILE_FLAT_WARNING,
+                    LEGACY_FILE_PATH_WARNING,
                 ],
             },
         )

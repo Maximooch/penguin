@@ -128,6 +128,11 @@ Useful design lessons for Penguin:
 - Provider quirks should stay at the adapter edge. Higher layers should see
   canonical tool calls/results/events, while adapters handle provider-specific
   tool-call IDs, message ordering, schemas, and finish reasons.
+- File mutation tools should have a small, provable surface. Codex's
+  `apply_patch` uses explicit old/context/new hunks instead of raw line
+  coordinates, and OpenCode's `edit` tool requires exact old-string matches
+  that fail when missing or ambiguous. Penguin should converge on those two
+  shapes rather than preserving many overlapping edit primitives.
 
 ## Target Architecture
 
@@ -294,18 +299,24 @@ first-class provider/tool runtime path:
 - Phase 7 now has a minimum model-visible schema contract and conservative
   runtime metadata extraction. The scheduler can consume that metadata later,
   but no parallel execution is enabled yet.
+- A file-edit reliability rewrite is now the next highest-priority tool
+  runtime slice. The existing line-coordinate edit surface is too easy for
+  models to misuse after repeated reads/edits, and `.bak` files have proven
+  more harmful than useful inside user repositories.
 
 Phase 6 parallel tool execution remains blocked until the safe-tool audit,
 approval semantics, cancellation behavior, and registry metadata are complete.
 The remaining practical order is:
 
-1. Audit concrete first-pass tools for read-only and parallel-safe behavior.
-2. Expand registry metadata coverage for approval, long-running/streaming
+1. Rewrite the model-visible file edit surface around exact replacements and a
+   Codex-style patch tool; retire unsafe line-coordinate edit paths.
+2. Audit concrete first-pass tools for read-only and parallel-safe behavior.
+3. Expand registry metadata coverage for approval, long-running/streaming
    process behavior, retry safety, provider support, and UI presentation.
-3. Add runtime permission/approval outcomes as structured `ToolResult` statuses.
-4. Defer aggregate per-turn model-visible tool-output caps until after the
+4. Add runtime permission/approval outcomes as structured `ToolResult` statuses.
+5. Defer aggregate per-turn model-visible tool-output caps until after the
    record/replay boundary remains stable under real workloads.
-5. Enable Phase 6 parallel execution only for explicitly audited safe subsets.
+6. Enable Phase 6 parallel execution only for explicitly audited safe subsets.
 
 ### Phase 0: Document and Test Current Behavior
 
@@ -728,6 +739,103 @@ Phase 7 implementation note:
   behavior.
 - This metadata is intentionally observational for now. It does not enable
   parallel scheduling, bypass approval checks, or mark any unaudited tool safe.
+
+### Phase 7.5: File Edit Tool Reliability Rewrite
+
+Goals:
+
+- replace the model-visible edit surface with one exact replacement tool and
+  one Codex-style patch/hunk tool
+- make every edit preflight against the current file contents before any write
+- compute new file contents and diffs in memory, then write each changed file at
+  most once per tool call
+- remove `.bak` creation from edit tools entirely; if persistent recovery is
+  needed later, store recovery artifacts under Penguin workspace storage, not in
+  the target repository
+- make `verify` mean expected old content or context matched before writing
+- retire or hide `replace_lines`, `insert_lines`, `delete_lines`, and unsafe
+  structured same-file `patch_files` from model-visible schemas
+- preserve temporary compatibility wrappers only where required, and have them
+  route through safe implementations or fail with clear deprecation errors
+
+Acceptance criteria:
+
+- `edit_file` accepts `path`, `old_string`, `new_string`, and optional
+  `replace_all`; it fails when `old_string` is missing or ambiguous unless
+  `replace_all` is explicit
+- `apply_patch` accepts a strict Codex-style patch grammar with add, delete,
+  update, move, and contextual hunks; missing context fails before writing
+- multi-edit behavior is atomic per tool call: if any operation fails preflight,
+  no file is written
+- no successful or failed edit creates a `.bak` file in the target repository
+- returned tool results include changed files, compact diff summary, structured
+  failure reason, and enough metadata for first-class `ToolResult` records
+- markdown-heavy edits reject or warn on obvious structural damage such as
+  unbalanced fences, duplicated adjacent headings, or broken table headers
+- tests cover stale line-coordinate reproduction, exact replacement ambiguity,
+  missing context, rollback/no-write behavior, no-`.bak` behavior, and markdown
+  table/heading preservation
+
+File-by-file checklist:
+
+- `penguin/tools/editing/contracts.py`
+  - [x] Add typed request/result envelopes for exact replacements and
+        Codex-style patch hunks.
+  - [x] Mark legacy line-coordinate operations as compatibility-only.
+- `penguin/tools/editing/service.py`
+  - [x] Implement in-memory preflight/apply/write-once flow for exact
+        replacements and patch hunks.
+  - [x] Remove in-repo backup path expectations from edit results.
+  - [x] Add optional markdown sanity checks for `.md`/`.mdx` targets.
+- `penguin/tools/core/support.py`
+  - [x] Remove direct `.bak` creation from legacy edit helpers; old `backup`
+        arguments are compatibility-only and rollback uses in-memory snapshots.
+  - [x] Keep low-level diff generation helpers side-effect free.
+- `penguin/tools/tool_manager.py`
+  - [x] Expose only `edit_file` and `apply_patch` as preferred model-visible
+        mutation tools.
+  - [x] Remove or hide line-coordinate schemas from model-visible output.
+  - [x] Keep legacy aliases only as deprecation wrappers during migration.
+- `penguin/tools/runtime.py`
+  - [ ] Preserve edit metadata in `ToolResult` records: changed files, diff
+        hashes, structured failure reasons, and truncation/artifact references.
+- `penguin/engine.py`
+  - [ ] Ensure edit failures are recoverable tool results, not assistant
+        completion failures or loop-stall false positives.
+- `tests/tools/test_edit_service.py`
+  - [x] Cover exact replacement success, missing string, ambiguous string,
+        replace-all, no-write-on-failure, and no `.bak` creation.
+  - [x] Cover Codex-style patch success and missing-context failure.
+  - [x] Cover markdown sanity checks for headings, tables, and fences.
+- `tests/test_edit_contract_aliases.py`
+  - [x] Update model-visible schema expectations for `edit_file` and
+        `apply_patch`.
+  - [x] Cover legacy alias deprecation wrappers.
+- `tests/test_parser_edit_handlers.py`
+  - [x] Update ActionXML/parser compatibility mapping to prefer the new
+        canonical edit tools.
+- `tests/test_core_tool_mapping.py`
+  - [x] Update action-to-tool mapping tests for safe edit surfaces.
+
+Current status:
+
+- Phase 7.5 model-visible rewrite landed for `edit_file` and `apply_patch`.
+- Legacy `patch_file`, `patch_files`, `replace_lines`, `insert_lines`,
+  `delete_lines`, `regex_replace`, and `apply_diff` remain callable only as
+  compatibility/deprecation paths; they are hidden from model-visible schemas
+  and fail without writing through the edit service.
+- Direct legacy support helpers no longer create repository `.bak` files; legacy
+  multi-edit rollback uses in-memory snapshots.
+
+Implementation guidance:
+
+- Start exact and conservative. Do not add fuzzy matching in the first rewrite.
+- Prefer refusing an edit over applying an unprovable mutation.
+- Do not enable parallel edit execution.
+- Do not keep `.bak` files as a default safety mechanism. Git, in-memory
+  preflight, and structured failure behavior should carry the migration.
+- Treat deletion of dead edit code as part of the reliability work once tests
+  prove the replacement surface.
 
 ### Phase 8: Terminal/Process Runtime Foundation
 

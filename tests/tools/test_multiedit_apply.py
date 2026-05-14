@@ -46,10 +46,10 @@ def test_multiedit_creates_new_file(
     assert created.read_text() == "print('hi')\n"
 
 
-def test_tool_manager_multiedit_apply_returns_current_json_shape(
+def test_tool_manager_multiedit_apply_returns_deprecation_error(
     tmp_path: Path,
 ) -> None:
-    workspace = Path.cwd() / ".tmp-track-a-tests" / f"{tmp_path.name}_multiedit"
+    workspace = tmp_path / "workspace"
     try:
         workspace.mkdir(parents=True, exist_ok=True)
         target = workspace / "foo.py"
@@ -66,12 +66,17 @@ def test_tool_manager_multiedit_apply_returns_current_json_shape(
         )
         payload = json.loads(result)
 
-        assert payload["success"] is True
-        assert payload["applied"] is True
+        assert payload["success"] is False
+        assert payload["tool"] == "patch_files"
+        assert "deprecated" in payload["error"]
         assert payload["files_failed"] == []
-        assert payload["error_messages"] == {}
+        assert payload["error_messages"] == {
+            "patch_files": (
+                "patch_files is deprecated; use apply_patch for contextual "
+                "multi-file patches"
+            )
+        }
         assert payload["backup_paths"] == {}
-        assert payload["rollback_performed"] is False
-        assert str(target.resolve()) in payload["files_edited"]
+        assert target.read_text(encoding="utf-8") == "print('old')\n"
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
