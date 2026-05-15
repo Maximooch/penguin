@@ -8,6 +8,7 @@ import pytest
 
 from penguin.engine import Engine, LoopState
 from penguin.llm.runtime import execute_pending_tool_call, execute_pending_tool_calls
+from penguin.tools.runtime import ToolExecutionPolicy
 
 
 def test_prepare_responses_tools_enables_openai_native_tools() -> None:
@@ -203,6 +204,8 @@ async def test_call_llm_with_retry_skips_retry_when_tool_call_pending() -> None:
     engine_like = SimpleNamespace(
         _handler_has_pending_tool_call=_has_pending_tool_call,
         _build_empty_response_diagnostics=lambda *_args, **_kwargs: {},
+        _trace_request_fields=lambda: ("req_test", "session_test"),
+        _extract_usage_from_api_client=lambda *_args, **_kwargs: {},
     )
 
     result = await Engine._call_llm_with_retry(
@@ -418,6 +421,48 @@ async def test_pending_responses_tool_calls_keep_successes_when_later_call_error
     assert results[0]["result"] == "ran pwd"
     assert results[1]["status"] == "error"
     assert "boom" in results[1]["result"]
+
+
+@pytest.mark.asyncio
+async def test_pending_responses_tool_calls_honor_execution_policy() -> None:
+    class _Handler:
+        def __init__(self) -> None:
+            self._tool_calls = [
+                {
+                    "name": "execute",
+                    "arguments": '{"command":"pwd"}',
+                    "call_id": "call_pwd",
+                },
+                {
+                    "name": "execute",
+                    "arguments": '{"command":"ls"}',
+                    "call_id": "call_ls",
+                },
+            ]
+
+        def get_and_clear_pending_tool_calls(self) -> list[dict[str, str]]:
+            result = self._tool_calls
+            self._tool_calls = []
+            return result
+
+    executed: list[str] = []
+
+    def _execute_tool(_tool_name: str, tool_args: dict[str, object]) -> str:
+        executed.append(str(tool_args["command"]))
+        return "ok"
+
+    results = await execute_pending_tool_calls(
+        api_client=SimpleNamespace(
+            client_handler=_Handler(),
+            model_config=SimpleNamespace(provider="openai", model="gpt-5.5"),
+        ),
+        tool_manager=SimpleNamespace(execute_tool=_execute_tool),
+        persist_action_result=lambda *_args: None,
+        execution_policy=ToolExecutionPolicy(max_calls=1, catch_exceptions=False),
+    )
+
+    assert executed == ["pwd"]
+    assert [result["tool_call_id"] for result in results] == ["call_pwd"]
 
 
 def test_wallet_guard_does_not_break_on_tool_only_empty_iteration() -> None:

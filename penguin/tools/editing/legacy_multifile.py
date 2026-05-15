@@ -17,6 +17,7 @@ class FileEdit:
     diff_content: str
     backup_path: Optional[str] = None
     original_bytes: Optional[bytes] = None
+    original_existed: bool = False
     applied: bool = False
 
 
@@ -56,11 +57,12 @@ class MultiEdit:
     def create_backups(self, edits: List[FileEdit]) -> bool:
         for edit in edits:
             file_path = Path(edit.file_path)
-            if not file_path.exists():
+            edit.original_existed = file_path.exists()
+            if not edit.original_existed:
                 continue
             try:
                 edit.original_bytes = file_path.read_bytes()
-            except Exception:
+            except OSError:
                 return False
         return True
 
@@ -87,18 +89,31 @@ class MultiEdit:
     def rollback_changes(self, edits: List[FileEdit]) -> bool:
         success = True
         for edit in edits:
-            if not edit.applied or edit.original_bytes is None:
+            if not edit.applied:
                 continue
             try:
-                Path(edit.file_path).write_bytes(edit.original_bytes)
+                file_path = Path(edit.file_path)
+                if edit.original_existed:
+                    if edit.original_bytes is None:
+                        success = False
+                        continue
+                    file_path.write_bytes(edit.original_bytes)
+                elif file_path.exists():
+                    file_path.unlink()
                 edit.applied = False
-            except Exception:
+            except OSError as exc:
+                logger.error(
+                    "Failed to roll back legacy multiedit path %s: %s",
+                    edit.file_path,
+                    exc,
+                )
                 success = False
         return success
 
     def cleanup_backups(self, edits: List[FileEdit]) -> None:
         for edit in edits:
             edit.original_bytes = None
+            edit.original_existed = False
 
     def apply_multiedit(
         self,
@@ -204,26 +219,37 @@ class MultiEdit:
                 if isinstance(apply_result, str) and apply_result.lower().startswith(
                     "error"
                 ):
+                    rollback_failed = False
                     for previous_path in applied_paths:
                         try:
                             previous = Path(previous_path)
                             snapshot = snapshots.get(str(previous))
                             if snapshot is not None:
                                 previous.write_bytes(snapshot)
-                        except Exception:
-                            pass
+                        except OSError as exc:
+                            logger.error(
+                                "Failed to restore %s during multiedit rollback: %s",
+                                previous_path,
+                                exc,
+                            )
+                            rollback_failed = True
                     for created in created_paths:
                         try:
                             Path(created).unlink()
-                        except Exception:
-                            pass
+                        except OSError as exc:
+                            logger.error(
+                                "Failed to delete %s during multiedit rollback: %s",
+                                created,
+                                exc,
+                            )
+                            rollback_failed = True
                     return MultiEditResult(
                         success=False,
                         files_edited=applied_paths,
                         files_failed=[edit.file_path],
                         error_messages={"apply": apply_result},
                         backup_paths={},
-                        rollback_performed=True,
+                        rollback_performed=not rollback_failed,
                     )
 
                 applied_paths.append(edit.file_path)

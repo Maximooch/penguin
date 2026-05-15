@@ -14,6 +14,7 @@ from penguin.tools.runtime import (
     hash_tool_output,
     legacy_action_result_from_tool_result,
     prepare_model_visible_tool_output,
+    tool_result_with_model_output_policy,
     tool_result_from_action_result,
 )
 
@@ -93,6 +94,34 @@ def test_tool_result_records_output_metadata() -> None:
         "result": "a\nb",
         "status": "completed",
     }
+
+
+def test_tool_result_policy_omits_full_structured_output_payload(
+    tmp_path: Path,
+) -> None:
+    result = ToolResult(
+        call_id="call_1",
+        name="read_file",
+        status="completed",
+        output="line\n" * 100,
+        structured_output={
+            "path": "large.txt",
+            "result": "line\n" * 100,
+            "output": "line\n" * 100,
+        },
+    )
+
+    bounded = tool_result_with_model_output_policy(
+        result,
+        max_chars=80,
+        artifact_dir=tmp_path,
+    )
+
+    assert bounded.truncated is True
+    assert bounded.structured_output is not None
+    assert bounded.structured_output["path"] == "large.txt"
+    assert "result" not in bounded.structured_output
+    assert "output" not in bounded.structured_output
 
 
 def test_action_result_to_tool_result_preserves_output_metadata() -> None:

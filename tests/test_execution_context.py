@@ -216,6 +216,44 @@ async def test_stream_chunk_without_explicit_scope_does_not_borrow_current_sessi
 
 
 @pytest.mark.asyncio
+async def test_abort_streaming_message_derives_agent_from_stream_scope() -> None:
+    events: list[tuple[str, dict[str, Any]]] = []
+    abort_scopes: list[str | None] = []
+
+    class _ConversationManager:
+        current_agent_id = "ambient_agent"
+
+    class _StreamManager:
+        def abort(self, agent_id: str | None = None) -> list[Any]:
+            abort_scopes.append(agent_id)
+            return [
+                SimpleNamespace(
+                    event_type="stream_interrupted",
+                    data={"type": "stream_interrupted"},
+                )
+            ]
+
+    async def _emit(event_type: str, data: dict[str, Any]) -> None:
+        events.append((event_type, data))
+
+    core = PenguinCore.__new__(PenguinCore)
+    setattr(core, "conversation_manager", _ConversationManager())
+    setattr(core, "_stream_manager", _StreamManager())
+    setattr(core, "emit_ui_event", _emit)
+    setattr(core, "_filter_internal_markers_from_event", lambda data: data)
+
+    assert core.abort_streaming_message(
+        stream_scope_id="session-123:reviewer"
+    ) is True
+    await asyncio.sleep(0)
+
+    assert abort_scopes == ["session-123:reviewer"]
+    assert events[-1][1]["session_id"] == "session-123"
+    assert events[-1][1]["conversation_id"] == "session-123"
+    assert events[-1][1]["agent_id"] == "reviewer"
+
+
+@pytest.mark.asyncio
 async def test_finalize_streaming_uses_explicit_session_scope() -> None:
     events: list[tuple[str, dict]] = []
 

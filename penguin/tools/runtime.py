@@ -321,8 +321,13 @@ def tool_result_with_model_output_policy(
         artifact_id=artifact_id or tool_result.call_id,
         truncation_direction=truncation_direction,
     )
+    safe_structured_output = {
+        key: value
+        for key, value in (tool_result.structured_output or {}).items()
+        if key not in {"output", "result"}
+    }
     structured_output = {
-        **(tool_result.structured_output or {}),
+        **safe_structured_output,
         **view.to_metadata(),
     }
     return ToolResult(

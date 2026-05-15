@@ -405,6 +405,12 @@ class ContextWindowManager:
             > self.max_context_window_tokens
         )
 
+    @staticmethod
+    def _copy_record(record: Any) -> Any:
+        """Copy dict records while preserving typed lifecycle/tool records."""
+
+        return dict(record) if isinstance(record, dict) else record
+
     def analyze_session(self, session: Session) -> Dict[str, Any]:
         """
         Analyze a session for token usage statistics and multimodal content.
@@ -483,11 +489,14 @@ class ContextWindowManager:
             last_active=session.last_active,
             metadata=session.metadata.copy(),
             llm_request_lifecycles=[
-                dict(record) for record in session.llm_request_lifecycles
+                self._copy_record(record)
+                for record in session.llm_request_lifecycles
             ],
-            tool_call_records=[dict(record) for record in session.tool_call_records],
+            tool_call_records=[
+                self._copy_record(record) for record in session.tool_call_records
+            ],
             tool_result_records=[
-                dict(record) for record in session.tool_result_records
+                self._copy_record(record) for record in session.tool_result_records
             ],
         )
 
@@ -607,23 +616,12 @@ class ContextWindowManager:
                 if tokens_to_trim <= 0:
                     total_over_budget = False
 
-        # Add SYSTEM messages without any trimming (preserve all of them)
-        system_messages = categorized.get(MessageCategory.SYSTEM, [])
-
         # Reconstruct the message list preserving original order
         # We'll use a dictionary to track which messages to keep
         kept_messages = {}
 
-        # First add ALL system messages (guaranteed to be kept)
-        for msg in system_messages:
-            kept_messages[msg.id] = msg
-
-        # Then add messages from other categories that survived trimming
-        for category in [
-            MessageCategory.CONTEXT,
-            MessageCategory.DIALOG,
-            MessageCategory.SYSTEM_OUTPUT,
-        ]:
+        # Add every surviving category so ERROR/INTERNAL/UNKNOWN are not dropped.
+        for category in MessageCategory:
             for msg in categorized[category]:
                 kept_messages[msg.id] = msg
 
@@ -651,6 +649,18 @@ class ContextWindowManager:
             isinstance(part, dict)
             and (part.get("type") in ["image", "image_url"] or "image_path" in part)
             for part in content
+        )
+
+    def _image_part_count(self, content: Any) -> int:
+        """Count image parts in multimodal content."""
+
+        if not isinstance(content, list):
+            return 0
+        return sum(
+            1
+            for part in content
+            if isinstance(part, dict)
+            and (part.get("type") in ["image", "image_url"] or "image_path" in part)
         )
 
     def _create_placeholder_message(self, msg: Message) -> Message:
@@ -692,15 +702,16 @@ class ContextWindowManager:
         if not session.messages:
             return session
 
-        # Find messages with images
+        # Find messages with image part counts
         image_messages = [
-            (i, msg)
+            (i, msg, self._image_part_count(msg.content))
             for i, msg in enumerate(session.messages)
             if self._contains_image(msg.content)
         ]
+        image_count = sum(count for _, _, count in image_messages)
 
         # Nothing to trim if within limit
-        if len(image_messages) <= self.max_context_images:
+        if image_count <= self.max_context_images:
             return Session(
                 id=session.id,
                 created_at=session.created_at,
@@ -708,27 +719,33 @@ class ContextWindowManager:
                 metadata=session.metadata.copy(),
                 messages=[msg for msg in session.messages],
                 llm_request_lifecycles=[
-                    dict(record) for record in session.llm_request_lifecycles
+                    self._copy_record(record)
+                    for record in session.llm_request_lifecycles
                 ],
                 tool_call_records=[
-                    dict(record) for record in session.tool_call_records
+                    self._copy_record(record)
+                    for record in session.tool_call_records
                 ],
                 tool_result_records=[
-                    dict(record) for record in session.tool_result_records
+                    self._copy_record(record)
+                    for record in session.tool_result_records
                 ],
             )
 
         # Sort by timestamp to identify oldest vs newest
         image_messages.sort(key=lambda x: x[1].timestamp)
 
-        # Keep the N most recent images (last N in sorted list)
-        messages_to_keep = {
-            msg.id for _, msg in image_messages[-self.max_context_images :]
-        }
-        trimmed_count = len(image_messages) - self.max_context_images
+        messages_to_trim = set()
+        remaining_images = image_count
+        for _, msg, count in image_messages:
+            if remaining_images <= self.max_context_images:
+                break
+            messages_to_trim.add(msg.id)
+            remaining_images -= count
+        trimmed_count = image_count - remaining_images
 
         logger.info(
-            f"Trimming {trimmed_count} oldest images, keeping {self.max_context_images} most recent"
+            f"Trimming {trimmed_count} oldest images, keeping {remaining_images} image parts"
         )
 
         # Create result with replaced images
@@ -738,17 +755,19 @@ class ContextWindowManager:
             last_active=session.last_active,
             metadata=session.metadata.copy(),
             llm_request_lifecycles=[
-                dict(record) for record in session.llm_request_lifecycles
+                self._copy_record(record) for record in session.llm_request_lifecycles
             ],
-            tool_call_records=[dict(record) for record in session.tool_call_records],
+            tool_call_records=[
+                self._copy_record(record) for record in session.tool_call_records
+            ],
             tool_result_records=[
-                dict(record) for record in session.tool_result_records
+                self._copy_record(record) for record in session.tool_result_records
             ],
         )
 
         # Process each message
         for msg in session.messages:
-            if self._contains_image(msg.content) and msg.id not in messages_to_keep:
+            if msg.id in messages_to_trim:
                 # Replace old image with placeholder
                 result.messages.append(self._create_placeholder_message(msg))
             else:
@@ -961,14 +980,16 @@ class ContextWindowManager:
                         if msg.category != MessageCategory.SYSTEM
                     ],
                     llm_request_lifecycles=[
-                        dict(record)
+                        self._copy_record(record)
                         for record in trimmed_session.llm_request_lifecycles
                     ],
                     tool_call_records=[
-                        dict(record) for record in trimmed_session.tool_call_records
+                        self._copy_record(record)
+                        for record in trimmed_session.tool_call_records
                     ],
                     tool_result_records=[
-                        dict(record) for record in trimmed_session.tool_result_records
+                        self._copy_record(record)
+                        for record in trimmed_session.tool_result_records
                     ],
                 )
 

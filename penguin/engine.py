@@ -85,6 +85,13 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _context_previews_enabled() -> bool:
+    """Return whether normal trace logs may include message previews."""
+
+    value = os.getenv("PENGUIN_LOG_CONTEXT_PREVIEWS", "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
 def _trace_log_info(message: str, *args: Any) -> None:
     """Mirror engine trace logs to uvicorn for live server debugging."""
     logger.info(message, *args)
@@ -397,21 +404,18 @@ class _ScopedConversationManager:
                 cloned_session.metadata = dict(session.metadata)
             if isinstance(getattr(session, "llm_request_lifecycles", None), list):
                 cloned_session.llm_request_lifecycles = [
-                    dict(record)
+                    dict(record) if isinstance(record, dict) else record
                     for record in session.llm_request_lifecycles
-                    if isinstance(record, dict)
                 ]
             if isinstance(getattr(session, "tool_call_records", None), list):
                 cloned_session.tool_call_records = [
-                    dict(record)
+                    dict(record) if isinstance(record, dict) else record
                     for record in session.tool_call_records
-                    if isinstance(record, dict)
                 ]
             if isinstance(getattr(session, "tool_result_records", None), list):
                 cloned_session.tool_result_records = [
-                    dict(record)
+                    dict(record) if isinstance(record, dict) else record
                     for record in session.tool_result_records
-                    if isinstance(record, dict)
                 ]
             cloned.session = cloned_session
         except Exception:
@@ -588,8 +592,7 @@ class Engine:
     ) -> None:
         """Log a compact context payload snapshot before provider construction."""
 
-        include_previews = os.getenv("PENGUIN_LOG_CONTEXT_PREVIEWS", "").strip().lower()
-        include_previews = include_previews in {"1", "true", "yes", "on"}
+        include_previews = _context_previews_enabled()
         role_counts: Dict[str, int] = {}
         total_chars = 0
         for message in messages:
@@ -3253,6 +3256,13 @@ class Engine:
         messages = self._apply_agent_mode_notice(messages)
         request_id, session_id = self._trace_request_fields()
         last_message = messages[-1] if messages else {}
+        last_preview = "<redacted>"
+        if _context_previews_enabled():
+            last_preview = self._trace_preview(
+                last_message.get("content", "")
+                if isinstance(last_message, dict)
+                else ""
+            )
         _trace_log_info(
             "engine.llm_step.start request=%s session=%s agent=%s cm=%s conv=%s conv_session=%s msgs=%s last_role=%s last_preview=%r streaming=%s tools=%s",
             request_id,
@@ -3265,11 +3275,7 @@ class Engine:
             self._conversation_session_id(cm) or "unknown",
             len(messages),
             last_message.get("role") if isinstance(last_message, dict) else None,
-            self._trace_preview(
-                last_message.get("content", "")
-                if isinstance(last_message, dict)
-                else ""
-            ),
+            last_preview,
             streaming,
             tools_enabled,
         )

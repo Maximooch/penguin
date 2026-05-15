@@ -4332,6 +4332,7 @@ class PenguinCore:
         """Abort an uncommitted streaming message without persisting dialog."""
 
         execution_context = get_current_execution_context()
+        explicit_agent_id = agent_id is not None
         if agent_id is None:
             if execution_context and execution_context.agent_id:
                 agent_id = execution_context.agent_id
@@ -4364,6 +4365,10 @@ class PenguinCore:
                 execution_context,
                 resolved_agent_id,
             )
+        if resolved_stream_scope_id and not explicit_agent_id:
+            _scope_session, _, scope_agent_id = resolved_stream_scope_id.partition(":")
+            if scope_agent_id.strip():
+                resolved_agent_id = scope_agent_id.strip()
         if resolved_stream_scope_id and (
             not resolved_session_id or not resolved_conversation_id
         ):

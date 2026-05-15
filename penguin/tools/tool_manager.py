@@ -3741,6 +3741,7 @@ class ToolManager:
         }
         if tool_name not in {
             "apply_patch",
+            "create_file",
             "edit_file",
             "patch_file",
             "patch_files",

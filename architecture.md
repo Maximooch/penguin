@@ -287,12 +287,13 @@ ToolManager:
 | `sync_context` | Sync context from parent to child |
 
 **Tool Execution Pipeline:**
-1. Action parsed from LLM response
-2. Tool identified by name/type
-3. Parameters validated and prepared
-4. Tool executed with workspace context
-5. Result formatted and returned
-6. Added to conversation as system message
+1. Action parsed from LLM response into the tool-call runtime shape
+2. Tool identified by name/type and matched against registry metadata
+3. Parameters validated, normalized, and prepared with workspace context
+4. Tool executed through the runtime policy layer
+5. Result converted to `ToolResult` with model-output truncation/artifact policy
+6. Safe structured metadata returned to the UI/session record
+7. Legacy action-result views preserved during migration
 
 ### 2. Memory System (`memory/`)
 
@@ -493,6 +494,11 @@ The codebase uses explicit naming for token limits to avoid ambiguity:
 4. Selective CONTEXT retention based on relevance
 5. Category budgets are dynamic based on live config
 
+**Context Payload Safety:**
+- Image payload detection is centralized so `image`, `image_url`, and `image_path` style parts are counted and trimmed consistently.
+- Engine context snapshot logs default to counts and token/character metadata only. Message previews are opt-in via `PENGUIN_LOG_CONTEXT_PREVIEWS`.
+- Tool output included in model context passes through the runtime model-output policy. Large outputs may be truncated inline while full output is stored as an artifact when configured.
+
 ## Tool System
 
 ### Tool Registry Architecture
@@ -524,6 +530,37 @@ ExecutionContext:
   - permissions: allowed_operations
   - ui_callback: result_display
 ```
+
+### Canonical File Editing
+
+Penguin's model-visible file editing surface is intentionally narrow:
+
+| Tool | Contract |
+|------|----------|
+| `edit_file` | Exact `old_string` / `new_string` replacement. Missing or ambiguous old content fails before writing unless `replace_all` is requested. |
+| `apply_patch` | Codex-style contextual hunks. Context must match the current file contents before any write occurs. |
+
+Legacy line-coordinate patch tools (`replace_lines`, `insert_lines`, `delete_lines`, and structured same-file patch batches) are compatibility-only and should not be the primary model-facing edit path.
+
+`EditService` owns the safety semantics:
+- Resolve paths inside the active workspace before reading or writing.
+- Preflight changes against current file contents.
+- Compute new content and diffs in memory.
+- Write each changed file at most once per tool call.
+- Return normalized `FileEditResult` failures for read, validation, or sanity-check errors.
+- Never create in-repository `.bak` files.
+
+Markdown sanity checks run before writes for supported edit paths. They detect broken fences, duplicate nearby headings, and malformed table separators while ignoring examples inside fenced code blocks.
+
+### Tool Result Safety
+
+Tool results have two distinct payloads:
+- `ToolResult.output`: model-visible text governed by truncation and artifact policy.
+- `ToolResult.structured_output`: safe metadata for UI/session consumers.
+
+The runtime avoids copying full `result` or `output` fields into `structured_output`, so large tool output cannot bypass model-output truncation. Edit diagnostics redact sensitive payload fields such as `content`, `patch`, `old_string`, `new_string`, and `new_content` before generic logging.
+
+Failed `apply_patch` parse/validation paths preserve the attempted patch body as diagnostic diff metadata so UI cards can show what was attempted without pretending the edit succeeded.
 
 ## Communication Layers
 
@@ -657,6 +694,14 @@ The engine's `run_response` and `run_task` methods use explicit termination sign
 - Phrase-based completion detection is deprecated
 
 **Important:** The LLM must explicitly call termination tools. This prevents premature loop exit when the LLM is processing tool results and needs to continue.
+
+### Message Loop Reliability
+
+The message loop treats provider attempts and local tool execution as separate reliability boundaries:
+- Retry paths preserve the original provider request options, including tools, instructions, and other request kwargs.
+- Abort and stream events resolve explicit session/conversation IDs first, then execution context, then stream-scope fallback, so session-scoped aborts remain routable.
+- Tool-call failures are represented as structured results or diagnostic metadata instead of silent disappearance.
+- Context snapshot diagnostics avoid prompt-content previews by default to reduce log volume and accidental prompt leakage.
 
 ## Performance Optimizations
 

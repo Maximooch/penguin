@@ -1739,6 +1739,7 @@ def apply_unified_patch(
                 return msg
         else:
             # Apply patch to existing file using robust single-file editor
+            res = None
             if target.exists() and str(target) not in snapshots:
                 try:
                     snapshots[str(target)] = target.read_bytes()
@@ -1748,15 +1749,16 @@ def apply_unified_patch(
                         target,
                         exc,
                     )
-                    raise
-            res = apply_diff_to_file(
-                str(target),
-                fp["content"],
-                backup=backup,
-                workspace_path=workspace_path,
-                return_json=return_json,
-                allow_fallback=False,
-            )
+                    res = f"Error applying diff: Failed to snapshot {target}: {exc}"
+            if res is None:
+                res = apply_diff_to_file(
+                    str(target),
+                    fp["content"],
+                    backup=backup,
+                    workspace_path=workspace_path,
+                    return_json=return_json,
+                    allow_fallback=False,
+                )
             results.append(res)
             if isinstance(res, str) and res.lower().startswith("error"):
                 # rollback previously applied files

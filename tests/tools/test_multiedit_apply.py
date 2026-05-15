@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from penguin.tools.tool_manager import ToolManager
-from penguin.tools.multiedit import MultiEdit
+from penguin.tools.multiedit import FileEdit, MultiEdit
 from penguin.tools.core.support import generate_diff_patch
 
 
@@ -44,6 +44,18 @@ def test_multiedit_creates_new_file(
     created = tmp_path / "foo.py"
     assert created.exists(), "expected foo.py to be created"
     assert created.read_text() == "print('hi')\n"
+
+
+def test_multiedit_rollback_removes_created_file(tmp_path: Path) -> None:
+    me = MultiEdit(workspace_root=str(tmp_path))
+    target = tmp_path / "created.py"
+    edit = FileEdit(file_path=str(target), diff_content="")
+    edit.applied = True
+    edit.original_existed = False
+    target.write_text("new\n", encoding="utf-8")
+
+    assert me.rollback_changes([edit]) is True
+    assert not target.exists()
 
 
 def test_tool_manager_multiedit_apply_returns_deprecation_error(

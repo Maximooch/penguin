@@ -97,3 +97,14 @@ def test_tool_manager_redacts_legacy_new_content_diagnostics() -> None:
     )
 
     assert redacted["operation"]["new_content"] == "<redacted:23 chars>"
+
+
+def test_tool_manager_redacts_create_file_content_diagnostics() -> None:
+    manager = ToolManager({}, lambda *_args, **_kwargs: None, fast_startup=True)
+
+    redacted = manager._redact_tool_input_for_diagnostics(
+        "create_file",
+        {"path": "secret.txt", "content": "secret file content"},
+    )
+
+    assert redacted["content"] == "<redacted:19 chars>"

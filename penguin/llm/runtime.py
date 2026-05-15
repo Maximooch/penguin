@@ -699,7 +699,7 @@ async def execute_pending_tool_calls(
             )
 
     try:
-        base_policy = execution_policy or ToolExecutionPolicy()
+        base_policy = execution_policy or ToolExecutionPolicy(catch_exceptions=True)
         scheduler_results = await execute_tool_calls_serially(
             tool_calls,
             lambda current_tool_call: tool_manager.execute_tool(
@@ -707,8 +707,12 @@ async def execute_pending_tool_calls(
                 parsed_args_by_id.get(current_tool_call.id, {}),
             ),
             policy=ToolExecutionPolicy(
-                max_calls=len(tool_calls),
-                catch_exceptions=True,
+                max_calls=(
+                    base_policy.max_calls
+                    if base_policy.max_calls is not None
+                    else len(tool_calls)
+                ),
+                catch_exceptions=base_policy.catch_exceptions,
                 max_output_chars=base_policy.max_output_chars,
                 artifact_dir=base_policy.artifact_dir,
                 truncation_direction=base_policy.truncation_direction,

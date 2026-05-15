@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from penguin.engine import Engine, EngineSettings
+from penguin.engine import Engine, EngineSettings, _ScopedConversationManager
 from penguin.llm.contracts import (
     ErrorCategory,
     FinishReason,
@@ -38,6 +38,29 @@ def test_engine_initializes_without_run_state_attribute_error() -> None:
     assert engine.current_agent_id is None
     assert engine.default_agent_id == "default"
     assert "default" in engine.agents
+
+
+def test_scoped_conversation_clone_preserves_typed_records() -> None:
+    typed_lifecycle = object()
+    typed_tool_call = object()
+    typed_tool_result = object()
+    session = Session()
+    session.llm_request_lifecycles = [typed_lifecycle, {"request_id": "req_1"}]
+    session.tool_call_records = [typed_tool_call, {"call_id": "call_1"}]
+    session.tool_result_records = [typed_tool_result, {"call_id": "call_1"}]
+    conversation = SimpleNamespace(session=session)
+    manager = SimpleNamespace(
+        get_agent_conversation=lambda *_args, **_kwargs: conversation
+    )
+
+    scoped = _ScopedConversationManager(manager, "default")
+    cloned_session = scoped.conversation.session
+
+    assert cloned_session is not session
+    assert cloned_session.llm_request_lifecycles[0] is typed_lifecycle
+    assert cloned_session.llm_request_lifecycles[1] == {"request_id": "req_1"}
+    assert cloned_session.tool_call_records[0] is typed_tool_call
+    assert cloned_session.tool_result_records[0] is typed_tool_result
 
 
 def test_tool_output_cap_non_positive_env_disables_truncation(

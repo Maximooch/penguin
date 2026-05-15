@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 
 MODEL_VISIBLE_TOOL_REQUIRED_FIELDS = ("name", "description", "input_schema")
@@ -23,7 +23,7 @@ class ToolRuntimeMetadata:
     streams_output: bool = False
     retry_safe: bool = False
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable metadata dictionary."""
 
         return {
@@ -37,7 +37,7 @@ class ToolRuntimeMetadata:
         }
 
 
-def render_tool_usage_guidance(tool_schema: Dict[str, Any]) -> str:
+def render_tool_usage_guidance(tool_schema: dict[str, Any]) -> str:
     """Render concise model-facing usage guidance from a tool schema."""
 
     name = str(tool_schema.get("name") or "tool").strip() or "tool"
@@ -67,8 +67,8 @@ def render_tool_usage_guidance(tool_schema: Dict[str, Any]) -> str:
 
 
 def normalize_model_visible_tool_schema(
-    tool_schema: Dict[str, Any],
-) -> Dict[str, Any]:
+    tool_schema: dict[str, Any],
+) -> dict[str, Any]:
     """Return a schema with Penguin's minimum model-visible contract."""
 
     normalized = dict(tool_schema)
@@ -88,11 +88,11 @@ def normalize_model_visible_tool_schema(
 
 
 def validate_model_visible_tool_schema(
-    tool_schema: Dict[str, Any],
-) -> List[str]:
+    tool_schema: dict[str, Any],
+) -> list[str]:
     """Return validation errors for Penguin's minimum model-visible contract."""
 
-    errors: List[str] = []
+    errors: list[str] = []
     normalized = normalize_model_visible_tool_schema(tool_schema)
     if not normalized["name"]:
         errors.append("missing name")
@@ -124,7 +124,7 @@ def _parse_boolean(value: Any, *, default: bool) -> bool:
 
 
 def runtime_metadata_from_tool_schema(
-    tool_schema: Dict[str, Any],
+    tool_schema: dict[str, Any],
 ) -> ToolRuntimeMetadata:
     """Extract conservative runtime metadata from a tool schema."""
 
