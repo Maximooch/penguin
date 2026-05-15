@@ -896,7 +896,7 @@ def apply_diff_to_file(
                 if log_path:
                     err_msg += f" (logged at {log_path})"
                 err_msg += (
-                    " Consider replace_lines/insert_lines/delete_lines for small edits."
+                    " Consider edit_file for exact replacements or apply_patch for contextual hunks."
                 )
                 if fallback_result:
                     err_msg += f" Fallback result: {fallback_result}"
@@ -1353,7 +1353,15 @@ def apply_unified_patch(
                 exists = tgt.exists()
                 existing_before[str(tgt)] = exists
                 if exists:
-                    snapshots[str(tgt)] = tgt.read_bytes()
+                    try:
+                        snapshots[str(tgt)] = tgt.read_bytes()
+                    except OSError as exc:
+                        logging.getLogger(__name__).error(
+                            "Failed to snapshot %s before patch: %s",
+                            tgt,
+                            exc,
+                        )
+                        raise
 
             # Normalize patch paths to be relative to the git base
             normalized_text = _normalize_unified_patch_paths(file_patches, base)
@@ -1734,8 +1742,13 @@ def apply_unified_patch(
             if target.exists() and str(target) not in snapshots:
                 try:
                     snapshots[str(target)] = target.read_bytes()
-                except Exception:
-                    pass
+                except OSError as exc:
+                    logging.getLogger(__name__).error(
+                        "Failed to snapshot %s before patch: %s",
+                        target,
+                        exc,
+                    )
+                    raise
             res = apply_diff_to_file(
                 str(target),
                 fp["content"],

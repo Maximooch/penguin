@@ -3733,6 +3733,7 @@ class ToolManager:
             "content",
             "diff",
             "diff_content",
+            "new_content",
             "new_string",
             "old_string",
             "patch",

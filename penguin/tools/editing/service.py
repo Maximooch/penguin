@@ -380,11 +380,19 @@ class EditService:
                 warnings=warnings,
             )
 
-        old_content = (
-            resolved_path.read_text(encoding="utf-8")
-            if resolved_path.exists()
-            else ""
-        )
+        try:
+            old_content = (
+                resolved_path.read_text(encoding="utf-8")
+                if resolved_path.exists()
+                else ""
+            )
+        except (OSError, UnicodeDecodeError) as exc:
+            return self._failure_result(
+                tool_name,
+                f"Failed to read {requested_path or resolved_path}: {exc}",
+                requested_paths=[requested_path],
+                warnings=warnings,
+            )
         display_path = self._display_path(requested_path, resolved_path)
         action = "created" if not resolved_path.exists() else "updated"
         return self._commit_text_changes(
@@ -418,7 +426,10 @@ class EditService:
             raise ValueError(f"{resolved_path} does not exist")
         if not resolved_path.is_file():
             raise ValueError(f"{resolved_path} is not a file")
-        return resolved_path.read_text(encoding="utf-8")
+        try:
+            return resolved_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ValueError(f"Failed to read {resolved_path}: {exc}") from exc
 
     def _commit_text_changes(
         self,
@@ -600,8 +611,11 @@ class EditService:
 
         errors: List[str] = []
         lines = content.splitlines()
+        in_fence_by_line = [False] * len(lines)
         active_fence: Optional[tuple[str, int, int]] = None
         for line_number, line in enumerate(lines, start=1):
+            if active_fence is not None:
+                in_fence_by_line[line_number - 1] = True
             match = re.match(r"^\s*(```+|~~~+)", line)
             if not match:
                 continue
@@ -610,6 +624,7 @@ class EditService:
             marker_len = len(marker)
             if active_fence is None:
                 active_fence = (marker_char, marker_len, line_number)
+                in_fence_by_line[line_number - 1] = True
             elif marker_char == active_fence[0] and marker_len >= active_fence[1]:
                 active_fence = None
         if active_fence is not None:
@@ -622,6 +637,8 @@ class EditService:
         previous_heading_line = 0
         nonblank_since_heading = 0
         for line_number, line in enumerate(lines, start=1):
+            if in_fence_by_line[line_number - 1]:
+                continue
             heading_match = re.match(r"^\s{0,3}(#{1,6})\s+(.+?)\s*$", line)
             if heading_match:
                 heading_text = re.sub(r"\s+", " ", heading_match.group(2).strip())
@@ -642,10 +659,16 @@ class EditService:
                 nonblank_since_heading += 1
 
         for line_number, line in enumerate(lines, start=1):
+            if in_fence_by_line[line_number - 1]:
+                continue
             if not self._is_markdown_table_separator(line):
                 continue
-            previous_line = self._nearest_nonblank_line(lines, line_number - 2, -1)
-            next_line = self._nearest_nonblank_line(lines, line_number, 1)
+            previous_line = self._nearest_nonblank_line(
+                lines, line_number - 2, -1, in_fence_by_line
+            )
+            next_line = self._nearest_nonblank_line(
+                lines, line_number, 1, in_fence_by_line
+            )
             if previous_line is None or "|" not in previous_line:
                 errors.append(
                     f"{display_path} has a table separator without a header "
@@ -668,10 +691,17 @@ class EditService:
         return all(re.fullmatch(r":?-{3,}:?", cell or "") for cell in cells)
 
     def _nearest_nonblank_line(
-        self, lines: List[str], start_index: int, direction: int
+        self,
+        lines: List[str],
+        start_index: int,
+        direction: int,
+        in_fence_by_line: Optional[List[bool]] = None,
     ) -> Optional[str]:
         index = start_index
         while 0 <= index < len(lines):
+            if in_fence_by_line and in_fence_by_line[index]:
+                index += direction
+                continue
             if lines[index].strip():
                 return lines[index]
             index += direction

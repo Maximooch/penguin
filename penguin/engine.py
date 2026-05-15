@@ -588,6 +588,8 @@ class Engine:
     ) -> None:
         """Log a compact context payload snapshot before provider construction."""
 
+        include_previews = os.getenv("PENGUIN_LOG_CONTEXT_PREVIEWS", "").strip().lower()
+        include_previews = include_previews in {"1", "true", "yes", "on"}
         role_counts: Dict[str, int] = {}
         total_chars = 0
         for message in messages:
@@ -625,15 +627,20 @@ class Engine:
                     "category": category_name,
                     "tokens": tokens,
                     "chars": chars,
-                    "preview": self._trace_preview(getattr(message, "content", "")),
                 }
             )
+            if include_previews:
+                largest_messages[-1]["preview"] = self._trace_preview(
+                    getattr(message, "content", "")
+                )
         largest_messages.sort(key=lambda item: item["tokens"], reverse=True)
+        largest_payload = largest_messages[:5]
 
         _trace_log_info(
             "engine.context.snapshot request=%s session=%s agent=%s "
             "formatted_messages=%s roles=%s total_chars=%s approx_tokens=%s "
-            "session_messages=%s session_tokens=%s category_tokens=%s largest=%s",
+            "session_messages=%s session_tokens=%s category_tokens=%s "
+            "largest=%s previews=%s",
             request_id,
             session_id or "unknown",
             agent_id or self.current_agent_id or self.default_agent_id,
@@ -644,7 +651,8 @@ class Engine:
             len(session_messages),
             session_tokens,
             category_tokens,
-            largest_messages[:5],
+            largest_payload,
+            include_previews,
         )
 
     def _get_loop_state(self) -> LoopState:

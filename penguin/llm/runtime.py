@@ -467,7 +467,7 @@ async def call_with_retry(
                 messages=messages,
                 stream=False,
                 stream_callback=None,
-                extra_kwargs={},
+                extra_kwargs=dict(extra_kwargs),
             )
             assistant_response = call_result.text
         else:
@@ -496,7 +496,7 @@ async def call_with_retry(
             messages=messages,
             stream=False,
             stream_callback=None,
-            extra_kwargs={},
+            extra_kwargs=dict(extra_kwargs),
         )
         assistant_response = call_result.text
         if (

@@ -859,13 +859,18 @@ async def execute_tool_calls_serially(
                 action_output = dict(output)
                 if not action_output.get("action") and not action_output.get("name"):
                     action_output["action"] = tool_call.name
+                structured_action_output = {
+                    key: value
+                    for key, value in action_output.items()
+                    if key not in {"output", "result"}
+                }
                 tool_result = tool_result_from_action_result(
                     action_output,
                     call_id=tool_call.id,
                     started_at=started_at,
                     ended_at=ended_at,
                     structured_output={
-                        **action_output,
+                        **structured_action_output,
                         "tool_call_id": tool_call.id,
                         "tool_arguments": tool_call.arguments,
                     },

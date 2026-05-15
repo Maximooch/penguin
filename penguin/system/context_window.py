@@ -435,10 +435,7 @@ class ContextWindowManager:
             # Count images in multimodal content
             if isinstance(content, list):
                 for part in content:
-                    if isinstance(part, dict) and part.get("type") in [
-                        "image",
-                        "image_url",
-                    ]:
+                    if self._contains_image([part]):
                         image_count += 1
 
             # Update per-category counts
@@ -663,7 +660,7 @@ class ContextWindowManager:
 
         new_content = []
         for part in msg.content:
-            if isinstance(part, dict) and part.get("type") in ["image", "image_url"]:
+            if self._contains_image([part]):
                 url_ref = part.get("image_url") or part.get("image_path")
                 new_part = {"type": "text", "text": "[Image removed to save tokens]"}
                 if url_ref:

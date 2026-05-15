@@ -47,7 +47,7 @@ def render_tool_usage_guidance(tool_schema: Dict[str, Any]) -> str:
 
     properties = input_schema.get("properties")
     property_names = (
-        sorted(str(key) for key in properties.keys())
+        sorted(str(key) for key in properties)
         if isinstance(properties, dict)
         else []
     )

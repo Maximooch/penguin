@@ -70,7 +70,7 @@ def test_tool_manager_exposes_minimum_schema_contract_for_registered_tools() -> 
     assert all(isinstance(tool.get("usage"), str) and tool["usage"] for tool in tools)
 
 
-def test_tool_manager_runtime_metadata_uses_schema_without_enabling_parallelism() -> None:
+def test_tool_manager_runtime_metadata_keeps_parallelism_disabled() -> None:
     manager = ToolManager({}, lambda *_args, **_kwargs: None, fast_startup=True)
 
     unknown = manager.get_tool_runtime_metadata("missing_tool")
@@ -80,3 +80,20 @@ def test_tool_manager_runtime_metadata_uses_schema_without_enabling_parallelism(
     assert unknown["requires_approval"] is True
     assert read_image["mutates_state"] is False
     assert "parallel_safe" in read_image
+
+
+def test_tool_manager_redacts_legacy_new_content_diagnostics() -> None:
+    manager = ToolManager({}, lambda *_args, **_kwargs: None, fast_startup=True)
+
+    redacted = manager._redact_tool_input_for_diagnostics(
+        "patch_file",
+        {
+            "path": "notes.md",
+            "operation": {
+                "type": "insert_lines",
+                "new_content": "secret replacement text",
+            },
+        },
+    )
+
+    assert redacted["operation"]["new_content"] == "<redacted:23 chars>"

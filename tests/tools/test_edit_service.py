@@ -241,3 +241,21 @@ def test_markdown_sanity_rejects_broken_table_before_write(
     assert result.ok is False
     assert "table separator" in result.error
     assert target.read_text(encoding="utf-8") == "# Doc\n\nbody\n"
+
+
+def test_markdown_sanity_ignores_markdown_inside_fences(tmp_path: Path) -> None:
+    target = tmp_path / "doc.md"
+    target.write_text("# Doc\n\nbody\n", encoding="utf-8")
+    service = EditService(workspace_root=str(tmp_path))
+
+    fenced_example = """```md
+# Example
+# Example
+|---|---|
+```
+"""
+
+    result = service.edit_file("doc.md", "body\n", fenced_example)
+
+    assert result.ok is True
+    assert target.read_text(encoding="utf-8") == "# Doc\n\n" + fenced_example

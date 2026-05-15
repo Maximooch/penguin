@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -160,8 +163,15 @@ class MultiEdit:
                 if target_path.exists() and str(target_path) not in snapshots:
                     try:
                         snapshots[str(target_path)] = target_path.read_bytes()
-                    except Exception:
-                        pass
+                    except OSError as exc:
+                        logger.error(
+                            "Failed to snapshot %s before multiedit: %s",
+                            target_path,
+                            exc,
+                        )
+                        raise RuntimeError(
+                            f"Failed to snapshot {target_path} before applying edits"
+                        ) from exc
                 apply_result = apply_diff_to_file(
                     edit.file_path,
                     edit.diff_content,

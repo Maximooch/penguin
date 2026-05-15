@@ -4346,14 +4346,14 @@ class PenguinCore:
         resolved_session_id = session_id or conversation_id
         if execution_context:
             resolved_conversation_id = (
-                execution_context.conversation_id
+                resolved_conversation_id
+                or execution_context.conversation_id
                 or execution_context.session_id
-                or resolved_conversation_id
             )
             resolved_session_id = (
-                execution_context.session_id
+                resolved_session_id
+                or execution_context.session_id
                 or resolved_conversation_id
-                or resolved_session_id
             )
 
         resolved_stream_scope_id = stream_scope_id
@@ -4364,6 +4364,15 @@ class PenguinCore:
                 execution_context,
                 resolved_agent_id,
             )
+        if resolved_stream_scope_id and (
+            not resolved_session_id or not resolved_conversation_id
+        ):
+            scope_session_id = resolved_stream_scope_id.split(":", 1)[0].strip()
+            if scope_session_id:
+                resolved_session_id = resolved_session_id or scope_session_id
+                resolved_conversation_id = (
+                    resolved_conversation_id or resolved_session_id
+                )
 
         events = self._stream_manager.abort(agent_id=resolved_stream_scope_id)
         if not events:
@@ -5297,10 +5306,12 @@ class PenguinCore:
 
         if action_name == "apply_patch":
             parsed = parse_apply_patch_payload(params)
+            patch = parsed.get("patch", "") if isinstance(parsed, dict) else ""
             error = parsed.get("error") if isinstance(parsed, dict) else None
             if isinstance(error, str):
+                if isinstance(patch, str) and patch.strip():
+                    metadata["diff"] = patch
                 return "edit", {"filePath": "(patch)"}, metadata
-            patch = parsed.get("patch", "")
             tool_input = {"filePath": "(patch)", "patch": patch}
             if isinstance(patch, str):
                 files = []

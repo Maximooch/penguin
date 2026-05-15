@@ -147,3 +147,38 @@ async def test_serial_scheduler_applies_model_output_policy(tmp_path: Path) -> N
         encoding="utf-8",
     )
     assert artifact_text == "line\n" * 100
+
+
+@pytest.mark.asyncio
+async def test_serial_scheduler_omits_full_output_from_structured_output(
+    tmp_path: Path,
+) -> None:
+    full_output = "line\n" * 100
+
+    [result] = await execute_tool_calls_serially(
+        [
+            ToolCall(
+                id="call_dict_output",
+                name="read_file",
+                arguments='{"path": "large.txt"}',
+                source="responses",
+            )
+        ],
+        lambda _tool_call: {
+            "action": "read_file",
+            "path": "large.txt",
+            "result": full_output,
+            "status": "completed",
+        },
+        policy=ToolExecutionPolicy(
+            max_output_chars=160,
+            artifact_dir=tmp_path,
+            truncation_direction="tail",
+        ),
+    )
+
+    assert result.truncated is True
+    assert result.structured_output is not None
+    assert "result" not in result.structured_output
+    assert result.structured_output["path"] == "large.txt"
+    assert result.artifact_path is not None
