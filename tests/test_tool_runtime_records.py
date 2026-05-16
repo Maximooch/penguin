@@ -34,7 +34,8 @@ def test_tool_call_record_carries_replay_metadata_without_output() -> None:
     assert record["call_id"] == "call_read"
     assert record["name"] == "read_file"
     assert record["source"] == "responses"
-    assert record["arguments"] == {"max_lines": 20, "path": "README.md"}
+    assert "arguments" not in record
+    assert record["arguments_preview"] == '{"max_lines":20,"path":"README.md"}'
     assert record["arguments_hash"] == hash_tool_arguments(
         {"path": "README.md", "max_lines": 20}
     )

@@ -504,6 +504,34 @@ def test_map_action_to_tool_supports_apply_patch_payload() -> None:
     assert metadata == {"files": ["src/main.py"]}
 
 
+def test_map_action_to_tool_preserves_apply_patch_files_on_parse_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core = PenguinCore.__new__(PenguinCore)
+
+    patch = (
+        "*** Begin Patch\n"
+        "*** Update File: src/main.py\n"
+        "@@\n"
+        "-old\n"
+        "+new\n"
+    )
+    monkeypatch.setattr(
+        "penguin.core.parse_apply_patch_payload",
+        lambda _params: {"patch": patch, "error": "malformed patch"},
+    )
+
+    mapped_tool, tool_input, metadata = core._map_action_to_tool(
+        "apply_patch",
+        {"patch": patch},
+    )
+
+    assert mapped_tool == "edit"
+    assert tool_input == {"filePath": "(patch)"}
+    assert metadata["files"] == ["src/main.py"]
+    assert metadata["diff"] == patch
+
+
 def test_map_action_to_tool_supports_canonical_patch_files_payload() -> None:
     core = PenguinCore.__new__(PenguinCore)
 

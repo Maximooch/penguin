@@ -19,6 +19,10 @@ from typing import Optional, Dict
 from PIL import Image  # type: ignore
 
 
+class RollbackError(Exception):
+    """Raised when edit rollback fails after a partial write."""
+
+
 def _git_available() -> bool:
     try:
         subprocess.run(
@@ -950,8 +954,16 @@ def apply_diff_to_file(
             if write_happened:
                 try:
                     target_path.write_bytes(raw)
-                except Exception:
-                    pass
+                except OSError as rollback_error:
+                    logging.getLogger(__name__).error(
+                        "Failed to roll back %s after diff error: %s",
+                        target_path,
+                        rollback_error,
+                        exc_info=True,
+                    )
+                    raise RollbackError(
+                        f"Failed to roll back {target_path} after diff error"
+                    ) from rollback_error
             # Log unexpected failure
             log_path = _log_diff_failure(
                 file_path, diff_content, original_content, workspace_path
@@ -961,6 +973,8 @@ def apply_diff_to_file(
                 msg += f" (logged at {log_path})"
             return msg
 
+    except RollbackError:
+        raise
     except Exception as e:
         return f"Error processing diff application: {str(e)}"
 
@@ -1288,7 +1302,9 @@ def apply_unified_patch(
     """Apply a unified patch that may contain multiple files.
 
     Performs best-effort transactional behavior: if any file fails,
-    previously-applied files are restored from in-memory snapshots.
+    previously-applied files are restored from in-memory snapshots. When the
+    optional git three-way backend reports conflicts, conflict markers may
+    remain so callers can inspect and resolve the conflict.
     """
     file_patches = _split_multifile_unified_patch(patch_text)
     if not file_patches:

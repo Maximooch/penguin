@@ -281,10 +281,10 @@ class ContextWindowManager:
             # Handle potential image content with more realistic estimates
             total = 0
             for item in content:
-                if isinstance(item, dict) and item.get("type") in [
-                    "image",
-                    "image_url",
-                ]:
+                if isinstance(item, dict) and (
+                    item.get("type") in ["image", "image_url"]
+                    or "image_path" in item
+                ):
                     # Much more realistic image token estimates - Claude models use ~4000 tokens per image
                     total += 4000  # Higher default for safety
                     # TODO: Make this dynamic based on the model used

@@ -237,10 +237,10 @@ async def test_abort_streaming_message_derives_agent_from_stream_scope() -> None
         events.append((event_type, data))
 
     core = PenguinCore.__new__(PenguinCore)
-    setattr(core, "conversation_manager", _ConversationManager())
-    setattr(core, "_stream_manager", _StreamManager())
-    setattr(core, "emit_ui_event", _emit)
-    setattr(core, "_filter_internal_markers_from_event", lambda data: data)
+    core.conversation_manager = _ConversationManager()
+    core._stream_manager = _StreamManager()
+    core.emit_ui_event = _emit
+    core._filter_internal_markers_from_event = lambda data: data
 
     assert core.abort_streaming_message(
         stream_scope_id="session-123:reviewer"

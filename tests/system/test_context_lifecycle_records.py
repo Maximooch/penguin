@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from penguin.system.context_window import ContextWindowManager
 from penguin.system.state import Message, MessageCategory, Session
 
@@ -74,7 +76,7 @@ def test_context_window_trim_preserves_non_primary_categories() -> None:
     assert unknown_message in trimmed.messages
 
 
-def test_image_trimming_counts_image_parts_not_messages() -> None:
+def test_image_trimming_counts_image_parts_not_messages(tmp_path: Path) -> None:
     cwm = ContextWindowManager(token_counter=lambda content: len(str(content)))
     cwm.max_context_images = 2
 
@@ -83,8 +85,8 @@ def test_image_trimming_counts_image_parts_not_messages() -> None:
         role="user",
         content=[
             {"type": "text", "text": "old"},
-            {"type": "image_url", "image_path": "/tmp/one.png"},
-            {"type": "image_url", "image_path": "/tmp/two.png"},
+            {"type": "image_url", "image_path": str(tmp_path / "one.png")},
+            {"type": "image_url", "image_path": str(tmp_path / "two.png")},
         ],
         category=MessageCategory.DIALOG,
     )
@@ -92,7 +94,7 @@ def test_image_trimming_counts_image_parts_not_messages() -> None:
         role="user",
         content=[
             {"type": "text", "text": "new"},
-            {"type": "image_url", "image_path": "/tmp/three.png"},
+            {"type": "image_url", "image_path": str(tmp_path / "three.png")},
         ],
         category=MessageCategory.DIALOG,
     )
@@ -105,3 +107,13 @@ def test_image_trimming_counts_image_parts_not_messages() -> None:
     assert stats["image_count"] == 1
     assert "[Image removed to save tokens]" in str(trimmed.messages[0].content)
     assert trimmed.messages[1] is new_message
+
+
+def test_default_token_counter_treats_image_path_parts_as_images(
+    tmp_path: Path,
+) -> None:
+    cwm = ContextWindowManager()
+
+    assert cwm._default_token_counter(
+        [{"image_path": str(tmp_path / "image.png")}]
+    ) == 4000

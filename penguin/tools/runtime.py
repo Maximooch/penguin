@@ -85,7 +85,6 @@ class ToolCallRecord:
     name: str
     source: ToolCallSource
     arguments_hash: str
-    arguments: Any = None
     arguments_preview: str = ""
     mutates_state: bool = True
     parallel_safe: bool = False
@@ -101,7 +100,6 @@ class ToolCallRecord:
             "call_id": self.call_id,
             "name": self.name,
             "source": self.source,
-            "arguments": self.arguments,
             "arguments_hash": self.arguments_hash,
             "arguments_preview": self.arguments_preview,
             "mutates_state": self.mutates_state,
@@ -251,7 +249,6 @@ def tool_call_record_from_tool_call(tool_call: ToolCall) -> ToolCallRecord:
         call_id=tool_call.id,
         name=tool_call.name,
         source=tool_call.source,
-        arguments=normalized_arguments,
         arguments_hash=hash_tool_arguments(normalized_arguments),
         arguments_preview=_preview_text(
             rendered_arguments,

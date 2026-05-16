@@ -4369,8 +4369,10 @@ class PenguinCore:
             _scope_session, _, scope_agent_id = resolved_stream_scope_id.partition(":")
             if scope_agent_id.strip():
                 resolved_agent_id = scope_agent_id.strip()
-        if resolved_stream_scope_id and (
-            not resolved_session_id or not resolved_conversation_id
+        if (
+            resolved_stream_scope_id
+            and ":" in resolved_stream_scope_id
+            and (not resolved_session_id or not resolved_conversation_id)
         ):
             scope_session_id = resolved_stream_scope_id.split(":", 1)[0].strip()
             if scope_session_id:
@@ -5312,14 +5314,8 @@ class PenguinCore:
         if action_name == "apply_patch":
             parsed = parse_apply_patch_payload(params)
             patch = parsed.get("patch", "") if isinstance(parsed, dict) else ""
-            error = parsed.get("error") if isinstance(parsed, dict) else None
-            if isinstance(error, str):
-                if isinstance(patch, str) and patch.strip():
-                    metadata["diff"] = patch
-                return "edit", {"filePath": "(patch)"}, metadata
-            tool_input = {"filePath": "(patch)", "patch": patch}
+            files = []
             if isinstance(patch, str):
-                files = []
                 for line in patch.splitlines():
                     match = re.match(
                         r"^\*\*\* (?:Add|Update|Delete) File:\s+(.+?)\s*$",
@@ -5329,6 +5325,12 @@ class PenguinCore:
                         files.append(match.group(1).strip())
                 if files:
                     metadata["files"] = files
+            error = parsed.get("error") if isinstance(parsed, dict) else None
+            if isinstance(error, str):
+                if isinstance(patch, str) and patch.strip():
+                    metadata["diff"] = patch
+                return "edit", {"filePath": "(patch)"}, metadata
+            tool_input = {"filePath": "(patch)", "patch": patch}
             return "edit", tool_input, metadata
 
         if action_name == "patch_file":

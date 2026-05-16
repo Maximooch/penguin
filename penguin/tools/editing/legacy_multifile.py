@@ -62,7 +62,13 @@ class MultiEdit:
                 continue
             try:
                 edit.original_bytes = file_path.read_bytes()
-            except OSError:
+            except OSError as exc:
+                logger.error(
+                    "Failed to snapshot %s before legacy multiedit: %s",
+                    file_path,
+                    exc,
+                    exc_info=True,
+                )
                 return False
         return True
 
