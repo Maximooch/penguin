@@ -519,12 +519,12 @@ class ContextWindowManager:
                 msg for msg in session.messages if msg.category == category
             ]
 
-        # Get the order for trimming based on our priority (from lowest to highest priority)
-        # SYSTEM_OUTPUT (4) trimmed first, then DIALOG (3), then CONTEXT (2), then SYSTEM (1)
+        # Get the order for trimming based on priority, from lowest to highest.
+        # SYSTEM is intentionally excluded because it must never be trimmed.
         trim_order = [
-            MessageCategory.SYSTEM_OUTPUT,  # Trim first - lowest priority
-            MessageCategory.DIALOG,  # Trim second
-            MessageCategory.CONTEXT,  # Trim third
+            category
+            for category in reversed(list(MessageCategory))
+            if category != MessageCategory.SYSTEM
         ]
 
         # Check if total is over budget

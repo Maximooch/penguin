@@ -76,6 +76,28 @@ def test_context_window_trim_preserves_non_primary_categories() -> None:
     assert unknown_message in trimmed.messages
 
 
+def test_context_window_trim_can_remove_over_budget_non_primary_categories() -> None:
+    cwm = ContextWindowManager(token_counter=lambda content: len(str(content)))
+    cwm.max_context_window_tokens = 100
+
+    for category in (
+        MessageCategory.ERROR,
+        MessageCategory.INTERNAL,
+        MessageCategory.UNKNOWN,
+    ):
+        cwm._budgets[category].max_category_tokens = 1
+        message = Message(
+            role="system",
+            content=f"{category.name} payload over budget",
+            category=category,
+        )
+        session = Session(messages=[message])
+
+        trimmed = cwm.trim_session(session)
+
+        assert message not in trimmed.messages
+
+
 def test_image_trimming_counts_image_parts_not_messages(tmp_path: Path) -> None:
     cwm = ContextWindowManager(token_counter=lambda content: len(str(content)))
     cwm.max_context_images = 2

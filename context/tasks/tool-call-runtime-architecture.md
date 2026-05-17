@@ -299,24 +299,43 @@ first-class provider/tool runtime path:
 - Phase 7 now has a minimum model-visible schema contract and conservative
   runtime metadata extraction. The scheduler can consume that metadata later,
   but no parallel execution is enabled yet.
-- A file-edit reliability rewrite is now the next highest-priority tool
-  runtime slice. The existing line-coordinate edit surface is too easy for
-  models to misuse after repeated reads/edits, and `.bak` files have proven
-  more harmful than useful inside user repositories.
+- The Phase 7.5 file-edit reliability rewrite has landed for exact
+  replacements and Codex-style contextual patches. File editing is no longer
+  the main bottleneck; the highest-risk remaining runtime gap is scheduling
+  safety around mutable resources, especially when a model is tempted to use
+  parallel calls for dependent Git, filesystem, process, or test operations.
 
-Phase 6 parallel tool execution remains blocked until the safe-tool audit,
-approval semantics, cancellation behavior, and registry metadata are complete.
+Phase 6 parallel tool execution remains blocked until scheduler-owned effect
+metadata, resource conflict detection, approval semantics, cancellation
+behavior, and registry metadata are complete.
 The remaining practical order is:
 
-1. Rewrite the model-visible file edit surface around exact replacements and a
-   Codex-style patch tool; retire unsafe line-coordinate edit paths.
-2. Audit concrete first-pass tools for read-only and parallel-safe behavior.
-3. Expand registry metadata coverage for approval, long-running/streaming
+1. Keep the new `edit_file`/`apply_patch` surface stable and finish remaining
+   metadata/replay polish around edit results.
+2. Add scheduler-owned effect/resource metadata and an ordered batch execution
+   path for dependent operations that should be bundled but not parallelized.
+3. Add parallel conflict detection before any provider or local parallel
+   execution is enabled.
+4. Expand registry metadata coverage for approval, long-running/streaming
    process behavior, retry safety, provider support, and UI presentation.
-4. Add runtime permission/approval outcomes as structured `ToolResult` statuses.
-5. Defer aggregate per-turn model-visible tool-output caps until after the
+5. Pair long-running job support with the terminal/process runtime foundation:
+   persistent process handles, polling, tailing, stdin, cancellation, and
+   pageable output belong there rather than in a separate ad-hoc job tool.
+6. Add runtime permission/approval outcomes as structured `ToolResult` statuses.
+7. Defer aggregate per-turn model-visible tool-output caps until after the
    record/replay boundary remains stable under real workloads.
-6. Enable Phase 6 parallel execution only for explicitly audited safe subsets.
+8. Defer structured Git/PR wrappers until last. The CLI remains the preferred
+   interface for now; `.git/index.lock` incidents are not enough evidence by
+   themselves to justify first-class Git tools.
+9. Enable Phase 6 parallel execution only for explicitly audited safe subsets.
+
+Current PR scope:
+
+- Focus on Phase 8 scheduling/multi-tool safety and Phase 9 terminal/process
+  handling.
+- Treat Git/PR wrappers, search-scope cleanup, multi/sub-agent orchestration,
+  Blueprint/PM/ITUV helpers, workflow primitives, and journal automation as
+  later phases.
 
 ### Phase 0: Document and Test Current Behavior
 
@@ -595,7 +614,7 @@ Phase 5.6 implementation note:
 
 Status:
 
-- Deferred until Phase 7 metadata exists.
+- Deferred until Phase 7 metadata and Phase 8 scheduling guardrails exist.
 - Do not send provider `parallel_tool_calls` just because a model supports it.
   Penguin must first know which tools are safe to run concurrently and how to
   order, cancel, persist, and replay each result.
@@ -837,7 +856,54 @@ Implementation guidance:
 - Treat deletion of dead edit code as part of the reliability work once tests
   prove the replacement surface.
 
-### Phase 8: Terminal/Process Runtime Foundation
+### Phase 8: Scheduling Safety And Ordered Batches
+
+Goals:
+
+- give every scheduler-visible tool call conservative effect metadata:
+  read-only, filesystem mutation, process mutation, external mutation,
+  network mutation, destructive, or unknown
+- attach resource metadata where practical: filesystem paths, Git index,
+  process/session id, database/schema target, network service, and workspace
+  scope
+- add an ordered batch path for dependent tool calls that should run serially
+  and return one bundled result without encouraging unsafe parallelism
+- reject or serialize unsafe parallel batches before dispatch
+- keep unknown, mutating, approval-required, long-running, and process-backed
+  calls serial by default
+
+Acceptance criteria:
+
+- independent read-only calls can be identified without marking them
+  parallel-safe by default
+- ordered batches run each call sequentially, stop on configured failure
+  boundaries, and preserve deterministic result ordering
+- parallel batches reject obvious resource conflicts, including multiple writes
+  to the same path, delete-parent/write-child combinations, Git mutation mixed
+  with other Git calls, process kill mixed with process writes, and unknown
+  commands mixed with mutable operations
+- conflict decisions are recorded as structured scheduler/tool-result metadata
+  rather than silent model-visible confusion
+- provider-native parallel tool-call flags remain disabled until this scheduler
+  policy has deterministic unit and contract tests
+
+Implementation notes:
+
+- This is the main follow-up from the file-edit rewrite. The edit tools are now
+  reliable enough for normal implementation work; the remaining sharp edge is
+  allowing concurrent mutation without effect/resource awareness.
+- The ordered batch path is not a safety bypass. It is a convenience wrapper
+  over serial scheduling for operations such as status, stage, commit, or
+  command setup sequences that have dependencies.
+- For pure inspection, a single shell/Python command is often simpler and more
+  reliable than many parallel tool calls. Multi-tool scheduling should focus on
+  cases where separate tool APIs are genuinely useful, while mutation remains
+  specialized and guarded.
+- Raw CLI use remains acceptable for Git and PR workflows. First-class Git/PR
+  wrappers should be treated as optional last-mile ergonomics, not a prerequisite
+  for safe scheduling.
+
+### Phase 9: Terminal/Process Runtime Foundation
 
 Goals:
 
@@ -851,6 +917,8 @@ Goals:
   execution
 - keep one-shot command execution as a compatibility wrapper over the process
   runtime where practical
+- make long-running jobs a process-runtime capability: start, poll, tail,
+  write stdin, interrupt, kill, and inspect by process/session id
 
 Acceptance criteria:
 
@@ -867,6 +935,134 @@ Related plan:
   code-navigation tool suites remain tracked in
   `context/tasks/tool-system-future-improvements.md`. This phase only builds
   the runtime foundation those suites need.
+
+### Phase 10: Optional Structured Git/PR Wrappers
+
+Status:
+
+- Deferred until after scheduling safety and terminal/process reliability.
+- The current preferred workflow remains the normal CLI through the command
+  tool, with explicit staging and review before commit or push.
+
+Possible future scope:
+
+- structured helpers for status, staging explicit files, commit, push, PR
+  create, and PR edit
+- temp-file-backed PR body handling to avoid shell escaping issues
+- safety checks for unrelated staged files and dirty worktree scope
+
+Non-goal for near-term runtime work:
+
+- Do not build Git/PR wrappers just to work around local index-lock incidents.
+  Treat those as environment/config issues unless repeated evidence shows the
+  generic CLI workflow is systematically unsafe.
+
+### Phase 11: Search Scope And Tool Introspection Hygiene
+
+Status:
+
+- Deferred until after scheduling and process handling.
+
+Goals:
+
+- make repository search and conversation/history search explicit instead of
+  ambiguous
+- expose tool registry/session introspection for debugging availability issues
+- help models distinguish repo truth from stale pasted conversation snippets,
+  prior tool outputs, or old review text
+
+Possible future scope:
+
+- split or parameterize search as `grep_files`, `grep_conversation`, and
+  `grep_all`, or require a `scope: files | conversation | both` field
+- add a tool-status/debug view with active tool names, accepted channels,
+  schema hash/version, edit tool availability, runtime version, and last schema
+  refresh/restart time
+- keep shell/`rg` as the preferred path for broad repo-only inspection when the
+  model needs exact filesystem truth
+
+Acceptance criteria:
+
+- file-only search cannot accidentally return conversation history
+- conversation search remains available when memory/history lookup is useful
+- diagnostics make tool schema or dispatch desync visible instead of silent
+
+### Phase 12: Typed Multi/Sub-Agent Coordination
+
+Status:
+
+- Deferred. This is orchestration/runtime design, not required for the current
+  terminal and multi-tool PR.
+
+Goals:
+
+- give agents explicit workspace, branch, task, and path ownership metadata
+- make sub-agent roles typed and capability-scoped
+- keep parent agents responsible for final integration, validation, commit, and
+  PR handoff
+- make sub-agent outputs structured enough to audit and merge safely
+
+Possible future scope:
+
+- file/path claims: `agent_id`, `task_id`, `branch`, `allowed_paths`, and
+  `claimed_files`
+- role contracts for explorer, implementer, reviewer, test-runner, docs-writer,
+  migration-auditor, and other constrained roles
+- explicit parent-to-child context packets with task charter, relevant files,
+  constraints, and acceptance criteria
+- machine-checkable child results with status, files reviewed/touched,
+  findings, risks, and tests run
+
+Acceptance criteria:
+
+- read-only roles cannot mutate files
+- test-runner roles can run commands without patching
+- parent integration can reject conflicting file claims or incomplete structured
+  outputs before commit/PR work
+
+### Phase 13: Blueprint, PM, RunMode, ITUV, And Journal Tooling
+
+Status:
+
+- Deferred. These are product/workflow integrations layered on top of the core
+  tool runtime once scheduling and process handling are stable.
+
+Goals:
+
+- expose Blueprint/PM helpers as deterministic validation and explanation tools
+- make ITUV phase movement evidence-backed instead of agent-declared progress
+- keep journal automation milestone-focused and separate raw work logs from
+  durable product memory
+- eventually combine ordered steps, validation gates, file claims, safe
+  mutation, and journal summaries into reusable RunMode/workflow primitives
+
+Possible future scope:
+
+- Blueprint validator CLI/tool: diagnostics, task count, dependency count,
+  topological order, cycles, and optional parsed JSON
+- Blueprint diff tool: semantic task, dependency, acceptance, routing, and ITUV
+  changes between revisions
+- PM transition inspector: allowed/denied transition, reason, resulting
+  phase/status, and required evidence
+- dependency readiness explainer for blocked tasks and missing artifacts
+- ITUV event log: phase started/completed/failed, evidence recorded, retry
+  scheduled, blocked, and resumed
+- per-phase retry budgets so failed TEST/USE/VERIFY loops do not run forever
+- journal entries for commits, PRs, major decisions, blockers, failed
+  assumptions, and follow-up debt
+- end-of-day or end-of-PR journal-to-memory review that proposes durable
+  `MEMORY.md` entries for approval
+
+Acceptance criteria:
+
+- ITUV keeps phase and status orthogonal: for example, blocked while TESTING is
+  different from blocked before implementation
+- agent `task_done` can move work to DONE plus pending review, but trusted
+  review/user policy owns final completed status
+- stream text, reasoning/tool logs, evidence, PM transitions, and journal
+  entries remain distinct record types
+- journal automation does not record every tool call and does not become a
+  dumping ground
 
 ## Non-Goals
 
@@ -981,6 +1177,13 @@ Working decisions:
 - Keep ActionXML multiple-call execution opt-in at first.
 - Treat parallel-safe tool metadata as audit-required. No tool should become
   parallel-safe by default.
+- Treat ordered batching as a serial scheduler feature, not as parallelism.
+  It should make dependent operations easier to run without tempting the model
+  to use `multi_tool_use.parallel` for mutable workflows.
+- Add effect/resource metadata before safe parallelism: unknown or mutating
+  calls stay serial, and obvious conflicts such as Git index mutation,
+  overlapping filesystem writes, parent delete plus child write, process
+  mutation, or database/schema mutation should be rejected or serialized.
 - Enforce a minimum registry contract before model-visible schemas come from
   the registry: canonical name, description, input schema, and concise
   model-facing usage guidance. Additional runtime fields such as handlers,
@@ -997,6 +1200,11 @@ Working decisions:
 - Long-running process output should not be solved with one fixed output
   limit. It needs process/session records, pageable output, cancellation, and
   model-visible `ToolResult` references to current output slices.
+- Pair long-running jobs with the terminal/process runtime. Start/poll/tail/kill
+  belongs to the process lifecycle layer, not a separate ad-hoc job abstraction.
+- Defer structured Git/PR tools until last. Raw CLI use is currently cleaner,
+  and local index-lock incidents alone should not drive first-class Git tool
+  design.
 - Defer aggregate per-turn model-visible tool-output caps until the first-class
   record and replay boundary is stable. When implemented, express the policy as
   a percentage of usable provider context plus an absolute ceiling, but split it
