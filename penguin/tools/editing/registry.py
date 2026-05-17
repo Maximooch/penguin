@@ -3,6 +3,19 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Dict, List
 
+READ_ONLY_PERMISSIONS: Dict[str, Any] = {
+    "mutates_state": False,
+    "requires_approval": False,
+    "parallel_safe": True,
+    "risk": "low",
+}
+EDIT_PERMISSIONS: Dict[str, Any] = {
+    "mutates_state": True,
+    "requires_approval": True,
+    "parallel_safe": False,
+    "risk": "high",
+}
+
 EDIT_TOOL_SCHEMAS: List[Dict[str, Any]] = [
     {
         "name": "read_file",
@@ -33,6 +46,7 @@ EDIT_TOOL_SCHEMAS: List[Dict[str, Any]] = [
             },
             "required": ["path"],
         },
+        "x-penguin-permissions": READ_ONLY_PERMISSIONS,
     },
     {
         "name": "write_file",
@@ -66,6 +80,7 @@ EDIT_TOOL_SCHEMAS: List[Dict[str, Any]] = [
             },
             "required": ["path", "content"],
         },
+        "x-penguin-permissions": EDIT_PERMISSIONS,
     },
     {
         "name": "edit_file",
@@ -101,6 +116,7 @@ EDIT_TOOL_SCHEMAS: List[Dict[str, Any]] = [
             },
             "required": ["path", "old_string", "new_string"],
         },
+        "x-penguin-permissions": EDIT_PERMISSIONS,
     },
     {
         "name": "apply_patch",
@@ -121,6 +137,7 @@ EDIT_TOOL_SCHEMAS: List[Dict[str, Any]] = [
             },
             "required": ["patch"],
         },
+        "x-penguin-permissions": EDIT_PERMISSIONS,
     },
 ]
 

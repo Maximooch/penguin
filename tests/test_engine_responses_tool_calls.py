@@ -8,7 +8,7 @@ import pytest
 
 from penguin.engine import Engine, LoopState
 from penguin.llm.runtime import execute_pending_tool_call, execute_pending_tool_calls
-from penguin.tools.runtime import ToolExecutionPolicy
+from penguin.tools.runtime import ORDERED_TOOL_BATCH_NAME, ToolExecutionPolicy
 
 
 def test_prepare_responses_tools_enables_openai_native_tools() -> None:
@@ -338,6 +338,189 @@ async def test_multiple_pending_responses_tool_calls_execute_serially() -> None:
 
 
 @pytest.mark.asyncio
+async def test_ordered_tool_batch_executes_children_serially_as_parent_result() -> None:
+    class _Handler:
+        def __init__(self) -> None:
+            self._tool_calls = [
+                {
+                    "name": ORDERED_TOOL_BATCH_NAME,
+                    "arguments": {
+                        "tool_uses": [
+                            {"tool": "execute", "arguments": {"command": "pwd"}},
+                            {"tool": "execute", "arguments": {"command": "ls"}},
+                        ]
+                    },
+                    "call_id": "batch_1",
+                }
+            ]
+
+        def get_and_clear_pending_tool_calls(self) -> list[dict[str, object]]:
+            result = self._tool_calls
+            self._tool_calls = []
+            return result
+
+    executed: list[str] = []
+    call_records = []
+    result_records = []
+    started = []
+    completed = []
+
+    def _execute_tool(tool_name: str, tool_args: dict[str, object]) -> str:
+        executed.append(f"{tool_name}:{tool_args['command']}")
+        return f"ran {tool_args['command']}"
+
+    async def _emit_action_start(payload: dict[str, object]) -> None:
+        started.append(payload)
+
+    async def _emit_action_result(payload: dict[str, object]) -> None:
+        completed.append(payload)
+
+    results = await execute_pending_tool_calls(
+        api_client=SimpleNamespace(
+            client_handler=_Handler(),
+            model_config=SimpleNamespace(provider="openai", model="gpt-5.5"),
+        ),
+        tool_manager=SimpleNamespace(
+            execute_tool=_execute_tool,
+            get_available_tool_names=lambda: {ORDERED_TOOL_BATCH_NAME, "execute"},
+            get_tool_runtime_metadata=lambda _name: {},
+        ),
+        persist_action_result=lambda *_args: None,
+        persist_tool_call_record=call_records.append,
+        persist_tool_result_record=lambda call, result: result_records.append(
+            (call, result)
+        ),
+        emit_action_start=_emit_action_start,
+        emit_action_result=_emit_action_result,
+    )
+
+    assert executed == ["execute:pwd", "execute:ls"]
+    assert [result["tool_call_id"] for result in results] == ["batch_1"]
+    assert results[0]["action"] == ORDERED_TOOL_BATCH_NAME
+    assert "2/2 child calls completed" in results[0]["result"]
+    assert [call.name for call in call_records] == [
+        ORDERED_TOOL_BATCH_NAME,
+        "execute",
+        "execute",
+    ]
+    assert [result.name for _call, result in result_records] == [
+        "execute",
+        "execute",
+        ORDERED_TOOL_BATCH_NAME,
+    ]
+    assert [item["id"] for item in started] == [
+        "batch_1",
+        "batch_1:child:0:execute",
+        "batch_1:child:1:execute",
+    ]
+    assert [item["id"] for item in completed] == [
+        "batch_1:child:0:execute",
+        "batch_1:child:1:execute",
+        "batch_1",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ordered_tool_batch_preflight_failure_executes_no_children() -> None:
+    class _Handler:
+        def __init__(self) -> None:
+            self._tool_calls = [
+                {
+                    "name": ORDERED_TOOL_BATCH_NAME,
+                    "arguments": {
+                        "tool_uses": [
+                            {"tool": "missing_tool", "arguments": {"path": "x"}}
+                        ]
+                    },
+                    "call_id": "batch_1",
+                }
+            ]
+
+        def get_and_clear_pending_tool_calls(self) -> list[dict[str, object]]:
+            result = self._tool_calls
+            self._tool_calls = []
+            return result
+
+    call_records = []
+    result_records = []
+
+    def _execute_tool(_tool_name: str, _tool_args: dict[str, object]) -> str:
+        raise AssertionError("preflight failure must not execute children")
+
+    results = await execute_pending_tool_calls(
+        api_client=SimpleNamespace(
+            client_handler=_Handler(),
+            model_config=SimpleNamespace(provider="openai", model="gpt-5.5"),
+        ),
+        tool_manager=SimpleNamespace(
+            execute_tool=_execute_tool,
+            get_available_tool_names=lambda: {ORDERED_TOOL_BATCH_NAME, "read_file"},
+            get_tool_runtime_metadata=lambda _name: {},
+        ),
+        persist_action_result=lambda *_args: None,
+        persist_tool_call_record=call_records.append,
+        persist_tool_result_record=lambda call, result: result_records.append(
+            (call, result)
+        ),
+    )
+
+    assert results[0]["status"] == "error"
+    assert "unknown tool 'missing_tool'" in results[0]["result"]
+    assert [call.name for call in call_records] == [ORDERED_TOOL_BATCH_NAME]
+    assert [result.name for _call, result in result_records] == [
+        ORDERED_TOOL_BATCH_NAME
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ordered_tool_batch_stops_on_first_child_error_by_default() -> None:
+    class _Handler:
+        def __init__(self) -> None:
+            self._tool_calls = [
+                {
+                    "name": ORDERED_TOOL_BATCH_NAME,
+                    "arguments": {
+                        "tool_uses": [
+                            {"tool": "execute", "arguments": {"command": "boom"}},
+                            {"tool": "execute", "arguments": {"command": "ls"}},
+                        ]
+                    },
+                    "call_id": "batch_1",
+                }
+            ]
+
+        def get_and_clear_pending_tool_calls(self) -> list[dict[str, object]]:
+            result = self._tool_calls
+            self._tool_calls = []
+            return result
+
+    executed: list[str] = []
+
+    def _execute_tool(_tool_name: str, tool_args: dict[str, object]) -> str:
+        executed.append(str(tool_args["command"]))
+        if tool_args["command"] == "boom":
+            raise RuntimeError("boom")
+        return "ran"
+
+    results = await execute_pending_tool_calls(
+        api_client=SimpleNamespace(
+            client_handler=_Handler(),
+            model_config=SimpleNamespace(provider="openai", model="gpt-5.5"),
+        ),
+        tool_manager=SimpleNamespace(
+            execute_tool=_execute_tool,
+            get_available_tool_names=lambda: {ORDERED_TOOL_BATCH_NAME, "execute"},
+            get_tool_runtime_metadata=lambda _name: {},
+        ),
+        persist_action_result=lambda *_args: None,
+    )
+
+    assert executed == ["boom"]
+    assert results[0]["status"] == "error"
+    assert "Stopped after first failed child call" in results[0]["result"]
+
+
+@pytest.mark.asyncio
 async def test_pending_responses_tool_call_preserves_dict_arguments() -> None:
     class _Handler:
         def __init__(self) -> None:
@@ -463,6 +646,52 @@ async def test_pending_responses_tool_calls_honor_execution_policy() -> None:
 
     assert executed == ["pwd"]
     assert [result["tool_call_id"] for result in results] == ["call_pwd"]
+
+
+@pytest.mark.asyncio
+async def test_pending_responses_tool_calls_honor_stop_on_error_policy() -> None:
+    class _Handler:
+        def __init__(self) -> None:
+            self._tool_calls = [
+                {
+                    "name": "execute",
+                    "arguments": '{"command":"boom"}',
+                    "call_id": "call_boom",
+                },
+                {
+                    "name": "execute",
+                    "arguments": '{"command":"ls"}',
+                    "call_id": "call_ls",
+                },
+            ]
+
+        def get_and_clear_pending_tool_calls(self) -> list[dict[str, str]]:
+            result = self._tool_calls
+            self._tool_calls = []
+            return result
+
+    executed: list[str] = []
+
+    def _execute_tool(_tool_name: str, tool_args: dict[str, object]) -> str:
+        executed.append(str(tool_args["command"]))
+        raise RuntimeError("boom")
+
+    results = await execute_pending_tool_calls(
+        api_client=SimpleNamespace(
+            client_handler=_Handler(),
+            model_config=SimpleNamespace(provider="openai", model="gpt-5.5"),
+        ),
+        tool_manager=SimpleNamespace(execute_tool=_execute_tool),
+        persist_action_result=lambda *_args: None,
+        execution_policy=ToolExecutionPolicy(
+            catch_exceptions=True,
+            stop_on_error=True,
+        ),
+    )
+
+    assert executed == ["boom"]
+    assert [result["tool_call_id"] for result in results] == ["call_boom"]
+    assert results[0]["status"] == "error"
 
 
 def test_wallet_guard_does_not_break_on_tool_only_empty_iteration() -> None:

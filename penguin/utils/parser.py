@@ -92,6 +92,11 @@ class ActionType(Enum):
     PERPLEXITY_SEARCH = "perplexity_search"
     # REPL, iPython, shell, bash, zsh, networking, file_management, task management, etc.
     # TODO: Add more actions as needed
+    # TODO(process-runtime): These ActionXML process tags still use the legacy
+    # ProcessManager path below. Native provider tools with the same public
+    # `process_*` names route through ToolManager/ProcessRuntime instead.
+    # Migrate or deprecate this ActionXML surface in a follow-up PR so the two
+    # protocols do not keep different payload shapes and lifecycle semantics.
     PROCESS_START = "process_start"
     PROCESS_STOP = "process_stop"
     PROCESS_STATUS = "process_status"
@@ -1980,6 +1985,10 @@ class ActionExecutor:
         return results
 
     async def _process_start(self, params: str) -> str:
+        # TODO(process-runtime): Legacy ActionXML compatibility path. Native
+        # `process_start` uses ToolManager.process_runtime with JSON args
+        # (`command`, optional `cwd`/`env`) and returns a process_id; this older
+        # path expects "name: command" and stores named processes separately.
         logger.debug(f"Starting process with params: {params}")
         name, command = params.split(":", 1)
         return await self.process_manager.start_process(name.strip(), command.strip())

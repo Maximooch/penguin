@@ -160,6 +160,10 @@ Penguin supports two tool-call protocols:
 The tool names, arguments, and completion semantics are the same in both paths.
 Use native tool calls first when they are available; use ActionXML only as the
 compatibility fallback.
+
+When native tools expose `ordered_tool_batch`, use it for dependent or mutating
+tool sequences that must run serially. Use parallel batching only for
+independent, read-only, non-conflicting inspection.
 """
 
 

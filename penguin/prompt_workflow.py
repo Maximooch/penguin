@@ -231,7 +231,14 @@ Wrong (Batch - Do not do this):
 <execute>Create tests<execute>
 ```
 
-**Exception:** Simple, related operations can be batched (e.g., creating multiple empty files).
+**Ordered native-tool batching:** When native tools expose `ordered_tool_batch`,
+use it for dependent or mutating sequences that must run serially. Do not use
+parallel batching for Git, filesystem mutation, process control, installs,
+tests, or any operation whose result/order matters.
+
+**Parallel batching:** Reserve parallel tool calls only for independent,
+read-only, non-conflicting inspection. Unknown or mutating work must remain
+serial.
 """
 
 # =============================================================================

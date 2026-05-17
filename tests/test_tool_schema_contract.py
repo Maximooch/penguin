@@ -75,11 +75,27 @@ def test_tool_manager_runtime_metadata_keeps_parallelism_disabled() -> None:
 
     unknown = manager.get_tool_runtime_metadata("missing_tool")
     read_image = manager.get_tool_runtime_metadata("read_image")
+    ordered_batch = manager.get_tool_runtime_metadata("ordered_tool_batch")
 
     assert unknown["parallel_safe"] is False
     assert unknown["requires_approval"] is True
     assert read_image["mutates_state"] is False
     assert "parallel_safe" in read_image
+    assert ordered_batch["mutates_state"] is True
+    assert ordered_batch["parallel_safe"] is False
+
+
+def test_tool_manager_exposes_ordered_tool_batch_to_responses() -> None:
+    manager = ToolManager({}, lambda *_args, **_kwargs: None, fast_startup=True)
+
+    schemas = manager.get_responses_tools(include_web_search=False)
+    names = {schema.get("name") for schema in schemas}
+
+    assert "ordered_tool_batch" in names
+    ordered_schema = next(
+        schema for schema in schemas if schema.get("name") == "ordered_tool_batch"
+    )
+    assert ordered_schema["parameters"]["required"] == ["tool_uses"]
 
 
 def test_tool_manager_redacts_legacy_new_content_diagnostics() -> None:

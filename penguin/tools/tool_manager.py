@@ -69,6 +69,7 @@ from penguin.tools.image_tools import ReadImageTool
 # Lazy import for PyDoll to avoid breaking if pydoll-python is not installed
 _pydoll_tools_imported = False
 _pydoll_import_error = None
+ORDERED_TOOL_BATCH_NAME = "ordered_tool_batch"
 
 
 def _ensure_pydoll_imports():
@@ -323,6 +324,7 @@ class ToolManager:
 
             # Permission enforcer (lazy initialized)
             self._permission_enforcer = None
+            self._process_runtime = None
             self._permission_enabled = os.environ.get(
                 "PENGUIN_YOLO", ""
             ).lower() not in ("1", "true", "yes")
@@ -364,6 +366,10 @@ class ToolManager:
                 "get_file_map": "self.file_map.get_formatted_file_map",
                 "lint_python": "penguin.tools.core.lint_python.lint_python",
                 "execute_command": "self.execute_command",
+                "process_start": "self.process_runtime.start",
+                "process_poll": "self.process_runtime.poll",
+                "process_write_stdin": "self.process_runtime.write_stdin",
+                "process_stop": "self.process_runtime.stop",
                 "add_summary_note": "self.summary_notes_tool.add_summary",
                 "perplexity_search": "self.perplexity_provider.search",
                 "browser_navigate": "self.browser_navigation_tool.execute",
@@ -427,6 +433,12 @@ class ToolManager:
 
     def _define_tool_schemas(self) -> List[Dict[str, Any]]:
         """Define tool schemas without any initialization - pure schema definitions."""
+        read_only_permissions = {
+            "mutates_state": False,
+            "requires_approval": False,
+            "parallel_safe": True,
+            "risk": "low",
+        }
         schemas = [
             {
                 "name": "create_folder",
@@ -632,6 +644,7 @@ class ToolManager:
                     },
                     "required": ["path"],
                 },
+                "x-penguin-permissions": read_only_permissions,
             },
             {
                 "name": "list_files",
@@ -658,6 +671,7 @@ class ToolManager:
                         },
                     },
                 },
+                "x-penguin-permissions": read_only_permissions,
             },
             {
                 "name": "add_declarative_note",
@@ -702,6 +716,7 @@ class ToolManager:
                     },
                     "required": ["pattern"],
                 },
+                "x-penguin-permissions": read_only_permissions,
             },
             {
                 "name": "memory_search",
@@ -722,6 +737,7 @@ class ToolManager:
                     },
                     "required": ["query"],
                 },
+                "x-penguin-permissions": read_only_permissions,
             },
             {
                 "name": "code_execution",
@@ -749,6 +765,7 @@ class ToolManager:
                         }
                     },
                 },
+                "x-penguin-permissions": read_only_permissions,
             },
             {
                 "name": "find_file",
@@ -776,6 +793,7 @@ class ToolManager:
                     },
                     "required": ["filename"],
                 },
+                "x-penguin-permissions": read_only_permissions,
             },
             {
                 "name": "lint_python",
@@ -810,6 +828,158 @@ class ToolManager:
                 },
             },
             {
+                "name": "process_start",
+                "description": "Start a persistent shell process for long-running commands. Use process_poll to read output and process_stop to stop it.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description": "The shell command to run",
+                        },
+                        "cwd": {
+                            "type": "string",
+                            "description": "Optional working directory; defaults to the execution root",
+                        },
+                        "env": {
+                            "type": "object",
+                            "additionalProperties": {"type": "string"},
+                            "description": "Optional environment variable overrides",
+                        },
+                    },
+                    "required": ["command"],
+                },
+                "x-penguin-permissions": {
+                    "mutates_state": True,
+                    "requires_approval": True,
+                    "parallel_safe": False,
+                    "long_running": True,
+                    "streams_output": True,
+                    "risk": "high",
+                },
+            },
+            {
+                "name": "process_poll",
+                "description": "Poll a persistent process for bounded stdout/stderr output and current lifecycle state.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "process_id": {"type": "string"},
+                        "since_sequence": {
+                            "type": "integer",
+                            "default": 0,
+                            "description": "Only return output after this sequence number",
+                        },
+                        "max_chars": {
+                            "type": "integer",
+                            "default": 12000,
+                            "description": "Maximum output characters to return",
+                        },
+                    },
+                    "required": ["process_id"],
+                },
+                "x-penguin-permissions": {
+                    "mutates_state": False,
+                    "requires_approval": False,
+                    "parallel_safe": False,
+                    "long_running": False,
+                    "streams_output": True,
+                    "risk": "low",
+                },
+            },
+            {
+                "name": "process_write_stdin",
+                "description": "Write text to the stdin of a persistent process.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "process_id": {"type": "string"},
+                        "text": {"type": "string"},
+                    },
+                    "required": ["process_id", "text"],
+                },
+                "x-penguin-permissions": {
+                    "mutates_state": True,
+                    "requires_approval": True,
+                    "parallel_safe": False,
+                    "risk": "medium",
+                },
+            },
+            {
+                "name": "process_stop",
+                "description": "Stop a persistent process using terminate, interrupt, or kill.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "process_id": {"type": "string"},
+                        "mode": {
+                            "type": "string",
+                            "enum": ["terminate", "interrupt", "kill"],
+                            "default": "terminate",
+                        },
+                        "timeout": {"type": "number", "default": 2.0},
+                    },
+                    "required": ["process_id"],
+                },
+                "x-penguin-permissions": {
+                    "mutates_state": True,
+                    "requires_approval": True,
+                    "parallel_safe": False,
+                    "risk": "medium",
+                },
+            },
+            {
+                "name": ORDERED_TOOL_BATCH_NAME,
+                "description": (
+                    "Run multiple dependent tool calls strictly in order. Use "
+                    "this instead of parallel batching for mutating or ordered "
+                    "workflows; each child call goes through normal tool "
+                    "dispatch and permission checks."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "tool_uses": {
+                            "type": "array",
+                            "description": (
+                                "Child calls to execute serially in listed order"
+                            ),
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "tool": {
+                                        "type": "string",
+                                        "description": "Registered child tool name",
+                                    },
+                                    "arguments": {
+                                        "type": "object",
+                                        "description": (
+                                            "JSON object arguments for the child tool"
+                                        ),
+                                        "additionalProperties": True,
+                                    },
+                                },
+                                "required": ["tool", "arguments"],
+                            },
+                        },
+                        "stop_on_error": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": (
+                                "Stop after the first child error. Defaults to true."
+                            ),
+                        },
+                    },
+                    "required": ["tool_uses"],
+                },
+                "x-penguin-permissions": {
+                    "mutates_state": True,
+                    "requires_approval": True,
+                    "parallel_safe": False,
+                    "risk": "high",
+                },
+            },
+            {
                 "name": "read_image",
                 "description": "Load a local image file into the conversation as a multimodal image artifact. Use this for screenshots, diagrams, UI captures, and other image files.",
                 "input_schema": {
@@ -830,12 +1000,7 @@ class ToolManager:
                     },
                     "required": ["path"],
                 },
-                "x-penguin-permissions": {
-                    "mutates_state": False,
-                    "requires_approval": False,
-                    "parallel_safe": True,
-                    "risk": "low",
-                },
+                "x-penguin-permissions": read_only_permissions,
             },
             {
                 "name": "add_summary_note",
@@ -2068,6 +2233,18 @@ class ToolManager:
         return self._read_image_tool
 
     @property
+    def process_runtime(self):
+        """Lazy load the persistent process runtime."""
+
+        if self._process_runtime is None:
+            with profile_operation("ToolManager.lazy_load_process_runtime"):
+                from penguin.tools.process_runtime import ProcessRuntime
+
+                logger.debug("Lazy-loading process runtime")
+                self._process_runtime = ProcessRuntime()
+        return self._process_runtime
+
+    @property
     def permission_enforcer(self):
         """Lazy load permission enforcer with workspace boundary policy."""
         if self._permission_enforcer is None and self._permission_enabled:
@@ -2516,6 +2693,43 @@ class ToolManager:
                 return runtime_metadata_from_tool_schema(schema).to_dict()
         return runtime_metadata_from_tool_schema({}).to_dict()
 
+    def get_available_tool_names(self) -> set[str]:
+        """Return registered canonical and legacy tool names for preflight checks."""
+
+        names: set[str] = set()
+        for schema in self.get_tools():
+            name = schema.get("name") if isinstance(schema, dict) else None
+            if isinstance(name, str) and name.strip():
+                names.add(self._canonical_tool_name(name.strip()))
+        names.update(self._tool_aliases.keys())
+        names.update(self._tool_aliases.values())
+        return names
+
+    def get_available_tool_schemas(self) -> dict[str, dict[str, Any]]:
+        """Return registered tool schemas keyed by canonical and alias names."""
+
+        schemas: dict[str, dict[str, Any]] = {}
+        for schema in self.get_tools():
+            name = schema.get("name") if isinstance(schema, dict) else None
+            if not isinstance(name, str) or not name.strip():
+                continue
+            canonical_name = self._canonical_tool_name(name.strip())
+            schemas[canonical_name] = schema
+            aliases = schema.get("aliases")
+            if isinstance(aliases, list):
+                for alias in aliases:
+                    if isinstance(alias, str) and alias.strip():
+                        schemas[alias.strip()] = schema
+        for alias, canonical_name in self._tool_aliases.items():
+            if canonical_name in schemas:
+                schemas[alias] = schemas[canonical_name]
+        return schemas
+
+    def has_tool(self, tool_name: str) -> bool:
+        """Return whether a tool name can be dispatched by this manager."""
+
+        return self._canonical_tool_name(tool_name) in self.get_available_tool_names()
+
     def _canonical_tool_name(self, tool_name: str) -> str:
         """Resolve a requested tool name to its canonical public name."""
         current = str(tool_name or "").strip()
@@ -2530,8 +2744,8 @@ class ToolManager:
     ) -> List[Dict[str, Any]]:
         """Return tools in OpenAI/Responses API function-calling format.
 
-        Only include file/code/command related tools by default. Browser and process
-        management tools are excluded unless explicitly allowed.
+        Include the curated file/code/command/process tools by default. Browser
+        tools stay restricted to explicitly allowed diagnostics unless requested.
         """
         # Default curated set for file/code/command edits/executions
         default_allowed = [
@@ -2548,6 +2762,11 @@ class ToolManager:
             "analyze_project",
             "code_execution",
             "execute_command",
+            "process_start",
+            "process_poll",
+            "process_write_stdin",
+            "process_stop",
+            ORDERED_TOOL_BATCH_NAME,
             "grep_search",
             "finish_response",
             "finish_task",
@@ -3740,6 +3959,7 @@ class ToolManager:
             "replacement",
         }
         if tool_name not in {
+            ORDERED_TOOL_BATCH_NAME,
             "apply_patch",
             "create_file",
             "edit_file",
@@ -3765,6 +3985,121 @@ class ToolManager:
 
         redacted = _redact(tool_input)
         return redacted if isinstance(redacted, dict) else {}
+
+    def _tool_result_from_child_output(
+        self,
+        tool_call: Any,
+        output: Any,
+        *,
+        started_at: float,
+        ended_at: float,
+    ) -> Any:
+        """Normalize one direct ordered-batch child output."""
+
+        from penguin.tools.runtime import ToolResult
+
+        status = "completed"
+        output_text = output
+        if isinstance(output, dict):
+            if output.get("error") or output.get("status") == "error":
+                status = "error"
+            output_text = output.get("result", output.get("output", output))
+        elif isinstance(output, str):
+            try:
+                parsed = json.loads(output)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, dict) and (
+                parsed.get("error") or parsed.get("status") == "error"
+            ):
+                status = "error"
+        return ToolResult(
+            call_id=tool_call.id,
+            name=tool_call.name,
+            status=status,
+            output=str(output_text if output_text is not None else ""),
+            started_at=started_at,
+            ended_at=ended_at,
+        )
+
+    def _execute_ordered_tool_batch(
+        self,
+        tool_input: dict[str, Any],
+        *,
+        context: Optional[dict[str, Any]] = None,
+    ) -> str:
+        """Execute a model-visible ordered batch through normal tool dispatch."""
+
+        from penguin.tools.runtime import (
+            ToolCall,
+            ToolExecutionPolicy,
+            ToolResult,
+            execute_tool_calls_ordered,
+            ordered_tool_batch_preflight_error_result,
+            ordered_tool_batch_result_from_results,
+            parse_ordered_tool_batch_plan,
+        )
+
+        parent_call = ToolCall(
+            id=f"{ORDERED_TOOL_BATCH_NAME}_{int(time.time() * 1000)}",
+            name=ORDERED_TOOL_BATCH_NAME,
+            arguments=tool_input,
+            source="internal",
+        )
+        plan = parse_ordered_tool_batch_plan(
+            parent_call,
+            available_tool_names=self.get_available_tool_names(),
+            available_tool_schemas=self.get_available_tool_schemas(),
+        )
+        if plan.error:
+            result = ordered_tool_batch_preflight_error_result(parent_call, plan)
+            return json.dumps(
+                {
+                    "tool": ORDERED_TOOL_BATCH_NAME,
+                    "status": result.status,
+                    "error": result.output,
+                    "metadata": result.structured_output,
+                }
+            )
+
+        async def _run_children() -> list[ToolResult]:
+            def _execute_child(tool_call: ToolCall) -> ToolResult:
+                child_args = (
+                    tool_call.arguments if isinstance(tool_call.arguments, dict) else {}
+                )
+                started_at = time.time()
+                output = self.execute_tool(tool_call.name, child_args, context=context)
+                ended_at = time.time()
+                return self._tool_result_from_child_output(
+                    tool_call,
+                    output,
+                    started_at=started_at,
+                    ended_at=ended_at,
+                )
+
+            return await execute_tool_calls_ordered(
+                list(plan.tool_calls),
+                _execute_child,
+                policy=ToolExecutionPolicy(
+                    catch_exceptions=True,
+                    stop_on_error=plan.stop_on_error,
+                ),
+            )
+
+        child_results = self._execute_async_tool(_run_children())
+        result = ordered_tool_batch_result_from_results(
+            parent_call,
+            plan,
+            child_results,
+        )
+        return json.dumps(
+            {
+                "tool": ORDERED_TOOL_BATCH_NAME,
+                "status": result.status,
+                "result": result.output,
+                "metadata": result.structured_output,
+            }
+        )
 
     def execute_tool(
         self, tool_name: str, tool_input: dict, context: dict = None
@@ -4007,6 +4342,37 @@ class ToolManager:
                 ),
                 "execute_command": lambda: self.execute_command(
                     tool_input["command"], cwd=file_root
+                ),
+                "process_start": lambda: self.process_runtime.start(
+                    tool_input["command"],
+                    cwd=tool_input.get("cwd") or file_root,
+                    env=(
+                        tool_input.get("env")
+                        if isinstance(tool_input.get("env"), dict)
+                        else None
+                    ),
+                ),
+                "process_poll": lambda: self.process_runtime.poll(
+                    tool_input["process_id"],
+                    since_sequence=int(tool_input.get("since_sequence", 0) or 0),
+                    max_chars=(
+                        int(tool_input["max_chars"])
+                        if tool_input.get("max_chars") is not None
+                        else 12000
+                    ),
+                ),
+                "process_write_stdin": lambda: self.process_runtime.write_stdin(
+                    tool_input["process_id"],
+                    tool_input.get("text", ""),
+                ),
+                "process_stop": lambda: self.process_runtime.stop(
+                    tool_input["process_id"],
+                    mode=tool_input.get("mode", "terminate"),
+                    timeout=float(tool_input.get("timeout", 2.0) or 2.0),
+                ),
+                ORDERED_TOOL_BATCH_NAME: lambda: self._execute_ordered_tool_batch(
+                    tool_input,
+                    context=effective_context,
                 ),
                 "add_summary_note": lambda: self.add_summary_note(
                     tool_input["category"], tool_input["content"]

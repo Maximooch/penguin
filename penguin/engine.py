@@ -61,9 +61,10 @@ from penguin.tools.runtime import (
     ToolCall,
     ToolExecutionPolicy,
     ToolResult,
-    execute_tool_calls_serially,
+    execute_tool_calls_ordered,
     image_artifacts_from_action_result,
     legacy_action_result_from_tool_result,
+    tool_call_with_schedule_metadata,
     tool_call_record_from_tool_call,
     tool_calls_from_codeact_actions,
     tool_result_record_from_tool_result,
@@ -3097,7 +3098,15 @@ class Engine:
             return action_results
 
         actions: List[CodeActAction] = parse_action(assistant_response)
-        tool_calls = tool_calls_from_codeact_actions(actions)
+        tool_manager = getattr(action_executor, "tool_manager", None)
+        metadata_getter = getattr(tool_manager, "get_tool_runtime_metadata", None)
+        tool_calls = [
+            tool_call_with_schedule_metadata(
+                tool_call,
+                metadata_getter(tool_call.name) if callable(metadata_getter) else None,
+            )
+            for tool_call in tool_calls_from_codeact_actions(actions)
+        ]
         logger.debug(
             "[AUTO-CONTINUE FIX] Parsed %s actions from response", len(tool_calls)
         )
@@ -3137,7 +3146,7 @@ class Engine:
         async def _execute_actionxml_call(tool_call: Any) -> Any:
             return await action_executor.execute_action(tool_call.raw)
 
-        scheduler_results = await execute_tool_calls_serially(
+        scheduler_results = await execute_tool_calls_ordered(
             scheduled_tool_calls,
             _execute_actionxml_call,
             policy=self._tool_execution_policy(cm, max_calls=1),

@@ -312,22 +312,28 @@ The remaining practical order is:
 
 1. Keep the new `edit_file`/`apply_patch` surface stable and finish remaining
    metadata/replay polish around edit results.
-2. Add scheduler-owned effect/resource metadata and an ordered batch execution
-   path for dependent operations that should be bundled but not parallelized.
-3. Add parallel conflict detection before any provider or local parallel
+2. Add scheduler-owned effect/resource metadata and an internal ordered
+   execution path for dependent operations that should be bundled but not
+   parallelized.
+3. Add Phase 8.1 as the model-visible ordered multi-tool wrapper so agents have
+   a safe serial batching affordance instead of misusing `multi_tool_use.parallel`.
+4. Add parallel conflict detection before any provider or local parallel
    execution is enabled.
-4. Expand registry metadata coverage for approval, long-running/streaming
+5. Expand registry metadata coverage for approval, long-running/streaming
    process behavior, retry safety, provider support, and UI presentation.
-5. Pair long-running job support with the terminal/process runtime foundation:
+6. Pair long-running job support with the terminal/process runtime foundation:
    persistent process handles, polling, tailing, stdin, cancellation, and
    pageable output belong there rather than in a separate ad-hoc job tool.
-6. Add runtime permission/approval outcomes as structured `ToolResult` statuses.
-7. Defer aggregate per-turn model-visible tool-output caps until after the
+7. Add a Phase 9.5 Codex-parity pass for terminal UX semantics once the basic
+   process runtime is stable: yield-time execution, streamed output deltas,
+   PTY resize, connection cleanup, and argv-vs-shell handling.
+8. Add runtime permission/approval outcomes as structured `ToolResult` statuses.
+9. Defer aggregate per-turn model-visible tool-output caps until after the
    record/replay boundary remains stable under real workloads.
-8. Defer structured Git/PR wrappers until last. The CLI remains the preferred
+10. Defer structured Git/PR wrappers until last. The CLI remains the preferred
    interface for now; `.git/index.lock` incidents are not enough evidence by
    themselves to justify first-class Git tools.
-9. Enable Phase 6 parallel execution only for explicitly audited safe subsets.
+11. Enable Phase 6 parallel execution only for explicitly audited safe subsets.
 
 Current PR scope:
 
@@ -903,6 +909,51 @@ Implementation notes:
   wrappers should be treated as optional last-mile ergonomics, not a prerequisite
   for safe scheduling.
 
+### Phase 8.1: Model-Visible Sequential Multi-Tool
+
+Goals:
+
+- expose a model-visible ordered batch surface, such as
+  `multi_tool_use.ordered` or `ordered_tool_batch`, as the safe companion to
+  `multi_tool_use.parallel`
+- run every child call through the normal dispatcher, permission checks,
+  scheduler metadata enrichment, output policy, and tool-call/result record
+  persistence
+- preflight the full child-call list before executing the first mutation:
+  reject unknown tools, invalid payloads, nested batch tools, and unsupported
+  channels without modifying state
+- execute strictly in listed order, with `stop_on_error` enabled by default and
+  deterministic result ordering
+- keep this as serial batching only; do not add DAGs, conditionals, workflow
+  scripting, or provider-native parallelism in this slice
+
+Acceptance criteria:
+
+- ordered batch success returns one grouped result with ordered per-child
+  statuses, outputs/previews, durations, effect/resource metadata, and errors
+  where relevant
+- if preflight fails for any child call, no child calls execute
+- runtime failure stops the batch by default, while any explicit continue mode
+  is opt-in, visible, and covered by tests
+- nested `multi_tool_use.parallel`, nested ordered batch calls, and model-visible
+  attempts to smuggle parallel execution through the ordered surface are rejected
+- child calls are persisted and replayable as first-class tool records, with a
+  shared parent batch id for UI grouping and diagnostics
+- prompt/schema guidance tells agents to use ordered batching for dependent
+  or mutating sequences and `multi_tool_use.parallel` only for independent,
+  read-only, non-conflicting calls
+
+Implementation notes:
+
+- Reuse the Phase 8 ordered scheduler path, effect/resource inference, and
+  dispatch policy. Phase 8.1 is primarily the model-visible affordance and
+  grouped result contract.
+- Codex is the runtime reference: scheduler-owned metadata and locks decide
+  whether calls may overlap. OpenCode's `batch` is useful for schema/UI shape,
+  but Penguin's Phase 8.1 semantics must be serial rather than parallel.
+- Keep Git/PR wrappers out of this phase. Ordered shell/CLI calls are enough for
+  now, and future structured wrappers can build on the same batch metadata.
+
 ### Phase 9: Terminal/Process Runtime Foundation
 
 Goals:
@@ -935,6 +986,50 @@ Related plan:
   code-navigation tool suites remain tracked in
   `context/tasks/tool-system-future-improvements.md`. This phase only builds
   the runtime foundation those suites need.
+
+### Phase 9.5: Codex-Style Terminal Runtime Parity
+
+Status:
+
+- Follow-up after the Phase 9 process foundation is stable.
+- Not required before ordered batches and basic process sessions land.
+
+Goals:
+
+- add Codex-style `yield_time_ms` semantics so a command can run briefly, return
+  partial output plus a process/session id, and continue in the background
+- emit stdout/stderr output-delta events for the TUI/web UI without requiring
+  model polling for every progress update
+- support PTY mode and terminal resize for interactive commands, REPLs, and
+  development servers
+- distinguish argv execution from explicit shell execution instead of treating
+  every command as a shell string
+- add process timeouts, auto-termination, and cleanup when the owning
+  session/connection closes
+- keep model-visible output bounded while retaining pageable process output for
+  UI inspection and later tool polling
+- persist enough lifecycle metadata to explain start, output, timeout,
+  interrupt, kill, exit, and disconnect outcomes
+
+Acceptance criteria:
+
+- a long-running command can return early with a stable process id and later be
+  resumed, polled, written to, resized, interrupted, or killed
+- UI consumers can receive incremental output deltas without waiting for the
+  final process result
+- process output caps and truncation are byte/token bounded and visible in
+  structured metadata
+- process cleanup is deterministic for normal exit, timeout, user abort, and
+  session/connection teardown
+- one-shot command execution remains compatible while internally sharing the
+  same lifecycle and output policy
+
+Implementation notes:
+
+- Use Codex as the behavioral reference, not a code template. Penguin should
+  keep its own tool/result/session abstractions.
+- Keep this phase separate from debugger, dev-server, and test-intelligence
+  suites. Those tools should build on the terminal runtime after it is reliable.
 
 ### Phase 10: Optional Structured Git/PR Wrappers
 
