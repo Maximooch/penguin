@@ -44,7 +44,7 @@ For each feature increment:
 
 #### 2.1 Implement
 - Write minimal code to satisfy ONE acceptance criterion
-- Use <patch_file> or <patch_files> for changes
+- Use <edit_file> for exact replacements or <apply_patch> for contextual hunks
 - Keep changes focused and atomic
 
 #### 2.2 Test
@@ -116,7 +116,7 @@ Focus on quality:
 4. Provide actionable feedback
 
 ### 4. File Management Best Practices
-- Always use <patch_file> for single-file edits (automatic backups)
+- Prefer <edit_file> for exact single-file edits and <apply_patch> for contextual changes
 - Check file existence before creating
 - Use enhanced tools for better error messages
 - Keep atomic changes for easy rollback
@@ -163,7 +163,7 @@ For each feature increment:
 
 ### 1. Implement
 Write minimal code to satisfy ONE acceptance criterion.
-- Use <patch_file> or <patch_files> for changes
+- Use <edit_file> for exact replacements or <apply_patch> for contextual hunks
 - Keep changes atomic and focused
 - Match existing code style
 - Commit with descriptive message (see Git Commits below)
@@ -231,7 +231,14 @@ Wrong (Batch - Do not do this):
 <execute>Create tests<execute>
 ```
 
-**Exception:** Simple, related operations can be batched (e.g., creating multiple empty files).
+**Ordered native-tool batching:** When native tools expose `ordered_tool_batch`,
+use it for dependent or mutating sequences that must run serially. Do not use
+parallel batching for Git, filesystem mutation, process control, installs,
+tests, or any operation whose result/order matters.
+
+**Parallel batching:** Reserve parallel tool calls only for independent,
+read-only, non-conflicting inspection. Unknown or mutating work must remain
+serial.
 """
 
 # =============================================================================
@@ -252,7 +259,7 @@ TOOL_RESULTS = """
 **For Implementation:**
 - Acknowledge critical modifications
 - Continue to next step
-- Call `<finish_response>` when done
+- Return final assistant text with no further tool calls when done
 
 **Critical:** Check previous message before executing—do not duplicate tool calls.
 """
@@ -559,12 +566,14 @@ If you want to remember something past this session, WRITE IT TO A FILE.
 COMPLETION_GUIDE = """
 ## Completion Signals
 
-**You MUST explicitly signal when done.**
+**Normal conversation turns complete when you return final assistant text and
+make no further tool calls.**
 
-- If native provider tools are available, call `finish_response` or
-  `finish_task` through the provider tool channel
-- If native tools are not available, call `<finish_response></finish_response>`
-  to end a conversation turn
+- If native provider tools are available, use the provider tool channel for work
+  tools and call `finish_task` only when formal task work is ready for human
+  review
+- If native tools are not available and the ActionXML fallback protocol
+  requires an explicit turn terminator, call `<finish_response></finish_response>`
 - If native tools are not available, call
   `<finish_task>{"status":"done","summary":"..."}</finish_task>` when task
   work satisfies acceptance criteria and is ready for human review
@@ -574,42 +583,29 @@ COMPLETION_GUIDE = """
 - `done` (default): Task objective achieved
 - `partial`: Made progress but not complete
 - `blocked`: Cannot proceed, need human intervention
-
-**Never rely on implicit completion.**
 """
 
 # =============================================================================
 # ASSEMBLE COMPLETE WORKFLOW GUIDE
 # =============================================================================
 
-WORKFLOW_GUIDE = (
-    JOURNAL_247
-    + "\n\n"
-    + RALPH_PERSISTENCE
-    + "\\n\\n"
-    + ITUV_WORKFLOW
-    + "\\n\\n"
-    + INVESTIGATION_WORKFLOW
-    + "\\n\\n"
-    + EXECUTION_WORKFLOW
-    + "\\n\\n"
-    + TOOL_RESULTS
-    + "\\n\\n"
-    + GIT_COMMITS
-    + "\\n\\n"
-    + DOCS_CACHE
-    + "\\n\\n"
-    + CONTEXT_MANAGEMENT
-    + "\\n\\n"
-    + LARGE_CODEBASE
-    + "\\n\\n"
-    + CODE_FORMATTING
-    + "\\n\\n"
-    + TODO_WORKFLOW
-    + "\\n\\n"
-    + SKILLS_WORKFLOW
-    + "\\n\\n"
-    + COMPLETION_GUIDE
+WORKFLOW_GUIDE = "\n\n".join(
+    [
+        JOURNAL_247,
+        RALPH_PERSISTENCE,
+        ITUV_WORKFLOW,
+        INVESTIGATION_WORKFLOW,
+        EXECUTION_WORKFLOW,
+        TOOL_RESULTS,
+        GIT_COMMITS,
+        DOCS_CACHE,
+        CONTEXT_MANAGEMENT,
+        LARGE_CODEBASE,
+        CODE_FORMATTING,
+        TODO_WORKFLOW,
+        SKILLS_WORKFLOW,
+        COMPLETION_GUIDE,
+    ]
 )
 
 

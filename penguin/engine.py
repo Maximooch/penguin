@@ -12,11 +12,13 @@ remains test‑friendly and avoids hidden globals.
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import json
+import os
 import uuid
 import asyncio
 import copy
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
+from pathlib import Path
 from penguin.constants import UI_ASYNC_SLEEP_SECONDS
 import re
 import time
@@ -44,6 +46,7 @@ from penguin.utils.parser import (  # type: ignore
 )
 from penguin.system.state import MessageCategory  # type: ignore
 from penguin.llm.api_client import APIClient  # type: ignore
+from penguin.llm.contracts import LLMProviderError
 from penguin.llm.runtime import (
     build_empty_response_diagnostics as build_llm_empty_response_diagnostics,
     build_reasoning_fallback_note,
@@ -54,11 +57,17 @@ from penguin.llm.runtime import (
 )
 from penguin.tools import ToolManager  # type: ignore
 from penguin.tools.runtime import (
+    DEFAULT_TOOL_MODEL_OUTPUT_MAX_CHARS,
+    ToolCall,
     ToolExecutionPolicy,
-    execute_tool_calls_serially,
+    ToolResult,
+    execute_tool_calls_ordered,
     image_artifacts_from_action_result,
     legacy_action_result_from_tool_result,
+    tool_call_with_schedule_metadata,
+    tool_call_record_from_tool_call,
     tool_calls_from_codeact_actions,
+    tool_result_record_from_tool_result,
     tool_results_loop_identity,
 )
 from penguin.config import TASK_COMPLETION_PHRASE  # Add this import
@@ -75,6 +84,13 @@ except ImportError:
     ProtocolMessage = None  # type: ignore
 
 logger = logging.getLogger(__name__)
+
+
+def _context_previews_enabled() -> bool:
+    """Return whether normal trace logs may include message previews."""
+
+    value = os.getenv("PENGUIN_LOG_CONTEXT_PREVIEWS", "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
 
 
 def _trace_log_info(message: str, *args: Any) -> None:
@@ -387,6 +403,21 @@ class _ScopedConversationManager:
                 cloned_session.messages = list(session.messages)
             if isinstance(getattr(session, "metadata", None), dict):
                 cloned_session.metadata = dict(session.metadata)
+            if isinstance(getattr(session, "llm_request_lifecycles", None), list):
+                cloned_session.llm_request_lifecycles = [
+                    dict(record) if isinstance(record, dict) else record
+                    for record in session.llm_request_lifecycles
+                ]
+            if isinstance(getattr(session, "tool_call_records", None), list):
+                cloned_session.tool_call_records = [
+                    dict(record) if isinstance(record, dict) else record
+                    for record in session.tool_call_records
+                ]
+            if isinstance(getattr(session, "tool_result_records", None), list):
+                cloned_session.tool_result_records = [
+                    dict(record) if isinstance(record, dict) else record
+                    for record in session.tool_result_records
+                ]
             cloned.session = cloned_session
         except Exception:
             return cloned
@@ -539,6 +570,94 @@ class Engine:
         if session is None:
             session = getattr(getattr(cm, "conversation", None), "session", None)
         return getattr(session, "id", None) if session is not None else None
+
+    @staticmethod
+    def _content_size(value: Any) -> int:
+        """Return content size in characters for diagnostics."""
+
+        if isinstance(value, str):
+            return len(value)
+        try:
+            return len(json.dumps(value, default=str))
+        except Exception:
+            return len(str(value))
+
+    def _log_context_snapshot(
+        self,
+        cm: ConversationManager,
+        messages: List[Dict[str, Any]],
+        *,
+        request_id: str,
+        session_id: str,
+        agent_id: Optional[str],
+    ) -> None:
+        """Log a compact context payload snapshot before provider construction."""
+
+        include_previews = _context_previews_enabled()
+        role_counts: Dict[str, int] = {}
+        total_chars = 0
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            role = str(message.get("role") or "unknown")
+            role_counts[role] = role_counts.get(role, 0) + 1
+            total_chars += self._content_size(message.get("content", ""))
+
+        session_messages = []
+        try:
+            session = (
+                cm.get_current_session() if hasattr(cm, "get_current_session") else None
+            )
+            session_messages = list(getattr(session, "messages", []) or [])
+        except Exception:
+            session_messages = []
+
+        category_tokens: Dict[str, int] = {}
+        largest_messages: List[Dict[str, Any]] = []
+        session_tokens = 0
+        for message in session_messages:
+            category = getattr(message, "category", None)
+            category_name = getattr(category, "name", str(category or "UNKNOWN"))
+            tokens = int(getattr(message, "tokens", 0) or 0)
+            chars = self._content_size(getattr(message, "content", ""))
+            session_tokens += tokens
+            category_tokens[category_name] = (
+                category_tokens.get(category_name, 0) + tokens
+            )
+            largest_messages.append(
+                {
+                    "id": getattr(message, "id", ""),
+                    "role": getattr(message, "role", ""),
+                    "category": category_name,
+                    "tokens": tokens,
+                    "chars": chars,
+                }
+            )
+            if include_previews:
+                largest_messages[-1]["preview"] = self._trace_preview(
+                    getattr(message, "content", "")
+                )
+        largest_messages.sort(key=lambda item: item["tokens"], reverse=True)
+        largest_payload = largest_messages[:5]
+
+        _trace_log_info(
+            "engine.context.snapshot request=%s session=%s agent=%s "
+            "formatted_messages=%s roles=%s total_chars=%s approx_tokens=%s "
+            "session_messages=%s session_tokens=%s category_tokens=%s "
+            "largest=%s previews=%s",
+            request_id,
+            session_id or "unknown",
+            agent_id or self.current_agent_id or self.default_agent_id,
+            len(messages),
+            role_counts,
+            total_chars,
+            total_chars // 4,
+            len(session_messages),
+            session_tokens,
+            category_tokens,
+            largest_payload,
+            include_previews,
+        )
 
     def _get_loop_state(self) -> LoopState:
         run_state = _CURRENT_ENGINE_RUN_STATE.get()
@@ -1320,8 +1439,19 @@ class Engine:
         try:
             while self.current_iteration < max_iterations:
                 self.current_iteration += 1
+                iteration_started = time.perf_counter()
                 logger.debug(
                     f"Engine iteration {self.current_iteration} ({config.mode})"
+                )
+                request_id, session_id = self._trace_request_fields()
+                _trace_log_info(
+                    "engine.loop.iteration.start request=%s session=%s mode=%s "
+                    "iteration=%s max_iterations=%s",
+                    request_id,
+                    session_id or "unknown",
+                    config.mode,
+                    self.current_iteration,
+                    max_iterations,
                 )
 
                 # Check for external stop conditions
@@ -1409,6 +1539,20 @@ class Engine:
                             ),
                         },
                     )
+
+                _trace_log_info(
+                    "engine.loop.iteration.done request=%s session=%s mode=%s "
+                    "iteration=%s duration_ms=%.2f response_len=%s actions=%s "
+                    "usage=%s",
+                    request_id,
+                    session_id or "unknown",
+                    config.mode,
+                    self.current_iteration,
+                    (time.perf_counter() - iteration_started) * 1000,
+                    len(last_response or ""),
+                    len(iteration_results),
+                    usage_data if isinstance(usage_data, dict) else {},
+                )
 
                 # Check for explicit termination signal
                 termination_detected, finish_status = self._check_termination_signal(
@@ -1525,6 +1669,31 @@ class Engine:
             completion_status = "llm_empty_response_error"
             if config.message_callback:
                 await config.message_callback(f"LLM Empty Response: {str(e)}", "error")
+
+        except LLMProviderError as e:
+            logger.warning(
+                "Provider request failed during %s: retryable=%s detail=%s",
+                config.mode,
+                e.retryable,
+                str(e),
+            )
+            completion_status = (
+                "provider_recoverable_error" if e.retryable else "provider_error"
+            )
+            if config.message_callback:
+                await config.message_callback(f"Provider Error: {str(e)}", "error")
+
+            if config.enable_events and config.task_metadata:
+                await self._publish_task_event(
+                    "FAILED",
+                    config.task_metadata,
+                    {
+                        "error": str(e),
+                        "recoverable": e.retryable,
+                        "iteration": self.current_iteration,
+                        "max_iterations": max_iterations,
+                    },
+                )
 
         except Exception as e:
             logger.error(f"Error in {config.mode} loop: {str(e)}")
@@ -1703,8 +1872,8 @@ class Engine:
         Multi-step conversational loop for natural conversation flow.
 
         Termination conditions (in priority order):
-        1. Explicit `finish_response` tool call (preferred)
-        2. No actions taken in an iteration (implicit completion fallback)
+        1. No actions taken in an iteration (natural provider completion)
+        2. Legacy `finish_response` compatibility signal
         3. Max iterations reached
 
         Each iteration creates separate messages in the conversation.
@@ -1831,14 +2000,18 @@ class Engine:
                 if iteration_results:
                     all_action_results.extend(iteration_results)
 
-                # Check for explicit finish_response signal (primary termination)
+                # Check legacy finish_response compatibility signal.
+                # Normal native-provider turns now complete by returning final text
+                # with no tool calls, matching Codex/OpenCode/Hermes loop shape.
                 # NOTE: Only check finish_response here - finish_task is for task mode (run_task)
                 finish_response_called = any(
                     isinstance(r, dict) and r.get("action") == "finish_response"
                     for r in iteration_results
                 )
                 if finish_response_called:
-                    logger.debug("Response completion: finish_response tool called")
+                    logger.debug(
+                        "Response completion: legacy finish_response tool called"
+                    )
                     break
 
                 # Debug: Check if LLM mentioned finish_response but didn't format it correctly
@@ -1883,6 +2056,26 @@ class Engine:
                 "action_results": all_action_results,
                 "usage": latest_usage,
                 "status": final_status,
+                "execution_time": (datetime.utcnow() - self.start_time).total_seconds(),
+            }
+
+        except LLMProviderError as e:
+            logger.warning(
+                "Provider request failed in run_response: retryable=%s detail=%s",
+                e.retryable,
+                str(e),
+            )
+            error_response = f"Provider error occurred: {str(e)}"
+            return {
+                "assistant_response": error_response,
+                "iterations": self.current_iteration,
+                "action_results": all_action_results,
+                "usage": {},
+                "status": (
+                    "provider_recoverable_error" if e.retryable else "provider_error"
+                ),
+                "recoverable": e.retryable,
+                "error": e.error.to_dict(),
                 "execution_time": (datetime.utcnow() - self.start_time).total_seconds(),
             }
 
@@ -2232,8 +2425,23 @@ class Engine:
         Raises:
             LLMEmptyResponseError: If response is empty after retry
         """
+        request_id, session_id = self._trace_request_fields()
+        started = time.perf_counter()
+        _trace_log_info(
+            "engine.llm_attempt.start request=%s session=%s model=%s provider=%s "
+            "streaming=%s messages=%s tools=%s",
+            request_id,
+            session_id or "unknown",
+            getattr(getattr(api_client, "model_config", None), "model", None),
+            getattr(getattr(api_client, "model_config", None), "provider", None),
+            streaming,
+            len(messages),
+            len(extra_kwargs.get("tools", []))
+            if isinstance(extra_kwargs.get("tools"), list)
+            else 0,
+        )
         try:
-            return await call_llm_with_retry(
+            response = await call_llm_with_retry(
                 api_client=api_client,
                 messages=messages,
                 streaming=streaming,
@@ -2241,6 +2449,29 @@ class Engine:
                 extra_kwargs=extra_kwargs,
                 model_config=getattr(self, "model_config", None),
             )
+            lifecycle = None
+            lifecycle_getter = getattr(api_client, "get_last_request_lifecycle", None)
+            if callable(lifecycle_getter):
+                try:
+                    lifecycle = lifecycle_getter()
+                except Exception:
+                    lifecycle = None
+            usage = self._extract_usage_from_api_client(api_client)
+            _trace_log_info(
+                "engine.llm_attempt.done request=%s session=%s duration_ms=%.2f "
+                "response_len=%s pending_tool_call=%s status=%s finish_reason=%s "
+                "usage=%s lifecycle_data=%s",
+                request_id,
+                session_id or "unknown",
+                (time.perf_counter() - started) * 1000,
+                len(response or ""),
+                self._handler_has_pending_tool_call(api_client),
+                getattr(getattr(lifecycle, "status", None), "value", None),
+                getattr(getattr(lifecycle, "finish_reason", None), "value", None),
+                usage,
+                getattr(lifecycle, "provider_data", None),
+            )
+            return response
         except LLMEmptyResponseError:
             diagnostics = self._build_empty_response_diagnostics(
                 api_client,
@@ -2249,6 +2480,35 @@ class Engine:
             )
             logger.error("[EMPTY_RESPONSE] %s", diagnostics["summary"])
             logger.error("[EMPTY_RESPONSE] Details: %s", diagnostics)
+            _trace_log_info(
+                "engine.llm_attempt.empty request=%s session=%s duration_ms=%.2f "
+                "diagnostics=%s",
+                request_id,
+                session_id or "unknown",
+                (time.perf_counter() - started) * 1000,
+                diagnostics,
+            )
+            raise
+        except LLMProviderError as exc:
+            lifecycle = None
+            lifecycle_getter = getattr(api_client, "get_last_request_lifecycle", None)
+            if callable(lifecycle_getter):
+                try:
+                    lifecycle = lifecycle_getter()
+                except Exception:
+                    lifecycle = None
+            _trace_log_info(
+                "engine.llm_attempt.error request=%s session=%s duration_ms=%.2f "
+                "retryable=%s category=%s status=%s error=%s lifecycle_data=%s",
+                request_id,
+                session_id or "unknown",
+                (time.perf_counter() - started) * 1000,
+                exc.retryable,
+                getattr(getattr(exc, "error", None), "category", None),
+                getattr(getattr(lifecycle, "status", None), "value", None),
+                exc,
+                getattr(lifecycle, "provider_data", None),
+            )
             raise
 
     def _persist_llm_request_lifecycle(
@@ -2327,6 +2587,81 @@ class Engine:
         )
         return results[0] if results else None
 
+    def _resolve_tool_output_max_chars(self) -> Optional[int]:
+        """Resolve the per-tool model-visible output cap.
+
+        Non-positive values (<= 0) disable truncation and expose full tool
+        output to the model.
+        """
+
+        raw_value = os.environ.get("PENGUIN_TOOL_OUTPUT_MAX_CHARS")
+        if raw_value is None:
+            return DEFAULT_TOOL_MODEL_OUTPUT_MAX_CHARS
+        try:
+            value = int(raw_value)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid PENGUIN_TOOL_OUTPUT_MAX_CHARS=%r; using default %s",
+                raw_value,
+                DEFAULT_TOOL_MODEL_OUTPUT_MAX_CHARS,
+            )
+            return DEFAULT_TOOL_MODEL_OUTPUT_MAX_CHARS
+        if value <= 0:
+            logger.info(
+                "PENGUIN_TOOL_OUTPUT_MAX_CHARS=%s disables tool output truncation; "
+                "full tool output will be model-visible",
+                raw_value,
+            )
+            return None
+        return value
+
+    def _tool_output_artifact_dir(self, cm: ConversationManager) -> Optional[Path]:
+        """Return the workspace-local artifact directory for tool outputs."""
+
+        try:
+            session = (
+                cm.get_current_session() if hasattr(cm, "get_current_session") else None
+            )
+            session_id = str(getattr(session, "id", "") or "unknown").strip()
+            session_id = re.sub(r"[^A-Za-z0-9_-]+", "_", session_id).strip("_")
+            if not session_id:
+                session_id = "unknown"
+            workspace_path = getattr(cm, "workspace_path", None)
+            if workspace_path is None:
+                return None
+            return (
+                Path(workspace_path)
+                / "conversations"
+                / "tool-results"
+                / session_id
+            )
+        except Exception:
+            logger.debug(
+                "Failed to resolve tool output artifact directory", exc_info=True
+            )
+            return None
+
+    def _tool_execution_policy(
+        self,
+        cm: ConversationManager,
+        *,
+        max_calls: Optional[int] = None,
+        catch_exceptions: bool = False,
+    ) -> ToolExecutionPolicy:
+        """Build the conservative serial tool execution policy."""
+
+        max_output_chars = self._resolve_tool_output_max_chars()
+        return ToolExecutionPolicy(
+            max_calls=max_calls,
+            catch_exceptions=catch_exceptions,
+            max_output_chars=max_output_chars,
+            artifact_dir=(
+                self._tool_output_artifact_dir(cm)
+                if max_output_chars is not None
+                else None
+            ),
+        )
+
     async def _handle_responses_tool_calls(
         self,
         api_client: APIClient,
@@ -2346,6 +2681,20 @@ class Engine:
         return await execute_pending_tool_calls(
             api_client=api_client,
             tool_manager=tool_manager,
+            persist_tool_call_record=lambda tool_call: self._persist_tool_call_record(
+                cm,
+                tool_call,
+            ),
+            persist_tool_result_record=lambda tool_call,
+            tool_result: self._persist_tool_result_record(
+                cm,
+                tool_call,
+                tool_result,
+            ),
+            execution_policy=self._tool_execution_policy(
+                cm,
+                catch_exceptions=True,
+            ),
             persist_action_result=lambda action_result,
             tool_context: cm.add_action_result(
                 action_type=action_result["action"],
@@ -2370,6 +2719,58 @@ class Engine:
             persist_image_artifacts=lambda action_result: (
                 self._persist_tool_image_artifacts(cm, action_result)
             ),
+        )
+
+    def _persist_record(
+        self,
+        cm: ConversationManager,
+        session_method_name: str,
+        record_factory: Callable[..., Any],
+        *args: Any,
+    ) -> None:
+        """Persist one lightweight record on the current session."""
+
+        try:
+            session = (
+                cm.get_current_session() if hasattr(cm, "get_current_session") else None
+            )
+            add_record = getattr(session, session_method_name, None)
+            if callable(add_record):
+                add_record(record_factory(*args))
+        except Exception as exc:
+            logger.warning("Failed to persist %s record: %s", session_method_name, exc)
+
+    def _persist_tool_call_record(
+        self,
+        cm: ConversationManager,
+        tool_call: ToolCall,
+    ) -> None:
+        """Persist one lightweight tool-call record on the current session."""
+
+        self._persist_record(
+            cm,
+            "add_tool_call_record",
+            tool_call_record_from_tool_call,
+            tool_call,
+        )
+
+    def _persist_tool_result_record(
+        self,
+        cm: ConversationManager,
+        tool_call: ToolCall,
+        tool_result: ToolResult,
+    ) -> None:
+        """Persist one lightweight tool-result record on the current session."""
+
+        self._persist_record(
+            cm,
+            "add_tool_result_record",
+            lambda result, call: tool_result_record_from_tool_result(
+                result,
+                tool_call=call,
+            ),
+            tool_result,
+            tool_call,
         )
 
     def _persist_tool_image_artifacts(
@@ -2642,6 +3043,34 @@ class Engine:
 
         return assistant_response
 
+    def _abort_streaming_response(
+        self,
+        cm: ConversationManager,
+        streaming: Optional[bool],
+        agent_id: Optional[str] = None,
+    ) -> None:
+        """Discard uncommitted stream state after a failed provider attempt."""
+
+        if not streaming or not hasattr(cm, "core") or not cm.core:
+            return
+        aborter = getattr(cm.core, "abort_streaming_message", None)
+        if not callable(aborter):
+            return
+        try:
+            session = (
+                cm.get_current_session() if hasattr(cm, "get_current_session") else None
+            )
+            session_id = getattr(session, "id", None)
+            aborter(
+                agent_id=agent_id or self.current_agent_id,
+                session_id=session_id,
+                conversation_id=session_id,
+            )
+        except Exception:
+            logger.debug(
+                "Failed to abort uncommitted streaming response", exc_info=True
+            )
+
     async def _execute_codeact_actions(
         self,
         cm: ConversationManager,
@@ -2669,21 +3098,62 @@ class Engine:
             return action_results
 
         actions: List[CodeActAction] = parse_action(assistant_response)
-        tool_calls = tool_calls_from_codeact_actions(actions)
+        tool_manager = getattr(action_executor, "tool_manager", None)
+        metadata_getter = getattr(tool_manager, "get_tool_runtime_metadata", None)
+        tool_calls = [
+            tool_call_with_schedule_metadata(
+                tool_call,
+                metadata_getter(tool_call.name) if callable(metadata_getter) else None,
+            )
+            for tool_call in tool_calls_from_codeact_actions(actions)
+        ]
         logger.debug(
             "[AUTO-CONTINUE FIX] Parsed %s actions from response", len(tool_calls)
         )
+        if len(tool_calls) > 1:
+            dropped_count = len(tool_calls) - 1
+            logger.warning(
+                "ActionXML response contained %s tool calls; executing the first "
+                "and dropping %s because multi-call execution is disabled",
+                len(tool_calls),
+                dropped_count,
+            )
+            try:
+                cm.conversation.add_message(
+                    role="system",
+                    content=(
+                        "The previous assistant response included multiple "
+                        "ActionXML tool calls. Penguin executed only the first "
+                        "tool call because multi-call ActionXML execution is "
+                        "disabled. Continue by issuing one complete tool call at "
+                        "a time or explain the remaining work in plain text."
+                    ),
+                    category=MessageCategory.SYSTEM_OUTPUT,
+                    metadata={
+                        "type": "dropped_actionxml_calls",
+                        "total_tool_calls": len(tool_calls),
+                        "dropped_tool_calls": dropped_count,
+                    },
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to queue dropped ActionXML call note", exc_info=True
+                )
+        scheduled_tool_calls = tool_calls[:1]
+        for tool_call in scheduled_tool_calls:
+            self._persist_tool_call_record(cm, tool_call)
 
         async def _execute_actionxml_call(tool_call: Any) -> Any:
             return await action_executor.execute_action(tool_call.raw)
 
-        scheduler_results = await execute_tool_calls_serially(
-            tool_calls,
+        scheduler_results = await execute_tool_calls_ordered(
+            scheduled_tool_calls,
             _execute_actionxml_call,
-            policy=ToolExecutionPolicy(max_calls=1),
+            policy=self._tool_execution_policy(cm, max_calls=1),
         )
 
-        for tool_call, tool_result in zip(tool_calls[:1], scheduler_results):
+        for tool_call, tool_result in zip(scheduled_tool_calls, scheduler_results):
+            self._persist_tool_result_record(cm, tool_call, tool_result)
             legacy_action_result = legacy_action_result_from_tool_result(tool_result)
             tool_arguments_text = (
                 tool_call.arguments
@@ -2795,6 +3265,13 @@ class Engine:
         messages = self._apply_agent_mode_notice(messages)
         request_id, session_id = self._trace_request_fields()
         last_message = messages[-1] if messages else {}
+        last_preview = "<redacted>"
+        if _context_previews_enabled():
+            last_preview = self._trace_preview(
+                last_message.get("content", "")
+                if isinstance(last_message, dict)
+                else ""
+            )
         _trace_log_info(
             "engine.llm_step.start request=%s session=%s agent=%s cm=%s conv=%s conv_session=%s msgs=%s last_role=%s last_preview=%r streaming=%s tools=%s",
             request_id,
@@ -2807,23 +3284,60 @@ class Engine:
             self._conversation_session_id(cm) or "unknown",
             len(messages),
             last_message.get("role") if isinstance(last_message, dict) else None,
-            self._trace_preview(
-                last_message.get("content", "")
-                if isinstance(last_message, dict)
-                else ""
-            ),
+            last_preview,
             streaming,
             tools_enabled,
         )
+        self._log_context_snapshot(
+            cm,
+            messages,
+            request_id=request_id,
+            session_id=session_id,
+            agent_id=agent_id,
+        )
 
         # Step 1: Prepare Responses API tools if enabled
+        llm_step_started = time.perf_counter()
         extra_kwargs = self._prepare_responses_tools(tool_manager)
+        tool_schema_count = (
+            len(extra_kwargs.get("tools", []))
+            if isinstance(extra_kwargs.get("tools"), list)
+            else 0
+        )
+        _trace_log_info(
+            "engine.llm_step.tools_prepared request=%s session=%s agent=%s schemas=%s "
+            "tool_choice=%s",
+            request_id,
+            session_id or "unknown",
+            agent_id or self.current_agent_id or self.default_agent_id,
+            tool_schema_count,
+            extra_kwargs.get("tool_choice"),
+        )
 
         # Step 2: Call LLM with retry on empty response
         try:
+            provider_started = time.perf_counter()
             assistant_response = await self._call_llm_with_retry(
                 api_client, messages, streaming, stream_callback, extra_kwargs
             )
+            provider_duration_ms = (time.perf_counter() - provider_started) * 1000
+            _trace_log_info(
+                "engine.llm_step.provider_done request=%s session=%s agent=%s "
+                "duration_ms=%.2f response_len=%s pending_tool_call=%s",
+                request_id,
+                session_id or "unknown",
+                agent_id or self.current_agent_id or self.default_agent_id,
+                provider_duration_ms,
+                len(assistant_response or ""),
+                self._handler_has_pending_tool_call(api_client),
+            )
+        except LLMProviderError:
+            self._abort_streaming_response(
+                cm,
+                streaming,
+                agent_id=agent_id or self.current_agent_id,
+            )
+            raise
         finally:
             self._persist_llm_request_lifecycle(cm, api_client)
 
@@ -2831,6 +3345,7 @@ class Engine:
         # This must happen before Responses tool execution so any provider
         # preamble text is attached to the current assistant turn before the
         # tool result is persisted against it.
+        finalize_started = time.perf_counter()
         assistant_response = await self._finalize_streaming_response(
             cm,
             assistant_response,
@@ -2838,30 +3353,71 @@ class Engine:
             agent_id=agent_id or self.current_agent_id,
             api_client=api_client,
         )
+        _trace_log_info(
+            "engine.llm_step.finalize_timing request=%s session=%s agent=%s "
+            "duration_ms=%.2f response_len=%s",
+            request_id,
+            session_id or "unknown",
+            agent_id or self.current_agent_id or self.default_agent_id,
+            (time.perf_counter() - finalize_started) * 1000,
+            len(assistant_response or ""),
+        )
 
         # Step 4: Handle Responses API tool_calls if they were triggered
+        responses_tools_started = time.perf_counter()
         responses_action_results = await self._handle_responses_tool_calls(
             api_client,
             tool_manager,
             cm,
         )
+        _trace_log_info(
+            "engine.llm_step.responses_tools_done request=%s session=%s agent=%s "
+            "duration_ms=%.2f actions=%s names=%s",
+            request_id,
+            session_id or "unknown",
+            agent_id or self.current_agent_id or self.default_agent_id,
+            (time.perf_counter() - responses_tools_started) * 1000,
+            len(responses_action_results),
+            [
+                result.get("action")
+                for result in responses_action_results
+                if isinstance(result, dict)
+            ],
+        )
 
         # Step 5: Execute CodeAct actions if enabled
         action_results = list(responses_action_results)
         if tools_enabled and not responses_action_results:
+            codeact_started = time.perf_counter()
             action_results.extend(
                 await self._execute_codeact_actions(
                     cm, action_executor, assistant_response
                 )
             )
+            _trace_log_info(
+                "engine.llm_step.codeact_tools_done request=%s session=%s agent=%s "
+                "duration_ms=%.2f actions=%s names=%s",
+                request_id,
+                session_id or "unknown",
+                agent_id or self.current_agent_id or self.default_agent_id,
+                (time.perf_counter() - codeact_started) * 1000,
+                len(action_results),
+                [
+                    result.get("action")
+                    for result in action_results
+                    if isinstance(result, dict)
+                ],
+            )
 
         usage = self._extract_usage_from_api_client(api_client)
         _trace_log_info(
-            "engine.llm_step.done request=%s session=%s agent=%s conv_session=%s response_len=%s actions=%s usage=%s",
+            "engine.llm_step.done request=%s session=%s agent=%s conv_session=%s "
+            "duration_ms=%.2f response_len=%s actions=%s usage=%s",
             request_id,
             session_id or "unknown",
             agent_id or self.current_agent_id or self.default_agent_id,
             self._conversation_session_id(cm) or "unknown",
+            (time.perf_counter() - llm_step_started) * 1000,
             len(assistant_response or ""),
             len(action_results),
             usage,

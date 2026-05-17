@@ -14,7 +14,7 @@ def _write(path: Path, content: str) -> None:
 
 
 def test_replace_lines_output_includes_unified_diff(tmp_path: Path) -> None:
-    workspace = Path.cwd() / ".tmp-track-a-tests" / tmp_path.name
+    workspace = tmp_path / "workspace"
     try:
         target = workspace / "src" / "main.py"
         _write(target, "line1\nline2\nline3\n")
@@ -40,7 +40,7 @@ def test_replace_lines_output_includes_unified_diff(tmp_path: Path) -> None:
 def test_edit_with_pattern_output_uses_workspace_relative_diff_path(
     tmp_path: Path,
 ) -> None:
-    workspace = Path.cwd() / ".tmp-track-a-tests" / tmp_path.name
+    workspace = tmp_path / "workspace"
     try:
         target = workspace / "src" / "settings.py"
         _write(target, "DEBUG = False\n")

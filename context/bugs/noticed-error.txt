@@ -1,0 +1,137 @@
+
+INFO:     127.0.0.1:50918 - "GET /session/session_20260509_210523_4d051ef4 HTTP/1.1" 200 OK
+INFO:     engine.llm_step.done request=df9c197b-ed82-457c-b9cd-3b221956dd8a session=session_20260509_210523_4d051ef4 agent=default conv_session=session_20260509_210523_4d051ef4 response_len=12 actions=2 usage={'input_tokens': 132427, 'output_tokens': 130, 'reasoning_tokens': 0, 'cache_read_tokens': 86400, 'cache_write_tokens': 0, 'total_tokens': 132557, 'cost': 0.0}
+INFO:     engine.scope.reuse request=df9c197b-ed82-457c-b9cd-3b221956dd8a session=session_20260509_210523_4d051ef4 agent=default cache=1 base_cm=0x1089b9e50 scoped_cm=0x118aa8690 scoped_session=session_20260509_210523_4d051ef4
+INFO:     engine.scope.reuse request=df9c197b-ed82-457c-b9cd-3b221956dd8a session=session_20260509_210523_4d051ef4 agent=default cache=1 base_cm=0x1089b9e50 scoped_cm=0x118aa8690 scoped_session=session_20260509_210523_4d051ef4
+INFO:     engine.llm_step.start request=df9c197b-ed82-457c-b9cd-3b221956dd8a session=session_20260509_210523_4d051ef4 agent=default cm=0x118aa8690 conv=0x118aaa250 conv_session=session_20260509_210523_4d051ef4 msgs=445 last_role=tool last_preview='s | 0.5d | Per `agent-orchestration.md` §10.2–10.5 |\\n 246: | **Context management (its own category per your call)**...' streaming=True tools=True
+INFO:     openai.oauth.resolve source=store_oauth has_access=True has_refresh=True has_expires=True has_account=True
+INFO:     openai.request.route route=oauth_codex model=gpt-5.5 stream=True service_tier=priority has_access=True has_refresh=True has_expires=True has_account=True
+INFO:     openai.oauth.codex.request_start diag_id=oaoc_c8880b8e3a requested_stream=True transport_stream=True model=gpt-5.5 model_fallback=False input_items=447 instructions_present=True store=False service_tier=priority has_account_id=True has_reasoning=True
+INFO:     127.0.0.1:50980 - "GET /api/v1/events/sse?session_id=session_20260509_210523_4d051ef4&directory=%2FUsers%2Fmaximusputnam%2FCode%2FLink%2FLink HTTP/1.1" 200 OK
+ERROR:    OpenAI OAuth Codex stream_transport failed (diag_id=oaoc_c8880b8e3a, model=gpt-5.5, model_fallback=False, input_is_list=True, input_items=447, instructions_present=True, store=False, error_type=RemoteProtocolError) detail=peer closed connection without sending complete message body (incomplete chunked read)
+Traceback (most recent call last):
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpx/_transports/default.py", line 271, in __aiter__
+    async for part in self._httpcore_stream:
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpcore/_async/connection_pool.py", line 407, in __aiter__
+    raise exc from None
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpcore/_async/connection_pool.py", line 403, in __aiter__
+    async for part in self._stream:
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpcore/_async/http11.py", line 342, in __aiter__
+    raise exc
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpcore/_async/http11.py", line 334, in __aiter__
+    async for chunk in self._connection._receive_response_body(**kwargs):
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpcore/_async/http11.py", line 203, in _receive_response_body
+    event = await self._receive_event(timeout=timeout)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpcore/_async/http11.py", line 213, in _receive_event
+    with map_exceptions({h11.RemoteProtocolError: RemoteProtocolError}):
+  File "/Users/maximusputnam/.local/share/uv/python/cpython-3.11.11-macos-aarch64-none/lib/python3.11/contextlib.py", line 158, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpcore/_exceptions.py", line 14, in map_exceptions
+    raise to_exc(exc) from exc
+httpcore.RemoteProtocolError: peer closed connection without sending complete message body (incomplete chunked read)
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/maximusputnam/Code/Penguin/penguin/penguin/llm/adapters/openai.py", line 1843, in _stream_codex_oauth
+    async for line in response.aiter_lines():
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpx/_models.py", line 1031, in aiter_lines
+    async for text in self.aiter_text():
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpx/_models.py", line 1018, in aiter_text
+    async for byte_content in self.aiter_bytes():
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpx/_models.py", line 997, in aiter_bytes
+    async for raw_bytes in self.aiter_raw():
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpx/_models.py", line 1055, in aiter_raw
+    async for raw_stream_bytes in self.stream:
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpx/_client.py", line 176, in __aiter__
+    async for chunk in self._stream:
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpx/_transports/default.py", line 270, in __aiter__
+    with map_httpcore_exceptions():
+  File "/Users/maximusputnam/.local/share/uv/python/cpython-3.11.11-macos-aarch64-none/lib/python3.11/contextlib.py", line 158, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.RemoteProtocolError: peer closed connection without sending complete message body (incomplete chunked read)
+ERROR:    [Request:df9c197b-ed82-457c-b9cd-3b221956dd8a] llm.handler.failure diag_id=oaoc_c8880b8e3a category=network handler=OpenAIAdapter provider=openai model=gpt-5.5 detail=OpenAI OAuth Codex stream_transport failed (diag_id=oaoc_c8880b8e3a, model=gpt-5.5, model_fallback=False, input_is_list=True, input_items=447, instructions_present=True, store=False, error_type=RemoteProtocolError) detail=peer closed connection without sending complete message body (incomplete chunked read)
+Traceback (most recent call last):
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpx/_transports/default.py", line 271, in __aiter__
+    async for part in self._httpcore_stream:
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpcore/_async/connection_pool.py", line 407, in __aiter__
+    raise exc from None
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpcore/_async/connection_pool.py", line 403, in __aiter__
+    async for part in self._stream:
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpcore/_async/http11.py", line 342, in __aiter__
+    raise exc
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpcore/_async/http11.py", line 334, in __aiter__
+    async for chunk in self._connection._receive_response_body(**kwargs):
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpcore/_async/http11.py", line 203, in _receive_response_body
+    event = await self._receive_event(timeout=timeout)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpcore/_async/http11.py", line 213, in _receive_event
+    with map_exceptions({h11.RemoteProtocolError: RemoteProtocolError}):
+  File "/Users/maximusputnam/.local/share/uv/python/cpython-3.11.11-macos-aarch64-none/lib/python3.11/contextlib.py", line 158, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpcore/_exceptions.py", line 14, in map_exceptions
+    raise to_exc(exc) from exc
+httpcore.RemoteProtocolError: peer closed connection without sending complete message body (incomplete chunked read)
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/maximusputnam/Code/Penguin/penguin/penguin/llm/adapters/openai.py", line 1843, in _stream_codex_oauth
+    async for line in response.aiter_lines():
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpx/_models.py", line 1031, in aiter_lines
+    async for text in self.aiter_text():
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpx/_models.py", line 1018, in aiter_text
+    async for byte_content in self.aiter_bytes():
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpx/_models.py", line 997, in aiter_bytes
+    async for raw_bytes in self.aiter_raw():
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpx/_models.py", line 1055, in aiter_raw
+    async for raw_stream_bytes in self.stream:
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpx/_client.py", line 176, in __aiter__
+    async for chunk in self._stream:
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpx/_transports/default.py", line 270, in __aiter__
+    with map_httpcore_exceptions():
+  File "/Users/maximusputnam/.local/share/uv/python/cpython-3.11.11-macos-aarch64-none/lib/python3.11/contextlib.py", line 158, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/Users/maximusputnam/Code/Penguin/penguin/.venv/lib/python3.11/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.RemoteProtocolError: peer closed connection without sending complete message body (incomplete chunked read)
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/maximusputnam/Code/Penguin/penguin/penguin/llm/api_client.py", line 803, in get_response
+    response_text = await self.client_handler.get_response(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/maximusputnam/Code/Penguin/penguin/penguin/llm/adapters/openai.py", line 955, in get_response
+    accumulated = await self.create_completion(
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/maximusputnam/Code/Penguin/penguin/penguin/llm/adapters/openai.py", line 833, in create_completion
+    return await self._create_oauth_codex_completion(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/maximusputnam/Code/Penguin/penguin/penguin/llm/adapters/openai.py", line 1637, in _create_oauth_codex_completion
+    return await self._stream_codex_oauth(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/maximusputnam/Code/Penguin/penguin/penguin/llm/adapters/openai.py", line 1981, in _stream_codex_oauth
+    self._raise_codex_transport_error(
+  File "/Users/maximusputnam/Code/Penguin/penguin/penguin/llm/adapters/openai.py", line 2280, in _raise_codex_transport_error
+    raise LLMProviderError(llm_error) from error
+penguin.llm.contracts.LLMProviderError: OpenAI OAuth Codex stream_transport failed (diag_id=oaoc_c8880b8e3a, model=gpt-5.5, model_fallback=False, input_is_list=True, input_items=447, instructions_present=True, store=False, error_type=RemoteProtocolError) detail=peer closed connection without sending complete message body (incomplete chunked read)
+INFO:     engine.stream.finalize.start request=df9c197b-ed82-457c-b9cd-3b221956dd8a session=session_20260509_210523_4d051ef4 agent=default conv_session=session_20260509_210523_4d051ef4 streaming=True response_len=66
+INFO:     core.stream.persist session=session_20260509_210523_4d051ef4 agent=default manager=0x1089b90d0 message_id=msg_1778694472.240255 saved=True message_len=85 category=MessageCategory.DIALOG
+INFO:     core.stream.finalize request=df9c197b-ed82-457c-b9cd-3b221956dd8a session=session_20260509_210523_4d051ef4 conversation=session_20260509_210523_4d051ef4 agent=default effective_conv_session=session_20260509_210523_4d051ef4 persisted=True message_len=85 events=2 empty=False
+INFO:     engine.stream.finalize.done request=df9c197b-ed82-457c-b9cd-3b221956dd8a session=session_20260509_210523_4d051ef4 agent=default conv_session=session_20260509_210523_4d051ef4 response_len=85 finalized=True
+INFO:     engine.llm_step.done request=df9c197b-ed82-457c-b9cd-3b221956dd8a session=session_20260509_210523_4d051ef4 agent=default conv_session=session_20260509_210523_4d051ef4 response_len=85 actions=0 usage={}
+INFO:     core.process.trace.done request=df9c197b-ed82-457c-b9cd-3b221956dd8a session=session_20260509_210523_4d051ef4 conversation=session_20260509_210523_4d051ef4 status=completed iterations=9 actions=18 usage={'input_tokens': 132427, 'output_tokens': 130, 'reasoning_tokens': 0, 'cache_read_tokens': 86400, 'cache_write_tokens': 0, 'total_tokens': 132557, 'cost': 0.0} response_len=85
+INFO:     opencode.usage.applied session=session_20260509_210523_4d051ef4 message=msg_session_20260509_210523_4d051ef4_1778693760778_00 input=132427 output=130 reasoning=0 cache_read=86400 cache_write=0 total=132557 cost=0.0
+INFO:     chat.trace.after_process request=df9c197b-ed82-457c-b9cd-3b221956dd8a session=session_20260509_210523_4d051ef4 status=completed iterations=9 response_len=85 actions=18 usage={'input_tokens': 132427, 'output_tokens': 130, 'reasoning_tokens': 0, 'cache_read_tokens': 86400, 'cache_write_tokens': 0, 'total_tokens': 132557, 'cost': 0.0} process_ms=720093.61 preview='The plan tail got mangled by overlapping patches; replacing the damaged tail cleanly.'
+INFO:     session.title.auto_refresh session=session_20260509_210523_4d051ef4 status=scheduled
+INFO:     chat.trace.response request=df9c197b-ed82-457c-b9cd-3b221956dd8a session=session_20260509_210523_4d051ef4 response_len=85 reasoning_len=1453 aborted=False preview='The plan tail got mangled by overlapping patches; replacing the damaged tail cleanly.'
+INFO:     session.title.auto_refresh session=session_20260509_210523_4d051ef4 attempt=1 status=already_titled title='Implement Draft Schema Plan'
+INFO:     127.0.0.1:50994 - "GET /session/session_20260509_210523_4d051ef4 HTTP/1.1" 200 OK

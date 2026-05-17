@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from penguin.system.context_window import ContextWindowManager
 from penguin.system.state import Message, MessageCategory, Session
 
@@ -24,7 +26,116 @@ def test_context_window_trim_preserves_llm_request_lifecycle_records() -> None:
             "status": "completed",
         }
     )
+    session.add_tool_call_record(
+        {
+            "record_type": "tool_call",
+            "call_id": "call-cwm-1",
+            "name": "read_file",
+            "source": "responses",
+            "arguments_hash": "args-hash",
+        }
+    )
+    session.add_tool_result_record(
+        {
+            "record_type": "tool_result",
+            "call_id": "call-cwm-1",
+            "name": "read_file",
+            "status": "completed",
+            "output_hash": "out-hash",
+        }
+    )
 
     trimmed = cwm.trim_session(session)
 
     assert trimmed.llm_request_lifecycles == session.llm_request_lifecycles
+    assert trimmed.tool_call_records == session.tool_call_records
+    assert trimmed.tool_result_records == session.tool_result_records
+
+
+def test_context_window_trim_preserves_non_primary_categories() -> None:
+    cwm = ContextWindowManager(token_counter=lambda content: len(str(content)))
+    cwm.max_context_window_tokens = 1
+
+    session = Session()
+    error_message = Message(
+        role="system",
+        content="error payload",
+        category=MessageCategory.ERROR,
+    )
+    unknown_message = Message(
+        role="system",
+        content="unknown payload",
+        category=MessageCategory.UNKNOWN,
+    )
+    session.add_message(error_message)
+    session.add_message(unknown_message)
+
+    trimmed = cwm.trim_session(session)
+
+    assert error_message in trimmed.messages
+    assert unknown_message in trimmed.messages
+
+
+def test_context_window_trim_can_remove_over_budget_non_primary_categories() -> None:
+    cwm = ContextWindowManager(token_counter=lambda content: len(str(content)))
+    cwm.max_context_window_tokens = 100
+
+    for category in (
+        MessageCategory.ERROR,
+        MessageCategory.INTERNAL,
+        MessageCategory.UNKNOWN,
+    ):
+        cwm._budgets[category].max_category_tokens = 1
+        message = Message(
+            role="system",
+            content=f"{category.name} payload over budget",
+            category=category,
+        )
+        session = Session(messages=[message])
+
+        trimmed = cwm.trim_session(session)
+
+        assert message not in trimmed.messages
+
+
+def test_image_trimming_counts_image_parts_not_messages(tmp_path: Path) -> None:
+    cwm = ContextWindowManager(token_counter=lambda content: len(str(content)))
+    cwm.max_context_images = 2
+
+    session = Session()
+    old_message = Message(
+        role="user",
+        content=[
+            {"type": "text", "text": "old"},
+            {"type": "image_url", "image_path": str(tmp_path / "one.png")},
+            {"type": "image_url", "image_path": str(tmp_path / "two.png")},
+        ],
+        category=MessageCategory.DIALOG,
+    )
+    new_message = Message(
+        role="user",
+        content=[
+            {"type": "text", "text": "new"},
+            {"type": "image_url", "image_path": str(tmp_path / "three.png")},
+        ],
+        category=MessageCategory.DIALOG,
+    )
+    session.add_message(old_message)
+    session.add_message(new_message)
+
+    trimmed = cwm._handle_image_trimming(session)
+
+    stats = cwm.analyze_session(trimmed)
+    assert stats["image_count"] == 1
+    assert "[Image removed to save tokens]" in str(trimmed.messages[0].content)
+    assert trimmed.messages[1] is new_message
+
+
+def test_default_token_counter_treats_image_path_parts_as_images(
+    tmp_path: Path,
+) -> None:
+    cwm = ContextWindowManager()
+
+    assert cwm._default_token_counter(
+        [{"image_path": str(tmp_path / "image.png")}]
+    ) == 4000

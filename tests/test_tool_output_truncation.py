@@ -1,14 +1,26 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
+import pytest
+
 from penguin.tools.runtime import (
+    ToolCall,
+    ToolExecutionPolicy,
     ToolResult,
+    _preview_text,
+    execute_tool_calls_serially,
     hash_tool_output,
     legacy_action_result_from_tool_result,
     prepare_model_visible_tool_output,
+    tool_result_with_model_output_policy,
     tool_result_from_action_result,
 )
+
+
+def test_preview_text_treats_negative_limit_as_empty() -> None:
+    assert _preview_text("secret", max_chars=-1) == ""
 
 
 def test_model_visible_tool_output_truncates_and_writes_full_artifact(
@@ -84,6 +96,34 @@ def test_tool_result_records_output_metadata() -> None:
     }
 
 
+def test_tool_result_policy_omits_full_structured_output_payload(
+    tmp_path: Path,
+) -> None:
+    result = ToolResult(
+        call_id="call_1",
+        name="read_file",
+        status="completed",
+        output="line\n" * 100,
+        structured_output={
+            "path": "large.txt",
+            "result": "line\n" * 100,
+            "output": "line\n" * 100,
+        },
+    )
+
+    bounded = tool_result_with_model_output_policy(
+        result,
+        max_chars=80,
+        artifact_dir=tmp_path,
+    )
+
+    assert bounded.truncated is True
+    assert bounded.structured_output is not None
+    assert bounded.structured_output["path"] == "large.txt"
+    assert "result" not in bounded.structured_output
+    assert "output" not in bounded.structured_output
+
+
 def test_action_result_to_tool_result_preserves_output_metadata() -> None:
     result = tool_result_from_action_result(
         {
@@ -106,3 +146,68 @@ def test_action_result_to_tool_result_preserves_output_metadata() -> None:
     assert result.truncated is True
     assert result.truncation_direction == "tail"
     assert result.artifact_path == "/tmp/full.txt"
+
+
+@pytest.mark.asyncio
+async def test_serial_scheduler_applies_model_output_policy(tmp_path: Path) -> None:
+    [result] = await execute_tool_calls_serially(
+        [
+            ToolCall(
+                id="call_long",
+                name="execute_command",
+                arguments="printf long",
+                source="responses",
+            )
+        ],
+        lambda _tool_call: "line\n" * 100,
+        policy=ToolExecutionPolicy(
+            max_output_chars=160,
+            artifact_dir=tmp_path,
+            truncation_direction="tail",
+        ),
+    )
+
+    assert result.truncated is True
+    assert len(result.output) <= 160
+    assert "Tool output truncated" in result.output
+    assert result.artifact_path is not None
+    artifact_text = await asyncio.to_thread(
+        Path(result.artifact_path).read_text,
+        encoding="utf-8",
+    )
+    assert artifact_text == "line\n" * 100
+
+
+@pytest.mark.asyncio
+async def test_serial_scheduler_omits_full_output_from_structured_output(
+    tmp_path: Path,
+) -> None:
+    full_output = "line\n" * 100
+
+    [result] = await execute_tool_calls_serially(
+        [
+            ToolCall(
+                id="call_dict_output",
+                name="read_file",
+                arguments='{"path": "large.txt"}',
+                source="responses",
+            )
+        ],
+        lambda _tool_call: {
+            "action": "read_file",
+            "path": "large.txt",
+            "result": full_output,
+            "status": "completed",
+        },
+        policy=ToolExecutionPolicy(
+            max_output_chars=160,
+            artifact_dir=tmp_path,
+            truncation_direction="tail",
+        ),
+    )
+
+    assert result.truncated is True
+    assert result.structured_output is not None
+    assert "result" not in result.structured_output
+    assert result.structured_output["path"] == "large.txt"
+    assert result.artifact_path is not None

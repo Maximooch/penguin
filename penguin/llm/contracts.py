@@ -82,6 +82,15 @@ class ProviderRequestStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+class LLMCallStatus(str, Enum):
+    """Canonical outcome for one provider sampling attempt."""
+
+    COMPLETED = "completed"
+    RETRYABLE_ERROR = "retryable_error"
+    FATAL_ERROR = "fatal_error"
+    CANCELLED = "cancelled"
+
+
 @dataclass
 class LLMProviderCapabilities:
     """Provider/model capabilities consumed by higher-level runtime layers."""
@@ -450,6 +459,26 @@ class LLMResult:
 
 
 @dataclass
+class LLMCallResult:
+    """Typed attempt result used by Engine/provider loop control."""
+
+    text: str = ""
+    status: LLMCallStatus = LLMCallStatus.COMPLETED
+    error: Optional[LLMError] = None
+    lifecycle: Optional[LLMRequestLifecycle] = None
+    completed_event_seen: bool = False
+    streamed_assistant_chunks: bool = False
+    pending_tool_call: bool = False
+    provider_data: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def succeeded(self) -> bool:
+        """Return whether this attempt completed successfully."""
+
+        return self.status == LLMCallStatus.COMPLETED
+
+
+@dataclass
 class LLMRequest:
     """Provider-agnostic request shape for completions/streaming."""
 
@@ -527,6 +556,8 @@ __all__ = [
     "ErrorCategory",
     "ErrorReportingRuntime",
     "FinishReason",
+    "LLMCallResult",
+    "LLMCallStatus",
     "LLMError",
     "LLMPreparedRequest",
     "LLMProviderCapabilities",

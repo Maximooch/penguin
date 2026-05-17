@@ -72,8 +72,10 @@ def test_tool_manager_get_responses_tools_curated():
     # A few representative curated tools
     assert "write_file" in names
     assert "read_file" in names
-    assert "patch_file" in names
-    assert "patch_files" in names
+    assert "edit_file" in names
+    assert "apply_patch" in names
+    assert "patch_file" not in names
+    assert "patch_files" not in names
     assert "execute_command" in names
     assert "finish_response" in names
     assert "finish_task" in names
@@ -248,8 +250,8 @@ def test_responses_tools_web_search_included():
     expected_tools = {
         "read_file",
         "write_file",
-        "patch_file",
-        "patch_files",
+        "edit_file",
+        "apply_patch",
         "execute_command",
         "code_execution",
     }

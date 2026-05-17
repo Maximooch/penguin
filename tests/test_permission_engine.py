@@ -445,6 +445,8 @@ class TestToolPermissionMapping:
         assert is_safe_tool("write_file") is False
         assert is_safe_tool("write_to_file") is False
         assert is_safe_tool("execute_command") is False
+        assert is_safe_tool("edit_file") is False
+        assert is_safe_tool("apply_patch") is False
         assert is_safe_tool("patch_file") is False
         assert is_safe_tool("patch_files") is False
         assert is_safe_tool("apply_diff") is False
@@ -470,6 +472,9 @@ class TestToolPermissionMapping:
         from penguin.security.tool_permissions import get_highest_risk_operation
 
         op = get_highest_risk_operation("patch_file")
+        assert op == Operation.FILESYSTEM_WRITE
+
+        op = get_highest_risk_operation("apply_patch")
         assert op == Operation.FILESYSTEM_WRITE
 
         # apply_diff has read + write, should return write as higher risk

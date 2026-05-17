@@ -12,17 +12,44 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import logging
+import shlex
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, Optional, Union, cast
 
+from penguin.system.execution_context import get_current_execution_context
 from penguin.utils.parser import CodeActAction, parse_action
+
+logger = logging.getLogger(__name__)
 
 ToolCallSource = Literal["action_xml", "responses", "mcp", "internal"]
 ToolResultStatus = Literal["completed", "error", "cancelled", "requires_approval"]
+ToolEffect = Literal[
+    "read",
+    "filesystem_mutation",
+    "process_mutation",
+    "external_mutation",
+    "destructive",
+    "unknown",
+]
 ToolArguments = Union[dict[str, Any], str]
+ToolResource = str
+TOOL_RECORD_OUTPUT_PREVIEW_CHARS = 500
+TOOL_RECORD_ARGUMENT_PREVIEW_CHARS = 500
+DEFAULT_TOOL_MODEL_OUTPUT_MAX_CHARS = 24_000
+ORDERED_TOOL_BATCH_NAME = "ordered_tool_batch"
+ORDERED_TOOL_BATCH_REJECTED_NAMES = frozenset(
+    {
+        ORDERED_TOOL_BATCH_NAME,
+        "multi_tool_use.ordered",
+        "multi_tool_use.parallel",
+        "parallel_tool_batch",
+    }
+)
+ORDERED_TOOL_BATCH_MAX_CALLS = 25
 
 
 @dataclass(frozen=True)
@@ -37,6 +64,12 @@ class ToolCall:
     mutates_state: bool = True
     parallel_safe: bool = False
     requires_approval: bool = True
+    effect: ToolEffect = "unknown"
+    resources: tuple[ToolResource, ...] = ()
+    long_running: bool = False
+    streams_output: bool = False
+    parent_call_id: Optional[str] = None
+    batch_id: Optional[str] = None
 
 
 ToolExecutor = Callable[[ToolCall], Union[Any, Awaitable[Any]]]
@@ -68,6 +101,94 @@ class ToolResult:
             object.__setattr__(self, "byte_count", len(output_text.encode("utf-8")))
         if self.line_count <= 0 and output_text:
             object.__setattr__(self, "line_count", output_text.count("\n") + 1)
+
+
+@dataclass(frozen=True)
+class ToolCallRecord:
+    """Lightweight persisted envelope for a captured tool call."""
+
+    call_id: str
+    name: str
+    source: ToolCallSource
+    arguments_hash: str
+    arguments_preview: str = ""
+    mutates_state: bool = True
+    parallel_safe: bool = False
+    requires_approval: bool = True
+    effect: ToolEffect = "unknown"
+    resources: tuple[ToolResource, ...] = ()
+    long_running: bool = False
+    streams_output: bool = False
+    parent_call_id: Optional[str] = None
+    batch_id: Optional[str] = None
+    created_at: float = field(default_factory=time.time)
+    raw_type: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-serializable tool-call record."""
+
+        return {
+            "record_type": "tool_call",
+            "call_id": self.call_id,
+            "name": self.name,
+            "source": self.source,
+            "arguments_hash": self.arguments_hash,
+            "arguments_preview": self.arguments_preview,
+            "mutates_state": self.mutates_state,
+            "parallel_safe": self.parallel_safe,
+            "requires_approval": self.requires_approval,
+            "effect": self.effect,
+            "resources": list(self.resources),
+            "long_running": self.long_running,
+            "streams_output": self.streams_output,
+            "parent_call_id": self.parent_call_id,
+            "batch_id": self.batch_id,
+            "created_at": self.created_at,
+            "raw_type": self.raw_type,
+        }
+
+
+@dataclass(frozen=True)
+class ToolResultRecord:
+    """Lightweight persisted envelope for a completed tool result."""
+
+    call_id: str
+    name: str
+    status: ToolResultStatus
+    output_hash: str
+    started_at: float
+    ended_at: float
+    byte_count: int
+    line_count: int
+    source: Optional[ToolCallSource] = None
+    duration_ms: float = 0.0
+    truncated: bool = False
+    truncation_direction: str = "none"
+    artifact_path: Optional[str] = None
+    arguments_hash: Optional[str] = None
+    output_preview: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-serializable tool-result record."""
+
+        return {
+            "record_type": "tool_result",
+            "call_id": self.call_id,
+            "name": self.name,
+            "source": self.source,
+            "status": self.status,
+            "started_at": self.started_at,
+            "ended_at": self.ended_at,
+            "duration_ms": self.duration_ms,
+            "output_hash": self.output_hash,
+            "byte_count": self.byte_count,
+            "line_count": self.line_count,
+            "truncated": self.truncated,
+            "truncation_direction": self.truncation_direction,
+            "artifact_path": self.artifact_path,
+            "arguments_hash": self.arguments_hash,
+            "output_preview": self.output_preview,
+        }
 
 
 @dataclass(frozen=True)
@@ -110,11 +231,35 @@ class ToolLoopIdentity:
 
 
 @dataclass(frozen=True)
+class ToolScheduleDecision:
+    """Decision describing whether a batch may run in parallel."""
+
+    mode: Literal["parallel", "ordered"]
+    allowed: bool
+    reason: str
+    conflicts: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class ToolExecutionPolicy:
     """Conservative execution policy for the serial scheduler."""
 
     max_calls: Optional[int] = None
     catch_exceptions: bool = False
+    stop_on_error: bool = False
+    max_output_chars: Optional[int] = None
+    artifact_dir: Optional[Union[str, Path]] = None
+    truncation_direction: Literal["head", "tail", "middle"] = "tail"
+
+
+@dataclass(frozen=True)
+class OrderedToolBatchPlan:
+    """Validated ordered batch parsed from a model-visible batch call."""
+
+    parent_call_id: str
+    stop_on_error: bool
+    tool_calls: tuple[ToolCall, ...] = ()
+    error: Optional[str] = None
 
 
 def hash_tool_output(output: Any) -> str:
@@ -122,6 +267,146 @@ def hash_tool_output(output: Any) -> str:
 
     output_text = str(output if output is not None else "")
     return hashlib.sha256(output_text.encode()).hexdigest()
+
+
+def hash_tool_arguments(arguments: Any) -> str:
+    """Return a stable hash for normalized tool arguments."""
+
+    return hashlib.sha256(
+        _stable_json(_normalize_arguments(arguments)).encode()
+    ).hexdigest()
+
+
+def _preview_text(value: Any, *, max_chars: int) -> str:
+    """Return a bounded text preview for lightweight persisted records.
+
+    Negative ``max_chars`` values are treated as 0 and produce an empty preview.
+    """
+
+    max_chars = max(0, max_chars)
+    text = str(value if value is not None else "")
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars]
+
+
+def _render_arguments(arguments: Any) -> str:
+    """Render normalized arguments as stable text for previews/replay metadata."""
+
+    normalized = _normalize_arguments(arguments)
+    if isinstance(normalized, (dict, list)):
+        return _stable_json(normalized)
+    return str(normalized if normalized is not None else "")
+
+
+def tool_call_record_from_tool_call(tool_call: ToolCall) -> ToolCallRecord:
+    """Build a lightweight persisted record for a captured tool call."""
+
+    normalized_arguments = _normalize_arguments(tool_call.arguments)
+    rendered_arguments = _render_arguments(normalized_arguments)
+    return ToolCallRecord(
+        call_id=tool_call.id,
+        name=tool_call.name,
+        source=tool_call.source,
+        arguments_hash=hash_tool_arguments(normalized_arguments),
+        arguments_preview=_preview_text(
+            rendered_arguments,
+            max_chars=TOOL_RECORD_ARGUMENT_PREVIEW_CHARS,
+        ),
+        mutates_state=tool_call.mutates_state,
+        parallel_safe=tool_call.parallel_safe,
+        requires_approval=tool_call.requires_approval,
+        effect=tool_call.effect,
+        resources=tool_call.resources,
+        long_running=tool_call.long_running,
+        streams_output=tool_call.streams_output,
+        parent_call_id=tool_call.parent_call_id,
+        batch_id=tool_call.batch_id,
+        raw_type=type(tool_call.raw).__name__ if tool_call.raw is not None else "",
+    )
+
+
+def tool_result_record_from_tool_result(
+    tool_result: ToolResult,
+    *,
+    tool_call: Optional[ToolCall] = None,
+    arguments: Any = None,
+) -> ToolResultRecord:
+    """Build a lightweight persisted record for a normalized tool result."""
+
+    resolved_arguments = tool_call.arguments if tool_call is not None else arguments
+    arguments_hash = (
+        hash_tool_arguments(resolved_arguments)
+        if resolved_arguments is not None
+        else None
+    )
+    duration_ms = max((tool_result.ended_at - tool_result.started_at) * 1000, 0.0)
+    return ToolResultRecord(
+        call_id=tool_result.call_id,
+        name=tool_result.name,
+        source=tool_call.source if tool_call is not None else None,
+        status=tool_result.status,
+        started_at=tool_result.started_at,
+        ended_at=tool_result.ended_at,
+        duration_ms=duration_ms,
+        output_hash=tool_result.output_hash,
+        byte_count=tool_result.byte_count,
+        line_count=tool_result.line_count,
+        truncated=tool_result.truncated,
+        truncation_direction=tool_result.truncation_direction,
+        artifact_path=tool_result.artifact_path,
+        arguments_hash=arguments_hash,
+        output_preview=_preview_text(
+            tool_result.output,
+            max_chars=TOOL_RECORD_OUTPUT_PREVIEW_CHARS,
+        ),
+    )
+
+
+def tool_result_with_model_output_policy(
+    tool_result: ToolResult,
+    *,
+    max_chars: Optional[int] = None,
+    artifact_dir: Optional[Union[str, Path]] = None,
+    artifact_id: Optional[str] = None,
+    truncation_direction: Literal["head", "tail", "middle"] = "tail",
+) -> ToolResult:
+    """Return a tool result whose output is bounded for model replay."""
+
+    if max_chars is None:
+        return tool_result
+
+    view = prepare_model_visible_tool_output(
+        tool_result.output,
+        max_chars=max_chars,
+        artifact_dir=artifact_dir,
+        artifact_id=artifact_id or tool_result.call_id,
+        truncation_direction=truncation_direction,
+    )
+    safe_structured_output = {
+        key: value
+        for key, value in (tool_result.structured_output or {}).items()
+        if key not in {"output", "result"}
+    }
+    structured_output = {
+        **safe_structured_output,
+        **view.to_metadata(),
+    }
+    return ToolResult(
+        call_id=tool_result.call_id,
+        name=tool_result.name,
+        status=tool_result.status,
+        output=view.model_output,
+        structured_output=structured_output,
+        started_at=tool_result.started_at,
+        ended_at=tool_result.ended_at,
+        output_hash=view.output_hash,
+        byte_count=view.byte_count,
+        line_count=view.line_count,
+        truncated=view.truncated,
+        truncation_direction=view.truncation_direction,
+        artifact_path=view.artifact_path,
+    )
 
 
 def _line_count(output_text: str) -> int:
@@ -267,6 +552,537 @@ def _normalize_arguments(arguments: Any) -> Any:
         except Exception:
             return stripped
     return arguments
+
+
+_READ_ONLY_TOOL_NAMES = {
+    "read_file",
+    "read_image",
+    "list_files",
+    "find_file",
+    "grep_search",
+    "memory_search",
+    "get_file_map",
+    "browser_status",
+    "browser_page_info",
+    "browser_list_tabs",
+    "process_poll",
+}
+_FILESYSTEM_MUTATION_TOOL_NAMES = {
+    "create_folder",
+    "create_file",
+    "write_file",
+    "edit_file",
+    "apply_patch",
+    "patch_file",
+    "patch_files",
+}
+_PROCESS_MUTATION_TOOL_NAMES = {
+    "code_execution",
+    "execute_command",
+    "process_start",
+    "process_write_stdin",
+    "process_stop",
+}
+_EXTERNAL_MUTATION_PREFIXES = ("browser_", "pydoll_browser_")
+_GIT_MUTATING_SUBCOMMANDS = {
+    "add",
+    "am",
+    "apply",
+    "bisect",
+    "branch",
+    "checkout",
+    "cherry-pick",
+    "clean",
+    "commit",
+    "fetch",
+    "merge",
+    "mv",
+    "pull",
+    "push",
+    "rebase",
+    "reset",
+    "restore",
+    "revert",
+    "rm",
+    "stash",
+    "switch",
+    "tag",
+}
+
+
+def _argument_mapping(arguments: Any) -> dict[str, Any]:
+    """Return normalized dict arguments when available."""
+
+    normalized = _normalize_arguments(arguments)
+    return normalized if isinstance(normalized, dict) else {}
+
+
+def _argument_text(arguments: Any) -> str:
+    """Return normalized argument text for command inspection."""
+
+    normalized = _normalize_arguments(arguments)
+    if isinstance(normalized, dict):
+        command = normalized.get("command") or normalized.get("code") or ""
+        return str(command)
+    return str(normalized or "")
+
+
+def _resource_path(value: Any) -> Optional[str]:
+    """Return a stable path resource string for scheduler metadata."""
+
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return f"fs:{Path(text).expanduser()}"
+    except Exception:
+        return f"fs:{text}"
+
+
+def _path_resources(arguments: Any) -> tuple[ToolResource, ...]:
+    """Extract obvious filesystem resources from tool arguments."""
+
+    mapping = _argument_mapping(arguments)
+    resources: list[ToolResource] = []
+    for key in (
+        "path",
+        "file_path",
+        "filePath",
+        "target",
+        "directory",
+        "search_path",
+        "output_dir",
+    ):
+        resource = _resource_path(mapping.get(key))
+        if resource and resource not in resources:
+            resources.append(resource)
+    patch = mapping.get("patch")
+    if isinstance(patch, str):
+        for line in patch.splitlines():
+            if line.startswith("*** Add File: "):
+                resource = _resource_path(line.removeprefix("*** Add File: "))
+            elif line.startswith("*** Delete File: "):
+                resource = _resource_path(line.removeprefix("*** Delete File: "))
+            elif line.startswith("*** Update File: "):
+                resource = _resource_path(line.removeprefix("*** Update File: "))
+            else:
+                resource = None
+            if resource and resource not in resources:
+                resources.append(resource)
+    return tuple(resources)
+
+
+def _command_tokens(command: str) -> list[str]:
+    """Split a shell command enough for conservative scheduling metadata."""
+
+    try:
+        return shlex.split(command)
+    except Exception:
+        return command.split()
+
+
+def _command_git_resources(command: str) -> tuple[ToolResource, ...]:
+    """Return Git resources touched by a shell command."""
+
+    tokens = _command_tokens(command)
+    for index, token in enumerate(tokens):
+        if token.endswith("/git") or token == "git":
+            subcommand = tokens[index + 1] if index + 1 < len(tokens) else ""
+            resources: list[ToolResource] = ["git:repo"]
+            if subcommand in _GIT_MUTATING_SUBCOMMANDS:
+                resources.append("git:index")
+            return tuple(resources)
+    return ()
+
+
+def infer_tool_effect(tool_call: ToolCall) -> ToolEffect:
+    """Infer a conservative scheduler effect for a tool call."""
+
+    name = tool_call.name
+    if name in _READ_ONLY_TOOL_NAMES:
+        return "read"
+    if name in _FILESYSTEM_MUTATION_TOOL_NAMES:
+        return "filesystem_mutation"
+    if name in _PROCESS_MUTATION_TOOL_NAMES:
+        return "process_mutation"
+    if any(name.startswith(prefix) for prefix in _EXTERNAL_MUTATION_PREFIXES):
+        return "external_mutation"
+    return "unknown"
+
+
+def infer_tool_resources(tool_call: ToolCall) -> tuple[ToolResource, ...]:
+    """Infer conservative resource keys used for scheduling decisions."""
+
+    resources: list[ToolResource] = list(tool_call.resources)
+    name = tool_call.name
+    if name in _READ_ONLY_TOOL_NAMES or name in _FILESYSTEM_MUTATION_TOOL_NAMES:
+        resources.extend(_path_resources(tool_call.arguments))
+    if name in _PROCESS_MUTATION_TOOL_NAMES:
+        resources.append("process:*")
+        resources.extend(_command_git_resources(_argument_text(tool_call.arguments)))
+    if name == "process_poll":
+        process_id = _argument_mapping(tool_call.arguments).get("process_id")
+        resources.append(f"process:{process_id or '*'}")
+    if name in {"process_write_stdin", "process_stop"}:
+        process_id = _argument_mapping(tool_call.arguments).get("process_id")
+        resources.append(f"process:{process_id or '*'}")
+    if name in {"perplexity_search", "browser_open_tab", "browser_navigate"}:
+        resources.append("network:*")
+    return tuple(dict.fromkeys(resource for resource in resources if resource))
+
+
+def _ordered_batch_payload(arguments: Any) -> tuple[dict[str, Any], Optional[str]]:
+    """Return a parsed ordered-batch payload or an error string."""
+
+    normalized = _normalize_arguments(arguments)
+    if isinstance(normalized, dict):
+        return normalized, None
+    return {}, "ordered_tool_batch requires a JSON object payload"
+
+
+def _ordered_child_name(item: dict[str, Any]) -> tuple[str, Optional[str]]:
+    """Return one child tool name from a batch item or an error string."""
+
+    if "recipient_name" in item:
+        return "", "ordered_tool_batch does not support recipient_name/channel routing"
+    if "channel" in item:
+        return "", "ordered_tool_batch does not support explicit channel routing"
+    raw_name = item.get("tool", item.get("name"))
+    name = str(raw_name or "").strip()
+    if not name:
+        return "", "ordered_tool_batch child calls require 'tool' or 'name'"
+    if name in ORDERED_TOOL_BATCH_REJECTED_NAMES:
+        return "", f"ordered_tool_batch cannot nest batch tool '{name}'"
+    if not all(char.isalnum() or char in "_-" for char in name):
+        return "", f"ordered_tool_batch child tool '{name}' is not supported"
+    return name, None
+
+
+def _ordered_child_arguments(item: dict[str, Any]) -> tuple[dict[str, Any], Optional[str]]:
+    """Return one child argument object from a batch item or an error string."""
+
+    sentinel = object()
+    raw_args = item.get("arguments", sentinel)
+    if raw_args is sentinel:
+        raw_args = item.get("parameters", sentinel)
+    if raw_args is sentinel:
+        raw_args = item.get("input", sentinel)
+    if raw_args is sentinel:
+        raw_args = item.get("tool_input", {})
+    if raw_args is None:
+        raw_args = {}
+    if not isinstance(raw_args, dict):
+        return {}, "ordered_tool_batch child arguments must be a JSON object"
+    return dict(raw_args), None
+
+
+def parse_ordered_tool_batch_plan(
+    parent_call: ToolCall,
+    *,
+    available_tool_names: Optional[set[str]] = None,
+    available_tool_schemas: Optional[dict[str, dict[str, Any]]] = None,
+) -> OrderedToolBatchPlan:
+    """Parse and preflight a model-visible ordered batch call.
+
+    Args:
+        parent_call: The provider/native tool call for `ordered_tool_batch`.
+        available_tool_names: Optional canonical tool names allowed as child
+            calls. When supplied, each child must resolve to one of these names.
+        available_tool_schemas: Optional tool schemas used for shallow required
+            field validation before any child call executes.
+
+    Returns:
+        An `OrderedToolBatchPlan`. The `error` field is populated when preflight
+        fails; in that case `tool_calls` is empty and callers must execute no
+        child calls.
+    """
+
+    payload, payload_error = _ordered_batch_payload(parent_call.arguments)
+    if payload_error:
+        return OrderedToolBatchPlan(
+            parent_call_id=parent_call.id,
+            stop_on_error=True,
+            error=payload_error,
+        )
+
+    raw_tool_uses = payload.get("tool_uses")
+    if raw_tool_uses is None:
+        raw_tool_uses = payload.get("tools")
+    if raw_tool_uses is None:
+        raw_tool_uses = payload.get("calls")
+    if not isinstance(raw_tool_uses, list):
+        return OrderedToolBatchPlan(
+            parent_call_id=parent_call.id,
+            stop_on_error=True,
+            error="ordered_tool_batch requires a tool_uses array",
+        )
+    if not raw_tool_uses:
+        return OrderedToolBatchPlan(
+            parent_call_id=parent_call.id,
+            stop_on_error=True,
+            error="ordered_tool_batch requires at least one child call",
+        )
+    if len(raw_tool_uses) > ORDERED_TOOL_BATCH_MAX_CALLS:
+        return OrderedToolBatchPlan(
+            parent_call_id=parent_call.id,
+            stop_on_error=True,
+            error=(
+                "ordered_tool_batch supports at most "
+                f"{ORDERED_TOOL_BATCH_MAX_CALLS} child calls"
+            ),
+        )
+
+    stop_on_error = bool(payload.get("stop_on_error", True))
+    if "continue_on_error" in payload and "stop_on_error" not in payload:
+        stop_on_error = not bool(payload.get("continue_on_error"))
+
+    child_calls: list[ToolCall] = []
+    for index, item in enumerate(raw_tool_uses):
+        if not isinstance(item, dict):
+            return OrderedToolBatchPlan(
+                parent_call_id=parent_call.id,
+                stop_on_error=stop_on_error,
+                error=f"ordered_tool_batch child #{index + 1} must be an object",
+            )
+        name, name_error = _ordered_child_name(item)
+        if name_error:
+            return OrderedToolBatchPlan(
+                parent_call_id=parent_call.id,
+                stop_on_error=stop_on_error,
+                error=f"child #{index + 1}: {name_error}",
+            )
+        if available_tool_names is not None and name not in available_tool_names:
+            return OrderedToolBatchPlan(
+                parent_call_id=parent_call.id,
+                stop_on_error=stop_on_error,
+                error=f"child #{index + 1}: unknown tool '{name}'",
+            )
+        child_arguments, arguments_error = _ordered_child_arguments(item)
+        if arguments_error:
+            return OrderedToolBatchPlan(
+                parent_call_id=parent_call.id,
+                stop_on_error=stop_on_error,
+                error=f"child #{index + 1}: {arguments_error}",
+            )
+        if available_tool_schemas is not None:
+            schema = available_tool_schemas.get(name, {})
+            input_schema = schema.get("input_schema") or schema.get("parameters")
+            if isinstance(input_schema, dict):
+                required_fields = input_schema.get("required")
+                if isinstance(required_fields, list):
+                    missing = [
+                        str(field)
+                        for field in required_fields
+                        if str(field) not in child_arguments
+                    ]
+                    if missing:
+                        return OrderedToolBatchPlan(
+                            parent_call_id=parent_call.id,
+                            stop_on_error=stop_on_error,
+                            error=(
+                                f"child #{index + 1}: tool '{name}' missing "
+                                f"required fields: {', '.join(missing)}"
+                            ),
+                        )
+        child_calls.append(
+            ToolCall(
+                id=f"{parent_call.id}:child:{index}:{name}",
+                name=name,
+                arguments=child_arguments,
+                source="internal",
+                raw=item,
+                parent_call_id=parent_call.id,
+                batch_id=parent_call.id,
+            )
+        )
+
+    return OrderedToolBatchPlan(
+        parent_call_id=parent_call.id,
+        stop_on_error=stop_on_error,
+        tool_calls=tuple(child_calls),
+    )
+
+
+def ordered_tool_batch_result_from_results(
+    parent_call: ToolCall,
+    plan: OrderedToolBatchPlan,
+    child_results: list[ToolResult],
+) -> ToolResult:
+    """Build the parent tool result for an executed ordered batch."""
+
+    child_summaries: list[dict[str, Any]] = []
+    for index, result in enumerate(child_results):
+        duration_ms = max((result.ended_at - result.started_at) * 1000, 0.0)
+        source_call = (
+            plan.tool_calls[index] if index < len(plan.tool_calls) else None
+        )
+        child_summaries.append(
+            {
+                "call_id": result.call_id,
+                "tool": result.name,
+                "status": result.status,
+                "duration_ms": duration_ms,
+                "output_preview": _preview_text(
+                    result.output,
+                    max_chars=TOOL_RECORD_OUTPUT_PREVIEW_CHARS,
+                ),
+                "output_hash": result.output_hash,
+                "truncated": result.truncated,
+                "effect": source_call.effect if source_call is not None else "unknown",
+                "resources": (
+                    list(source_call.resources) if source_call is not None else []
+                ),
+            }
+        )
+    failed = [summary for summary in child_summaries if summary["status"] != "completed"]
+    status: ToolResultStatus = "error" if failed else "completed"
+    completed_count = len(child_summaries) - len(failed)
+    output_lines = [
+        (
+            "Ordered tool batch "
+            f"{'failed' if failed else 'completed'}: "
+            f"{completed_count}/{len(plan.tool_calls)} child calls completed."
+        )
+    ]
+    for index, summary in enumerate(child_summaries, start=1):
+        output_lines.append(
+            f"{index}. {summary['tool']} {summary['status']}: "
+            f"{summary['output_preview']}"
+        )
+    if plan.stop_on_error and failed and len(child_summaries) < len(plan.tool_calls):
+        output_lines.append("Stopped after first failed child call.")
+
+    started_at = child_results[0].started_at if child_results else time.time()
+    ended_at = child_results[-1].ended_at if child_results else started_at
+    return ToolResult(
+        call_id=parent_call.id,
+        name=parent_call.name,
+        status=status,
+        output="\n".join(output_lines),
+        structured_output={
+            "ordered_batch": {
+                "parent_call_id": parent_call.id,
+                "batch_id": parent_call.id,
+                "stop_on_error": plan.stop_on_error,
+                "child_count": len(plan.tool_calls),
+                "executed_count": len(child_results),
+                "completed_count": completed_count,
+                "failed_count": len(failed),
+                "stopped_on_error": bool(
+                    plan.stop_on_error
+                    and failed
+                    and len(child_results) < len(plan.tool_calls)
+                ),
+                "children": child_summaries,
+            }
+        },
+        started_at=started_at,
+        ended_at=ended_at,
+    )
+
+
+def ordered_tool_batch_preflight_error_result(
+    parent_call: ToolCall,
+    plan: OrderedToolBatchPlan,
+) -> ToolResult:
+    """Build an error result for an ordered batch that failed preflight."""
+
+    message = plan.error or "ordered_tool_batch preflight failed"
+    now = time.time()
+    return ToolResult(
+        call_id=parent_call.id,
+        name=parent_call.name,
+        status="error",
+        output=f"ordered_tool_batch preflight failed: {message}",
+        structured_output={
+            "ordered_batch": {
+                "parent_call_id": parent_call.id,
+                "batch_id": parent_call.id,
+                "stop_on_error": plan.stop_on_error,
+                "child_count": 0,
+                "executed_count": 0,
+                "error": message,
+            }
+        },
+        started_at=now,
+        ended_at=now,
+    )
+
+
+def tool_call_with_schedule_metadata(
+    tool_call: ToolCall,
+    runtime_metadata: Optional[dict[str, Any]] = None,
+) -> ToolCall:
+    """Return a tool call enriched with scheduler-owned metadata."""
+
+    metadata = runtime_metadata if isinstance(runtime_metadata, dict) else {}
+    inferred_effect = (
+        tool_call.effect
+        if tool_call.effect != "unknown"
+        else infer_tool_effect(tool_call)
+    )
+    inferred_resources = infer_tool_resources(tool_call)
+    mutates_state = metadata.get("mutates_state", tool_call.mutates_state)
+    requires_approval = metadata.get("requires_approval", tool_call.requires_approval)
+    parallel_safe = metadata.get("parallel_safe", tool_call.parallel_safe)
+    long_running = metadata.get("long_running", tool_call.long_running)
+    streams_output = metadata.get("streams_output", tool_call.streams_output)
+    if inferred_effect == "read" and not metadata:
+        mutates_state = False
+        requires_approval = False
+    return replace(
+        tool_call,
+        mutates_state=bool(mutates_state),
+        requires_approval=bool(requires_approval),
+        parallel_safe=bool(parallel_safe),
+        effect=inferred_effect,
+        resources=inferred_resources,
+        long_running=bool(long_running),
+        streams_output=bool(streams_output),
+        parent_call_id=tool_call.parent_call_id,
+        batch_id=tool_call.batch_id,
+    )
+
+
+def parallel_schedule_decision(
+    tool_calls: list[ToolCall],
+) -> ToolScheduleDecision:
+    """Return whether a tool-call batch is safe for parallel execution."""
+
+    scheduled_calls = [tool_call_with_schedule_metadata(call) for call in tool_calls]
+    conflicts: list[str] = []
+    for call in scheduled_calls:
+        if call.effect != "read":
+            conflicts.append(f"{call.id}:{call.name} effect={call.effect}")
+        if call.mutates_state:
+            conflicts.append(f"{call.id}:{call.name} mutates_state")
+        if call.requires_approval:
+            conflicts.append(f"{call.id}:{call.name} requires_approval")
+        if not call.parallel_safe:
+            conflicts.append(f"{call.id}:{call.name} not_parallel_safe")
+    resource_writers: dict[ToolResource, str] = {}
+    for call in scheduled_calls:
+        if call.effect == "read":
+            continue
+        for resource in call.resources:
+            previous = resource_writers.get(resource)
+            if previous is not None:
+                conflicts.append(f"{previous} conflicts with {call.id} on {resource}")
+            resource_writers[resource] = call.id
+    if conflicts:
+        return ToolScheduleDecision(
+            mode="ordered",
+            allowed=False,
+            reason="parallel execution rejected; ordered serial execution required",
+            conflicts=tuple(dict.fromkeys(conflicts)),
+        )
+    return ToolScheduleDecision(
+        mode="parallel",
+        allowed=True,
+        reason="all calls are read-only, approved-free, and marked parallel-safe",
+    )
 
 
 def _first_non_none(mapping: dict[str, Any], keys: tuple[str, ...]) -> Any:
@@ -544,6 +1360,64 @@ def select_tool_calls_for_policy(
     return list(tool_calls[: max(active_policy.max_calls, 0)])
 
 
+def select_ordered_tool_calls_for_policy(
+    tool_calls: list[ToolCall],
+    policy: Optional[ToolExecutionPolicy] = None,
+) -> list[ToolCall]:
+    """Select and enrich calls for ordered serial execution."""
+
+    return [
+        tool_call_with_schedule_metadata(tool_call)
+        for tool_call in select_tool_calls_for_policy(tool_calls, policy)
+    ]
+
+
+def _current_trace_fields() -> dict[str, str]:
+    """Return active request/session fields for runtime diagnostics."""
+
+    context = get_current_execution_context()
+    if context is None:
+        return {"request_id": "unknown", "session_id": "unknown"}
+    return {
+        "request_id": context.request_id or "unknown",
+        "session_id": context.session_id or context.conversation_id or "unknown",
+    }
+
+
+def _argument_size(arguments: Any) -> int:
+    """Return argument size in characters using stable JSON where possible."""
+
+    return len(_render_arguments(arguments))
+
+
+def _log_tool_runtime_result(
+    *,
+    tool_call: ToolCall,
+    tool_result: ToolResult,
+    duration_ms: float,
+) -> None:
+    """Emit a compact structured tool runtime summary."""
+
+    fields = _current_trace_fields()
+    logger.info(
+        "tool.exec.done request=%s session=%s call_id=%s tool=%s source=%s "
+        "status=%s duration_ms=%.2f args_chars=%s output_bytes=%s "
+        "output_lines=%s truncated=%s artifact=%s",
+        fields["request_id"],
+        fields["session_id"],
+        tool_call.id,
+        tool_call.name,
+        tool_call.source,
+        tool_result.status,
+        duration_ms,
+        _argument_size(tool_call.arguments),
+        tool_result.byte_count,
+        tool_result.line_count,
+        tool_result.truncated,
+        tool_result.artifact_path,
+    )
+
+
 async def execute_tool_calls_serially(
     tool_calls: list[ToolCall],
     execute_call: ToolExecutor,
@@ -554,58 +1428,168 @@ async def execute_tool_calls_serially(
 
     active_policy = policy or ToolExecutionPolicy()
     results: list[ToolResult] = []
-    for tool_call in select_tool_calls_for_policy(tool_calls, active_policy):
+    selected_calls = select_ordered_tool_calls_for_policy(tool_calls, active_policy)
+    parallel_decision = parallel_schedule_decision(selected_calls)
+    if selected_calls:
+        logger.info(
+            "tool.batch.schedule mode=ordered count=%s parallel_allowed=%s reason=%s "
+            "conflicts=%s",
+            len(selected_calls),
+            parallel_decision.allowed,
+            parallel_decision.reason,
+            list(parallel_decision.conflicts),
+        )
+    for tool_call in selected_calls:
         started_at = time.time()
+        started_perf = time.perf_counter()
+        trace_fields = _current_trace_fields()
+        logger.info(
+            "tool.exec.start request=%s session=%s call_id=%s tool=%s source=%s "
+            "args_chars=%s parallel_safe=%s mutates_state=%s effect=%s resources=%s",
+            trace_fields["request_id"],
+            trace_fields["session_id"],
+            tool_call.id,
+            tool_call.name,
+            tool_call.source,
+            _argument_size(tool_call.arguments),
+            tool_call.parallel_safe,
+            tool_call.mutates_state,
+            tool_call.effect,
+            list(tool_call.resources),
+        )
         try:
             output = execute_call(tool_call)
             if inspect.isawaitable(output):
                 output = await output
             ended_at = time.time()
+            duration_ms = (time.perf_counter() - started_perf) * 1000
             if isinstance(output, ToolResult):
-                results.append(output)
+                result = tool_result_with_model_output_policy(
+                    output,
+                    max_chars=active_policy.max_output_chars,
+                    artifact_dir=active_policy.artifact_dir,
+                    artifact_id=tool_call.id,
+                    truncation_direction=active_policy.truncation_direction,
+                )
+                _log_tool_runtime_result(
+                    tool_call=tool_call,
+                    tool_result=result,
+                    duration_ms=duration_ms,
+                )
+                results.append(result)
+                if active_policy.stop_on_error and result.status == "error":
+                    break
                 continue
             if isinstance(output, dict):
                 action_output = dict(output)
                 if not action_output.get("action") and not action_output.get("name"):
                     action_output["action"] = tool_call.name
-                results.append(
-                    tool_result_from_action_result(
-                        action_output,
-                        call_id=tool_call.id,
-                        started_at=started_at,
-                        ended_at=ended_at,
-                        structured_output={
-                            **action_output,
-                            "tool_call_id": tool_call.id,
-                            "tool_arguments": tool_call.arguments,
-                        },
-                    )
-                )
-                continue
-            results.append(
-                ToolResult(
+                structured_action_output = {
+                    key: value
+                    for key, value in action_output.items()
+                    if key not in {"output", "result"}
+                }
+                tool_result = tool_result_from_action_result(
+                    action_output,
                     call_id=tool_call.id,
-                    name=tool_call.name,
-                    status="completed",
-                    output=str(output if output is not None else ""),
                     started_at=started_at,
                     ended_at=ended_at,
+                    structured_output={
+                        **structured_action_output,
+                        "tool_call_id": tool_call.id,
+                        "tool_arguments": tool_call.arguments,
+                    },
                 )
+                result = tool_result_with_model_output_policy(
+                    tool_result,
+                    max_chars=active_policy.max_output_chars,
+                    artifact_dir=active_policy.artifact_dir,
+                    artifact_id=tool_call.id,
+                    truncation_direction=active_policy.truncation_direction,
+                )
+                _log_tool_runtime_result(
+                    tool_call=tool_call,
+                    tool_result=result,
+                    duration_ms=duration_ms,
+                )
+                results.append(result)
+                if active_policy.stop_on_error and result.status == "error":
+                    break
+                continue
+            tool_result = ToolResult(
+                call_id=tool_call.id,
+                name=tool_call.name,
+                status="completed",
+                output=str(output if output is not None else ""),
+                started_at=started_at,
+                ended_at=ended_at,
             )
+            result = tool_result_with_model_output_policy(
+                tool_result,
+                max_chars=active_policy.max_output_chars,
+                artifact_dir=active_policy.artifact_dir,
+                artifact_id=tool_call.id,
+                truncation_direction=active_policy.truncation_direction,
+            )
+            _log_tool_runtime_result(
+                tool_call=tool_call,
+                tool_result=result,
+                duration_ms=duration_ms,
+            )
+            results.append(result)
+            if active_policy.stop_on_error and result.status == "error":
+                break
         except Exception as exc:
+            duration_ms = (time.perf_counter() - started_perf) * 1000
+            logger.warning(
+                "tool.exec.error request=%s session=%s call_id=%s tool=%s "
+                "source=%s duration_ms=%.2f args_chars=%s error=%s",
+                trace_fields["request_id"],
+                trace_fields["session_id"],
+                tool_call.id,
+                tool_call.name,
+                tool_call.source,
+                duration_ms,
+                _argument_size(tool_call.arguments),
+                exc,
+            )
             if not active_policy.catch_exceptions:
                 raise
-            results.append(
-                ToolResult(
-                    call_id=tool_call.id,
-                    name=tool_call.name,
-                    status="error",
-                    output=f"Error executing tool {tool_call.name}: {exc}",
-                    started_at=started_at,
-                    ended_at=time.time(),
-                )
+            tool_result = ToolResult(
+                call_id=tool_call.id,
+                name=tool_call.name,
+                status="error",
+                output=f"Error executing tool {tool_call.name}: {exc}",
+                started_at=started_at,
+                ended_at=time.time(),
             )
+            result = tool_result_with_model_output_policy(
+                tool_result,
+                max_chars=active_policy.max_output_chars,
+                artifact_dir=active_policy.artifact_dir,
+                artifact_id=tool_call.id,
+                truncation_direction=active_policy.truncation_direction,
+            )
+            _log_tool_runtime_result(
+                tool_call=tool_call,
+                tool_result=result,
+                duration_ms=duration_ms,
+            )
+            results.append(result)
+            if active_policy.stop_on_error:
+                break
     return results
+
+
+async def execute_tool_calls_ordered(
+    tool_calls: list[ToolCall],
+    execute_call: ToolExecutor,
+    *,
+    policy: Optional[ToolExecutionPolicy] = None,
+) -> list[ToolResult]:
+    """Execute a dependent multi-tool batch in deterministic serial order."""
+
+    return await execute_tool_calls_serially(tool_calls, execute_call, policy=policy)
 
 
 def tool_call_from_responses_info(tool_info: dict[str, Any]) -> Optional[ToolCall]:
@@ -859,25 +1843,47 @@ def legacy_action_result_from_tool_result(tool_result: ToolResult) -> dict[str, 
 
 __all__ = [
     "ToolArguments",
+    "DEFAULT_TOOL_MODEL_OUTPUT_MAX_CHARS",
+    "ToolEffect",
     "ToolCall",
+    "ToolCallRecord",
     "ToolCallSource",
     "ToolExecutionPolicy",
     "ToolExecutor",
     "ToolLoopIdentity",
     "ToolOutputView",
+    "ToolResource",
     "ToolResult",
+    "ToolResultRecord",
     "ToolResultStatus",
+    "ToolScheduleDecision",
+    "ORDERED_TOOL_BATCH_NAME",
+    "ORDERED_TOOL_BATCH_REJECTED_NAMES",
+    "OrderedToolBatchPlan",
+    "execute_tool_calls_ordered",
     "execute_tool_calls_serially",
+    "hash_tool_arguments",
     "hash_tool_output",
     "image_artifacts_from_action_result",
+    "infer_tool_effect",
+    "infer_tool_resources",
     "legacy_action_result_from_tool_result",
+    "ordered_tool_batch_preflight_error_result",
+    "ordered_tool_batch_result_from_results",
+    "parallel_schedule_decision",
+    "parse_ordered_tool_batch_plan",
     "prepare_model_visible_tool_output",
+    "select_ordered_tool_calls_for_policy",
     "select_tool_calls_for_policy",
+    "tool_call_with_schedule_metadata",
+    "tool_call_record_from_tool_call",
     "tool_call_from_responses_info",
     "tool_calls_from_actionxml",
     "tool_calls_from_codeact_actions",
     "tool_loop_signature",
+    "tool_result_record_from_tool_result",
     "tool_result_from_action_result",
+    "tool_result_with_model_output_policy",
     "tool_results_loop_identity",
     "tool_results_loop_signature",
 ]

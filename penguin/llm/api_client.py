@@ -18,11 +18,14 @@ from PIL import Image  # type: ignore
 
 from .contracts import (
     ErrorCategory,
+    LLMCallResult,
+    LLMCallStatus,
     LLMError,
     LLMPreparedRequest,
     LLMProviderCapabilities,
     LLMProviderError,
     LLMRequestLifecycle,
+    ProviderRequestStatus,
 )
 from .model_config import ModelConfig
 from .provider_registry import ProviderRegistry
@@ -296,6 +299,7 @@ class APIClient:
         self.logger = logging.getLogger(__name__)
         self.client_handler = None  # Will be set based on preference
         self._last_error: Optional[LLMError] = None
+        self._last_response_result: Optional[LLMCallResult] = None
         self._base_url = base_url
         self._extra_headers = dict(extra_headers or {})
         self.provider_registry = ProviderRegistry(
@@ -506,6 +510,68 @@ class APIClient:
             return None
         return lifecycle if isinstance(lifecycle, LLMRequestLifecycle) else None
 
+    def get_last_response_result(self) -> Optional[LLMCallResult]:
+        """Return the latest typed provider attempt result."""
+
+        if not isinstance(self._last_response_result, LLMCallResult):
+            return None
+        return self._last_response_result
+
+    def _handler_has_pending_tool_call(self) -> bool:
+        handler = getattr(self, "client_handler", None)
+        getter = getattr(handler, "has_pending_tool_call", None)
+        if not callable(getter):
+            return False
+        try:
+            return bool(getter())
+        except Exception:
+            self.logger.debug("Failed to inspect handler pending tool call")
+            return False
+
+    def _build_response_result(
+        self,
+        *,
+        text: Optional[str],
+        error: Optional[LLMError] = None,
+        provider_data: Optional[Dict[str, Any]] = None,
+    ) -> LLMCallResult:
+        lifecycle = self.get_last_request_lifecycle()
+        completed_event_seen = (
+            isinstance(lifecycle, LLMRequestLifecycle)
+            and lifecycle.status == ProviderRequestStatus.COMPLETED
+        )
+        resolved_error = error
+        if resolved_error is None and isinstance(lifecycle, LLMRequestLifecycle):
+            resolved_error = lifecycle.error
+
+        if isinstance(lifecycle, LLMRequestLifecycle) and (
+            lifecycle.status == ProviderRequestStatus.CANCELLED
+        ):
+            status = LLMCallStatus.CANCELLED
+        elif resolved_error is not None:
+            status = (
+                LLMCallStatus.RETRYABLE_ERROR
+                if resolved_error.retryable
+                else LLMCallStatus.FATAL_ERROR
+            )
+        elif isinstance(lifecycle, LLMRequestLifecycle) and lifecycle.status in {
+            ProviderRequestStatus.DISCONNECTED,
+            ProviderRequestStatus.FAILED,
+        }:
+            status = LLMCallStatus.FATAL_ERROR
+        else:
+            status = LLMCallStatus.COMPLETED
+
+        return LLMCallResult(
+            text=str(text or ""),
+            status=status,
+            error=resolved_error,
+            lifecycle=lifecycle,
+            completed_event_seen=completed_event_seen,
+            pending_tool_call=self._handler_has_pending_tool_call(),
+            provider_data=dict(provider_data or {}),
+        )
+
     def get_provider_capabilities(self) -> LLMProviderCapabilities:
         """Return provider/model capabilities from the active handler."""
 
@@ -693,6 +759,7 @@ class APIClient:
 
         request_id_api = request_id_ctx or os.urandom(4).hex()
         self._last_error = None
+        self._last_response_result = None
         self.logger.info(
             f"[Request:{request_id_api}] APIClient calling handler {type(self.client_handler).__name__}.get_response session={session_id_ctx} model={getattr(self.model_config, 'model', None)} stream={use_streaming}"
         )
@@ -748,7 +815,21 @@ class APIClient:
                 self.logger.error(
                     f"CRITICAL: Client handler {type(self.client_handler).__name__} missing required 'get_response' method!"
                 )
-                return f"[Error: Handler {type(self.client_handler).__name__} interface mismatch]"
+                response_text = (
+                    f"[Error: Handler {type(self.client_handler).__name__} "
+                    "interface mismatch]"
+                )
+                self._last_response_result = self._build_response_result(
+                    text=response_text,
+                    error=build_llm_error(
+                        message=response_text,
+                        provider=getattr(self.model_config, "provider", None),
+                        model=getattr(self.model_config, "model", None),
+                        category=ErrorCategory.RUNTIME,
+                        retryable=False,
+                    ),
+                )
+                return response_text
 
             # Normalize callback to async (chunk, message_type) signature
             effective_callback = (
@@ -825,10 +906,23 @@ class APIClient:
                         or self._extract_diagnostic_id(handler_error.message)
                         or f"llm_{os.urandom(5).hex()}"
                     )
-                    return self._format_user_error_message(
+                    formatted_error = self._format_user_error_message(
                         error=handler_error,
                         diag_id=diag_id,
                     )
+                    self._last_response_result = self._build_response_result(
+                        text=formatted_error,
+                        error=handler_error,
+                    )
+                    return formatted_error
+                self._last_response_result = self._build_response_result(
+                    text=response_text,
+                    error=handler_error,
+                )
+            else:
+                self._last_response_result = self._build_response_result(
+                    text=response_text,
+                )
 
             # If streaming, the callback handled output. Return minimal response.
             # The response_text here is the final accumulated text from the gateway.
@@ -860,6 +954,10 @@ class APIClient:
                     )
             # >>>----------------------------------------------->>>
 
+            if self._last_response_result is None:
+                self._last_response_result = self._build_response_result(
+                    text=response_text,
+                )
             return response_text
             # --- End Ideal Flow ---
 
@@ -882,7 +980,39 @@ class APIClient:
                 str(e),
                 exc_info=True,
             )
-            return self._format_user_error_message(error=error_payload, diag_id=diag_id)
+            formatted_error = self._format_user_error_message(
+                error=error_payload,
+                diag_id=diag_id,
+            )
+            self._last_response_result = self._build_response_result(
+                text=formatted_error,
+                error=error_payload,
+            )
+            return formatted_error
+
+    async def get_response_result(
+        self,
+        messages: List[Dict[str, Any]],
+        max_output_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        stream: Optional[bool] = None,
+        stream_callback: Optional[Callable[[str, str], None]] = None,
+        **kwargs: Any,
+    ) -> LLMCallResult:
+        """Get a typed provider attempt result for loop control."""
+
+        text = await self.get_response(
+            messages,
+            max_output_tokens=max_output_tokens,
+            temperature=temperature,
+            stream=stream,
+            stream_callback=stream_callback,
+            **kwargs,
+        )
+        result = self.get_last_response_result()
+        if result is not None:
+            return result
+        return self._build_response_result(text=text)
 
     # --- Methods below might be simplified or removed if get_response handles all ---
 

@@ -12,21 +12,30 @@ from penguin.tools.editing.registry import (
 )
 from penguin.tools.tool_manager import ToolManager
 from penguin.utils.parser import (
-    ActionType,
     LEGACY_EDIT_ACTION_ALIASES,
+    ActionType,
     parse_action,
 )
 
-
 CANONICAL_EDIT_ACTION_TYPES = (
     ActionType.WRITE_FILE,
-    ActionType.PATCH_FILE,
-    ActionType.PATCH_FILES,
+    ActionType.EDIT_FILE,
+    ActionType.APPLY_PATCH,
 )
 
 
 def _dummy_log_error(exc: Exception, context: str = "") -> None:
     del exc, context
+
+
+LEGACY_APPLY_DIFF_WARNING = (
+    "Deprecated patch_file payload: legacy apply_diff wrapper is deprecated; "
+    "use patch_file instead."
+)
+LEGACY_MULTIEDIT_WARNING = (
+    "Deprecated patch_files payload: legacy multiedit wrapper is deprecated; "
+    "use patch_files instead."
+)
 
 
 @pytest.mark.parametrize("action_type", CANONICAL_EDIT_ACTION_TYPES)
@@ -65,20 +74,25 @@ def test_tool_manager_schema_exposes_current_public_edit_tools() -> None:
 
     assert {
         "write_file",
-        "patch_file",
-        "patch_files",
+        "edit_file",
+        "apply_patch",
     }.issubset(schema_names)
+    assert "patch_file" not in schema_names
+    assert "patch_files" not in schema_names
 
-    patch_file_schema = next(
-        tool for tool in tool_manager.get_tools() if tool["name"] == "patch_file"
+    edit_file_schema = next(
+        tool for tool in tool_manager.get_tools() if tool["name"] == "edit_file"
     )
-    patch_files_schema = next(
-        tool for tool in tool_manager.get_tools() if tool["name"] == "patch_files"
+    apply_patch_schema = next(
+        tool for tool in tool_manager.get_tools() if tool["name"] == "apply_patch"
     )
 
-    assert "operation" in patch_file_schema["input_schema"]["properties"]
-    assert patch_file_schema["input_schema"]["required"] == ["path", "operation"]
-    assert "operations" in patch_files_schema["input_schema"]["properties"]
+    assert edit_file_schema["input_schema"]["required"] == [
+        "path",
+        "old_string",
+        "new_string",
+    ]
+    assert apply_patch_schema["input_schema"]["required"] == ["patch"]
 
 
 def test_tool_manager_edit_schemas_match_shared_registry() -> None:
@@ -127,7 +141,9 @@ def test_get_responses_tools_returns_canonical_edit_names_only() -> None:
         if tool.get("type") == "function"
     }
 
-    assert {"write_file", "patch_file", "patch_files"}.issubset(names)
+    assert {"write_file", "edit_file", "apply_patch"}.issubset(names)
+    assert "patch_file" not in names
+    assert "patch_files" not in names
     assert "write_to_file" not in names
     assert "apply_diff" not in names
     assert "multiedit_apply" not in names
@@ -157,7 +173,9 @@ def test_execute_tool_accepts_legacy_write_alias(tmp_path: Path) -> None:
         shutil.rmtree(workspace, ignore_errors=True)
 
 
-def test_execute_tool_accepts_legacy_patch_alias(tmp_path: Path) -> None:
+def test_execute_tool_rejects_legacy_patch_alias_without_writing(
+    tmp_path: Path,
+) -> None:
     workspace = Path.cwd() / ".tmp-track-a-tests" / f"{tmp_path.name}_patch_alias"
     try:
         workspace.mkdir(parents=True, exist_ok=True)
@@ -191,8 +209,10 @@ def test_execute_tool_accepts_legacy_patch_alias(tmp_path: Path) -> None:
         )
 
         assert isinstance(result, str)
-        assert result.startswith("Successfully applied diff")
-        assert target.read_text(encoding="utf-8") == "print('new')\n"
+        payload = json.loads(result)
+        assert payload["success"] is False
+        assert "deprecated" in payload["error"]
+        assert target.read_text(encoding="utf-8") == "print('old')\n"
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
 
@@ -220,7 +240,78 @@ def test_write_file_can_overwrite_existing_file_with_workspace_context(
         )
 
         assert isinstance(result, str)
-        assert result.startswith("Changes applied to")
+        payload = json.loads(result)
+        assert payload["success"] is True
+        assert payload["files_edited"] == ["notes.txt"]
+        assert target.read_text(encoding="utf-8") == "new\n"
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+def test_edit_file_executes_with_workspace_context(tmp_path: Path) -> None:
+    workspace = Path.cwd() / ".tmp-track-a-tests" / f"{tmp_path.name}_edit_file"
+    try:
+        workspace.mkdir(parents=True, exist_ok=True)
+        target = workspace / "notes.txt"
+        target.write_text("old\n", encoding="utf-8")
+
+        tool_manager = ToolManager(
+            config={}, log_error_func=_dummy_log_error, fast_startup=True
+        )
+        result = tool_manager.execute_tool(
+            "edit_file",
+            {
+                "path": "notes.txt",
+                "old_string": "old\n",
+                "new_string": "new\n",
+            },
+            context={
+                "directory": str(workspace),
+                "project_root": str(workspace),
+                "workspace_root": str(workspace),
+            },
+        )
+        assert isinstance(result, str)
+        payload = json.loads(result)
+
+        assert payload["success"] is True
+        assert target.read_text(encoding="utf-8") == "new\n"
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+def test_apply_patch_executes_with_workspace_context(tmp_path: Path) -> None:
+    workspace = Path.cwd() / ".tmp-track-a-tests" / f"{tmp_path.name}_apply_patch"
+    try:
+        workspace.mkdir(parents=True, exist_ok=True)
+        target = workspace / "notes.txt"
+        target.write_text("old\n", encoding="utf-8")
+
+        tool_manager = ToolManager(
+            config={}, log_error_func=_dummy_log_error, fast_startup=True
+        )
+        result = tool_manager.execute_tool(
+            "apply_patch",
+            {
+                "patch": (
+                    "*** Begin Patch\n"
+                    "*** Update File: notes.txt\n"
+                    "@@\n"
+                    "-old\n"
+                    "+new\n"
+                    "*** End Patch\n"
+                )
+            },
+            context={
+                "directory": str(workspace),
+                "project_root": str(workspace),
+                "workspace_root": str(workspace),
+            },
+        )
+        assert isinstance(result, str)
+        payload = json.loads(result)
+
+        assert payload["success"] is True
         assert target.read_text(encoding="utf-8") == "new\n"
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
@@ -259,7 +350,7 @@ def test_patch_file_insert_lines_validation_returns_clear_error(tmp_path: Path) 
         shutil.rmtree(workspace, ignore_errors=True)
 
 
-def test_patch_files_structured_operations_execute_with_workspace_context(
+def test_patch_files_structured_operations_fail_without_writing(
     tmp_path: Path,
 ) -> None:
     workspace = (
@@ -309,15 +400,15 @@ def test_patch_files_structured_operations_execute_with_workspace_context(
         assert isinstance(result, str)
         payload = json.loads(result)
 
-        assert payload["success"] is True
-        assert payload["applied"] is True
-        assert first.read_text(encoding="utf-8") == "hello\nPENGUIN\n"
-        assert second.read_text(encoding="utf-8") == "one\ntwo\nthree\n"
+        assert payload["success"] is False
+        assert "deprecated" in payload["error"]
+        assert first.read_text(encoding="utf-8") == "hello\nworld\n"
+        assert second.read_text(encoding="utf-8") == "one\ntwo\n"
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
 
 
-def test_patch_files_legacy_content_executes_with_workspace_context(
+def test_patch_files_legacy_content_fails_without_writing(
     tmp_path: Path,
 ) -> None:
     workspace = (
@@ -346,9 +437,9 @@ def test_patch_files_legacy_content_executes_with_workspace_context(
         assert isinstance(result, str)
         payload = json.loads(result)
 
-        assert payload["success"] is True
-        assert payload["applied"] is True
-        assert target.read_text(encoding="utf-8") == "print('new')\n"
+        assert payload["success"] is False
+        assert "deprecated" in payload["error"]
+        assert target.read_text(encoding="utf-8") == "print('old')\n"
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
 
@@ -384,9 +475,7 @@ def test_legacy_apply_diff_wrapper_routes_through_patch_file(monkeypatch) -> Non
                 "diff_content": "--- a/src/main.py\n+++ b/src/main.py\n",
             },
             "backup": False,
-            "_warnings": [
-                "Deprecated patch_file payload: legacy apply_diff wrapper is deprecated; use patch_file instead."
-            ],
+            "_warnings": [LEGACY_APPLY_DIFF_WARNING],
         },
         "file_root": "/tmp/workspace",
     }
@@ -416,9 +505,7 @@ def test_legacy_multiedit_wrapper_routes_through_patch_files(monkeypatch) -> Non
             "content": "a.py:\n@@ -1 +1 @@\n-a\n+b\n",
             "apply": True,
             "backup": True,
-            "_warnings": [
-                "Deprecated patch_files payload: legacy multiedit wrapper is deprecated; use patch_files instead."
-            ],
+            "_warnings": [LEGACY_MULTIEDIT_WARNING],
         },
         "file_root": "/tmp/workspace",
     }

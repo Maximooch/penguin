@@ -220,6 +220,20 @@ def test_map_action_result_metadata_extracts_diff_for_replace_lines() -> None:
     assert "+++ b/src/main.py" in metadata["diff"]
 
 
+def test_map_action_result_metadata_extracts_diff_for_canonical_edit() -> None:
+    core = PenguinCore.__new__(PenguinCore)
+    result = "--- a/src/main.py\n+++ b/src/main.py\n@@ -1 +1 @@\n-old\n+new\n"
+
+    metadata = core._map_action_result_metadata(
+        "edit",
+        result,
+        tool_input={"path": "src/main.py"},
+    )
+
+    assert metadata["filePath"] == "src/main.py"
+    assert metadata["diff"].startswith("--- a/src/main.py")
+
+
 def test_map_action_result_metadata_sets_output_for_code_execution() -> None:
     core = PenguinCore.__new__(PenguinCore)
 
@@ -446,6 +460,78 @@ def test_map_action_to_tool_supports_canonical_patch_file_payload() -> None:
     assert metadata == {}
 
 
+def test_map_action_to_tool_supports_edit_file_payload() -> None:
+    core = PenguinCore.__new__(PenguinCore)
+
+    mapped_tool, tool_input, metadata = core._map_action_to_tool(
+        "edit_file",
+        {
+            "path": "src/main.py",
+            "old_string": "old\n",
+            "new_string": "new\n",
+            "replace_all": True,
+        },
+    )
+
+    assert mapped_tool == "edit"
+    assert tool_input == {
+        "filePath": "src/main.py",
+        "oldString": "old\n",
+        "newString": "new\n",
+        "replaceAll": True,
+    }
+    assert metadata == {}
+
+
+def test_map_action_to_tool_supports_apply_patch_payload() -> None:
+    core = PenguinCore.__new__(PenguinCore)
+
+    patch = (
+        "*** Begin Patch\n"
+        "*** Update File: src/main.py\n"
+        "@@\n"
+        "-old\n"
+        "+new\n"
+        "*** End Patch\n"
+    )
+    mapped_tool, tool_input, metadata = core._map_action_to_tool(
+        "apply_patch",
+        {"patch": patch},
+    )
+
+    assert mapped_tool == "edit"
+    assert tool_input == {"filePath": "(patch)", "patch": patch}
+    assert metadata == {"files": ["src/main.py"]}
+
+
+def test_map_action_to_tool_preserves_apply_patch_files_on_parse_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core = PenguinCore.__new__(PenguinCore)
+
+    patch = (
+        "*** Begin Patch\n"
+        "*** Update File: src/main.py\n"
+        "@@\n"
+        "-old\n"
+        "+new\n"
+    )
+    monkeypatch.setattr(
+        "penguin.core.parse_apply_patch_payload",
+        lambda _params: {"patch": patch, "error": "malformed patch"},
+    )
+
+    mapped_tool, tool_input, metadata = core._map_action_to_tool(
+        "apply_patch",
+        {"patch": patch},
+    )
+
+    assert mapped_tool == "edit"
+    assert tool_input == {"filePath": "(patch)"}
+    assert metadata["files"] == ["src/main.py"]
+    assert metadata["diff"] == patch
+
+
 def test_map_action_to_tool_supports_canonical_patch_files_payload() -> None:
     core = PenguinCore.__new__(PenguinCore)
 
@@ -625,6 +711,21 @@ def test_map_action_result_metadata_moves_diff_to_attempted_diff_on_error() -> N
         "Error applying diff",
         existing={"diff": "--- a/file.txt\n+++ b/file.txt\n@@\n-old\n+new\n"},
         tool_input={"filePath": "file.txt"},
+        status="error",
+    )
+
+    assert "diff" not in metadata
+    assert metadata["attemptedDiff"].startswith("--- a/file.txt")
+
+
+def test_map_action_result_metadata_keeps_apply_patch_attempted_diff_on_error() -> None:
+    core = PenguinCore.__new__(PenguinCore)
+
+    metadata = core._map_action_result_metadata(
+        "apply_patch",
+        "Error applying patch",
+        existing={"diff": "--- a/file.txt\n+++ b/file.txt\n@@\n-old\n+new\n"},
+        tool_input={"path": "file.txt"},
         status="error",
     )
 

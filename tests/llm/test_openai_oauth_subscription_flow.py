@@ -4,6 +4,7 @@ import logging
 import os
 from typing import Any
 
+import httpx
 import pytest
 
 from penguin.llm.adapters.openai import OpenAIAdapter
@@ -1380,6 +1381,42 @@ async def test_oauth_codex_partial_text_without_completed_is_disconnected(
 
 
 @pytest.mark.asyncio
+async def test_oauth_codex_stream_transport_error_records_disconnected_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_oauth_codex_test_auth(monkeypatch)
+
+    class _BrokenStreamResponse(_FakeResponse):
+        async def aiter_lines(self):  # type: ignore[no-untyped-def]
+            yield _codex_text_delta("partial")
+            raise httpx.RemoteProtocolError(
+                "peer closed connection without sending complete message body"
+            )
+
+    transport = _FakeCodexTransport([_BrokenStreamResponse(200)])
+    monkeypatch.setattr(
+        "penguin.llm.adapters.openai.httpx.AsyncClient",
+        transport.async_client_class(),
+    )
+    adapter = _codex_adapter()
+
+    with pytest.raises(LLMProviderError) as exc:
+        await adapter.get_response(
+            [{"role": "user", "content": "hello"}],
+            stream=False,
+        )
+
+    assert "stream_transport" in str(exc.value)
+    lifecycle = adapter.get_last_request_lifecycle()
+    assert lifecycle is not None
+    assert lifecycle.status == ProviderRequestStatus.DISCONNECTED
+    assert lifecycle.last_event_type == "stream_transport"
+    assert lifecycle.error is not None
+    assert lifecycle.error.category == ErrorCategory.NETWORK
+    assert lifecycle.error.retryable is True
+
+
+@pytest.mark.asyncio
 async def test_oauth_codex_partial_tool_call_without_completed_is_not_pending(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1459,6 +1496,10 @@ async def test_oauth_codex_completed_tool_call_remains_pending(
     assert lifecycle is not None
     assert lifecycle.status == ProviderRequestStatus.COMPLETED
     assert lifecycle.provider_response_id == "resp_tool"
+    breakdown = lifecycle.provider_data.get("stream_breakdown")
+    assert breakdown["tool_arg_delta_count"] == 1
+    assert breakdown["tool_arg_chars"] == len('{"path":"README.md"}')
+    assert breakdown["event_counts"]["response.function_call_arguments.delta"] == 1
 
 
 @pytest.mark.asyncio

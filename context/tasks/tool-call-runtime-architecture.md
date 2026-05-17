@@ -128,6 +128,11 @@ Useful design lessons for Penguin:
 - Provider quirks should stay at the adapter edge. Higher layers should see
   canonical tool calls/results/events, while adapters handle provider-specific
   tool-call IDs, message ordering, schemas, and finish reasons.
+- File mutation tools should have a small, provable surface. Codex's
+  `apply_patch` uses explicit old/context/new hunks instead of raw line
+  coordinates, and OpenCode's `edit` tool requires exact old-string matches
+  that fail when missing or ambiguous. Penguin should converge on those two
+  shapes rather than preserving many overlapping edit primitives.
 
 ## Target Architecture
 
@@ -271,6 +276,72 @@ The loop controller should not know individual tool semantics. It should reason
 about call/result metadata.
 
 ## Migration Plan
+
+### Current Position
+
+Penguin is implemented through the Phase 7 metadata foundation for the
+first-class provider/tool runtime path:
+
+- ActionXML and native provider tool calls both normalize into
+  `ToolCall`/`ToolResult` before legacy action-result compatibility views are
+  persisted.
+- The current loop guard uses IR-aware identity rather than text previews.
+- OpenAI/Codex, OpenRouter/OpenAI-compatible, and Anthropic native tool paths
+  have provider-aware preparation, capture, and replay repair coverage.
+- Phase 5.5 prompt guidance already prefers native provider tool calls when
+  schemas are available, keeps ActionXML documented as fallback, and removes
+  native `finish_response` exposure so normal turns end by returning text with
+  no further tool calls.
+- Phase 6.5 now persists lightweight first-class tool call/result session
+  records for all tool paths, preserves those records through CWM trimming, and
+  applies a shared artifact-backed per-tool model-output cap in the serial
+  scheduler.
+- Phase 7 now has a minimum model-visible schema contract and conservative
+  runtime metadata extraction. The scheduler can consume that metadata later,
+  but no parallel execution is enabled yet.
+- The Phase 7.5 file-edit reliability rewrite has landed for exact
+  replacements and Codex-style contextual patches. File editing is no longer
+  the main bottleneck; the highest-risk remaining runtime gap is scheduling
+  safety around mutable resources, especially when a model is tempted to use
+  parallel calls for dependent Git, filesystem, process, or test operations.
+
+Phase 6 parallel tool execution remains blocked until scheduler-owned effect
+metadata, resource conflict detection, approval semantics, cancellation
+behavior, and registry metadata are complete.
+The remaining practical order is:
+
+1. Keep the new `edit_file`/`apply_patch` surface stable and finish remaining
+   metadata/replay polish around edit results.
+2. Add scheduler-owned effect/resource metadata and an internal ordered
+   execution path for dependent operations that should be bundled but not
+   parallelized.
+3. Add Phase 8.1 as the model-visible ordered multi-tool wrapper so agents have
+   a safe serial batching affordance instead of misusing `multi_tool_use.parallel`.
+4. Add parallel conflict detection before any provider or local parallel
+   execution is enabled.
+5. Expand registry metadata coverage for approval, long-running/streaming
+   process behavior, retry safety, provider support, and UI presentation.
+6. Pair long-running job support with the terminal/process runtime foundation:
+   persistent process handles, polling, tailing, stdin, cancellation, and
+   pageable output belong there rather than in a separate ad-hoc job tool.
+7. Add a Phase 9.5 Codex-parity pass for terminal UX semantics once the basic
+   process runtime is stable: yield-time execution, streamed output deltas,
+   PTY resize, connection cleanup, and argv-vs-shell handling.
+8. Add runtime permission/approval outcomes as structured `ToolResult` statuses.
+9. Defer aggregate per-turn model-visible tool-output caps until after the
+   record/replay boundary remains stable under real workloads.
+10. Defer structured Git/PR wrappers until last. The CLI remains the preferred
+   interface for now; `.git/index.lock` incidents are not enough evidence by
+   themselves to justify first-class Git tools.
+11. Enable Phase 6 parallel execution only for explicitly audited safe subsets.
+
+Current PR scope:
+
+- Focus on Phase 8 scheduling/multi-tool safety and Phase 9 terminal/process
+  handling.
+- Treat Git/PR wrappers, search-scope cleanup, multi/sub-agent orchestration,
+  Blueprint/PM/ITUV helpers, workflow primitives, and journal automation as
+  later phases.
 
 ### Phase 0: Document and Test Current Behavior
 
@@ -474,8 +545,27 @@ Acceptance criteria:
   exposed natively
 - ActionXML remains documented for providers or modes without native tool
   support
-- completion-tool guidance does not conflict with native `finish_response` and
-  `finish_task` calls
+- normal conversation turns complete by returning assistant text with no tool
+  calls, while formal task runs still use `finish_task`
+- native provider schemas do not expose `finish_response` as a model-callable
+  stop tool
+
+Phase 5.5 implementation note:
+
+- `penguin.prompt_actions` now presents native provider tools as the preferred
+  path when schemas are available and labels ActionXML as the compatibility
+  fallback path.
+- Native provider schemas now omit `finish_response`; this matches Codex,
+  OpenCode, and Hermes-style loops where "no tool calls" is the normal
+  conversation-turn completion signal. `finish_response` remains available as a
+  legacy ActionXML compatibility signal.
+- Completion guidance now reserves native `finish_task` for formal task work
+  and avoids telling normal conversation turns to call a stop tool.
+- `tests/test_prompt_actions.py` covers native-tool preference, fallback
+  wording, alias rendering, and completion-tool guidance.
+- `tests/test_engine_responses_tool_calls.py` covers provider schema filtering
+  so OpenAI/Codex, OpenRouter, and Anthropic native schemas do not advertise
+  `finish_response`.
 
 ### Phase 5.6: Extend Native Tool Support Across Providers
 
@@ -528,6 +618,13 @@ Phase 5.6 implementation note:
 
 ### Phase 6: Safe Parallel Tool Calls
 
+Status:
+
+- Deferred until Phase 7 metadata and Phase 8 scheduling guardrails exist.
+- Do not send provider `parallel_tool_calls` just because a model supports it.
+  Penguin must first know which tools are safe to run concurrently and how to
+  order, cancel, persist, and replay each result.
+
 Goals:
 
 - add parallel execution only for tools marked safe
@@ -554,12 +651,14 @@ Related future work:
 Goals:
 
 - persist native/provider tool-call records before dispatching tools
+- persist lightweight first-class tool call/result session records for all
+  tools, not only native provider tools
 - apply a single truncation policy to all model-visible tool outputs
 - preserve full raw output in a local artifact/result store when truncated
 - include line count, byte count, truncation direction, output hash, and output
   artifact path/reference in `ToolResult`
-- enforce an aggregate per-turn model-visible tool-output cap in addition to
-  per-tool caps
+- leave room for an aggregate per-turn model-visible tool-output cap, but defer
+  enforcement until durable records and replay are stable
 - make provider replay reconstruct native tool-call and tool-result adjacency
   from persisted `ToolCall` / `ToolResult` records
 - convert interrupted, pending, or cancelled historical tool calls into
@@ -567,6 +666,11 @@ Goals:
 
 Acceptance criteria:
 
+- every tool execution has a stable call/result record with id, tool name,
+  normalized argument hash, status, timing, output hash, truncation metadata,
+  and optional artifact reference
+- legacy action-result messages remain as compatibility views until UI, TUI,
+  and replay consumers move to first-class records
 - if Penguin stops between tool-call capture and tool completion, replay can
   reconstruct the pending call and emit an explicit cancelled/failed result
 - large command/read/search outputs do not get injected wholesale into the next
@@ -586,6 +690,25 @@ Provider replay progress note:
   output hash, and optional artifact path metadata, and
   `prepare_model_visible_tool_output` provides a deterministic per-tool preview
   plus full-output artifact write path.
+- `ToolCallRecord` and `ToolResultRecord` are lightweight first-class session
+  records. They store call id, name, source, normalized arguments/hash, status,
+  timing, output hash, byte/line counts, truncation metadata, bounded previews,
+  and optional artifact references without making full output a required
+  conversation payload.
+- ActionXML and native provider tool paths persist the call record before
+  dispatch and the result record after scheduler completion. Legacy
+  `role=tool` action-result messages are still written as the compatibility
+  view for existing UI, TUI, adapter, and history consumers.
+- `ConversationSystem.get_formatted_messages()` can repair provider-native
+  replay metadata for tool result messages from first-class records when an
+  assistant tool-call message was trimmed or historical metadata is incomplete.
+- The serial scheduler can apply a shared per-tool model-visible output policy.
+  Penguin defaults to a generous 24k-character per-tool cap, can disable it
+  with `PENGUIN_TOOL_OUTPUT_MAX_CHARS=0`, and writes full truncated outputs to
+  workspace-local `conversations/tool-results/<session-id>/` artifacts when a
+  conversation manager has a workspace path.
+- Context-window trimming preserves provider lifecycle records and first-class
+  tool call/result records even when lower-priority messages are dropped.
 - Tool-output truncation has unit/property coverage for deterministic caps,
   artifact writes, metadata preservation, and artifact-safe IDs.
 - Anthropic now marks `error`, `failed`, `cancelled`, and `interrupted`
@@ -627,7 +750,211 @@ Acceptance criteria:
 - tests cover denied, approved-once, approved-for-session, and unavailable-tool
   behavior
 
-### Phase 8: Terminal/Process Runtime Foundation
+Phase 7 implementation note:
+
+- `penguin.tools.schema_contract` defines the minimum model-visible tool schema
+  contract: canonical name, description, input schema, and concise generated
+  usage guidance.
+- `ToolManager.get_model_visible_tools()` exposes that normalized contract
+  without changing the legacy `get_tools()` schema shape that existing edit
+  registry and UI tests compare exactly.
+- `ToolRuntimeMetadata` extracts conservative runtime flags from tool schemas:
+  mutating by default, approval-required by default, not parallel-safe by
+  default, plus placeholders for risk, long-running, streaming, and retry-safe
+  behavior.
+- This metadata is intentionally observational for now. It does not enable
+  parallel scheduling, bypass approval checks, or mark any unaudited tool safe.
+
+### Phase 7.5: File Edit Tool Reliability Rewrite
+
+Goals:
+
+- replace the model-visible edit surface with one exact replacement tool and
+  one Codex-style patch/hunk tool
+- make every edit preflight against the current file contents before any write
+- compute new file contents and diffs in memory, then write each changed file at
+  most once per tool call
+- remove `.bak` creation from edit tools entirely; if persistent recovery is
+  needed later, store recovery artifacts under Penguin workspace storage, not in
+  the target repository
+- make `verify` mean expected old content or context matched before writing
+- retire or hide `replace_lines`, `insert_lines`, `delete_lines`, and unsafe
+  structured same-file `patch_files` from model-visible schemas
+- preserve temporary compatibility wrappers only where required, and have them
+  route through safe implementations or fail with clear deprecation errors
+
+Acceptance criteria:
+
+- `edit_file` accepts `path`, `old_string`, `new_string`, and optional
+  `replace_all`; it fails when `old_string` is missing or ambiguous unless
+  `replace_all` is explicit
+- `apply_patch` accepts a strict Codex-style patch grammar with add, delete,
+  update, move, and contextual hunks; missing context fails before writing
+- multi-edit behavior is atomic per tool call: if any operation fails preflight,
+  no file is written
+- no successful or failed edit creates a `.bak` file in the target repository
+- returned tool results include changed files, compact diff summary, structured
+  failure reason, and enough metadata for first-class `ToolResult` records
+- markdown-heavy edits reject or warn on obvious structural damage such as
+  unbalanced fences, duplicated adjacent headings, or broken table headers
+- tests cover stale line-coordinate reproduction, exact replacement ambiguity,
+  missing context, rollback/no-write behavior, no-`.bak` behavior, and markdown
+  table/heading preservation
+
+File-by-file checklist:
+
+- `penguin/tools/editing/contracts.py`
+  - [x] Add typed request/result envelopes for exact replacements and
+        Codex-style patch hunks.
+  - [x] Mark legacy line-coordinate operations as compatibility-only.
+- `penguin/tools/editing/service.py`
+  - [x] Implement in-memory preflight/apply/write-once flow for exact
+        replacements and patch hunks.
+  - [x] Remove in-repo backup path expectations from edit results.
+  - [x] Add optional markdown sanity checks for `.md`/`.mdx` targets.
+- `penguin/tools/core/support.py`
+  - [x] Remove direct `.bak` creation from legacy edit helpers; old `backup`
+        arguments are compatibility-only and rollback uses in-memory snapshots.
+  - [x] Keep low-level diff generation helpers side-effect free.
+- `penguin/tools/tool_manager.py`
+  - [x] Expose only `edit_file` and `apply_patch` as preferred model-visible
+        mutation tools.
+  - [x] Remove or hide line-coordinate schemas from model-visible output.
+  - [x] Keep legacy aliases only as deprecation wrappers during migration.
+- `penguin/tools/runtime.py`
+  - [ ] Preserve edit metadata in `ToolResult` records: changed files, diff
+        hashes, structured failure reasons, and truncation/artifact references.
+- `penguin/engine.py`
+  - [ ] Ensure edit failures are recoverable tool results, not assistant
+        completion failures or loop-stall false positives.
+- `tests/tools/test_edit_service.py`
+  - [x] Cover exact replacement success, missing string, ambiguous string,
+        replace-all, no-write-on-failure, and no `.bak` creation.
+  - [x] Cover Codex-style patch success and missing-context failure.
+  - [x] Cover markdown sanity checks for headings, tables, and fences.
+- `tests/test_edit_contract_aliases.py`
+  - [x] Update model-visible schema expectations for `edit_file` and
+        `apply_patch`.
+  - [x] Cover legacy alias deprecation wrappers.
+- `tests/test_parser_edit_handlers.py`
+  - [x] Update ActionXML/parser compatibility mapping to prefer the new
+        canonical edit tools.
+- `tests/test_core_tool_mapping.py`
+  - [x] Update action-to-tool mapping tests for safe edit surfaces.
+
+Current status:
+
+- Phase 7.5 model-visible rewrite landed for `edit_file` and `apply_patch`.
+- Legacy `patch_file`, `patch_files`, `replace_lines`, `insert_lines`,
+  `delete_lines`, `regex_replace`, and `apply_diff` remain callable only as
+  compatibility/deprecation paths; they are hidden from model-visible schemas
+  and fail without writing through the edit service.
+- Direct legacy support helpers no longer create repository `.bak` files; legacy
+  multi-edit rollback uses in-memory snapshots.
+
+Implementation guidance:
+
+- Start exact and conservative. Do not add fuzzy matching in the first rewrite.
+- Prefer refusing an edit over applying an unprovable mutation.
+- Do not enable parallel edit execution.
+- Do not keep `.bak` files as a default safety mechanism. Git, in-memory
+  preflight, and structured failure behavior should carry the migration.
+- Treat deletion of dead edit code as part of the reliability work once tests
+  prove the replacement surface.
+
+### Phase 8: Scheduling Safety And Ordered Batches
+
+Goals:
+
+- give every scheduler-visible tool call conservative effect metadata:
+  read-only, filesystem mutation, process mutation, external mutation,
+  network mutation, destructive, or unknown
+- attach resource metadata where practical: filesystem paths, Git index,
+  process/session id, database/schema target, network service, and workspace
+  scope
+- add an ordered batch path for dependent tool calls that should run serially
+  and return one bundled result without encouraging unsafe parallelism
+- reject or serialize unsafe parallel batches before dispatch
+- keep unknown, mutating, approval-required, long-running, and process-backed
+  calls serial by default
+
+Acceptance criteria:
+
+- independent read-only calls can be identified without marking them
+  parallel-safe by default
+- ordered batches run each call sequentially, stop on configured failure
+  boundaries, and preserve deterministic result ordering
+- parallel batches reject obvious resource conflicts, including multiple writes
+  to the same path, delete-parent/write-child combinations, Git mutation mixed
+  with other Git calls, process kill mixed with process writes, and unknown
+  commands mixed with mutable operations
+- conflict decisions are recorded as structured scheduler/tool-result metadata
+  rather than silent model-visible confusion
+- provider-native parallel tool-call flags remain disabled until this scheduler
+  policy has deterministic unit and contract tests
+
+Implementation notes:
+
+- This is the main follow-up from the file-edit rewrite. The edit tools are now
+  reliable enough for normal implementation work; the remaining sharp edge is
+  allowing concurrent mutation without effect/resource awareness.
+- The ordered batch path is not a safety bypass. It is a convenience wrapper
+  over serial scheduling for operations such as status, stage, commit, or
+  command setup sequences that have dependencies.
+- For pure inspection, a single shell/Python command is often simpler and more
+  reliable than many parallel tool calls. Multi-tool scheduling should focus on
+  cases where separate tool APIs are genuinely useful, while mutation remains
+  specialized and guarded.
+- Raw CLI use remains acceptable for Git and PR workflows. First-class Git/PR
+  wrappers should be treated as optional last-mile ergonomics, not a prerequisite
+  for safe scheduling.
+
+### Phase 8.1: Model-Visible Sequential Multi-Tool
+
+Goals:
+
+- expose a model-visible ordered batch surface, such as
+  `multi_tool_use.ordered` or `ordered_tool_batch`, as the safe companion to
+  `multi_tool_use.parallel`
+- run every child call through the normal dispatcher, permission checks,
+  scheduler metadata enrichment, output policy, and tool-call/result record
+  persistence
+- preflight the full child-call list before executing the first mutation:
+  reject unknown tools, invalid payloads, nested batch tools, and unsupported
+  channels without modifying state
+- execute strictly in listed order, with `stop_on_error` enabled by default and
+  deterministic result ordering
+- keep this as serial batching only; do not add DAGs, conditionals, workflow
+  scripting, or provider-native parallelism in this slice
+
+Acceptance criteria:
+
+- ordered batch success returns one grouped result with ordered per-child
+  statuses, outputs/previews, durations, effect/resource metadata, and errors
+  where relevant
+- if preflight fails for any child call, no child calls execute
+- runtime failure stops the batch by default, while any explicit continue mode
+  is opt-in, visible, and covered by tests
+- nested `multi_tool_use.parallel`, nested ordered batch calls, and model-visible
+  attempts to smuggle parallel execution through the ordered surface are rejected
+- child calls are persisted and replayable as first-class tool records, with a
+  shared parent batch id for UI grouping and diagnostics
+- prompt/schema guidance tells agents to use ordered batching for dependent
+  or mutating sequences and `multi_tool_use.parallel` only for independent,
+  read-only, non-conflicting calls
+
+Implementation notes:
+
+- Reuse the Phase 8 ordered scheduler path, effect/resource inference, and
+  dispatch policy. Phase 8.1 is primarily the model-visible affordance and
+  grouped result contract.
+- Codex is the runtime reference: scheduler-owned metadata and locks decide
+  whether calls may overlap. OpenCode's `batch` is useful for schema/UI shape,
+  but Penguin's Phase 8.1 semantics must be serial rather than parallel.
+- Keep Git/PR wrappers out of this phase. Ordered shell/CLI calls are enough for
+  now, and future structured wrappers can build on the same batch metadata.
+
+### Phase 9: Terminal/Process Runtime Foundation
 
 Goals:
 
@@ -641,6 +968,8 @@ Goals:
   execution
 - keep one-shot command execution as a compatibility wrapper over the process
   runtime where practical
+- make long-running jobs a process-runtime capability: start, poll, tail,
+  write stdin, interrupt, kill, and inspect by process/session id
 
 Acceptance criteria:
 
@@ -657,6 +986,178 @@ Related plan:
   code-navigation tool suites remain tracked in
   `context/tasks/tool-system-future-improvements.md`. This phase only builds
   the runtime foundation those suites need.
+
+### Phase 9.5: Codex-Style Terminal Runtime Parity
+
+Status:
+
+- Follow-up after the Phase 9 process foundation is stable.
+- Not required before ordered batches and basic process sessions land.
+
+Goals:
+
+- add Codex-style `yield_time_ms` semantics so a command can run briefly, return
+  partial output plus a process/session id, and continue in the background
+- emit stdout/stderr output-delta events for the TUI/web UI without requiring
+  model polling for every progress update
+- support PTY mode and terminal resize for interactive commands, REPLs, and
+  development servers
+- distinguish argv execution from explicit shell execution instead of treating
+  every command as a shell string
+- add process timeouts, auto-termination, and cleanup when the owning
+  session/connection closes
+- keep model-visible output bounded while retaining pageable process output for
+  UI inspection and later tool polling
+- persist enough lifecycle metadata to explain start, output, timeout,
+  interrupt, kill, exit, and disconnect outcomes
+
+Acceptance criteria:
+
+- a long-running command can return early with a stable process id and later be
+  resumed, polled, written to, resized, interrupted, or killed
+- UI consumers can receive incremental output deltas without waiting for the
+  final process result
+- process output caps and truncation are byte/token bounded and visible in
+  structured metadata
+- process cleanup is deterministic for normal exit, timeout, user abort, and
+  session/connection teardown
+- one-shot command execution remains compatible while internally sharing the
+  same lifecycle and output policy
+
+Implementation notes:
+
+- Use Codex as the behavioral reference, not a code template. Penguin should
+  keep its own tool/result/session abstractions.
+- Keep this phase separate from debugger, dev-server, and test-intelligence
+  suites. Those tools should build on the terminal runtime after it is reliable.
+
+### Phase 10: Optional Structured Git/PR Wrappers
+
+Status:
+
+- Deferred until after scheduling safety and terminal/process reliability.
+- The current preferred workflow remains the normal CLI through the command
+  tool, with explicit staging and review before commit or push.
+
+Possible future scope:
+
+- structured helpers for status, staging explicit files, commit, push, PR
+  create, and PR edit
+- temp-file-backed PR body handling to avoid shell escaping issues
+- safety checks for unrelated staged files and dirty worktree scope
+
+Non-goal for near-term runtime work:
+
+- Do not build Git/PR wrappers just to work around local index-lock incidents.
+  Treat those as environment/config issues unless repeated evidence shows the
+  generic CLI workflow is systematically unsafe.
+
+### Phase 11: Search Scope And Tool Introspection Hygiene
+
+Status:
+
+- Deferred until after scheduling and process handling.
+
+Goals:
+
+- make repository search and conversation/history search explicit instead of
+  ambiguous
+- expose tool registry/session introspection for debugging availability issues
+- help models distinguish repo truth from stale pasted conversation snippets,
+  prior tool outputs, or old review text
+
+Possible future scope:
+
+- split or parameterize search as `grep_files`, `grep_conversation`, and
+  `grep_all`, or require a `scope: files | conversation | both` field
+- add a tool-status/debug view with active tool names, accepted channels,
+  schema hash/version, edit tool availability, runtime version, and last schema
+  refresh/restart time
+- keep shell/`rg` as the preferred path for broad repo-only inspection when the
+  model needs exact filesystem truth
+
+Acceptance criteria:
+
+- file-only search cannot accidentally return conversation history
+- conversation search remains available when memory/history lookup is useful
+- diagnostics make tool schema or dispatch desync visible instead of silent
+
+### Phase 12: Typed Multi/Sub-Agent Coordination
+
+Status:
+
+- Deferred. This is orchestration/runtime design, not required for the current
+  terminal and multi-tool PR.
+
+Goals:
+
+- give agents explicit workspace, branch, task, and path ownership metadata
+- make sub-agent roles typed and capability-scoped
+- keep parent agents responsible for final integration, validation, commit, and
+  PR handoff
+- make sub-agent outputs structured enough to audit and merge safely
+
+Possible future scope:
+
+- file/path claims: `agent_id`, `task_id`, `branch`, `allowed_paths`, and
+  `claimed_files`
+- role contracts for explorer, implementer, reviewer, test-runner, docs-writer,
+  migration-auditor, and other constrained roles
+- explicit parent-to-child context packets with task charter, relevant files,
+  constraints, and acceptance criteria
+- machine-checkable child results with status, files reviewed/touched,
+  findings, risks, and tests run
+
+Acceptance criteria:
+
+- read-only roles cannot mutate files
+- test-runner roles can run commands without patching
+- parent integration can reject conflicting file claims or incomplete structured
+  outputs before commit/PR work
+
+### Phase 13: Blueprint, PM, RunMode, ITUV, And Journal Tooling
+
+Status:
+
+- Deferred. These are product/workflow integrations layered on top of the core
+  tool runtime once scheduling and process handling are stable.
+
+Goals:
+
+- expose Blueprint/PM helpers as deterministic validation and explanation tools
+- make ITUV phase movement evidence-backed instead of agent-declared progress
+- keep journal automation milestone-focused and separate raw work logs from
+  durable product memory
+- eventually combine ordered steps, validation gates, file claims, safe
+  mutation, and journal summaries into reusable RunMode/workflow primitives
+
+Possible future scope:
+
+- Blueprint validator CLI/tool: diagnostics, task count, dependency count,
+  topological order, cycles, and optional parsed JSON
+- Blueprint diff tool: semantic task, dependency, acceptance, routing, and ITUV
+  changes between revisions
+- PM transition inspector: allowed/denied transition, reason, resulting
+  phase/status, and required evidence
+- dependency readiness explainer for blocked tasks and missing artifacts
+- ITUV event log: phase started/completed/failed, evidence recorded, retry
+  scheduled, blocked, and resumed
+- per-phase retry budgets so failed TEST/USE/VERIFY loops do not run forever
+- journal entries for commits, PRs, major decisions, blockers, failed
+  assumptions, and follow-up debt
+- end-of-day or end-of-PR journal-to-memory review that proposes durable
+  `MEMORY.md` entries for approval
+
+Acceptance criteria:
+
+- ITUV keeps phase and status orthogonal: for example, blocked while TESTING is
+  different from blocked before implementation
+- agent `task_done` can move work to DONE plus pending review, but trusted
+  review/user policy owns final completed status
+- stream text, reasoning/tool logs, evidence, PM transitions, and journal
+  entries remain distinct record types
+- journal automation does not record every tool call and does not become a
+  dumping ground
 
 ## Non-Goals
 
@@ -764,15 +1265,50 @@ The safer near-term boundary is:
 
 ## Open Questions
 
-- Should the IR stay under `penguin/tools/` until shared runtime primitives
-  justify introducing `penguin/runtime/`?
-- Should ActionXML multiple-call execution remain opt-in at first?
-- Which tools are safe enough to mark parallel-safe initially?
-- Should model-visible tool schemas come entirely from the registry?
-- How should long-running process tools stream output into `ToolResult` records?
-- Should tool results be persisted as first-class session records rather than
-  action-result messages?
-- Should full tool output artifacts live in conversation storage, workspace
-  artifacts, or a dedicated result store with retention cleanup?
-- What aggregate per-turn model-visible tool-output cap should Penguin enforce
-  by default?
+Working decisions:
+
+- Keep the near-term IR under `penguin.tools.runtime`. Revisit
+  `penguin/runtime/` only when shared cross-domain primitives exist.
+- Keep ActionXML multiple-call execution opt-in at first.
+- Treat parallel-safe tool metadata as audit-required. No tool should become
+  parallel-safe by default.
+- Treat ordered batching as a serial scheduler feature, not as parallelism.
+  It should make dependent operations easier to run without tempting the model
+  to use `multi_tool_use.parallel` for mutable workflows.
+- Add effect/resource metadata before safe parallelism: unknown or mutating
+  calls stay serial, and obvious conflicts such as Git index mutation,
+  overlapping filesystem writes, parent delete plus child write, process
+  mutation, or database/schema mutation should be rejected or serialized.
+- Enforce a minimum registry contract before model-visible schemas come from
+  the registry: canonical name, description, input schema, and concise
+  model-facing usage guidance. Additional runtime fields such as handlers,
+  aliases, risk metadata, approval policy, output policy, provider support,
+  and UI presentation can remain incremental, but the minimum model-visible
+  surface should be testable for every exposed tool.
+- Adopt first-class session records as the long-term tool-result direction for
+  all tools. Start with lightweight envelopes for every tool execution and
+  store full outputs only when needed for truncation, artifacts, native replay,
+  or process/session-backed workflows.
+- Store full tool-output artifacts near Penguin workspace/conversation storage,
+  with a dedicated result/artifact namespace and retention cleanup when the
+  storage policy exists.
+- Long-running process output should not be solved with one fixed output
+  limit. It needs process/session records, pageable output, cancellation, and
+  model-visible `ToolResult` references to current output slices.
+- Pair long-running jobs with the terminal/process runtime. Start/poll/tail/kill
+  belongs to the process lifecycle layer, not a separate ad-hoc job abstraction.
+- Defer structured Git/PR tools until last. Raw CLI use is currently cleaner,
+  and local index-lock incidents alone should not drive first-class Git tool
+  design.
+- Defer aggregate per-turn model-visible tool-output caps until the first-class
+  record and replay boundary is stable. When implemented, express the policy as
+  a percentage of usable provider context plus an absolute ceiling, but split it
+  into a later PR because it is less urgent than durable records and replay
+  correctness.
+
+Remaining questions:
+
+- Which concrete first-pass tools are read-only enough to mark parallel-safe
+  after audit?
+- Which registry fields are required before model-visible schemas can come
+  entirely from the registry beyond the minimum model-visible contract?

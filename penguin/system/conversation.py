@@ -342,6 +342,43 @@ class ConversationSystem:
                 }
             )
 
+        try:
+            from penguin.tools.runtime import (
+                ToolCall,
+                tool_call_record_from_tool_call,
+                tool_result_from_action_result,
+                tool_result_record_from_tool_result,
+            )
+
+            self.session.add_tool_call_record(
+                tool_call_record_from_tool_call(
+                    ToolCall(
+                        id=resolved_tool_call_id,
+                        name=action_type,
+                        arguments=tool_arguments or "{}",
+                        source="internal",
+                    )
+                )
+            )
+
+            tool_result = tool_result_from_action_result(
+                {
+                    "action": action_type,
+                    "result": result,
+                    "status": status,
+                },
+                call_id=resolved_tool_call_id,
+                structured_output={"tool_arguments": tool_arguments or "{}"},
+            )
+            self.session.add_tool_result_record(
+                tool_result_record_from_tool_result(
+                    tool_result,
+                    arguments=tool_arguments or "{}",
+                )
+            )
+        except Exception as exc:
+            logger.warning("Failed to persist tool runtime records: %s", exc)
+
         # Add the tool result message
         return self.add_message(
             role="tool",
@@ -452,21 +489,59 @@ class ConversationSystem:
         )
         dialog_and_output.sort(key=lambda msg: msg.timestamp)
 
+        def _tool_records_by_call_id(name: str) -> Dict[str, Dict[str, Any]]:
+            records = getattr(self.session, name, [])
+            if not isinstance(records, list):
+                return {}
+            return {
+                str(record.get("call_id") or "").strip(): record
+                for record in records
+                if isinstance(record, dict)
+                and str(record.get("call_id") or "").strip()
+            }
+
+        def _render_tool_arguments(arguments: Any) -> str:
+            if isinstance(arguments, str):
+                return arguments if arguments.strip() else "{}"
+            if arguments is None:
+                return "{}"
+            try:
+                return json.dumps(arguments, sort_keys=True)
+            except Exception:
+                return str(arguments)
+
+        tool_call_records = _tool_records_by_call_id("tool_call_records")
+        tool_result_records = _tool_records_by_call_id("tool_result_records")
+
         # Add merged messages
         for msg in dialog_and_output:
             # --- START MODIFICATION: Handle 'tool' role ---
             if msg.role == "tool":
+                tool_call_id = str(msg.metadata.get("tool_call_id", "")).strip()
+                call_record = tool_call_records.get(tool_call_id, {})
+                result_record = tool_result_records.get(tool_call_id, {})
+                action_type = (
+                    msg.metadata.get("action_type")
+                    or msg.metadata.get("name")
+                    or call_record.get("name")
+                )
+                tool_arguments = msg.metadata.get("tool_arguments")
+                if tool_arguments is None:
+                    tool_arguments = call_record.get("arguments")
                 # For 'tool' role, the API expects 'tool_call_id' and 'content'
                 api_msg = {
                     "role": "tool",
-                    "tool_call_id": msg.metadata.get("tool_call_id", ""),
+                    "tool_call_id": tool_call_id,
                     "content": msg.content,
                 }
                 # Optionally add 'name' if the action_type is available
-                if "action_type" in msg.metadata:
-                    api_msg["name"] = msg.metadata["action_type"]
-                if "tool_arguments" in msg.metadata:
-                    api_msg["tool_arguments"] = msg.metadata["tool_arguments"]
+                if action_type:
+                    api_msg["name"] = action_type
+                if tool_arguments is not None:
+                    api_msg["tool_arguments"] = _render_tool_arguments(tool_arguments)
+                status = msg.metadata.get("status") or result_record.get("status")
+                if status:
+                    api_msg["status"] = status
                 messages.append(api_msg)
             else:
                 # Standard message format

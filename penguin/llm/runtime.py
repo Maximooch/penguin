@@ -4,17 +4,32 @@ import asyncio
 import inspect
 import json
 import logging
+import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from penguin.tools.runtime import (
+    ORDERED_TOOL_BATCH_NAME,
+    OrderedToolBatchPlan,
+    ToolCall,
     ToolExecutionPolicy,
-    execute_tool_calls_serially,
+    ToolResult,
+    execute_tool_calls_ordered,
     legacy_action_result_from_tool_result,
+    ordered_tool_batch_preflight_error_result,
+    ordered_tool_batch_result_from_results,
+    parse_ordered_tool_batch_plan,
     tool_call_from_responses_info,
+    tool_call_with_schedule_metadata,
 )
 from penguin.utils.errors import LLMEmptyResponseError
 
-from .contracts import LLMError
+from .contracts import (
+    ErrorCategory,
+    LLMCallResult,
+    LLMCallStatus,
+    LLMError,
+    LLMProviderError,
+)
 from .provider_transform import (
     native_tool_format,
     normalize_anthropic_tools,
@@ -28,7 +43,116 @@ from .reasoning_variants import native_reasoning_efforts
 _REASONING_EFFORT_VARIANTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
 _REASONING_MAX_VARIANTS = {"max"}
 _REASONING_DISABLE_VARIANTS = {"off"}
+_NATIVE_RESPONSE_COMPLETION_TOOLS = {"finish_response"}
 logger = logging.getLogger(__name__)
+
+
+def _tool_arguments_chars(arguments: Any) -> int:
+    """Return a bounded-diagnostic argument size in characters."""
+
+    if isinstance(arguments, str):
+        return len(arguments)
+    try:
+        return len(json.dumps(arguments, sort_keys=True, default=str))
+    except Exception:
+        return len(str(arguments))
+
+
+def _available_tool_names(tool_manager: Any) -> Optional[set[str]]:
+    """Return known child tool names for ordered-batch preflight."""
+
+    getter = getattr(tool_manager, "get_available_tool_names", None)
+    if callable(getter):
+        try:
+            names = getter()
+            if isinstance(names, set):
+                return {str(name) for name in names}
+            if isinstance(names, (list, tuple)):
+                return {str(name) for name in names}
+        except Exception:
+            logger.debug("Failed to read available tool names", exc_info=True)
+            return set()
+
+    schema_getter = getattr(tool_manager, "get_responses_tools", None)
+    if not callable(schema_getter):
+        return None
+    try:
+        schemas = schema_getter(include_web_search=False)
+    except TypeError:
+        try:
+            schemas = schema_getter()
+        except Exception:
+            logger.debug("Failed to read response tool schemas", exc_info=True)
+            return set()
+    except Exception:
+        logger.debug("Failed to read response tool schemas", exc_info=True)
+        return set()
+
+    names: set[str] = set()
+    if isinstance(schemas, list):
+        for schema in schemas:
+            if not isinstance(schema, dict):
+                continue
+            name = schema.get("name")
+            if isinstance(name, str) and name.strip():
+                names.add(name.strip())
+            function_payload = schema.get("function")
+            if isinstance(function_payload, dict):
+                function_name = function_payload.get("name")
+                if isinstance(function_name, str) and function_name.strip():
+                    names.add(function_name.strip())
+    return names
+
+
+def _available_tool_schemas(tool_manager: Any) -> Optional[dict[str, dict[str, Any]]]:
+    """Return tool schemas for ordered-batch child payload preflight."""
+
+    getter = getattr(tool_manager, "get_available_tool_schemas", None)
+    if callable(getter):
+        try:
+            schemas = getter()
+            if isinstance(schemas, dict):
+                return {
+                    str(name): schema
+                    for name, schema in schemas.items()
+                    if isinstance(schema, dict)
+                }
+        except Exception:
+            logger.debug("Failed to read available tool schemas", exc_info=True)
+            return {}
+
+    schema_getter = getattr(tool_manager, "get_responses_tools", None)
+    if not callable(schema_getter):
+        return None
+    try:
+        schemas = schema_getter(include_web_search=False)
+    except TypeError:
+        try:
+            schemas = schema_getter()
+        except Exception:
+            logger.debug("Failed to read response tool schemas", exc_info=True)
+            return {}
+    except Exception:
+        logger.debug("Failed to read response tool schemas", exc_info=True)
+        return {}
+
+    resolved: dict[str, dict[str, Any]] = {}
+    if isinstance(schemas, list):
+        for schema in schemas:
+            if not isinstance(schema, dict):
+                continue
+            name = schema.get("name")
+            if isinstance(name, str) and name.strip():
+                resolved[name.strip()] = schema
+            function_payload = schema.get("function")
+            if isinstance(function_payload, dict):
+                function_name = function_payload.get("name")
+                if isinstance(function_name, str) and function_name.strip():
+                    resolved[function_name.strip()] = {
+                        **schema,
+                        "parameters": function_payload.get("parameters"),
+                    }
+    return resolved
 
 
 def _get_last_provider_error(api_client: Any) -> Optional[LLMError]:
@@ -38,6 +162,83 @@ def _get_last_provider_error(api_client: Any) -> Optional[LLMError]:
     except Exception:
         return None
     return provider_error if isinstance(provider_error, LLMError) else None
+
+
+def _get_last_call_result(api_client: Any) -> Optional[LLMCallResult]:
+    try:
+        getter = getattr(api_client, "get_last_response_result", None)
+        result = getter() if callable(getter) else None
+    except Exception:
+        return None
+    return result if isinstance(result, LLMCallResult) else None
+
+
+async def _get_response_result(
+    *,
+    api_client: Any,
+    messages: List[Dict[str, Any]],
+    stream: Optional[bool],
+    stream_callback: Optional[Callable[..., Any]],
+    extra_kwargs: Dict[str, Any],
+) -> LLMCallResult:
+    result_getter = getattr(api_client, "get_response_result", None)
+    if callable(result_getter):
+        result = await result_getter(
+            messages,
+            stream=stream,
+            stream_callback=stream_callback,
+            **extra_kwargs,
+        )
+        if isinstance(result, LLMCallResult):
+            return result
+
+    text = await api_client.get_response(
+        messages,
+        stream=stream,
+        stream_callback=stream_callback,
+        **extra_kwargs,
+    )
+    result = _get_last_call_result(api_client)
+    if result is not None:
+        return result
+    provider_error = _get_last_provider_error(api_client)
+    return LLMCallResult(
+        text=str(text or ""),
+        status=(
+            LLMCallStatus.RETRYABLE_ERROR
+            if provider_error is not None and provider_error.retryable
+            else LLMCallStatus.FATAL_ERROR
+            if provider_error is not None
+            else LLMCallStatus.COMPLETED
+        ),
+        error=provider_error,
+    )
+
+
+def _call_result_failed(result: Optional[LLMCallResult]) -> bool:
+    return isinstance(result, LLMCallResult) and result.status in {
+        LLMCallStatus.RETRYABLE_ERROR,
+        LLMCallStatus.FATAL_ERROR,
+        LLMCallStatus.CANCELLED,
+    }
+
+
+def _raise_provider_failure(
+    result: Optional[LLMCallResult],
+    provider_error: Optional[LLMError],
+) -> None:
+    error = (
+        result.error
+        if isinstance(result, LLMCallResult) and isinstance(result.error, LLMError)
+        else provider_error
+    )
+    if error is None:
+        error = LLMError(
+            message="Provider request failed",
+            category=ErrorCategory.UNKNOWN,
+            retryable=False,
+        )
+    raise LLMProviderError(error)
 
 
 def _is_provider_error_response(response: Optional[str]) -> bool:
@@ -60,7 +261,7 @@ def should_retry_provider_failure(
         return False
     if streamed_assistant_chunk or pending_tool_call:
         return False
-    return not response or not response.strip() or _is_provider_error_response(response)
+    return True
 
 
 def _get_tool_payload(
@@ -83,9 +284,38 @@ def _get_tool_payload(
     return list(tools_payload or [])
 
 
-def prepare_native_tool_kwargs(
-    model_config: Any, tool_manager: Any
-) -> Dict[str, Any]:
+def _native_tool_name(tool: Dict[str, Any]) -> str:
+    function_payload = tool.get("function")
+    if isinstance(function_payload, dict):
+        return str(function_payload.get("name") or tool.get("name") or "")
+    return str(tool.get("name") or "")
+
+
+def _filter_native_loop_control_tools(
+    tools_payload: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Remove model-callable loop controls from native provider schemas."""
+
+    filtered: List[Dict[str, Any]] = []
+    omitted: set[str] = set()
+    for tool in tools_payload:
+        if not isinstance(tool, dict):
+            continue
+        tool_name = _native_tool_name(tool)
+        if tool_name in _NATIVE_RESPONSE_COMPLETION_TOOLS:
+            omitted.add(tool_name)
+            continue
+        filtered.append(tool)
+
+    if omitted:
+        logger.debug(
+            "Omitted native response completion tool(s) from provider schema: %s",
+            sorted(omitted),
+        )
+    return filtered
+
+
+def prepare_native_tool_kwargs(model_config: Any, tool_manager: Any) -> Dict[str, Any]:
     """Build native tool kwargs for providers that support structured tool calls."""
 
     extra_kwargs: Dict[str, Any] = {}
@@ -100,6 +330,7 @@ def prepare_native_tool_kwargs(
         tool_manager,
         include_web_search=tool_format == "openai_responses",
     )
+    tools_payload = _filter_native_loop_control_tools(tools_payload)
     if not tools_payload:
         return extra_kwargs
 
@@ -312,53 +543,78 @@ async def call_with_retry(
         except TypeError:
             stream_callback(chunk)
 
-    assistant_response = await api_client.get_response(
-        messages,
+    call_result = await _get_response_result(
+        api_client=api_client,
+        messages=messages,
         stream=streaming,
         stream_callback=(
             _tracked_stream_callback
             if streaming and stream_callback
             else stream_callback
         ),
-        **extra_kwargs,
+        extra_kwargs=extra_kwargs,
     )
+    assistant_response = call_result.text
 
     pending_tool_call = handler_has_pending_tool_call(api_client)
-    provider_error = _get_last_provider_error(api_client)
-    if should_retry_provider_failure(
-        provider_error=provider_error,
-        response=assistant_response,
-        streamed_assistant_chunk=streamed_assistant_chunk,
-        pending_tool_call=pending_tool_call,
-    ):
-        assistant_response = await api_client.get_response(messages, stream=False)
+    provider_error = call_result.error or _get_last_provider_error(api_client)
+    if _call_result_failed(call_result):
+        if should_retry_provider_failure(
+            provider_error=provider_error,
+            response=assistant_response,
+            streamed_assistant_chunk=streamed_assistant_chunk,
+            pending_tool_call=pending_tool_call,
+        ):
+            call_result = await _get_response_result(
+                api_client=api_client,
+                messages=messages,
+                stream=False,
+                stream_callback=None,
+                extra_kwargs=dict(extra_kwargs),
+            )
+            assistant_response = call_result.text
+        else:
+            _raise_provider_failure(call_result, provider_error)
         if (
             streaming
             and stream_callback
             and assistant_response
             and assistant_response.strip()
+            and call_result.succeeded
         ):
             await _tracked_stream_callback(assistant_response, "assistant")
             replayed_retry_response = True
         pending_tool_call = handler_has_pending_tool_call(api_client)
-        provider_error = _get_last_provider_error(api_client)
+        provider_error = call_result.error or _get_last_provider_error(api_client)
+        if _call_result_failed(call_result):
+            _raise_provider_failure(call_result, provider_error)
 
     if not assistant_response or not assistant_response.strip():
         if streamed_assistant_chunk:
             return assistant_response or ""
         if pending_tool_call:
             return assistant_response or ""
-        assistant_response = await api_client.get_response(messages, stream=False)
+        call_result = await _get_response_result(
+            api_client=api_client,
+            messages=messages,
+            stream=False,
+            stream_callback=None,
+            extra_kwargs=dict(extra_kwargs),
+        )
+        assistant_response = call_result.text
         if (
             streaming
             and stream_callback
             and assistant_response
             and assistant_response.strip()
+            and call_result.succeeded
         ):
             await _tracked_stream_callback(assistant_response, "assistant")
             replayed_retry_response = True
         pending_tool_call = handler_has_pending_tool_call(api_client)
-        provider_error = _get_last_provider_error(api_client)
+        provider_error = call_result.error or _get_last_provider_error(api_client)
+        if _call_result_failed(call_result):
+            _raise_provider_failure(call_result, provider_error)
 
     if not assistant_response or not assistant_response.strip():
         if pending_tool_call:
@@ -390,6 +646,9 @@ async def execute_pending_tool_call(
     api_client: Any,
     tool_manager: Any,
     persist_action_result: Callable[[Dict[str, Any], Dict[str, Any]], None],
+    persist_tool_call_record: Optional[Callable[[ToolCall], None]] = None,
+    persist_tool_result_record: Optional[Callable[[ToolCall, ToolResult], None]] = None,
+    execution_policy: Optional[ToolExecutionPolicy] = None,
     emit_action_start: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     emit_action_result: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     emit_tool_timeline: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
@@ -400,6 +659,9 @@ async def execute_pending_tool_call(
         api_client=api_client,
         tool_manager=tool_manager,
         persist_action_result=persist_action_result,
+        persist_tool_call_record=persist_tool_call_record,
+        persist_tool_result_record=persist_tool_result_record,
+        execution_policy=execution_policy,
         emit_action_start=emit_action_start,
         emit_action_result=emit_action_result,
         emit_tool_timeline=emit_tool_timeline,
@@ -453,11 +715,131 @@ async def _get_and_clear_pending_tool_infos(api_client: Any) -> List[Dict[str, A
     return [tool_info] if isinstance(tool_info, dict) else []
 
 
+async def _execute_ordered_batch_parent(
+    *,
+    parent_call: ToolCall,
+    tool_manager: Any,
+    available_tool_names: Optional[set[str]],
+    available_tool_schemas: Optional[dict[str, dict[str, Any]]],
+    metadata_getter: Optional[Callable[[str], Dict[str, Any]]],
+    base_policy: ToolExecutionPolicy,
+    persist_tool_call_record: Optional[Callable[[ToolCall], None]],
+    persist_tool_result_record: Optional[Callable[[ToolCall, ToolResult], None]],
+    emit_action_start: Optional[Callable[[Dict[str, Any]], Awaitable[None]]],
+    emit_action_result: Optional[Callable[[Dict[str, Any]], Awaitable[None]]],
+    emit_tool_timeline: Optional[Callable[[Dict[str, Any]], Awaitable[None]]],
+    event_metadata: Dict[str, Any],
+) -> ToolResult:
+    """Execute one model-visible ordered batch and return its parent result."""
+
+    plan = parse_ordered_tool_batch_plan(
+        parent_call,
+        available_tool_names=available_tool_names,
+        available_tool_schemas=available_tool_schemas,
+    )
+    if plan.error:
+        return ordered_tool_batch_preflight_error_result(parent_call, plan)
+
+    child_calls = [
+        tool_call_with_schedule_metadata(
+            child_call,
+            metadata_getter(child_call.name) if callable(metadata_getter) else None,
+        )
+        for child_call in plan.tool_calls
+    ]
+    plan = OrderedToolBatchPlan(
+        parent_call_id=plan.parent_call_id,
+        stop_on_error=plan.stop_on_error,
+        tool_calls=tuple(child_calls),
+        error=plan.error,
+    )
+
+    if persist_tool_call_record is not None:
+        for child_call in child_calls:
+            persist_tool_call_record(child_call)
+
+    if emit_action_start is not None:
+        for child_call in child_calls:
+            await emit_action_start(
+                {
+                    "id": child_call.id,
+                    "type": child_call.name,
+                    "action": child_call.name,
+                    "params": (
+                        json.dumps(child_call.arguments, sort_keys=True)
+                        if isinstance(child_call.arguments, dict)
+                        else str(child_call.arguments)
+                    ),
+                    "metadata": {
+                        **event_metadata,
+                        "source": "ordered_tool_batch_child",
+                        "parent_tool_call_id": parent_call.id,
+                    },
+                }
+    )
+
+    def _execute_child(child_call: ToolCall) -> Any:
+        child_args = (
+            child_call.arguments if isinstance(child_call.arguments, dict) else {}
+        )
+        return tool_manager.execute_tool(child_call.name, child_args)
+
+    child_results = await execute_tool_calls_ordered(
+        child_calls,
+        _execute_child,
+        policy=ToolExecutionPolicy(
+            max_calls=(
+                base_policy.max_calls
+                if base_policy.max_calls is not None
+                else len(child_calls)
+            ),
+            catch_exceptions=True,
+            stop_on_error=plan.stop_on_error,
+            max_output_chars=base_policy.max_output_chars,
+            artifact_dir=base_policy.artifact_dir,
+            truncation_direction=base_policy.truncation_direction,
+        ),
+    )
+
+    for child_call, child_result in zip(child_calls, child_results):
+        if persist_tool_result_record is not None:
+            persist_tool_result_record(child_call, child_result)
+        legacy_child_result = legacy_action_result_from_tool_result(child_result)
+        child_metadata = {
+            **event_metadata,
+            "source": "ordered_tool_batch_child",
+            "parent_tool_call_id": parent_call.id,
+        }
+        if emit_action_result is not None:
+            await emit_action_result(
+                {
+                    "id": child_call.id,
+                    "status": legacy_child_result["status"],
+                    "result": legacy_child_result["result"],
+                    "action": legacy_child_result["action"],
+                    "metadata": child_metadata,
+                }
+            )
+        if emit_tool_timeline is not None:
+            await emit_tool_timeline(
+                {
+                    **legacy_child_result,
+                    "tool_call_id": child_call.id,
+                    "metadata": child_metadata,
+                }
+            )
+
+    return ordered_tool_batch_result_from_results(parent_call, plan, child_results)
+
+
 async def execute_pending_tool_calls(
     *,
     api_client: Any,
     tool_manager: Any,
     persist_action_result: Callable[[Dict[str, Any], Dict[str, Any]], None],
+    persist_tool_call_record: Optional[Callable[[ToolCall], None]] = None,
+    persist_tool_result_record: Optional[Callable[[ToolCall, ToolResult], None]] = None,
+    execution_policy: Optional[ToolExecutionPolicy] = None,
     emit_action_start: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     emit_action_result: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     emit_tool_timeline: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
@@ -466,8 +848,12 @@ async def execute_pending_tool_calls(
     """Execute all pending provider-captured tool calls using generic hooks."""
 
     tool_infos = await _get_and_clear_pending_tool_infos(api_client)
+    metadata_getter = getattr(tool_manager, "get_tool_runtime_metadata", None)
     tool_calls = [
-        tool_call
+        tool_call_with_schedule_metadata(
+            tool_call,
+            metadata_getter(tool_call.name) if callable(metadata_getter) else None,
+        )
         for tool_call in (
             tool_call_from_responses_info(tool_info) for tool_info in tool_infos
         )
@@ -475,6 +861,20 @@ async def execute_pending_tool_calls(
     ]
     if not tool_calls:
         return []
+
+    batch_started = time.perf_counter()
+    logger.info(
+        "llm.tool_batch.start provider=%s model=%s count=%s names=%s args_chars=%s",
+        getattr(getattr(api_client, "model_config", None), "provider", None),
+        getattr(getattr(api_client, "model_config", None), "model", None),
+        len(tool_calls),
+        [tool_call.name for tool_call in tool_calls],
+        sum(_tool_arguments_chars(tool_call.arguments) for tool_call in tool_calls),
+    )
+
+    if persist_tool_call_record is not None:
+        for tool_call in tool_calls:
+            persist_tool_call_record(tool_call)
 
     parsed_args_by_id: Dict[str, Dict[str, Any]] = {}
     raw_args_by_id: Dict[str, str] = {}
@@ -523,18 +923,58 @@ async def execute_pending_tool_calls(
             )
 
     try:
-        scheduler_results = await execute_tool_calls_serially(
-            tool_calls,
-            lambda current_tool_call: tool_manager.execute_tool(
+        base_policy = execution_policy or ToolExecutionPolicy(catch_exceptions=True)
+        known_tool_names = _available_tool_names(tool_manager)
+        known_tool_schemas = _available_tool_schemas(tool_manager)
+
+        async def _execute_scheduled_tool_call(
+            current_tool_call: ToolCall,
+        ) -> Any:
+            if current_tool_call.name == ORDERED_TOOL_BATCH_NAME:
+                return await _execute_ordered_batch_parent(
+                    parent_call=current_tool_call,
+                    tool_manager=tool_manager,
+                    available_tool_names=known_tool_names,
+                    available_tool_schemas=known_tool_schemas,
+                    metadata_getter=metadata_getter,
+                    base_policy=base_policy,
+                    persist_tool_call_record=persist_tool_call_record,
+                    persist_tool_result_record=persist_tool_result_record,
+                    emit_action_start=emit_action_start,
+                    emit_action_result=emit_action_result,
+                    emit_tool_timeline=emit_tool_timeline,
+                    event_metadata=event_metadata,
+                )
+            return tool_manager.execute_tool(
                 current_tool_call.name,
                 parsed_args_by_id.get(current_tool_call.id, {}),
-            ),
+            )
+
+        scheduler_results = await execute_tool_calls_ordered(
+            tool_calls,
+            _execute_scheduled_tool_call,
             policy=ToolExecutionPolicy(
-                max_calls=len(tool_calls),
-                catch_exceptions=True,
+                max_calls=(
+                    base_policy.max_calls
+                    if base_policy.max_calls is not None
+                    else len(tool_calls)
+                ),
+                catch_exceptions=base_policy.catch_exceptions,
+                stop_on_error=base_policy.stop_on_error,
+                max_output_chars=base_policy.max_output_chars,
+                artifact_dir=base_policy.artifact_dir,
+                truncation_direction=base_policy.truncation_direction,
             ),
         )
         if not scheduler_results:
+            logger.info(
+                "llm.tool_batch.done provider=%s model=%s count=%s results=0 "
+                "duration_ms=%.2f",
+                getattr(getattr(api_client, "model_config", None), "provider", None),
+                getattr(getattr(api_client, "model_config", None), "model", None),
+                len(tool_calls),
+                (time.perf_counter() - batch_started) * 1000,
+            )
             return []
         action_results: List[Dict[str, Any]] = []
         for tool_result in scheduler_results:
@@ -548,6 +988,8 @@ async def execute_pending_tool_calls(
             )
             if source_tool_call is None:
                 continue
+            if persist_tool_result_record is not None:
+                persist_tool_result_record(source_tool_call, tool_result)
             suppress_ui_artifacts = source_tool_call.name == "finish_response"
             raw_args_text = raw_args_by_id.get(source_tool_call.id, "")
             tool_call_id = source_tool_call.id
@@ -586,8 +1028,27 @@ async def execute_pending_tool_calls(
             action_results.append(
                 legacy_action_result if suppress_ui_artifacts else runtime_action_result
             )
+        logger.info(
+            "llm.tool_batch.done provider=%s model=%s count=%s results=%s "
+            "duration_ms=%.2f statuses=%s",
+            getattr(getattr(api_client, "model_config", None), "provider", None),
+            getattr(getattr(api_client, "model_config", None), "model", None),
+            len(tool_calls),
+            len(action_results),
+            (time.perf_counter() - batch_started) * 1000,
+            [result.status for result in scheduler_results],
+        )
         return action_results
     except Exception as exc:
+        logger.warning(
+            "llm.tool_batch.error provider=%s model=%s count=%s duration_ms=%.2f "
+            "error=%s",
+            getattr(getattr(api_client, "model_config", None), "provider", None),
+            getattr(getattr(api_client, "model_config", None), "model", None),
+            len(tool_calls),
+            (time.perf_counter() - batch_started) * 1000,
+            exc,
+        )
         if emit_action_result is not None:
             for tool_call in visible_tool_calls:
                 await emit_action_result(
