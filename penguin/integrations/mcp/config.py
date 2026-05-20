@@ -6,9 +6,9 @@ import fnmatch
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Union
 
-ServerEntries = Mapping[str, Any] | list[Any]
+ServerEntries = Union[Mapping[str, Any], list[Any]]
 
 
 @dataclass(frozen=True)
