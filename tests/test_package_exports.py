@@ -198,7 +198,7 @@ class TestAPIClientExports:
             assert options.context is None
             assert options.context_files is None
             assert options.streaming is False
-            assert options.max_iterations == 5
+            assert options.max_iterations is None
             assert options.image_path is None
             assert options.agent_id is None
             
@@ -267,7 +267,7 @@ class TestAPIClientExports:
                 name="test/model",
                 provider="test",
                 vision_enabled=True,
-                max_tokens=4000,
+                max_output_tokens=4000,
                 current=True
             )
             
@@ -276,7 +276,7 @@ class TestAPIClientExports:
             assert info.name == "test/model"
             assert info.provider == "test"
             assert info.vision_enabled is True
-            assert info.max_tokens == 4000
+            assert info.max_output_tokens == 4000
             assert info.current is True
             
         except ImportError:
