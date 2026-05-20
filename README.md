@@ -250,6 +250,17 @@ Read more:
 
 ## Version Highlights
 
+### v0.8.0
+
+- Shipped three weeks of daily dogfooding hardening across Penguin's core runtime, tool execution, task orchestration, and TUI/web surfaces.
+- Added ordered batch tool execution and process-runtime foundations for more reliable multi-step agent workflows.
+- Improved native tool-call runtime behavior across provider adapters, transcript replay, tool-result handling, and action execution metadata.
+- Tightened RunMode, project-task, and clarification flows so API/web clients preserve non-terminal runtime truth instead of flattening everything into fake success/failure states.
+- Continued OpenCode-compatible TUI integration work, including better event ordering, session scoping, sidecar packaging, and launcher behavior.
+- Strengthened local web/API security and operational surfaces around auth, settings, credentials, provider routes, SSE/WebSocket behavior, and GitHub integration.
+- Expanded test coverage around provider contracts, streaming, session isolation, task state, permission/question flows, package exports, and TUI launcher behavior.
+- Added and updated assurance and architecture documentation for the next phase of core refactoring and testing discipline.
+
 ### v0.7.0
 
 - Hardened the native tool-call runtime across provider adapters, transcript replay, tool-result adjacency, and TUI event ordering.
