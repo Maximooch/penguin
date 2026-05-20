@@ -250,6 +250,10 @@ Read more:
 
 ## Version Highlights
 
+### v0.8.1
+
+- Fixed Python 3.9 import compatibility for MCP configuration by avoiding a runtime PEP 604 union type alias.
+
 ### v0.8.0
 
 - Shipped three weeks of daily dogfooding hardening across Penguin's core runtime, tool execution, task orchestration, and TUI/web surfaces.
