@@ -5,7 +5,6 @@ import base64
 import io
 import json
 import logging
-import mimetypes
 import os
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union, cast
@@ -2555,10 +2554,7 @@ class OpenAIAdapter(BaseAdapter):
                 img.save(buffer, format="JPEG")
                 image_bytes = buffer.getvalue()
             b64 = base64.b64encode(image_bytes).decode("utf-8")
-            mime, _ = mimetypes.guess_type(image_path)
-            if not mime or not mime.startswith("image"):
-                mime = "image/jpeg"
-            return f"data:{mime};base64,{b64}"
+            return f"data:image/jpeg;base64,{b64}"
         except Exception as e:
             logger.error(f"Failed to encode image '{image_path}': {e}")
             return None

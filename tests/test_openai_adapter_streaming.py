@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from PIL import Image
 
 from penguin.llm.adapters.openai import OpenAIAdapter
 from penguin.llm.model_config import ModelConfig
+
+
+def _image_payload_magic(data_uri: str) -> bytes:
+    return base64.b64decode(data_uri.split(",", 1)[1])[:3]
 
 
 @dataclass(frozen=True)
@@ -135,6 +141,38 @@ class _DummyResponsesWithToolCall(_DummyResponses):
             ],
             final_text="",
         )
+
+
+@pytest.mark.asyncio
+async def test_openai_vision_encoding_labels_transcoded_png_as_jpeg(
+    tmp_path,
+) -> None:
+    image_path = tmp_path / "browser-screenshot.png"
+    Image.new("RGB", (8, 6), color=(0, 0, 255)).save(image_path)
+    adapter = OpenAIAdapter(
+        ModelConfig(
+            model="gpt-5",
+            provider="openai",
+            client_preference="native",
+            api_key="sk-test",
+        )
+    )
+
+    processed = await adapter._process_messages_for_vision(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "inspect screenshot"},
+                    {"type": "image_url", "image_path": str(image_path)},
+                ],
+            }
+        ]
+    )
+
+    image_url = processed[0]["content"][1]["image_url"]["url"]
+    assert image_url.startswith("data:image/jpeg;base64,")
+    assert _image_payload_magic(image_url) == b"\xff\xd8\xff"
 
 
 class _DummyOpenAIClient:
