@@ -1065,25 +1065,95 @@ class PenguinCore:
         return manager.get_profile(agent_id)
 
     def register_agent(self, *args, **kwargs) -> None:
-        """REMOVED: Use ensure_agent_conversation() instead.
+        """Compatibility shim for legacy persona-based agent registration.
 
-        This method has been removed as part of the core.py refactoring.
-        See context/architecture/core-refactor-plan.md for migration guide.
-
-        Migration:
-            # Old:
-            core.register_agent("analyzer", system_prompt="...", persona="code_analyzer")
-
-            # New:
-            core.ensure_agent_conversation("analyzer", system_prompt="...")
+        New code should use ``ensure_agent_conversation()``. This shim keeps
+        older deterministic callers working while deriving agent state from
+        conversation metadata and Engine registry entries.
         """
-        raise NotImplementedError(
-            "register_agent() has been removed. Use ensure_agent_conversation() instead.\n"
-            "See context/architecture/core-refactor-plan.md for migration guide.\n\n"
-            "Quick migration:\n"
-            "  OLD: core.register_agent(agent_id, system_prompt=..., persona=...)\n"
-            "  NEW: core.ensure_agent_conversation(agent_id, system_prompt=...)"
+        from penguin.agent.persona_runtime import (
+            model_config_for_agent_settings,
+            model_config_metadata,
         )
+
+        agent_id = kwargs.pop("agent_id", None)
+        if agent_id is None and args:
+            agent_id = args[0]
+        if not isinstance(agent_id, str) or not agent_id.strip():
+            raise ValueError("register_agent() requires a non-empty agent_id")
+        agent_id = agent_id.strip()
+
+        persona_name = kwargs.pop("persona", None)
+        personas = getattr(self.config, "agent_personas", {}) or {}
+        persona_config = (
+            personas.get(persona_name)
+            if isinstance(persona_name, str) and persona_name
+            else None
+        )
+
+        system_prompt = kwargs.pop("system_prompt", None)
+        if system_prompt is None and persona_config is not None:
+            system_prompt = getattr(persona_config, "system_prompt", None)
+
+        agent_model_config = model_config_for_agent_settings(
+            getattr(persona_config, "model", None) if persona_config else None,
+            model_configs=getattr(self.config, "model_configs", None),
+            current_model_config=getattr(self, "model_config", None),
+        )
+
+        conv = self.conversation_manager.get_agent_conversation(
+            agent_id, create_if_missing=True
+        )
+        if system_prompt and conv:
+            conv.set_system_prompt(system_prompt)
+
+        session = getattr(conv, "session", None)
+        metadata = getattr(session, "metadata", None)
+        if isinstance(metadata, dict):
+            if persona_config is not None:
+                metadata["persona"] = persona_config.name
+                if getattr(persona_config, "description", None):
+                    metadata["persona_description"] = persona_config.description
+                if getattr(persona_config, "default_tools", None):
+                    metadata["default_tools"] = list(persona_config.default_tools or [])
+            metadata["model"] = model_config_metadata(agent_model_config)
+
+        agent_context_windows = getattr(self.conversation_manager, "agent_context_windows", {})
+        if isinstance(agent_context_windows, dict) and agent_id in agent_context_windows:
+            agent_context_windows[agent_id].model_config = agent_model_config
+
+        if not hasattr(self, "_agent_api_clients"):
+            self._agent_api_clients = {}
+        if not hasattr(self, "_agent_model_overrides"):
+            self._agent_model_overrides = {}
+        if not hasattr(self, "_agent_tool_defaults"):
+            self._agent_tool_defaults = {}
+
+        api_client = APIClient(model_config=agent_model_config)
+        if system_prompt:
+            api_client.set_system_prompt(system_prompt)
+        self._agent_api_clients[agent_id] = api_client
+        self._agent_model_overrides[agent_id] = agent_model_config
+        self._agent_tool_defaults[agent_id] = tuple(
+            getattr(persona_config, "default_tools", None) or ()
+        )
+
+        if getattr(self, "engine", None):
+            action_executor = ActionExecutor(
+                self.tool_manager,
+                self.project_manager,
+                conv,
+                ui_event_callback=self.emit_ui_event,
+            )
+            self.engine.register_agent(
+                agent_id=agent_id,
+                conversation_manager=self.conversation_manager,
+                api_client=api_client,
+                tool_manager=self.tool_manager,
+                action_executor=action_executor,
+            )
+            if getattr(persona_config, "activate_by_default", False):
+                self.engine.set_default_agent(agent_id)
 
     def set_active_agent(self, agent_id: str) -> None:
         """Switch the active agent across ConversationManager and Engine."""
@@ -2693,6 +2763,12 @@ class PenguinCore:
             streaming,
             multi_step,
         )
+        if not isinstance(getattr(self, "_opencode_abort_sessions", None), set):
+            self._opencode_abort_sessions = set()
+        if not isinstance(getattr(self, "_opencode_process_tasks", None), dict):
+            self._opencode_process_tasks = {}
+        if not isinstance(getattr(self, "_opencode_active_requests", None), dict):
+            self._opencode_active_requests = {}
         request_task = asyncio.current_task()
         request_tracked = False
         if isinstance(request_session_id, str) and request_session_id:
@@ -2782,11 +2858,14 @@ class PenguinCore:
             # Emit user message event before processing
             logger.debug(f"Emitting user message event: {message[:30]}...")
             await self.emit_ui_event("message", user_message_dict)
-            await self._emit_opencode_user_message_with_metadata(
-                message,
-                message_id=client_message_id,
-                agent_id=agent_id,
-            )
+            try:
+                await self._emit_opencode_user_message_with_metadata(
+                    message,
+                    message_id=client_message_id,
+                    agent_id=agent_id,
+                )
+            except Exception:
+                logger.debug("Failed to emit OpenCode user message", exc_info=True)
 
             # Use new Engine layer if available
             if self.engine:
@@ -6134,7 +6213,12 @@ class PenguinCore:
                 execution_context.session_id or execution_context.conversation_id
             )
         if not session_id:
-            current_session = self.conversation_manager.get_current_session()
+            get_current_session = getattr(
+                self.conversation_manager, "get_current_session", None
+            )
+            current_session = (
+                get_current_session() if callable(get_current_session) else None
+            )
             session_id = current_session.id if current_session else "unknown"
         adapter = self._get_tui_adapter(session_id)
         model_state = self._resolve_opencode_model_state(
@@ -6282,7 +6366,12 @@ class PenguinCore:
                 execution_context.session_id or execution_context.conversation_id
             )
         if not session_id:
-            current_session = self.conversation_manager.get_current_session()
+            get_current_session = getattr(
+                self.conversation_manager, "get_current_session", None
+            )
+            current_session = (
+                get_current_session() if callable(get_current_session) else None
+            )
             session_id = current_session.id if current_session else "unknown"
         adapter = self._get_tui_adapter(session_id)
         model_state = self._resolve_opencode_model_state(session_id=session_id)

@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -55,22 +55,23 @@ async def test_execute_task_from_project_moves_success_to_pending_review():
 
     project_manager = MagicMock()
     project_manager.get_task_async = AsyncMock(return_value=task)
-    project_manager.update_task_status = MagicMock(return_value=True)
-    project_manager.storage.update_task = MagicMock()
 
     engine = MagicMock()
     engine.run_task = AsyncMock(return_value={"status": "completed", "assistant_response": "ok"})
 
     core = SimpleNamespace(project_manager=project_manager, engine=engine)
 
-    result = await execute_task_from_project("task-1", core)
-
-    task.mark_pending_review.assert_called_once_with(
-        "Engine execution completed", reviewer="engine"
+    run_mode = MagicMock()
+    run_mode.start = AsyncMock(
+        return_value={"status": "pending_review", "assistant_response": "ok"}
     )
-    project_manager.storage.update_task.assert_called_once_with(task)
+
+    with patch("penguin.web.routes.RunMode", return_value=run_mode):
+        result = await execute_task_from_project("task-1", core=core)
+
+    run_mode.start.assert_awaited_once()
     assert result["task_id"] == "task-1"
-    assert result["status"] == "completed"
+    assert result["result"]["status"] == "pending_review"
 
 
 @pytest.mark.asyncio

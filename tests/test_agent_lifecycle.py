@@ -3,7 +3,6 @@ import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 
 from penguin.agent import PenguinAgent, PenguinAgentAsync, BasicPenguinAgent
-from penguin.agent.base import BaseAgent
 from penguin.agent.schema import AgentConfig, SecurityConfig
 from penguin.agent.launcher import AgentLauncher
 
@@ -264,8 +263,8 @@ class TestAgentLauncher:
         with pytest.raises(ValueError, match="Agent configuration 'nonexistent' not found"):
             await launcher.invoke("nonexistent", "Test prompt")
 
-    def test_sandbox_warning(self, mock_core_with_components):
-        """Test that sandbox execution logs a warning for now."""
+    def test_sandbox_uses_container_executor(self, mock_core_with_components):
+        """Test that sandbox execution delegates without requiring Docker."""
         sandbox_config = AgentConfig(
             name="sandbox_agent", 
             type="penguin.agent.basic_agent.BasicPenguinAgent",
@@ -275,10 +274,29 @@ class TestAgentLauncher:
         
         launcher = AgentLauncher(core=mock_core_with_components)
         launcher.add_agent(sandbox_config)
+
+        class FakeContainerExecutor:
+            async def execute_agent(self, agent_config, prompt, context=None):
+                return {
+                    "status": "completed",
+                    "agent": agent_config["name"],
+                    "prompt": prompt,
+                    "context": context,
+                }
         
-        with patch('penguin.agent.launcher.logger') as mock_logger:
-            asyncio.run(launcher.invoke("sandbox_agent", "Test"))
-            mock_logger.warning.assert_called()
+        with patch(
+            "penguin.agent.launcher.ContainerExecutor",
+            return_value=FakeContainerExecutor(),
+        ) as executor_cls:
+            result = asyncio.run(launcher.invoke("sandbox_agent", "Test"))
+
+        executor_cls.assert_called_once()
+        assert result == {
+            "status": "completed",
+            "agent": "sandbox_agent",
+            "prompt": "Test",
+            "context": None,
+        }
 
 
 class TestResourceSnapshots:

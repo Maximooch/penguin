@@ -39,12 +39,12 @@ class WorkflowInfo:
     """Summary information about a workflow."""
     workflow_id: str
     task_id: str
-    blueprint_id: Optional[str]
-    project_id: Optional[str]
-    status: WorkflowStatus
-    phase: WorkflowPhase
-    started_at: datetime
-    updated_at: datetime
+    blueprint_id: Optional[str] = None
+    project_id: Optional[str] = None
+    status: WorkflowStatus = WorkflowStatus.PENDING
+    phase: WorkflowPhase = WorkflowPhase.PENDING
+    started_at: datetime = field(default_factory=datetime.utcnow)
+    updated_at: datetime = field(default_factory=datetime.utcnow)
     progress: int = 0  # 0-100 percentage
     error_message: Optional[str] = None
     
@@ -295,4 +295,3 @@ class OrchestrationBackend(ABC):
         """Get workflow artifacts."""
         result = await self.query_workflow(workflow_id, "artifacts")
         return result if isinstance(result, dict) else None
-

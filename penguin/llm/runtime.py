@@ -261,6 +261,8 @@ def should_retry_provider_failure(
         return False
     if streamed_assistant_chunk or pending_tool_call:
         return False
+    if isinstance(response, str) and response.strip():
+        return _is_provider_error_response(response)
     return True
 
 

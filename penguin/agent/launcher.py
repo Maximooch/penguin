@@ -14,6 +14,7 @@ import yaml  # type: ignore
 
 from penguin.agent.schema import AgentConfig
 from penguin.agent.base import BaseAgent
+from penguin.agent.container_executor import ContainerExecutor
 
 from penguin.core import PenguinCore  # type: ignore
 from penguin.system.conversation_manager import ConversationManager  # type: ignore
@@ -33,7 +34,11 @@ class AgentLauncher:
         self,
         core_instance: Optional[PenguinCore] = None,
         config_dir: Path = AGENT_CONFIG_DIR,
+        *,
+        core: Optional[PenguinCore] = None,
     ) -> None:
+        if core is not None:
+            core_instance = core
         self.core = core_instance
         self.config_dir = config_dir
         self._agent_configs: Dict[str, AgentConfig] = {}
@@ -60,6 +65,10 @@ class AgentLauncher:
                 logger.debug("Loaded agent config: %s", agent_config.name)
             except Exception as exc:  # pylint: disable=broad-except
                 logger.error("Failed to load agent config from %s: %s", yaml_file, exc)
+
+    def add_agent(self, agent_config: AgentConfig) -> None:
+        """Register an agent config programmatically."""
+        self._agent_configs[agent_config.name] = agent_config
 
     # ------------------------------------------------------------------
     # Dynamic Class loading
@@ -128,11 +137,14 @@ class AgentLauncher:
 
         if sandbox_type in {"docker", "shared_docker", "firecracker"}:
             # Use container execution for sandboxed agents
-            from penguin.agent.container_executor import ContainerExecutor
-            
             container_executor = ContainerExecutor()
+            agent_payload = (
+                agent_config.model_dump()
+                if hasattr(agent_config, "model_dump")
+                else agent_config.dict()
+            )
             return await container_executor.execute_agent(
-                agent_config.dict(), 
+                agent_payload,
                 prompt, 
                 context
             )
@@ -145,4 +157,4 @@ class AgentLauncher:
             return result
         except Exception as exc:  # pylint: disable=broad-except
             logger.exception("Unexpected error invoking agent '%s': %s", agent_name, exc)
-            return {"error": str(exc), "agent_name": agent_name} 
+            return {"error": str(exc), "agent_name": agent_name}

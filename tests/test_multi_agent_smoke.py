@@ -94,7 +94,13 @@ def test_sub_agent_clamp_and_partial_share_once(tmp_path):
     cm.add_context("Parent shared context")
     parent_cw = cm.agent_context_windows[parent_id]
 
-    cm.create_sub_agent("child", parent_agent_id=parent_id, shared_cw_max_tokens=512)
+    cm.create_sub_agent(
+        "child",
+        parent_agent_id=parent_id,
+        share_session=False,
+        share_context_window=False,
+        shared_context_window_max_tokens=512,
+    )
 
     child_cw = cm.agent_context_windows["child"]
     assert child_cw.max_tokens == min(parent_cw.max_tokens, 512)

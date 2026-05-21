@@ -60,6 +60,12 @@ verbatim. That plan is historically useful, but `core.py` has since changed
 substantially and Penguin already has streaming primitives in
 `penguin/llm/stream_handler.py`.
 
+Reference upstream OpenCode at
+`/Users/maximusputnam/Code/Penguin/penguin/reference/opencode` when planning
+future `penguin-tui` work and when auditing OpenAI auth or related provider
+handling. Treat it as a reference implementation for event, auth, provider, and
+session-flow shape, not as code to copy blindly.
+
 ## ITUV Gate
 
 Every ACBRA slice must pass ITUV before it is considered complete:

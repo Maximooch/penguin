@@ -93,6 +93,11 @@ class ModelInfo:
     max_output_tokens: Optional[int]
     current: bool
 
+    @property
+    def max_tokens(self) -> Optional[int]:
+        """Backward-compatible alias for max output tokens."""
+        return self.max_output_tokens
+
 
 class PenguinClient:
     """High-level Python client for Penguin functionality."""

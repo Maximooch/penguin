@@ -11,7 +11,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from .backend import PhaseResult, WorkflowInfo, WorkflowPhase, WorkflowStatus
 
@@ -320,7 +320,7 @@ class WorkflowStateStorage:
     def list_states(
         self,
         project_id: Optional[str] = None,
-        status_filter: Optional[List[WorkflowStatus]] = None,
+        status_filter: Optional[Union[WorkflowStatus, List[WorkflowStatus]]] = None,
         limit: int = 100,
     ) -> List[WorkflowState]:
         """List workflow states with optional filtering."""
@@ -334,10 +334,15 @@ class WorkflowStateStorage:
                 query += " AND project_id = ?"
                 params.append(project_id)
             
-            if status_filter:
-                placeholders = ",".join("?" * len(status_filter))
+            if isinstance(status_filter, WorkflowStatus):
+                statuses = [status_filter]
+            else:
+                statuses = status_filter or []
+
+            if statuses:
+                placeholders = ",".join("?" * len(statuses))
                 query += f" AND status IN ({placeholders})"
-                params.extend([s.value for s in status_filter])
+                params.extend([s.value for s in statuses])
             
             query += " ORDER BY created_at DESC LIMIT ?"
             params.append(limit)
@@ -520,4 +525,3 @@ class WorkflowStateStorage:
         )
         self.save_snapshot(snapshot)
         return snapshot
-

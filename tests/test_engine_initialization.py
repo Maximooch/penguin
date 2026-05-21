@@ -291,7 +291,7 @@ async def test_call_llm_with_retry_replays_retryable_provider_failure_once() -> 
 
 
 @pytest.mark.asyncio
-async def test_call_llm_with_retry_replays_uncommitted_partial_provider_failure() -> (
+async def test_call_llm_with_retry_rejects_partial_assistant_provider_failure() -> (
     None
 ):
     engine = Engine(
@@ -325,16 +325,16 @@ async def test_call_llm_with_retry_replays_uncommitted_partial_provider_failure(
         client_handler=SimpleNamespace(),
     )
 
-    result = await engine._call_llm_with_retry(
-        cast(Any, api_client),
-        [{"role": "user", "content": "hi"}],
-        streaming=True,
-        stream_callback=None,
-        extra_kwargs={},
-    )
+    with pytest.raises(LLMProviderError):
+        await engine._call_llm_with_retry(
+            cast(Any, api_client),
+            [{"role": "user", "content": "hi"}],
+            streaming=True,
+            stream_callback=None,
+            extra_kwargs={},
+        )
 
-    assert result == "recovered answer"
-    assert api_client.get_response.await_count == 2
+    assert api_client.get_response.await_count == 1
 
 
 @pytest.mark.asyncio

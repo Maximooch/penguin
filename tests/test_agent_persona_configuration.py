@@ -216,11 +216,21 @@ def test_register_agent_applies_persona_model(monkeypatch: pytest.MonkeyPatch) -
     engine.set_default_agent = MagicMock()
     core.engine = engine
 
+    class StubAPIClient:
+        def __init__(self, model_config: ModelConfig) -> None:
+            self.model_config = model_config
+            self.system_prompt: Optional[str] = None
+
+        def set_system_prompt(self, prompt: str) -> None:
+            self.system_prompt = prompt
+
+    monkeypatch.setattr("penguin.core.APIClient", StubAPIClient)
+
     core.register_agent("research", persona="research")
 
     api_client = engine.register_agent.call_args.kwargs["api_client"]
     assert api_client is core._agent_api_clients["research"]
-    assert api_client.model_config.model == "openrouter/kimi-k2"
+    assert api_client.model_config.model == "kimi-k2"
     assert api_client.model_config.provider == "openrouter"
 
     convo = core.conversation_manager.agent_sessions["research"]
@@ -228,7 +238,7 @@ def test_register_agent_applies_persona_model(monkeypatch: pytest.MonkeyPatch) -
     assert convo.session.metadata["persona"] == "research"
 
     agent_cw = core.conversation_manager.agent_context_windows["research"]
-    assert agent_cw.model_config.model == "openrouter/kimi-k2"
+    assert agent_cw.model_config.model == "kimi-k2"
 
     assert core._agent_tool_defaults["research"] == ("read_file",)
 
@@ -238,7 +248,7 @@ def test_register_agent_applies_persona_model(monkeypatch: pytest.MonkeyPatch) -
     research_entry = next((entry for entry in roster if entry["id"] == "research"), None)
     assert research_entry is not None
     assert research_entry["persona"] == "research"
-    assert research_entry["model"]["model"] == "openrouter/kimi-k2"
+    assert research_entry["model"]["model"] == "kimi-k2"
     profile = core.get_agent_profile("research")
     assert profile is not None
     assert profile["default_tools"] == ["read_file"]

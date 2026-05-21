@@ -1,4 +1,3 @@
-import asyncio
 import pytest
 import subprocess
 from pathlib import Path
@@ -55,10 +54,10 @@ async def test_full_mvp_workflow(temp_workspace: Path, monkeypatch):
 
     mock_run_mode.start = AsyncMock(side_effect=mock_agent_run)
 
-    # Mock the `gh` CLI call in GitManager
-    def mock_gh_pr_create(*args, **kwargs):
+    # Mock PR creation so the default suite never calls GitHub.
+    async def mock_create_pr_with_api(*args, **kwargs):
         pr_url = "https://github.com/test-org/test-repo/pull/1"
-        logger.info(f"Mocked gh pr create, returning: {pr_url}")
+        logger.info(f"Mocked PR create, returning: {pr_url}")
         return {"status": "created", "pr_url": pr_url}
 
     # Mock the git push operation
@@ -66,11 +65,9 @@ async def test_full_mvp_workflow(temp_workspace: Path, monkeypatch):
         logger.info("Mocked git push, returning True")
         return True
 
-    # We need to find the right object to patch.
-    # It will be the `_create_pr_with_gh_cli` method in the GitManager instance.
     monkeypatch.setattr(
-        "penguin.project.git_manager.GitManager._create_pr_with_gh_cli",
-        mock_gh_pr_create
+        "penguin.project.git_manager.GitManager._create_pr_with_api",
+        mock_create_pr_with_api,
     )
     monkeypatch.setattr(
         "penguin.project.git_integration.GitIntegration.push_branch",
@@ -88,7 +85,9 @@ async def test_full_mvp_workflow(temp_workspace: Path, monkeypatch):
     )
     validation_manager = ValidationManager(workspace_path=temp_workspace)
     task_executor = ProjectTaskExecutor(
-        run_mode=mock_run_mode, project_manager=project_manager
+        run_mode=mock_run_mode,
+        project_manager=project_manager,
+        git_integration=git_manager.git_integration,
     )
     orchestrator = WorkflowOrchestrator(
         project_manager=project_manager,
@@ -118,15 +117,14 @@ async def test_full_mvp_workflow(temp_workspace: Path, monkeypatch):
 
     # 3. --- ASSERT ---
     assert workflow_result is not None, "Orchestrator should have found and run a task."
-    assert workflow_result["final_status"] == "COMPLETED"
-    assert "pull_request" in workflow_result
-    assert workflow_result["pull_request"]["status"] == "created"
-    assert "https://github.com" in workflow_result["pull_request"]["pr_url"]
+    assert workflow_result["final_status"] == TaskStatus.PENDING_REVIEW.value
+    assert workflow_result["pr_result"]["status"] == "created"
+    assert "https://github.com" in workflow_result["pr_result"]["pr_url"]
 
     # Verify the task status in the database
     final_task = await project_manager.get_task_async(original_task_id)
-    assert final_task.status == TaskStatus.COMPLETED
-    assert "Workflow successful" in final_task.transition_history[-1].reason
+    assert final_task.status == TaskStatus.PENDING_REVIEW
+    assert "pending review" in final_task.transition_history[-1].reason
 
     # Verify that the agent's work (the files) exist
     assert (temp_workspace / "new_feature.py").exists()
@@ -143,4 +141,4 @@ async def test_full_mvp_workflow(temp_workspace: Path, monkeypatch):
         text=True
     ).stdout
     assert "feat(task)" in log_output
-    assert tasks[0].title in log_output 
+    assert tasks[0].title in log_output

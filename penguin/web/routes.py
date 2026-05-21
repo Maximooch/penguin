@@ -905,7 +905,7 @@ class MessageRequest(BaseModel):
     streaming: Optional[bool] = True
     max_iterations: Optional[int] = None  # Uses MAX_TASK_ITERATIONS if not specified
     image_paths: Optional[List[str]] = None  # Multiple images supported (max 10)
-    include_reasoning: Optional[bool] = True
+    include_reasoning: Optional[bool] = False
     agent_id: Optional[str] = None
     agent_mode: Optional[str] = None
     directory: Optional[str] = None
@@ -5298,8 +5298,14 @@ async def execute_task_from_project(
 
         payload = request or TaskExecutionRequest()
         project = None
-        if task.project_id and hasattr(core.project_manager, "get_project_async"):
-            project = await core.project_manager.get_project_async(task.project_id)
+        get_project_async = getattr(core.project_manager, "get_project_async", None)
+        if task.project_id and callable(get_project_async):
+            project_candidate = get_project_async(task.project_id)
+            project = (
+                await project_candidate
+                if asyncio.iscoroutine(project_candidate)
+                else project_candidate
+            )
         resolved_directory = normalize_directory(payload.directory) or normalize_directory(
             getattr(project, "workspace_path", None)
         )

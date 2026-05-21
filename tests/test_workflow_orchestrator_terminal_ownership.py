@@ -21,6 +21,7 @@ async def test_orchestrator_owns_terminal_status_transitions():
     project_manager.update_task_status = MagicMock(return_value=True)
     project_manager.update_task_status_async = AsyncMock(return_value=True)
     project_manager.update_task_phase_async = AsyncMock(return_value=True)
+    project_manager.mark_task_execution_ready_for_review_async = AsyncMock()
     project_manager.get_task = MagicMock(return_value=updated_task)
 
     task_executor = MagicMock()
@@ -59,11 +60,6 @@ async def test_orchestrator_owns_terminal_status_transitions():
     project_manager.update_task_status.assert_has_calls(
         [
             call(task.id, TaskStatus.RUNNING),
-            call(
-                task.id,
-                TaskStatus.PENDING_REVIEW,
-                "Validation passed; awaiting review or trusted automatic completion.",
-            ),
         ]
     )
     project_manager.update_task_status_async.assert_not_called()
@@ -84,12 +80,17 @@ async def test_orchestrator_owns_terminal_status_transitions():
                 TaskPhase.VERIFY,
                 "Validation passed; verifying completion artifacts.",
             ),
-            call(
-                task.id,
-                TaskPhase.DONE,
-                "Validation succeeded; task is ready for review.",
-            ),
         ]
+    )
+    project_manager.mark_task_execution_ready_for_review_async.assert_awaited_once_with(
+        task_id=task.id,
+        executor_id="workflow_orchestrator",
+        response="",
+        task_prompt="Workflow execution: Example Task",
+        context={
+            "source": "workflow_orchestrator",
+            "changed_files": ["src/example.py"],
+        },
     )
     validation_manager.validate_task_completion.assert_awaited_once_with(
         task,

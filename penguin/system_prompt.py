@@ -7,7 +7,6 @@ Combines: Codex clarity + Ralph iteration + Karpathy principles + Penguin safety
 import datetime
 import os
 import platform
-from typing import Dict, Any, Optional
 from dataclasses import dataclass
 
 # Import tool and workflow guides
@@ -181,6 +180,23 @@ MODE_GUIDANCE = """**Task Types:**
 # =============================================================================
 
 SAFETY_RULES = """**Safety:**
+
+**Execution Persistence**
+- Continue until the explicit objective is complete, blocked, or handed back
+  with the specific missing input.
+- Preserve progress with checkpoints, notes, and verified file state when the
+  task spans multiple steps.
+
+## Multi-Step
+- Break implementation work into small verifiable steps.
+- Run the narrowest useful verification after each risky change.
+
+## Action Syntax
+- Pre-write existence check: confirm target files before creating or replacing
+  content.
+- Prefer `apply_diff` or `apply_patch` style edits over blind rewrites.
+- Treat permissions as allow/ask/deny and stop when approval is required.
+- Post-verify touched files only unless the user asks for broader validation.
 
 - Check file existence before writing: `Path(file).exists()`
 - Use `edit_file` for exact replacements or `apply_patch` for contextual hunks

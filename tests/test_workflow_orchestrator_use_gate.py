@@ -24,6 +24,7 @@ async def test_orchestrator_executes_use_gate_for_declared_recipe():
     project_manager.update_task_status = MagicMock(return_value=True)
     project_manager.update_task_status_async = AsyncMock(return_value=True)
     project_manager.update_task_phase_async = AsyncMock(return_value=True)
+    project_manager.mark_task_execution_ready_for_review_async = AsyncMock()
     project_manager.resolve_task_recipe_async = AsyncMock(
         return_value={
             "name": "smoke-auth-flow",
@@ -95,12 +96,17 @@ async def test_orchestrator_executes_use_gate_for_declared_recipe():
                 TaskPhase.VERIFY,
                 "Validation passed; verifying completion artifacts.",
             ),
-            call(
-                task.id,
-                TaskPhase.DONE,
-                "Validation succeeded; task is ready for review.",
-            ),
         ]
+    )
+    project_manager.mark_task_execution_ready_for_review_async.assert_awaited_once_with(
+        task_id=task.id,
+        executor_id="workflow_orchestrator",
+        response="",
+        task_prompt="Workflow execution: Example Task",
+        context={
+            "source": "workflow_orchestrator",
+            "changed_files": ["src/example.py"],
+        },
     )
 
 

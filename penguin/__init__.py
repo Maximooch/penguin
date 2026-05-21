@@ -110,6 +110,27 @@ _system_exports = ["ConversationManager", "Session", "Message", "MessageCategory
 
 # API client exports - lazy load
 _api_client_exports = ["PenguinClient", "ChatOptions", "TaskOptions", "CheckpointInfo", "ModelInfo", "create_client"]
+_submodule_exports = {
+    "agent",
+    "api",
+    "api_client",
+    "cli",
+    "core",
+    "core_runtime",
+    "engine",
+    "local_task",
+    "llm",
+    "memory",
+    "multi",
+    "orchestration",
+    "project",
+    "run_mode",
+    "security",
+    "system",
+    "tools",
+    "utils",
+    "web",
+}
 
 # Public API surface - this is the contract we'll maintain
 __all__ = [
@@ -177,8 +198,8 @@ def __getattr__(name):
     if name in _optional_exports:
         return _optional_exports[name]
 
-    if name == "web":
-        module = import_module(f"{__name__}.web")
+    if name in _submodule_exports:
+        module = import_module(f"{__name__}.{name}")
         _optional_exports[name] = module
         return module
     

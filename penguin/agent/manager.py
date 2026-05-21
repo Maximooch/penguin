@@ -97,6 +97,16 @@ class AgentManager:
             persona_description = metadata.get("persona_description")
             if not persona_description and persona_config:
                 persona_description = getattr(persona_config, "description", None)
+            default_tools = metadata.get("default_tools")
+            if default_tools is None and persona_config:
+                default_tools = getattr(persona_config, "default_tools", None)
+            if isinstance(default_tools, tuple):
+                default_tools = list(default_tools)
+            if not isinstance(default_tools, list):
+                default_tools = []
+            model = metadata.get("model")
+            if not isinstance(model, dict):
+                model = None
 
             permission = metadata.get("permission")
             permission_rules = permission if isinstance(permission, list) else []
@@ -131,6 +141,8 @@ class AgentManager:
                     "persona": persona_name,
                     "persona_description": persona_description,
                     "persona_defined": bool(persona_config),
+                    "model": model,
+                    "default_tools": default_tools,
                     "parent": parent,
                     "children": children,
                     "active": agent_id == active_agent,

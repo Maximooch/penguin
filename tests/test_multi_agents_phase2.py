@@ -1,11 +1,26 @@
 import asyncio
-import os
 from pathlib import Path
 
 import pytest
 
 from penguin.core import PenguinCore
 from penguin.system.state import MessageCategory
+
+
+class FakeAPIClient:
+    def __init__(self, model_config, **kwargs):
+        self.model_config = model_config
+        self.kwargs = kwargs
+        self.system_prompt = None
+        self.client_handler = None
+
+    def set_system_prompt(self, prompt):
+        self.system_prompt = prompt
+
+
+@pytest.fixture(autouse=True)
+def _fake_api_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("penguin.core.APIClient", FakeAPIClient)
 
 
 @pytest.mark.asyncio
@@ -27,7 +42,13 @@ async def test_agent_isolation_and_partial_share(tmp_path: Path):
     # Register an isolated sub-agent with lower model limit
     child_id = "child_agent"
     await asyncio.sleep(0)  # ensure event loop ready
-    core.register_agent(child_id, share_session_with=parent_id, model_max_tokens=168_000)
+    core.create_sub_agent(
+        child_id,
+        parent_agent_id=parent_id,
+        share_session=False,
+        share_context_window=False,
+        shared_context_window_max_tokens=168_000,
+    )
 
     # Check smoke snapshot
     snap = core.smoke_check_agents()
@@ -71,4 +92,3 @@ async def test_checkpoints_and_autosave(tmp_path: Path):
     sm = cm.session_manager
     assert hasattr(sm, "_auto_save_thread"), "Autosave thread not initialized"
     assert getattr(sm, "_auto_save_thread").is_alive(), "Autosave thread is not running"
-
