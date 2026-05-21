@@ -1,4 +1,3 @@
-import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -13,52 +12,18 @@ def mock_tiktoken(monkeypatch):
     # Reload diagnostics to apply patch before adapter import
     import importlib
 
-    import penguin.utils.diagnostics as diagnostics_module
+    diagnostics_module = importlib.import_module("penguin.utils.diagnostics")
     importlib.reload(diagnostics_module)
 
     yield
 
     importlib.reload(diagnostics_module)
-
-
-@pytest.fixture(autouse=True)
-def stub_penguin_modules(monkeypatch):
-    import types
-    # Provide minimal stubs to satisfy package imports
-    monkeypatch.setitem(
-        sys.modules,
-        "penguin.penguin.core",
-        types.ModuleType("penguin.penguin.core"),
-    )
-    monkeypatch.setitem(
-        sys.modules, "penguin.config", types.ModuleType("penguin.config")
-    )
-    yield
-
 
 
 @pytest.mark.asyncio
 async def test_ollama_adapter_get_response_non_stream():
-    import importlib.util
-    from pathlib import Path
-
-    adapter_spec = importlib.util.spec_from_file_location(
-        "ollama_adapter",
-        Path(__file__).resolve().parent.parent / "penguin/llm/adapters/ollama.py",
-    )
-    adapter_mod = importlib.util.module_from_spec(adapter_spec)
-    assert adapter_spec and adapter_spec.loader
-    adapter_spec.loader.exec_module(adapter_mod)
-    OllamaAdapter = adapter_mod.OllamaAdapter
-
-    model_config_spec = importlib.util.spec_from_file_location(
-        "model_config",
-        Path(__file__).resolve().parent.parent / "penguin/llm/model_config.py",
-    )
-    model_mod = importlib.util.module_from_spec(model_config_spec)
-    assert model_config_spec and model_config_spec.loader
-    model_config_spec.loader.exec_module(model_mod)
-    ModelConfig = model_mod.ModelConfig
+    from penguin.llm.adapters.ollama import OllamaAdapter
+    from penguin.llm.model_config import ModelConfig
 
     model_config = ModelConfig(model="mistral", provider="ollama")
     adapter = OllamaAdapter(model_config)
@@ -70,35 +35,15 @@ async def test_ollama_adapter_get_response_non_stream():
         "chat",
         AsyncMock(return_value=fake_response),
     ) as mock_chat:
-        result = await adapter.get_response([
-            {"role": "user", "content": "hi"}
-        ])
+        result = await adapter.get_response([{"role": "user", "content": "hi"}])
         assert result == "hello"
         mock_chat.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_ollama_adapter_get_response_stream():
-    import importlib.util
-    from pathlib import Path
-
-    adapter_spec = importlib.util.spec_from_file_location(
-        "ollama_adapter",
-        Path(__file__).resolve().parent.parent / "penguin/llm/adapters/ollama.py",
-    )
-    adapter_mod = importlib.util.module_from_spec(adapter_spec)
-    assert adapter_spec and adapter_spec.loader
-    adapter_spec.loader.exec_module(adapter_mod)
-    OllamaAdapter = adapter_mod.OllamaAdapter
-
-    model_config_spec = importlib.util.spec_from_file_location(
-        "model_config",
-        Path(__file__).resolve().parent.parent / "penguin/llm/model_config.py",
-    )
-    model_mod = importlib.util.module_from_spec(model_config_spec)
-    assert model_config_spec and model_config_spec.loader
-    model_config_spec.loader.exec_module(model_mod)
-    ModelConfig = model_mod.ModelConfig
+    from penguin.llm.adapters.ollama import OllamaAdapter
+    from penguin.llm.model_config import ModelConfig
 
     model_config = ModelConfig(model="mistral", provider="ollama")
     adapter = OllamaAdapter(model_config)

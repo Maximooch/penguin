@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 # 1. YAML-based autonomous agents (with `type` for class loading)
 # 2. Persona-based runtime configs (from config.yml)
 
+
 class AgentLimits(BaseModel):
     """Resource limits for agent execution."""
 
@@ -49,6 +50,10 @@ class AgentSecurity(BaseModel):
     # Future: filesystem_access: Literal["read_only", "workspace_write", "full_write"]
 
 
+# Backward-compatible name used by older tests and integrations.
+SecurityConfig = AgentSecurity
+
+
 class AgentMount(BaseModel):
     """Volume mounts for containerized agents (Docker/Firecracker)."""
 
@@ -67,13 +72,18 @@ class AgentConfig(BaseModel):
     Use `from_persona()` to build from config.yml persona definitions.
     """
 
-    spec_version: Literal["0.1"] = Field("0.1", description="Version of the agent configuration schema.")
+    spec_version: Literal["0.1"] = Field(
+        "0.1", description="Version of the agent configuration schema."
+    )
     name: str = Field(..., description="Unique identifier name for the agent.")
-    description: Optional[str] = Field(None, description="Human-readable description of the agent's purpose.")
+    description: Optional[str] = Field(
+        None, description="Human-readable description of the agent's purpose."
+    )
 
     # --- YAML-based agent fields ---
     type: Optional[str] = Field(
-        None, description="Fully-qualified class name implementing the agent (e.g. 'penguin.agent.basic.EchoAgent'). Required for YAML-based agents."
+        None,
+        description="Fully-qualified class name implementing the agent (e.g. 'penguin.agent.basic.EchoAgent'). Required for YAML-based agents.",
     )
     capabilities: List[str] = Field(
         default_factory=list,
@@ -83,7 +93,8 @@ class AgentConfig(BaseModel):
         default_factory=list, description="Volume mounts for containerized execution."
     )
     env: Dict[str, str] = Field(
-        default_factory=dict, description="Environment variables for the agent execution context."
+        default_factory=dict,
+        description="Environment variables for the agent execution context.",
     )
 
     # --- Persona-based agent fields ---
@@ -91,15 +102,20 @@ class AgentConfig(BaseModel):
         None, description="System prompt for persona-based agents."
     )
     model_id: Optional[str] = Field(
-        None, description="Model identifier (e.g. 'anthropic/claude-sonnet'). If None, uses default."
+        None,
+        description="Model identifier (e.g. 'anthropic/claude-sonnet'). If None, uses default.",
     )
     permissions: Optional[Dict[str, Any]] = Field(
         None, description="Unified permissions config (operations, paths, mode)."
     )
 
     # --- Shared fields ---
-    limits: AgentLimits = Field(default_factory=AgentLimits, description="Resource limits.")
-    security: AgentSecurity = Field(default_factory=AgentSecurity, description="Security constraints.")
+    limits: AgentLimits = Field(
+        default_factory=AgentLimits, description="Resource limits."
+    )
+    security: AgentSecurity = Field(
+        default_factory=AgentSecurity, description="Security constraints."
+    )
     tools: Optional[List[str]] = Field(
         None,
         description="Overrides allowed_tools – explicit set of tools available to the agent.",
@@ -144,7 +160,9 @@ class AgentConfig(BaseModel):
             share_context_window_with=persona.share_context_window_with,
             limits=AgentLimits(
                 max_tokens=persona.shared_context_window_max_tokens,
-            ) if persona.shared_context_window_max_tokens else AgentLimits(),
+            )
+            if persona.shared_context_window_max_tokens
+            else AgentLimits(),
         )
 
     @classmethod

@@ -159,12 +159,8 @@ from penguin._version import __version__ as PENGUIN_VERSION
 
 # LLM and API
 from penguin.llm.api_client import APIClient
-from penguin.llm.model_config import (
-    ModelConfig,
-    fetch_model_specs,
-    normalize_openai_service_tier,
-    safe_context_window,
-)
+from penguin.llm.model_config import ModelConfig, fetch_model_specs
+from .core_runtime import model_runtime as core_model_runtime
 from penguin.llm.stream_handler import (
     StreamingStateManager,
     AgentStreamingStateManager,
@@ -462,9 +458,7 @@ class PenguinCore:
                         max_context_window_tokens=getattr(
                             config.model_config, "max_context_window_tokens", None
                         ),
-                        service_tier=getattr(
-                            config.model_config, "service_tier", None
-                        ),
+                        service_tier=getattr(config.model_config, "service_tier", None),
                     )
                     logger.info(
                         f"STARTUP: Using model={model_config.model}, provider={model_config.provider}, client={model_config.client_preference}"
@@ -777,7 +771,9 @@ class PenguinCore:
             max_sessions_in_memory=20,
             auto_save_interval=60,
             checkpoint_config=checkpoint_config,
-            skills_config=self.config.to_dict() if hasattr(self.config, "to_dict") else {},
+            skills_config=self.config.to_dict()
+            if hasattr(self.config, "to_dict")
+            else {},
             project_root=getattr(self.tool_manager, "project_root", None),
         )
         # Attach a back-reference so Engine (and other helpers) can emit UI events
@@ -3328,7 +3324,11 @@ class PenguinCore:
                 # Project-scoped continuous execution must select from the ready frontier;
                 # passing the project name as a task name creates a synthetic user task and
                 # drifts out of project scope.
-                project_id = (context or {}).get("project_id") if mode_type == "project" else None
+                project_id = (
+                    (context or {}).get("project_id")
+                    if mode_type == "project"
+                    else None
+                )
                 await run_mode.start_continuous(
                     specified_task_name=None if project_id else name,
                     task_description=None if project_id else description,
@@ -3466,107 +3466,13 @@ class PenguinCore:
         self, model_id: str
     ) -> tuple[ModelConfig, Optional[int]]:
         """Resolve a runtime model id into a concrete ModelConfig without mutating global state."""
-
-        def _coerce_optional_int(value: Any) -> Optional[int]:
-            try:
-                parsed = int(value)
-            except Exception:
-                return None
-            return parsed if parsed > 0 else None
-
-        provider, client_pref = self._resolve_model_provider(model_id)
-        if not provider:
-            raise ValueError(f"Could not resolve provider for model '{model_id}'")
-
-        provider_value = provider.strip().lower()
-        client_value = client_pref.strip().lower()
-        runtime_model_id = self._canonicalize_runtime_model_id(
+        return await core_model_runtime.build_model_config_for_model(
             model_id,
-            provider_value,
-            client_value,
+            model_configs=getattr(self.config, "model_configs", None),
+            current_model_config=getattr(self, "model_config", None),
+            fetch_specs=fetch_model_specs,
+            resolve_provider=self._resolve_model_provider,
         )
-
-        model_configs = getattr(self.config, "model_configs", None)
-        if not isinstance(model_configs, dict):
-            model_configs = {}
-        model_lookup_id = (
-            runtime_model_id
-            if runtime_model_id in model_configs and model_id not in model_configs
-            else model_id
-        )
-
-        requires_openrouter_specs = bool(
-            provider_value == "openrouter" or client_value == "openrouter"
-        )
-        model_specs: Dict[str, Any] = {}
-        spec_model_id = runtime_model_id if provider_value == "openrouter" else model_id
-
-        if requires_openrouter_specs:
-            model_specs = await fetch_model_specs(spec_model_id)
-            if not model_specs:
-                raise ValueError(
-                    f"Could not fetch specifications for model '{spec_model_id}'"
-                )
-            logger.info(f"Fetched specs for {spec_model_id}: {model_specs}")
-
-        model_specific = model_configs.get(model_lookup_id, {})
-        if not isinstance(model_specific, dict):
-            model_specific = {}
-
-        context_length = _coerce_optional_int(model_specs.get("context_length"))
-        if context_length is None:
-            context_length = _coerce_optional_int(
-                model_specific.get("context_window")
-                or model_specific.get("max_context_window_tokens")
-            )
-
-        safe_window = safe_context_window(context_length)
-        max_output = _coerce_optional_int(model_specs.get("max_output_tokens"))
-        if max_output is None:
-            max_output = _coerce_optional_int(
-                model_specific.get("max_output_tokens")
-                or model_specific.get("max_tokens")
-            )
-        if max_output is None:
-            max_output = safe_window
-        elif safe_window is not None and max_output > safe_window:
-            logger.warning(
-                "Clamping model '%s' max_output_tokens from %s to safe window %s",
-                runtime_model_id,
-                max_output,
-                safe_window,
-            )
-            max_output = safe_window
-
-        new_model_config = ModelConfig.for_model(
-            model_name=model_lookup_id,
-            provider=provider,
-            client_preference=client_pref,
-            model_configs=model_configs,
-        )
-
-        new_model_config.model = runtime_model_id
-        if "service_tier" not in model_specific:
-            new_model_config.service_tier = normalize_openai_service_tier(
-                getattr(getattr(self, "model_config", None), "service_tier", None)
-            )
-        if context_length is not None:
-            new_model_config.max_context_window_tokens = context_length
-            new_model_config.max_history_tokens = safe_window
-        if max_output is not None:
-            new_model_config.max_output_tokens = max_output
-
-        user_explicit_vision = model_specific.get("vision_enabled")
-        if user_explicit_vision is not None:
-            new_model_config.vision_enabled = bool(user_explicit_vision)
-            logger.info(
-                f"Model '{runtime_model_id}' vision set to {new_model_config.vision_enabled} (user config)"
-            )
-        elif model_specs.get("supports_vision"):
-            new_model_config.vision_enabled = True
-            logger.info(f"Model '{runtime_model_id}' supports vision (auto-detected)")
-
-        return new_model_config, safe_window
 
     async def resolve_request_runtime(
         self,
@@ -3640,28 +3546,11 @@ class PenguinCore:
         client_preference: str,
     ) -> str:
         """Canonicalize model IDs into provider-local form for runtime adapters."""
-        value = str(model_id or "").strip()
-        if not value:
-            return value
-
-        provider_value = str(provider or "").strip().lower()
-        client_value = str(client_preference or "").strip().lower()
-
-        # Native SDK adapters expect provider-local IDs (e.g. `gpt-5`, not `openai/gpt-5`).
-        if client_value == "native" and provider_value in {"openai", "anthropic"}:
-            if "/" in value:
-                prefix, remainder = value.split("/", 1)
-                if prefix.strip().lower() == provider_value and remainder.strip():
-                    return remainder.strip()
-            return value
-
-        # OpenRouter runtime model IDs should not include an extra `openrouter/` prefix.
-        if provider_value == "openrouter" and "/" in value:
-            prefix, remainder = value.split("/", 1)
-            if prefix.strip().lower() == "openrouter" and remainder.strip():
-                return remainder.strip()
-
-        return value
+        return core_model_runtime.canonicalize_runtime_model_id(
+            model_id,
+            provider,
+            client_preference,
+        )
 
     def _resolve_model_provider(self, model_id: str) -> tuple[Optional[str], str]:
         """Resolve provider and client preference for a model ID.
@@ -3669,40 +3558,13 @@ class PenguinCore:
         Returns:
             Tuple of (provider, client_preference), or (None, "") on error.
         """
-        # Check explicit model_configs first
-        if hasattr(self.config, "model_configs") and isinstance(
-            self.config.model_configs, dict
-        ):
-            model_conf = self.config.model_configs.get(model_id)
-            if model_conf:
-                provider = model_conf.get("provider")
-                client_pref = model_conf.get("client_preference", "openrouter")
-                return provider, client_pref
-
-        # Infer from fully-qualified model ID
-        if "/" not in model_id:
-            logger.error(
-                f"Model '{model_id}' not in model_configs and not fully-qualified"
-            )
-            return None, ""
-
-        provider_part = model_id.split("/", 1)[0]
-        provider_part = provider_part.strip().lower()
-
-        if provider_part == "openrouter":
-            client_pref = "openrouter"
-            provider = "openrouter"
-            return provider, client_pref
-
-        native_providers = {"openai", "anthropic", "google", "ollama"}
-        if provider_part in native_providers:
-            return provider_part, "native"
-
-        client_pref = (
-            self.model_config.client_preference if self.model_config else "openrouter"
+        return core_model_runtime.resolve_model_provider(
+            model_id,
+            getattr(self.config, "model_configs", None),
+            current_client_preference=(
+                self.model_config.client_preference if self.model_config else None
+            ),
         )
-        provider = "openrouter" if client_pref == "openrouter" else provider_part
-        return provider, client_pref
 
     def list_available_models(self) -> List[Dict[str, Any]]:
         """Return a list of model metadata derived from ``config.yml``.
@@ -3711,36 +3573,11 @@ class PenguinCore:
         time without additional network requests.  Richer model discovery (e.g.
         OpenRouter catalogue) is handled in *PenguinInterface*.
         """
-        models: List[Dict[str, Any]] = []
         current_model_name = self.model_config.model if self.model_config else None
-
-        if not (
-            hasattr(self.config, "model_configs")
-            and isinstance(self.config.model_configs, dict)
-        ):
-            return models
-
-        for model_id, conf in self.config.model_configs.items():
-            if not isinstance(conf, dict):
-                continue
-            entry = {
-                "id": model_id,
-                "name": conf.get("model", model_id),
-                "provider": conf.get("provider", "unknown"),
-                "client_preference": conf.get("client_preference", "openrouter"),
-                "vision_enabled": conf.get("vision_enabled", False),
-                "max_output_tokens": conf.get(
-                    "max_output_tokens", conf.get("max_tokens")
-                ),  # Accept both keys
-                "temperature": conf.get("temperature"),
-                "current": model_id == current_model_name
-                or conf.get("model") == current_model_name,
-            }
-            models.append(entry)
-
-        # Bring the current model to the top for convenience.
-        models.sort(key=lambda m: (not m["current"], m["id"]))
-        return models
+        return core_model_runtime.list_available_models(
+            getattr(self.config, "model_configs", None),
+            current_model_name=current_model_name,
+        )
 
     def get_current_model(self) -> Optional[Dict[str, Any]]:
         """
@@ -3752,16 +3589,7 @@ class PenguinCore:
         if not self.model_config:
             return None
 
-        return {
-            "model": self.model_config.model,
-            "provider": self.model_config.provider,
-            "client_preference": self.model_config.client_preference,
-            "max_output_tokens": getattr(self.model_config, "max_output_tokens", None),
-            "temperature": getattr(self.model_config, "temperature", None),
-            "streaming_enabled": self.model_config.streaming_enabled,
-            "vision_enabled": bool(getattr(self.model_config, "vision_enabled", False)),
-            "api_base": getattr(self.model_config, "api_base", None),
-        }
+        return core_model_runtime.current_model_payload(self.model_config)
 
     async def emit_ui_event(self, event_type: str, data: Dict[str, Any]) -> None:
         """
@@ -3854,7 +3682,9 @@ class PenguinCore:
                         await self._emit_opencode_session_status(
                             session_id,
                             status_type,
-                            info=data.get("data") if isinstance(data.get("data"), dict) else None,
+                            info=data.get("data")
+                            if isinstance(data.get("data"), dict)
+                            else None,
                         )
         except Exception as e:
             logger.error(f"[TUI_ADAPTER] ERROR in event_bus.emit: {e}", exc_info=True)
@@ -4583,15 +4413,20 @@ class PenguinCore:
                     status_type == "run_mode_ended"
                     or status_type == "shutdown_completed"
                 ):
-                    self.current_runmode_status_summary = status_data.get("summary", "RunMode ended.")
+                    self.current_runmode_status_summary = status_data.get(
+                        "summary", "RunMode ended."
+                    )
                 elif (
                     status_type == "clarification_needed"
                     or status_type == "clarification_needed_eventbus"
                 ):
-                    self.current_runmode_status_summary = status_data.get("summary", "Awaiting user clarification.")
+                    self.current_runmode_status_summary = status_data.get(
+                        "summary", "Awaiting user clarification."
+                    )
                 elif status_type == "time_limit_reached":
                     self.current_runmode_status_summary = status_data.get(
-                        "summary", "RunMode stopped because the explicit time limit was reached."
+                        "summary",
+                        "RunMode stopped because the explicit time limit was reached.",
                     )
                 elif status_type == "idle_no_ready_tasks":
                     self.current_runmode_status_summary = status_data.get(
@@ -4599,7 +4434,8 @@ class PenguinCore:
                     )
                 elif status_type == "exploratory_continuation":
                     self.current_runmode_status_summary = status_data.get(
-                        "summary", "RunMode is continuing exploratorily by determining next steps."
+                        "summary",
+                        "RunMode is continuing exploratorily by determining next steps.",
                     )
 
             # Handle error events

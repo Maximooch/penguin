@@ -4,15 +4,18 @@ Tests API key and JWT authentication for the Penguin web API.
 Tests can run against a local server or container with auth enabled.
 """
 
+import json
 import os
 import time
-import urllib.request
 import urllib.error
-import json
-from typing import Any, Dict, Optional
+import urllib.request
 from datetime import datetime, timedelta
-import jwt
+from typing import Any, Dict, Optional
 
+import jwt
+import pytest
+
+pytestmark = pytest.mark.e2e
 
 BASE_URL = os.environ.get("PENGUIN_API_URL", "http://127.0.0.1:8000")
 
@@ -119,10 +122,10 @@ def test_api_key_header_authentication():
     try:
         resp = _get("/api/v1/capabilities", headers=headers)
         assert isinstance(resp, dict), "Should receive valid response with API key"
-        print(f"✓ API key authentication via X-API-Key header works")
+        print("✓ API key authentication via X-API-Key header works")
     except AssertionError as e:
         if "401" in str(e):
-            print(f"⊘ API key authentication failed - check TEST_API_KEY is in PENGUIN_API_KEYS")
+            print("⊘ API key authentication failed - check TEST_API_KEY is in PENGUIN_API_KEYS")
         else:
             raise
 
@@ -301,7 +304,7 @@ def test_error_response_structure():
         assert isinstance(error["recoverable"], bool), "Error recoverable should be boolean"
         assert isinstance(error["suggested_action"], str), "Error suggested_action should be string"
 
-        print(f"✓ Authentication error follows structured format:")
+        print("✓ Authentication error follows structured format:")
         print(f"  - code: {error['code']}")
         print(f"  - recoverable: {error['recoverable']}")
         print(f"  - suggested_action: {error['suggested_action']}")

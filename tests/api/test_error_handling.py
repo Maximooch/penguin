@@ -4,13 +4,16 @@ Tests that errors follow the standardized PenguinError format with
 code, message, recoverable, suggested_action, and details fields.
 """
 
+import json
 import os
 import time
-import urllib.request
 import urllib.error
-import json
+import urllib.request
 from typing import Any, Dict
 
+import pytest
+
+pytestmark = pytest.mark.e2e
 
 BASE_URL = os.environ.get("PENGUIN_API_URL", "http://127.0.0.1:8000")
 
@@ -140,7 +143,7 @@ def test_agent_not_found_error():
         if "details" in error:
             assert "agent_id" in error["details"], "Should include agent_id in details"
 
-        print(f"✓ AgentNotFoundError follows structured format:")
+        print("✓ AgentNotFoundError follows structured format:")
         print(f"  - code: {error['code']}")
         print(f"  - recoverable: {error['recoverable']}")
         print(f"  - suggested_action: {error['suggested_action']}")

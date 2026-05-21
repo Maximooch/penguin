@@ -46,6 +46,7 @@ Example Usage:
 
 import os
 import sys
+from importlib import import_module
 
 # Add package directory to Python path
 package_dir = os.path.dirname(os.path.abspath(__file__))
@@ -175,6 +176,11 @@ def __getattr__(name):
     """Lazy loading for optional exports to avoid import overhead."""
     if name in _optional_exports:
         return _optional_exports[name]
+
+    if name == "web":
+        module = import_module(f"{__name__}.web")
+        _optional_exports[name] = module
+        return module
     
     # Try to load project management exports
     if name in ['ProjectManager', 'Project', 'Task']:

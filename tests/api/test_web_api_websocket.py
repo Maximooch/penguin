@@ -4,12 +4,15 @@ Tests WebSocket connectivity and streaming task execution.
 Requires: pip install websockets
 """
 
+import asyncio
+import json
 import os
 import time
 import urllib.request
-import json
-import asyncio
-from typing import Any, Dict
+
+import pytest
+
+pytestmark = pytest.mark.e2e
 
 try:
     import websockets  # type: ignore
@@ -42,12 +45,12 @@ async def test_websocket_task_stream():
     """Test WebSocket /api/v1/tasks/stream for streaming task events."""
     uri = f"{WS_URL}/api/v1/tasks/stream"
     print(f"Connecting to {uri}...")
-    
+
     events_received = []
-    
+
     async with websockets.connect(uri, timeout=60) as websocket:
         print("✓ WebSocket connected")
-        
+
         # Send task request
         task_request = {
             "name": "Simple task",
@@ -55,10 +58,10 @@ async def test_websocket_task_stream():
             "continuous": False,
             "time_limit": 30,
         }
-        
+
         print(f"Sending task: {task_request['name']}")
         await websocket.send(json.dumps(task_request))
-        
+
         # Receive events
         timeout_time = time.time() + 45  # 45s timeout for task completion
         while time.time() < timeout_time:
@@ -67,45 +70,45 @@ async def test_websocket_task_stream():
                 event = json.loads(message)
                 event_type = event.get("event", "unknown")
                 events_received.append(event_type)
-                
+
                 print(f"  Event: {event_type}")
-                
+
                 # Check for completion or error
                 if event_type in ["complete", "error"]:
                     print(f"✓ Task finished with event: {event_type}")
                     if event_type == "error":
                         print(f"  Error data: {event.get('data', {})}")
                     break
-                    
+
             except asyncio.TimeoutError:
                 # No message received in 5s, continue waiting
                 continue
             except websockets.exceptions.ConnectionClosed:
                 print("✓ WebSocket closed by server")
                 break
-        
+
         # Verify we received events
         assert len(events_received) > 0, "No events received"
-        
+
         # Should have at least a start and complete/error event
         event_types_str = ", ".join(events_received)
         print(f"✓ WebSocket streaming test: received {len(events_received)} events ({event_types_str})")
-        
+
         return True
 
 
 if __name__ == "__main__":
     import sys
-    
+
     print(f"\nRunning WebSocket tests against {WS_URL}\n")
-    
+
     # Wait for server
     try:
         _wait_for_server()
     except RuntimeError as e:
         print(f"✗ {e}")
         sys.exit(1)
-    
+
     # Run WebSocket test
     try:
         asyncio.run(test_websocket_task_stream())

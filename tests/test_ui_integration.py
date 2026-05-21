@@ -13,10 +13,14 @@ Tests the full flow from backend to frontend UI:
 import asyncio
 import json
 import time
-import websockets
-from typing import List, Dict, Any
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any, Dict, List
+
+import pytest
+import websockets
+
+pytestmark = pytest.mark.e2e
 
 
 @dataclass

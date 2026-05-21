@@ -4,11 +4,15 @@ import subprocess
 import time
 import urllib.request
 
+import pytest
+
 try:
     from dotenv import load_dotenv  # type: ignore
 except Exception:  # pragma: no cover - optional dep in CI
     load_dotenv = None  # type: ignore
 
+
+pytestmark = [pytest.mark.e2e, pytest.mark.slow]
 
 IMAGE = os.environ.get("PENGUIN_TEST_IMAGE", "penguin:web")
 ENV_FILE = os.environ.get("PENGUIN_TEST_ENV_FILE", ".env")
@@ -48,7 +52,7 @@ def test_web_container_health(capsys):
         val = os.environ.get(key)
         if val:
             env_flags.extend(["-e", f"{key}={val}"])
-    
+
     # Start container
     cmd = [
         "docker",
@@ -59,16 +63,16 @@ def test_web_container_health(capsys):
         *env_flags,
         IMAGE,
     ]
-    
+
     print(f"\nStarting container: {IMAGE}")
     if env_flags:
         print(f"Passing {len(env_flags) // 2} env var(s) to container")
-    
+
     proc = subprocess.run(cmd, capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
     cid = proc.stdout.strip()
     print(f"Container ID: {cid[:12]}")
-    
+
     try:
         # Wait up to 30s for health
         print("Polling /api/v1/health (max 30s)...")
@@ -85,5 +89,4 @@ def test_web_container_health(capsys):
     finally:
         print(f"Cleaning up container {cid[:12]}")
         subprocess.run(["docker", "rm", "-f", cid], capture_output=True)
-
 

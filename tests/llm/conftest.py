@@ -1,6 +1,6 @@
-"""Pytest configuration for LLM tests."""
+"""Pytest configuration for LLM tests.
 
-import pytest
-
-# Configure pytest-asyncio to use auto mode for async fixtures and tests
-pytest_plugins = ('pytest_asyncio',)
+pytest-asyncio is loaded through its installed pytest entry point. Keeping a
+``pytest_plugins`` declaration in this nested conftest breaks collection on
+current pytest versions because it affects the whole suite.
+"""
