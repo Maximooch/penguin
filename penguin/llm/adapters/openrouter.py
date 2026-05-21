@@ -8,7 +8,6 @@ from typing import List, Dict, Optional, Any, Union, Callable, AsyncIterator
 # --- Added Imports for Vision Handling ---
 import base64
 import io
-import mimetypes
 from PIL import Image as PILImage  # Use alias for PIL Image # type: ignore
 # --- End Added Imports ---
 
@@ -1030,10 +1029,7 @@ class OpenRouterGateway:
                 image_bytes = buffer.getvalue()
 
             base64_image = base64.b64encode(image_bytes).decode("utf-8")
-            mime_type, _ = mimetypes.guess_type(image_path)
-            if not mime_type or not mime_type.startswith("image"):
-                mime_type = "image/jpeg"
-            data_uri = f"data:{mime_type};base64,{base64_image}"
+            data_uri = f"data:image/jpeg;base64,{base64_image}"
             self.logger.debug(f"Encoded image to data URI (length: {len(data_uri)})")
             return data_uri
         except FileNotFoundError:
