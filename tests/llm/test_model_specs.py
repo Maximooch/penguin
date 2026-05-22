@@ -258,9 +258,9 @@ class TestServiceCaching:
     @pytest.mark.asyncio
     async def test_suspicious_context_sized_completion_cap_is_ignored(
         self,
-        service,
-        mock_api_response,
-    ):
+        service: ModelSpecsService,
+        mock_api_response: dict[str, Any],
+    ) -> None:
         """Context-sized OpenRouter completion caps are not usable output caps."""
         with patch("httpx.AsyncClient") as mock_client_class:
             mock_client = AsyncMock()
@@ -279,9 +279,9 @@ class TestServiceCaching:
     @pytest.mark.asyncio
     async def test_missing_completion_cap_remains_unknown(
         self,
-        service,
-        mock_api_response,
-    ):
+        service: ModelSpecsService,
+        mock_api_response: dict[str, Any],
+    ) -> None:
         """Missing OpenRouter completion caps should not be guessed from context."""
         with patch("httpx.AsyncClient") as mock_client_class:
             mock_client = AsyncMock()
