@@ -243,11 +243,20 @@ print(f"Task execution started: {response.json()}")
 ```python
 import requests
 
-# Get token usage stats
+# Get runtime/global token usage stats
 response = requests.get("http://127.0.0.1:9000/api/v1/token-usage")
 usage = response.json()["usage"]
+print(f"Usage scope: {usage['scope']}")
 
-print(f"Main model usage: {usage['main_model']['total']} tokens")
+# Get transcript-safe, session-scoped context-window telemetry
+response = requests.get(
+    "http://127.0.0.1:9000/api/v1/token-usage",
+    params={"session_id": "example-session"},
+)
+usage = response.json()["usage"]
+
+if usage["scope"] == "session":
+    print(f"Session context usage: {usage['current_total_tokens']} tokens")
 ```
 
 ### Context Files

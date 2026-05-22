@@ -80,6 +80,7 @@ from penguin.web.services.session_view import (
 from penguin.web.services.session_fork import fork_session
 from penguin.web.services.session_revert import revert_session, unrevert_session
 from penguin.web.services.session_summary import summarize_session_title
+from penguin.web.services.token_usage import get_token_usage_payload
 from penguin.web.middleware.auth import (
     AuthenticationError,
     AuthConfig,
@@ -5425,9 +5426,42 @@ async def execute_task_via_runmode(
 
 
 @router.get("/api/v1/token-usage")
-async def get_token_usage(core: PenguinCore = Depends(get_core)):
-    """Get current token usage statistics."""
-    return {"usage": core.get_token_usage()}
+async def get_token_usage(
+    session_id: Optional[str] = Query(default=None),
+    conversation_id: Optional[str] = Query(default=None),
+    agent_id: Optional[str] = Query(default=None),
+    core: PenguinCore = Depends(get_core),
+) -> Dict[str, Any]:
+    """Get token usage statistics.
+
+    When a session/conversation id is provided, usage is session scoped. Without
+    identifiers this preserves the legacy runtime response but labels it as
+    runtime scoped for callers that need transcript-safe telemetry.
+    """
+
+    return get_token_usage_payload(
+        core,
+        session_id=session_id,
+        conversation_id=conversation_id,
+        agent_id=agent_id,
+    )
+
+
+@router.get("/api/v1/sessions/{session_id}/token-usage")
+async def get_session_token_usage(
+    session_id: str,
+    conversation_id: Optional[str] = Query(default=None),
+    agent_id: Optional[str] = Query(default=None),
+    core: PenguinCore = Depends(get_core),
+) -> Dict[str, Any]:
+    """Get token usage statistics for a specific session."""
+
+    return get_token_usage_payload(
+        core,
+        session_id=session_id,
+        conversation_id=conversation_id or session_id,
+        agent_id=agent_id,
+    )
 
 
 @router.get("/api/v1/conversations")

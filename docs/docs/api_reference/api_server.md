@@ -650,7 +650,71 @@ Execute a task in the background.
 
 #### GET `/api/v1/token-usage`
 
-Get current token usage statistics.
+Get token/context-window usage telemetry.
+
+Without query parameters, this endpoint returns runtime/global core telemetry and
+sets `usage.scope` to `"runtime"`. Runtime usage is useful for process-level
+diagnostics, but clients must not treat it as proof that a specific transcript
+was trimmed.
+
+For transcript-aware UI, request a session-scoped payload:
+
+```bash
+curl "http://127.0.0.1:9000/api/v1/token-usage?session_id=sess_abc"
+```
+
+Equivalent session route:
+
+```bash
+curl "http://127.0.0.1:9000/api/v1/sessions/sess_abc/token-usage"
+```
+
+**Query Parameters:**
+- `session_id` (optional): Session to inspect. When present, Penguin never
+  silently falls back to runtime/global usage.
+- `conversation_id` (optional): Conversation identifier to echo in the scoped
+  response. Used as the lookup id when `session_id` is omitted.
+- `agent_id` (optional): Filter scoped session usage by `Message.agent_id`.
+  If the agent is not represented in the session, the endpoint returns `404`
+  instead of returning whole-session totals.
+
+**Session-scoped response:**
+
+```json
+{
+  "usage": {
+    "scope": "session",
+    "session_id": "sess_abc",
+    "conversation_id": "sess_abc",
+    "current_total_tokens": 12345,
+    "max_context_window_tokens": 200000,
+    "available_tokens": 187655,
+    "percentage": 6.17,
+    "categories": {
+      "SYSTEM": 12000,
+      "DIALOG": 345,
+      "SYSTEM_OUTPUT": 0
+    },
+    "truncations": {
+      "total_truncations": 0,
+      "messages_removed": 0,
+      "tokens_freed": 0,
+      "by_category": {},
+      "recent_events": []
+    }
+  }
+}
+```
+
+Missing scoped lookups return `404` with `usage.scope`/`detail.scope` set to
+`"missing"`. Consumers such as Link should render transcript-specific context
+horizon lines only when `usage.scope == "session"`.
+
+#### GET `/api/v1/sessions/{session_id}/token-usage`
+
+Session-scoped alias for `/api/v1/token-usage?session_id=...`. It accepts the
+same optional `conversation_id` and `agent_id` query parameters and has the same
+404 behavior for missing sessions or missing agent scopes.
 
 #### GET `/api/v1/context-files`
 

@@ -26,3 +26,15 @@ curl -X POST http://127.0.0.1:9000/api/v1/tasks/execute \
   -H "Content-Type: application/json" \
   -d '{"name": "Build project", "description": "Set up repo"}'
 ```
+
+## Get Session-Scoped Token Usage
+```bash
+curl "http://127.0.0.1:9000/api/v1/token-usage?session_id=example-session"
+
+# Equivalent session route
+curl "http://127.0.0.1:9000/api/v1/sessions/example-session/token-usage"
+```
+
+Only responses with `usage.scope == "session"` are safe for transcript-specific
+context-window meters or context horizon UI. The unscoped endpoint returns
+runtime/global telemetry with `usage.scope == "runtime"`.

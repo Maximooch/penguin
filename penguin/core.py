@@ -1905,16 +1905,78 @@ class PenguinCore:
         await self._emit_opencode_session_status(sid, "idle")
         return aborted
 
-    def get_token_usage(self) -> Dict[str, Dict[str, int]]:
-        """Get token usage via conversation manager"""
+    def get_token_usage(
+        self,
+        session_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Return runtime or scoped token/context-window telemetry.
+
+        Args:
+            session_id: Optional session identifier to scope usage. Takes
+                precedence over the runtime context window and never falls back
+                to runtime usage when not found.
+            conversation_id: Optional conversation identifier. Used as the
+                lookup id when ``session_id`` is absent and echoed in scoped
+                responses.
+            agent_id: Optional agent identifier. When scoped usage is requested,
+                filters messages by ``Message.agent_id`` or uses an isolated
+                session whose metadata owner matches this id. Missing ownership
+                returns ``scope="missing"`` instead of whole-session totals.
+
+        Returns:
+            Dict[str, Any]: Runtime calls return ``scope="runtime"`` plus the
+            conversation manager's legacy usage fields. Scoped calls return
+            ``scope="session"``, ``session_id``, ``conversation_id``, optional
+            ``agent_id``, ``current_total_tokens``,
+            ``max_context_window_tokens``, ``available_tokens``, ``percentage``,
+            ``categories``, and ``truncations``. Missing scoped lookups return
+            ``scope="missing"`` with identifiers and ``error`` for HTTP layers
+            to translate to 404.
+
+        Raises:
+            None. Runtime telemetry failures are logged and return zeroed
+            runtime usage; missing scoped lookups are returned as data.
+        """
+
+        def _normalize(value: Optional[str]) -> Optional[str]:
+            if not isinstance(value, str):
+                return None
+            stripped = value.strip()
+            return stripped or None
+
+        requested_session_id = _normalize(session_id) or _normalize(conversation_id)
+        requested_conversation_id = _normalize(conversation_id) or requested_session_id
+
+        if requested_session_id:
+            requested_agent_id = _normalize(agent_id)
+            usage = self._get_session_token_usage(
+                requested_session_id,
+                conversation_id=requested_conversation_id,
+                agent_id=requested_agent_id,
+            )
+            if usage is not None:
+                return usage
+            return {
+                "scope": "missing",
+                "session_id": requested_session_id,
+                "conversation_id": requested_conversation_id,
+                **({"agent_id": requested_agent_id} if requested_agent_id else {}),
+                "error": "session token usage not found",
+            }
+
         try:
             if not self.conversation_manager:
                 return {
+                    "scope": "runtime",
                     "total": {"input": 0, "output": 0},
                     "session": {"input": 0, "output": 0},
                 }
 
             usage = self.conversation_manager.get_token_usage()
+            if isinstance(usage, dict):
+                usage = {"scope": "runtime", **usage}
 
             # Emit UI event for token update (only if event loop is running)
             try:
@@ -1934,9 +1996,132 @@ class PenguinCore:
         except Exception as e:
             logger.error(f"Error getting token usage: {e}")
             return {
+                "scope": "runtime",
                 "total": {"input": 0, "output": 0},
                 "session": {"input": 0, "output": 0},
             }
+
+    def _get_session_token_usage(
+        self,
+        session_id: str,
+        *,
+        conversation_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Return usage for one persisted session without global fallback."""
+
+        session, _manager = self._find_session_store(session_id)
+        if session is None:
+            return None
+
+        metadata = getattr(session, "metadata", None)
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        metadata_agent_id = metadata.get("agent_id")
+        if isinstance(metadata_agent_id, str):
+            metadata_agent_id = metadata_agent_id.strip() or None
+        else:
+            metadata_agent_id = None
+
+        if agent_id:
+            message_agent_ids = {
+                message_agent_id.strip()
+                for message in getattr(session, "messages", []) or []
+                if isinstance(
+                    message_agent_id := getattr(message, "agent_id", None),
+                    str,
+                )
+                and message_agent_id.strip()
+            }
+            if agent_id in message_agent_ids:
+                usage = self._usage_from_session_messages(
+                    session,
+                    agent_id=agent_id,
+                )
+            elif metadata_agent_id == agent_id and not message_agent_ids:
+                usage_snapshot = metadata.get("_opencode_usage_v1")
+                if isinstance(usage_snapshot, dict):
+                    usage = dict(usage_snapshot)
+                else:
+                    usage = self._usage_from_session_messages(session)
+            else:
+                return {
+                    "scope": "missing",
+                    "session_id": session_id,
+                    "conversation_id": conversation_id or session_id,
+                    "agent_id": agent_id,
+                    "error": "agent token usage not found for session",
+                }
+        else:
+            usage_snapshot = metadata.get("_opencode_usage_v1")
+            if isinstance(usage_snapshot, dict):
+                usage = dict(usage_snapshot)
+            else:
+                usage = self._usage_from_session_messages(session)
+
+        usage["scope"] = "session"
+        usage["session_id"] = session_id
+        usage["conversation_id"] = conversation_id or session_id
+        if agent_id:
+            usage["agent_id"] = agent_id
+        elif metadata_agent_id:
+            usage["agent_id"] = metadata_agent_id
+
+        return usage
+
+    def _usage_from_session_messages(
+        self,
+        session: Any,
+        *,
+        agent_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Build a conservative session-scoped usage payload from messages."""
+
+        messages = getattr(session, "messages", []) or []
+        if agent_id:
+            messages = [
+                message
+                for message in messages
+                if getattr(message, "agent_id", None) == agent_id
+            ]
+        categories: Dict[str, int] = {category.name: 0 for category in MessageCategory}
+        current_total_tokens = 0
+
+        for message in messages:
+            token_count = int(getattr(message, "tokens", 0) or 0)
+            current_total_tokens += token_count
+
+            category = getattr(message, "category", None)
+            if hasattr(category, "name"):
+                category_name = category.name
+            elif isinstance(category, str):
+                category_name = category
+            else:
+                category_name = "UNKNOWN"
+            categories[category_name] = categories.get(category_name, 0) + token_count
+
+        context_window = getattr(self.conversation_manager, "context_window", None)
+        max_tokens = int(getattr(context_window, "max_context_window_tokens", 0) or 0)
+        available_tokens = (
+            max(max_tokens - current_total_tokens, 0) if max_tokens else 0
+        )
+        percentage = (current_total_tokens / max_tokens) * 100 if max_tokens else 0
+
+        return {
+            "current_total_tokens": current_total_tokens,
+            "max_context_window_tokens": max_tokens,
+            "available_tokens": available_tokens,
+            "percentage": percentage,
+            "categories": categories,
+            "truncations": {
+                "total_truncations": 0,
+                "messages_removed": 0,
+                "tokens_freed": 0,
+                "by_category": {},
+                "recent_events": [],
+            },
+        }
 
     def set_system_prompt(self, prompt: str) -> None:
         """Set the system prompt for both core and API client."""
@@ -3076,6 +3261,7 @@ class PenguinCore:
                             ),
                             "available_tokens": token_data.get("available_tokens", 0),
                             "percentage": token_data.get("percentage", 0),
+                            "categories": token_data.get("categories", {}),
                             "truncations": token_data.get("truncations", {}),
                         }
                 except Exception:
