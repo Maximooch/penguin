@@ -3713,9 +3713,7 @@ class PenguinCore:
                 model_specific.get("max_output_tokens")
                 or model_specific.get("max_tokens")
             )
-        if max_output is None:
-            max_output = safe_window
-        elif safe_window is not None and max_output > safe_window:
+        if max_output is not None and safe_window is not None and max_output > safe_window:
             logger.warning(
                 "Clamping model '%s' max_output_tokens from %s to safe window %s",
                 runtime_model_id,

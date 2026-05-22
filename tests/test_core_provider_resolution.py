@@ -225,13 +225,54 @@ async def test_load_model_surfaces_reason_when_openrouter_specs_missing() -> Non
 
 
 @pytest.mark.asyncio
-async def test_load_model_clamps_max_output_tokens_to_safe_window() -> None:
+async def test_load_model_does_not_use_context_window_as_output_cap() -> None:
     applied: dict[str, Any] = {}
     core_like = SimpleNamespace(
         config=SimpleNamespace(model_configs={}),
         model_config=SimpleNamespace(client_preference="openrouter"),
         _last_model_load_error=None,
     )
+    _attach_core_helpers(core_like)
+
+    def _resolve(model_id: str) -> tuple[str, str]:
+        del model_id
+        return "openrouter", "openrouter"
+
+    def _apply(config: Any, context_window_tokens: Any = None) -> None:
+        applied["model"] = str(config.model)
+        applied["max_output_tokens"] = getattr(config, "max_output_tokens", None)
+        applied["context_window_tokens"] = context_window_tokens
+
+    core_like._resolve_model_provider = _resolve
+    core_like._apply_new_model_config = _apply
+
+    with patch(
+        "penguin.core.fetch_model_specs",
+        new=AsyncMock(
+            return_value={
+                "context_length": 204800,
+                "max_output_tokens": None,
+            }
+        ),
+    ):
+        ok = await PenguinCore.load_model(_as_any(core_like), "openrouter/z-ai/glm-5.1")
+
+    assert ok is True
+    assert applied["model"] == "z-ai/glm-5.1"
+    assert applied["max_output_tokens"] is None
+    assert applied["context_window_tokens"] == safe_context_window(204800)
+
+
+@pytest.mark.asyncio
+async def test_load_model_clamps_explicit_max_output_tokens_to_safe_window() -> None:
+    applied: dict[str, Any] = {}
+    core_like = SimpleNamespace(
+        config=SimpleNamespace(model_configs={}),
+        model_config=SimpleNamespace(current_model="old/model", service_tier=None),
+        api_client=None,
+        _last_model_load_error=None,
+    )
+
     _attach_core_helpers(core_like)
 
     def _resolve(model_id: str) -> tuple[str, str]:
