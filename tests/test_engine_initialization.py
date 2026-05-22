@@ -760,7 +760,7 @@ def test_scoped_conversation_manager_reports_scoped_context_window_usage() -> No
     from penguin.system.context_window import ContextWindowManager
     from penguin.system.state import MessageCategory
 
-    scoped_window = ContextWindowManager(token_counter=lambda content: 0)
+    scoped_window = ContextWindowManager(token_counter=lambda _content: 0)
     scoped_window.max_context_window_tokens = 1_000
     scoped_window.update_usage(MessageCategory.DIALOG, 125)
     scoped_window.truncation_tracker.record_truncation(
@@ -770,7 +770,7 @@ def test_scoped_conversation_manager_reports_scoped_context_window_usage() -> No
         total_messages_before=5,
         total_messages_after=3,
     )
-    global_window = ContextWindowManager(token_counter=lambda content: 0)
+    global_window = ContextWindowManager(token_counter=lambda _content: 0)
     global_window.max_context_window_tokens = 1_000
     global_window.update_usage(MessageCategory.DIALOG, 900)
     global_window.truncation_tracker.record_truncation(
@@ -802,7 +802,7 @@ def test_scoped_conversation_manager_does_not_fall_back_to_global_window() -> No
     from penguin.system.context_window import ContextWindowManager
     from penguin.system.state import Message, MessageCategory
 
-    global_window = ContextWindowManager(token_counter=lambda content: 0)
+    global_window = ContextWindowManager(token_counter=lambda _content: 0)
     global_window.max_context_window_tokens = 1_000
     global_window.update_usage(MessageCategory.DIALOG, 900)
     global_window.truncation_tracker.record_truncation(

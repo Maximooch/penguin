@@ -108,26 +108,42 @@ def _truncations_from_tracker(tracker: Any) -> Dict[str, Any]:
     for category in MessageCategory:
         try:
             by_category[category.name] = int(tracker.get_category_truncations(category))
-        except Exception:
+        except Exception as exc:
+            logger.debug(
+                "failed to get_category_truncations for %s: %s",
+                category,
+                exc,
+                exc_info=True,
+            )
             by_category[category.name] = 0
 
     recent_events = []
     try:
         events = tracker.get_recent_events(limit=5)
-    except Exception:
+    except Exception as exc:
+        logger.debug("failed to get_recent_events: %s", exc, exc_info=True)
         events = []
     for event in events:
-        category = getattr(event, "category", None)
-        recent_events.append(
-            {
-                "category": category.name
-                if hasattr(category, "name")
-                else str(category),
-                "messages_removed": int(getattr(event, "messages_removed", 0) or 0),
-                "tokens_freed": int(getattr(event, "tokens_freed", 0) or 0),
-                "timestamp": getattr(event, "timestamp", ""),
-            }
-        )
+        try:
+            category = getattr(event, "category", None)
+            recent_events.append(
+                {
+                    "category": category.name
+                    if hasattr(category, "name")
+                    else str(category),
+                    "messages_removed": int(
+                        getattr(event, "messages_removed", 0) or 0
+                    ),
+                    "tokens_freed": int(getattr(event, "tokens_freed", 0) or 0),
+                    "timestamp": getattr(event, "timestamp", ""),
+                }
+            )
+        except Exception as exc:
+            logger.debug(
+                "failed to normalize truncation event: %s",
+                exc,
+                exc_info=True,
+            )
 
     return {
         "total_truncations": int(getattr(tracker, "session_total_truncations", 0) or 0),

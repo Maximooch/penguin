@@ -52,6 +52,11 @@ class _ConversationManager:
         }
 
 
+class _AgentConversationManager(_ConversationManager):
+    def get_token_usage(self) -> dict[str, object]:
+        raise AssertionError("agent-scoped session queries must not use runtime usage")
+
+
 def _message(category: MessageCategory, tokens: int) -> Message:
     return Message(role="user", content="x", category=category, tokens=tokens)
 
@@ -62,7 +67,7 @@ def _session(session_id: str, tokens: int) -> Session:
     return session
 
 
-def _core(sessions: list[Session]) -> Any:
+def _core(sessions: list[Session]) -> SimpleNamespace:
     core = SimpleNamespace()
 
     core.conversation_manager = _ConversationManager(sessions)
@@ -72,6 +77,16 @@ def _core(sessions: list[Session]) -> Any:
     core._usage_from_session_messages = usage_from_messages.__get__(core)
     core.get_token_usage = PenguinCore.get_token_usage.__get__(core)
     return core
+
+
+def _message_for_agent(agent_id: str, tokens: int) -> Message:
+    return Message(
+        role="user",
+        content="x",
+        category=MessageCategory.DIALOG,
+        tokens=tokens,
+        agent_id=agent_id,
+    )
 
 
 @pytest.mark.asyncio
@@ -134,3 +149,49 @@ async def test_session_token_usage_path_returns_404_for_missing_session() -> Non
 
     assert exc.value.status_code == 404
     assert exc.value.detail["scope"] == "missing"
+
+
+@pytest.mark.asyncio
+async def test_token_usage_filters_session_messages_by_agent_id() -> None:
+    session = Session(id="session_agent")
+    session.messages.extend(
+        [
+            _message_for_agent("agent-a", 10),
+            _message_for_agent("agent-b", 40),
+        ]
+    )
+    core = _core([session])
+    core.conversation_manager = _AgentConversationManager([session])
+
+    response = await get_token_usage(
+        session_id="session_agent",
+        conversation_id=None,
+        agent_id="agent-a",
+        core=core,
+    )
+
+    usage = response["usage"]
+    assert usage["scope"] == "session"
+    assert usage["agent_id"] == "agent-a"
+    assert usage["current_total_tokens"] == 10
+    assert usage["categories"]["DIALOG"] == 10
+
+
+@pytest.mark.asyncio
+async def test_token_usage_returns_404_for_missing_agent_scope() -> None:
+    session = Session(id="session_agent")
+    session.messages.append(_message_for_agent("agent-a", 10))
+    core = _core([session])
+    core.conversation_manager = _AgentConversationManager([session])
+
+    with pytest.raises(HTTPException) as exc:
+        await get_token_usage(
+            session_id="session_agent",
+            conversation_id=None,
+            agent_id="agent-b",
+            core=core,
+        )
+
+    assert exc.value.status_code == 404
+    assert exc.value.detail["scope"] == "missing"
+    assert exc.value.detail["agent_id"] == "agent-b"
