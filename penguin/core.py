@@ -3739,6 +3739,18 @@ class PenguinCore:
             new_model_config.max_history_tokens = safe_window
         if max_output is not None:
             new_model_config.max_output_tokens = max_output
+        if (
+            safe_window is not None
+            and new_model_config.max_output_tokens is not None
+            and new_model_config.max_output_tokens > safe_window
+        ):
+            logger.warning(
+                "Clamping model '%s' max_output_tokens from %s to safe window %s",
+                runtime_model_id,
+                new_model_config.max_output_tokens,
+                safe_window,
+            )
+            new_model_config.max_output_tokens = safe_window
 
         user_explicit_vision = model_specific.get("vision_enabled")
         if user_explicit_vision is not None:
