@@ -5431,7 +5431,7 @@ async def get_token_usage(
     conversation_id: Optional[str] = Query(default=None),
     agent_id: Optional[str] = Query(default=None),
     core: PenguinCore = Depends(get_core),
-):
+) -> Dict[str, Any]:
     """Get token usage statistics.
 
     When a session/conversation id is provided, usage is session scoped. Without
@@ -5453,7 +5453,7 @@ async def get_session_token_usage(
     conversation_id: Optional[str] = Query(default=None),
     agent_id: Optional[str] = Query(default=None),
     core: PenguinCore = Depends(get_core),
-):
+) -> Dict[str, Any]:
     """Get token usage statistics for a specific session."""
 
     return get_token_usage_payload(
