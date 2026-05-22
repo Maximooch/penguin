@@ -501,7 +501,7 @@ class ModelSpecs:
     model_id: str
     name: str
     context_length: int
-    max_output_tokens: int
+    max_output_tokens: Optional[int]
     provider: str
     pricing_prompt: Optional[float] = None  # per 1M tokens
     pricing_completion: Optional[float] = None  # per 1M tokens
@@ -716,8 +716,19 @@ class ModelSpecsService:
         max_output = model.get("top_provider", {}).get("max_completion_tokens")
         if not max_output:
             max_output = model.get("max_output_tokens")
-        if not max_output:
-            max_output = context_length // 4 if context_length else 4096
+        try:
+            max_output = int(max_output) if max_output else None
+        except (TypeError, ValueError):
+            max_output = None
+        if context_length and max_output and max_output >= int(context_length * 0.8):
+            logger.debug(
+                "Ignoring suspicious OpenRouter max_completion_tokens=%s for %s "
+                "with context_length=%s",
+                max_output,
+                model_id,
+                context_length,
+            )
+            max_output = None
 
         provider = model_id.split("/")[0] if "/" in model_id else "unknown"
 

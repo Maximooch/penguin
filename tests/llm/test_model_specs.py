@@ -85,6 +85,20 @@ def mock_api_response():
                 "top_provider": {"max_completion_tokens": 32768},
                 "architecture": {"modality": "text"},
             },
+            {
+                "id": "moonshotai/kimi-k2.6",
+                "name": "Kimi K2.6",
+                "context_length": 262144,
+                "top_provider": {"max_completion_tokens": 262142},
+                "architecture": {"modality": "text"},
+            },
+            {
+                "id": "z-ai/glm-5.1",
+                "name": "GLM 5.1",
+                "context_length": 202752,
+                "top_provider": {"max_completion_tokens": None},
+                "architecture": {"modality": "text"},
+            },
         ]
     }
 
@@ -240,6 +254,48 @@ class TestServiceCaching:
             assert result.model_id == "openai/gpt-4o"
             assert result.context_length == 128000
             mock_client.get.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_suspicious_context_sized_completion_cap_is_ignored(
+        self,
+        service: ModelSpecsService,
+        mock_api_response: dict[str, Any],
+    ) -> None:
+        """Context-sized OpenRouter completion caps are not usable output caps."""
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_response = MagicMock()
+            mock_response.json.return_value = mock_api_response
+            mock_response.raise_for_status = MagicMock()
+            mock_client.get.return_value = mock_response
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            result = await service.get_specs("moonshotai/kimi-k2.6")
+
+            assert result is not None
+            assert result.context_length == 262144
+            assert result.max_output_tokens is None
+
+    @pytest.mark.asyncio
+    async def test_missing_completion_cap_remains_unknown(
+        self,
+        service: ModelSpecsService,
+        mock_api_response: dict[str, Any],
+    ) -> None:
+        """Missing OpenRouter completion caps should not be guessed from context."""
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_response = MagicMock()
+            mock_response.json.return_value = mock_api_response
+            mock_response.raise_for_status = MagicMock()
+            mock_client.get.return_value = mock_response
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            result = await service.get_specs("z-ai/glm-5.1")
+
+            assert result is not None
+            assert result.context_length == 202752
+            assert result.max_output_tokens is None
 
     @pytest.mark.asyncio
     async def test_force_refresh_bypasses_cache(self, service, mock_api_response):
@@ -434,8 +490,8 @@ class TestServicePreload:
 
             count = await service.preload_all()
 
-            assert count == 4  # 4 models in mock response
-            assert len(service.list_cached_models()) == 4
+            assert count == 6  # 6 models in mock response
+            assert len(service.list_cached_models()) == 6
             assert "openai/gpt-4o" in service.list_cached_models()
             assert "anthropic/claude-opus-4" in service.list_cached_models()
 
