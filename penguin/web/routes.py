@@ -6187,12 +6187,27 @@ async def upload_file(
                 detail="Unsupported file extension. Allowed extensions: .gif, .jpeg, .jpg, .png, .webp.",
             )
 
+        max_upload_bytes = _max_upload_bytes()
+        try:
+            original_position = file.file.tell()
+            file.file.seek(0, os.SEEK_END)
+            upload_size = file.file.tell()
+            file.file.seek(original_position)
+            if upload_size > max_upload_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File exceeds upload size limit of {max_upload_bytes} bytes",
+                )
+        except HTTPException:
+            raise
+        except (AttributeError, OSError):
+            pass
+
         uploads_dir = Path(WORKSPACE_PATH) / "uploads"
         uploads_dir.mkdir(exist_ok=True)
 
         unique_filename = f"{uuid.uuid4()}{extension}"
         file_path = uploads_dir / unique_filename
-        max_upload_bytes = _max_upload_bytes()
         bytes_written = 0
 
         with open(file_path, "wb") as buffer:

@@ -9,8 +9,6 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from penguin.config import WORKSPACE_PATH
-
 
 class BrowserHarnessOwnershipStore:
     """Persist Penguin-owned browser-harness daemon identities."""
@@ -20,7 +18,14 @@ class BrowserHarnessOwnershipStore:
 
     @staticmethod
     def default_path() -> Path:
-        return Path(WORKSPACE_PATH) / "context" / "browser_harness" / "ownership.json"
+        workspace = os.getenv("PENGUIN_WORKSPACE")
+        if workspace:
+            root = Path(workspace).expanduser()
+        else:
+            from penguin.config import WORKSPACE_PATH
+
+            root = Path(WORKSPACE_PATH)
+        return root / "context" / "browser_harness" / "ownership.json"
 
     def _empty_payload(self) -> Dict[str, Any]:
         return {"version": 1, "records": {}}

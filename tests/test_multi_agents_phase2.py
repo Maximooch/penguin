@@ -29,7 +29,16 @@ async def test_agent_isolation_and_partial_share(tmp_path: Path):
     workspace = tmp_path / "penguin_workspace"
     workspace.mkdir(parents=True, exist_ok=True)
 
-    core = await PenguinCore.create(workspace_path=str(workspace), enable_cli=False, fast_startup=True)
+    core = await PenguinCore.create(
+        workspace_path=str(workspace),
+        enable_cli=False,
+        fast_startup=True,
+    )
+    assert Path(core.config.workspace_path).resolve() == workspace.resolve()
+    assert (
+        Path(core.conversation_manager.workspace_path).resolve()
+        == workspace.resolve()
+    )
 
     # Parent agent: ensure some SYSTEM + CONTEXT content exists
     cm = core.conversation_manager
@@ -73,7 +82,16 @@ async def test_checkpoints_and_autosave(tmp_path: Path):
     workspace = tmp_path / "penguin_workspace"
     workspace.mkdir(parents=True, exist_ok=True)
 
-    core = await PenguinCore.create(workspace_path=str(workspace), enable_cli=False, fast_startup=True)
+    core = await PenguinCore.create(
+        workspace_path=str(workspace),
+        enable_cli=False,
+        fast_startup=True,
+    )
+    assert Path(core.config.workspace_path).resolve() == workspace.resolve()
+    assert (
+        Path(core.conversation_manager.workspace_path).resolve()
+        == workspace.resolve()
+    )
     cm = core.conversation_manager
 
     # Add a message to trigger checkpoint logic (frequency=1 by default)

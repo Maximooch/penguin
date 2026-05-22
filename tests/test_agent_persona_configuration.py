@@ -224,7 +224,10 @@ def test_register_agent_applies_persona_model(monkeypatch: pytest.MonkeyPatch) -
         def set_system_prompt(self, prompt: str) -> None:
             self.system_prompt = prompt
 
-    monkeypatch.setattr("penguin.core.APIClient", StubAPIClient)
+    monkeypatch.setattr(
+        "penguin.core_runtime.agent_lifecycle.APIClient",
+        StubAPIClient,
+    )
 
     core.register_agent("research", persona="research")
 
@@ -255,3 +258,66 @@ def test_register_agent_applies_persona_model(monkeypatch: pytest.MonkeyPatch) -
 
     personas = core.get_persona_catalog()
     assert any(p["name"] == "research" for p in personas)
+
+
+def test_register_agent_shim_normalizes_keyword_agent_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from penguin.core import PenguinCore
+
+    base_model = ModelConfig(
+        model="openai/gpt-5-high",
+        provider="openai",
+        client_preference="native",
+        max_output_tokens=80000,
+    )
+    config_ns = SimpleNamespace(
+        agent_personas={},
+        model_configs={},
+        model_config=base_model,
+        diagnostics=SimpleNamespace(enabled=False),
+    )
+
+    core = PenguinCore.__new__(PenguinCore)
+    core.config = config_ns
+    core.model_config = base_model
+    core.tool_manager = MagicMock()
+    core.project_manager = MagicMock()
+
+    async def _noop_event(*_: Any, **__: Any) -> None:
+        return None
+
+    core.emit_ui_event = _noop_event
+    core.conversation_manager = StubConversationManager(base_model)
+    core.engine = MagicMock()
+
+    class StubAPIClient:
+        def __init__(self, model_config: ModelConfig) -> None:
+            self.model_config = model_config
+            self.system_prompt: Optional[str] = None
+
+        def set_system_prompt(self, prompt: str) -> None:
+            self.system_prompt = prompt
+
+    monkeypatch.setattr(
+        "penguin.core_runtime.agent_lifecycle.APIClient",
+        StubAPIClient,
+    )
+
+    with pytest.raises(ValueError, match="non-empty agent_id"):
+        core.register_agent(" ")
+
+    core.register_agent(
+        agent_id=" legacy ",
+        system_prompt="Legacy prompt",
+        activate=False,
+        ignored_legacy_option=True,
+    )
+
+    assert "legacy" in core.conversation_manager.agent_sessions
+    conversation = core.conversation_manager.agent_sessions["legacy"]
+    assert conversation.system_prompt == "Legacy prompt"
+    assert conversation.session.metadata["model"]["model"] == "openai/gpt-5-high"
+    assert core._agent_tool_defaults["legacy"] == ()
+    assert core.engine.register_agent.call_args.kwargs["agent_id"] == "legacy"
+    core.engine.set_default_agent.assert_not_called()

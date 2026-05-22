@@ -391,7 +391,23 @@ class PenguinCore:
                             current_step_index, total_steps, "Loading configuration"
                         )
                     start_config_time = time.time()
-                    config = config or Config.load_config()
+                    previous_workspace = os.environ.get("PENGUIN_WORKSPACE")
+                    if workspace_path:
+                        os.environ["PENGUIN_WORKSPACE"] = str(
+                            Path(workspace_path).expanduser().resolve()
+                        )
+                    try:
+                        config = config or Config.load_config()
+                    finally:
+                        if workspace_path:
+                            if previous_workspace is None:
+                                os.environ.pop("PENGUIN_WORKSPACE", None)
+                            else:
+                                os.environ["PENGUIN_WORKSPACE"] = previous_workspace
+                    if workspace_path:
+                        config.workspace_path = (
+                            Path(workspace_path).expanduser().resolve()
+                        )
 
                     # Use fast_startup from config if not explicitly set
                     if fast_startup is False and hasattr(config, "fast_startup"):
@@ -743,14 +759,15 @@ class PenguinCore:
         # Initialize project manager with workspace path from config
         from penguin.config import WORKSPACE_PATH
 
-        self.project_manager = ProjectManager(workspace_path=WORKSPACE_PATH)
+        workspace_path = Path(getattr(self.config, "workspace_path", WORKSPACE_PATH))
+
+        self.project_manager = ProjectManager(workspace_path=workspace_path)
 
         # Initialize diagnostics based on config
         if not self.config.diagnostics.enabled:
             disable_diagnostics()
 
         # Initialize conversation manager (replaces conversation system)
-        from penguin.config import WORKSPACE_PATH
         from penguin.system.checkpoint_manager import CheckpointConfig
 
         # Create checkpoint configuration
@@ -765,7 +782,7 @@ class PenguinCore:
         self.conversation_manager = ConversationManager(
             model_config=model_config,
             api_client=api_client,
-            workspace_path=WORKSPACE_PATH,
+            workspace_path=workspace_path,
             system_prompt=self.system_prompt,
             max_messages_per_session=DEFAULT_MAX_MESSAGES_PER_SESSION,
             max_sessions_in_memory=20,
@@ -848,10 +865,8 @@ class PenguinCore:
         self.initialized = True
         logger.info("PenguinCore initialized successfully")
 
-        # Ensure error log directory exists
-        from penguin.config import WORKSPACE_PATH
-
-        self.validate_path(Path(WORKSPACE_PATH))
+        # Ensure the active workspace is writable.
+        self.validate_path(workspace_path)
 
         # Add an accumulated token counter
         self.accumulated_tokens = {"prompt": 0, "completion": 0, "total": 0}
@@ -1071,89 +1086,9 @@ class PenguinCore:
         older deterministic callers working while deriving agent state from
         conversation metadata and Engine registry entries.
         """
-        from penguin.agent.persona_runtime import (
-            model_config_for_agent_settings,
-            model_config_metadata,
-        )
+        from penguin.core_runtime.agent_lifecycle import register_agent_compat
 
-        agent_id = kwargs.pop("agent_id", None)
-        if agent_id is None and args:
-            agent_id = args[0]
-        if not isinstance(agent_id, str) or not agent_id.strip():
-            raise ValueError("register_agent() requires a non-empty agent_id")
-        agent_id = agent_id.strip()
-
-        persona_name = kwargs.pop("persona", None)
-        personas = getattr(self.config, "agent_personas", {}) or {}
-        persona_config = (
-            personas.get(persona_name)
-            if isinstance(persona_name, str) and persona_name
-            else None
-        )
-
-        system_prompt = kwargs.pop("system_prompt", None)
-        if system_prompt is None and persona_config is not None:
-            system_prompt = getattr(persona_config, "system_prompt", None)
-
-        agent_model_config = model_config_for_agent_settings(
-            getattr(persona_config, "model", None) if persona_config else None,
-            model_configs=getattr(self.config, "model_configs", None),
-            current_model_config=getattr(self, "model_config", None),
-        )
-
-        conv = self.conversation_manager.get_agent_conversation(
-            agent_id, create_if_missing=True
-        )
-        if system_prompt and conv:
-            conv.set_system_prompt(system_prompt)
-
-        session = getattr(conv, "session", None)
-        metadata = getattr(session, "metadata", None)
-        if isinstance(metadata, dict):
-            if persona_config is not None:
-                metadata["persona"] = persona_config.name
-                if getattr(persona_config, "description", None):
-                    metadata["persona_description"] = persona_config.description
-                if getattr(persona_config, "default_tools", None):
-                    metadata["default_tools"] = list(persona_config.default_tools or [])
-            metadata["model"] = model_config_metadata(agent_model_config)
-
-        agent_context_windows = getattr(self.conversation_manager, "agent_context_windows", {})
-        if isinstance(agent_context_windows, dict) and agent_id in agent_context_windows:
-            agent_context_windows[agent_id].model_config = agent_model_config
-
-        if not hasattr(self, "_agent_api_clients"):
-            self._agent_api_clients = {}
-        if not hasattr(self, "_agent_model_overrides"):
-            self._agent_model_overrides = {}
-        if not hasattr(self, "_agent_tool_defaults"):
-            self._agent_tool_defaults = {}
-
-        api_client = APIClient(model_config=agent_model_config)
-        if system_prompt:
-            api_client.set_system_prompt(system_prompt)
-        self._agent_api_clients[agent_id] = api_client
-        self._agent_model_overrides[agent_id] = agent_model_config
-        self._agent_tool_defaults[agent_id] = tuple(
-            getattr(persona_config, "default_tools", None) or ()
-        )
-
-        if getattr(self, "engine", None):
-            action_executor = ActionExecutor(
-                self.tool_manager,
-                self.project_manager,
-                conv,
-                ui_event_callback=self.emit_ui_event,
-            )
-            self.engine.register_agent(
-                agent_id=agent_id,
-                conversation_manager=self.conversation_manager,
-                api_client=api_client,
-                tool_manager=self.tool_manager,
-                action_executor=action_executor,
-            )
-            if getattr(persona_config, "activate_by_default", False):
-                self.engine.set_default_agent(agent_id)
+        register_agent_compat(self, *args, **kwargs)
 
     def set_active_agent(self, agent_id: str) -> None:
         """Switch the active agent across ConversationManager and Engine."""

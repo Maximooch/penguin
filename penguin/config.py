@@ -1426,6 +1426,8 @@ class Config:
             default_llm_model_config = LLMModelConfig.from_env()
             return cls(model_config=default_llm_model_config)
 
+        workspace_path = _workspace_path_from_config_data(config_data)
+
         diagnostics_config = DiagnosticsConfig(
             enabled=config_data.get("diagnostics", {}).get("enabled", False),
             max_context_tokens=config_data.get("diagnostics", {}).get(
@@ -1459,7 +1461,11 @@ class Config:
 
         if diagnostics_config.enabled:
             log_level = logging.DEBUG if os.getenv("PENGUIN_DEBUG") else logging.INFO
-            _configure_diagnostics_logging(diagnostics_config, log_level)
+            _configure_diagnostics_logging(
+                diagnostics_config,
+                log_level,
+                workspace_path=workspace_path,
+            )
             logging.getLogger(__name__).info("Diagnostics enabled via config.yml.")
             
         # Initialize diagnostics using the loaded config
@@ -1522,7 +1528,7 @@ class Config:
         return cls(
             model_config=llm_model_config,
             api=APIConfig(base_url=config_data.get("api", {}).get("base_url")),
-            workspace_path=Path(WORKSPACE_PATH), # WORKSPACE_PATH is already defined globally
+            workspace_path=workspace_path,
             temperature=config_data.get("temperature", llm_model_config.temperature), # Use model temp if global not set
             max_output_tokens=config_data.get("max_output_tokens", config_data.get("max_tokens", llm_model_config.max_output_tokens)),  # Accepts both old and new key
             diagnostics=diagnostics_config,
@@ -1582,7 +1588,25 @@ CONVERSATION_CONFIG = {
 #     preferred_browser: str = 'chromium'  # 'chrome' or 'chromium'
 #     suppress_popups: bool = True
 
-def _configure_diagnostics_logging(diagnostics_config: "DiagnosticsConfig", log_level: int) -> None:
+def _workspace_path_from_config_data(config_data: Dict[str, Any]) -> Path:
+    """Resolve workspace path using env, effective config, then module default."""
+    workspace_value = os.getenv("PENGUIN_WORKSPACE")
+    workspace_section = config_data.get("workspace", {})
+    if not workspace_value and isinstance(workspace_section, dict):
+        configured_path = workspace_section.get("path")
+        if isinstance(configured_path, str) and configured_path.strip():
+            workspace_value = configured_path
+    if workspace_value:
+        return Path(workspace_value).expanduser()
+    return Path(WORKSPACE_PATH)
+
+
+def _configure_diagnostics_logging(
+    diagnostics_config: "DiagnosticsConfig",
+    log_level: int,
+    *,
+    workspace_path: Optional[Path] = None,
+) -> None:
     """Route diagnostics logs to a managed file instead of stdout."""
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
@@ -1591,7 +1615,7 @@ def _configure_diagnostics_logging(diagnostics_config: "DiagnosticsConfig", log_
     if diagnostics_config.log_to_file and diagnostics_config.log_path:
         target_path = diagnostics_config.log_path
     else:
-        log_dir = WORKSPACE_PATH / "logs"
+        log_dir = (workspace_path or WORKSPACE_PATH) / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         target_path = log_dir / "diagnostics.log"
         diagnostics_config.log_to_file = True
