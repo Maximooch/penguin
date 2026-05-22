@@ -756,6 +756,90 @@ def test_preloaded_scoped_conversation_manager_is_adopted_within_run_state() -> 
     assert adopted is preloaded
 
 
+def test_scoped_conversation_manager_reports_scoped_context_window_usage() -> None:
+    from penguin.system.context_window import ContextWindowManager
+    from penguin.system.state import MessageCategory
+
+    scoped_window = ContextWindowManager(token_counter=lambda content: 0)
+    scoped_window.max_context_window_tokens = 1_000
+    scoped_window.update_usage(MessageCategory.DIALOG, 125)
+    scoped_window.truncation_tracker.record_truncation(
+        MessageCategory.DIALOG,
+        messages_removed=2,
+        tokens_freed=300,
+        total_messages_before=5,
+        total_messages_after=3,
+    )
+    global_window = ContextWindowManager(token_counter=lambda content: 0)
+    global_window.max_context_window_tokens = 1_000
+    global_window.update_usage(MessageCategory.DIALOG, 900)
+    global_window.truncation_tracker.record_truncation(
+        MessageCategory.DIALOG,
+        messages_removed=47,
+        tokens_freed=67_000,
+        total_messages_before=50,
+        total_messages_after=3,
+    )
+    session = SimpleNamespace(id="session-scoped", messages=[])
+    conversation = SimpleNamespace(session=session, context_window=scoped_window)
+    base_manager = SimpleNamespace(
+        core=None,
+        get_agent_conversation=MagicMock(return_value=conversation),
+        context_window=global_window,
+        agent_context_windows={},
+    )
+
+    scoped = _ScopedConversationManager(cast(Any, base_manager), "agent-a")
+    usage = scoped.get_token_usage()
+
+    assert usage["current_total_tokens"] == 125
+    assert usage["categories"]["DIALOG"] == 125
+    assert usage["truncations"]["messages_removed"] == 2
+    assert usage["truncations"]["tokens_freed"] == 300
+
+
+def test_scoped_conversation_manager_does_not_fall_back_to_global_window() -> None:
+    from penguin.system.context_window import ContextWindowManager
+    from penguin.system.state import Message, MessageCategory
+
+    global_window = ContextWindowManager(token_counter=lambda content: 0)
+    global_window.max_context_window_tokens = 1_000
+    global_window.update_usage(MessageCategory.DIALOG, 900)
+    global_window.truncation_tracker.record_truncation(
+        MessageCategory.DIALOG,
+        messages_removed=47,
+        tokens_freed=67_000,
+        total_messages_before=50,
+        total_messages_after=3,
+    )
+    session = SimpleNamespace(
+        id="session-scoped",
+        messages=[
+            Message(
+                role="user",
+                content="hi",
+                category=MessageCategory.DIALOG,
+                tokens=12,
+            )
+        ],
+    )
+    conversation = SimpleNamespace(session=session, context_window=None)
+    base_manager = SimpleNamespace(
+        core=None,
+        get_agent_conversation=MagicMock(return_value=conversation),
+        context_window=global_window,
+        agent_context_windows={},
+    )
+
+    scoped = _ScopedConversationManager(cast(Any, base_manager), "agent-a")
+    usage = scoped.get_token_usage()
+
+    assert usage["current_total_tokens"] == 12
+    assert usage["categories"]["DIALOG"] == 12
+    assert usage["truncations"]["messages_removed"] == 0
+    assert usage["truncations"]["tokens_freed"] == 0
+
+
 @pytest.mark.asyncio
 async def test_llm_step_returns_usage_from_active_api_client() -> None:
     conversation = SimpleNamespace(

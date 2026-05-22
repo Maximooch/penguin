@@ -86,6 +86,123 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _empty_truncations() -> Dict[str, Any]:
+    """Return an empty truncation payload matching API telemetry shape."""
+
+    return {
+        "total_truncations": 0,
+        "messages_removed": 0,
+        "tokens_freed": 0,
+        "by_category": {},
+        "recent_events": [],
+    }
+
+
+def _truncations_from_tracker(tracker: Any) -> Dict[str, Any]:
+    """Normalize a context-window truncation tracker for telemetry."""
+
+    if tracker is None:
+        return _empty_truncations()
+
+    by_category: Dict[str, int] = {}
+    for category in MessageCategory:
+        try:
+            by_category[category.name] = int(tracker.get_category_truncations(category))
+        except Exception:
+            by_category[category.name] = 0
+
+    recent_events = []
+    try:
+        events = tracker.get_recent_events(limit=5)
+    except Exception:
+        events = []
+    for event in events:
+        category = getattr(event, "category", None)
+        recent_events.append(
+            {
+                "category": category.name
+                if hasattr(category, "name")
+                else str(category),
+                "messages_removed": int(getattr(event, "messages_removed", 0) or 0),
+                "tokens_freed": int(getattr(event, "tokens_freed", 0) or 0),
+                "timestamp": getattr(event, "timestamp", ""),
+            }
+        )
+
+    return {
+        "total_truncations": int(getattr(tracker, "session_total_truncations", 0) or 0),
+        "messages_removed": int(
+            getattr(tracker, "session_total_messages_removed", 0) or 0
+        ),
+        "tokens_freed": int(getattr(tracker, "session_total_tokens_freed", 0) or 0),
+        "by_category": by_category,
+        "recent_events": recent_events,
+    }
+
+
+def _usage_from_context_window(context_window: Any) -> Dict[str, Any]:
+    """Return standardized usage telemetry for one context window."""
+
+    cw_usage = context_window.get_token_usage()
+    categories: Dict[str, int] = {}
+    for category in MessageCategory:
+        try:
+            categories[category.name] = int(context_window.get_usage(category) or 0)
+        except Exception:
+            categories[category.name] = 0
+
+    max_tokens = int(
+        cw_usage.get("max", getattr(context_window, "max_context_window_tokens", 0))
+        or 0
+    )
+    current_total_tokens = int(cw_usage.get("total", 0) or 0)
+    available_tokens = int(
+        cw_usage.get("available", getattr(context_window, "available_tokens", 0)) or 0
+    )
+
+    return {
+        "current_total_tokens": current_total_tokens,
+        "max_tokens": max_tokens,
+        "max_context_window_tokens": max_tokens,
+        "available_tokens": available_tokens,
+        "percentage": cw_usage.get("usage_percentage", 0),
+        "categories": categories,
+        "truncations": _truncations_from_tracker(
+            getattr(context_window, "truncation_tracker", None)
+        ),
+    }
+
+
+def _usage_from_session_messages(
+    session: Any,
+    max_context_window_tokens: int = 0,
+) -> Dict[str, Any]:
+    """Build conservative usage telemetry directly from one session's messages."""
+
+    categories: Dict[str, int] = {category.name: 0 for category in MessageCategory}
+    current_total_tokens = 0
+    for message in getattr(session, "messages", []) or []:
+        token_count = int(getattr(message, "tokens", 0) or 0)
+        current_total_tokens += token_count
+        category = getattr(message, "category", None)
+        category_name = category.name if hasattr(category, "name") else str(category)
+        categories[category_name] = categories.get(category_name, 0) + token_count
+
+    max_tokens = int(max_context_window_tokens or 0)
+    available_tokens = max(max_tokens - current_total_tokens, 0) if max_tokens else 0
+    percentage = (current_total_tokens / max_tokens) * 100 if max_tokens else 0
+
+    return {
+        "current_total_tokens": current_total_tokens,
+        "max_tokens": max_tokens,
+        "max_context_window_tokens": max_tokens,
+        "available_tokens": available_tokens,
+        "percentage": percentage,
+        "categories": categories,
+        "truncations": _empty_truncations(),
+    }
+
+
 def _context_previews_enabled() -> bool:
     """Return whether normal trace logs may include message previews."""
 
@@ -481,6 +598,27 @@ class _ScopedConversationManager:
         if hasattr(self._base_manager, "get_current_context_window"):
             return self._base_manager.get_current_context_window()
         return getattr(self._base_manager, "context_window", None)
+
+    def get_token_usage(self) -> Dict[str, Any]:
+        """Return token usage for this scoped conversation, not the base manager."""
+
+        conversation = self._conversation
+        session = getattr(conversation, "session", None)
+        context_window = getattr(conversation, "context_window", None)
+        if context_window is None:
+            try:
+                windows = getattr(self._base_manager, "agent_context_windows", None)
+                if isinstance(windows, dict):
+                    context_window = windows.get(self._agent_id)
+            except Exception:
+                context_window = None
+
+        if context_window is not None:
+            return _usage_from_context_window(context_window)
+
+        base_window = getattr(self._base_manager, "context_window", None)
+        max_tokens = int(getattr(base_window, "max_context_window_tokens", 0) or 0)
+        return _usage_from_session_messages(session, max_tokens)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._base_manager, name)
