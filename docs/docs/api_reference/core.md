@@ -557,14 +557,30 @@ Gets total tokens used in current session.
 ### `get_token_usage`
 
 ```python
-def get_token_usage(self) -> Dict[str, Dict[str, int]]
+def get_token_usage(
+    self,
+    session_id: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
+) -> Dict[str, Any]
 ```
 
-Gets detailed token usage statistics.
+Returns runtime or scoped token/context-window telemetry.
+
+- With no identifiers, returns runtime/global core telemetry with
+  `scope="runtime"`.
+- With `session_id` or `conversation_id`, returns persisted session/conversation
+  telemetry with `scope="session"`; missing scoped lookups return
+  `scope="missing"` data for HTTP layers to translate to `404`.
+- With `agent_id`, scoped usage is filtered by `Message.agent_id`. Penguin does
+  not return whole-session totals for a missing agent scope.
 
 ```python
-stats = core.get_token_usage()
-print(stats["session"]["prompt_tokens"], stats["session"]["completion_tokens"])
+runtime_stats = core.get_token_usage()
+session_stats = core.get_token_usage(session_id="sess_abc")
+
+print(runtime_stats["scope"])
+print(session_stats["current_total_tokens"])
 ```
 
 ## Action Handling
@@ -648,10 +664,16 @@ Returns information about the currently loaded model including all configuration
 ### `get_token_usage`
 
 ```python
-def get_token_usage(self) -> Dict[str, Dict[str, int]]
+def get_token_usage(
+    self,
+    session_id: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
+) -> Dict[str, Any]
 ```
 
-Returns detailed token usage statistics with enhanced structure for CLI and UI display.
+Returns runtime/global usage or session-scoped context-window telemetry for CLI
+and UI display. Transcript-specific UI should require `scope="session"`.
 
 ## Usage Examples
 
