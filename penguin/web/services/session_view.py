@@ -295,6 +295,7 @@ def _build_session_info(core: Any, session: Any, manager: Any) -> dict[str, Any]
                 ),
                 "available_tokens": usage_snapshot.get("available_tokens", 0),
                 "percentage": usage_snapshot.get("percentage", 0),
+                "categories": usage_snapshot.get("categories", {}),
                 "truncations": usage_snapshot.get("truncations", {}),
             }
 
