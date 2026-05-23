@@ -32,13 +32,15 @@ Related planning docs:
 
 Current local comparison notes:
 
-- The local OpenCode reference is at `reference/opencode`, but it is stale
-  relative to its remote and should be refreshed before treating it as current
-  upstream.
+- The local OpenCode reference is at `reference/opencode`. Its checked-out
+  `dev` branch is stale and has local commits, but `origin/dev` was refreshed
+  on 2026-05-23 and should be used for comparisons unless the local branch is
+  intentionally reset.
 - Penguin's fork landed locally on January 31, 2026, around embedded OpenCode
   package version `1.1.48`.
-- Upstream OpenCode was at `v1.15.7` on May 21, 2026, so the upstream delta is
-  substantial and includes backend/API/event-model changes, not just TUI polish.
+- Upstream OpenCode was at `v1.15.10` on May 23, 2026, so the upstream
+  delta is substantial and includes backend/API/event-model changes, not just
+  TUI polish.
 - The largest Penguin TUI divergence appears concentrated in:
   - `penguin-tui/packages/opencode/src/cli/cmd/tui/component/prompt/index.tsx`
   - `penguin-tui/packages/opencode/src/cli/cmd/tui/context/sync.tsx`
@@ -134,19 +136,19 @@ Success looks like:
 
 ### 1. Refresh and baseline upstream
 
-- [ ] Fetch latest OpenCode into `reference/opencode`.
-- [ ] Record the exact upstream commit used for comparison.
-- [ ] Confirm whether OpenCode's active branch is still `dev` for TUI work.
-- [ ] Generate a fresh diff/stat for `packages/opencode/src/cli/cmd/tui`.
-- [ ] Identify files added only by Penguin versus files modified from upstream.
-- [ ] Record upstream versions for important dependencies, especially
+- [x] Fetch latest OpenCode into `reference/opencode`.
+- [x] Record the exact upstream commit used for comparison.
+- [x] Confirm whether OpenCode's active branch is still `dev` for TUI work.
+- [x] Generate a fresh diff/stat for `packages/opencode/src/cli/cmd/tui`.
+- [x] Identify files added only by Penguin versus files modified from upstream.
+- [x] Record upstream versions for important dependencies, especially
       `@opentui/core`, `@opentui/solid`, `@opencode-ai/sdk`, and the AI SDK.
-- [ ] Identify upstream changes that are backend/API contract changes versus
+- [x] Identify upstream changes that are backend/API contract changes versus
       pure TUI changes.
 
 ### 1.5. Map upstream gains to Penguin and Link
 
-- [ ] Inventory upstream improvements since `v1.1.48` that Penguin should
+- [x] Inventory upstream improvements since `v1.1.48` that Penguin should
       preserve or adopt:
   - incremental part deltas
   - v2 session API shapes/errors
@@ -156,15 +158,195 @@ Success looks like:
   - provider/model/reasoning UX
   - permission/question UI fixes
   - OpenTUI dependency updates
-- [ ] Mark each upstream improvement as:
+- [x] Mark each upstream improvement as:
   - adopt directly in TUI
   - adopt by changing Penguin backend compatibility
   - defer because Link will own the surface differently
   - avoid because it conflicts with Penguin/Link semantics
-- [ ] Compare upstream runtime/session UI concepts against Link Agentboard needs
+- [x] Compare upstream runtime/session UI concepts against Link Agentboard needs
       from `production-v1-tracks.md`.
-- [ ] Capture reusable lessons for Link's `RuntimeEvent`/`SessionEvent`
+- [x] Capture reusable lessons for Link's `RuntimeEvent`/`SessionEvent`
       projection model.
+
+
+### Phase 1/1.5 Audit Results - 2026-05-23
+
+Branch baseline:
+
+- Worktree branch: `penguin-tui-opencode-upstream`.
+- Merged latest `origin/main` into the branch on 2026-05-23. Resulting local
+  merge commit: `97691bac8135602813da427d1d02b1667b3d2c60`.
+- The branch is ahead of `origin/penguin-tui-opencode-upstream`; this audit has
+  not been pushed.
+
+Upstream baseline:
+
+- OpenCode reference repo: `reference/opencode`.
+- `origin/HEAD` resolves to `origin/dev`, so `dev` is still the active upstream
+  branch to watch for TUI work.
+- Comparison commit: `origin/dev` at
+  `7fe7b9f258e36ad9f9acded20c5a9df201da19d5`
+  (`2026-05-23 16:42:22 +0000`, `chore: update nix node_modules hashes`).
+- Clean comparison worktree: `/private/tmp/opencode-origin-dev-audit-7fe7b9f`.
+- Latest GitHub release observed during the audit: `v1.15.10`, published
+  `2026-05-23T01:04:24Z`; tag commit
+  `d74d166acf40e51146f8547216913a4e787a4bc1`.
+- Release range loaded for notes: `v1.1.48` through `v1.15.10`, 120 releases.
+- Fetch note: `origin/dev` refreshed successfully. Tag fetch reported local tag
+  clobber rejections for pre-existing tags such as `latest` and `v1.1.45`; this
+  does not affect the `origin/dev` TUI comparison.
+
+TUI diff/stat against upstream `origin/dev`:
+
+- Compared upstream
+  `packages/opencode/src/cli/cmd/tui` to Penguin
+  `penguin-tui/packages/opencode/src/cli/cmd/tui`.
+- `git diff --no-index --shortstat`: 178 files changed, 9,970 insertions,
+  18,646 deletions.
+- Upstream TUI files: 160. Penguin TUI files: 117.
+- Common files: 91. Unchanged common files: 8. Modified common files: 83.
+- Penguin-only files: 26. Upstream-only files missing in Penguin: 69.
+
+Penguin-only files:
+
+- `component/dialog-command.tsx`
+- `component/dialog-settings.tsx`
+- `component/dialog-skills.tsx`
+- `component/prompt/penguin-local-command-runtime.ts`
+- `component/prompt/penguin-local-command.ts`
+- `component/prompt/penguin-send.ts`
+- `component/textarea-keybindings.ts`
+- `component/tips.tsx`
+- `context/keybind.tsx`
+- `context/penguin-auth.ts`
+- `context/session-hydration.ts`
+- `context/sync-bootstrap.ts`
+- `context/theme/emperor.json`
+- `context/theme/glacier-high-contrast.json`
+- `context/theme/krill.json`
+- `context/theme/midnight-terminal.json`
+- `context/theme/penguin-classic.json`
+- `context/theme/polar-night.json`
+- `context/theme/research-lab.json`
+- `context/theme/solar-ice.json`
+- `context/theme/tux.json`
+- `routes/session/header.tsx`
+- `util/api-error.ts`
+- `util/exit.ts`
+- `util/session-family.ts`
+- `util/terminal.ts`
+
+Major upstream-only areas missing in Penguin:
+
+- TUI plugin/runtime system: `plugin/*`, `feature-plugins/*`, `keymap.tsx`,
+  `layer.ts`, and `component/command-palette.tsx`.
+- Diff viewer implementation: `feature-plugins/system/diff-viewer*`.
+- Upstream config/keybind migration files: `config/*`, `context/tui-config.tsx`,
+  `context/thinking.ts`.
+- Workspace/project dialogs and route helpers: `dialog-workspace-*`,
+  `context/project.tsx`, `workspace-label.tsx`.
+- Upstream utility helpers: `util/audio.ts`, `util/revert-diff.ts`,
+  `util/selection.ts`, `util/scroll.ts`, `validate-session.ts`, `win32.ts`.
+
+Highest-risk modified common files:
+
+- `component/prompt/index.tsx`
+- `context/sync.tsx`
+- `context/sdk.tsx`
+- `routes/session/index.tsx`
+- `routes/session/permission.tsx`
+- `routes/session/question.tsx`
+- `routes/session/sidebar.tsx`
+- `app.tsx`
+- `thread.ts`
+- `component/dialog-provider.tsx`
+- `component/dialog-model.tsx`
+
+Dependency delta:
+
+| Package | Penguin embedded `1.1.48` | Upstream `1.15.10` / `origin/dev` | Notes |
+| --- | --- | --- | --- |
+| `opencode` package | `1.1.48` | `1.15.10` | Confirms fork baseline is far behind. |
+| `@opentui/core` | `0.1.75` | `0.2.15` | Needs separate OpenTUI risk track. |
+| `@opentui/solid` | `0.1.75` | `0.2.15` | Same OpenTUI upgrade track. |
+| `@opentui/keymap` | not present | `0.2.15` | Upstream split keymap support. |
+| `@opencode-ai/sdk` | `workspace:*` | `workspace:*` | Contract changed inside workspace SDK. |
+| `ai` | `5.0.124` | `6.0.168` | Major AI SDK jump; likely backend/provider impact. |
+| `@ai-sdk/anthropic` | `2.0.58` | `3.0.71` | Provider compatibility impact. |
+| `@ai-sdk/openai` | `2.0.89` | `3.0.53` | Provider compatibility impact. |
+| `@ai-sdk/provider` | `2.0.1` | `3.0.8` | Provider interface impact. |
+| `typescript` | `5.8.2` | `5.8.2` | No meaningful delta. |
+| `solid-js` | `1.9.10` | `1.9.10` | No meaningful delta. |
+| `zod` | `4.1.8` | `4.1.8` | No meaningful delta. |
+
+Backend/API contract changes to account for before or during upstreaming:
+
+- `v1.2.0` introduced incremental `message.part.delta` events. Penguin should
+  support this in backend persistence/replay before relying on the TUI to smooth
+  over full-part churn.
+- `v1.3.0` added git-backed session review, multistep auth, duplicate-submit
+  prevention, terminal recovery, attachment preservation, and provider/model
+  fixes. Several are UI-visible but depend on backend session and auth truth.
+- `v1.4.0` included SDK breaking changes around diff metadata and user message
+  model variant shape. This is a compatibility boundary, not just a TUI change.
+- `v1.14.42` added HTTP compression, structured validation errors, typed `401`
+  auth challenges, permission/question ID validation, retry dialogs, reasoning
+  controls, sidebar/session picker improvements, and flat keybind config.
+- `v1.15.0` added an Effect-based core event system, better event delivery, and
+  fixed event-projector replay lookup behavior. This is directly relevant to
+  Penguin and Link runtime projection.
+- `v1.15.6` added structured public v2 API error schemas, OpenAPI endpoint error
+  preservation, permission JSON startup hardening, OpenTUI `0.2.15`, and the
+  TUI diff viewer.
+- `v1.15.7` added safe unknown API errors with log IDs, typed session missing and
+  unavailable-mutation errors, friendlier tool schema failures, restored OpenAI
+  reasoning streams, local-project session defaults, and question UI fixes.
+- `v1.15.9` enabled the diff viewer by default, improved diff-viewer empty
+  states/context handling, and returned clearer HTTP API errors for project,
+  PTY, MCP, and session-busy failures.
+- `v1.15.10` restored legacy production desktop flows for opening projects and
+  starting sessions; low direct TUI risk, but evidence that upstream still moves
+  quickly across client entry flows.
+
+Pure or mostly TUI changes to consider adopting directly:
+
+- Diff viewer UI and file tree.
+- Full-session fork option and session review affordances.
+- Session picker sorting, sidebar session ID display, and local-project defaults.
+- Prompt duplicate-submit prevention and prompt history behavior.
+- Permission/question label and checkmark fixes.
+- Retry dialogs that name provider and failure reason.
+- Flat keybind config and OpenTUI keymap extraction.
+- Malformed tool-input crash handling.
+
+Phase 1.5 mapping:
+
+| Upstream improvement | Recommendation | Link implication |
+| --- | --- | --- |
+| Incremental `message.part.delta` events | Adopt by changing Penguin backend compatibility first, then consume in TUI. | Link should project deltas into Link-owned `RuntimeEvent`/`SessionEvent` updates instead of exposing raw OpenCode events. |
+| V2 session API shapes and structured errors | Adopt by backend/API parity where feasible. | Link adapters should preserve typed error categories and log reference IDs. |
+| Event replay/projector behavior | Adopt conceptually in backend and adapter layers before UI refactors. | Strong reference for Link runtime event replay and projector versioning. |
+| Diff viewer | Adopt directly in Penguin TUI after isolating Penguin diff/session semantics. | Link Agentboard likely needs the same pattern, adapted to tasks, artifacts, and review state. |
+| Full-session fork/session review | Adopt with Penguin-specific mapping to conversation/task IDs. | Map to Link review flows and `PENDING_REVIEW` semantics, not raw OpenCode fork vocabulary. |
+| Provider/model/reasoning UX | Adopt selectively; backend must provide truthful model/provider capability metadata. | Link should treat this as runtime capability UI, not just settings. |
+| Permission/question UI fixes | Adopt directly where route shapes already align; otherwise fix backend shape first. | Link approval panels can copy the UX, but must use Link permission/audit records. |
+| OpenTUI dependency updates | Evaluate as a separate upgrade track before mixing with API/event upstreaming. | Rendering smoothness helps both products, but upgrade risk should not block event-contract work. |
+| Plugin/runtime system | Defer for now; evaluate after adapter cleanup. | Interesting for Link extensibility, but too large to mix into first upstreaming pass. |
+| Desktop/project entry flows | Avoid for Penguin TUI unless a specific terminal workflow needs them. | Link owns project/session entry differently. |
+
+Initial conclusions for Phases 1 and 1.5:
+
+- The fork is no longer a small styling/product delta from OpenCode `v1.1.48`;
+  it is missing a substantial upstream TUI architecture layer, especially the
+  plugin/runtime system and diff viewer.
+- The next implementation step should not be a broad rebase. First shrink
+  Penguin-specific protocol drift in `context/sdk.tsx`, `context/sync.tsx`, and
+  `component/prompt/index.tsx`.
+- Backend/API parity work is likely higher leverage than more TUI-side probing,
+  especially for events, sessions, errors, permission/question flows, and
+  provider/model metadata.
+- Link should borrow upstream runtime UI ideas, but not raw OpenCode event or ID
+  vocabulary. Keep Link-native projection as the long-term contract.
 
 ### 2. Classify TUI divergence
 
