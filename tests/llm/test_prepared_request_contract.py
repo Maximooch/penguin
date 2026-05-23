@@ -5,6 +5,7 @@ import logging
 import pytest
 
 from penguin.llm.api_client import APIClient
+from penguin.llm.model_config import ModelConfig
 from penguin.llm.contracts import (
     LLMPreparedRequest,
     LLMProviderCapabilities,
@@ -252,3 +253,83 @@ async def test_api_client_delegates_prepared_request_to_handler(
     assert prepared.protocol == "openai_responses"
     assert "Injected system prompt." in str(prepared.body["input"])
     assert prepared.body["max_output_tokens"] == 111
+
+
+@pytest.mark.asyncio
+async def test_api_client_does_not_synthesize_max_tokens_from_context_window() -> None:
+    class _Handler:
+        model_config = None
+        received_max_output_tokens: int | None = -1
+
+        def get_capabilities(self) -> LLMProviderCapabilities:
+            return LLMProviderCapabilities(provider="openrouter")
+
+        async def get_response(self, **kwargs: object) -> str:
+            value = kwargs.get("max_output_tokens")
+            self.received_max_output_tokens = value if isinstance(value, int) else None
+            return "ok"
+
+    handler = _Handler()
+    client = APIClient.__new__(APIClient)
+    client.model_config = ModelConfig(
+        model="moonshotai/kimi-k2.6",
+        provider="openrouter",
+        client_preference="openrouter",
+    )
+    client.model_config.max_context_window_tokens = 272000
+    client.model_config.max_output_tokens = None
+    client.system_prompt = None
+    client.client_handler = handler
+    client.logger = logging.getLogger(__name__)
+    client._last_error = None
+    client._last_response_result = None
+    client._clear_handler_error = lambda: None
+    client._get_handler_error = lambda: None
+    client._build_response_result = lambda **kwargs: None
+    client._prepare_messages_with_system_prompt = lambda messages: messages
+    client.count_tokens = lambda _messages: 46421
+
+    result = await client.get_response(_messages(), stream=False)
+
+    assert result == "ok"
+    assert handler.received_max_output_tokens is None
+
+
+@pytest.mark.asyncio
+async def test_api_client_clamps_explicit_max_tokens_to_available_context() -> None:
+    class _Handler:
+        model_config = None
+        received_max_output_tokens: int | None = None
+
+        def get_capabilities(self) -> LLMProviderCapabilities:
+            return LLMProviderCapabilities(provider="openrouter")
+
+        async def get_response(self, **kwargs: object) -> str:
+            value = kwargs.get("max_output_tokens")
+            self.received_max_output_tokens = value if isinstance(value, int) else None
+            return "ok"
+
+    handler = _Handler()
+    client = APIClient.__new__(APIClient)
+    client.model_config = ModelConfig(
+        model="moonshotai/kimi-k2.6",
+        provider="openrouter",
+        client_preference="openrouter",
+    )
+    client.model_config.max_context_window_tokens = 272000
+    client.model_config.max_output_tokens = 100000
+    client.system_prompt = None
+    client.client_handler = handler
+    client.logger = logging.getLogger(__name__)
+    client._last_error = None
+    client._last_response_result = None
+    client._clear_handler_error = lambda: None
+    client._get_handler_error = lambda: None
+    client._build_response_result = lambda **kwargs: None
+    client._prepare_messages_with_system_prompt = lambda messages: messages
+    client.count_tokens = lambda _messages: 225000
+
+    result = await client.get_response(_messages(), stream=False)
+
+    assert result == "ok"
+    assert handler.received_max_output_tokens == 46488
