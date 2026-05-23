@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import time
@@ -39,8 +40,10 @@ def _jwt(payload: dict[str, Any]) -> str:
 @pytest.fixture(autouse=True)
 def _clear_pending_oauth() -> None:
     provider_service._PENDING_OAUTH.clear()
+    provider_service.provider_auth_service._RECENT_OAUTH_COMPLETIONS.clear()
     yield
     provider_service._PENDING_OAUTH.clear()
+    provider_service.provider_auth_service._RECENT_OAUTH_COMPLETIONS.clear()
 
 
 @pytest.mark.asyncio
@@ -88,7 +91,17 @@ async def test_provider_oauth_authorize_headless_sets_pending_state(
 
 
 @pytest.mark.asyncio
-async def test_provider_oauth_authorize_browser_is_method_zero() -> None:
+async def test_provider_oauth_authorize_browser_is_method_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _callback_server_unavailable(_redirect_uri: str) -> bool:
+        return False
+
+    monkeypatch.setattr(
+        provider_service.provider_auth_service,
+        "_ensure_openai_browser_callback_server",
+        _callback_server_unavailable,
+    )
     result = await provider_service.provider_oauth_authorize("openai", 0)
 
     assert result["method"] == "code"
@@ -99,7 +112,38 @@ async def test_provider_oauth_authorize_browser_is_method_zero() -> None:
 
 
 @pytest.mark.asyncio
-async def test_provider_oauth_callback_browser_requires_code() -> None:
+async def test_provider_oauth_authorize_browser_uses_local_callback_when_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _callback_server_available(_redirect_uri: str) -> bool:
+        return True
+
+    monkeypatch.setattr(
+        provider_service.provider_auth_service,
+        "_ensure_openai_browser_callback_server",
+        _callback_server_available,
+    )
+
+    result = await provider_service.provider_oauth_authorize("openai", 0)
+
+    assert result["method"] == "auto"
+    assert "close automatically" in result["instructions"]
+    pending = provider_service._PENDING_OAUTH["openai"]
+    assert isinstance(pending["callback_future"], asyncio.Future)
+
+
+@pytest.mark.asyncio
+async def test_provider_oauth_callback_browser_requires_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _callback_server_unavailable(_redirect_uri: str) -> bool:
+        return False
+
+    monkeypatch.setattr(
+        provider_service.provider_auth_service,
+        "_ensure_openai_browser_callback_server",
+        _callback_server_unavailable,
+    )
     await provider_service.provider_oauth_authorize("openai", 0)
 
     with pytest.raises(ValueError) as exc:
@@ -109,7 +153,17 @@ async def test_provider_oauth_callback_browser_requires_code() -> None:
 
 
 @pytest.mark.asyncio
-async def test_provider_oauth_callback_browser_rejects_state_mismatch() -> None:
+async def test_provider_oauth_callback_browser_rejects_state_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _callback_server_unavailable(_redirect_uri: str) -> bool:
+        return False
+
+    monkeypatch.setattr(
+        provider_service.provider_auth_service,
+        "_ensure_openai_browser_callback_server",
+        _callback_server_unavailable,
+    )
     await provider_service.provider_oauth_authorize("openai", 0)
 
     with pytest.raises(ValueError) as exc:
@@ -326,6 +380,62 @@ async def test_provider_oauth_refresh_updates_credentials(
     assert persisted["access"] == "access-new"
     assert persisted["refresh"] == "refresh-old"
     assert persisted["accountId"] == "acct_old"
+
+
+@pytest.mark.asyncio
+async def test_provider_oauth_refresh_reuses_fresh_persisted_credentials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store_path = tmp_path / "provider_auth_refresh_reuse.json"
+    monkeypatch.setenv("PENGUIN_PROVIDER_AUTH_STORE", str(store_path))
+
+    future_expires = int(time.time() * 1000) + 1800 * 1000
+    provider_service.set_provider_auth_record(
+        "openai",
+        {
+            "type": "oauth",
+            "access": "access-fresh",
+            "refresh": "refresh-new",
+            "expires": future_expires,
+            "accountId": "acct_new",
+        },
+    )
+
+    calls: list[str] = []
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout: float) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self) -> _FakeAsyncClient:
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> bool:  # type: ignore[no-untyped-def]
+            del exc_type, exc, tb
+            return False
+
+        async def post(self, url: str, headers=None, json=None, data=None):  # type: ignore[no-untyped-def]
+            del headers, json, data
+            calls.append(url)
+            return _FakeResponse(500, {})
+
+    monkeypatch.setattr(provider_service.httpx, "AsyncClient", _FakeAsyncClient)
+
+    refreshed = await provider_service.provider_auth_service.refresh_provider_oauth(
+        "openai",
+        credential_record={
+            "type": "oauth",
+            "access": "access-stale",
+            "refresh": "refresh-old",
+            "expires": 1,
+        },
+    )
+
+    assert refreshed["access"] == "access-fresh"
+    assert refreshed["refresh"] == "refresh-new"
+    assert refreshed["accountId"] == "acct_new"
+    assert calls == []
 
 
 @pytest.mark.asyncio
