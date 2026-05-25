@@ -1597,17 +1597,11 @@ class PenguinCore:
         Use this when switching between entirely different tasks or at
         application shutdown.
         """
-        self.reset_context()
-        self._interrupted = False
-
-        # Close browser if it was initialized
-        from penguin.tools.browser_tools import browser_manager
-
-        asyncio.create_task(browser_manager.close())
+        core_state_runtime.reset_state(self, diagnostics_manager=diagnostics)
 
     def list_context_files(self) -> List[Dict[str, Any]]:
         """List all available context files"""
-        return self.conversation_manager.list_context_files()
+        return core_state_runtime.list_context_files(self)
 
     # ------------------------------------------------------------------
     # Snapshot / Restore wrappers (Phase 3 integration)
@@ -1615,17 +1609,17 @@ class PenguinCore:
 
     def create_snapshot(self, meta: Optional[Dict[str, Any]] = None) -> Optional[str]:
         """Persist current conversation state and return snapshot_id."""
-        return self.conversation_manager.create_snapshot(meta=meta)
+        return core_state_runtime.create_snapshot(self, meta=meta)
 
     def restore_snapshot(self, snapshot_id: str) -> bool:
         """Load conversation from snapshot; returns success bool."""
-        return self.conversation_manager.restore_snapshot(snapshot_id)
+        return core_state_runtime.restore_snapshot(self, snapshot_id)
 
     def branch_from_snapshot(
         self, snapshot_id: str, meta: Optional[Dict[str, Any]] = None
     ) -> Optional[str]:
         """Fork a snapshot into a new branch and load it."""
-        return self.conversation_manager.branch_from_snapshot(snapshot_id, meta=meta)
+        return core_state_runtime.branch_from_snapshot(self, snapshot_id, meta=meta)
 
     # ------------------------------------------------------------------
     # Checkpoint Management API (NEW - V2.1 Conversation Plane)
