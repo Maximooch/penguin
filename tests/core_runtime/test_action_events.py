@@ -307,3 +307,181 @@ async def test_handle_tui_action_result_uses_runtime_metadata_without_core_shim(
     ]
     assert owner._opencode_tool_parts == {}
     assert owner._opencode_tool_info == {}
+
+
+@pytest.mark.asyncio
+async def test_handle_tui_action_result_synthesizes_missing_start() -> None:
+    class _Adapter:
+        def __init__(self) -> None:
+            self.starts: list[dict[str, Any]] = []
+            self.ends: list[dict[str, Any]] = []
+
+        async def on_tool_start(
+            self,
+            tool_name: str,
+            tool_input: dict[str, Any],
+            *,
+            tool_call_id: str | None = None,
+            metadata: dict[str, Any] | None = None,
+            message_id: str | None = None,
+            agent_id: str = "default",
+            model_id: str | None = None,
+            provider_id: str | None = None,
+            variant: str | None = None,
+        ) -> str:
+            self.starts.append(
+                {
+                    "tool_name": tool_name,
+                    "tool_input": tool_input,
+                    "tool_call_id": tool_call_id,
+                    "metadata": metadata or {},
+                    "message_id": message_id,
+                    "agent_id": agent_id,
+                    "model_id": model_id,
+                    "provider_id": provider_id,
+                    "variant": variant,
+                }
+            )
+            return "part_synthesized"
+
+        async def on_tool_end(
+            self,
+            part_id: str,
+            output: Any,
+            error: Any = None,
+            metadata: dict[str, Any] | None = None,
+        ) -> None:
+            self.ends.append(
+                {
+                    "part_id": part_id,
+                    "output": output,
+                    "error": error,
+                    "metadata": metadata or {},
+                }
+            )
+
+    adapter = _Adapter()
+    owner = SimpleNamespace(
+        _get_tui_adapter=lambda _session_id: adapter,
+        _resolve_opencode_model_state=lambda session_id: {
+            "modelID": f"model:{session_id}",
+            "providerID": "openai",
+            "variant": "low",
+        },
+        _opencode_stream_states={"session_missing": {"message_id": "msg_1"}},
+        _opencode_tool_parts={},
+        _opencode_tool_info={},
+    )
+
+    await action_events.handle_tui_action_result(
+        owner,
+        "action_result",
+        {
+            "session_id": "session_missing",
+            "id": "call_missing",
+            "action": "read_file",
+            "result": "contents",
+            "agent_id": "worker",
+        },
+    )
+
+    assert adapter.starts == [
+        {
+            "tool_name": "read",
+            "tool_input": {"filePath": ""},
+            "tool_call_id": "call_missing",
+            "metadata": {},
+            "message_id": "msg_1",
+            "agent_id": "worker",
+            "model_id": "model:session_missing",
+            "provider_id": "openai",
+            "variant": "low",
+        }
+    ]
+    assert adapter.ends == [
+        {
+            "part_id": "part_synthesized",
+            "output": "contents",
+            "error": None,
+            "metadata": {},
+        }
+    ]
+    assert owner._opencode_tool_parts == {}
+    assert owner._opencode_tool_info == {}
+
+
+@pytest.mark.asyncio
+async def test_tool_call_ids_are_scoped_by_session() -> None:
+    class _Adapter:
+        def __init__(self, session_id: str) -> None:
+            self.session_id = session_id
+            self.starts: list[str] = []
+            self.ends: list[str] = []
+
+        async def on_tool_start(
+            self,
+            tool_name: str,
+            tool_input: dict[str, Any],
+            *,
+            tool_call_id: str | None = None,
+            **_: Any,
+        ) -> str:
+            del tool_name, tool_input
+            self.starts.append(str(tool_call_id))
+            return f"part_{self.session_id}"
+
+        async def on_tool_end(
+            self,
+            part_id: str,
+            output: Any,
+            error: Any = None,
+            metadata: dict[str, Any] | None = None,
+        ) -> None:
+            del output, error, metadata
+            self.ends.append(part_id)
+
+    adapters = {
+        "session_a": _Adapter("session_a"),
+        "session_b": _Adapter("session_b"),
+    }
+    owner = SimpleNamespace(
+        _get_tui_adapter=lambda session_id: adapters[session_id],
+        _resolve_opencode_model_state=lambda session_id: {
+            "modelID": f"model:{session_id}",
+            "providerID": "openai",
+            "variant": None,
+        },
+        _opencode_stream_states={},
+        _opencode_tool_parts={},
+        _opencode_tool_info={},
+    )
+
+    for session_id in ("session_a", "session_b"):
+        await action_events.handle_tui_action(
+            owner,
+            "action",
+            {
+                "session_id": session_id,
+                "id": "call_shared",
+                "action": "read_file",
+                "params": {"path": f"{session_id}.txt"},
+            },
+        )
+
+    await action_events.handle_tui_action_result(
+        owner,
+        "action_result",
+        {
+            "session_id": "session_a",
+            "id": "call_shared",
+            "action": "read_file",
+            "result": "done",
+        },
+    )
+
+    assert adapters["session_a"].starts == ["call_shared"]
+    assert adapters["session_b"].starts == ["call_shared"]
+    assert adapters["session_a"].ends == ["part_session_a"]
+    assert adapters["session_b"].ends == []
+    assert owner._opencode_tool_parts == {"session_b:call_shared": "part_session_b"}
+    assert set(owner._opencode_tool_info) == {"session_b:call_shared"}
