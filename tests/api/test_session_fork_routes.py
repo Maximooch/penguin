@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+import copy
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from fastapi import HTTPException
@@ -13,6 +13,9 @@ from penguin.system.state import Message, MessageCategory, Session
 from penguin.web.routes import SessionForkRequest, api_session_fork, session_fork
 from penguin.web.services.session_fork import fork_session
 from penguin.web.services.session_view import TRANSCRIPT_KEY, get_session_messages
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class _Manager:
@@ -92,12 +95,27 @@ def _seed_session(core: _Core, directory: Path) -> Session:
         role="user",
         content="first prompt",
         category=MessageCategory.DIALOG,
+        metadata={
+            "opencode_info": {
+                "id": "msg_user_1",
+                "sessionID": session.id,
+                "role": "user",
+            }
+        },
     )
     assistant_1 = Message(
         id="msg_assistant_1",
         role="assistant",
         content="first answer",
         category=MessageCategory.DIALOG,
+        metadata={
+            "opencode_info": {
+                "id": "msg_assistant_1",
+                "sessionID": session.id,
+                "role": "assistant",
+                "parentID": "msg_user_1",
+            }
+        },
     )
     user_2 = Message(
         id="msg_user_2",
@@ -194,6 +212,37 @@ def test_fork_session_clones_history_before_requested_message(tmp_path: Path) ->
     assert rows[0]["info"]["id"] != "msg_user_1"
     assert rows[1]["info"]["id"] != "msg_assistant_1"
     assert rows[1]["info"]["parentID"] == rows[0]["info"]["id"]
+
+
+def test_fork_session_preserves_source_and_rewrites_legacy_message_lineage(
+    tmp_path: Path,
+) -> None:
+    core = _Core(tmp_path)
+    source = _seed_session(core, tmp_path)
+    before_metadata = copy.deepcopy(source.metadata)
+    before_messages = copy.deepcopy(source.messages)
+
+    info = fork_session(cast(Any, core), source.id, message_id="msg_user_2")
+
+    assert info is not None
+    assert source.metadata == before_metadata
+    assert source.messages == before_messages
+
+    forked = core.conversation_manager.session_manager.load_session(info["id"])
+    assert forked is not None
+    assert [message.id for message in forked.messages] != [
+        "msg_user_1",
+        "msg_assistant_1",
+    ]
+
+    first_info = forked.messages[0].metadata["opencode_info"]
+    second_info = forked.messages[1].metadata["opencode_info"]
+    assert first_info["sessionID"] == forked.id
+    assert second_info["sessionID"] == forked.id
+    assert first_info["id"] == forked.messages[0].id
+    assert second_info["id"] == forked.messages[1].id
+    assert second_info["parentID"] == first_info["id"]
+    assert source.id not in {first_info["sessionID"], second_info["sessionID"]}
 
 
 @pytest.mark.asyncio
