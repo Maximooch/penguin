@@ -350,9 +350,9 @@ Initial conclusions for Phases 1 and 1.5:
 
 ### 2. Classify TUI divergence
 
-- [ ] Inventory all `sdk.penguin` branches under
+- [x] Inventory all `sdk.penguin` branches under
       `penguin-tui/packages/opencode/src/cli/cmd/tui/`.
-- [ ] Classify each branch as one of:
+- [x] Classify each branch as one of:
   - branding/docs/theme
   - auth/transport
   - backend compatibility
@@ -361,29 +361,450 @@ Initial conclusions for Phases 1 and 1.5:
   - local command surface
   - settings/skills/project/task Penguin feature
   - temporary workaround
-- [ ] Mark each branch as keep, move lower, replace with backend parity, or
+- [x] Mark each branch as keep, move lower, replace with backend parity, or
       delete after compatibility work.
+
+### Phase 2 Divergence Map - 2026-05-23
+
+Scope:
+
+- This was an audit-only pass. No runtime behavior was changed.
+- Direct `sdk.penguin` usage under
+  `penguin-tui/packages/opencode/src/cli/cmd/tui` appears 81 times across 10
+  files.
+- The direct branch count is concentrated in `component/prompt/index.tsx` (52),
+  `context/sync.tsx` (11), and `app.tsx` (7). The remaining direct branches are
+  small branding/provider/onboarding differences.
+
+Direct `sdk.penguin` branches:
+
+| Area | Classification | Disposition | Notes |
+| --- | --- | --- | --- |
+| `app.tsx:227`, `app.tsx:228`, `app.tsx:560`, `app.tsx:742` | branding/docs/theme | Keep, but move toward product config. | Terminal title, docs URL, and update copy are valid Penguin identity differences. |
+| `app.tsx:430` | settings/skills/project/task Penguin feature | Keep. | Skills are a Penguin feature. Long term, register this through a command/plugin surface rather than inline app command wiring. |
+| `app.tsx:463` and `component/prompt/index.tsx:956` | local command surface | Keep, but move lower. | Fast mode is useful, but `/fast` handling should live in one Penguin command registry instead of both app command registration and prompt submission logic. |
+| `app.tsx:674` and `component/dialog-provider.tsx:274` | backend compatibility | Move lower. | Provider-specific Penguin copy and OpenCode Zen suppression should come from product/provider metadata or a provider policy helper. |
+| `routes/home.tsx:101`, `routes/session/sidebar.tsx:327`, `component/dialog-status.tsx:50`, `routes/session/permission.tsx:141`, `routes/session/permission.tsx:306` | branding/docs/theme | Keep, but move toward product config. | App name/logo/copy branches are low-risk but noisy during upstream syncs. |
+| `routes/session/sidebar.tsx:307` and `component/dialog-status.tsx:81` | auth/transport | Keep near auth/provider UX. | Penguin auth wording is legitimate because local auth differs from upstream OpenCode CLI auth. |
+| `routes/session/index.tsx:245` and `component/prompt/index.tsx:570`, `component/prompt/index.tsx:581`, `component/prompt/index.tsx:1525` | optimistic UI | Replace with backend status truth where possible. | Interrupt handling uses local pending/busy state because backend status/event truth is not yet sufficient. |
+| `routes/session/index.tsx:1195` | session/message reconciliation | Move lower into a session list/message helper. | Queued-message ordering differs because Penguin synthetic IDs and optimistic messages do not sort like upstream IDs. |
+| `context/sync.tsx:282`, `context/sync.tsx:493` | backend compatibility | Replace with backend API/event parity. | Usage refresh on idle exists because session usage is not reliably delivered with status/session updates. |
+| `context/sync.tsx:309`, `context/sync.tsx:315`, `context/sync.tsx:326`, `context/sync.tsx:524`, `context/sync.tsx:1131` | session/message reconciliation | Move lower into a Penguin sync adapter. | Snapshot hydration, message merge/upsert, and unsorted session lookup compensate for Penguin response/event shapes. |
+| `context/sync.tsx:340`, `context/sync.tsx:640` | backend compatibility | Move lower, then replace with backend scoping where feasible. | Directory/session filtering in the TUI is a protocol boundary leak. Backend events should carry enough project/session scope to avoid scattered UI filters. |
+| `context/sync.tsx:671` | backend compatibility | Move lower into a bootstrap adapter, then replace with route parity. | The Penguin bootstrap path builds providers, agents, sessions, usage, path, LSP, formatter, and VCS state from mixed Penguin and OpenCode-shaped endpoints. |
+| `component/prompt/index.tsx:203`, `component/prompt/index.tsx:206` | optimistic UI | Replace with backend event/status truth. | `store.pending` and `pendingSeenBusy` are client-side reconciliation state for the send gap. |
+| `component/prompt/index.tsx:307`, `component/prompt/index.tsx:318`, `component/prompt/index.tsx:1747`, `component/prompt/index.tsx:1891` | settings/skills/project/task Penguin feature | Keep, but move lower. | Agent build/plan mode is a Penguin product feature. Keep it, but isolate session persistence and labels behind Penguin session helpers. |
+| `component/prompt/index.tsx:328` through `component/prompt/index.tsx:537` | local command surface | Keep, but move lower. | Project/task command suggestions are useful, but they should be produced by a Penguin command catalog/helper rather than embedded in the prompt component. |
+| `component/prompt/index.tsx:892`, `component/prompt/index.tsx:1763` | backend compatibility | Move lower into model/provider capability helpers. | `service_tier`/fast mode should be represented as provider/model capability metadata. |
+| `component/prompt/index.tsx:964` | backend compatibility | Replace with backend API parity or isolate in a send adapter. | Session creation still uses `POST /session` with Penguin-specific payload fields. |
+| `component/prompt/index.tsx:1013` | local command surface | Keep, but keep below prompt UI. | HTTP local command execution is already partially extracted; the prompt should only dispatch to it. |
+| `component/prompt/index.tsx:1076`, `component/prompt/index.tsx:1084`, `component/prompt/index.tsx:1113`, `component/prompt/index.tsx:1129`, `component/prompt/index.tsx:1185` | optimistic UI | Replace with backend echo/persistence when possible. | Synthetic IDs, optimistic user message/part/status events, navigation, and pending state are the highest-risk TUI-side truth shims. |
+| `component/prompt/index.tsx:1103` | backend compatibility | Replace with route parity or an attachment adapter. | Image virtual-part stripping is a client workaround for Penguin attachment handling. |
+| `component/prompt/index.tsx:1197` | backend compatibility | Move lower into a Penguin send adapter, then converge on OpenCode-compatible send/session APIs where feasible. | Direct `POST /api/v1/chat/message` is the central Penguin send divergence. |
+| `component/prompt/index.tsx:1873`, `component/prompt/index.tsx:1875`, `component/prompt/index.tsx:1876` | optimistic UI | Keep until backend status truth is stronger. | Interrupt copy differs because Penguin allows single-key interrupt semantics while local pending is active. |
+| `component/tips.tsx:60` | branding/docs/theme | Keep, but move toward product config. | Penguin-specific tips are valid product copy; keep them isolated. |
+
+Penguin-only file classification:
+
+| File | Classification | Disposition |
+| --- | --- | --- |
+| `component/dialog-command.tsx` | local command surface | Keep short term; evaluate against upstream command palette/plugin runtime before rebasing. |
+| `component/dialog-settings.tsx` | settings/skills/project/task Penguin feature | Keep; it is a read-only Penguin settings panel backed by `/api/v1/system/settings`. |
+| `component/dialog-skills.tsx` | settings/skills/project/task Penguin feature | Keep; move skill actions behind typed backend responses and command registration. |
+| `component/prompt/penguin-local-command.ts` | local command surface | Keep; this is the right kind of extraction, but command definitions should eventually come from one catalog. |
+| `component/prompt/penguin-local-command-runtime.ts` | local command surface | Keep, but avoid expanding it inside prompt flow; backend should provide typed command errors. |
+| `component/prompt/penguin-send.ts` | optimistic UI | Keep as a helper for now; delete or shrink after backend status/error parity. |
+| `component/textarea-keybindings.ts` | temporary workaround | Move toward upstream `@opentui/keymap` / flat keybind handling during the OpenTUI upgrade track. |
+| `component/tips.tsx` | branding/docs/theme | Keep as product copy, but avoid inline OpenCode filtering by moving tips into product config. |
+| `context/keybind.tsx` | temporary workaround | Replace with upstream flat keybind/keymap path when adopting newer OpenCode/OpenTUI. |
+| `context/penguin-auth.ts` | auth/transport | Keep at the SDK boundary. |
+| `context/session-hydration.ts` | session/message reconciliation | Keep as an adapter helper; replace parts with backend replay parity and tested event projection. |
+| `context/sync-bootstrap.ts` | backend compatibility | Keep as a helper; expand into a typed Penguin bootstrap adapter or remove after route parity. |
+| `context/theme/*.json` Penguin themes | branding/docs/theme | Keep. |
+| `routes/session/header.tsx` | session/message reconciliation | Keep if Penguin wants this layout, but compare against upstream session header/plugin surfaces before rebasing. |
+| `util/api-error.ts` | backend compatibility | Keep until Penguin/OpenCode structured error shapes converge. |
+| `util/exit.ts` | optimistic UI | Keep until abort/status transitions are backend-truthful and consistently replayed. |
+| `util/session-family.ts` | session/message reconciliation | Keep; map to upstream full-session fork/session review semantics before deleting. |
+| `util/terminal.ts` | temporary workaround | Appears unused in current TUI search; verify before deleting during cleanup. |
+
+High-risk modified file conclusions:
+
+- `context/sdk.tsx` should remain the transport boundary. Keep auth header
+  injection there, but move custom Penguin SSE parsing, finish-response cleanup,
+  and reconnect/session scoping into a named event adapter. Long term, prefer a
+  backend event stream that matches OpenCode SDK event semantics.
+- `context/sync.tsx` is carrying too many compatibility responsibilities:
+  bootstrap shape probing, directory filtering, usage refresh, session mapping,
+  message ordering, hydration, and provider/agent defaults. Phase 5 should split
+  these into a typed Penguin bootstrap/sync adapter before any upstream rebase.
+- `component/prompt/index.tsx` is the largest drift source. The prompt owns
+  project/task command registration, local command dispatch, Penguin session
+  creation, optimistic message emission, send recovery, fast mode, agent mode,
+  attachment stripping, and interrupt behavior. Phase 4 should make the prompt
+  call a small Penguin send/command service instead of owning protocol details.
+- `routes/session/index.tsx` depends on local pending state and Penguin message
+  ordering. This should be revisited after backend status and replay parity.
+- `routes/session/sidebar.tsx`, `routes/session/permission.tsx`,
+  `component/dialog-status.tsx`, `routes/home.tsx`, `component/dialog-provider.tsx`,
+  and `component/tips.tsx` are mostly product copy/branding/provider UX. They
+  are not the first upstreaming risk, but product config would reduce merge
+  noise.
+
+Recommended next work from Phase 2:
+
+- Phase 3: Treat `context/sdk.tsx` as the first real refactor. Keep
+  `context/penguin-auth.ts`, extract `streamPenguin`, `parseEvent`, event
+  cleanup, and route/session stream selection into a tested adapter.
+- Phase 4: Extract Penguin prompt submit into a `sendPenguinPrompt` helper that
+  owns session creation, optimistic emission, `/api/v1/chat/message`, failure
+  recovery, and navigation decisions.
+- Phase 4: Move project/task command registration into the existing
+  `penguin-local-command` catalog so the prompt component only renders and
+  dispatches.
+- Phase 5: Convert the Penguin bootstrap block in `context/sync.tsx` into a
+  typed mapper with explicit input/output shapes and tests for session, usage,
+  provider, agent, path, LSP, formatter, and VCS data.
+- Phase 6: Prefer backend parity for session create/list/get/messages, event
+  replay, status, usage, provider/model metadata, permission/question IDs, and
+  attachment handling. Those are the causes of the highest-risk TUI shims.
+- Link guardrail: any extracted Penguin event/send/bootstrap adapter should
+  expose normalized local types and should not become Link's frontend contract.
+  Link should project Penguin/OpenCode/A2A/Codex/Claude runtime streams into
+  Link-owned `RuntimeEvent` and `SessionEvent` types.
 
 ### 3. Shrink SDK-layer drift
 
-- [ ] Review `context/sdk.tsx` against upstream.
-- [ ] Keep Penguin auth header injection near the SDK boundary.
-- [ ] Decide whether Penguin SSE should use OpenCode's SDK event subscription
+- [x] Review `context/sdk.tsx` against upstream.
+- [x] Keep Penguin auth header injection near the SDK boundary.
+- [x] Decide whether Penguin SSE should use OpenCode's SDK event subscription
       path, a custom adapter, or backend route parity.
-- [ ] Move event cleaning and Penguin SSE parsing into a named helper if it
+- [x] Move event cleaning and Penguin SSE parsing into a named helper if it
       remains client-side.
-- [ ] Avoid leaking transport-specific behavior into route and prompt
+- [x] Avoid leaking transport-specific behavior into route and prompt
       components.
+
+### Phase 3 SDK-Layer Results - 2026-05-24
+
+Scope:
+
+- This phase was intentionally narrow: shrink SDK-layer drift without changing
+  prompt, sync/bootstrap, OpenTUI, or backend behavior.
+- Penguin SSE remains client-side for now, but behind a named adapter. Backend
+  route/event parity remains a Phase 6 target.
+
+Changes made:
+
+- Added `penguin-tui/packages/opencode/src/cli/cmd/tui/context/penguin-event-stream.ts`.
+- Kept local auth header loading in
+  `penguin-tui/packages/opencode/src/cli/cmd/tui/context/penguin-auth.ts`.
+- Updated `penguin-tui/packages/opencode/src/cli/cmd/tui/context/sdk.tsx` so it:
+  - still constructs the OpenCode SDK client and event emitter
+  - still injects Penguin auth headers at the SDK/fetch boundary
+  - still chooses Penguin SSE versus upstream SDK event subscription
+  - delegates Penguin SSE URL construction, parsing, unauthorized handling hook,
+    session-scope cancellation, and `finish_response` cleanup to the new adapter
+- Added focused adapter tests in
+  `penguin-tui/packages/opencode/test/tui/penguin-event-stream.test.ts`.
+
+Adapter responsibilities now isolated:
+
+- `cleanPenguinText`: removes `finish_response` markers from streamed text.
+- `cleanPenguinEvent`: normalizes Penguin `message.part.updated` text/delta
+  payloads before they enter the TUI event queue.
+- `parsePenguinSSEEvent`: parses `data:` lines from an SSE frame into an event.
+- `streamPenguinEvents`: opens `/api/v1/events/sse`, applies `session_id` and
+  `directory` query parameters, forwards parsed events, reports `401`
+  unauthorized responses, and cancels when the active route/session changes.
+
+Decision recorded:
+
+- Keep the custom Penguin SSE adapter for now. It is the correct short-term
+  boundary because Penguin's event route is still `/api/v1/events/sse`, not the
+  upstream OpenCode SDK subscription route.
+- Do not push this deeper into route/prompt components. `sdk.tsx` remains the
+  only TUI component that decides between Penguin SSE and upstream OpenCode SDK
+  event subscription.
+- Long term, prefer backend event parity so the Penguin branch can collapse back
+  toward upstream `sdk.event.subscribe`.
+
+Verification:
+
+- Manual Bun sanity checks passed from `/private/tmp` for:
+  - `cleanPenguinText`
+  - `parsePenguinSSEEvent`
+  - `streamPenguinEvents`
+- `bun install` was run in `penguin-tui` after storage was freed. The Husky
+  install hook printed `.git can't be found`, but the install completed.
+- `bun test test/tui/penguin-event-stream.test.ts` now passes from
+  `penguin-tui/packages/opencode`.
+- `bun run typecheck` now passes from `penguin-tui/packages/opencode`.
+
+Follow-up suggestion:
+
+- Keep `node_modules` untracked/ignored. If disk pressure returns, it can be
+  removed without affecting the source changes.
 
 ### 4. Shrink prompt-layer drift
 
-- [ ] Review `component/prompt/index.tsx` against upstream.
-- [ ] Extract Penguin session creation and send flow into a helper/service.
-- [ ] Decide whether optimistic user-message emission should remain in the TUI.
-- [ ] If optimistic emission remains, isolate it behind one helper with tests.
+- [x] Review `component/prompt/index.tsx` against upstream.
+- [x] Extract Penguin session creation and send flow into a helper/service.
+- [x] Decide whether optimistic user-message emission should remain in the TUI.
+- [x] If optimistic emission remains, isolate it behind one helper with tests.
 - [ ] Keep `/fast`, project/task commands, settings, and local commands out of
       the main prompt submission path where possible.
-- [ ] Make failure recovery explicit and testable.
+- [x] Make failure recovery explicit and testable.
+
+### Phase 4 Prompt-Layer Results - 2026-05-24
+
+Scope:
+
+- This phase shrank prompt-layer protocol drift without changing backend routes,
+  broad-rebasing, upgrading OpenTUI, or changing local command behavior.
+- Optimistic user-message emission remains in the TUI for now because Penguin's
+  backend does not yet provide an immediate OpenCode-shaped user-message echo,
+  durable replay, and status transition that fully replace it.
+- `/fast`, project/task commands, settings, and local command dispatch remain in
+  `component/prompt/index.tsx` as a follow-up. They are already partially
+  separated through `penguin-local-command.ts` and
+  `penguin-local-command-runtime.ts`, but the prompt still owns command
+  registration/dispatch decisions.
+
+Changes made:
+
+- Expanded `penguin-tui/packages/opencode/src/cli/cmd/tui/component/prompt/penguin-send.ts`
+  so it now owns:
+  - `resolveSessionID`
+  - `createPenguinSession`
+  - `shouldStripPenguinVirtualPart`
+  - `emitPenguinOptimisticPrompt`
+  - `sendPenguinPrompt`
+  - `recoverPenguinPromptFailure`
+  - `formatPenguinPromptFailure`
+- Updated `penguin-tui/packages/opencode/src/cli/cmd/tui/component/prompt/index.tsx`
+  so the main submit flow calls the helper for Penguin session creation,
+  optimistic event emission, image virtual-part stripping, `/api/v1/chat/message`
+  sending, and failure formatting.
+- Added `penguin-tui/packages/opencode/test/tui/penguin-send.test.ts` for the
+  extracted prompt helper.
+- Adjusted `penguin-tui/packages/opencode/test/tui/penguin-event-stream.test.ts`
+  test doubles so the package TypeScript check accepts Bun's extended `fetch`
+  type.
+
+OpenCode-compatible backend route sketch:
+
+- Current Penguin prompt send is a single custom route:
+  `POST /api/v1/chat/message` with body fields such as `text`, string
+  `provider/model`, `session_id`, `agent_id`, `agent_mode`, `directory`,
+  `streaming`, `variant`, `service_tier`, `client_message_id`, and `parts`.
+- OpenCode-compatible legacy route parity would split this into session,
+  message, status, command, shell, and event routes:
+  - `GET /event` returns `text/event-stream` and accepts workspace/directory
+    routing query parameters.
+  - `GET /session`, `POST /session`, and `GET /session/status`.
+  - `GET /session/:sessionID`, `PATCH /session/:sessionID`,
+    `DELETE /session/:sessionID`, and `POST /session/:sessionID/abort`.
+  - `GET /session/:sessionID/message` returns OpenCode-shaped
+    `MessageV2.WithParts[]` history/replay.
+  - `GET /session/:sessionID/message/:messageID` returns one OpenCode-shaped
+    message.
+  - `POST /session/:sessionID/message` sends a prompt with an OpenCode-shaped
+    payload: optional `messageID`, optional `model: { providerID, modelID }`,
+    optional `agent`, optional `variant`, optional `system`/`format`/`noReply`,
+    and `parts` containing text, file, agent, or subtask prompt parts.
+  - `POST /session/:sessionID/prompt_async` accepts the same prompt payload but
+    returns immediately after queueing work.
+  - `POST /session/:sessionID/command` and `POST /session/:sessionID/shell`
+    handle slash-command and shell-mode execution.
+- OpenCode's newer v2 route direction is also worth tracking:
+  - `GET /api/session` returns `{ items, cursor }` for paged sessions.
+  - `POST /api/session/:sessionID/prompt` accepts `{ prompt, delivery? }`,
+    where `delivery` is `immediate` or `deferred`.
+  - `GET /api/session/:sessionID/message` returns `{ items, cursor }` for paged
+    projected messages.
+  - `POST /api/session/:sessionID/wait`, `POST /api/session/:sessionID/compact`,
+    and `GET /api/session/:sessionID/context` provide explicit runtime/session
+    operations.
+
+Backend route conclusion:
+
+- The OpenCode-compatible shape is cleaner than Penguin's current chat route for
+  TUI maintenance because session identity is path-scoped, prompt/message
+  payloads use OpenCode SDK types, replay is a first-class message route, status
+  is independent of prompt send, and generated SDK clients can call the backend
+  without custom `sdk.penguin` prompt code.
+- Penguin should not rewrite everything immediately in Phase 4. The better path
+  is to implement a backend compatibility layer in Phase 6, then collapse
+  `sendPenguinPrompt` toward ordinary `sdk.client.session.prompt` or v2 prompt
+  calls once the backend emits and replays OpenCode-shaped message/status events.
+- If Penguin keeps product-specific fields such as `agent_mode`, `service_tier`,
+  project/task IDs, or Link/Penguin runtime metadata, keep them as explicit
+  Penguin extensions at the backend boundary. Do not make those fields Link's
+  long-term frontend contract.
+
+Verification:
+
+- `bun test test/tui/penguin-event-stream.test.ts test/tui/penguin-send.test.ts`
+  passed from `penguin-tui/packages/opencode`.
+- `bun test test/cli/tui/prompt-penguin-send.test.ts test/tui/penguin-send.test.ts test/tui/penguin-event-stream.test.ts`
+  passed from `penguin-tui/packages/opencode`.
+- `bun run typecheck` passed from `penguin-tui/packages/opencode`.
+- `git diff --check` passed from the worktree root.
+
+Risks and follow-ups:
+
+- The prompt still synthesizes optimistic `message.updated`,
+  `message.part.updated`, and `session.status` events. This should disappear
+  only after backend route/event/replay parity is strong enough.
+- Penguin currently generates TUI-side synthetic IDs for optimistic messages and
+  parts. Backend compatibility work should decide whether the backend accepts
+  those IDs, replaces them deterministically, or echoes a canonical mapping.
+- `sendPenguinPrompt` still posts to `/api/v1/chat/message`. That is now
+  isolated, but it remains the central route to delete after compatibility work.
+- Move `/fast` and project/task/settings command registration behind one Penguin
+  command catalog or upstream plugin/command-palette style before a broad
+  OpenCode rebase.
+- Phase 4.5 should address runtime-confidence UX before the larger
+  sync/bootstrap extraction: spinner reliability, elapsed wall-clock timing, and
+  stale/reconnecting state.
+- Phase 5 should then focus on `context/sync.tsx` bootstrap/hydration mapping.
+  Phase 6 should prioritize backend route parity for sessions, messages, status,
+  event replay, provider/model metadata, and attachments.
+
+### 4.5. Runtime confidence UX
+
+- [x] Review upstream OpenCode's current spinner/activity/timer behavior and
+      identify the smallest useful pieces to copy.
+- [x] Make Penguin's active-run spinner continue while local prompt send is
+      pending or backend session status is busy, even if no text chunks arrive.
+- [x] Add an elapsed wall-clock timer for the active response/run, similar to
+      OpenCode's response timer.
+- [x] Distinguish at least these visible states in the TUI state model:
+      `pending`, `running`, `reconnecting`, `stale`, and `idle`.
+- [x] Track last-event time from the SDK/event adapter so stream stalls do not
+      look identical to a clean idle state.
+- [x] Keep the implementation TUI-scoped unless a backend timestamp/status gap
+      blocks correctness.
+- [x] Update this plan with the UX decision, files changed, tests, and any
+      backend follow-up needed for better run-state truth.
+
+### Phase 4.5 Runtime Confidence Results - 2026-05-24
+
+Problem statement:
+
+- The current spinner is not a reliable active-run signal. It can stop while the
+  agent is still running, which makes it hard to tell whether Penguin is still
+  working, the event stream is quiet, the backend is slow, or something broke.
+- Penguin also lacks a wall-clock elapsed timer between prompt submission and
+  response completion. Upstream OpenCode has this pattern and it should be a
+  relatively small TUI improvement.
+
+Target behavior:
+
+- The spinner should be driven by derived run state, not only by chunk activity.
+  At minimum, it should remain active while:
+  - the TUI has submitted a prompt and is waiting for backend echo/status
+  - backend session status is busy
+  - a known active response has not yet received an idle/completion transition
+- The TUI should show elapsed wall-clock time for the active run/response and
+  settle to a final duration once idle.
+- If the event stream reconnects or goes stale while a run is active, the UI
+  should show that distinction instead of silently presenting a stopped spinner.
+
+Recommended implementation shape:
+
+- Prefer a small helper or derived state object that combines:
+  - local pending state from prompt submission
+  - backend session status from sync
+  - last event timestamp from the SDK/event adapter
+  - active session/message timestamps where available
+- Use upstream OpenCode's timer/spinner behavior as the first reference. Copy the
+  pattern where it maps cleanly; adapt through a Penguin helper where backend
+  status/event truth differs.
+- Avoid new backend routes in this phase. If backend timestamps, busy/idle
+  transitions, or event replay are insufficient, document the required backend
+  follow-up under Phase 6.
+- Keep Link alignment explicit: `running`, `stale`, and `reconnecting` are useful
+  runtime-state concepts, but Link should still expose them through Link-owned
+  runtime/session event types rather than raw Penguin/OpenCode stream events.
+
+Upstream reference:
+
+- Upstream OpenCode now has a reusable `component/spinner.tsx`, richer active
+  message/tool spinners, and duration display on assistant/reasoning/tool rows.
+- Penguin did not copy the newer plugin/runtime route structure in this phase.
+  The useful small pieces were the active-state framing and duration display
+  pattern, adapted to Penguin's current prompt footer and event adapter.
+
+Changes made:
+
+- Added
+  `penguin-tui/packages/opencode/src/cli/cmd/tui/component/prompt/penguin-run-state.ts`.
+  This pure helper derives `idle`, `pending`, `running`, `reconnecting`, and
+  `stale` from:
+  - local prompt pending state
+  - backend `session.status`
+  - open assistant message/active part state
+  - SDK stream status and last-event timestamp
+  - local/user/assistant start timestamps
+- Updated
+  `penguin-tui/packages/opencode/src/cli/cmd/tui/context/penguin-event-stream.ts`
+  with an `onOpen` hook so the SDK can distinguish a connected stream from a
+  reconnect loop.
+- Updated `penguin-tui/packages/opencode/src/cli/cmd/tui/context/sdk.tsx` so the
+  SDK context exposes Penguin stream health:
+  - `connecting`
+  - `connected`
+  - `reconnecting`
+  - `denied`
+  - `lastEventAt`
+- Updated
+  `penguin-tui/packages/opencode/src/cli/cmd/tui/component/prompt/index.tsx` so
+  the prompt footer:
+  - stays active for Penguin while the derived run state is not `idle`
+  - keeps the spinner active for pending, running, reconnecting, and stale states
+  - shows elapsed wall-clock time as `starting`, `running`, `reconnecting`, or
+    `still running`
+  - treats an open assistant message or active tool/reasoning part as running
+    even if `session.status` has already returned idle
+- Added
+  `penguin-tui/packages/opencode/test/tui/penguin-run-state.test.ts` for the
+  derived run-state helper.
+
+Verification:
+
+- `bun test test/tui/penguin-run-state.test.ts test/tui/penguin-event-stream.test.ts test/tui/penguin-send.test.ts test/cli/tui/prompt-penguin-send.test.ts`
+  passed from `penguin-tui/packages/opencode`.
+- `bun run typecheck` passed from `penguin-tui/packages/opencode`.
+- `git diff --check` passed from the worktree root.
+
+Backend follow-ups for Phase 6:
+
+- Prefer backend-provided canonical run start/end timestamps for reload/replay
+  correctness. The TUI now uses local/user/assistant timestamps as a short-term
+  fallback.
+- Ensure Penguin emits durable busy/idle transitions after the actual agent loop
+  state changes, not just after request handling or response dispatch.
+- Ensure event replay can reconstruct active assistant/tool state after reconnect
+  so the TUI does not need to infer too much from local state.
+- Keep the UI-facing states useful for Link, but project them into Link-owned
+  runtime/session event types instead of exposing Penguin/OpenCode stream words
+  as Link's frontend contract.
+
+Follow-up correction - 2026-05-25:
+
+- The first Phase 4.5 pass added a live footer elapsed timer, but OpenCode's
+  reference screenshot also shows the settled wall-clock duration on the
+  assistant message metadata row.
+- Penguin's backend already returned `time.completed` for the assistant message
+  in the tested session, but omitted `finish`. The old TUI duration code required
+  both an OpenCode-style final `finish` and a parent user lookup, so it hid the
+  completed duration.
+- Added a settled assistant-message duration helper that treats
+  `time.completed` as completion, preserves OpenCode `finish` semantics, and
+  falls back to the previous user message if `parentID` is unavailable or `root`.
+- Verification for the correction:
+  `bun test test/tui/message-duration.test.ts test/tui/penguin-run-state.test.ts test/tui/penguin-event-stream.test.ts test/tui/penguin-send.test.ts test/cli/tui/prompt-penguin-send.test.ts`
+  and `bun run typecheck` from `penguin-tui/packages/opencode`.
 
 ### 5. Shrink sync/bootstrap drift
 
@@ -401,6 +822,9 @@ Initial conclusions for Phases 1 and 1.5:
       OpenCode-shaped enough.
 - [ ] For each workaround, decide whether backend parity is better than TUI
       adaptation.
+- [ ] When OpenCode has a clearly better backend contract or runtime behavior,
+      plan to recreate that shape in Penguin rather than preserving weaker
+      Penguin-only routes by default.
 - [ ] Prioritize backend parity for:
   - session create/list/get/messages
   - message/part event persistence and replay
@@ -445,6 +869,8 @@ Initial conclusions for Phases 1 and 1.5:
   `session.status`, or should those always come from the backend?
 - Can Penguin's backend provide enough immediate session truth to eliminate most
   optimistic prompt logic?
+- What is the right TUI-visible threshold for an active stream becoming
+  `stale`, and should that threshold be configurable?
 - Should project/task commands be first-class OpenCode-compatible commands, or
   stay as Penguin-only local commands?
 - Should settings and skills panels be upstreamable abstractions, or Penguin-only
@@ -488,6 +914,12 @@ Initial conclusions for Phases 1 and 1.5:
   terminal problem for Penguin to own.
 - Prefer upstream-compatible backend/API fixes when they also strengthen Link's
   runtime adapter story.
+- Treat spinner reliability and wall-clock elapsed time as runtime trust
+  signals, not cosmetic polish. They should be fixed before a broad rebase if
+  they are isolated enough to do safely.
+- When OpenCode does something materially better on the backend, recreate or
+  adapt the better contract in Penguin in a later backend phase instead of
+  cementing current Penguin route shapes.
 - Use Link's `RuntimeEvent`/`SessionEvent` direction as a guardrail: do not let
   Penguin/OpenCode/A2A-specific vocabulary become the long-term Link frontend
   contract.
@@ -501,6 +933,11 @@ Initial conclusions for Phases 1 and 1.5:
   overstate or understate real upstream divergence.
 - TUI-side optimistic events can mask backend truth problems and create ordering
   bugs after reload or across sessions.
+- A stopped spinner during an active backend run is a high-trust UX failure:
+  users cannot distinguish slow work from event-stream stalls or bugs.
+- A wall-clock timer implemented only from local prompt timestamps may be good
+  enough short term, but backend-provided run start/end times are preferable for
+  reload/replay correctness.
 - Directory/session scoping is subtle. Moving it too aggressively could regress
   multi-worktree or subagent behavior.
 - Provider/model defaults may be carrying implicit assumptions about Penguin's

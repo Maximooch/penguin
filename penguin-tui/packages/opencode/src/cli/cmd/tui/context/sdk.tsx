@@ -1,9 +1,10 @@
 import { createOpencodeClient, type Event } from "@opencode-ai/sdk/v2"
 import { createSimpleContext } from "./helper"
 import { createGlobalEmitter } from "@solid-primitives/event-bus"
-import { batch, createEffect, onCleanup, onMount } from "solid-js"
+import { batch, createEffect, createSignal, onCleanup, onMount } from "solid-js"
 import { useRoute } from "./route"
 import { getPenguinAuthHeaders } from "./penguin-auth"
+import { cleanPenguinEvent, streamPenguinEvents } from "./penguin-event-stream"
 
 export type EventSource = {
   on: (handler: (event: Event) => void) => () => void
@@ -51,6 +52,12 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     let last = 0
     let streamAbort: AbortController | undefined
     const auth = { denied: false }
+    const [stream, setStream] = createSignal<{
+      lastEventAt?: number
+      status: "idle" | "connecting" | "connected" | "reconnecting" | "denied"
+    }>({
+      status: penguin ? "connecting" : "idle",
+    })
 
     const flush = () => {
       if (queue.length === 0) return
@@ -66,22 +73,16 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       })
     }
 
-    const clean = (value: string) => value.replace(/<\/?finish_response\b[^>]*>?/g, "")
-
     const handleEvent = (event: Event) => {
-      if (penguin && event.type === "message.part.updated") {
-        const part = event.properties.part
-        if (part && part.type === "text" && typeof part.text === "string") {
-          const text = clean(part.text)
-          if (text !== part.text) part.text = text
-        }
-        if (typeof event.properties.delta === "string") {
-          const delta = clean(event.properties.delta)
-          if (delta !== event.properties.delta) event.properties.delta = delta
-        }
+      const now = Date.now()
+      if (penguin) {
+        setStream({
+          lastEventAt: now,
+          status: "connected",
+        })
       }
-      queue.push(event)
-      const elapsed = Date.now() - last
+      queue.push(penguin ? cleanPenguinEvent(event) : event)
+      const elapsed = now - last
 
       if (timer) return
       // If we just flushed recently (within 16ms), batch this with future events
@@ -93,77 +94,38 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       flush()
     }
 
-    const parseJson = (input: string) => {
-      try {
-        return JSON.parse(input) as Event
-      } catch {
-        return undefined
-      }
-    }
-
-    const parseEvent = (input: string) => {
-      const data = input
-        .split("\n")
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice(5).trim())
-        .join("\n")
-      if (!data) return undefined
-      return parseJson(data)
-    }
-
     const streamPenguin = async () => {
-      const base = new URL("/api/v1/events/sse", props.url)
       const activeSessionID = sessionID()
-      if (activeSessionID) base.searchParams.set("session_id", activeSessionID)
-      if (props.directory) base.searchParams.set("directory", props.directory)
-
       streamAbort = new AbortController()
       const currentStreamAbort = streamAbort
+      setStream((current) => ({
+        lastEventAt: current.lastEventAt,
+        status: current.lastEventAt ? "reconnecting" : "connecting",
+      }))
 
-      const res = await request(base, {
+      await streamPenguinEvents<Event>({
+        baseUrl: props.url,
+        directory: props.directory,
+        fetch: request,
+        sessionID: activeSessionID,
         signal: currentStreamAbort.signal,
-        headers: {
-          Accept: "text/event-stream",
+        isCurrentSession: () => sessionID() === activeSessionID,
+        onOpen: () => {
+          setStream((current) => ({
+            lastEventAt: current.lastEventAt,
+            status: "connected",
+          }))
         },
-      })
-
-      if (!res.ok) {
-        if (res.status === 401) {
+        onUnauthorized: () => {
           auth.denied = true
+          setStream((current) => ({
+            lastEventAt: current.lastEventAt,
+            status: "denied",
+          }))
           console.error("Penguin SSE unauthorized; restart the TUI to refresh local auth")
-        }
-        return
-      }
-
-      const reader = res.body?.getReader()
-
-      if (!reader) return
-
-      const decoder = new TextDecoder()
-      const state = { buffer: "" }
-
-      while (true) {
-        if (abort.signal.aborted || currentStreamAbort.signal.aborted) break
-
-        const chunk = await reader.read()
-        if (chunk.done) break
-
-        if (sessionID() !== activeSessionID) {
-          try {
-            await reader.cancel()
-          } catch {}
-          break
-        }
-
-        state.buffer += decoder.decode(chunk.value, { stream: true })
-        const parts = state.buffer.split("\n\n")
-        state.buffer = parts.pop() ?? ""
-        for (const part of parts) {
-          const event = parseEvent(part)
-          if (!event) continue
-          handleEvent(event)
-        }
-      }
+        },
+        onEvent: handleEvent,
+      })
     }
 
     createEffect(() => {
@@ -191,6 +153,10 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
             flush()
           }
           if (abort.signal.aborted || auth.denied) break
+          setStream((current) => ({
+            lastEventAt: current.lastEventAt,
+            status: "reconnecting",
+          }))
           await wait(250)
         }
         return
@@ -231,6 +197,9 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       url: props.url,
       directory: props.directory,
       penguin,
+      get stream() {
+        return stream()
+      },
       get sessionID() {
         return sessionID()
       },
