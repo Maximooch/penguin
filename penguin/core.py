@@ -160,6 +160,7 @@ from penguin._version import __version__ as PENGUIN_VERSION
 # LLM and API
 from penguin.llm.api_client import APIClient
 from penguin.llm.model_config import ModelConfig, fetch_model_specs
+from .core_runtime import checkpoint_runtime as core_checkpoint_runtime
 from .core_runtime import model_runtime as core_model_runtime
 from penguin.llm.stream_handler import (
     StreamingStateManager,
@@ -2338,8 +2339,10 @@ class PenguinCore:
         Returns:
             Checkpoint ID if successful, None otherwise
         """
-        return await self.conversation_manager.create_manual_checkpoint(
-            name=name, description=description
+        return await core_checkpoint_runtime.create_checkpoint(
+            self.conversation_manager,
+            name=name,
+            description=description,
         )
 
     async def rollback_to_checkpoint(self, checkpoint_id: str) -> bool:
@@ -2352,7 +2355,10 @@ class PenguinCore:
         Returns:
             True if successful, False otherwise
         """
-        return await self.conversation_manager.rollback_to_checkpoint(checkpoint_id)
+        return await core_checkpoint_runtime.rollback_to_checkpoint(
+            self.conversation_manager,
+            checkpoint_id,
+        )
 
     async def branch_from_checkpoint(
         self,
@@ -2371,8 +2377,11 @@ class PenguinCore:
         Returns:
             New branch checkpoint ID if successful, None otherwise
         """
-        return await self.conversation_manager.branch_from_checkpoint(
-            checkpoint_id, name=name, description=description
+        return await core_checkpoint_runtime.branch_from_checkpoint(
+            self.conversation_manager,
+            checkpoint_id,
+            name=name,
+            description=description,
         )
 
     def list_checkpoints(
@@ -2388,13 +2397,8 @@ class PenguinCore:
         Returns:
             List of checkpoint information
         """
-        # If no session_id specified, use current session
-        if session_id is None:
-            current_session = self.conversation_manager.get_current_session()
-            if current_session:
-                session_id = current_session.id
-
-        return self.conversation_manager.list_checkpoints(
+        return core_checkpoint_runtime.list_checkpoints(
+            self.conversation_manager,
             session_id=session_id, limit=limit
         )
 
@@ -2405,7 +2409,9 @@ class PenguinCore:
         Returns:
             Number of checkpoints cleaned up
         """
-        return await self.conversation_manager.cleanup_old_checkpoints()
+        return await core_checkpoint_runtime.cleanup_old_checkpoints(
+            self.conversation_manager
+        )
 
     def get_checkpoint_stats(self) -> Dict[str, Any]:
         """
@@ -2414,44 +2420,9 @@ class PenguinCore:
         Returns:
             Dictionary with checkpoint statistics
         """
-        if (
-            not self.conversation_manager
-            or not self.conversation_manager.checkpoint_manager
-        ):
-            return {
-                "enabled": False,
-                "total_checkpoints": 0,
-                "auto_checkpoints": 0,
-                "manual_checkpoints": 0,
-                "branch_checkpoints": 0,
-            }
-
-        checkpoints = self.conversation_manager.list_checkpoints(limit=1000)
-
-        stats = {
-            "enabled": True,
-            "total_checkpoints": len(checkpoints),
-            "auto_checkpoints": len(
-                [cp for cp in checkpoints if cp.get("auto", False)]
-            ),
-            "manual_checkpoints": len(
-                [cp for cp in checkpoints if cp.get("type") == "manual"]
-            ),
-            "branch_checkpoints": len(
-                [cp for cp in checkpoints if cp.get("type") == "branch"]
-            ),
-            "config": {
-                "frequency": self.conversation_manager.checkpoint_manager.config.frequency,
-                "retention_hours": self.conversation_manager.checkpoint_manager.config.retention[
-                    "keep_all_hours"
-                ],
-                "max_age_days": self.conversation_manager.checkpoint_manager.config.retention[
-                    "max_age_days"
-                ],
-            },
-        }
-
-        return stats
+        return core_checkpoint_runtime.get_checkpoint_stats(
+            self.conversation_manager
+        )
 
     # System Diagnostics and Information API
     # ------------------------------------------------------------------

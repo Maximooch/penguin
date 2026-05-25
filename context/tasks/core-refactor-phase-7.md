@@ -10,6 +10,20 @@ Phase 7 is not a free-form cleanup pass. Each extraction should start from a
 tested contract and end with `PenguinCore` acting as construction, delegation,
 and compatibility facade only.
 
+## Phase Boundary
+
+Phase 7 stays focused on bounded extraction slices. Do not turn this into a
+broad "finish `core.py`" pass.
+
+Phase 8 follows as the planned assault phase: random-order runs, focused
+property/fault-injection expansion, provider stream edge cases, and small
+mutation candidates.
+
+The heavier safety-critical reliability program is intentionally deferred to
+future phases after 7-8. That future work can add broader formal models,
+observability/metrics, replay pipelines, and production-grade assurance without
+blocking the current extraction sequence.
+
 ## Scope
 
 Candidate extraction areas:

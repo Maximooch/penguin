@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import os
-import select
 import signal
 import subprocess
 import time
@@ -12,7 +11,7 @@ import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Deque, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +36,7 @@ class ManagedProcess:
     process: subprocess.Popen[str]
     env_overrides: dict[str, str] = field(default_factory=dict)
     started_at: float = field(default_factory=time.time)
-    events: Deque[ProcessOutputEvent] = field(default_factory=deque)
+    events: deque[ProcessOutputEvent] = field(default_factory=deque)
     next_sequence: int = 1
 
     def append_output(self, stream: str, text: str) -> None:
@@ -69,9 +68,9 @@ class ProcessRuntime:
         self,
         command: str,
         *,
-        cwd: Optional[str] = None,
-        env: Optional[dict[str, str]] = None,
-        process_id: Optional[str] = None,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        process_id: str | None = None,
     ) -> dict[str, Any]:
         """Start a persistent shell process.
 
@@ -207,9 +206,6 @@ class ProcessRuntime:
             fd = pipe.fileno()
             while True:
                 try:
-                    ready, _, _ = select.select([fd], [], [], 0)
-                    if not ready:
-                        break
                     chunk = os.read(fd, 4096)
                 except BlockingIOError:
                     break
@@ -249,14 +245,15 @@ class ProcessRuntime:
         *,
         output: str,
         since_sequence: int,
-        next_sequence: Optional[int] = None,
+        next_sequence: int | None = None,
     ) -> dict[str, Any]:
         returncode = record.process.poll()
         status = "running" if returncode is None else "exited"
-        next_value = next_sequence if next_sequence is not None else record.next_sequence
+        next_value = (
+            next_sequence if next_sequence is not None else record.next_sequence
+        )
         result = (
-            f"process_id={record.process_id} status={status} "
-            f"returncode={returncode}"
+            f"process_id={record.process_id} status={status} returncode={returncode}"
         )
         if output:
             result = f"{result}\n{output}"
