@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, MutableMapping
 
@@ -15,6 +16,8 @@ ToolManagerFactory = Callable[..., Any]
 SystemPromptBuilder = Callable[[str], str]
 OutputFormatter = Callable[[str], Any]
 EnvLoader = Callable[[], Any]
+ProgressCallback = Callable[[int, int, str], Any]
+TqdmFactory = Callable[..., Any]
 
 __all__ = [
     "ApiClientFactory",
@@ -22,9 +25,12 @@ __all__ = [
     "EnvLoader",
     "ModelConfigFactory",
     "OutputFormatter",
+    "ProgressCallback",
     "RuntimeConfigFactory",
+    "StartupProgress",
     "SystemPromptBuilder",
     "ToolManagerFactory",
+    "TqdmFactory",
     "build_api_client",
     "build_initial_model_config",
     "build_tool_manager",
@@ -35,6 +41,90 @@ __all__ = [
     "load_startup_config",
     "resolve_fast_startup",
 ]
+
+_BASE_STARTUP_STEPS = [
+    "Loading environment",
+    "Setting up logging",
+    "Loading configuration",
+    "Creating model config",
+    "Initializing API client",
+    "Creating tool manager",
+    "Creating core instance",
+]
+
+
+@dataclass
+class StartupProgress:
+    """Track startup progress callbacks and optional console progress bar."""
+
+    steps: list[str]
+    progress_callback: ProgressCallback | None = None
+    pbar: Any = None
+    current_step_index: int = 0
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        enable_cli: bool,
+        show_progress: bool,
+        progress_callback: ProgressCallback | None,
+        tqdm_factory: TqdmFactory,
+    ) -> StartupProgress:
+        """Build startup progress state for PenguinCore.create."""
+
+        steps = list(_BASE_STARTUP_STEPS)
+        if enable_cli:
+            steps.append("Initializing CLI")
+
+        pbar = None
+        if show_progress and progress_callback is None:
+            pbar = tqdm_factory(steps, desc="Initializing Penguin", unit="step")
+        return cls(
+            steps=steps,
+            progress_callback=progress_callback,
+            pbar=pbar,
+        )
+
+    @property
+    def total_steps(self) -> int:
+        return len(self.steps)
+
+    def start_step(self, label: str) -> None:
+        """Mark a step as active for both tqdm and callback consumers."""
+
+        if self.pbar:
+            self.pbar.set_description(label)
+        if self.progress_callback:
+            self.current_step_index += 1
+            self.progress_callback(
+                self.current_step_index,
+                self.total_steps,
+                label,
+            )
+
+    def complete_step(self) -> None:
+        """Advance the visual progress bar when present."""
+
+        if self.pbar:
+            self.pbar.update(1)
+
+    def finish(self) -> None:
+        """Close progress and send a final callback if not every step emitted."""
+
+        self.close()
+        if self.progress_callback and self.current_step_index < self.total_steps:
+            self.progress_callback(
+                self.total_steps,
+                self.total_steps,
+                "Initialization complete",
+            )
+
+    def close(self) -> None:
+        """Close the visual progress bar if one was created."""
+
+        if self.pbar:
+            self.pbar.close()
 
 
 def ensure_tokenizers_parallelism(

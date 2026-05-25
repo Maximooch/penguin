@@ -308,7 +308,7 @@ class PenguinCore:
         # Fix HuggingFace tokenizers parallelism warning early, before any model loading
         core_startup.ensure_tokenizers_parallelism()
 
-        pbar = None  # Initialize pbar to None
+        progress = None
         # Track detailed timing for profiling
         import time
         from collections import defaultdict
@@ -327,68 +327,35 @@ class PenguinCore:
 
         try:
             with profile_startup_phase("PenguinCore.create_total"):
-                # Initialize progress bar only if show_progress is True
-                steps = [
-                    "Loading environment",
-                    "Setting up logging",
-                    "Loading configuration",
-                    "Creating model config",
-                    "Initializing API client",
-                    "Creating tool manager",
-                    "Creating core instance",
-                ]
-                if enable_cli:
-                    steps.append("Initializing CLI")
-
-                total_steps = len(steps)
-                if show_progress and progress_callback is None:
-                    # Fall back to tqdm console only if no external callback provided
-                    pbar = tqdm(steps, desc="Initializing Penguin", unit="step")
-                # Internal helper to advance external progress callback if supplied
-                current_step_index = 0
+                progress = core_startup.StartupProgress.create(
+                    enable_cli=enable_cli,
+                    show_progress=show_progress,
+                    progress_callback=progress_callback,
+                    tqdm_factory=tqdm,
+                )
 
                 # Step 1: Load environment
                 with profile_startup_phase("Load environment"):
                     logger.info("STARTUP: Loading environment variables")
-                    if pbar:
-                        pbar.set_description("Loading environment")
-                    if progress_callback:
-                        current_step_index += 1
-                        progress_callback(
-                            current_step_index, total_steps, "Loading environment"
-                        )
+                    progress.start_step("Loading environment")
                     # load_dotenv() is already invoked centrally in config.py at import time.
                     # Calling it again here is redundant and can subtly override earlier values.
                     # Intentionally no-op.
-                    if pbar:
-                        pbar.update(1)
+                    progress.complete_step()
                     log_step_time("Load environment")
 
                 # Step 2: Initialize logging
                 with profile_startup_phase("Setup logging"):
                     logger.info("STARTUP: Setting up logging configuration")
-                    if pbar:
-                        pbar.set_description("Setting up logging")
-                    if progress_callback:
-                        current_step_index += 1
-                        progress_callback(
-                            current_step_index, total_steps, "Setting up logging"
-                        )
+                    progress.start_step("Setting up logging")
                     core_startup.configure_startup_logging()
-                    if pbar:
-                        pbar.update(1)
+                    progress.complete_step()
                     log_step_time("Setup logging")
 
                 # Load configuration
                 with profile_startup_phase("Load configuration"):
                     logger.info("STARTUP: Loading and parsing configuration")
-                    if pbar:
-                        pbar.set_description("Loading configuration")
-                    if progress_callback:
-                        current_step_index += 1
-                        progress_callback(
-                            current_step_index, total_steps, "Loading configuration"
-                        )
+                    progress.start_step("Loading configuration")
                     start_config_time = time.time()
                     config = core_startup.load_startup_config(
                         config,
@@ -405,20 +372,13 @@ class PenguinCore:
                     logger.info(
                         f"STARTUP: Config loaded in {time.time() - start_config_time:.4f}s"
                     )
-                    if pbar:
-                        pbar.update(1)
+                    progress.complete_step()
                     log_step_time("Load configuration")
 
                 # Initialize model configuration
                 with profile_startup_phase("Create model config"):
                     logger.info("STARTUP: Creating model configuration")
-                    if pbar:
-                        pbar.set_description("Creating model config")
-                    if progress_callback:
-                        current_step_index += 1
-                        progress_callback(
-                            current_step_index, total_steps, "Creating model config"
-                        )
+                    progress.start_step("Creating model config")
                     model_config = core_startup.build_initial_model_config(
                         config,
                         model=model,
@@ -430,20 +390,13 @@ class PenguinCore:
                     logger.info(
                         f"STARTUP: Using model={model_config.model}, provider={model_config.provider}, client={model_config.client_preference}"
                     )
-                    if pbar:
-                        pbar.update(1)
+                    progress.complete_step()
                     log_step_time("Create model config")
 
                 # Create API client
                 with profile_startup_phase("Initialize API client"):
                     logger.info("STARTUP: Initializing API client")
-                    if pbar:
-                        pbar.set_description("Initializing API client")
-                    if progress_callback:
-                        current_step_index += 1
-                        progress_callback(
-                            current_step_index, total_steps, "Initializing API client"
-                        )
+                    progress.start_step("Initializing API client")
                     api_client_start = time.time()
                     api_client = core_startup.build_api_client(
                         model_config,
@@ -454,8 +407,7 @@ class PenguinCore:
                     logger.info(
                         f"STARTUP: API client initialized in {time.time() - api_client_start:.4f}s"
                     )
-                    if pbar:
-                        pbar.update(1)
+                    progress.complete_step()
                     log_step_time("Initialize API client")
 
                 # Initialize tool manager
@@ -463,13 +415,7 @@ class PenguinCore:
                     logger.info(
                         f"STARTUP: Creating tool manager (fast_startup={fast_startup})"
                     )
-                    if pbar:
-                        pbar.set_description("Creating tool manager")
-                    if progress_callback:
-                        current_step_index += 1
-                        progress_callback(
-                            current_step_index, total_steps, "Creating tool manager"
-                        )
+                    progress.start_step("Creating tool manager")
                     tool_manager_start = time.time()
                     print("DEBUG: Creating ToolManager in PenguinCore...")
                     print(
@@ -488,20 +434,13 @@ class PenguinCore:
                     logger.info(
                         f"STARTUP: Tool manager created in {time.time() - tool_manager_start:.4f}s with {len(tool_manager.tools) if hasattr(tool_manager, 'tools') else 'unknown'} tools"
                     )
-                    if pbar:
-                        pbar.update(1)
+                    progress.complete_step()
                     log_step_time("Create tool manager")
 
                 # Create core instance
                 with profile_startup_phase("Create core instance"):
                     logger.info("STARTUP: Creating core instance")
-                    if pbar:
-                        pbar.set_description("Creating core instance")
-                    if progress_callback:
-                        current_step_index += 1
-                        progress_callback(
-                            current_step_index, total_steps, "Creating core instance"
-                        )
+                    progress.start_step("Creating core instance")
                     core_start = time.time()
                     instance = cls(
                         config=config,
@@ -512,20 +451,13 @@ class PenguinCore:
                     logger.info(
                         f"STARTUP: Core instance created in {time.time() - core_start:.4f}s"
                     )
-                    if pbar:
-                        pbar.update(1)
+                    progress.complete_step()
                     log_step_time("Create core instance")
 
                 if enable_cli:
                     with profile_startup_phase("Initialize CLI"):
                         logger.info("STARTUP: Initializing CLI")
-                        if pbar:
-                            pbar.set_description("Initializing CLI")
-                        if progress_callback:
-                            current_step_index += 1
-                            progress_callback(
-                                current_step_index, total_steps, "Initializing CLI"
-                            )
+                        progress.start_step("Initializing CLI")
                         cli_start = time.time()
                         from penguin.chat.cli import PenguinCLI
 
@@ -533,17 +465,10 @@ class PenguinCore:
                         logger.info(
                             f"STARTUP: CLI initialized in {time.time() - cli_start:.4f}s"
                         )
-                        if pbar:
-                            pbar.update(1)
+                        progress.complete_step()
                         log_step_time("Initialize CLI")
 
-                if pbar:
-                    pbar.close()
-                # Ensure external progress finishes
-                if progress_callback and current_step_index < total_steps:
-                    progress_callback(
-                        total_steps, total_steps, "Initialization complete"
-                    )
+                progress.finish()
 
                 total_time = time.time() - overall_start_time
                 logger.info(
@@ -571,8 +496,8 @@ class PenguinCore:
         except Exception as e:
             error_time = time.time() - overall_start_time
             logger.error(f"STARTUP FAILED after {error_time:.4f}s: {str(e)}")
-            if pbar:
-                pbar.close()
+            if progress is not None:
+                progress.close()
             error_msg = f"Failed to initialize PenguinCore: {str(e)}"
             logger.error(error_msg)
             raise RuntimeError(error_msg) from e

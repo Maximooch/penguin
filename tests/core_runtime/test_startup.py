@@ -18,6 +18,87 @@ class _RuntimeConfig:
         self.observers.append(observer)
 
 
+class _FakeProgressBar:
+    def __init__(self) -> None:
+        self.descriptions: list[str] = []
+        self.updates: list[int] = []
+        self.closed = False
+
+    def set_description(self, label: str) -> None:
+        self.descriptions.append(label)
+
+    def update(self, value: int) -> None:
+        self.updates.append(value)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_startup_progress_uses_tqdm_without_external_callback() -> None:
+    pbar = _FakeProgressBar()
+    factory_calls: list[dict[str, Any]] = []
+
+    def _tqdm_factory(steps: list[str], **kwargs: Any) -> _FakeProgressBar:
+        factory_calls.append({"steps": steps, **kwargs})
+        return pbar
+
+    progress = startup.StartupProgress.create(
+        enable_cli=True,
+        show_progress=True,
+        progress_callback=None,
+        tqdm_factory=_tqdm_factory,
+    )
+
+    progress.start_step("Loading environment")
+    progress.complete_step()
+    progress.finish()
+
+    assert progress.total_steps == 8
+    assert factory_calls == [
+        {
+            "steps": [
+                "Loading environment",
+                "Setting up logging",
+                "Loading configuration",
+                "Creating model config",
+                "Initializing API client",
+                "Creating tool manager",
+                "Creating core instance",
+                "Initializing CLI",
+            ],
+            "desc": "Initializing Penguin",
+            "unit": "step",
+        }
+    ]
+    assert pbar.descriptions == ["Loading environment"]
+    assert pbar.updates == [1]
+    assert pbar.closed is True
+
+
+def test_startup_progress_callback_gets_step_counts_and_finish_guard() -> None:
+    calls: list[tuple[int, int, str]] = []
+
+    progress = startup.StartupProgress.create(
+        enable_cli=False,
+        show_progress=True,
+        progress_callback=lambda current, total, label: calls.append(
+            (current, total, label)
+        ),
+        tqdm_factory=lambda *_args, **_kwargs: _FakeProgressBar(),
+    )
+
+    progress.start_step("Loading environment")
+    progress.start_step("Setting up logging")
+    progress.finish()
+
+    assert progress.pbar is None
+    assert calls == [
+        (1, 7, "Loading environment"),
+        (2, 7, "Setting up logging"),
+        (7, 7, "Initialization complete"),
+    ]
+
+
 def test_ensure_tokenizers_parallelism_sets_default_without_overwriting() -> None:
     env: dict[str, str] = {}
 
