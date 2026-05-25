@@ -179,6 +179,7 @@ from penguin.llm.stream_handler import (
     AgentStreamingStateManager,
     StreamingConfig,
 )
+from penguin.multi import routing as multi_routing
 
 MODEL_CONFIG_FIELD_NAMES = {field.name for field in fields(ModelConfig)}
 
@@ -1351,17 +1352,16 @@ class PenguinCore:
         channel: Optional[str] = None,
     ) -> bool:
         """Route a message via Engine's MessageBus integration."""
-        if self.engine:
-            return await self.engine.route_message(
-                recipient_id,
-                content,
-                message_type=message_type,
-                metadata=metadata,
-                agent_id=agent_id,
-                channel=channel,
-            )
-        logger.warning("Engine not available for message routing")
-        return False
+        return await multi_routing.route_message(
+            self,
+            recipient_id,
+            content,
+            message_type=message_type,
+            metadata=metadata,
+            agent_id=agent_id,
+            channel=channel,
+            logger=logger,
+        )
 
     async def send_to_agent(
         self,
@@ -1373,15 +1373,14 @@ class PenguinCore:
         channel: Optional[str] = None,
     ) -> bool:
         """Send a message to an agent via Engine."""
-        if self.engine:
-            return await self.engine.send_to_agent(
-                agent_id,
-                content,
-                message_type=message_type,
-                metadata=metadata,
-                channel=channel,
-            )
-        return False
+        return await multi_routing.send_to_agent(
+            self,
+            agent_id,
+            content,
+            message_type=message_type,
+            metadata=metadata,
+            channel=channel,
+        )
 
     async def send_to_human(
         self,
@@ -1392,14 +1391,13 @@ class PenguinCore:
         channel: Optional[str] = None,
     ) -> bool:
         """Send a message to the human (UI) via Engine."""
-        if self.engine:
-            return await self.engine.send_to_human(
-                content,
-                message_type=message_type,
-                metadata=metadata,
-                channel=channel,
-            )
-        return False
+        return await multi_routing.send_to_human(
+            self,
+            content,
+            message_type=message_type,
+            metadata=metadata,
+            channel=channel,
+        )
 
     async def human_reply(
         self,
@@ -1411,15 +1409,14 @@ class PenguinCore:
         channel: Optional[str] = None,
     ) -> bool:
         """Send a reply from human to an agent via Engine."""
-        if self.engine:
-            return await self.engine.human_reply(
-                agent_id,
-                content,
-                message_type=message_type,
-                metadata=metadata,
-                channel=channel,
-            )
-        return False
+        return await multi_routing.human_reply(
+            self,
+            agent_id,
+            content,
+            message_type=message_type,
+            metadata=metadata,
+            channel=channel,
+        )
 
     async def get_telemetry_summary(self) -> Dict[str, Any]:
         telemetry = getattr(self, "telemetry", None)
