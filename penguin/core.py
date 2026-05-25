@@ -3306,93 +3306,12 @@ class PenguinCore:
             event_type: Type of event (e.g., "stream_chunk", "token_update", etc.)
             data: Event data relevant to the event type
         """
-        data_keys = list(data.keys()) if isinstance(data, dict) else []
-        logger.debug(
-            "emit_ui_event called: %s keys=%s bus=%s",
+        await core_stream_events.emit_ui_event(
+            self,
             event_type,
-            data_keys,
-            id(self.event_bus),
+            data,
+            logger=logger,
         )
-
-        # Filter internal markers from content before emitting
-        if isinstance(data, dict):
-            data = self._filter_internal_markers_from_event(data)
-
-        execution_context = get_current_execution_context()
-
-        # Tag with agent_id when available so UI can label sources
-        try:
-            if isinstance(data, dict):
-                # Tag missing or empty agent_id with the current active agent
-                if not data.get("agent_id"):
-                    context_agent = (
-                        execution_context.agent_id if execution_context else None
-                    )
-                    if context_agent:
-                        data = dict(data)
-                        data["agent_id"] = context_agent
-                    else:
-                        cm = getattr(self, "conversation_manager", None)
-                        if cm and hasattr(cm, "current_agent_id"):
-                            data = dict(data)
-                            data["agent_id"] = cm.current_agent_id
-        except Exception:
-            pass
-
-        # Inject conversation/session ids for SSE filtering
-        if isinstance(data, dict):
-            scoped_conversation_id = None
-            scoped_session_id = None
-            if execution_context:
-                scoped_conversation_id = (
-                    execution_context.conversation_id or execution_context.session_id
-                )
-                scoped_session_id = (
-                    execution_context.session_id or scoped_conversation_id
-                )
-
-            if scoped_conversation_id and not data.get("conversation_id"):
-                data = dict(data)
-                data["conversation_id"] = scoped_conversation_id
-            if scoped_session_id and not data.get("session_id"):
-                data = dict(data)
-                data["session_id"] = scoped_session_id
-
-            if not data.get("conversation_id") or not data.get("session_id"):
-                fallback_conversation_id = getattr(
-                    self, "_current_conversation_id", None
-                )
-                if fallback_conversation_id:
-                    data = dict(data)  # shallow copy to avoid mutating caller dict
-                    data.setdefault("conversation_id", fallback_conversation_id)
-                    data.setdefault("session_id", fallback_conversation_id)
-
-        # Emit through unified event bus
-        try:
-            await self.event_bus.emit(event_type, data)
-
-            if event_type == "status" and isinstance(data, dict):
-                status_type = data.get("status_type")
-                session_id = data.get("session_id") or data.get("conversation_id")
-                if isinstance(status_type, str) and isinstance(session_id, str):
-                    # SSE clients subscribe to `opencode_event`, so bridge session-scoped RunMode
-                    # status truth here for the statuses the web surface needs to preserve.
-                    bridgeable_statuses = {
-                        "clarification_needed",
-                        "clarification_answered",
-                        "time_limit_reached",
-                        "idle_no_ready_tasks",
-                    }
-                    if status_type in bridgeable_statuses:
-                        await self._emit_opencode_session_status(
-                            session_id,
-                            status_type,
-                            info=data.get("data")
-                            if isinstance(data.get("data"), dict)
-                            else None,
-                        )
-        except Exception as e:
-            logger.error(f"[TUI_ADAPTER] ERROR in event_bus.emit: {e}", exc_info=True)
 
     def _filter_internal_markers_from_event(
         self, data: Dict[str, Any]

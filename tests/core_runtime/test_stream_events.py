@@ -11,6 +11,7 @@ import pytest
 
 from penguin.core_runtime import stream_events
 from penguin.llm.stream_handler import AgentStreamingStateManager
+from penguin.system.execution_context import ExecutionContext, execution_context_scope
 from penguin.system.state import MessageCategory
 
 
@@ -252,6 +253,80 @@ async def test_emit_opencode_session_status_shapes_and_scopes_event() -> None:
             },
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_emit_ui_event_filters_and_scopes_from_execution_context() -> None:
+    owner = SimpleNamespace(
+        event_bus=_EventBus(),
+        conversation_manager=SimpleNamespace(current_agent_id="fallback_agent"),
+    )
+    payload = {"content": "visible <execute>hidden</execute>"}
+
+    with execution_context_scope(
+        ExecutionContext(
+            session_id="session_1",
+            conversation_id="conversation_1",
+            agent_id="agent_1",
+        )
+    ):
+        await stream_events.emit_ui_event(
+            owner,
+            "message",
+            payload,
+            logger=logging.getLogger(__name__),
+        )
+
+    assert payload == {"content": "visible <execute>hidden</execute>"}
+    assert owner.event_bus.events == [
+        (
+            "message",
+            {
+                "content": "visible",
+                "agent_id": "agent_1",
+                "conversation_id": "conversation_1",
+                "session_id": "session_1",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_emit_ui_event_bridges_runmode_status_to_opencode_status() -> None:
+    owner = SimpleNamespace(
+        event_bus=_EventBus(),
+        conversation_manager=SimpleNamespace(current_agent_id="default"),
+        _current_conversation_id="session_fallback",
+    )
+
+    await stream_events.emit_ui_event(
+        owner,
+        "status",
+        {"status_type": "time_limit_reached", "data": {"summary": "hit limit"}},
+        logger=logging.getLogger(__name__),
+    )
+
+    assert owner.event_bus.events[0] == (
+        "status",
+        {
+            "status_type": "time_limit_reached",
+            "data": {"summary": "hit limit"},
+            "agent_id": "default",
+            "conversation_id": "session_fallback",
+            "session_id": "session_fallback",
+        },
+    )
+    assert owner.event_bus.events[1] == (
+        "opencode_event",
+        {
+            "type": "session.status",
+            "properties": {
+                "sessionID": "session_fallback",
+                "status": {"type": "time_limit_reached"},
+                "info": {"summary": "hit limit"},
+            },
+        },
+    )
 
 
 @pytest.mark.asyncio

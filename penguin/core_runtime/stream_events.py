@@ -21,6 +21,7 @@ __all__ = [
     "emit_opencode_stream_end",
     "emit_opencode_stream_start",
     "emit_opencode_user_message_with_metadata",
+    "emit_ui_event",
     "filter_internal_markers_from_event",
     "finalize_streaming_message",
     "handle_stream_chunk",
@@ -202,6 +203,93 @@ async def emit_opencode_session_status(
             "properties": properties,
         },
     )
+
+
+async def emit_ui_event(
+    owner: Any,
+    event_type: str,
+    data: Any,
+    *,
+    logger: Any,
+) -> None:
+    """Emit a UI event with Penguin/OpenCode session scoping."""
+
+    data_keys = list(data.keys()) if isinstance(data, dict) else []
+    logger.debug(
+        "emit_ui_event called: %s keys=%s bus=%s",
+        event_type,
+        data_keys,
+        id(owner.event_bus),
+    )
+
+    if isinstance(data, dict):
+        data = filter_internal_markers_from_event(data)
+
+    execution_context = get_current_execution_context()
+
+    try:
+        if isinstance(data, dict) and not data.get("agent_id"):
+            context_agent = execution_context.agent_id if execution_context else None
+            if context_agent:
+                data = dict(data)
+                data["agent_id"] = context_agent
+            else:
+                conversation_manager = getattr(owner, "conversation_manager", None)
+                if conversation_manager and hasattr(
+                    conversation_manager, "current_agent_id"
+                ):
+                    data = dict(data)
+                    data["agent_id"] = conversation_manager.current_agent_id
+    except Exception:
+        pass
+
+    if isinstance(data, dict):
+        scoped_conversation_id = None
+        scoped_session_id = None
+        if execution_context:
+            scoped_conversation_id = (
+                execution_context.conversation_id or execution_context.session_id
+            )
+            scoped_session_id = execution_context.session_id or scoped_conversation_id
+
+        if scoped_conversation_id and not data.get("conversation_id"):
+            data = dict(data)
+            data["conversation_id"] = scoped_conversation_id
+        if scoped_session_id and not data.get("session_id"):
+            data = dict(data)
+            data["session_id"] = scoped_session_id
+
+        if not data.get("conversation_id") or not data.get("session_id"):
+            fallback_conversation_id = getattr(owner, "_current_conversation_id", None)
+            if fallback_conversation_id:
+                data = dict(data)
+                data.setdefault("conversation_id", fallback_conversation_id)
+                data.setdefault("session_id", fallback_conversation_id)
+
+    try:
+        await owner.event_bus.emit(event_type, data)
+
+        if event_type == "status" and isinstance(data, dict):
+            status_type = data.get("status_type")
+            session_id = data.get("session_id") or data.get("conversation_id")
+            if isinstance(status_type, str) and isinstance(session_id, str):
+                bridgeable_statuses = {
+                    "clarification_needed",
+                    "clarification_answered",
+                    "time_limit_reached",
+                    "idle_no_ready_tasks",
+                }
+                if status_type in bridgeable_statuses:
+                    await emit_opencode_session_status(
+                        owner,
+                        session_id,
+                        status_type,
+                        info=data.get("data")
+                        if isinstance(data.get("data"), dict)
+                        else None,
+                    )
+    except Exception as e:
+        logger.error("[TUI_ADAPTER] ERROR in event_bus.emit: %s", e, exc_info=True)
 
 
 async def abort_session(
