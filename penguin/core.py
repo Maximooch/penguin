@@ -168,6 +168,7 @@ from .core_runtime import model_runtime as core_model_runtime
 from .core_runtime import opencode_adapters as core_opencode_adapters
 from .core_runtime import opencode_bridge as core_opencode_bridge
 from .core_runtime import opencode_persistence as core_opencode_persistence
+from .core_runtime import process_input as core_process_input
 from .core_runtime import process_lifecycle as core_process_lifecycle
 from .core_runtime import prompt_settings as core_prompt_settings
 from .core_runtime import runmode_events as core_runmode_events
@@ -2100,33 +2101,12 @@ class PenguinCore:
         Returns:
             Dict containing assistant response and action results
         """
-        # Handle flexible input format
-        if isinstance(input_data, str):
-            message = input_data
-            image_paths = None
-            client_message_id = None
-        else:
-            message = input_data.get("text", "")
-            image_paths = input_data.get("image_paths")
-            client_message_id = input_data.get("client_message_id")
-            if not isinstance(client_message_id, str) or not client_message_id.strip():
-                client_message_id = None
-            if not image_paths:
-                legacy_path = input_data.get("image_path")
-                if isinstance(legacy_path, str) and legacy_path.strip():
-                    image_paths = [legacy_path.strip()]
+        process_input = core_process_input.normalize_process_input(input_data)
+        message = process_input.message
+        image_paths = process_input.image_paths
+        client_message_id = process_input.client_message_id
 
-            # Handle string input and filter out empty/whitespace-only paths
-            if isinstance(image_paths, str):
-                image_paths = [image_paths.strip()] if image_paths.strip() else None
-            elif isinstance(image_paths, list):
-                image_paths = [
-                    p.strip() for p in image_paths if isinstance(p, str) and p.strip()
-                ]
-                if not image_paths:
-                    image_paths = None
-
-        if not message and not image_paths:
+        if process_input.is_empty:
             return {"assistant_response": "No input provided", "action_results": []}
         conversation_manager = self.conversation_manager
         if self.engine:
