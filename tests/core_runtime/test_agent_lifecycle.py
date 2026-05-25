@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from penguin.core_runtime.agent_lifecycle import (
+    create_agent_conversation,
     create_sub_agent,
     delete_agent_conversation,
     delete_agent_conversation_compat,
@@ -18,6 +19,10 @@ from penguin.core_runtime.agent_lifecycle import (
     get_agent_roster,
     get_persona_catalog,
     is_agent_paused,
+    list_agent_conversations,
+    list_agents,
+    list_sub_agents,
+    load_agent_conversation,
     publish_sub_agent_session_created,
     resolve_agent_execution_scope,
     run_agent_prompt_in_session,
@@ -790,6 +795,84 @@ def test_agent_catalog_and_roster_helpers_delegate(monkeypatch: pytest.MonkeyPat
         "roster",
         "manager",
         "profile",
+    ]
+
+
+def test_agent_conversation_facade_helpers_delegate_to_conversation_manager() -> None:
+    calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+
+    class _ConversationManager:
+        def create_agent_conversation(self, agent_id: str) -> str:
+            calls.append(("create", (agent_id,), {}))
+            return f"conversation:{agent_id}"
+
+        def list_all_conversations(
+            self,
+            *,
+            limit_per_agent: int,
+            offset: int,
+        ) -> list[dict[str, Any]]:
+            calls.append(
+                (
+                    "list_all",
+                    (),
+                    {"limit_per_agent": limit_per_agent, "offset": offset},
+                )
+            )
+            return [{"id": "conversation:worker"}]
+
+        def load_agent_conversation(
+            self,
+            agent_id: str,
+            conversation_id: str,
+            *,
+            activate: bool,
+        ) -> bool:
+            calls.append(
+                (
+                    "load",
+                    (agent_id, conversation_id),
+                    {"activate": activate},
+                )
+            )
+            return activate
+
+        def list_agents(self) -> list[str]:
+            calls.append(("list_agents", (), {}))
+            return ["default", "worker"]
+
+        def list_sub_agents(
+            self,
+            parent_agent_id: str | None = None,
+        ) -> dict[str, list[str]]:
+            calls.append(("list_sub_agents", (parent_agent_id,), {}))
+            return {"default": ["worker"]}
+
+    core = SimpleNamespace(conversation_manager=_ConversationManager())
+
+    assert create_agent_conversation(core, "worker") == "conversation:worker"
+    assert list_agent_conversations(
+        core,
+        limit_per_agent=5,
+        offset=2,
+    ) == [{"id": "conversation:worker"}]
+    assert (
+        load_agent_conversation(
+            core,
+            "worker",
+            "conversation:worker",
+            activate=False,
+        )
+        is False
+    )
+    assert list_agents(core) == ["default", "worker"]
+    assert list_sub_agents(core, "default") == {"default": ["worker"]}
+    assert calls == [
+        ("create", ("worker",), {}),
+        ("list_all", (), {"limit_per_agent": 5, "offset": 2}),
+        ("load", ("worker", "conversation:worker"), {"activate": False}),
+        ("list_agents", (), {}),
+        ("list_sub_agents", ("default",), {}),
     ]
 
 

@@ -475,18 +475,20 @@ class PenguinCore:
 
     # Thin wrappers for agent-scoped conversations
     def create_agent_conversation(self, agent_id: str) -> str:
-        return self.conversation_manager.create_agent_conversation(agent_id)
+        return core_agent_lifecycle.create_agent_conversation(self, agent_id)
 
     def list_all_conversations(self, *, limit_per_agent: int = 1000, offset: int = 0):
-        return self.conversation_manager.list_all_conversations(
-            limit_per_agent=limit_per_agent, offset=offset
+        return core_agent_lifecycle.list_agent_conversations(
+            self,
+            limit_per_agent=limit_per_agent,
+            offset=offset,
         )
 
     def load_agent_conversation(
         self, agent_id: str, conversation_id: str, *, activate: bool = True
     ) -> bool:
-        return self.conversation_manager.load_agent_conversation(
-            agent_id, conversation_id, activate=activate
+        return core_agent_lifecycle.load_agent_conversation(
+            self, agent_id, conversation_id, activate=activate
         )
 
     def delete_agent_conversation_guarded(
@@ -505,13 +507,13 @@ class PenguinCore:
 
     def list_agents(self) -> List[str]:
         """Return all registered agent identifiers."""
-        return self.conversation_manager.list_agents()
+        return core_agent_lifecycle.list_agents(self)
 
     def list_sub_agents(
         self, parent_agent_id: Optional[str] = None
     ) -> Dict[str, List[str]]:
         """Return mapping of parent agents to sub-agents."""
-        return self.conversation_manager.list_sub_agents(parent_agent_id)
+        return core_agent_lifecycle.list_sub_agents(self, parent_agent_id)
 
     # ------------------------------
     # Sub-agent paused state helpers

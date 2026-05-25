@@ -37,6 +37,26 @@ def test_core_agent_lifecycle_shims_delegate_to_runtime(monkeypatch) -> None:
         calls.append(("profile", args, kwargs))
         return {"id": args[1]}
 
+    def _create_conversation(*args: Any, **kwargs: Any) -> str:
+        calls.append(("create_conversation", args, kwargs))
+        return "conv_worker"
+
+    def _list_conversations(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        calls.append(("list_conversations", args, kwargs))
+        return [{"id": "conv_worker"}]
+
+    def _load_conversation(*args: Any, **kwargs: Any) -> bool:
+        calls.append(("load_conversation", args, kwargs))
+        return True
+
+    def _list_agents(*args: Any, **kwargs: Any) -> list[str]:
+        calls.append(("list_agents", args, kwargs))
+        return ["default", "worker"]
+
+    def _list_sub_agents(*args: Any, **kwargs: Any) -> dict[str, list[str]]:
+        calls.append(("list_sub_agents", args, kwargs))
+        return {"default": ["worker"]}
+
     def _unregister(*args: Any, **kwargs: Any) -> bool:
         calls.append(("unregister", args, kwargs))
         return False
@@ -52,6 +72,26 @@ def test_core_agent_lifecycle_shims_delegate_to_runtime(monkeypatch) -> None:
     monkeypatch.setattr(
         "penguin.core.core_agent_lifecycle.get_agent_profile",
         _profile,
+    )
+    monkeypatch.setattr(
+        "penguin.core.core_agent_lifecycle.create_agent_conversation",
+        _create_conversation,
+    )
+    monkeypatch.setattr(
+        "penguin.core.core_agent_lifecycle.list_agent_conversations",
+        _list_conversations,
+    )
+    monkeypatch.setattr(
+        "penguin.core.core_agent_lifecycle.load_agent_conversation",
+        _load_conversation,
+    )
+    monkeypatch.setattr(
+        "penguin.core.core_agent_lifecycle.list_agents",
+        _list_agents,
+    )
+    monkeypatch.setattr(
+        "penguin.core.core_agent_lifecycle.list_sub_agents",
+        _list_sub_agents,
     )
     monkeypatch.setattr(
         "penguin.core.core_agent_lifecycle.ensure_agent_conversation",
@@ -77,6 +117,13 @@ def test_core_agent_lifecycle_shims_delegate_to_runtime(monkeypatch) -> None:
     assert core.get_persona_catalog() == [{"id": "persona"}]
     assert core.get_agent_roster() == [{"id": "worker"}]
     assert core.get_agent_profile("worker") == {"id": "worker"}
+    assert core.create_agent_conversation("worker") == "conv_worker"
+    assert core.list_all_conversations(limit_per_agent=3, offset=1) == [
+        {"id": "conv_worker"}
+    ]
+    assert core.load_agent_conversation("worker", "conv_worker", activate=False) is True
+    assert core.list_agents() == ["default", "worker"]
+    assert core.list_sub_agents("default") == {"default": ["worker"]}
     core.ensure_agent_conversation("worker", system_prompt="system", legacy=True)
     core.create_sub_agent(
         "child",
@@ -96,6 +143,19 @@ def test_core_agent_lifecycle_shims_delegate_to_runtime(monkeypatch) -> None:
         ("persona_catalog", (core,), {}),
         ("roster", (core,), {}),
         ("profile", (core, "worker"), {}),
+        ("create_conversation", (core, "worker"), {}),
+        (
+            "list_conversations",
+            (core,),
+            {"limit_per_agent": 3, "offset": 1},
+        ),
+        (
+            "load_conversation",
+            (core, "worker", "conv_worker"),
+            {"activate": False},
+        ),
+        ("list_agents", (core,), {}),
+        ("list_sub_agents", (core, "default"), {}),
         (
             "ensure",
             (core, "worker"),

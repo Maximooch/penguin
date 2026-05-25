@@ -16,6 +16,7 @@ from penguin.system.execution_context import (
 from penguin.utils.parser import ActionExecutor
 
 __all__ = [
+    "create_agent_conversation",
     "create_sub_agent",
     "delete_agent_conversation",
     "delete_agent_conversation_compat",
@@ -25,6 +26,10 @@ __all__ = [
     "get_agent_roster",
     "get_persona_catalog",
     "is_agent_paused",
+    "list_agent_conversations",
+    "list_agents",
+    "list_sub_agents",
+    "load_agent_conversation",
     "publish_sub_agent_session_created",
     "register_agent_compat",
     "resolve_agent_execution_scope",
@@ -65,6 +70,52 @@ def get_agent_roster(core: Any) -> list[dict[str, Any]]:
 def get_agent_profile(core: Any, agent_id: str) -> dict[str, Any] | None:
     """Return roster information for a single agent identifier."""
     return _build_agent_manager(core).get_profile(agent_id)
+
+
+def create_agent_conversation(core: Any, agent_id: str) -> str:
+    """Create a new conversation for an agent through ConversationManager."""
+    return core.conversation_manager.create_agent_conversation(agent_id)
+
+
+def list_agent_conversations(
+    core: Any,
+    *,
+    limit_per_agent: int = 1000,
+    offset: int = 0,
+) -> Any:
+    """List agent-scoped conversations through ConversationManager."""
+    return core.conversation_manager.list_all_conversations(
+        limit_per_agent=limit_per_agent,
+        offset=offset,
+    )
+
+
+def load_agent_conversation(
+    core: Any,
+    agent_id: str,
+    conversation_id: str,
+    *,
+    activate: bool = True,
+) -> bool:
+    """Load an agent conversation through ConversationManager."""
+    return core.conversation_manager.load_agent_conversation(
+        agent_id,
+        conversation_id,
+        activate=activate,
+    )
+
+
+def list_agents(core: Any) -> list[str]:
+    """Return all registered agent identifiers."""
+    return core.conversation_manager.list_agents()
+
+
+def list_sub_agents(
+    core: Any,
+    parent_agent_id: str | None = None,
+) -> dict[str, list[str]]:
+    """Return mapping of parent agents to sub-agent identifiers."""
+    return core.conversation_manager.list_sub_agents(parent_agent_id)
 
 
 def register_agent_compat(core: Any, *args: Any, **kwargs: Any) -> None:
