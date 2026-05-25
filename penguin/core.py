@@ -176,6 +176,7 @@ from .core_runtime import response_generation as core_response_generation
 from .core_runtime import runmode_events as core_runmode_events
 from .core_runtime import runmode_lifecycle as core_runmode_lifecycle
 from .core_runtime import session_lookup as core_session_lookup
+from .core_runtime import startup as core_startup
 from .core_runtime import stream_events as core_stream_events
 from .core_runtime import streaming_state as core_streaming_state
 from .core_runtime import system_diagnostics as core_system_diagnostics
@@ -654,19 +655,15 @@ class PenguinCore:
         self.token_callbacks = []
         self._active_contexts = set()  # Track active execution contexts
 
-        # Initialize runtime configuration (for dynamic config changes)
         from penguin.config import RuntimeConfig
 
-        if runtime_config is None:
-            # Create from current config
-            config_dict = config.to_dict() if hasattr(config, "to_dict") else {}
-            self.runtime_config = RuntimeConfig(config_dict)
-        else:
-            self.runtime_config = runtime_config
-
-        # Register tool_manager as observer if it exists
-        if tool_manager and hasattr(tool_manager, "on_runtime_config_change"):
-            self.runtime_config.register_observer(tool_manager.on_runtime_config_change)
+        core_startup.initialize_runtime_config(
+            self,
+            config=config,
+            runtime_config=runtime_config,
+            tool_manager=tool_manager,
+            runtime_config_factory=RuntimeConfig,
+        )
 
         # Initialize unified event system
         from penguin.cli.events import EventBus, EventType
@@ -677,61 +674,12 @@ class PenguinCore:
         # Telemetry collector
         ensure_telemetry(self)
 
-        output_config = getattr(self.config, "output", None)
-        self.show_tool_results = True
-        if output_config and hasattr(output_config, "show_tool_results"):
-            self.show_tool_results = bool(output_config.show_tool_results)
-        else:
-            try:
-                raw_output_config = (
-                    raw_config.get("output", {}) if isinstance(raw_config, dict) else {}
-                )
-                show_tool_value = raw_output_config.get("show_tool_results", True)
-                if isinstance(show_tool_value, str):
-                    self.show_tool_results = show_tool_value.strip().lower() in {
-                        "1",
-                        "true",
-                        "yes",
-                        "on",
-                    }
-                else:
-                    self.show_tool_results = bool(show_tool_value)
-            except Exception:
-                self.show_tool_results = True
-
-        # Set system prompt from import
-        # Initialize prompt mode from config if available
-        try:
-            initial_mode = (
-                str(raw_config.get("prompt", {}).get("mode", "direct")).strip().lower()
-            )
-        except Exception:
-            initial_mode = "direct"
-        self.prompt_mode: str = initial_mode or "direct"
-
-        # Apply initial output style from config before building prompt
-        try:
-            from penguin.prompt.builder import set_output_formatting
-
-            if output_config and getattr(output_config, "prompt_style", None):
-                prompt_style = str(output_config.prompt_style).strip().lower()
-            else:
-                prompt_style = (
-                    str(raw_config.get("output", {}).get("prompt_style", "steps_final"))
-                    .strip()
-                    .lower()
-                )
-            self.output_style = prompt_style or "steps_final"
-            set_output_formatting(self.output_style or "steps_final")
-        except Exception:
-            # If anything fails, fall back silently
-            self.output_style = "steps_final"
-
-        # Derive system prompt from builder for the selected mode
-        try:
-            self.system_prompt = get_system_prompt(self.prompt_mode)
-        except Exception:
-            self.system_prompt = SYSTEM_PROMPT
+        core_startup.initialize_prompt_and_output_state(
+            self,
+            raw_config,
+            get_system_prompt=get_system_prompt,
+            fallback_system_prompt=SYSTEM_PROMPT,
+        )
 
         # Initialize streaming primitives immediately (before Engine/handlers can use them)
         self.current_stream = None
