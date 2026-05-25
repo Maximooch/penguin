@@ -17,10 +17,15 @@ from penguin.llm.runtime import call_with_retry
 
 
 class _ResultClient:
-    def __init__(self, results: list[dict[str, Any]]) -> None:
+    def __init__(
+        self,
+        results: list[dict[str, Any]],
+        *,
+        client_handler: Any | None = None,
+    ) -> None:
         self.results = list(results)
         self.calls: list[dict[str, Any]] = []
-        self.client_handler = object()
+        self.client_handler = client_handler or object()
 
     async def get_response_result(
         self,
@@ -125,3 +130,34 @@ async def test_call_with_retry_does_not_replay_after_assistant_chunk_failure() -
 
     assert len(client.calls) == 1
     assert streamed == [("partial answer", "assistant")]
+
+
+@pytest.mark.asyncio
+async def test_call_with_retry_does_not_replay_when_tool_call_is_pending() -> None:
+    class _PendingToolHandler:
+        def has_pending_tool_call(self) -> bool:
+            return True
+
+    retryable_error = _retryable_stream_error()
+    client = _ResultClient(
+        [
+            {
+                "text": "Error: LLM network request failed. Diagnostic ID: first",
+                "status": LLMCallStatus.RETRYABLE_ERROR,
+                "error": retryable_error,
+            },
+            {"text": "unsafe duplicate"},
+        ],
+        client_handler=_PendingToolHandler(),
+    )
+
+    with pytest.raises(LLMProviderError):
+        await call_with_retry(
+            api_client=client,
+            messages=[{"role": "user", "content": "call tool"}],
+            streaming=True,
+            stream_callback=lambda *_args: None,
+            extra_kwargs={},
+        )
+
+    assert len(client.calls) == 1
