@@ -21,16 +21,6 @@ class _EventBus:
 def _owner() -> SimpleNamespace:
     return SimpleNamespace(
         event_bus=_EventBus(),
-        _normalize_todo_items=lambda value: [
-            {
-                "id": str(item.get("id", "todo_1")),
-                "content": str(item.get("content", "")),
-                "status": str(item.get("status", "pending")),
-                "priority": str(item.get("priority", "medium")),
-            }
-            for item in value
-            if isinstance(item, dict)
-        ],
     )
 
 
@@ -176,3 +166,144 @@ async def test_handle_tui_lsp_events_ignore_mismatched_event_types() -> None:
     await action_events.handle_tui_lsp_diagnostics(owner, "other", {})
 
     assert owner.event_bus.events == []
+
+
+@pytest.mark.asyncio
+async def test_handle_tui_action_uses_runtime_mapping_without_core_shim() -> None:
+    class _Adapter:
+        def __init__(self) -> None:
+            self.starts: list[dict[str, Any]] = []
+
+        async def on_tool_start(
+            self,
+            tool_name: str,
+            tool_input: dict[str, Any],
+            *,
+            tool_call_id: str | None = None,
+            metadata: dict[str, Any] | None = None,
+            message_id: str | None = None,
+            agent_id: str = "default",
+            model_id: str | None = None,
+            provider_id: str | None = None,
+            variant: str | None = None,
+        ) -> str:
+            self.starts.append(
+                {
+                    "tool_name": tool_name,
+                    "tool_input": tool_input,
+                    "tool_call_id": tool_call_id,
+                    "metadata": metadata or {},
+                    "message_id": message_id,
+                    "agent_id": agent_id,
+                    "model_id": model_id,
+                    "provider_id": provider_id,
+                    "variant": variant,
+                }
+            )
+            return "part_read"
+
+    adapter = _Adapter()
+    owner = SimpleNamespace(
+        _get_tui_adapter=lambda _session_id: adapter,
+        _resolve_opencode_model_state=lambda session_id: {
+            "modelID": f"model:{session_id}",
+            "providerID": "openai",
+            "variant": "high",
+        },
+        _opencode_stream_states={"session_read": {"message_id": "msg_1"}},
+        _opencode_tool_parts={},
+        _opencode_tool_info={},
+    )
+
+    await action_events.handle_tui_action(
+        owner,
+        "action",
+        {
+            "session_id": "session_read",
+            "id": "call_read",
+            "action": "read_file",
+            "params": '{"path": "README.md", "max_lines": 25}',
+            "agent_id": "worker",
+        },
+    )
+
+    assert adapter.starts == [
+        {
+            "tool_name": "read",
+            "tool_input": {"filePath": "README.md", "limit": 25},
+            "tool_call_id": "call_read",
+            "metadata": {},
+            "message_id": "msg_1",
+            "agent_id": "worker",
+            "model_id": "model:session_read",
+            "provider_id": "openai",
+            "variant": "high",
+        }
+    ]
+    assert owner._opencode_tool_parts == {"session_read:call_read": "part_read"}
+    assert owner._opencode_tool_info["session_read:call_read"]["tool"] == "read"
+
+
+@pytest.mark.asyncio
+async def test_handle_tui_action_result_uses_runtime_metadata_without_core_shim() -> (
+    None
+):
+    class _Adapter:
+        def __init__(self) -> None:
+            self.ends: list[dict[str, Any]] = []
+
+        async def on_tool_end(
+            self,
+            part_id: str,
+            output: Any,
+            error: Any = None,
+            metadata: dict[str, Any] | None = None,
+        ) -> None:
+            self.ends.append(
+                {
+                    "part_id": part_id,
+                    "output": output,
+                    "error": error,
+                    "metadata": metadata or {},
+                }
+            )
+
+    adapter = _Adapter()
+    owner = SimpleNamespace(
+        _get_tui_adapter=lambda _session_id: adapter,
+        _opencode_tool_parts={"session_edit:call_edit": "part_edit"},
+        _opencode_tool_info={
+            "session_edit:call_edit": {
+                "metadata": {
+                    "diff": "--- a/file.txt\n+++ b/file.txt\n@@\n-old\n+new\n"
+                },
+                "input": {"filePath": "file.txt"},
+                "action": "apply_diff",
+            }
+        },
+    )
+
+    await action_events.handle_tui_action_result(
+        owner,
+        "action_result",
+        {
+            "session_id": "session_edit",
+            "id": "call_edit",
+            "status": "completed",
+            "result": "Error parsing diff",
+            "action": "apply_diff",
+        },
+    )
+
+    assert adapter.ends == [
+        {
+            "part_id": "part_edit",
+            "output": "Error parsing diff",
+            "error": "Error parsing diff",
+            "metadata": {
+                "attemptedDiff": "--- a/file.txt\n+++ b/file.txt\n@@\n-old\n+new\n"
+            },
+        }
+    ]
+    assert owner._opencode_tool_parts == {}
+    assert owner._opencode_tool_info == {}

@@ -10,7 +10,10 @@ import json
 import time
 from typing import Any, Callable
 
-from . import opencode_bridge as core_opencode_bridge
+from . import (
+    action_mapping as core_action_mapping,
+    opencode_bridge as core_opencode_bridge,
+)
 
 __all__ = [
     "handle_tui_action",
@@ -55,7 +58,10 @@ async def handle_tui_action(
 
     tool_name = data.get("type") or data.get("action") or "unknown"
     params = _decode_json_params(data.get("params"))
-    mapped_tool, tool_input, metadata = owner._map_action_to_tool(tool_name, params)
+    mapped_tool, tool_input, metadata = core_action_mapping.map_action_to_tool(
+        tool_name,
+        params,
+    )
 
     call_id = data.get("id") or data.get("call_id") or data.get("callID")
     if not call_id:
@@ -114,7 +120,10 @@ async def handle_tui_action_result(
         or "unknown"
     )
     if not part_id:
-        mapped_tool, tool_input, metadata = owner._map_action_to_tool(action_name, {})
+        mapped_tool, tool_input, metadata = core_action_mapping.map_action_to_tool(
+            action_name,
+            {},
+        )
         model_state = owner._resolve_opencode_model_state(session_id=session_id)
         part_id = await adapter.on_tool_start(
             mapped_tool,
@@ -140,13 +149,13 @@ async def handle_tui_action_result(
         status = "error"
     error = result if status == "error" else None
     event_metadata = data.get("metadata")
-    merged_meta = owner._map_action_result_metadata(
+    merged_meta = core_action_mapping.map_action_result_metadata(
         str(action_name),
         result,
-        _info_value(info, "metadata") if isinstance(info, dict) else None,
-        _info_value(info, "input") if isinstance(info, dict) else None,
-        status,
-        event_metadata if isinstance(event_metadata, dict) else None,
+        existing=_info_value(info, "metadata") if isinstance(info, dict) else None,
+        tool_input=_info_value(info, "input") if isinstance(info, dict) else None,
+        status=status,
+        event_metadata=event_metadata if isinstance(event_metadata, dict) else None,
     )
     await adapter.on_tool_end(part_id, result, error=error, metadata=merged_meta)
     tool_parts.pop(tool_key, None)
@@ -176,7 +185,7 @@ async def handle_tui_todo_updated(
     if properties is None or not session_id:
         return
 
-    normalized_todos = owner._normalize_todo_items(properties.get("todos"))
+    normalized_todos = core_action_mapping.normalize_todo_items(properties.get("todos"))
     if update_session_todo is None:
         update_session_todo = _default_update_session_todo
     try:
