@@ -579,14 +579,7 @@ class PenguinCore:
 
     def _ensure_litellm_configured(self):
         """Configure LiteLLM on first use when the optional extra is installed."""
-        core_model_runtime.ensure_litellm_configured(self, log=logger)
-
-        # Streaming primitives are initialized in __init__ now
-        self.current_runmode_status_summary: str = "RunMode idle."
-
-        # Inject core reference into tool_manager for sub-agent tools
-        if self.tool_manager and hasattr(self.tool_manager, "set_core"):
-            self.tool_manager.set_core(self)
+        core_model_runtime.ensure_litellm_runtime_state(self, log=logger)
 
     # ------------------------------------------------------------------
     # Coordinator accessor (singleton per Core)

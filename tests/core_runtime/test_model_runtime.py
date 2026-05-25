@@ -17,6 +17,7 @@ from penguin.core_runtime.model_runtime import (
     configure_llm_client,
     current_model_payload,
     ensure_litellm_configured,
+    ensure_litellm_runtime_state,
     list_available_models,
     load_model_for_core,
     refresh_api_client,
@@ -239,6 +240,47 @@ def test_ensure_litellm_configured_marks_done_after_loader_failure() -> None:
         "LiteLLM optional runtime unavailable or not configured: %s"
     )
     assert str(debug_calls[0][1][0]) == "missing optional dependency"
+
+
+def test_ensure_litellm_runtime_state_preserves_core_side_effects() -> None:
+    calls: list[Any] = []
+
+    class _Logging:
+        def _disable_debugging(self) -> None:
+            calls.append("disable_debugging")
+
+    class _LiteLLM:
+        _logging = _Logging()
+        set_verbose = True
+        drop_params = True
+
+    tool_manager = SimpleNamespace(set_core=lambda owner: calls.append(owner))
+    owner = SimpleNamespace(
+        _litellm_configured=False,
+        current_runmode_status_summary="busy",
+        tool_manager=tool_manager,
+    )
+
+    ensure_litellm_runtime_state(
+        owner,
+        litellm_loader=lambda _reason: _LiteLLM,
+    )
+
+    assert owner._litellm_configured is True
+    assert owner.current_runmode_status_summary == "RunMode idle."
+    assert calls == ["disable_debugging", owner]
+
+
+def test_ensure_litellm_runtime_state_tolerates_missing_tool_core_hook() -> None:
+    owner = SimpleNamespace(
+        _litellm_configured=True,
+        current_runmode_status_summary="busy",
+        tool_manager=SimpleNamespace(),
+    )
+
+    ensure_litellm_runtime_state(owner)
+
+    assert owner.current_runmode_status_summary == "RunMode idle."
 
 
 def test_configure_llm_client_creates_link_configured_client() -> None:

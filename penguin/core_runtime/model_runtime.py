@@ -119,6 +119,26 @@ def ensure_litellm_configured(
         owner._litellm_configured = True
 
 
+def ensure_litellm_runtime_state(
+    owner: Any,
+    *,
+    litellm_loader: LiteLLMLoader | None = None,
+    log: logging.Logger | None = None,
+) -> None:
+    """Configure LiteLLM and preserve runtime state side effects from core."""
+
+    configure_kwargs: dict[str, Any] = {"log": log}
+    if litellm_loader is not None:
+        configure_kwargs["litellm_loader"] = litellm_loader
+    ensure_litellm_configured(owner, **configure_kwargs)
+    owner.current_runmode_status_summary = "RunMode idle."
+
+    tool_manager = getattr(owner, "tool_manager", None)
+    set_core = getattr(tool_manager, "set_core", None)
+    if tool_manager is not None and callable(set_core):
+        set_core(owner)
+
+
 def configure_llm_client(
     owner: Any,
     *,
@@ -547,6 +567,7 @@ __all__ = [
     "canonicalize_runtime_model_id",
     "current_model_payload",
     "ensure_litellm_configured",
+    "ensure_litellm_runtime_state",
     "list_available_models",
     "load_model_for_core",
     "refresh_api_client",
