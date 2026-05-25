@@ -162,6 +162,7 @@ from .core_runtime import action_mapping as core_action_mapping
 from .core_runtime import agent_lifecycle as core_agent_lifecycle
 from .core_runtime import checkpoint_runtime as core_checkpoint_runtime
 from .core_runtime import conversations as core_conversations
+from .core_runtime import core_state as core_state_runtime
 from .core_runtime import message_processing as core_message_processing
 from .core_runtime import model_runtime as core_model_runtime
 from .core_runtime import opencode_adapters as core_opencode_adapters
@@ -955,23 +956,24 @@ class PenguinCore:
 
     def validate_path(self, path: Path):
         """Validate and create a directory path if needed."""
-        if not path.exists():
-            path.mkdir(parents=True, exist_ok=True)
-        if not os.access(path, os.W_OK):
-            raise PermissionError(f"No write access to {path}")
+        core_state_runtime.validate_path(path)
 
     def register_progress_callback(
         self, callback: Callable[[int, int, Optional[str]], None]
     ) -> None:
         """Register a callback for progress updates during multi-step processing."""
-        self.progress_callbacks.append(callback)
+        core_state_runtime.register_progress_callback(self, callback)
 
     def notify_progress(
         self, iteration: int, max_iterations: int, message: Optional[str] = None
     ) -> None:
         """Notify all registered callbacks about progress."""
-        for callback in self.progress_callbacks:
-            callback(iteration, max_iterations, message)
+        core_state_runtime.notify_progress(
+            self,
+            iteration,
+            max_iterations,
+            message,
+        )
 
     def reset_context(self):
         """
@@ -981,17 +983,7 @@ class PenguinCore:
         tools and diagnostics. Use this between different conversation
         sessions.
         """
-        diagnostics.reset()
-        self._interrupted = False
-
-        # Reset conversation via manager
-        self.conversation_manager.reset()
-
-        # Reset tools
-        # if self.tool_manager: # ToolManager does not have a reset method currently
-        #     self.tool_manager.reset()
-        # if self.action_executor: # ActionExecutor does not have a reset method currently
-        #     self.action_executor.reset()
+        core_state_runtime.reset_context(self, diagnostics_manager=diagnostics)
 
     # ------------------------------------------------------------------
     # Multi-agent helpers
