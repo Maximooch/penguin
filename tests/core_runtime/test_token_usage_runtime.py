@@ -111,6 +111,92 @@ def test_usage_from_session_messages_treats_corrupt_tokens_as_zero(
     assert usage["categories"]["DIALOG"] == expected
 
 
+@given(
+    messages=st.lists(
+        st.tuples(
+            st.one_of(
+                st.integers(min_value=-1_000, max_value=1_000),
+                st.text(min_size=0, max_size=8),
+                st.none(),
+            ),
+            st.sampled_from(["agent-a", "agent-b", None]),
+            st.sampled_from([MessageCategory.DIALOG, MessageCategory.SYSTEM, "CUSTOM"]),
+        ),
+        max_size=30,
+    )
+)
+def test_usage_from_session_messages_scopes_tokens_by_agent(
+    messages: list[tuple[Any, str | None, Any]],
+) -> None:
+    session = _session(
+        "session_a",
+        messages=[
+            _message(tokens, category=category, agent_id=agent_id)
+            for tokens, agent_id, category in messages
+        ],
+    )
+
+    usage = token_usage_runtime.usage_from_session_messages(
+        _Core(),
+        session,
+        agent_id="agent-a",
+    )
+
+    expected_total = sum(
+        _expected_token_count(tokens)
+        for tokens, agent_id, _category in messages
+        if agent_id == "agent-a"
+    )
+    expected_dialog = sum(
+        _expected_token_count(tokens)
+        for tokens, agent_id, category in messages
+        if agent_id == "agent-a" and category == MessageCategory.DIALOG
+    )
+    expected_system = sum(
+        _expected_token_count(tokens)
+        for tokens, agent_id, category in messages
+        if agent_id == "agent-a" and category == MessageCategory.SYSTEM
+    )
+    expected_custom = sum(
+        _expected_token_count(tokens)
+        for tokens, agent_id, category in messages
+        if agent_id == "agent-a" and category == "CUSTOM"
+    )
+
+    assert usage["current_total_tokens"] == expected_total
+    assert usage["available_tokens"] == max(100 - expected_total, 0)
+    assert usage["categories"]["DIALOG"] == expected_dialog
+    assert usage["categories"]["SYSTEM"] == expected_system
+    assert usage["categories"].get("CUSTOM", 0) == expected_custom
+
+
+def test_get_session_token_usage_does_not_let_metadata_owner_override_messages() -> (
+    None
+):
+    session = _session(
+        "session_a",
+        messages=[_message(11, agent_id="agent-b")],
+        metadata={
+            "agent_id": "agent-a",
+            "_opencode_usage_v1": {"current_total_tokens": 99},
+        },
+    )
+
+    usage = token_usage_runtime.get_session_token_usage(
+        _Core(session=session),
+        "session_a",
+        agent_id="agent-a",
+    )
+
+    assert usage == {
+        "scope": "missing",
+        "session_id": "session_a",
+        "conversation_id": "session_a",
+        "agent_id": "agent-a",
+        "error": "agent token usage not found for session",
+    }
+
+
 def test_get_token_usage_returns_empty_runtime_payload_for_corrupt_runtime_usage() -> (
     None
 ):

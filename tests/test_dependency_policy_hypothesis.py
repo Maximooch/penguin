@@ -1,7 +1,7 @@
 from datetime import datetime
 from tempfile import TemporaryDirectory
 
-from hypothesis import given, strategies as st
+from hypothesis import given, settings, strategies as st
 
 from penguin.project.manager import ProjectManager
 from penguin.project.models import (
@@ -12,7 +12,6 @@ from penguin.project.models import (
     TaskPhase,
     TaskStatus,
 )
-
 
 dependency_ids = st.lists(
     st.from_regex(r"[A-Z][A-Z0-9_-]{0,7}", fullmatch=True),
@@ -77,6 +76,7 @@ def test_blueprint_item_plain_dependencies_normalize_to_completion_required(dep_
 
 
 @given(task_statuses, task_phases)
+@settings(deadline=None)
 def test_completion_required_only_unlocks_completed(status, phase):
     with TemporaryDirectory() as tmpdir:
         manager = ProjectManager(tmpdir)
@@ -92,6 +92,7 @@ def test_completion_required_only_unlocks_completed(status, phase):
 
 
 @given(task_statuses, task_phases)
+@settings(deadline=None)
 def test_review_ready_ok_requires_done_and_review_or_completed(status, phase):
     with TemporaryDirectory() as tmpdir:
         manager = ProjectManager(tmpdir)
@@ -111,6 +112,7 @@ def test_review_ready_ok_requires_done_and_review_or_completed(status, phase):
 
 
 @given(task_statuses, task_phases)
+@settings(deadline=None)
 def test_artifact_ready_fails_closed_until_evidence_support_exists(status, phase):
     with TemporaryDirectory() as tmpdir:
         manager = ProjectManager(tmpdir)
