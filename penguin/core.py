@@ -2182,53 +2182,19 @@ class PenguinCore:
                     streaming=streaming,
                 )
 
-            # NOTE: Empty-response retry logic removed - engine._llm_step handles this.
-            # Engine retries once with stream=False, then raises LLMEmptyResponseError.
-            # WALLET_GUARD in finalize_streaming_message injects placeholder for empty streams.
-
-            token_data = await core_token_usage_runtime.collect_process_token_usage(
+            await core_process_lifecycle.finalize_process_response(
                 self,
                 conversation_manager,
                 response,
                 request_session_id,
+                streaming=streaming,
+                agent_id=agent_id,
+                collect_token_usage=(
+                    core_token_usage_runtime.collect_process_token_usage
+                ),
+                message_category=MessageCategory.DIALOG,
                 log=logger,
             )
-
-            # Ensure conversation is saved after processing
-            conversation_manager.save()
-
-            # Emit assistant message event after processing.
-            # Streaming paths usually update UI via chunk events; however, some
-            # provider failures return only a final error/note string with zero
-            # chunks. In that case emit a message event so users can see it.
-            if response and "assistant_response" in response:
-                assistant_message = response["assistant_response"]
-                if assistant_message:
-                    emit_assistant_event = not streaming
-                    if streaming:
-                        stripped = assistant_message.lstrip()
-                        if stripped.startswith("[Error:") or stripped.startswith(
-                            "[Note:"
-                        ):
-                            emit_assistant_event = True
-                    if emit_assistant_event:
-                        logger.debug(
-                            "Emitting assistant message event: %s…",
-                            assistant_message[:30],
-                        )
-                        await self.emit_ui_event(
-                            "message",
-                            {
-                                "role": "assistant",
-                                "content": assistant_message,
-                                "category": MessageCategory.DIALOG,
-                                "metadata": {},
-                                **({"agent_id": agent_id} if agent_id else {}),
-                            },
-                        )
-
-            # Ensure token usage is emitted after processing
-            await self.emit_ui_event("token_update", token_data)
 
             return response
 

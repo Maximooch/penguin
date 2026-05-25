@@ -267,3 +267,117 @@ async def test_emit_process_user_message_logs_metadata_failures() -> None:
         ("Failed to emit OpenCode user message",),
         {"exc_info": True},
     )
+
+
+@pytest.mark.asyncio
+async def test_finalize_process_response_saves_and_emits_non_streaming_message() -> (
+    None
+):
+    owner = _Owner()
+    conversation_manager = SimpleNamespace(save_calls=0)
+    response = {"assistant_response": "Done"}
+    token_calls: list[tuple[object, ...]] = []
+
+    def save() -> None:
+        conversation_manager.save_calls += 1
+
+    async def collect_token_usage(*args: object, **kwargs: object) -> dict[str, int]:
+        token_calls.append((*args, kwargs))
+        return {"total": 3}
+
+    conversation_manager.save = save
+
+    token_data = await process_lifecycle.finalize_process_response(
+        owner,
+        conversation_manager,
+        response,
+        "session-1",
+        streaming=False,
+        agent_id="agent-1",
+        collect_token_usage=collect_token_usage,
+        message_category="dialog",
+        log=SimpleNamespace(debug=lambda *args, **kwargs: None),
+    )
+
+    assert token_data == {"total": 3}
+    assert conversation_manager.save_calls == 1
+    assert owner.ui_events == [
+        (
+            "message",
+            {
+                "role": "assistant",
+                "content": "Done",
+                "category": "dialog",
+                "metadata": {},
+                "agent_id": "agent-1",
+            },
+        ),
+        ("token_update", {"total": 3}),
+    ]
+    assert token_calls[0][2] is response
+
+
+@pytest.mark.asyncio
+async def test_finalize_process_response_suppresses_normal_streaming_message() -> None:
+    owner = _Owner()
+    conversation_manager = SimpleNamespace(save=lambda: None)
+
+    async def collect_token_usage(*_args: object, **_kwargs: object) -> dict[str, int]:
+        return {"total": 3}
+
+    await process_lifecycle.finalize_process_response(
+        owner,
+        conversation_manager,
+        {"assistant_response": "Streamed through chunks"},
+        "session-1",
+        streaming=True,
+        agent_id=None,
+        collect_token_usage=collect_token_usage,
+        message_category="dialog",
+        log=SimpleNamespace(debug=lambda *args, **kwargs: None),
+    )
+
+    assert owner.ui_events == [("token_update", {"total": 3})]
+
+
+@pytest.mark.parametrize(
+    "assistant_response",
+    [
+        "[Error: provider failed]",
+        "   [Note: empty stream fallback]",
+    ],
+)
+@pytest.mark.asyncio
+async def test_finalize_process_response_emits_streaming_error_or_note_fallback(
+    assistant_response: str,
+) -> None:
+    owner = _Owner()
+    conversation_manager = SimpleNamespace(save=lambda: None)
+
+    async def collect_token_usage(*_args: object, **_kwargs: object) -> dict[str, int]:
+        return {"total": 3}
+
+    await process_lifecycle.finalize_process_response(
+        owner,
+        conversation_manager,
+        {"assistant_response": assistant_response},
+        "session-1",
+        streaming=True,
+        agent_id=None,
+        collect_token_usage=collect_token_usage,
+        message_category="dialog",
+        log=SimpleNamespace(debug=lambda *args, **kwargs: None),
+    )
+
+    assert owner.ui_events == [
+        (
+            "message",
+            {
+                "role": "assistant",
+                "content": assistant_response,
+                "category": "dialog",
+                "metadata": {},
+            },
+        ),
+        ("token_update", {"total": 3}),
+    ]

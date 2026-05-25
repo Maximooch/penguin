@@ -11,6 +11,7 @@ __all__ = [
     "discard_opencode_abort_session",
     "emit_process_user_message",
     "finalize_opencode_process_request",
+    "finalize_process_response",
     "register_opencode_process_request",
 ]
 
@@ -67,6 +68,59 @@ async def emit_process_user_message(
         )
     except Exception:
         log.debug("Failed to emit OpenCode user message", exc_info=True)
+
+
+def _should_emit_assistant_event(response: Any, *, streaming: bool | None) -> bool:
+    if not isinstance(response, dict) or "assistant_response" not in response:
+        return False
+    assistant_message = response["assistant_response"]
+    if not assistant_message:
+        return False
+    if not streaming:
+        return True
+    stripped = assistant_message.lstrip()
+    return stripped.startswith("[Error:") or stripped.startswith("[Note:")
+
+
+async def finalize_process_response(
+    owner: Any,
+    conversation_manager: Any,
+    response: Any,
+    request_session_id: str | None,
+    *,
+    streaming: bool | None,
+    agent_id: str | None,
+    collect_token_usage: Any,
+    message_category: Any,
+    log: Any,
+) -> Any:
+    """Persist process response state and emit user-visible post-response events."""
+    token_data = await collect_token_usage(
+        owner,
+        conversation_manager,
+        response,
+        request_session_id,
+        log=log,
+    )
+
+    conversation_manager.save()
+
+    if _should_emit_assistant_event(response, streaming=streaming):
+        assistant_message = response["assistant_response"]
+        log.debug("Emitting assistant message event: %s…", assistant_message[:30])
+        await owner.emit_ui_event(
+            "message",
+            {
+                "role": "assistant",
+                "content": assistant_message,
+                "category": message_category,
+                "metadata": {},
+                **({"agent_id": agent_id} if agent_id else {}),
+            },
+        )
+
+    await owner.emit_ui_event("token_update", token_data)
+    return token_data
 
 
 async def register_opencode_process_request(
