@@ -128,7 +128,6 @@ from typing import (
     Union,
 )
 import asyncio
-import json
 
 from dotenv import load_dotenv  # type: ignore
 from rich.console import Console  # type: ignore
@@ -174,6 +173,7 @@ from .core_runtime import process_input as core_process_input
 from .core_runtime import process_lifecycle as core_process_lifecycle
 from .core_runtime import process_streaming as core_process_streaming
 from .core_runtime import prompt_settings as core_prompt_settings
+from .core_runtime import response_generation as core_response_generation
 from .core_runtime import runmode_events as core_runmode_events
 from .core_runtime import runmode_lifecycle as core_runmode_lifecycle
 from .core_runtime import session_lookup as core_session_lookup
@@ -1666,127 +1666,17 @@ class PenguinCore:
         Returns:
             Tuple of (response data, exit continuation flag)
         """
-        try:
-            # Add iteration marker if in multi-step processing
-            if current_iteration is not None and max_iterations is not None:
-                self.conversation_manager.conversation.add_iteration_marker(
-                    current_iteration, max_iterations
-                )
-
-            # Get formatted messages from conversation manager
-            messages = self.conversation_manager.conversation.get_formatted_messages()
-
-            # Maximum retry attempts for empty responses
-            max_retries = 2
-            retry_count = 0
-
-            while retry_count <= max_retries:
-                # Start new stream, PASSING both streaming flag and callback
-                logger.debug(
-                    f"Calling API directly (Streaming: {streaming}, Callback provided: {stream_callback is not None})"
-                )
-
-                assistant_response = None
-                try:
-                    logger.debug(
-                        json.dumps(
-                            self.conversation_manager.conversation.get_formatted_messages(),
-                            indent=2,
-                        )
-                    )
-                    assistant_response = await self.api_client.get_response(
-                        messages=messages,
-                        stream=streaming,
-                        stream_callback=stream_callback,
-                    )
-                except asyncio.CancelledError:
-                    logger.warning("APIClient response retrieval was cancelled")
-                except Exception as e:
-                    logger.error(
-                        f"Error during APIClient response retrieval: {str(e)}",
-                        exc_info=True,
-                    )
-
-                # Validate response (retry logic remains the same)
-                if not assistant_response or not assistant_response.strip():
-                    retry_count += 1
-                    if retry_count <= max_retries:
-                        logger.warning(
-                            f"Empty response from API (attempt {retry_count}/{max_retries}), retrying..."
-                        )
-                        # Small exponential backoff
-                        await asyncio.sleep(1 * retry_count)
-                        continue
-                    else:
-                        logger.warning(
-                            f"Empty response from API after {max_retries} attempts"
-                        )
-                        assistant_response = "I apologize, but I encountered an issue generating a response. Please try again."
-                        break
-                else:
-                    # We got a valid response, break the retry loop
-                    break
-
-                # Let's return it as is for now, core needs adjustment later if this is the case.
-
-            # Process response and execute actions regardless of streaming mode
-            logger.debug(
-                f"[Core.get_response] Processing response and executing actions. Streaming={streaming}"
-            )
-
-            # Add assistant response to conversation (only happens *after* the stream task is fully complete)
-            if assistant_response:
-                # Add assistant response to conversation
-                # Ensure we add the complete response, even if it was streamed.
-                # The APIClient should return the full string after streaming completes.
-                # Note: add_assistant_message automatically strips action tags
-                self.conversation_manager.conversation.add_assistant_message(
-                    assistant_response
-                )
-
-            action_processing = await core_action_execution.process_response_actions(
-                self,
-                assistant_response,
-                log=logger,
-            )
-            actions = action_processing.actions
-            action_results = action_processing.action_results
-            exit_continuation = action_processing.exit_continuation
-
-            # Save the updated conversation state
-            self.conversation_manager.save()
-
-            # Construct the final response payload
-            full_response = {
-                "assistant_response": assistant_response,
-                "actions": actions,
-                "action_results": action_results,
-                "metadata": {
-                    "iteration": current_iteration,
-                    "max_iterations": max_iterations,
-                },
-            }
-
-            logger.debug(
-                f"ACTION RESULT TEST: System outputs visible to LLM: {[msg for msg in messages if 'system' in msg.get('role', '') and 'Action executed' in str(msg.get('content', ''))]}"
-            )
-
-            return full_response, exit_continuation
-
-        except Exception as e:
-            error_data = log_error(
-                e,
-                context={
-                    "component": "core",
-                    "method": "get_response",
-                    "iteration": current_iteration,
-                    "max_iterations": max_iterations,
-                },
-            )
-            return {
-                "assistant_response": f"I apologize, but an error occurred: {str(e)}",
-                "action_results": [],
-            }, False
+        return await core_response_generation.get_response(
+            self,
+            current_iteration=current_iteration,
+            max_iterations=max_iterations,
+            stream_callback=stream_callback,
+            streaming=streaming,
+            process_response_actions=core_action_execution.process_response_actions,
+            sleep=asyncio.sleep,
+            log_error=log_error,
+            log=logger,
+        )
 
     async def execute_action(self, action) -> Dict[str, Any]:
         """Execute an action and return structured result"""
