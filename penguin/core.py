@@ -169,6 +169,7 @@ from .core_runtime import opencode_persistence as core_opencode_persistence
 from .core_runtime import runmode_events as core_runmode_events
 from .core_runtime import session_lookup as core_session_lookup
 from .core_runtime import stream_events as core_stream_events
+from .core_runtime import system_diagnostics as core_system_diagnostics
 from .core_runtime import token_usage_runtime as core_token_usage_runtime
 from penguin.llm.stream_handler import (
     StreamingStateManager,
@@ -2376,74 +2377,11 @@ class PenguinCore:
             Dictionary containing system information including model config,
             component status, and capabilities
         """
-        try:
-            info = {
-                "penguin_version": PENGUIN_VERSION,
-                "engine_available": hasattr(self, "engine") and self.engine is not None,
-                "checkpoints_enabled": self.get_checkpoint_stats().get(
-                    "enabled", False
-                ),
-                "current_model": None,
-                "conversation_manager": {
-                    "active": hasattr(self, "conversation_manager")
-                    and self.conversation_manager is not None,
-                    "current_session_id": None,
-                    "total_messages": 0,
-                },
-                "tool_manager": {
-                    "active": hasattr(self, "tool_manager")
-                    and self.tool_manager is not None,
-                    "total_tools": 0,
-                },
-                "memory_provider": {"initialized": False, "provider_type": None},
-            }
-
-            # Add current model info
-            if hasattr(self, "model_config") and self.model_config:
-                info["current_model"] = {
-                    "model": self.model_config.model,
-                    "provider": self.model_config.provider,
-                    "streaming_enabled": self.model_config.streaming_enabled,
-                    "vision_enabled": bool(
-                        getattr(self.model_config, "vision_enabled", False)
-                    ),
-                }
-
-            # Add conversation manager details
-            if hasattr(self, "conversation_manager") and self.conversation_manager:
-                try:
-                    current_session = self.conversation_manager.get_current_session()
-                    if current_session:
-                        info["conversation_manager"]["current_session_id"] = (
-                            current_session.id
-                        )
-                        info["conversation_manager"]["total_messages"] = len(
-                            current_session.messages
-                        )
-                except Exception:
-                    pass  # Ignore errors getting session info
-
-            # Add tool manager details
-            if hasattr(self, "tool_manager") and self.tool_manager:
-                info["tool_manager"]["total_tools"] = len(
-                    getattr(self.tool_manager, "tools", {})
-                )
-
-                # Add memory provider info
-                if (
-                    hasattr(self.tool_manager, "_memory_provider")
-                    and self.tool_manager._memory_provider
-                ):
-                    info["memory_provider"]["initialized"] = True
-                    info["memory_provider"]["provider_type"] = type(
-                        self.tool_manager._memory_provider
-                    ).__name__
-
-            return info
-
-        except Exception as e:
-            logger.error(f"Error getting system info: {e}")
-            return {"error": f"Failed to get system info: {str(e)}"}
+        return core_system_diagnostics.get_system_info(
+            self,
+            version=PENGUIN_VERSION,
+            logger=logger,
+        )
 
     def get_system_status(self) -> Dict[str, Any]:
         """
@@ -2452,41 +2390,7 @@ class PenguinCore:
         Returns:
             Dictionary containing current system status and runtime information
         """
-        try:
-            from datetime import datetime
-
-            status = {
-                "status": "active",
-                "runmode_status": getattr(
-                    self, "current_runmode_status_summary", "RunMode idle."
-                ),
-                "continuous_mode": getattr(self, "_continuous_mode", False),
-                "streaming_active": getattr(self, "streaming_active", False),
-                "token_usage": self.get_token_usage(),
-                "timestamp": datetime.now().isoformat(),
-                "initialization": {
-                    "core_initialized": getattr(self, "initialized", False),
-                    "fast_startup_enabled": (
-                        getattr(self.tool_manager, "fast_startup", False)
-                        if hasattr(self, "tool_manager")
-                        else False
-                    ),
-                },
-            }
-
-            # Add memory provider status if available
-            if hasattr(self, "get_memory_provider_status"):
-                status["memory_provider"] = self.get_memory_provider_status()
-
-            return status
-
-        except Exception as e:
-            logger.error(f"Error getting system status: {e}")
-            return {
-                "status": "error",
-                "error": f"Failed to get system status: {str(e)}",
-                "timestamp": datetime.now().isoformat(),
-            }
+        return core_system_diagnostics.get_system_status(self, logger=logger)
 
     @retry(
         stop=stop_after_attempt(3),
@@ -3791,92 +3695,19 @@ class PenguinCore:
 
     def get_startup_stats(self) -> Dict[str, Any]:
         """Get comprehensive startup performance statistics."""
-        stats = {
-            "profiling_summary": profiler.get_summary(),
-            "tool_manager_stats": (
-                self.tool_manager.get_startup_stats()
-                if hasattr(self.tool_manager, "get_startup_stats")
-                else {}
-            ),
-            "memory_provider_initialized": hasattr(
-                self.tool_manager, "_memory_provider"
-            )
-            and self.tool_manager._memory_provider is not None,
-            "core_initialized": self.initialized,
-        }
-        return stats
+        return core_system_diagnostics.get_startup_stats(self, profiler=profiler)
 
     def print_startup_report(self) -> None:
         """Print a comprehensive startup performance report."""
-        print("\n" + "=" * 60)
-        print("PENGUIN STARTUP PERFORMANCE REPORT")
-        print("=" * 60)
-
-        # Get tool manager stats
-        if hasattr(self.tool_manager, "get_startup_stats"):
-            tool_stats = self.tool_manager.get_startup_stats()
-            print(f"\nTool Manager Configuration:")
-            print(f"  Fast startup mode: {tool_stats.get('fast_startup', 'Unknown')}")
-            print(
-                f"  Memory provider initialized: {tool_stats.get('memory_provider_exists', 'Unknown')}"
-            )
-            print(
-                f"  Indexing completed: {tool_stats.get('indexing_completed', 'Unknown')}"
-            )
-
-            lazy_init = tool_stats.get("lazy_initialized", {})
-            print(f"\nLazy-loaded components:")
-            for component, initialized in lazy_init.items():
-                status = "✓ Loaded" if initialized else "○ Deferred"
-                print(f"  {component}: {status}")
-
-        # Print profiling report
-        print(f"\nDetailed Performance Breakdown:")
-        profiler_report = profiler.get_startup_report()
-        print(profiler_report)
-
-        print("=" * 60)
+        core_system_diagnostics.print_startup_report(self, profiler=profiler)
 
     def enable_fast_startup_globally(self) -> None:
         """Enable fast startup mode for future operations."""
-        if hasattr(self.tool_manager, "fast_startup"):
-            self.tool_manager.fast_startup = True
-            logger.info("Fast startup mode enabled globally")
+        core_system_diagnostics.enable_fast_startup_globally(self, logger=logger)
 
     def get_memory_provider_status(self) -> Dict[str, Any]:
         """Get current status of memory provider and indexing."""
-        if not hasattr(self.tool_manager, "_memory_provider"):
-            return {"status": "not_initialized", "provider": None}
-
-        provider = self.tool_manager._memory_provider
-        if provider is None:
-            return {"status": "disabled", "provider": None}
-
-        status = {
-            "status": "initialized" if provider else "not_initialized",
-            "provider": type(provider).__name__ if provider else None,
-            "indexing_completed": getattr(
-                self.tool_manager, "_indexing_completed", False
-            ),
-            "indexing_task_running": False,
-        }
-
-        # Check indexing task status
-        if (
-            hasattr(self.tool_manager, "_indexing_task")
-            and self.tool_manager._indexing_task
-        ):
-            task = self.tool_manager._indexing_task
-            status["indexing_task_running"] = not task.done()
-            status["indexing_task_status"] = {
-                "done": task.done(),
-                "cancelled": task.cancelled(),
-                "exception": (
-                    str(task.exception()) if task.done() and task.exception() else None
-                ),
-            }
-
-        return status
+        return core_system_diagnostics.get_memory_provider_status(self)
 
     def _subscribe_to_stream_events(self):
         """Subscribe to Penguin stream events and translate to OpenCode format."""
