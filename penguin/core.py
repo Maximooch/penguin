@@ -165,6 +165,7 @@ from .core_runtime import checkpoint_runtime as core_checkpoint_runtime
 from .core_runtime import model_runtime as core_model_runtime
 from .core_runtime import opencode_bridge as core_opencode_bridge
 from .core_runtime import session_lookup as core_session_lookup
+from .core_runtime import stream_events as core_stream_events
 from .core_runtime import token_usage_runtime as core_token_usage_runtime
 from penguin.llm.stream_handler import (
     StreamingStateManager,
@@ -4654,140 +4655,12 @@ class PenguinCore:
 
     async def _on_tui_stream_chunk(self, event_type: str, data: Dict[str, Any]):
         """Handle stream chunk - manages stream lifecycle and emits with delta."""
-        if event_type != "stream_chunk":
-            return
-
-        chunk = data.get("chunk", "")
-        message_type = data.get("message_type", "assistant")
-        stream_id = data.get("stream_id", "unknown")
-        session_id = (
-            data.get("session_id")
-            or data.get("conversation_id")
-            or data.get("sessionID")
-            or "unknown"
+        await core_stream_events.handle_tui_stream_chunk(
+            self,
+            event_type,
+            data,
+            logger=logger,
         )
-        agent_id = data.get("agent_id") or data.get("agentID") or "default"
-        adapter = self._get_tui_adapter(session_id)
-        stream_states = getattr(self, "_opencode_stream_states", None)
-        if not isinstance(stream_states, dict):
-            stream_states = {}
-            self._opencode_stream_states = stream_states
-        state = stream_states.get(session_id)
-        if not isinstance(state, dict):
-            state = {
-                "active": False,
-                "stream_id": None,
-                "message_id": None,
-                "part_id": None,
-            }
-            stream_states[session_id] = state
-
-        is_final = bool(data.get("is_final"))
-        is_aborted = bool(data.get("aborted"))
-        if is_aborted and is_final and not state.get("active") and not chunk:
-            state["stream_id"] = None
-            state["part_id"] = None
-            return
-
-        # Auto-detect stream start (first chunk or new stream_id)
-        if (not state.get("active")) or state.get("stream_id") != stream_id:
-            # Finalize previous stream if exists
-            message_id = state.get("message_id")
-            part_id = state.get("part_id")
-            if state.get("active") and message_id and part_id:
-                try:
-                    await adapter.on_stream_end(message_id, part_id)
-                except Exception:
-                    pass
-
-            # Start new stream
-            state["active"] = True
-            state["stream_id"] = stream_id
-
-            model_state = self._resolve_opencode_model_state(session_id=session_id)
-
-            # Create message and text part
-            try:
-                message_id, part_id = await adapter.on_stream_start(
-                    agent_id=agent_id,
-                    model_id=model_state.get("modelID"),
-                    provider_id=model_state.get("providerID"),
-                    variant=model_state.get("variant"),
-                )
-                state["message_id"] = message_id
-                state["part_id"] = part_id
-                self._opencode_message_adapters[message_id] = adapter
-            except Exception as e:
-                logger.error(f"Failed to start OpenCode stream: {e}")
-                state["active"] = False
-                return
-
-        # Emit the chunk
-        message_id = state.get("message_id")
-        part_id = state.get("part_id")
-        if message_id and part_id:
-            try:
-                await adapter.on_stream_chunk(message_id, part_id, chunk, message_type)
-            except Exception as e:
-                logger.error(f"Failed to emit OpenCode chunk: {e}")
-
-        # Fallback: when provider streaming yields no assistant chunk events but
-        # finalize includes full assistant content, synthesize one part update so
-        # Penguin-mode SSE clients render the response.
-        if is_final and message_id and part_id and not chunk:
-            final_content = data.get("content")
-            if isinstance(final_content, str) and final_content.strip():
-                should_emit_fallback = True
-                try:
-                    active_parts = getattr(adapter, "_active_parts", {})
-                    active_part = (
-                        active_parts.get(part_id)
-                        if isinstance(active_parts, dict)
-                        else None
-                    )
-                    if isinstance(active_part, dict):
-                        existing_text = active_part.get("content", {}).get("text", "")
-                    else:
-                        existing_content = (
-                            getattr(active_part, "content", {}) if active_part else {}
-                        )
-                        existing_text = (
-                            existing_content.get("text", "")
-                            if isinstance(existing_content, dict)
-                            else ""
-                        )
-                    should_emit_fallback = not bool(
-                        isinstance(existing_text, str) and existing_text
-                    )
-                except Exception:
-                    should_emit_fallback = True
-
-                if should_emit_fallback:
-                    try:
-                        await adapter.on_stream_chunk(
-                            message_id,
-                            part_id,
-                            final_content,
-                            "assistant",
-                        )
-                    except Exception as e:
-                        logger.error(
-                            "Failed to emit fallback OpenCode final chunk: %s",
-                            e,
-                        )
-
-        if data.get("is_final"):
-            if message_id and part_id:
-                try:
-                    await adapter.on_stream_end(message_id, part_id)
-                except Exception as e:
-                    logger.error(f"Failed to finalize OpenCode stream: {e}")
-            state["active"] = False
-            state["stream_id"] = None
-            # Keep latest message id so post-stream tool events can attach
-            # to the same assistant response when possible.
-            state["message_id"] = message_id
-            state["part_id"] = None
 
     def _strip_diff_fences(self, diff_content: str) -> str:
         return core_action_mapping.strip_diff_fences(diff_content)
