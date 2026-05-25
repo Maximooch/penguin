@@ -311,6 +311,30 @@ def test_resolve_usage_update_target_returns_none_without_message() -> None:
     assert target is None
 
 
+def test_resolve_usage_loggers_deduplicates_primary_and_handles_errors() -> None:
+    primary = object()
+    secondary = object()
+
+    assert (
+        opencode_bridge.resolve_usage_loggers(
+            primary,
+            logger_getter=lambda _name: primary,
+        )
+        == ()
+    )
+    assert opencode_bridge.resolve_usage_loggers(
+        primary,
+        logger_getter=lambda _name: secondary,
+    ) == (secondary,)
+    assert (
+        opencode_bridge.resolve_usage_loggers(
+            primary,
+            logger_getter=lambda _name: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        == ()
+    )
+
+
 @pytest.mark.asyncio
 async def test_apply_usage_to_latest_message_updates_adapter_and_logs() -> None:
     updates: list[tuple[str, dict[str, Any], float]] = []
@@ -408,6 +432,63 @@ async def test_apply_usage_to_latest_message_returns_false_on_update_error() -> 
     assert debug_calls == [
         ("Failed to apply OpenCode usage metadata", {"exc_info": True})
     ]
+
+
+@pytest.mark.asyncio
+async def test_apply_usage_to_core_latest_message_uses_owner_state_and_loggers() -> (
+    None
+):
+    updates: list[tuple[str, dict[str, Any], float]] = []
+
+    class _Adapter:
+        async def update_assistant_usage(
+            self,
+            message_id: str,
+            *,
+            tokens: dict[str, Any],
+            cost: float,
+        ) -> None:
+            updates.append((message_id, tokens, cost))
+
+    class _Logger:
+        def __init__(self) -> None:
+            self.info_calls: list[tuple[str, tuple[Any, ...]]] = []
+
+        def info(self, template: str, *args: Any) -> None:
+            self.info_calls.append((template, args))
+
+    adapter = _Adapter()
+    owner = SimpleNamespace(
+        _opencode_stream_states={"session_1": {"message_id": "msg_1"}},
+        _opencode_message_adapters={"msg_1": adapter},
+        _get_tui_adapter=lambda _session_id: SimpleNamespace(),
+    )
+    logger = _Logger()
+    uvicorn_logger = _Logger()
+
+    applied = await opencode_bridge.apply_usage_to_core_latest_message(
+        owner,
+        "session_1",
+        {"input_tokens": 3, "output_tokens": 4, "total_tokens": 7, "cost": "0.12"},
+        logger=logger,
+        logger_getter=lambda _name: uvicorn_logger,
+    )
+
+    assert applied is True
+    assert updates == [
+        (
+            "msg_1",
+            {
+                "input": 3,
+                "output": 4,
+                "reasoning": 0,
+                "cache": {"read": 0, "write": 0},
+            },
+            0.12,
+        )
+    ]
+    assert logger.info_calls
+    assert uvicorn_logger.info_calls == logger.info_calls
 
 
 @given(

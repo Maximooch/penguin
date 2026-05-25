@@ -7,6 +7,7 @@ can be tested without a core instance.
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ __all__ = [
     "SESSION_PROVIDER_ID_KEY",
     "SESSION_VARIANT_KEY",
     "UsageUpdateTarget",
+    "apply_usage_to_core_latest_message",
     "apply_usage_to_latest_message",
     "build_assistant_message_info",
     "latest_model_usage",
@@ -31,6 +33,7 @@ __all__ = [
     "resolve_latest_usage_message_id",
     "resolve_model_state",
     "resolve_session_id",
+    "resolve_usage_loggers",
     "resolve_usage_update_target",
     "usage_tokens_and_cost",
 ]
@@ -426,3 +429,38 @@ async def apply_usage_to_latest_message(
         if callable(info):
             info(usage_log, *usage_args)
     return True
+
+
+def resolve_usage_loggers(
+    logger: Any,
+    *,
+    logger_getter: Callable[[str], Any] = logging.getLogger,
+) -> tuple[Any, ...]:
+    """Return secondary loggers that should receive usage update telemetry."""
+
+    try:
+        uvicorn_logger = logger_getter("uvicorn.error")
+    except Exception:
+        return ()
+    return (uvicorn_logger,) if uvicorn_logger is not logger else ()
+
+
+async def apply_usage_to_core_latest_message(
+    owner: Any,
+    session_id: Any,
+    usage: Any,
+    *,
+    logger: Any,
+    logger_getter: Callable[[str], Any] = logging.getLogger,
+) -> bool:
+    """Apply OpenCode usage metadata using a core-like owner's bridge state."""
+
+    return await apply_usage_to_latest_message(
+        session_id,
+        usage,
+        stream_states=getattr(owner, "_opencode_stream_states", None),
+        message_adapters=getattr(owner, "_opencode_message_adapters", None),
+        get_adapter=owner._get_tui_adapter,
+        logger=logger,
+        extra_loggers=resolve_usage_loggers(logger, logger_getter=logger_getter),
+    )

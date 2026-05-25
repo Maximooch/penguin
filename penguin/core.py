@@ -2821,16 +2821,11 @@ class PenguinCore:
         session_id: Optional[str],
         usage: Dict[str, Any],
     ) -> None:
-        uvicorn_logger = logging.getLogger("uvicorn.error")
-        extra_loggers = (uvicorn_logger,) if uvicorn_logger is not logger else ()
-        await core_opencode_bridge.apply_usage_to_latest_message(
+        await core_opencode_bridge.apply_usage_to_core_latest_message(
+            self,
             session_id,
             usage,
-            stream_states=getattr(self, "_opencode_stream_states", None),
-            message_adapters=getattr(self, "_opencode_message_adapters", None),
-            get_adapter=self._get_tui_adapter,
             logger=logger,
-            extra_loggers=extra_loggers,
         )
 
     async def _emit_opencode_user_message(self, content: str) -> str:
