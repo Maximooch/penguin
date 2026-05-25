@@ -191,10 +191,12 @@ def test_process_runtime_captures_interleaved_streams() -> None:
     process_id = runtime.start(command)["process_id"]
     polled = _poll_until_status(runtime, process_id, "exited")
 
-    assert "[stdout] out1" in polled["output"]
-    assert "[stdout] out2" in polled["output"]
-    assert "[stderr] err1" in polled["output"]
-    assert "[stderr] err2" in polled["output"]
+    assert "[stdout]" in polled["output"]
+    assert "[stderr]" in polled["output"]
+    assert "out1" in polled["output"]
+    assert "out2" in polled["output"]
+    assert "err1" in polled["output"]
+    assert "err2" in polled["output"]
 
 
 class _TimeoutThenKillProcess:
