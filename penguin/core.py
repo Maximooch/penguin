@@ -136,7 +136,7 @@ from penguin.llm.api_client import APIClient
 from penguin.llm.model_config import ModelConfig, fetch_model_specs
 from .core_runtime import action_execution as core_action_execution
 from .core_runtime import agent_lifecycle_facade as core_agent_lifecycle_facade
-from .core_runtime import checkpoint_runtime as core_checkpoint_runtime
+from .core_runtime import checkpoint_facade as core_checkpoint_facade
 from .core_runtime import conversations as core_conversations
 from .core_runtime import diagnostics_facade as core_diagnostics_facade
 from .core_runtime import message_processing as core_message_processing
@@ -215,6 +215,7 @@ def _trace_log_info(message: str, *args: Any) -> None:
 # ---------------------------------------------------------------------------
 class PenguinCore(
     core_agent_lifecycle_facade.AgentLifecycleCoreFacade,
+    core_checkpoint_facade.CheckpointCoreFacade,
     core_diagnostics_facade.DiagnosticsCoreFacade,
     core_state_facade.StateCoreFacade,
     core_streaming_facade.StreamingCoreFacade,
@@ -496,108 +497,6 @@ class PenguinCore(
     async def execute_action(self, action) -> Dict[str, Any]:
         """Execute an action and return structured result"""
         return await core_action_execution.execute_action(self, action)
-
-    # ------------------------------------------------------------------
-    # Checkpoint Management API (NEW - V2.1 Conversation Plane)
-    # ------------------------------------------------------------------
-
-    async def create_checkpoint(
-        self, name: Optional[str] = None, description: Optional[str] = None
-    ) -> Optional[str]:
-        """
-        Create a manual checkpoint of the current conversation state.
-
-        Args:
-            name: Optional name for the checkpoint
-            description: Optional description
-
-        Returns:
-            Checkpoint ID if successful, None otherwise
-        """
-        return await core_checkpoint_runtime.create_checkpoint(
-            self.conversation_manager,
-            name=name,
-            description=description,
-        )
-
-    async def rollback_to_checkpoint(self, checkpoint_id: str) -> bool:
-        """
-        Rollback conversation to a specific checkpoint.
-
-        Args:
-            checkpoint_id: ID of the checkpoint to rollback to
-
-        Returns:
-            True if successful, False otherwise
-        """
-        return await core_checkpoint_runtime.rollback_to_checkpoint(
-            self.conversation_manager,
-            checkpoint_id,
-        )
-
-    async def branch_from_checkpoint(
-        self,
-        checkpoint_id: str,
-        name: Optional[str] = None,
-        description: Optional[str] = None,
-    ) -> Optional[str]:
-        """
-        Create a new conversation branch from a checkpoint.
-
-        Args:
-            checkpoint_id: ID of the checkpoint to branch from
-            name: Optional name for the branch
-            description: Optional description
-
-        Returns:
-            New branch checkpoint ID if successful, None otherwise
-        """
-        return await core_checkpoint_runtime.branch_from_checkpoint(
-            self.conversation_manager,
-            checkpoint_id,
-            name=name,
-            description=description,
-        )
-
-    def list_checkpoints(
-        self, session_id: Optional[str] = None, limit: int = 50
-    ) -> List[Dict[str, Any]]:
-        """
-        List available checkpoints with optional filtering.
-
-        Args:
-            session_id: Filter by session ID (None for current session)
-            limit: Maximum number of checkpoints to return
-
-        Returns:
-            List of checkpoint information
-        """
-        return core_checkpoint_runtime.list_checkpoints(
-            self.conversation_manager,
-            session_id=session_id, limit=limit
-        )
-
-    async def cleanup_old_checkpoints(self) -> int:
-        """
-        Clean up old checkpoints according to retention policy.
-
-        Returns:
-            Number of checkpoints cleaned up
-        """
-        return await core_checkpoint_runtime.cleanup_old_checkpoints(
-            self.conversation_manager
-        )
-
-    def get_checkpoint_stats(self) -> Dict[str, Any]:
-        """
-        Get statistics about the checkpointing system.
-
-        Returns:
-            Dictionary with checkpoint statistics
-        """
-        return core_checkpoint_runtime.get_checkpoint_stats(
-            self.conversation_manager
-        )
 
     async def process(
         self,
