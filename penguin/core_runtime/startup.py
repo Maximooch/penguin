@@ -42,6 +42,7 @@ __all__ = [
     "ensure_tokenizers_parallelism",
     "initialize_prompt_and_output_state",
     "initialize_runtime_config",
+    "initialize_tui_bridge_state",
     "load_startup_config",
     "log_startup_failure",
     "log_startup_summary",
@@ -345,6 +346,41 @@ def initialize_runtime_config(
     observer = getattr(tool_manager, "on_runtime_config_change", None)
     if tool_manager is not None and callable(observer):
         owner.runtime_config.register_observer(observer)
+
+
+def initialize_tui_bridge_state(
+    owner: Any,
+    *,
+    event_bus_factory: Callable[[], Any],
+    event_type_enum: Any,
+    stream_lock_factory: Callable[[], Any],
+    stream_manager_factory: Callable[[], Any],
+    part_event_adapter_factory: Callable[..., Any],
+) -> None:
+    """Initialize event, streaming, OpenCode adapter, and run-mode bridge state."""
+
+    owner.event_bus = event_bus_factory()
+    owner.event_types = {event_type.value for event_type in event_type_enum}
+
+    owner.current_stream = None
+    owner.stream_lock = stream_lock_factory()
+    owner._stream_manager = stream_manager_factory()
+
+    owner._tui_adapter = part_event_adapter_factory(
+        owner.event_bus,
+        persist_callback=owner._persist_opencode_event,
+        emit_session_status_events=False,
+    )
+    owner._tui_adapters = {}
+    owner._opencode_abort_sessions = set()
+    owner._opencode_active_requests = {}
+    owner._opencode_process_tasks = {}
+
+    owner._subscribe_to_stream_events()
+
+    owner._runmode_stream_callback = None
+    owner._runmode_active = False
+    owner.run_mode = None
 
 
 def build_tool_manager(

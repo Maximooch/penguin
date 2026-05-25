@@ -510,52 +510,26 @@ class PenguinCore:
             runtime_config_factory=RuntimeConfig,
         )
 
-        # Initialize unified event system
         from penguin.cli.events import EventBus, EventType
+        from penguin.tui_adapter import PartEventAdapter
 
-        self.event_bus = EventBus.get_sync()
-        self.event_types = {e.value for e in EventType}
+        core_startup.initialize_tui_bridge_state(
+            self,
+            event_bus_factory=EventBus.get_sync,
+            event_type_enum=EventType,
+            stream_lock_factory=asyncio.Lock,
+            stream_manager_factory=AgentStreamingStateManager,
+            part_event_adapter_factory=PartEventAdapter,
+        )
 
         # Telemetry collector
         ensure_telemetry(self)
-
         core_startup.initialize_prompt_and_output_state(
             self,
             raw_config,
             get_system_prompt=get_system_prompt,
             fallback_system_prompt=SYSTEM_PROMPT,
         )
-
-        # Initialize streaming primitives immediately (before Engine/handlers can use them)
-        self.current_stream = None
-        self.stream_lock = asyncio.Lock()
-
-        # AgentStreamingStateManager handles per-agent streaming state, coalescing, and event generation
-        # This allows multiple agents to stream simultaneously without interference
-        self._stream_manager = AgentStreamingStateManager()
-
-        # OpenCode TUI adapter for SSE event translation
-        from penguin.tui_adapter import PartEventAdapter
-
-        self._tui_adapter = PartEventAdapter(
-            self.event_bus,
-            persist_callback=self._persist_opencode_event,
-            emit_session_status_events=False,
-        )
-        self._tui_adapters: Dict[str, Any] = {}
-        self._opencode_abort_sessions: set[str] = set()
-        self._opencode_active_requests: Dict[str, int] = {}
-        self._opencode_process_tasks: Dict[str, Set[asyncio.Task[Any]]] = {}
-
-        # Subscribe to stream events and translate to OpenCode format
-        self._subscribe_to_stream_events()
-
-        # RunMode state for UI streaming bridges
-        self._runmode_stream_callback: Optional[
-            Callable[[str, str], Awaitable[None]]
-        ] = None
-        self._runmode_active: bool = False
-        self.run_mode = None
 
         # Initialize project manager with workspace path from config
         from penguin.config import WORKSPACE_PATH

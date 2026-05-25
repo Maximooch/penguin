@@ -444,6 +444,72 @@ def test_initialize_runtime_config_uses_supplied_runtime_config() -> None:
     assert runtime_config.observers == []
 
 
+def test_initialize_tui_bridge_state_wires_event_stream_and_opencode_state() -> None:
+    class _EventType:
+        def __init__(self, value: str) -> None:
+            self.value = value
+
+    bus = SimpleNamespace(name="bus")
+    lock = object()
+    stream_manager = SimpleNamespace(name="stream")
+    adapter_calls: list[dict[str, Any]] = []
+
+    def _adapter_factory(
+        event_bus: Any,
+        *,
+        persist_callback: Any,
+        emit_session_status_events: bool,
+    ) -> SimpleNamespace:
+        adapter_calls.append(
+            {
+                "event_bus": event_bus,
+                "persist_callback": persist_callback,
+                "emit_session_status_events": emit_session_status_events,
+            }
+        )
+        return SimpleNamespace(name="adapter")
+
+    def _persist(event_type: str, payload: dict[str, Any]) -> None:
+        del event_type, payload
+
+    subscribe_calls: list[str] = []
+    owner = SimpleNamespace(
+        _persist_opencode_event=_persist,
+        _subscribe_to_stream_events=lambda: subscribe_calls.append("subscribed"),
+    )
+
+    startup.initialize_tui_bridge_state(
+        owner,
+        event_bus_factory=lambda: bus,
+        event_type_enum=[_EventType("status"), _EventType("stream_chunk")],
+        stream_lock_factory=lambda: lock,
+        stream_manager_factory=lambda: stream_manager,
+        part_event_adapter_factory=_adapter_factory,
+    )
+
+    assert owner.event_bus is bus
+    assert owner.event_types == {"status", "stream_chunk"}
+    assert owner.current_stream is None
+    assert owner.stream_lock is lock
+    assert owner._stream_manager is stream_manager
+    assert owner._tui_adapter.name == "adapter"
+    assert owner._tui_adapters == {}
+    assert owner._opencode_abort_sessions == set()
+    assert owner._opencode_active_requests == {}
+    assert owner._opencode_process_tasks == {}
+    assert owner._runmode_stream_callback is None
+    assert owner._runmode_active is False
+    assert owner.run_mode is None
+    assert subscribe_calls == ["subscribed"]
+    assert adapter_calls == [
+        {
+            "event_bus": bus,
+            "persist_callback": _persist,
+            "emit_session_status_events": False,
+        }
+    ]
+
+
 def test_initialize_prompt_and_output_state_prefers_typed_output_config() -> None:
     formatted: list[str] = []
     owner = SimpleNamespace(
