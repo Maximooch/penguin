@@ -371,6 +371,125 @@ def test_persist_finalized_message_fails_closed_without_target_store() -> None:
 
 
 @pytest.mark.asyncio
+async def test_finalize_streaming_message_persists_and_emits_scoped_final_event() -> (
+    None
+):
+    class _Message:
+        def __init__(self) -> None:
+            self.role = "assistant"
+            self.content = "final response"
+            self.metadata = {"source": "stream"}
+            self.was_empty = False
+
+        def to_dict(self) -> dict[str, str]:
+            return {"content": self.content}
+
+    class _StreamManager:
+        def finalize(self, agent_id: str) -> tuple[_Message, list[SimpleNamespace]]:
+            assert agent_id == "session_1:agent-a"
+            return (
+                _Message(),
+                [
+                    SimpleNamespace(
+                        event_type="stream_chunk",
+                        data={
+                            "chunk": "visible <execute>hidden</execute>",
+                            "is_final": True,
+                        },
+                    )
+                ],
+            )
+
+        def get_active_agents(self) -> list[str]:
+            return []
+
+    persisted: list[dict[str, Any]] = []
+    emitted: list[tuple[str, dict[str, Any]]] = []
+    owner = SimpleNamespace(
+        conversation_manager=SimpleNamespace(current_agent_id="default"),
+        _stream_manager=_StreamManager(),
+        _runmode_stream_callback=None,
+    )
+    owner._persist_finalized_message = lambda **kwargs: persisted.append(kwargs) or True
+    owner._filter_internal_markers_from_event = (
+        stream_events.filter_internal_markers_from_event
+    )
+
+    async def _emit_ui_event(event_type: str, data: dict[str, Any]) -> None:
+        emitted.append((event_type, data))
+
+    owner.emit_ui_event = _emit_ui_event
+
+    result = stream_events.finalize_streaming_message(
+        owner,
+        agent_id="agent-a",
+        session_id="session_1",
+        conversation_id="session_1",
+        logger=logging.getLogger("test.stream_events"),
+    )
+    await asyncio.sleep(0)
+
+    assert result == {"content": "final response"}
+    assert persisted[0]["agent_id"] == "agent-a"
+    assert persisted[0]["session_id"] == "session_1"
+    assert persisted[0]["category"] == MessageCategory.DIALOG
+    assert emitted == [
+        (
+            "stream_chunk",
+            {
+                "chunk": "visible",
+                "is_final": True,
+                "session_id": "session_1",
+                "conversation_id": "session_1",
+                "agent_id": "agent-a",
+            },
+        )
+    ]
+
+
+def test_finalize_streaming_message_falls_back_only_when_unscoped() -> None:
+    class _Message:
+        def __init__(self) -> None:
+            self.role = "assistant"
+            self.content = "fallback response"
+            self.metadata: dict[str, Any] = {}
+            self.was_empty = False
+
+        def to_dict(self) -> dict[str, str]:
+            return {"content": self.content}
+
+    class _StreamManager:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def finalize(self, agent_id: str) -> tuple[_Message | None, list[Any]]:
+            self.calls.append(agent_id)
+            if agent_id == "active-agent":
+                return _Message(), []
+            return None, []
+
+        def get_active_agents(self) -> list[str]:
+            return ["active-agent"]
+
+    stream_manager = _StreamManager()
+    owner = SimpleNamespace(
+        conversation_manager=SimpleNamespace(current_agent_id="default"),
+        _stream_manager=stream_manager,
+        _runmode_stream_callback=None,
+    )
+    owner._resolve_stream_scope_id = lambda _context, agent_id: agent_id
+    owner._persist_finalized_message = lambda **_kwargs: True
+
+    result = stream_events.finalize_streaming_message(
+        owner,
+        logger=logging.getLogger("test.stream_events"),
+    )
+
+    assert result == {"content": "fallback response"}
+    assert stream_manager.calls == ["default", "active-agent"]
+
+
+@pytest.mark.asyncio
 async def test_handle_tui_stream_chunk_starts_tracks_and_finalizes_stream() -> None:
     adapter = _Adapter()
     owner = _Owner(adapter)

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from datetime import datetime
 from typing import Any
 
+from penguin.system.execution_context import get_current_execution_context
 from penguin.system.state import Message, MessageCategory
 
 __all__ = [
@@ -13,6 +15,7 @@ __all__ = [
     "active_part_text",
     "emit_opencode_session_status",
     "filter_internal_markers_from_event",
+    "finalize_streaming_message",
     "handle_tui_stream_chunk",
     "persist_finalized_message",
     "resolve_stream_scope_id",
@@ -28,6 +31,16 @@ _INTERNAL_MARKER_PATTERNS = (
 )
 
 _FILTERED_CONTENT_FIELDS = ("content", "chunk", "content_so_far", "message")
+
+
+def _schedule_background_task(owner: Any, awaitable: Any) -> None:
+    task = asyncio.create_task(awaitable)
+    tasks = getattr(owner, "_opencode_background_tasks", None)
+    if not isinstance(tasks, set):
+        tasks = set()
+        owner._opencode_background_tasks = tasks
+    tasks.add(task)
+    task.add_done_callback(tasks.discard)
 
 
 def stream_state_for(owner: Any, session_id: Any) -> dict[str, Any]:
@@ -296,6 +309,283 @@ def persist_finalized_message(
             category,
         )
     return saved
+
+
+def finalize_streaming_message(
+    owner: Any,
+    *,
+    agent_id: str | None = None,
+    session_id: str | None = None,
+    conversation_id: str | None = None,
+    stream_scope_id: str | None = None,
+    logger: Any,
+    trace_log: Any = None,
+) -> dict[str, Any] | None:
+    """Finalize a stream, persist the message, and emit scoped stream events."""
+
+    execution_context = get_current_execution_context()
+    conversation_manager = getattr(owner, "conversation_manager", None)
+
+    if agent_id is None:
+        if execution_context and execution_context.agent_id:
+            agent_id = execution_context.agent_id
+        else:
+            agent_id = getattr(conversation_manager, "current_agent_id", "default")
+
+    resolved_agent_id = agent_id
+    if resolved_agent_id is None and execution_context and execution_context.agent_id:
+        resolved_agent_id = execution_context.agent_id
+    if resolved_agent_id is None:
+        resolved_agent_id = getattr(
+            conversation_manager,
+            "current_agent_id",
+            "default",
+        )
+    resolved_agent_id = resolved_agent_id or "default"
+
+    resolved_conversation_id = conversation_id
+    resolved_session_id = session_id or conversation_id
+    if execution_context:
+        resolved_conversation_id = (
+            execution_context.conversation_id
+            or execution_context.session_id
+            or resolved_conversation_id
+        )
+        resolved_session_id = (
+            execution_context.session_id
+            or resolved_conversation_id
+            or resolved_session_id
+        )
+
+    resolved_stream_scope_id = stream_scope_id
+    if not resolved_stream_scope_id and resolved_session_id:
+        resolved_stream_scope_id = f"{resolved_session_id}:{resolved_agent_id}"
+    if not resolved_stream_scope_id:
+        scope_resolver = getattr(owner, "_resolve_stream_scope_id", None)
+        if callable(scope_resolver):
+            resolved_stream_scope_id = scope_resolver(
+                execution_context,
+                resolved_agent_id,
+            )
+        else:
+            resolved_stream_scope_id = resolve_stream_scope_id(
+                conversation_manager=conversation_manager,
+                execution_context=execution_context,
+                agent_id=resolved_agent_id,
+            )
+
+    message, events = owner._stream_manager.finalize(agent_id=resolved_stream_scope_id)
+    if message is None:
+        active_scopes = owner._stream_manager.get_active_agents()
+        allow_unscoped_fallback = not (
+            isinstance(resolved_session_id, str) and resolved_session_id
+        ) and not (
+            isinstance(resolved_conversation_id, str) and resolved_conversation_id
+        )
+        logger.warning(
+            "stream.finalize.scope_miss request=%s session=%s conversation=%s "
+            "agent=%s scope=%s active_scopes=%s allow_unscoped_fallback=%s",
+            execution_context.request_id if execution_context else "unknown",
+            resolved_session_id or "",
+            resolved_conversation_id or "",
+            resolved_agent_id,
+            resolved_stream_scope_id,
+            active_scopes,
+            allow_unscoped_fallback,
+        )
+        if allow_unscoped_fallback:
+            logical_agent_id = resolved_agent_id
+            if resolved_stream_scope_id != logical_agent_id:
+                message, events = owner._stream_manager.finalize(
+                    agent_id=logical_agent_id
+                )
+                if message is not None:
+                    logger.warning(
+                        "stream.finalize.fallback_used request=%s session=%s "
+                        "conversation=%s requested_scope=%s fallback_scope=%s",
+                        execution_context.request_id
+                        if execution_context
+                        else "unknown",
+                        resolved_session_id or "",
+                        resolved_conversation_id or "",
+                        resolved_stream_scope_id,
+                        logical_agent_id,
+                    )
+            if message is None and len(active_scopes) == 1:
+                message, events = owner._stream_manager.finalize(
+                    agent_id=active_scopes[0]
+                )
+                if message is not None:
+                    logger.warning(
+                        "stream.finalize.single_active_fallback request=%s "
+                        "session=%s conversation=%s requested_scope=%s "
+                        "fallback_scope=%s",
+                        execution_context.request_id
+                        if execution_context
+                        else "unknown",
+                        resolved_session_id or "",
+                        resolved_conversation_id or "",
+                        resolved_stream_scope_id,
+                        active_scopes[0],
+                    )
+
+    if message is None:
+        return None
+
+    if message.was_empty:
+        logger.warning(
+            "[WALLET_GUARD] Empty response from LLM for agent '%s', "
+            "forcing context advance.",
+            resolved_agent_id,
+        )
+
+    if message.role == "assistant":
+        category = MessageCategory.DIALOG
+    elif message.role == "system":
+        category = MessageCategory.SYSTEM
+    else:
+        category = MessageCategory.DIALOG
+
+    if conversation_manager:
+        target_session_id = (
+            resolved_session_id
+            if isinstance(resolved_session_id, str) and resolved_session_id
+            else None
+        )
+        persisted = owner._persist_finalized_message(
+            agent_id=resolved_agent_id,
+            session_id=target_session_id,
+            message=message,
+            category=category,
+        )
+        trace_session_id = target_session_id if persisted else None
+        try:
+            if not persisted:
+                conv = conversation_manager.get_agent_conversation(resolved_agent_id)
+                current_session_id = getattr(getattr(conv, "session", None), "id", None)
+                trace_session_id = current_session_id or trace_session_id
+                if target_session_id and current_session_id != target_session_id:
+                    logger.warning(
+                        "Skipping shared-conversation finalize persistence for "
+                        "agent '%s': target session '%s' != current session '%s'",
+                        resolved_agent_id,
+                        target_session_id,
+                        current_session_id,
+                    )
+                else:
+                    conv.add_message(
+                        role=message.role,
+                        content=message.content,
+                        category=category,
+                        metadata=message.metadata,
+                    )
+                    if hasattr(conv, "save"):
+                        conv.save()
+        except (KeyError, AttributeError):
+            if not persisted:
+                conv = conversation_manager.conversation
+                current_session_id = getattr(getattr(conv, "session", None), "id", None)
+                trace_session_id = current_session_id or trace_session_id
+                if target_session_id and current_session_id != target_session_id:
+                    logger.warning(
+                        "Skipping fallback finalize persistence: target session "
+                        "'%s' != current session '%s'",
+                        target_session_id,
+                        current_session_id,
+                    )
+                else:
+                    conv.add_message(
+                        role=message.role,
+                        content=message.content,
+                        category=category,
+                        metadata=message.metadata,
+                    )
+                    if hasattr(conv, "save"):
+                        conv.save()
+
+        if callable(trace_log):
+            trace_log(
+                "core.stream.finalize request=%s session=%s conversation=%s "
+                "agent=%s effective_conv_session=%s persisted=%s message_len=%s "
+                "events=%s empty=%s",
+                execution_context.request_id if execution_context else "unknown",
+                target_session_id or "unknown",
+                resolved_conversation_id or "",
+                resolved_agent_id,
+                trace_session_id or "unknown",
+                persisted,
+                len(message.content or ""),
+                len(events),
+                bool(message.was_empty),
+            )
+
+        temp_ws_callback = getattr(owner, "_temp_ws_callback", None)
+        if temp_ws_callback:
+            _schedule_background_task(
+                owner,
+                temp_ws_callback(
+                    {
+                        "type": "message",
+                        "role": message.role,
+                        "content": message.content,
+                        "category": category,
+                        "metadata": message.metadata,
+                        "agent_id": resolved_agent_id,
+                    }
+                ),
+            )
+
+    callback_ref = getattr(owner, "_runmode_stream_callback", None)
+    for event in events:
+        event_data = (
+            dict(event.data) if isinstance(event.data, dict) else {"data": event.data}
+        )
+        scoped_conversation_id = resolved_conversation_id
+        scoped_session_id = resolved_session_id
+        if execution_context:
+            scoped_conversation_id = (
+                execution_context.conversation_id
+                or execution_context.session_id
+                or scoped_conversation_id
+            )
+            scoped_session_id = (
+                execution_context.session_id
+                or scoped_conversation_id
+                or scoped_session_id
+            )
+
+        if scoped_conversation_id:
+            event_data["session_id"] = scoped_session_id or scoped_conversation_id
+            event_data["conversation_id"] = scoped_conversation_id
+        else:
+            event_data["session_id"] = "unknown"
+            event_data["conversation_id"] = "unknown"
+            logger.warning(
+                "stream.finalize.unknown_scope request=%s agent=%s scope=%s "
+                "active_scopes=%s",
+                execution_context.request_id if execution_context else "unknown",
+                resolved_agent_id,
+                resolved_stream_scope_id,
+                owner._stream_manager.get_active_agents(),
+            )
+
+        event_data["agent_id"] = resolved_agent_id
+        event_data = owner._filter_internal_markers_from_event(event_data)
+        _schedule_background_task(
+            owner,
+            owner.emit_ui_event(event.event_type, event_data),
+        )
+        if callback_ref and event_data.get("is_final"):
+            _schedule_background_task(
+                owner,
+                owner._invoke_runmode_stream_callback(
+                    "",
+                    "assistant",
+                    callback_ref,
+                ),
+            )
+
+    return message.to_dict()
 
 
 async def handle_tui_stream_chunk(
