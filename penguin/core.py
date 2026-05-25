@@ -3585,29 +3585,7 @@ class PenguinCore:
 
     def _subscribe_to_stream_events(self):
         """Subscribe to Penguin stream events and translate to OpenCode format."""
-        self._opencode_stream_states: Dict[str, Dict[str, Any]] = {}
-        self._opencode_message_adapters: Dict[str, Any] = {}
-        self._opencode_tool_parts: Dict[str, str] = {}
-        self._opencode_tool_info: Dict[str, Dict[str, Any]] = {}
-
-        # Store reference to handler so it doesn't get garbage collected
-        self._tui_stream_handler = self._on_tui_stream_chunk
-        self.event_bus.subscribe("stream_chunk", self._tui_stream_handler)
-
-        self._tui_action_handler = self._on_tui_action
-        self._tui_action_result_handler = self._on_tui_action_result
-        self.event_bus.subscribe("action", self._tui_action_handler)
-        self.event_bus.subscribe("action_result", self._tui_action_result_handler)
-
-        self._tui_lsp_updated_handler = self._on_tui_lsp_updated
-        self._tui_lsp_diagnostics_handler = self._on_tui_lsp_diagnostics
-        self.event_bus.subscribe("lsp.updated", self._tui_lsp_updated_handler)
-        self.event_bus.subscribe(
-            "lsp.client.diagnostics", self._tui_lsp_diagnostics_handler
-        )
-
-        self._tui_todo_updated_handler = self._on_tui_todo_updated
-        self.event_bus.subscribe("todo.updated", self._tui_todo_updated_handler)
+        core_stream_events.subscribe_to_stream_events(self)
 
     def _get_tui_adapter(self, session_id: Optional[str]) -> Any:
         """Return a session-scoped TUI adapter to avoid cross-session bleed."""

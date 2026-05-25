@@ -84,6 +84,52 @@ class _EventBus:
         self.events.append((event_type, data))
 
 
+class _SubscribingEventBus:
+    def __init__(self) -> None:
+        self.subscriptions: list[tuple[str, Any]] = []
+
+    def subscribe(self, event_type: str, handler: Any) -> None:
+        self.subscriptions.append((event_type, handler))
+
+
+def test_subscribe_to_stream_events_initializes_tui_bridge_state() -> None:
+    event_bus = _SubscribingEventBus()
+    owner = SimpleNamespace(
+        event_bus=event_bus,
+        _opencode_stream_states={"old": {"active": True}},
+        _opencode_message_adapters={"old": object()},
+        _opencode_tool_parts={"old:tool": "part"},
+        _opencode_tool_info={"old:tool": {"name": "execute"}},
+    )
+    owner._on_tui_stream_chunk = object()
+    owner._on_tui_action = object()
+    owner._on_tui_action_result = object()
+    owner._on_tui_lsp_updated = object()
+    owner._on_tui_lsp_diagnostics = object()
+    owner._on_tui_todo_updated = object()
+
+    stream_events.subscribe_to_stream_events(owner)
+
+    assert owner._opencode_stream_states == {}
+    assert owner._opencode_message_adapters == {}
+    assert owner._opencode_tool_parts == {}
+    assert owner._opencode_tool_info == {}
+    assert event_bus.subscriptions == [
+        ("stream_chunk", owner._on_tui_stream_chunk),
+        ("action", owner._on_tui_action),
+        ("action_result", owner._on_tui_action_result),
+        ("lsp.updated", owner._on_tui_lsp_updated),
+        ("lsp.client.diagnostics", owner._on_tui_lsp_diagnostics),
+        ("todo.updated", owner._on_tui_todo_updated),
+    ]
+    assert owner._tui_stream_handler is owner._on_tui_stream_chunk
+    assert owner._tui_action_handler is owner._on_tui_action
+    assert owner._tui_action_result_handler is owner._on_tui_action_result
+    assert owner._tui_lsp_updated_handler is owner._on_tui_lsp_updated
+    assert owner._tui_lsp_diagnostics_handler is owner._on_tui_lsp_diagnostics
+    assert owner._tui_todo_updated_handler is owner._on_tui_todo_updated
+
+
 def test_should_emit_final_content_detects_existing_part_text() -> None:
     adapter = _Adapter()
     adapter._active_parts["part_1"] = {"content": {"text": "already streamed"}}

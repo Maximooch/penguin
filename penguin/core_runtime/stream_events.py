@@ -29,6 +29,7 @@ __all__ = [
     "resolve_stream_scope_id",
     "should_emit_final_content",
     "stream_state_for",
+    "subscribe_to_stream_events",
 ]
 
 _INTERNAL_MARKER_PATTERNS = (
@@ -69,6 +70,34 @@ def stream_state_for(owner: Any, session_id: Any) -> dict[str, Any]:
         }
         stream_states[session_id] = state
     return state
+
+
+def subscribe_to_stream_events(owner: Any) -> None:
+    """Subscribe a core-like owner to OpenCode/TUI bridge source events."""
+
+    owner._opencode_stream_states = {}
+    owner._opencode_message_adapters = {}
+    owner._opencode_tool_parts = {}
+    owner._opencode_tool_info = {}
+
+    owner._tui_stream_handler = owner._on_tui_stream_chunk
+    owner.event_bus.subscribe("stream_chunk", owner._tui_stream_handler)
+
+    owner._tui_action_handler = owner._on_tui_action
+    owner._tui_action_result_handler = owner._on_tui_action_result
+    owner.event_bus.subscribe("action", owner._tui_action_handler)
+    owner.event_bus.subscribe("action_result", owner._tui_action_result_handler)
+
+    owner._tui_lsp_updated_handler = owner._on_tui_lsp_updated
+    owner._tui_lsp_diagnostics_handler = owner._on_tui_lsp_diagnostics
+    owner.event_bus.subscribe("lsp.updated", owner._tui_lsp_updated_handler)
+    owner.event_bus.subscribe(
+        "lsp.client.diagnostics",
+        owner._tui_lsp_diagnostics_handler,
+    )
+
+    owner._tui_todo_updated_handler = owner._on_tui_todo_updated
+    owner.event_bus.subscribe("todo.updated", owner._tui_todo_updated_handler)
 
 
 def active_part_text(adapter: Any, part_id: str) -> str:
