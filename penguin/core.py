@@ -170,6 +170,7 @@ from .core_runtime import opencode_bridge as core_opencode_bridge
 from .core_runtime import opencode_persistence as core_opencode_persistence
 from .core_runtime import process_input as core_process_input
 from .core_runtime import process_lifecycle as core_process_lifecycle
+from .core_runtime import process_streaming as core_process_streaming
 from .core_runtime import prompt_settings as core_prompt_settings
 from .core_runtime import runmode_events as core_runmode_events
 from .core_runtime import runmode_lifecycle as core_runmode_lifecycle
@@ -2113,102 +2114,22 @@ class PenguinCore:
             # Use new Engine layer if available
             if self.engine:
                 execution_context = get_current_execution_context()
-                stream_scope_id = self._resolve_stream_scope_id(
-                    execution_context,
-                    agent_id,
-                )
-                scoped_conversation_id = conversation_id
-                scoped_session_id = conversation_id
-                if execution_context is not None:
-                    scoped_conversation_id = (
-                        execution_context.conversation_id
-                        or execution_context.session_id
-                        or scoped_conversation_id
-                    )
-                    scoped_session_id = (
-                        execution_context.session_id
-                        or scoped_conversation_id
-                        or scoped_session_id
-                    )
-                if not scoped_session_id:
-                    try:
-                        active_session = conversation_manager.get_current_session()
-                        scoped_session_id = (
-                            active_session.id if active_session else None
-                        )
-                    except Exception:
-                        scoped_session_id = None
-                if not scoped_conversation_id:
-                    scoped_conversation_id = scoped_session_id
-
-                prime_agent_id = agent_id or getattr(
-                    self.engine, "default_agent_id", "default"
-                )
-                if hasattr(self.engine, "prime_scoped_conversation_manager"):
-                    self.engine.prime_scoped_conversation_manager(
-                        prime_agent_id,
-                        conversation_manager,
-                    )
-
-                async def _scoped_stream_callback(
-                    chunk: str,
-                    message_type: str = "assistant",
-                ) -> None:
-                    await self._handle_stream_chunk(
-                        chunk,
-                        message_type=message_type,
+                engine_process_context = (
+                    core_process_streaming.prepare_engine_process_context(
+                        self,
+                        conversation_manager=conversation_manager,
+                        conversation_id=conversation_id,
                         agent_id=agent_id,
-                        stream_scope_id=stream_scope_id,
-                        session_id=scoped_session_id,
-                        conversation_id=scoped_conversation_id,
+                        streaming=streaming,
+                        stream_callback=stream_callback,
+                        execution_context=execution_context,
+                        log=logger,
                     )
-
-                # Build streaming callback for Engine that first updates internal streaming
-                # state via _handle_stream_chunk and then forwards chunks to any external
-                # stream_callback supplied by callers (e.g., WebSocket).
-                if streaming:
-                    if stream_callback:
-
-                        async def _combined_stream_callback(
-                            chunk: str, message_type: str = "assistant"
-                        ):
-                            # Update internal streaming handling
-                            await _scoped_stream_callback(chunk, message_type)
-                            # Forward to external callback, preserving message_type when supported
-                            try:
-                                import inspect
-
-                                params = []
-                                try:
-                                    params = list(
-                                        inspect.signature(
-                                            stream_callback
-                                        ).parameters.keys()
-                                    )
-                                except Exception:
-                                    params = []
-                                if asyncio.iscoroutinefunction(stream_callback):
-                                    if len(params) >= 2:
-                                        await stream_callback(chunk, message_type)
-                                    else:
-                                        await stream_callback(chunk)
-                                else:
-                                    if len(params) >= 2:
-                                        await asyncio.to_thread(
-                                            stream_callback, chunk, message_type
-                                        )
-                                    else:
-                                        await asyncio.to_thread(stream_callback, chunk)
-                            except Exception as cb_err:
-                                logger.error(
-                                    f"Error in external stream_callback: {cb_err}"
-                                )
-
-                        engine_stream_callback = _combined_stream_callback
-                    else:
-                        engine_stream_callback = _scoped_stream_callback
-                else:
-                    engine_stream_callback = None
+                )
+                engine_stream_callback = engine_process_context.stream_callback
+                scoped_conversation_id = (
+                    engine_process_context.scoped_conversation_id
+                )
 
                 if multi_step:
                     # Check if this is a formal task (RunMode) or conversational multi-step
