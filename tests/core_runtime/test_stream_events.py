@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from penguin.core_runtime import stream_events
+from penguin.llm.stream_handler import AgentStreamingStateManager
 from penguin.system.state import MessageCategory
 
 
@@ -567,6 +568,88 @@ def test_abort_streaming_message_returns_false_without_events() -> None:
     )
 
     assert aborted is False
+
+
+@pytest.mark.asyncio
+async def test_handle_stream_chunk_scopes_filters_and_forwards_runmode() -> None:
+    emitted: list[tuple[str, dict[str, Any]]] = []
+    callbacks: list[tuple[str, str]] = []
+
+    owner = SimpleNamespace(
+        conversation_manager=SimpleNamespace(current_agent_id="ambient-agent"),
+        _stream_manager=AgentStreamingStateManager(),
+        _opencode_abort_sessions=set(),
+    )
+    owner._filter_internal_markers_from_event = (
+        stream_events.filter_internal_markers_from_event
+    )
+
+    async def _emit_ui_event(event_type: str, data: dict[str, Any]) -> None:
+        emitted.append((event_type, data))
+
+    async def _invoke_runmode_stream_callback(
+        chunk: str,
+        message_type: str,
+    ) -> None:
+        callbacks.append((chunk, message_type))
+
+    owner.emit_ui_event = _emit_ui_event
+    owner._invoke_runmode_stream_callback = _invoke_runmode_stream_callback
+
+    await stream_events.handle_stream_chunk(
+        owner,
+        "visible <execute>hidden</execute>",
+        message_type="assistant",
+        role="assistant",
+        agent_id="agent-a",
+        stream_scope_id="session_1:agent-a",
+        session_id="session_1",
+        conversation_id="session_1",
+        logger=logging.getLogger(__name__),
+    )
+
+    assert emitted
+    event_type, payload = emitted[-1]
+    assert event_type == "stream_chunk"
+    assert payload["chunk"] == "visible"
+    assert payload["session_id"] == "session_1"
+    assert payload["conversation_id"] == "session_1"
+    assert payload["agent_id"] == "agent-a"
+    assert callbacks == [("visible", "assistant")]
+
+
+@pytest.mark.asyncio
+async def test_handle_stream_chunk_cancels_aborted_session_before_state_mutation() -> (
+    None
+):
+    emitted: list[tuple[str, dict[str, Any]]] = []
+
+    owner = SimpleNamespace(
+        conversation_manager=SimpleNamespace(current_agent_id="agent-a"),
+        _stream_manager=AgentStreamingStateManager(),
+        _opencode_abort_sessions={"session_1"},
+    )
+    owner._filter_internal_markers_from_event = (
+        stream_events.filter_internal_markers_from_event
+    )
+    owner.emit_ui_event = lambda event_type, data: emitted.append((event_type, data))
+    owner._invoke_runmode_stream_callback = lambda _chunk, _message_type: None
+
+    with pytest.raises(asyncio.CancelledError):
+        await stream_events.handle_stream_chunk(
+            owner,
+            "should not emit",
+            message_type="assistant",
+            role="assistant",
+            agent_id="agent-a",
+            stream_scope_id="session_1:agent-a",
+            session_id="session_1",
+            conversation_id="session_1",
+            logger=logging.getLogger(__name__),
+        )
+
+    assert emitted == []
+    assert not owner._stream_manager.is_agent_active("session_1:agent-a")
 
 
 @pytest.mark.asyncio

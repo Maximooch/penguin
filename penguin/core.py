@@ -3683,96 +3683,17 @@ class PenguinCore:
             role: The role of the message (default: "assistant")
             agent_id: Optional agent identifier for per-agent streaming (default: current agent)
         """
-        # Resolve agent_id from conversation_manager if not provided
-        execution_context = get_current_execution_context()
-        if agent_id is None:
-            if execution_context and execution_context.agent_id:
-                agent_id = execution_context.agent_id
-            else:
-                agent_id = getattr(
-                    self.conversation_manager, "current_agent_id", "default"
-                )
-        resolved_scope_id = stream_scope_id or self._resolve_stream_scope_id(
-            execution_context, agent_id
-        )
-        resolved_session_id = session_id or conversation_id
-        if execution_context:
-            resolved_session_id = (
-                execution_context.session_id
-                or execution_context.conversation_id
-                or resolved_session_id
-            )
-
-        abort_sessions = getattr(self, "_opencode_abort_sessions", None)
-        if not isinstance(abort_sessions, set):
-            abort_sessions = set()
-            setattr(self, "_opencode_abort_sessions", abort_sessions)
-
-        if (
-            isinstance(resolved_session_id, str)
-            and resolved_session_id in abort_sessions
-        ):
-            raise asyncio.CancelledError(f"Session {resolved_session_id} aborted")
-
-        # Delegate to AgentStreamingStateManager
-        filtered = self._filter_internal_markers_from_event({"chunk": chunk})
-        if filtered.get("chunk") is not None:
-            chunk = filtered.get("chunk", "")
-        events = self._stream_manager.handle_chunk(
+        await core_stream_events.handle_stream_chunk(
+            self,
             chunk,
-            agent_id=resolved_scope_id,
             message_type=message_type,
             role=role,
+            agent_id=agent_id,
+            stream_scope_id=stream_scope_id,
+            session_id=session_id,
+            conversation_id=conversation_id,
+            logger=logger,
         )
-
-        # Emit events and invoke RunMode callback
-        for event in events:
-            # Inject session_id into event data for SSE filtering
-            event_data = (
-                dict(event.data)
-                if isinstance(event.data, dict)
-                else {"data": event.data}
-            )
-            scoped_conversation_id = conversation_id
-            scoped_session_id = session_id or conversation_id
-            if execution_context:
-                scoped_conversation_id = (
-                    execution_context.conversation_id
-                    or execution_context.session_id
-                    or scoped_conversation_id
-                )
-                scoped_session_id = (
-                    execution_context.session_id
-                    or scoped_conversation_id
-                    or scoped_session_id
-                )
-
-            if scoped_conversation_id:
-                event_data["conversation_id"] = scoped_conversation_id
-                event_data["session_id"] = scoped_session_id or scoped_conversation_id
-            else:
-                # Do not borrow shared current_session here. In multi-session
-                # mode a concurrent read/poll can temporarily repoint it.
-                event_data["session_id"] = "unknown"
-                event_data["conversation_id"] = "unknown"
-                logger.warning(
-                    "stream.event.unknown_scope request=%s event=%s agent=%s scope=%s chunk_preview=%r",
-                    execution_context.request_id if execution_context else "unknown",
-                    event.event_type,
-                    agent_id or "default",
-                    resolved_scope_id,
-                    (chunk or "")[:120],
-                )
-
-            event_data["agent_id"] = agent_id
-            event_data = self._filter_internal_markers_from_event(event_data)
-            await self.emit_ui_event(event.event_type, event_data)
-            # Forward to RunMode stream callback if active
-            if event_data.get("chunk") and not event_data.get("is_reasoning"):
-                await self._invoke_runmode_stream_callback(
-                    event_data["chunk"],
-                    event_data.get("message_type", "assistant"),
-                )
 
     def finalize_streaming_message(
         self,

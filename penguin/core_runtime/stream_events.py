@@ -17,6 +17,7 @@ __all__ = [
     "emit_opencode_session_status",
     "filter_internal_markers_from_event",
     "finalize_streaming_message",
+    "handle_stream_chunk",
     "handle_tui_stream_chunk",
     "persist_finalized_message",
     "resolve_stream_scope_id",
@@ -691,6 +692,113 @@ def abort_streaming_message(
             len(events),
         )
     return True
+
+
+async def handle_stream_chunk(
+    owner: Any,
+    chunk: str,
+    *,
+    message_type: str | None = None,
+    role: str = "assistant",
+    agent_id: str | None = None,
+    stream_scope_id: str | None = None,
+    session_id: str | None = None,
+    conversation_id: str | None = None,
+    logger: Any,
+) -> None:
+    """Handle one provider stream chunk and emit scoped UI events."""
+
+    execution_context = get_current_execution_context()
+    conversation_manager = getattr(owner, "conversation_manager", None)
+    if agent_id is None:
+        if execution_context and execution_context.agent_id:
+            agent_id = execution_context.agent_id
+        else:
+            agent_id = getattr(conversation_manager, "current_agent_id", "default")
+
+    resolved_scope_id = stream_scope_id
+    if not resolved_scope_id:
+        scope_resolver = getattr(owner, "_resolve_stream_scope_id", None)
+        if callable(scope_resolver):
+            resolved_scope_id = scope_resolver(execution_context, agent_id)
+        else:
+            resolved_scope_id = resolve_stream_scope_id(
+                conversation_manager=conversation_manager,
+                execution_context=execution_context,
+                agent_id=agent_id,
+            )
+
+    resolved_session_id = session_id or conversation_id
+    if execution_context:
+        resolved_session_id = (
+            execution_context.session_id
+            or execution_context.conversation_id
+            or resolved_session_id
+        )
+
+    abort_sessions = getattr(owner, "_opencode_abort_sessions", None)
+    if not isinstance(abort_sessions, set):
+        abort_sessions = set()
+        owner._opencode_abort_sessions = abort_sessions
+
+    if isinstance(resolved_session_id, str) and resolved_session_id in abort_sessions:
+        raise asyncio.CancelledError(f"Session {resolved_session_id} aborted")
+
+    filter_event = getattr(owner, "_filter_internal_markers_from_event")
+    filtered = filter_event({"chunk": chunk})
+    if filtered.get("chunk") is not None:
+        chunk = filtered.get("chunk", "")
+
+    events = owner._stream_manager.handle_chunk(
+        chunk,
+        agent_id=resolved_scope_id,
+        message_type=message_type,
+        role=role,
+    )
+
+    for event in events:
+        event_data = (
+            dict(event.data) if isinstance(event.data, dict) else {"data": event.data}
+        )
+        scoped_conversation_id = conversation_id
+        scoped_session_id = session_id or conversation_id
+        if execution_context:
+            scoped_conversation_id = (
+                execution_context.conversation_id
+                or execution_context.session_id
+                or scoped_conversation_id
+            )
+            scoped_session_id = (
+                execution_context.session_id
+                or scoped_conversation_id
+                or scoped_session_id
+            )
+
+        if scoped_conversation_id:
+            event_data["conversation_id"] = scoped_conversation_id
+            event_data["session_id"] = scoped_session_id or scoped_conversation_id
+        else:
+            event_data["session_id"] = "unknown"
+            event_data["conversation_id"] = "unknown"
+            logger.warning(
+                "stream.event.unknown_scope request=%s event=%s agent=%s scope=%s "
+                "chunk_preview=%r",
+                execution_context.request_id if execution_context else "unknown",
+                event.event_type,
+                agent_id or "default",
+                resolved_scope_id,
+                (chunk or "")[:120],
+            )
+
+        event_data["agent_id"] = agent_id
+        event_data = filter_event(event_data)
+        await owner.emit_ui_event(event.event_type, event_data)
+
+        if event_data.get("chunk") and not event_data.get("is_reasoning"):
+            await owner._invoke_runmode_stream_callback(
+                event_data["chunk"],
+                event_data.get("message_type", "assistant"),
+            )
 
 
 async def handle_tui_stream_chunk(
