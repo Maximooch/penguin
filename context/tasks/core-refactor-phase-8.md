@@ -124,17 +124,19 @@ around the highest-risk extracted Phase 8 surfaces:
   normalization, action event bridging, adapter directory resolution, and usage
   payload shaping
 
-Use repeated targeted runs locally before broad refactors, for example:
+Use repeated targeted runs locally before broad refactors:
 
 ```bash
-for i in 1 2 3; do \
-  .venv/bin/python -m pytest \
-    tests/test_core_tool_mapping.py \
-    tests/core_runtime \
-    tests/tools/test_process_runtime.py \
-    tests/llm/test_provider_contract_matrix.py \
-    -q || exit 1; \
-done
+.venv/bin/python scripts/repeat_pytest.py
+```
+
+For a narrower cluster:
+
+```bash
+.venv/bin/python scripts/repeat_pytest.py --count 5 -- \
+  tests/core_runtime/test_token_usage_runtime.py \
+  tests/api/test_token_usage_routes.py \
+  -q
 ```
 
 Do not add a random-order CI gate until the runner/plugin choice is explicit
