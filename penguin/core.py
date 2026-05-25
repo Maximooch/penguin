@@ -316,80 +316,41 @@ class PenguinCore:
         runtime_config: Optional["RuntimeConfig"] = None,
     ):
         """Initialize PenguinCore with required components."""
-        core_startup.initialize_core_base_state(
+        from penguin.config import RuntimeConfig
+        from penguin.cli.events import EventBus, EventType
+        from penguin.config import WORKSPACE_PATH
+        from penguin.engine import Engine, EngineSettings, TokenBudgetStop
+        from penguin.system.checkpoint_manager import CheckpointConfig
+        from penguin.tui_adapter import PartEventAdapter
+
+        core_startup.initialize_core_instance_state(
             self,
             config=config,
             api_client=api_client,
             tool_manager=tool_manager,
             model_config=model_config,
-            config_factory=Config.load_config,
-        )
-
-        from penguin.config import RuntimeConfig
-
-        core_startup.initialize_runtime_config(
-            self,
-            config=config,
             runtime_config=runtime_config,
-            tool_manager=tool_manager,
+            config_factory=Config.load_config,
             runtime_config_factory=RuntimeConfig,
-        )
-
-        from penguin.cli.events import EventBus, EventType
-        from penguin.tui_adapter import PartEventAdapter
-
-        core_startup.initialize_tui_bridge_state(
-            self,
             event_bus_factory=EventBus.get_sync,
             event_type_enum=EventType,
             stream_lock_factory=asyncio.Lock,
             stream_manager_factory=AgentStreamingStateManager,
             part_event_adapter_factory=PartEventAdapter,
-        )
-
-        # Telemetry collector
-        ensure_telemetry(self)
-        core_startup.initialize_prompt_and_output_state(
-            self,
-            raw_config,
+            telemetry_ensurer=ensure_telemetry,
+            raw_config=raw_config,
             get_system_prompt=get_system_prompt,
             fallback_system_prompt=SYSTEM_PROMPT,
-        )
-
-        # Initialize project manager with workspace path from config
-        from penguin.config import WORKSPACE_PATH
-
-        workspace_path = core_startup.initialize_project_diagnostics_state(
-            self,
             default_workspace_path=WORKSPACE_PATH,
             project_manager_factory=ProjectManager,
             diagnostics_disabler=disable_diagnostics,
-        )
-
-        from penguin.system.checkpoint_manager import CheckpointConfig
-
-        core_startup.initialize_conversation_action_state(
-            self,
-            workspace_path=workspace_path,
             checkpoint_config_factory=CheckpointConfig,
             conversation_manager_factory=ConversationManager,
             action_executor_factory=ActionExecutor,
             default_max_messages_per_session=DEFAULT_MAX_MESSAGES_PER_SESSION,
-        )
-
-        from penguin.engine import Engine, EngineSettings, TokenBudgetStop
-
-        core_startup.initialize_engine_state(
-            self,
             engine_factory=Engine,
             engine_settings_factory=EngineSettings,
             token_budget_stop_factory=TokenBudgetStop,
-            logger=logger,
-        )
-
-        core_startup.finalize_core_startup_state(
-            self,
-            workspace_path=workspace_path,
             logger=logger,
         )
 

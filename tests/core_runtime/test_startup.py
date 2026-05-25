@@ -657,6 +657,116 @@ def test_initialize_core_base_state_loads_config_when_missing() -> None:
     assert owner.config is loaded
 
 
+def test_initialize_core_instance_state_orchestrates_constructor_dependencies(
+    tmp_path,
+) -> None:
+    calls: list[str] = []
+
+    class _EventType:
+        def __init__(self, value: str) -> None:
+            self.value = value
+
+    class _ConversationManager:
+        def __init__(self, **kwargs: Any) -> None:
+            calls.append("conversation")
+            self.kwargs = kwargs
+
+    class _Engine:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            calls.append("engine")
+            self.message_bus_callbacks: list[Any] = []
+
+        def setup_message_bus(self, *, ui_event_callback: Any) -> None:
+            self.message_bus_callbacks.append(ui_event_callback)
+
+    def _action_executor_factory(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+        calls.append("action")
+        return SimpleNamespace(name="action")
+
+    def _project_manager_factory(*, workspace_path: Any) -> SimpleNamespace:
+        calls.append("project")
+        return SimpleNamespace(workspace_path=workspace_path)
+
+    def _adapter_factory(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+        calls.append("adapter")
+        return SimpleNamespace(name="adapter")
+
+    def _emit_ui_event(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    validate_calls: list[Any] = []
+    owner = SimpleNamespace(
+        _persist_opencode_event=lambda *_args, **_kwargs: None,
+        _subscribe_to_stream_events=lambda: calls.append("subscribe"),
+        emit_ui_event=_emit_ui_event,
+        get_coordinator=lambda: SimpleNamespace(name="coordinator"),
+        validate_path=lambda path: validate_calls.append(path),
+    )
+    config = SimpleNamespace(
+        workspace_path=tmp_path,
+        diagnostics=SimpleNamespace(enabled=True),
+        output=None,
+        to_dict=lambda: {"skills": {"enabled": True}},
+    )
+    tool_manager = SimpleNamespace(
+        project_root=tmp_path / "repo",
+        set_core=lambda core: calls.append(f"set_core:{core is owner}"),
+    )
+
+    startup.initialize_core_instance_state(
+        owner,
+        config=config,
+        api_client=SimpleNamespace(name="api"),
+        tool_manager=tool_manager,
+        model_config=SimpleNamespace(streaming_enabled=True),
+        runtime_config=None,
+        config_factory=lambda: SimpleNamespace(name="loaded"),
+        runtime_config_factory=_RuntimeConfig,
+        event_bus_factory=lambda: SimpleNamespace(name="bus"),
+        event_type_enum=[_EventType("message"), _EventType("token_update")],
+        stream_lock_factory=lambda: SimpleNamespace(name="lock"),
+        stream_manager_factory=lambda: SimpleNamespace(name="stream"),
+        part_event_adapter_factory=_adapter_factory,
+        telemetry_ensurer=lambda _owner: calls.append("telemetry"),
+        raw_config={"prompt": {"mode": "direct"}},
+        get_system_prompt=lambda mode: f"prompt:{mode}",
+        fallback_system_prompt="fallback",
+        default_workspace_path="/unused",
+        project_manager_factory=_project_manager_factory,
+        diagnostics_disabler=lambda: calls.append("disable_diagnostics"),
+        checkpoint_config_factory=lambda **kwargs: kwargs,
+        conversation_manager_factory=_ConversationManager,
+        action_executor_factory=_action_executor_factory,
+        default_max_messages_per_session=42,
+        engine_factory=_Engine,
+        engine_settings_factory=lambda **kwargs: kwargs,
+        token_budget_stop_factory=lambda: SimpleNamespace(name="stop"),
+        logger=_FakeLogger(),
+    )
+
+    assert owner.config is config
+    assert owner.event_types == {"message", "token_update"}
+    assert owner.system_prompt == "prompt:direct"
+    assert owner.project_manager.workspace_path == tmp_path
+    assert owner.conversation_manager.core is owner
+    assert owner.conversation_manager.kwargs["project_root"] == tmp_path / "repo"
+    assert owner.action_executor.name == "action"
+    assert isinstance(owner.engine, _Engine)
+    assert owner.initialized is True
+    assert owner._litellm_configured is False
+    assert validate_calls == [tmp_path]
+    assert calls == [
+        "adapter",
+        "subscribe",
+        "telemetry",
+        "project",
+        "conversation",
+        "set_core:True",
+        "action",
+        "engine",
+    ]
+
+
 def test_initialize_runtime_config_builds_config_and_registers_tool_observer() -> None:
     owner = SimpleNamespace()
     tool_manager = SimpleNamespace(on_runtime_config_change=lambda _payload: None)

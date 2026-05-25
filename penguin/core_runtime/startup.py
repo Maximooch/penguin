@@ -57,6 +57,7 @@ __all__ = [
     "finalize_core_startup_state",
     "initialize_conversation_action_state",
     "initialize_core_base_state",
+    "initialize_core_instance_state",
     "initialize_engine_state",
     "initialize_project_diagnostics_state",
     "initialize_prompt_and_output_state",
@@ -565,6 +566,97 @@ def initialize_core_base_state(
     owner.progress_callbacks = []
     owner.token_callbacks = []
     owner._active_contexts = set()
+
+
+def initialize_core_instance_state(
+    owner: Any,
+    *,
+    config: Any | None,
+    api_client: Any | None,
+    tool_manager: Any | None,
+    model_config: Any | None,
+    runtime_config: Any | None,
+    config_factory: ConfigLoader,
+    runtime_config_factory: RuntimeConfigFactory,
+    event_bus_factory: Callable[[], Any],
+    event_type_enum: Any,
+    stream_lock_factory: Callable[[], Any],
+    stream_manager_factory: Callable[[], Any],
+    part_event_adapter_factory: Callable[..., Any],
+    telemetry_ensurer: Callable[[Any], Any],
+    raw_config: Any,
+    get_system_prompt: SystemPromptBuilder,
+    fallback_system_prompt: str,
+    default_workspace_path: Any,
+    project_manager_factory: Callable[..., Any],
+    diagnostics_disabler: Callable[[], Any],
+    checkpoint_config_factory: CheckpointConfigFactory,
+    conversation_manager_factory: ConversationManagerFactory,
+    action_executor_factory: ActionExecutorFactory,
+    default_max_messages_per_session: int,
+    engine_factory: EngineFactory,
+    engine_settings_factory: EngineSettingsFactory,
+    token_budget_stop_factory: StopConditionFactory,
+    logger: Any,
+) -> None:
+    """Initialize all constructor-owned runtime state for ``PenguinCore``."""
+
+    initialize_core_base_state(
+        owner,
+        config=config,
+        api_client=api_client,
+        tool_manager=tool_manager,
+        model_config=model_config,
+        config_factory=config_factory,
+    )
+    initialize_runtime_config(
+        owner,
+        config=config,
+        runtime_config=runtime_config,
+        tool_manager=tool_manager,
+        runtime_config_factory=runtime_config_factory,
+    )
+    initialize_tui_bridge_state(
+        owner,
+        event_bus_factory=event_bus_factory,
+        event_type_enum=event_type_enum,
+        stream_lock_factory=stream_lock_factory,
+        stream_manager_factory=stream_manager_factory,
+        part_event_adapter_factory=part_event_adapter_factory,
+    )
+    telemetry_ensurer(owner)
+    initialize_prompt_and_output_state(
+        owner,
+        raw_config,
+        get_system_prompt=get_system_prompt,
+        fallback_system_prompt=fallback_system_prompt,
+    )
+    workspace_path = initialize_project_diagnostics_state(
+        owner,
+        default_workspace_path=default_workspace_path,
+        project_manager_factory=project_manager_factory,
+        diagnostics_disabler=diagnostics_disabler,
+    )
+    initialize_conversation_action_state(
+        owner,
+        workspace_path=workspace_path,
+        checkpoint_config_factory=checkpoint_config_factory,
+        conversation_manager_factory=conversation_manager_factory,
+        action_executor_factory=action_executor_factory,
+        default_max_messages_per_session=default_max_messages_per_session,
+    )
+    initialize_engine_state(
+        owner,
+        engine_factory=engine_factory,
+        engine_settings_factory=engine_settings_factory,
+        token_budget_stop_factory=token_budget_stop_factory,
+        logger=logger,
+    )
+    finalize_core_startup_state(
+        owner,
+        workspace_path=workspace_path,
+        logger=logger,
+    )
 
 
 def initialize_runtime_config(
