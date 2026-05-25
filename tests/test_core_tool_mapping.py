@@ -248,6 +248,74 @@ def test_map_action_result_metadata_sets_output_for_code_execution() -> None:
     assert metadata["output"] == "13\nRESULT=13"
 
 
+def test_core_action_mapping_shims_match_runtime_helpers() -> None:
+    core = PenguinCore.__new__(PenguinCore)
+    patch = "*** Begin Patch\n*** Update File: a.py\n@@\n-old\n+new\n*** End Patch\n"
+    todos = [
+        {"id": "1", "content": "Ship", "status": "done", "priority": "urgent"},
+        {"id": "1", "content": "Verify", "status": "completed", "priority": "high"},
+    ]
+
+    assert core._strip_diff_fences("```diff\n@@\n-a\n+b\n```") == (
+        action_mapping.strip_diff_fences("```diff\n@@\n-a\n+b\n```")
+    )
+    assert core._ensure_unified_diff("a.py", "@@\n-old\n+new\n") == (
+        action_mapping.ensure_unified_diff("a.py", "@@\n-old\n+new\n")
+    )
+    assert core._extract_unified_diff_from_result("ok\n--- a/a.py\n+++ b/a.py\n@@") == (
+        action_mapping.extract_unified_diff_from_result(
+            "ok\n--- a/a.py\n+++ b/a.py\n@@"
+        )
+    )
+    assert core._extract_tool_file_path({"filePath": "a.py"}) == (
+        action_mapping.extract_tool_file_path({"filePath": "a.py"})
+    )
+    assert core._normalize_todo_items(todos) == action_mapping.normalize_todo_items(
+        todos
+    )
+    assert core._extract_todos_from_result(json.dumps(todos)) == (
+        action_mapping.extract_todos_from_result(json.dumps(todos))
+    )
+    assert core._parse_action_payload('{"file": "a.py"}') == (
+        action_mapping.parse_action_payload('{"file": "a.py"}')
+    )
+    assert core._extract_result_file_paths('{"file": "a.py", "files": ["b.py"]}') == (
+        action_mapping.extract_result_file_paths('{"file": "a.py", "files": ["b.py"]}')
+    )
+    assert core._humanize_subagent_name("build_agent") == (
+        action_mapping.humanize_subagent_name("build_agent")
+    )
+    assert core._summarize_subagent_description("x" * 130, "fallback") == (
+        action_mapping.summarize_subagent_description("x" * 130, "fallback")
+    )
+    assert core._build_task_card_summary("subagent", "running") == (
+        action_mapping.build_task_card_summary("subagent", "running")
+    )
+    assert core._summary_status({"summary": [{"state": {"status": "done"}}]}, "x") == (
+        action_mapping.summary_status(
+            {"summary": [{"state": {"status": "done"}}]},
+            "x",
+        )
+    )
+    assert core._build_spawn_subagent_task_card({"id": "build"}) == (
+        action_mapping.build_spawn_subagent_task_card({"id": "build"})
+    )
+    assert core._map_action_to_tool("apply_patch", {"patch": patch}) == (
+        action_mapping.map_action_to_tool("apply_patch", {"patch": patch})
+    )
+    assert core._map_action_result_metadata(
+        "apply_patch",
+        "failed",
+        existing={"diff": patch},
+        status="error",
+    ) == action_mapping.map_action_result_metadata(
+        "apply_patch",
+        "failed",
+        existing={"diff": patch},
+        status="error",
+    )
+
+
 @pytest.mark.asyncio
 async def test_execute_action_shim_returns_structured_payload() -> None:
     class _Executor:
