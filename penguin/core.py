@@ -1025,11 +1025,6 @@ class PenguinCore:
             agent_id, conversation_id, activate=activate
         )
 
-    def delete_agent_conversation(self, agent_id: str, conversation_id: str) -> bool:
-        return self.conversation_manager.delete_agent_conversation(
-            agent_id, conversation_id
-        )
-
     def delete_agent_conversation_guarded(
         self, agent_id: str, conversation_id: str, *, force: bool = False
     ) -> Dict[str, Any]:
@@ -1092,18 +1087,28 @@ class PenguinCore:
             system_prompt=system_prompt,
         )
 
-    def delete_agent_conversation(self, agent_id: str) -> bool:
-        """Delete an agent's conversation.
+    def delete_agent_conversation(
+        self,
+        agent_id: str,
+        conversation_id: Optional[str] = None,
+    ) -> bool:
+        """Delete an agent or a specific agent conversation.
 
-        This is the new simplified API that replaces unregister_agent().
+        A ``conversation_id`` preserves the legacy explicit conversation-delete
+        form; omitting it uses the conversation-centered agent lifecycle path.
 
         Args:
             agent_id: Agent to remove
+            conversation_id: Optional concrete conversation/session id to delete
 
         Returns:
             True if agent was removed, False otherwise
         """
-        return core_agent_lifecycle.delete_agent_conversation(self, agent_id)
+        return core_agent_lifecycle.delete_agent_conversation_compat(
+            self,
+            agent_id,
+            conversation_id,
+        )
 
     def create_sub_agent(
         self,

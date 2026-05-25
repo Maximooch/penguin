@@ -11,6 +11,7 @@ import pytest
 from penguin.core_runtime.agent_lifecycle import (
     create_sub_agent,
     delete_agent_conversation,
+    delete_agent_conversation_compat,
     delete_agent_conversation_guarded,
     ensure_agent_conversation,
     get_agent_profile,
@@ -649,6 +650,20 @@ def test_delete_agent_conversation_removes_engine_agent_and_resets_active() -> N
         ("engine", "worker"),
         ("active", "default"),
     ]
+
+
+def test_delete_agent_conversation_compat_deletes_specific_conversation() -> None:
+    calls: list[tuple[str, str]] = []
+    conversation_manager = SimpleNamespace(
+        delete_agent_conversation=lambda agent_id, conversation_id: calls.append(
+            (agent_id, conversation_id)
+        )
+        or True,
+    )
+    core = SimpleNamespace(conversation_manager=conversation_manager)
+
+    assert delete_agent_conversation_compat(core, "worker", "session_1") is True
+    assert calls == [("worker", "session_1")]
 
 
 def test_delete_agent_conversation_rejects_default_agent() -> None:

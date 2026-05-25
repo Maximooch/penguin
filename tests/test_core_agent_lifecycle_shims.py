@@ -17,8 +17,8 @@ def test_core_agent_lifecycle_shims_delegate_to_runtime(monkeypatch) -> None:
     def _create(*args: Any, **kwargs: Any) -> None:
         calls.append(("create", args, kwargs))
 
-    def _delete(*args: Any, **kwargs: Any) -> bool:
-        calls.append(("delete", args, kwargs))
+    def _delete_compat(*args: Any, **kwargs: Any) -> bool:
+        calls.append(("delete_compat", args, kwargs))
         return True
 
     def _delete_guarded(*args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -62,8 +62,8 @@ def test_core_agent_lifecycle_shims_delegate_to_runtime(monkeypatch) -> None:
         _create,
     )
     monkeypatch.setattr(
-        "penguin.core.core_agent_lifecycle.delete_agent_conversation",
-        _delete,
+        "penguin.core.core_agent_lifecycle.delete_agent_conversation_compat",
+        _delete_compat,
     )
     monkeypatch.setattr(
         "penguin.core.core_agent_lifecycle.delete_agent_conversation_guarded",
@@ -89,6 +89,7 @@ def test_core_agent_lifecycle_shims_delegate_to_runtime(monkeypatch) -> None:
         "warning": None,
     }
     assert core.delete_agent_conversation("worker") is True
+    assert core.delete_agent_conversation("worker", "conv_1") is True
     assert core.unregister_agent("worker", preserve_conversation=True) is False
 
     assert calls == [
@@ -116,6 +117,7 @@ def test_core_agent_lifecycle_shims_delegate_to_runtime(monkeypatch) -> None:
             (core, "worker", "conv_1"),
             {"force": False},
         ),
-        ("delete", (core, "worker"), {}),
+        ("delete_compat", (core, "worker", None), {}),
+        ("delete_compat", (core, "worker", "conv_1"), {}),
         ("unregister", (core, "worker"), {"preserve_conversation": True}),
     ]

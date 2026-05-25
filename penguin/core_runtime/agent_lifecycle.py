@@ -18,6 +18,7 @@ from penguin.utils.parser import ActionExecutor
 __all__ = [
     "create_sub_agent",
     "delete_agent_conversation",
+    "delete_agent_conversation_compat",
     "delete_agent_conversation_guarded",
     "ensure_agent_conversation",
     "get_agent_profile",
@@ -238,6 +239,21 @@ def delete_agent_conversation(core: Any, agent_id: str) -> bool:
         core.set_active_agent("default")
 
     return removed
+
+
+def delete_agent_conversation_compat(
+    core: Any,
+    agent_id: str,
+    conversation_id: str | None = None,
+) -> bool:
+    """Compatibility shim for legacy and conversation-centered delete calls."""
+
+    if conversation_id is not None:
+        return core.conversation_manager.delete_agent_conversation(
+            agent_id,
+            conversation_id,
+        )
+    return delete_agent_conversation(core, agent_id)
 
 
 def delete_agent_conversation_guarded(
