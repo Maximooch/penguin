@@ -13,6 +13,7 @@ from penguin.core_runtime.agent_lifecycle import (
     publish_sub_agent_session_created,
     resolve_agent_execution_scope,
     run_agent_prompt_in_session,
+    set_active_agent,
     set_agent_paused,
     smoke_check_agents,
 )
@@ -474,3 +475,56 @@ def test_is_agent_paused_returns_false_without_session_metadata() -> None:
     )
 
     assert is_agent_paused(core, "worker") is False
+
+
+def test_set_active_agent_switches_conversation_manager_and_engine() -> None:
+    calls: list[tuple[str, str]] = []
+    core = SimpleNamespace(
+        conversation_manager=SimpleNamespace(
+            set_current_agent=lambda agent_id: calls.append(("cm", agent_id))
+        ),
+        engine=SimpleNamespace(
+            set_default_agent=lambda agent_id: calls.append(("engine", agent_id))
+        ),
+    )
+
+    set_active_agent(core, "worker")
+
+    assert calls == [("cm", "worker"), ("engine", "worker")]
+
+
+def test_set_active_agent_reraises_conversation_manager_failure() -> None:
+    def _set_current_agent(_agent_id: str) -> None:
+        raise RuntimeError("missing agent")
+
+    core = SimpleNamespace(
+        conversation_manager=SimpleNamespace(set_current_agent=_set_current_agent),
+        engine=SimpleNamespace(
+            set_default_agent=lambda _agent_id: pytest.fail(
+                "engine should not switch after CM failure"
+            )
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="missing agent"):
+        set_active_agent(core, "worker")
+
+
+def test_set_active_agent_reraises_engine_failure_after_cm_switch() -> None:
+    calls: list[tuple[str, str]] = []
+
+    def _set_default_agent(agent_id: str) -> None:
+        calls.append(("engine", agent_id))
+        raise RuntimeError("engine registry unavailable")
+
+    core = SimpleNamespace(
+        conversation_manager=SimpleNamespace(
+            set_current_agent=lambda agent_id: calls.append(("cm", agent_id))
+        ),
+        engine=SimpleNamespace(set_default_agent=_set_default_agent),
+    )
+
+    with pytest.raises(RuntimeError, match="engine registry unavailable"):
+        set_active_agent(core, "worker")
+
+    assert calls == [("cm", "worker"), ("engine", "worker")]

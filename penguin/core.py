@@ -1012,21 +1012,9 @@ class PenguinCore:
 
     def get_persona_catalog(self) -> List[Dict[str, Any]]:
         """Return configured personas as serialisable dictionaries."""
+        from penguin.agent.manager import get_persona_catalog
 
-        personas = getattr(self.config, "agent_personas", {}) or {}
-        catalog: List[Dict[str, Any]] = []
-        for name, persona in personas.items():
-            try:
-                data = persona.to_dict()
-            except Exception:
-                data = {
-                    "name": name,
-                    "description": getattr(persona, "description", None),
-                }
-            data.setdefault("name", name)
-            catalog.append(data)
-        catalog.sort(key=lambda item: item.get("name", ""))
-        return catalog
+        return get_persona_catalog(self.config)
 
     def get_agent_roster(self) -> List[Dict[str, Any]]:
         """Return list of registered agents with their conversation metadata.
@@ -1071,22 +1059,7 @@ class PenguinCore:
 
     def set_active_agent(self, agent_id: str) -> None:
         """Switch the active agent across ConversationManager and Engine."""
-        # Switch CM
-        try:
-            self.conversation_manager.set_current_agent(agent_id)
-        except Exception as e:
-            logger.error(
-                f"Failed to switch ConversationManager to agent '{agent_id}': {e}"
-            )
-            raise
-
-        # Switch Engine default routing
-        try:
-            if getattr(self, "engine", None):
-                self.engine.set_default_agent(agent_id)
-        except Exception as e:
-            logger.error(f"Failed to set Engine default agent '{agent_id}': {e}")
-            raise
+        core_agent_lifecycle.set_active_agent(self, agent_id)
 
     # Thin wrappers for agent-scoped conversations
     def create_agent_conversation(self, agent_id: str) -> str:

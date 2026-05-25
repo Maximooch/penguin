@@ -25,6 +25,7 @@ __all__ = [
     "register_agent_compat",
     "resolve_agent_execution_scope",
     "run_agent_prompt_in_session",
+    "set_active_agent",
     "set_agent_paused",
     "smoke_check_agents",
 ]
@@ -115,6 +116,30 @@ def register_agent_compat(core: Any, *args: Any, **kwargs: Any) -> None:
         )
         if getattr(persona_config, "activate_by_default", False):
             core.engine.set_default_agent(agent_id)
+
+
+def set_active_agent(core: Any, agent_id: str) -> None:
+    """Switch the active agent across ConversationManager and Engine."""
+    try:
+        core.conversation_manager.set_current_agent(agent_id)
+    except Exception:
+        logger.error(
+            "Failed to switch ConversationManager to agent '%s'",
+            agent_id,
+            exc_info=True,
+        )
+        raise
+
+    try:
+        if getattr(core, "engine", None):
+            core.engine.set_default_agent(agent_id)
+    except Exception:
+        logger.error(
+            "Failed to set Engine default agent '%s'",
+            agent_id,
+            exc_info=True,
+        )
+        raise
 
 
 async def publish_sub_agent_session_created(

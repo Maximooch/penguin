@@ -4,8 +4,8 @@ This module provides agent roster and profile functionality,
 extracted from core.py for better separation of concerns.
 """
 
-from typing import Any, Callable, Dict, List, Optional
 import logging
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -232,8 +232,28 @@ def get_agent_profile(
     ).get_profile(agent_id)
 
 
+def get_persona_catalog(config: Any) -> List[Dict[str, Any]]:
+    """Return configured personas as serializable dictionaries."""
+
+    personas = getattr(config, "agent_personas", {}) or {}
+    catalog: List[Dict[str, Any]] = []
+    for name, persona in personas.items():
+        try:
+            data = persona.to_dict()
+        except Exception:
+            data = {
+                "name": name,
+                "description": getattr(persona, "description", None),
+            }
+        data.setdefault("name", name)
+        catalog.append(data)
+    catalog.sort(key=lambda item: item.get("name", ""))
+    return catalog
+
+
 __all__ = [
     "AgentManager",
-    "get_agent_roster",
     "get_agent_profile",
+    "get_agent_roster",
+    "get_persona_catalog",
 ]
