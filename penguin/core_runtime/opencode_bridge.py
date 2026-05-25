@@ -23,6 +23,7 @@ __all__ = [
     "build_assistant_message_info",
     "latest_model_usage",
     "normalize_optional_string",
+    "resolve_adapter_directory",
     "resolve_model_state",
     "resolve_session_id",
     "usage_tokens_and_cost",
@@ -96,6 +97,41 @@ def resolve_session_id(
     current_session = get_current_session() if callable(get_current_session) else None
     current_session_id = normalize_optional_string(getattr(current_session, "id", None))
     return current_session_id or default
+
+
+def resolve_adapter_directory(
+    session_id: str,
+    *,
+    session_directories: Any = None,
+    execution_context: Any = None,
+    runtime_config: Any = None,
+    env_getter: Any = os.getenv,
+    cwd_getter: Any = os.getcwd,
+) -> str:
+    """Resolve the working directory attached to a TUI adapter."""
+
+    if isinstance(session_directories, dict):
+        mapped = normalize_optional_string(session_directories.get(session_id))
+        if mapped:
+            return mapped
+
+    context_directory = normalize_optional_string(
+        getattr(execution_context, "directory", None)
+    )
+    if context_directory:
+        return context_directory
+
+    runtime_directory = normalize_optional_string(
+        getattr(runtime_config, "active_root", None)
+    ) or normalize_optional_string(getattr(runtime_config, "project_root", None))
+    if runtime_directory:
+        return runtime_directory
+
+    env_directory = normalize_optional_string(env_getter("PENGUIN_CWD"))
+    if env_directory:
+        return env_directory
+
+    return str(cwd_getter())
 
 
 def build_assistant_message_info(

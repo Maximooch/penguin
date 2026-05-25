@@ -64,6 +64,65 @@ def test_resolve_session_id_prefers_execution_context_over_current_session() -> 
     )
 
 
+def test_resolve_adapter_directory_prefers_session_mapping() -> None:
+    directory = opencode_bridge.resolve_adapter_directory(
+        "session_1",
+        session_directories={"session_1": " /session/project "},
+        execution_context=SimpleNamespace(directory="/context/project"),
+        runtime_config=SimpleNamespace(
+            active_root="/runtime/active",
+            project_root="/runtime/project",
+        ),
+        env_getter=lambda _key: "/env/project",
+        cwd_getter=lambda: "/cwd/project",
+    )
+
+    assert directory == "/session/project"
+
+
+def test_resolve_adapter_directory_falls_back_by_context_runtime_env_cwd() -> None:
+    context_directory = opencode_bridge.resolve_adapter_directory(
+        "session_1",
+        session_directories={},
+        execution_context=SimpleNamespace(directory="/context/project"),
+        runtime_config=SimpleNamespace(active_root="/runtime/active"),
+        env_getter=lambda _key: "/env/project",
+        cwd_getter=lambda: "/cwd/project",
+    )
+    runtime_directory = opencode_bridge.resolve_adapter_directory(
+        "session_1",
+        session_directories={},
+        execution_context=SimpleNamespace(directory=" "),
+        runtime_config=SimpleNamespace(
+            active_root=" ",
+            project_root="/runtime/project",
+        ),
+        env_getter=lambda _key: "/env/project",
+        cwd_getter=lambda: "/cwd/project",
+    )
+    env_directory = opencode_bridge.resolve_adapter_directory(
+        "session_1",
+        session_directories={},
+        execution_context=SimpleNamespace(directory=""),
+        runtime_config=SimpleNamespace(active_root=None, project_root=None),
+        env_getter=lambda _key: " /env/project ",
+        cwd_getter=lambda: "/cwd/project",
+    )
+    cwd_directory = opencode_bridge.resolve_adapter_directory(
+        "session_1",
+        session_directories={},
+        execution_context=SimpleNamespace(directory=""),
+        runtime_config=SimpleNamespace(active_root=None, project_root=None),
+        env_getter=lambda _key: "",
+        cwd_getter=lambda: "/cwd/project",
+    )
+
+    assert context_directory == "/context/project"
+    assert runtime_directory == "/runtime/project"
+    assert env_directory == "/env/project"
+    assert cwd_directory == "/cwd/project"
+
+
 def test_build_assistant_message_info_uses_fallback_tokens_and_variant() -> None:
     info = opencode_bridge.build_assistant_message_info(
         message_id="msg_1",
