@@ -2452,15 +2452,7 @@ class PenguinCore:
     # Update token usage notification to use events
     def update_token_display(self) -> None:
         """Emit token usage event to UI subscribers."""
-        token_data = self.get_token_usage()
-        asyncio.create_task(self.emit_ui_event("token_update", token_data))
-
-        # Legacy callback support
-        for callback in self.token_callbacks:
-            try:
-                callback(token_data)
-            except Exception as e:
-                logger.error(f"Error in token callback: {e}")
+        core_token_usage_runtime.emit_token_display_update(self, log=logger)
 
     # Keep existing register_stream_callback for backward compatibility
 

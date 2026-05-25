@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "build_usage_snapshot",
     "collect_process_token_usage",
+    "emit_token_display_update",
     "get_session_token_usage",
     "get_token_usage",
     "merge_latest_usage_into_token_data",
@@ -215,6 +216,27 @@ def usage_from_session_messages(
             "recent_events": [],
         },
     }
+
+
+def emit_token_display_update(
+    core: Any,
+    *,
+    create_task: Any | None = None,
+    log: logging.Logger | None = None,
+) -> None:
+    """Emit token usage updates to UI subscribers and legacy callbacks."""
+    token_data = core.get_token_usage()
+    task_factory = create_task or asyncio.create_task
+    task = task_factory(core.emit_ui_event("token_update", token_data))
+    if hasattr(task, "add_done_callback"):
+        task.add_done_callback(_log_background_task_exception)
+
+    active_logger = log or logger
+    for callback in getattr(core, "token_callbacks", []) or []:
+        try:
+            callback(token_data)
+        except Exception as exc:
+            active_logger.error("Error in token callback: %s", exc)
 
 
 async def collect_process_token_usage(

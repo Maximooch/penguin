@@ -501,6 +501,53 @@ def test_merge_latest_usage_into_token_data_preserves_existing_totals() -> None:
     assert merged["current_total_tokens"] == 9
 
 
+def test_emit_token_display_update_schedules_event_and_runs_callbacks() -> None:
+    payload = {"total": {"input": 1, "output": 2}}
+    callback_calls: list[dict[str, Any]] = []
+
+    class _Task:
+        def __init__(self) -> None:
+            self.callbacks: list[Any] = []
+
+        def add_done_callback(self, callback: Any) -> None:
+            self.callbacks.append(callback)
+
+    class _Logger:
+        def __init__(self) -> None:
+            self.errors: list[tuple[str, tuple[Any, ...]]] = []
+
+        def error(self, message: str, *args: Any) -> None:
+            self.errors.append((message, args))
+
+    def _failing_callback(_token_data: dict[str, Any]) -> None:
+        raise RuntimeError("callback unavailable")
+
+    task = _Task()
+    scheduled: list[Any] = []
+    logger = _Logger()
+    core = SimpleNamespace(
+        get_token_usage=lambda: payload,
+        emit_ui_event=lambda event_type, token_data: (event_type, token_data),
+        token_callbacks=[
+            lambda token_data: callback_calls.append(token_data),
+            _failing_callback,
+        ],
+    )
+
+    token_usage_runtime.emit_token_display_update(
+        core,
+        create_task=lambda awaitable: scheduled.append(awaitable) or task,
+        log=logger,
+    )
+
+    assert scheduled == [("token_update", payload)]
+    assert len(task.callbacks) == 1
+    assert callback_calls == [payload]
+    assert len(logger.errors) == 1
+    assert logger.errors[0][0] == "Error in token callback: %s"
+    assert str(logger.errors[0][1][0]) == "callback unavailable"
+
+
 @pytest.mark.asyncio
 async def test_get_token_usage_ignores_failed_background_event_emission() -> None:
     usage_payload = {"total": {"input": 1, "output": 2}}
