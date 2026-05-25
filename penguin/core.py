@@ -158,6 +158,7 @@ from penguin._version import __version__ as PENGUIN_VERSION
 # LLM and API
 from penguin.llm.api_client import APIClient
 from penguin.llm.model_config import ModelConfig, fetch_model_specs
+from .core_runtime import action_execution as core_action_execution
 from .core_runtime import action_events as core_action_events
 from .core_runtime import action_mapping as core_action_mapping
 from .core_runtime import checkpoint_runtime as core_checkpoint_runtime
@@ -2217,28 +2218,7 @@ class PenguinCore:
 
     async def execute_action(self, action) -> Dict[str, Any]:
         """Execute an action and return structured result"""
-        try:
-            # result = await super().execute_action(action)
-            result = await self.action_executor.execute_action(action)
-            return {
-                "action": action.action_type.value,
-                "result": str(result) if result is not None else "",
-                "status": "completed",
-            }
-        except Exception as e:
-            log_error(
-                e,
-                context={
-                    "component": "core",
-                    "method": "execute_action",
-                    "action": action.action_type.value,
-                },
-            )
-            return {
-                "action": action.action_type.value,
-                "result": f"Error: {str(e)}",
-                "status": "error",
-            }
+        return await core_action_execution.execute_action(self, action)
 
     async def reset_state(self):
         """

@@ -248,6 +248,31 @@ def test_map_action_result_metadata_sets_output_for_code_execution() -> None:
 
 
 @pytest.mark.asyncio
+async def test_execute_action_shim_returns_structured_payload() -> None:
+    class _Executor:
+        def __init__(self) -> None:
+            self.calls: list[Any] = []
+
+        async def execute_action(self, action: Any) -> str:
+            self.calls.append(action)
+            return "done"
+
+    action = SimpleNamespace(action_type=SimpleNamespace(value="custom_action"))
+    executor = _Executor()
+    core = PenguinCore.__new__(PenguinCore)
+    core.action_executor = executor
+
+    result = await core.execute_action(action)
+
+    assert result == {
+        "action": "custom_action",
+        "result": "done",
+        "status": "completed",
+    }
+    assert executor.calls == [action]
+
+
+@pytest.mark.asyncio
 async def test_on_tui_action_passes_model_state_for_tool_only_turns() -> None:
     class _Adapter:
         def __init__(self) -> None:
@@ -487,12 +512,7 @@ def test_map_action_to_tool_supports_apply_patch_payload() -> None:
     core = PenguinCore.__new__(PenguinCore)
 
     patch = (
-        "*** Begin Patch\n"
-        "*** Update File: src/main.py\n"
-        "@@\n"
-        "-old\n"
-        "+new\n"
-        "*** End Patch\n"
+        "*** Begin Patch\n*** Update File: src/main.py\n@@\n-old\n+new\n*** End Patch\n"
     )
     mapped_tool, tool_input, metadata = core._map_action_to_tool(
         "apply_patch",
@@ -509,13 +529,7 @@ def test_map_action_to_tool_preserves_apply_patch_files_on_parse_error(
 ) -> None:
     core = PenguinCore.__new__(PenguinCore)
 
-    patch = (
-        "*** Begin Patch\n"
-        "*** Update File: src/main.py\n"
-        "@@\n"
-        "-old\n"
-        "+new\n"
-    )
+    patch = "*** Begin Patch\n*** Update File: src/main.py\n@@\n-old\n+new\n"
     monkeypatch.setattr(
         "penguin.core.parse_apply_patch_payload",
         lambda _params: {"patch": patch, "error": "malformed patch"},
@@ -589,9 +603,7 @@ def test_map_action_result_metadata_extracts_todos_for_todowrite() -> None:
     assert metadata["todos"][0]["content"] == "Implement todo endpoint"
 
 
-def test_map_action_result_metadata_promotes_spawn_sub_agent_to_clickable_task_card() -> (
-    None
-):
+def test_map_action_result_metadata_promotes_spawn_sub_agent_to_clickable_task_card():
     core = PenguinCore.__new__(PenguinCore)
 
     metadata = core._map_action_result_metadata(
