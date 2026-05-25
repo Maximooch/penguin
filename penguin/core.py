@@ -104,7 +104,6 @@ See Also:
 """
 
 import asyncio
-import copy
 import inspect
 import logging
 import time
@@ -2248,36 +2247,11 @@ class PenguinCore:
         model_id: Optional[str] = None,
     ) -> tuple[ModelConfig, APIClient]:
         """Build a request-scoped model config and API client without mutating global state."""
-        current_model = (
-            self.get_current_model() if hasattr(self, "get_current_model") else {}
+        return await core_model_runtime.resolve_request_runtime(
+            self,
+            model_id,
+            api_client_factory=APIClient,
         )
-        current_raw = (
-            str(current_model.get("model") or "").strip()
-            if isinstance(current_model, dict)
-            else ""
-        )
-        current_provider = (
-            str(current_model.get("provider") or "").strip()
-            if isinstance(current_model, dict)
-            else ""
-        )
-        current_qualified = (
-            f"{current_provider}/{current_raw}"
-            if current_provider and current_raw
-            else ""
-        )
-
-        requested_model = model_id.strip() if isinstance(model_id, str) else ""
-        if requested_model and requested_model not in {current_raw, current_qualified}:
-            new_model_config, _ = await self._build_model_config_for_model(
-                requested_model
-            )
-        else:
-            new_model_config = copy.deepcopy(self.model_config)
-
-        api_client = APIClient(model_config=new_model_config)
-        api_client.set_system_prompt(self.system_prompt)
-        return new_model_config, api_client
 
     async def load_model(self, model_id: str) -> bool:
         """Replace the active model at runtime.
@@ -2288,25 +2262,11 @@ class PenguinCore:
 
         Returns ``True`` on success, ``False`` otherwise.
         """
-        self._last_model_load_error = None
-
-        try:
-            new_model_config, safe_window = await self._build_model_config_for_model(
-                model_id
-            )
-            self._apply_new_model_config(
-                new_model_config, context_window_tokens=safe_window
-            )
-
-            logger.info(
-                f"Switched to model '{new_model_config.model}' (context: {safe_window} tokens, vision: {new_model_config.vision_enabled})"
-            )
-            return True
-
-        except Exception as e:
-            self._last_model_load_error = str(e)
-            logger.error(f"Failed to switch to model '{model_id}': {e}")
-            return False
+        return await core_model_runtime.load_model_for_core(
+            self,
+            model_id,
+            log=logger,
+        )
 
     def _canonicalize_runtime_model_id(
         self,

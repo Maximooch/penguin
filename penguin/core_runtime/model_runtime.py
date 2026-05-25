@@ -7,6 +7,7 @@ runtime values for the caller to apply.
 
 from __future__ import annotations
 
+import copy
 import logging
 from typing import Any, Awaitable, Callable, Mapping
 
@@ -189,6 +190,76 @@ def apply_new_model_config(
                 "Failed to propagate new model config to Engine: %s",
                 exc,
             )
+
+
+async def resolve_request_runtime(
+    owner: Any,
+    model_id: str | None = None,
+    *,
+    api_client_factory: ApiClientFactory,
+) -> tuple[ModelConfig, Any]:
+    """Build a request-scoped model config and API client for a core-like owner."""
+
+    current_model = (
+        owner.get_current_model() if hasattr(owner, "get_current_model") else {}
+    )
+    current_raw = (
+        str(current_model.get("model") or "").strip()
+        if isinstance(current_model, dict)
+        else ""
+    )
+    current_provider = (
+        str(current_model.get("provider") or "").strip()
+        if isinstance(current_model, dict)
+        else ""
+    )
+    current_qualified = (
+        f"{current_provider}/{current_raw}" if current_provider and current_raw else ""
+    )
+
+    requested_model = model_id.strip() if isinstance(model_id, str) else ""
+    if requested_model and requested_model not in {current_raw, current_qualified}:
+        new_model_config, _ = await owner._build_model_config_for_model(requested_model)
+    else:
+        new_model_config = copy.deepcopy(owner.model_config)
+
+    api_client = api_client_factory(model_config=new_model_config)
+    api_client.set_system_prompt(owner.system_prompt)
+    return new_model_config, api_client
+
+
+async def load_model_for_core(
+    owner: Any,
+    model_id: str,
+    *,
+    log: logging.Logger | None = None,
+) -> bool:
+    """Load and apply a runtime model for a core-like owner."""
+
+    active_logger = log or logger
+    owner._last_model_load_error = None
+
+    try:
+        new_model_config, safe_window = await owner._build_model_config_for_model(
+            model_id
+        )
+        owner._apply_new_model_config(
+            new_model_config,
+            context_window_tokens=safe_window,
+        )
+
+        active_logger.info(
+            "Switched to model '%s' (context: %s tokens, vision: %s)",
+            new_model_config.model,
+            safe_window,
+            new_model_config.vision_enabled,
+        )
+        return True
+
+    except Exception as exc:
+        owner._last_model_load_error = str(exc)
+        active_logger.error("Failed to switch to model '%s': %s", model_id, exc)
+        return False
 
 
 def canonicalize_runtime_model_id(
@@ -444,6 +515,8 @@ __all__ = [
     "canonicalize_runtime_model_id",
     "current_model_payload",
     "list_available_models",
+    "load_model_for_core",
     "refresh_api_client",
     "resolve_model_provider",
+    "resolve_request_runtime",
 ]

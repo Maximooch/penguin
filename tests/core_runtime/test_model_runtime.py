@@ -17,8 +17,10 @@ from penguin.core_runtime.model_runtime import (
     configure_llm_client,
     current_model_payload,
     list_available_models,
+    load_model_for_core,
     refresh_api_client,
     resolve_model_provider,
+    resolve_request_runtime,
 )
 from penguin.llm.model_config import ModelConfig
 
@@ -313,6 +315,112 @@ def test_apply_new_model_config_propagates_budget_and_model_config() -> None:
     assert context_window.max_context_window_tokens == 85
     context_window._initialize_token_budgets.assert_called_once()
     assert engine.model_config is new_config
+
+
+@pytest.mark.asyncio
+async def test_resolve_request_runtime_reuses_current_model_without_mutation() -> None:
+    model_config = ModelConfig(model="gpt-4o", provider="openai")
+    model_config.temperature = 0.1
+    built_models: list[str] = []
+
+    class FakeAPIClient:
+        def __init__(self, *, model_config: ModelConfig) -> None:
+            self.model_config = model_config
+            self.prompts: list[str] = []
+
+        def set_system_prompt(self, prompt: str) -> None:
+            self.prompts.append(prompt)
+
+    async def _build_model_config_for_model(model_id: str) -> tuple[ModelConfig, int]:
+        built_models.append(model_id)
+        return ModelConfig(model=model_id, provider="openai"), 1000
+
+    owner = SimpleNamespace(
+        model_config=model_config,
+        system_prompt="system",
+        get_current_model=lambda: {"model": "gpt-4o", "provider": "openai"},
+        _build_model_config_for_model=_build_model_config_for_model,
+    )
+
+    resolved, api_client = await resolve_request_runtime(
+        owner,
+        "openai/gpt-4o",
+        api_client_factory=FakeAPIClient,
+    )
+
+    assert built_models == []
+    assert resolved is not model_config
+    assert resolved.model == "gpt-4o"
+    assert resolved.temperature == 0.1
+    assert api_client.model_config is resolved
+    assert api_client.prompts == ["system"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_request_runtime_builds_requested_override() -> None:
+    requested = ModelConfig(model="gpt-5", provider="openai")
+    built_models: list[str] = []
+
+    class FakeAPIClient:
+        def __init__(self, *, model_config: ModelConfig) -> None:
+            self.model_config = model_config
+            self.prompts: list[str] = []
+
+        def set_system_prompt(self, prompt: str) -> None:
+            self.prompts.append(prompt)
+
+    async def _build_model_config_for_model(
+        model_id: str,
+    ) -> tuple[ModelConfig, int]:
+        built_models.append(model_id)
+        return requested, 1000
+
+    owner = SimpleNamespace(
+        model_config=ModelConfig(model="gpt-4o", provider="openai"),
+        system_prompt="system",
+        get_current_model=lambda: {"model": "gpt-4o", "provider": "openai"},
+        _build_model_config_for_model=_build_model_config_for_model,
+    )
+
+    resolved, api_client = await resolve_request_runtime(
+        owner,
+        "gpt-5",
+        api_client_factory=FakeAPIClient,
+    )
+
+    assert built_models == ["gpt-5"]
+    assert resolved is requested
+    assert api_client.model_config is requested
+    assert api_client.prompts == ["system"]
+
+
+@pytest.mark.asyncio
+async def test_load_model_for_core_applies_config_and_records_failures() -> None:
+    new_config = ModelConfig(model="gpt-5", provider="openai")
+    applied: list[tuple[ModelConfig, int | None]] = []
+
+    async def _build_success(_model_id: str) -> tuple[ModelConfig, int]:
+        return new_config, 2048
+
+    owner = SimpleNamespace(
+        _last_model_load_error="previous",
+        _build_model_config_for_model=_build_success,
+        _apply_new_model_config=lambda config, *, context_window_tokens=None: (
+            applied.append((config, context_window_tokens))
+        ),
+    )
+
+    assert await load_model_for_core(owner, "gpt-5") is True
+    assert owner._last_model_load_error is None
+    assert applied == [(new_config, 2048)]
+
+    async def _build_failure(_model_id: str) -> tuple[ModelConfig, int]:
+        raise RuntimeError("bad model")
+
+    owner._build_model_config_for_model = _build_failure
+    assert await load_model_for_core(owner, "bad") is False
+    assert owner._last_model_load_error == "bad model"
+    assert applied == [(new_config, 2048)]
 
 
 @pytest.mark.asyncio

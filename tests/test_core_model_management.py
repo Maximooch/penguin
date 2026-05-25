@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -148,6 +148,34 @@ def test_get_current_model_no_config(core: PenguinCore) -> None:
     core.model_config = None
 
     assert core.get_current_model() is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_request_runtime_uses_runtime_helper(
+    core: PenguinCore,
+) -> None:
+    core.system_prompt = "system"
+    core.resolve_request_runtime = PenguinCore.resolve_request_runtime.__get__(core)
+    requested_config = ModelConfig(model="gpt-5", provider="openai")
+    core._build_model_config_for_model = AsyncMock(
+        return_value=(requested_config, 1000)
+    )
+
+    class FakeAPIClient:
+        def __init__(self, *, model_config: ModelConfig) -> None:
+            self.model_config = model_config
+            self.system_prompt = None
+
+        def set_system_prompt(self, prompt: str) -> None:
+            self.system_prompt = prompt
+
+    with patch("penguin.core.APIClient", FakeAPIClient):
+        model_config, api_client = await core.resolve_request_runtime("gpt-5")
+
+    assert model_config is requested_config
+    assert api_client.model_config is requested_config
+    assert api_client.system_prompt == "system"
+    core._build_model_config_for_model.assert_called_once_with("gpt-5")
 
 
 @pytest.mark.asyncio
