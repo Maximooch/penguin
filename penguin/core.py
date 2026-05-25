@@ -184,6 +184,7 @@ from penguin.llm.stream_handler import (
     AgentStreamingStateManager,
     StreamingConfig,
 )
+from penguin.multi import coordinator_runtime as multi_coordinator_runtime
 from penguin.multi import routing as multi_routing
 
 MODEL_CONFIG_FIELD_NAMES = {field.name for field in fields(ModelConfig)}
@@ -910,19 +911,7 @@ class PenguinCore:
     # ------------------------------------------------------------------
     def get_coordinator(self):
         """Return a singleton MultiAgentCoordinator bound to this Core."""
-        try:
-            if (
-                not hasattr(self, "_coordinator")
-                or getattr(self, "_coordinator") is None
-            ):
-                # Use a relative import to avoid path issues in both repo and installed layouts
-                from .multi.coordinator import MultiAgentCoordinator  # type: ignore
-
-                self._coordinator = MultiAgentCoordinator(self)
-            return self._coordinator
-        except Exception as e:
-            logger.error(f"Failed to get coordinator: {e}")
-        raise
+        return multi_coordinator_runtime.get_core_coordinator(self, log=logger)
 
     # ------------------------------------------------------------------
     # Prompt mode control
