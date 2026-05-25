@@ -146,7 +146,7 @@ from .core_runtime import opencode_facade as core_opencode_facade
 from .core_runtime import process_runtime as core_process_runtime
 from .core_runtime import prompt_facade as core_prompt_facade
 from .core_runtime import response_generation as core_response_generation
-from .core_runtime import runmode_lifecycle as core_runmode_lifecycle
+from .core_runtime import runmode_facade as core_runmode_facade
 from .core_runtime import state_facade as core_state_facade
 from .core_runtime import startup as core_startup
 from .core_runtime import streaming_facade as core_streaming_facade
@@ -158,9 +158,6 @@ from penguin.multi import coordinator_runtime as multi_coordinator_runtime
 
 # Project manager
 from penguin.project.manager import ProjectManager
-
-# RunMode
-from penguin.run_mode import RunMode
 
 # Core systems
 from penguin.system.conversation_manager import ConversationManager
@@ -220,6 +217,7 @@ class PenguinCore(
     core_conversation_facade.ConversationCoreFacade,
     core_diagnostics_facade.DiagnosticsCoreFacade,
     core_prompt_facade.PromptCoreFacade,
+    core_runmode_facade.RunModeCoreFacade,
     core_state_facade.StateCoreFacade,
     core_streaming_facade.StreamingCoreFacade,
     core_token_usage_facade.TokenUsageCoreFacade,
@@ -511,45 +509,6 @@ class PenguinCore(
             log=logger,
             trace_log_info=_trace_log_info,
             log_error_fn=log_error,
-        )
-
-    async def start_run_mode(
-        self,
-        name: Optional[str] = None,
-        description: Optional[str] = None,
-        context: Optional[Dict[str, Any]] = None,
-        continuous: bool = False,
-        time_limit: Optional[int] = None,
-        mode_type: str = "task",
-        stream_callback_for_cli: Optional[Callable[[str], Awaitable[None]]] = None,
-        ui_update_callback_for_cli: Optional[Callable[[], Awaitable[None]]] = None,
-    ) -> None:
-        """
-        Start autonomous run mode for executing a task.
-
-        Args:
-            name: Name of the task (existing or new)
-            description: Optional description if creating a new task
-            context: Optional additional context or parameters
-            continuous: Whether to run in continuous mode
-            time_limit: Optional time limit in minutes
-            mode_type: Type of mode (task or project)
-            stream_callback_for_cli: Async callback for streaming LLM responses to UI.
-            ui_update_callback_for_cli: Async callback for UI updates based on RunMode events.
-        """
-        await core_runmode_lifecycle.start_run_mode(
-            self,
-            name=name,
-            description=description,
-            context=context,
-            continuous=continuous,
-            time_limit=time_limit,
-            mode_type=mode_type,
-            stream_callback_for_cli=stream_callback_for_cli,
-            ui_update_callback_for_cli=ui_update_callback_for_cli,
-            run_mode_factory=RunMode,
-            log_error=log_error,
-            logger=logger,
         )
 
     # ------------------------------------------------------------------
