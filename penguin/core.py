@@ -166,6 +166,7 @@ from .core_runtime import model_runtime as core_model_runtime
 from .core_runtime import opencode_adapters as core_opencode_adapters
 from .core_runtime import opencode_bridge as core_opencode_bridge
 from .core_runtime import opencode_persistence as core_opencode_persistence
+from .core_runtime import runmode_events as core_runmode_events
 from .core_runtime import session_lookup as core_session_lookup
 from .core_runtime import stream_events as core_stream_events
 from .core_runtime import token_usage_runtime as core_token_usage_runtime
@@ -3786,137 +3787,7 @@ class PenguinCore:
         Args:
             event: Dictionary containing event data with at least a 'type' key
         """
-        try:
-            logger.debug(f"Core received RunMode event: {event}")
-            event_type = event.get("type")
-
-            # Handle message events
-            if event_type == "message":
-                # Extract message data
-                msg_data = {
-                    "role": event.get("role", "system"),
-                    "content": event.get("content", ""),
-                    "category": event.get("category", MessageCategory.SYSTEM),
-                    "metadata": event.get("metadata", {}),
-                }
-
-                # Ensure category is a MessageCategory enum if provided as string
-                if isinstance(msg_data["category"], str):
-                    try:
-                        msg_data["category"] = MessageCategory[
-                            msg_data["category"].upper()
-                        ]
-                    except KeyError:
-                        logger.warning(
-                            f"Invalid message category string '{msg_data['category']}' from RunMode event. Defaulting to SYSTEM."
-                        )
-                        msg_data["category"] = MessageCategory.SYSTEM
-
-                # Add to conversation
-                self.conversation_manager.conversation.add_message(**msg_data)
-                self.conversation_manager.save()
-                logger.debug(
-                    f"Core added message to ConversationManager from RunMode event: {msg_data['role']} - {msg_data['content'][:50]}..."
-                )
-
-            # Handle status events
-            elif event_type == "status":
-                status_type = event.get("status_type", "unknown")
-                status_data = event.get("data", {})
-                logger.info(
-                    f"RunMode status update: {status_type} - Data: {status_data}"
-                )
-
-                # Update status summary based on event type
-                if (
-                    status_type == "task_started"
-                    or status_type == "task_started_legacy"
-                ):
-                    task_name = status_data.get(
-                        "task_name", status_data.get("task_prompt", "Unknown task")
-                    )
-                    self.current_runmode_status_summary = f"Task: {task_name} - Running"
-                elif status_type == "task_progress":
-                    iteration = status_data.get("iteration", "?")
-                    max_iter = status_data.get("max_iterations", "?")
-                    progress = status_data.get("progress", 0)
-                    self.current_runmode_status_summary = (
-                        f"Progress: {progress}% (Iter: {iteration}/{max_iter})"
-                    )
-                elif (
-                    status_type == "task_completed"
-                    or status_type == "task_completed_legacy"
-                    or status_type == "task_completed_eventbus"
-                ):
-                    task_name = status_data.get("task_name", "Last task")
-                    self.current_runmode_status_summary = (
-                        f"Task: {task_name} - Completed"
-                    )
-                elif (
-                    status_type == "run_mode_ended"
-                    or status_type == "shutdown_completed"
-                ):
-                    self.current_runmode_status_summary = status_data.get(
-                        "summary", "RunMode ended."
-                    )
-                elif (
-                    status_type == "clarification_needed"
-                    or status_type == "clarification_needed_eventbus"
-                ):
-                    self.current_runmode_status_summary = status_data.get(
-                        "summary", "Awaiting user clarification."
-                    )
-                elif status_type == "time_limit_reached":
-                    self.current_runmode_status_summary = status_data.get(
-                        "summary",
-                        "RunMode stopped because the explicit time limit was reached.",
-                    )
-                elif status_type == "idle_no_ready_tasks":
-                    self.current_runmode_status_summary = status_data.get(
-                        "summary", "RunMode stopped because no ready work remained."
-                    )
-                elif status_type == "exploratory_continuation":
-                    self.current_runmode_status_summary = status_data.get(
-                        "summary",
-                        "RunMode is continuing exploratorily by determining next steps.",
-                    )
-
-            # Handle error events
-            elif event_type == "error":
-                err_msg = event.get("message", "Unknown error from RunMode")
-                err_source = event.get("source", "runmode")
-                err_details = event.get("details", {})
-                logger.error(
-                    f"RunMode Error Event (Source: {err_source}): {err_msg} | Details: {err_details}"
-                )
-
-                # Update status with error
-                self.current_runmode_status_summary = f"Error: {err_msg}"
-
-            # Handle unknown event types
-            else:
-                logger.warning(
-                    f"Core received unknown RunMode event type: {event_type} | Event: {event}"
-                )
-
-            # After processing any event, signal the UI to update if callback is registered
-            if hasattr(self, "_ui_update_callback") and self._ui_update_callback:
-                try:
-                    await self._ui_update_callback()
-                except Exception as e:
-                    logger.error(f"Error in UI update callback: {e}", exc_info=True)
-
-            # Also send to WebSocket if temporary callback exists (for streaming)
-            if hasattr(self, "_temp_ws_callback") and self._temp_ws_callback:
-                try:
-                    await self._temp_ws_callback(event)
-                except Exception as e:
-                    logger.error(f"Error in WebSocket callback: {e}", exc_info=True)
-
-        except Exception as e:
-            logger.error(
-                f"Error in PenguinCore._handle_run_mode_event: {str(e)}", exc_info=True
-            )
+        await core_runmode_events.handle_run_mode_event(self, event, logger=logger)
 
     def get_startup_stats(self) -> Dict[str, Any]:
         """Get comprehensive startup performance statistics."""
