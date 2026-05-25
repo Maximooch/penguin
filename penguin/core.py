@@ -1277,10 +1277,7 @@ class PenguinCore:
         )
 
     async def get_telemetry_summary(self) -> Dict[str, Any]:
-        telemetry = getattr(self, "telemetry", None)
-        if telemetry is None:
-            return {}
-        return await telemetry.snapshot()
+        return await core_system_diagnostics.get_telemetry_summary(self)
 
     # ------------------------------------------------------------------
     # Diagnostics: Smoke test for agent wiring

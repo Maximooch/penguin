@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from types import SimpleNamespace
 from typing import Any
@@ -180,3 +181,23 @@ def test_get_memory_provider_status_reports_done_indexing_task_exception() -> No
             "exception": "index failed",
         },
     }
+
+
+def test_get_telemetry_summary_returns_empty_without_telemetry() -> None:
+    summary = asyncio.run(system_diagnostics.get_telemetry_summary(SimpleNamespace()))
+
+    assert summary == {}
+
+
+def test_get_telemetry_summary_returns_snapshot_payload() -> None:
+    class _Telemetry:
+        async def snapshot(self) -> dict[str, Any]:
+            return {"events": 3, "errors": 0}
+
+    summary = asyncio.run(
+        system_diagnostics.get_telemetry_summary(
+            SimpleNamespace(telemetry=_Telemetry())
+        )
+    )
+
+    assert summary == {"events": 3, "errors": 0}

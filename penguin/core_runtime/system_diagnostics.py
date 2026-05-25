@@ -11,6 +11,7 @@ __all__ = [
     "get_startup_stats",
     "get_system_info",
     "get_system_status",
+    "get_telemetry_summary",
     "print_startup_report",
 ]
 
@@ -213,3 +214,12 @@ def get_memory_provider_status(owner: Any) -> dict[str, Any]:
         }
 
     return status
+
+
+async def get_telemetry_summary(owner: Any) -> dict[str, Any]:
+    """Return telemetry snapshot data when telemetry is configured."""
+
+    telemetry = getattr(owner, "telemetry", None)
+    if telemetry is None:
+        return {}
+    return await telemetry.snapshot()
