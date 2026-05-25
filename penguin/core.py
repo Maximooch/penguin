@@ -159,6 +159,7 @@ from penguin._version import __version__ as PENGUIN_VERSION
 # LLM and API
 from penguin.llm.api_client import APIClient
 from penguin.llm.model_config import ModelConfig, fetch_model_specs
+from .core_runtime import action_events as core_action_events
 from .core_runtime import action_mapping as core_action_mapping
 from .core_runtime import checkpoint_runtime as core_checkpoint_runtime
 from .core_runtime import model_runtime as core_model_runtime
@@ -4892,136 +4893,12 @@ class PenguinCore:
         )
 
     async def _on_tui_action(self, event_type: str, data: Dict[str, Any]) -> None:
-        if event_type != "action":
-            return
-
-        session_id = (
-            data.get("session_id")
-            or data.get("conversation_id")
-            or data.get("sessionID")
-            or "unknown"
-        )
-        adapter = self._get_tui_adapter(session_id)
-
-        tool_name = data.get("type") or data.get("action") or "unknown"
-        params = data.get("params")
-        if isinstance(params, str) and params.strip().startswith(("{", "[")):
-            try:
-                import json
-
-                params = json.loads(params)
-            except Exception:
-                pass
-
-        mapped_tool, tool_input, metadata = self._map_action_to_tool(tool_name, params)
-
-        stream_state: Dict[str, Any] = {}
-        states = getattr(self, "_opencode_stream_states", None)
-        if isinstance(states, dict):
-            maybe_state = states.get(session_id)
-            if isinstance(maybe_state, dict):
-                stream_state = maybe_state
-        message_id_hint = stream_state.get("message_id")
-        agent_id_hint = data.get("agent_id") or data.get("agentID") or "default"
-        model_state = self._resolve_opencode_model_state(session_id=session_id)
-
-        call_id = data.get("id") or data.get("call_id") or data.get("callID")
-        if not call_id:
-            call_id = f"call_{int(time.time() * 1000)}"
-        tool_key = f"{session_id}:{call_id}"
-
-        part_id = await adapter.on_tool_start(
-            mapped_tool,
-            tool_input,
-            tool_call_id=call_id,
-            metadata=metadata,
-            message_id=message_id_hint,
-            agent_id=agent_id_hint,
-            model_id=model_state.get("modelID"),
-            provider_id=model_state.get("providerID"),
-            variant=model_state.get("variant"),
-        )
-        self._opencode_tool_parts[tool_key] = part_id
-        self._opencode_tool_info[tool_key] = {
-            "tool": mapped_tool,
-            "input": tool_input,
-            "metadata": metadata,
-            "action": tool_name,
-        }
+        await core_action_events.handle_tui_action(self, event_type, data)
 
     async def _on_tui_action_result(
         self, event_type: str, data: Dict[str, Any]
     ) -> None:
-        if event_type != "action_result":
-            return
-
-        session_id = (
-            data.get("session_id")
-            or data.get("conversation_id")
-            or data.get("sessionID")
-            or "unknown"
-        )
-        adapter = self._get_tui_adapter(session_id)
-
-        call_id = data.get("id") or data.get("call_id") or data.get("callID")
-        if not call_id:
-            return
-        tool_key = f"{session_id}:{call_id}"
-
-        info = self._opencode_tool_info.get(tool_key, {})
-        part_id = self._opencode_tool_parts.get(tool_key)
-        action_name = (
-            data.get("action") or data.get("type") or info.get("action") or "unknown"
-        )
-        if not part_id:
-            mapped_tool, tool_input, metadata = self._map_action_to_tool(
-                action_name, {}
-            )
-
-            stream_state: Dict[str, Any] = {}
-            states = getattr(self, "_opencode_stream_states", None)
-            if isinstance(states, dict):
-                maybe_state = states.get(session_id)
-                if isinstance(maybe_state, dict):
-                    stream_state = maybe_state
-            message_id_hint = stream_state.get("message_id")
-            agent_id_hint = data.get("agent_id") or data.get("agentID") or "default"
-            model_state = self._resolve_opencode_model_state(session_id=session_id)
-
-            part_id = await adapter.on_tool_start(
-                mapped_tool,
-                tool_input,
-                tool_call_id=call_id,
-                metadata=metadata,
-                message_id=message_id_hint,
-                agent_id=agent_id_hint,
-                model_id=model_state.get("modelID"),
-                provider_id=model_state.get("providerID"),
-                variant=model_state.get("variant"),
-            )
-            self._opencode_tool_parts[tool_key] = part_id
-            info = {"tool": mapped_tool, "input": tool_input, "metadata": metadata}
-
-        status = data.get("status")
-        result = data.get("result")
-        if (
-            status != "error"
-            and isinstance(result, str)
-            and result.lstrip().lower().startswith("error")
-        ):
-            status = "error"
-        error = result if status == "error" else None
-        merged_meta = self._map_action_result_metadata(
-            action_name,
-            result,
-            info.get("metadata") if isinstance(info, dict) else None,
-            info.get("input") if isinstance(info, dict) else None,
-            status,
-            data.get("metadata") if isinstance(data.get("metadata"), dict) else None,
-        )
-        await adapter.on_tool_end(part_id, result, error=error, metadata=merged_meta)
-        self._opencode_tool_parts.pop(tool_key, None)
-        self._opencode_tool_info.pop(tool_key, None)
+        await core_action_events.handle_tui_action_result(self, event_type, data)
 
     async def _on_tui_todo_updated(self, event_type: str, data: Dict[str, Any]) -> None:
         if event_type != "todo.updated":
