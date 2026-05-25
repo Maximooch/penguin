@@ -8,19 +8,24 @@ from pathlib import Path
 from typing import Any, Callable, MutableMapping
 
 ConfigLoader = Callable[[], Any]
+ApiClientFactory = Callable[..., Any]
 RuntimeConfigFactory = Callable[[dict[str, Any]], Any]
 ModelConfigFactory = Callable[..., Any]
 ToolManagerFactory = Callable[..., Any]
 SystemPromptBuilder = Callable[[str], str]
 OutputFormatter = Callable[[str], Any]
+EnvLoader = Callable[[], Any]
 
 __all__ = [
+    "ApiClientFactory",
     "ConfigLoader",
+    "EnvLoader",
     "ModelConfigFactory",
     "OutputFormatter",
     "RuntimeConfigFactory",
     "SystemPromptBuilder",
     "ToolManagerFactory",
+    "build_api_client",
     "build_initial_model_config",
     "build_tool_manager",
     "configure_startup_logging",
@@ -91,6 +96,21 @@ def resolve_fast_startup(config: Any, requested_fast_startup: bool) -> bool:
     if requested_fast_startup is False and hasattr(config, "fast_startup"):
         return bool(config.fast_startup)
     return requested_fast_startup
+
+
+def build_api_client(
+    model_config: Any,
+    *,
+    system_prompt: str,
+    api_client_factory: ApiClientFactory,
+    ensure_env_loaded: EnvLoader,
+) -> Any:
+    """Build the startup API client after env files are available."""
+
+    ensure_env_loaded()
+    api_client = api_client_factory(model_config=model_config)
+    api_client.set_system_prompt(system_prompt)
+    return api_client
 
 
 def build_initial_model_config(

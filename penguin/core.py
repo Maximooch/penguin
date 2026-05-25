@@ -444,11 +444,13 @@ class PenguinCore:
                         progress_callback(
                             current_step_index, total_steps, "Initializing API client"
                         )
-                    # Ensure .env files are loaded before API client needs API keys
-                    _ensure_env_loaded()
                     api_client_start = time.time()
-                    api_client = APIClient(model_config=model_config)
-                    api_client.set_system_prompt(SYSTEM_PROMPT)
+                    api_client = core_startup.build_api_client(
+                        model_config,
+                        system_prompt=SYSTEM_PROMPT,
+                        api_client_factory=APIClient,
+                        ensure_env_loaded=_ensure_env_loaded,
+                    )
                     logger.info(
                         f"STARTUP: API client initialized in {time.time() - api_client_start:.4f}s"
                     )

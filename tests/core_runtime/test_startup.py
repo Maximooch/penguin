@@ -106,6 +106,35 @@ def test_resolve_fast_startup_preserves_current_config_override_behavior() -> No
     assert not startup.resolve_fast_startup(SimpleNamespace(), False)
 
 
+def test_build_api_client_loads_env_then_sets_system_prompt() -> None:
+    calls: list[tuple[str, Any]] = []
+    model_config = SimpleNamespace(model="gpt-5")
+
+    class _Client:
+        def __init__(self, *, model_config: Any) -> None:
+            calls.append(("create", model_config))
+            self.system_prompt = ""
+
+        def set_system_prompt(self, prompt: str) -> None:
+            calls.append(("prompt", prompt))
+            self.system_prompt = prompt
+
+    client = startup.build_api_client(
+        model_config,
+        system_prompt="system prompt",
+        api_client_factory=_Client,
+        ensure_env_loaded=lambda: calls.append(("env", None)),
+    )
+
+    assert isinstance(client, _Client)
+    assert client.system_prompt == "system prompt"
+    assert calls == [
+        ("env", None),
+        ("create", model_config),
+        ("prompt", "system prompt"),
+    ]
+
+
 def test_build_initial_model_config_uses_live_config_and_api_base_fallback() -> None:
     captured: dict[str, Any] = {}
     config = SimpleNamespace(
