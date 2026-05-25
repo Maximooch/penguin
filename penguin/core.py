@@ -137,6 +137,7 @@ from penguin.llm.model_config import ModelConfig, fetch_model_specs
 from .core_runtime import action_execution as core_action_execution
 from .core_runtime import agent_lifecycle_facade as core_agent_lifecycle_facade
 from .core_runtime import checkpoint_facade as core_checkpoint_facade
+from .core_runtime import conversation_facade as core_conversation_facade
 from .core_runtime import conversations as core_conversations
 from .core_runtime import diagnostics_facade as core_diagnostics_facade
 from .core_runtime import message_processing as core_message_processing
@@ -216,6 +217,7 @@ def _trace_log_info(message: str, *args: Any) -> None:
 class PenguinCore(
     core_agent_lifecycle_facade.AgentLifecycleCoreFacade,
     core_checkpoint_facade.CheckpointCoreFacade,
+    core_conversation_facade.ConversationCoreFacade,
     core_diagnostics_facade.DiagnosticsCoreFacade,
     core_state_facade.StateCoreFacade,
     core_streaming_facade.StreamingCoreFacade,
@@ -553,91 +555,6 @@ class PenguinCore(
             trace_log_info=_trace_log_info,
             log_error_fn=log_error,
         )
-
-    def list_conversations(
-        self,
-        limit: int = 20,
-        offset: int = 0,
-        search_term: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
-        """
-        List available conversations.
-
-        Args:
-            limit: Maximum number of conversations to return
-            offset: Offset for pagination
-
-        Returns:
-            List of conversations with metadata
-        """
-        return core_conversations.list_conversations(
-            self.conversation_manager,
-            limit=limit,
-            offset=offset,
-            search_term=search_term,
-        )
-
-    def get_conversation(self, conversation_id: str) -> Optional[Dict[str, Any]]:
-        """
-        Get a specific conversation by ID.
-
-        Args:
-            conversation_id: ID of the conversation to retrieve
-
-        Returns:
-            Conversation data or None if not found
-        """
-        return core_conversations.get_conversation(
-            self.conversation_manager,
-            conversation_id,
-        )
-
-    def get_conversation_history(
-        self,
-        conversation_id: str,
-        *,
-        include_system: bool = True,
-        limit: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
-        return core_conversations.get_conversation_history(
-            self.conversation_manager,
-            conversation_id,
-            include_system=include_system,
-            limit=limit,
-        )
-
-    def create_conversation(self) -> str:
-        """
-        Create a new conversation.
-
-        Returns:
-            ID of the new conversation
-        """
-        return core_conversations.create_conversation(self.conversation_manager)
-
-    def delete_conversation(self, conversation_id: str) -> bool:
-        """
-        Delete a conversation.
-
-        Args:
-            conversation_id: ID of the conversation to delete
-
-        Returns:
-            True if successful, False otherwise
-        """
-        return core_conversations.delete_conversation(
-            self.conversation_manager,
-            conversation_id,
-        )
-
-    def get_conversation_stats(self) -> Dict[str, Any]:
-        """
-        Get statistics about conversations.
-
-        Returns:
-            Dictionary with conversation statistics
-        """
-        return core_conversations.get_conversation_stats(self.conversation_manager)
 
     async def start_run_mode(
         self,
