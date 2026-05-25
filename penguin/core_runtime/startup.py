@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, MutableMapping
 
@@ -18,9 +19,11 @@ OutputFormatter = Callable[[str], Any]
 EnvLoader = Callable[[], Any]
 ProgressCallback = Callable[[int, int, str], Any]
 TqdmFactory = Callable[..., Any]
+Clock = Callable[[], float]
 
 __all__ = [
     "ApiClientFactory",
+    "Clock",
     "ConfigLoader",
     "EnvLoader",
     "ModelConfigFactory",
@@ -28,6 +31,7 @@ __all__ = [
     "ProgressCallback",
     "RuntimeConfigFactory",
     "StartupProgress",
+    "StartupTiming",
     "SystemPromptBuilder",
     "ToolManagerFactory",
     "TqdmFactory",
@@ -39,6 +43,8 @@ __all__ = [
     "initialize_prompt_and_output_state",
     "initialize_runtime_config",
     "load_startup_config",
+    "log_startup_failure",
+    "log_startup_summary",
     "resolve_fast_startup",
 ]
 
@@ -125,6 +131,88 @@ class StartupProgress:
 
         if self.pbar:
             self.pbar.close()
+
+
+@dataclass
+class StartupTiming:
+    """Track PenguinCore.create timing with an injectable clock."""
+
+    clock: Clock = time.time
+    timings: dict[str, float] = field(default_factory=dict)
+    step_started_at: float = field(init=False)
+    overall_started_at: float = field(init=False)
+
+    def __post_init__(self) -> None:
+        started_at = self.clock()
+        self.step_started_at = started_at
+        self.overall_started_at = started_at
+
+    def mark(self) -> float:
+        """Return the current clock value for ad hoc duration logging."""
+
+        return self.clock()
+
+    def elapsed_since(self, started_at: float) -> float:
+        """Return elapsed seconds since a previous mark."""
+
+        return self.clock() - started_at
+
+    def elapsed_total(self) -> float:
+        """Return elapsed seconds since startup timing began."""
+
+        return self.clock() - self.overall_started_at
+
+    def record_step(self, step_name: str, *, logger: Any) -> float:
+        """Record and log elapsed time for one startup phase."""
+
+        step_ended_at = self.clock()
+        elapsed = step_ended_at - self.step_started_at
+        self.timings[step_name] = elapsed
+        logger.info("PROFILING: %s took %.4f seconds", step_name, elapsed)
+        self.step_started_at = step_ended_at
+        return elapsed
+
+
+def log_startup_summary(
+    timing: StartupTiming,
+    *,
+    fast_startup: bool,
+    tool_manager: Any,
+    logger: Any,
+) -> float:
+    """Log the final startup timing summary and return total elapsed seconds."""
+
+    total_time = timing.elapsed_total()
+    logger.info(
+        "STARTUP COMPLETE: Total initialization time: %.4f seconds",
+        total_time,
+    )
+    logger.info("STARTUP TIMING SUMMARY:")
+    for step, duration in timing.timings.items():
+        percentage = (duration / total_time) * 100 if total_time > 0 else 0.0
+        logger.info("  - %s: %.4fs (%.1f%%)", step, duration, percentage)
+
+    if fast_startup:
+        logger.info("FAST STARTUP enabled - memory indexing deferred to first use")
+
+    tool_stats = tool_manager.get_startup_stats()
+    logger.info("ToolManager startup stats: %s", tool_stats)
+    return total_time
+
+
+def log_startup_failure(
+    timing: StartupTiming,
+    error: BaseException,
+    *,
+    logger: Any,
+) -> str:
+    """Log startup failure timing and return the public RuntimeError message."""
+
+    error_time = timing.elapsed_total()
+    logger.error("STARTUP FAILED after %.4fs: %s", error_time, error)
+    error_msg = f"Failed to initialize PenguinCore: {error!s}"
+    logger.error(error_msg)
+    return error_msg
 
 
 def ensure_tokenizers_parallelism(

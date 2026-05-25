@@ -34,6 +34,29 @@ class _FakeProgressBar:
         self.closed = True
 
 
+class _FakeLogger:
+    def __init__(self) -> None:
+        self.info_calls: list[tuple[str, tuple[Any, ...]]] = []
+        self.error_calls: list[tuple[str, tuple[Any, ...]]] = []
+
+    def info(self, message: str, *args: Any) -> None:
+        self.info_calls.append((message, args))
+
+    def error(self, message: str, *args: Any) -> None:
+        self.error_calls.append((message, args))
+
+
+class _SequenceClock:
+    def __init__(self, values: list[float]) -> None:
+        self.values = values
+        self.index = 0
+
+    def __call__(self) -> float:
+        value = self.values[self.index]
+        self.index += 1
+        return value
+
+
 def test_startup_progress_uses_tqdm_without_external_callback() -> None:
     pbar = _FakeProgressBar()
     factory_calls: list[dict[str, Any]] = []
@@ -96,6 +119,59 @@ def test_startup_progress_callback_gets_step_counts_and_finish_guard() -> None:
         (1, 7, "Loading environment"),
         (2, 7, "Setting up logging"),
         (7, 7, "Initialization complete"),
+    ]
+
+
+def test_startup_timing_records_steps_and_summary_with_deterministic_clock() -> None:
+    clock = _SequenceClock([100.0, 101.5, 102.0, 104.0])
+    logger = _FakeLogger()
+    timing = startup.StartupTiming(clock=clock)
+
+    elapsed = timing.record_step("Load configuration", logger=logger)
+    mark = timing.mark()
+
+    assert elapsed == 1.5
+    assert mark == 102.0
+    assert timing.timings == {"Load configuration": 1.5}
+    assert logger.info_calls == [
+        ("PROFILING: %s took %.4f seconds", ("Load configuration", 1.5))
+    ]
+
+    startup.log_startup_summary(
+        timing,
+        fast_startup=True,
+        tool_manager=SimpleNamespace(get_startup_stats=lambda: {"tools": 3}),
+        logger=logger,
+    )
+
+    assert logger.info_calls[-5:] == [
+        (
+            "STARTUP COMPLETE: Total initialization time: %.4f seconds",
+            (4.0,),
+        ),
+        ("STARTUP TIMING SUMMARY:", ()),
+        ("  - %s: %.4fs (%.1f%%)", ("Load configuration", 1.5, 37.5)),
+        ("FAST STARTUP enabled - memory indexing deferred to first use", ()),
+        ("ToolManager startup stats: %s", ({"tools": 3},)),
+    ]
+
+
+def test_startup_failure_logging_returns_public_error_message() -> None:
+    clock = _SequenceClock([10.0, 12.25])
+    logger = _FakeLogger()
+    timing = startup.StartupTiming(clock=clock)
+    error = RuntimeError("boom")
+
+    message = startup.log_startup_failure(
+        timing,
+        error,
+        logger=logger,
+    )
+
+    assert message == "Failed to initialize PenguinCore: boom"
+    assert logger.error_calls == [
+        ("STARTUP FAILED after %.4fs: %s", (2.25, error)),
+        ("Failed to initialize PenguinCore: boom", ()),
     ]
 
 

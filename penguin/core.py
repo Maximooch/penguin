@@ -106,7 +106,6 @@ See Also:
 import asyncio
 import inspect
 import logging
-import time
 from dataclasses import asdict, fields
 from pathlib import Path
 from typing import (
@@ -308,22 +307,8 @@ class PenguinCore:
         # Fix HuggingFace tokenizers parallelism warning early, before any model loading
         core_startup.ensure_tokenizers_parallelism()
 
+        startup_timing = core_startup.StartupTiming()
         progress = None
-        # Track detailed timing for profiling
-        import time
-        from collections import defaultdict
-
-        timings = defaultdict(float)
-        step_start_time = time.time()
-        overall_start_time = step_start_time
-
-        def log_step_time(step_name: str):
-            nonlocal step_start_time
-            step_end_time = time.time()
-            elapsed = step_end_time - step_start_time
-            timings[step_name] = elapsed
-            logger.info(f"PROFILING: {step_name} took {elapsed:.4f} seconds")
-            step_start_time = step_end_time
 
         try:
             with profile_startup_phase("PenguinCore.create_total"):
@@ -342,7 +327,7 @@ class PenguinCore:
                     # Calling it again here is redundant and can subtly override earlier values.
                     # Intentionally no-op.
                     progress.complete_step()
-                    log_step_time("Load environment")
+                    startup_timing.record_step("Load environment", logger=logger)
 
                 # Step 2: Initialize logging
                 with profile_startup_phase("Setup logging"):
@@ -350,13 +335,13 @@ class PenguinCore:
                     progress.start_step("Setting up logging")
                     core_startup.configure_startup_logging()
                     progress.complete_step()
-                    log_step_time("Setup logging")
+                    startup_timing.record_step("Setup logging", logger=logger)
 
                 # Load configuration
                 with profile_startup_phase("Load configuration"):
                     logger.info("STARTUP: Loading and parsing configuration")
                     progress.start_step("Loading configuration")
-                    start_config_time = time.time()
+                    start_config_time = startup_timing.mark()
                     config = core_startup.load_startup_config(
                         config,
                         workspace_path=workspace_path,
@@ -370,10 +355,11 @@ class PenguinCore:
                     )
 
                     logger.info(
-                        f"STARTUP: Config loaded in {time.time() - start_config_time:.4f}s"
+                        "STARTUP: Config loaded in %.4fs",
+                        startup_timing.elapsed_since(start_config_time),
                     )
                     progress.complete_step()
-                    log_step_time("Load configuration")
+                    startup_timing.record_step("Load configuration", logger=logger)
 
                 # Initialize model configuration
                 with profile_startup_phase("Create model config"):
@@ -391,13 +377,13 @@ class PenguinCore:
                         f"STARTUP: Using model={model_config.model}, provider={model_config.provider}, client={model_config.client_preference}"
                     )
                     progress.complete_step()
-                    log_step_time("Create model config")
+                    startup_timing.record_step("Create model config", logger=logger)
 
                 # Create API client
                 with profile_startup_phase("Initialize API client"):
                     logger.info("STARTUP: Initializing API client")
                     progress.start_step("Initializing API client")
-                    api_client_start = time.time()
+                    api_client_start = startup_timing.mark()
                     api_client = core_startup.build_api_client(
                         model_config,
                         system_prompt=SYSTEM_PROMPT,
@@ -405,10 +391,11 @@ class PenguinCore:
                         ensure_env_loaded=_ensure_env_loaded,
                     )
                     logger.info(
-                        f"STARTUP: API client initialized in {time.time() - api_client_start:.4f}s"
+                        "STARTUP: API client initialized in %.4fs",
+                        startup_timing.elapsed_since(api_client_start),
                     )
                     progress.complete_step()
-                    log_step_time("Initialize API client")
+                    startup_timing.record_step("Initialize API client", logger=logger)
 
                 # Initialize tool manager
                 with profile_startup_phase("Create tool manager"):
@@ -416,7 +403,7 @@ class PenguinCore:
                         f"STARTUP: Creating tool manager (fast_startup={fast_startup})"
                     )
                     progress.start_step("Creating tool manager")
-                    tool_manager_start = time.time()
+                    tool_manager_start = startup_timing.mark()
                     print("DEBUG: Creating ToolManager in PenguinCore...")
                     print(
                         f"DEBUG: Passing config of type {type(config)} to ToolManager."
@@ -432,16 +419,20 @@ class PenguinCore:
                         tool_manager_factory=ToolManager,
                     )
                     logger.info(
-                        f"STARTUP: Tool manager created in {time.time() - tool_manager_start:.4f}s with {len(tool_manager.tools) if hasattr(tool_manager, 'tools') else 'unknown'} tools"
+                        "STARTUP: Tool manager created in %.4fs with %s tools",
+                        startup_timing.elapsed_since(tool_manager_start),
+                        len(tool_manager.tools)
+                        if hasattr(tool_manager, "tools")
+                        else "unknown",
                     )
                     progress.complete_step()
-                    log_step_time("Create tool manager")
+                    startup_timing.record_step("Create tool manager", logger=logger)
 
                 # Create core instance
                 with profile_startup_phase("Create core instance"):
                     logger.info("STARTUP: Creating core instance")
                     progress.start_step("Creating core instance")
-                    core_start = time.time()
+                    core_start = startup_timing.mark()
                     instance = cls(
                         config=config,
                         api_client=api_client,
@@ -449,57 +440,46 @@ class PenguinCore:
                         model_config=model_config,
                     )
                     logger.info(
-                        f"STARTUP: Core instance created in {time.time() - core_start:.4f}s"
+                        "STARTUP: Core instance created in %.4fs",
+                        startup_timing.elapsed_since(core_start),
                     )
                     progress.complete_step()
-                    log_step_time("Create core instance")
+                    startup_timing.record_step("Create core instance", logger=logger)
 
                 if enable_cli:
                     with profile_startup_phase("Initialize CLI"):
                         logger.info("STARTUP: Initializing CLI")
                         progress.start_step("Initializing CLI")
-                        cli_start = time.time()
+                        cli_start = startup_timing.mark()
                         from penguin.chat.cli import PenguinCLI
 
                         cli = PenguinCLI(instance)
                         logger.info(
-                            f"STARTUP: CLI initialized in {time.time() - cli_start:.4f}s"
+                            "STARTUP: CLI initialized in %.4fs",
+                            startup_timing.elapsed_since(cli_start),
                         )
                         progress.complete_step()
-                        log_step_time("Initialize CLI")
+                        startup_timing.record_step("Initialize CLI", logger=logger)
 
                 progress.finish()
 
-                total_time = time.time() - overall_start_time
-                logger.info(
-                    f"STARTUP COMPLETE: Total initialization time: {total_time:.4f} seconds"
+                core_startup.log_startup_summary(
+                    startup_timing,
+                    fast_startup=fast_startup,
+                    tool_manager=tool_manager,
+                    logger=logger,
                 )
-
-                # Log summary of all timing measurements
-                logger.info("STARTUP TIMING SUMMARY:")
-                for step, duration in timings.items():
-                    percentage = (duration / total_time) * 100
-                    logger.info(f"  - {step}: {duration:.4f}s ({percentage:.1f}%)")
-
-                # Print comprehensive profiling report if enabled
-                if fast_startup:
-                    logger.info(
-                        "FAST STARTUP enabled - memory indexing deferred to first use"
-                    )
-
-                # Log tool manager stats
-                tool_stats = tool_manager.get_startup_stats()
-                logger.info(f"ToolManager startup stats: {tool_stats}")
 
                 return instance if not enable_cli else (instance, cli)
 
         except Exception as e:
-            error_time = time.time() - overall_start_time
-            logger.error(f"STARTUP FAILED after {error_time:.4f}s: {str(e)}")
             if progress is not None:
                 progress.close()
-            error_msg = f"Failed to initialize PenguinCore: {str(e)}"
-            logger.error(error_msg)
+            error_msg = core_startup.log_startup_failure(
+                startup_timing,
+                e,
+                logger=logger,
+            )
             raise RuntimeError(error_msg) from e
 
     def __init__(
