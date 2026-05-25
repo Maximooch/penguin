@@ -9,9 +9,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 from penguin.core_runtime.agent_lifecycle import (
+    is_agent_paused,
     publish_sub_agent_session_created,
     resolve_agent_execution_scope,
     run_agent_prompt_in_session,
+    set_agent_paused,
     smoke_check_agents,
 )
 from penguin.system.execution_context import (
@@ -418,3 +420,57 @@ def test_smoke_check_agents_skips_bad_agent_and_tolerates_engine_failure() -> No
     ]
     assert summary["shared_conversations"] == []
     assert summary["engine_registry"] == {"good": False}
+
+
+def test_set_agent_paused_updates_metadata_and_emits_system_note() -> None:
+    conversation = _Conversation(SimpleNamespace(metadata={}))
+    notes: list[tuple[str, str, dict[str, Any]]] = []
+    core = SimpleNamespace(
+        conversation_manager=SimpleNamespace(
+            get_agent_conversation=lambda _agent_id: conversation,
+            add_system_note=lambda agent_id, content, metadata: notes.append(
+                (agent_id, content, metadata)
+            ),
+        )
+    )
+
+    set_agent_paused(core, "worker", True)
+
+    assert conversation.session.metadata["paused"] is True
+    assert is_agent_paused(core, "worker") is True
+    assert notes == [
+        (
+            "worker",
+            "Agent state: Paused",
+            {"type": "agent_state", "paused": True},
+        )
+    ]
+
+
+def test_set_agent_paused_still_updates_metadata_when_note_fails() -> None:
+    conversation = _Conversation(SimpleNamespace(metadata={}))
+
+    def _add_system_note(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("note store unavailable")
+
+    core = SimpleNamespace(
+        conversation_manager=SimpleNamespace(
+            get_agent_conversation=lambda _agent_id: conversation,
+            add_system_note=_add_system_note,
+        )
+    )
+
+    set_agent_paused(core, "worker", False)
+
+    assert conversation.session.metadata["paused"] is False
+    assert is_agent_paused(core, "worker") is False
+
+
+def test_is_agent_paused_returns_false_without_session_metadata() -> None:
+    core = SimpleNamespace(
+        conversation_manager=SimpleNamespace(
+            get_agent_conversation=lambda _agent_id: SimpleNamespace(session=None)
+        )
+    )
+
+    assert is_agent_paused(core, "worker") is False

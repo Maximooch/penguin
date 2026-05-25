@@ -20,10 +20,12 @@ from penguin.system.execution_context import (
 from penguin.utils.parser import ActionExecutor
 
 __all__ = [
+    "is_agent_paused",
     "publish_sub_agent_session_created",
     "register_agent_compat",
     "resolve_agent_execution_scope",
     "run_agent_prompt_in_session",
+    "set_agent_paused",
     "smoke_check_agents",
 ]
 
@@ -320,6 +322,35 @@ def smoke_check_agents(core: Any) -> dict[str, Any]:
         summary["engine_registry"][agent_id] = agent_id in engine_agents
 
     return summary
+
+
+def set_agent_paused(core: Any, agent_id: str, paused: bool = True) -> None:
+    """Mark an agent as paused or resumed using conversation metadata."""
+    conversation = core.conversation_manager.get_agent_conversation(agent_id)
+    session = getattr(conversation, "session", None) if conversation else None
+    metadata = getattr(session, "metadata", None)
+    if isinstance(metadata, dict):
+        metadata["paused"] = bool(paused)
+
+    try:
+        note = "Paused" if paused else "Resumed"
+        core.conversation_manager.add_system_note(
+            agent_id,
+            f"Agent state: {note}",
+            metadata={"type": "agent_state", "paused": bool(paused)},
+        )
+    except Exception:
+        pass
+
+
+def is_agent_paused(core: Any, agent_id: str) -> bool:
+    """Return whether an agent is paused via conversation metadata."""
+    conversation = core.conversation_manager.get_agent_conversation(agent_id)
+    session = getattr(conversation, "session", None) if conversation else None
+    metadata = getattr(session, "metadata", None)
+    if isinstance(metadata, dict):
+        return bool(metadata.get("paused", False))
+    return False
 
 
 def resolve_agent_execution_scope(

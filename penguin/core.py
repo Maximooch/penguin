@@ -1154,26 +1154,11 @@ class PenguinCore:
     # ------------------------------
     def set_agent_paused(self, agent_id: str, paused: bool = True) -> None:
         """Mark an agent as paused/resumed using conversation metadata."""
-        conv = self.conversation_manager.get_agent_conversation(agent_id)
-        if conv and hasattr(conv, "session") and conv.session:
-            conv.session.metadata["paused"] = bool(paused)
-        # Also add system note for visibility
-        try:
-            note = "Paused" if paused else "Resumed"
-            self.conversation_manager.add_system_note(
-                agent_id,
-                f"Agent state: {note}",
-                metadata={"type": "agent_state", "paused": bool(paused)},
-            )
-        except Exception:
-            pass
+        core_agent_lifecycle.set_agent_paused(self, agent_id, paused)
 
     def is_agent_paused(self, agent_id: str) -> bool:
         """Check if agent is paused via conversation metadata."""
-        conv = self.conversation_manager.get_agent_conversation(agent_id)
-        if conv and hasattr(conv, "session") and conv.session:
-            return bool(conv.session.metadata.get("paused", False))
-        return False
+        return core_agent_lifecycle.is_agent_paused(self, agent_id)
 
     # ------------------------------
     # Agent conversation management (NEW API)
