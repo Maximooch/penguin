@@ -245,6 +245,38 @@ def test_fork_session_preserves_source_and_rewrites_legacy_message_lineage(
     assert source.id not in {first_info["sessionID"], second_info["sessionID"]}
 
 
+def test_fork_session_rewrites_corrupt_transcript_without_source_id_bleed(
+    tmp_path: Path,
+) -> None:
+    core = _Core(tmp_path)
+    source = _seed_session(core, tmp_path)
+    transcript = source.metadata[TRANSCRIPT_KEY]
+    assistant_entry = transcript["messages"]["msg_assistant_1"]
+    assistant_entry.pop("info")
+    assistant_entry["part_order"] = ["missing_part", "part_assistant_1"]
+    before_metadata = copy.deepcopy(source.metadata)
+
+    info = fork_session(cast(Any, core), source.id, message_id="msg_user_2")
+
+    assert info is not None
+    assert source.metadata == before_metadata
+    forked = core.conversation_manager.session_manager.load_session(info["id"])
+    assert forked is not None
+    rows = get_session_messages(cast(Any, core), forked.id)
+    assert rows is not None
+    assert len(rows) == 2
+
+    source_message_ids = {"msg_user_1", "msg_assistant_1", "msg_user_2"}
+    for row in rows:
+        row_info = row["info"]
+        assert row_info["sessionID"] == forked.id
+        assert row_info["id"] not in source_message_ids
+        for part in row["parts"]:
+            assert part["sessionID"] == forked.id
+            assert part["messageID"] == row_info["id"]
+            assert part["id"] not in {"part_user_1", "part_assistant_1"}
+
+
 @pytest.mark.asyncio
 async def test_session_fork_route_emits_created_event(tmp_path: Path) -> None:
     core = _Core(tmp_path)

@@ -850,9 +850,14 @@ def _default_assistant_info(
     *,
     agent_id: str | None = None,
     session: Any | None = None,
+    created_ms: int | None = None,
 ) -> dict[str, Any]:
     """Build a minimal valid assistant info envelope."""
-    now = int(datetime.now().timestamp() * 1000)
+    now = (
+        created_ms
+        if isinstance(created_ms, int)
+        else int(datetime.now().timestamp() * 1000)
+    )
     cwd = str(Path.cwd())
     model_state = _resolve_session_model_state(core, session or object())
     return {
@@ -1137,7 +1142,7 @@ def get_session_messages(
         messages = transcript.get("messages")
         order = transcript.get("order")
         if isinstance(messages, dict) and isinstance(order, list):
-            for message_id in order:
+            for order_index, message_id in enumerate(order):
                 entry = messages.get(message_id)
                 if not isinstance(entry, dict):
                     continue
@@ -1153,6 +1158,8 @@ def get_session_messages(
                         session_id,
                         str(message_id),
                         agent_id=fallback_agent_id,
+                        session=session,
+                        created_ms=order_index + 1,
                     )
 
                 parts_map = entry.get("parts")
