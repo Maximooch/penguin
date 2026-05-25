@@ -178,6 +178,7 @@ from .core_runtime import runmode_events as core_runmode_events
 from .core_runtime import runmode_lifecycle as core_runmode_lifecycle
 from .core_runtime import session_lookup as core_session_lookup
 from .core_runtime import stream_events as core_stream_events
+from .core_runtime import streaming_state as core_streaming_state
 from .core_runtime import system_diagnostics as core_system_diagnostics
 from .core_runtime import token_usage_runtime as core_token_usage_runtime
 from penguin.llm.stream_handler import (
@@ -1304,11 +1305,7 @@ class PenguinCore:
     @property
     def total_tokens_used(self) -> int:
         """Get total tokens used via conversation manager"""
-        try:
-            token_usage = self.conversation_manager.get_token_usage()
-            return token_usage.get("total", 0)
-        except Exception:
-            return 0
+        return core_streaming_state.total_tokens_used(self)
 
     # ------------------------------------------------------------------
     # Streaming State Properties (delegate to AgentStreamingStateManager)
@@ -1317,22 +1314,22 @@ class PenguinCore:
     @property
     def streaming_active(self) -> bool:
         """Whether streaming is currently active for the default agent."""
-        return self._stream_manager.is_active
+        return core_streaming_state.streaming_active(self)
 
     @property
     def streaming_content(self) -> str:
         """Accumulated assistant content from default agent's stream."""
-        return self._stream_manager.content
+        return core_streaming_state.streaming_content(self)
 
     @property
     def streaming_reasoning_content(self) -> str:
         """Accumulated reasoning content from default agent's stream."""
-        return self._stream_manager.reasoning_content
+        return core_streaming_state.streaming_reasoning_content(self)
 
     @property
     def streaming_stream_id(self) -> Optional[str]:
         """Unique ID of the default agent's stream, or None if not streaming."""
-        return self._stream_manager.stream_id
+        return core_streaming_state.streaming_stream_id(self)
 
     # --- Agent-Specific Streaming Methods ---
 
@@ -1345,7 +1342,7 @@ class PenguinCore:
         Returns:
             True if the agent is actively streaming
         """
-        return self._stream_manager.is_agent_active(agent_id)
+        return core_streaming_state.is_agent_streaming(self, agent_id)
 
     def get_agent_streaming_content(self, agent_id: str) -> str:
         """Get accumulated streaming content for a specific agent.
@@ -1356,7 +1353,7 @@ class PenguinCore:
         Returns:
             Accumulated content string (empty if agent not found or not streaming)
         """
-        return self._stream_manager.get_agent_content(agent_id)
+        return core_streaming_state.get_agent_streaming_content(self, agent_id)
 
     def get_agent_streaming_reasoning(self, agent_id: str) -> str:
         """Get accumulated reasoning content for a specific agent.
@@ -1367,7 +1364,7 @@ class PenguinCore:
         Returns:
             Accumulated reasoning content string
         """
-        return self._stream_manager.get_agent_reasoning(agent_id)
+        return core_streaming_state.get_agent_streaming_reasoning(self, agent_id)
 
     def get_active_streaming_agents(self) -> List[str]:
         """Get list of agent IDs that are currently streaming.
@@ -1375,7 +1372,7 @@ class PenguinCore:
         Returns:
             List of agent IDs with active streams
         """
-        return self._stream_manager.get_active_agents()
+        return core_streaming_state.get_active_streaming_agents(self)
 
     def cleanup_agent_streaming(self, agent_id: str) -> None:
         """Clean up streaming state for a terminated agent.
@@ -1383,7 +1380,7 @@ class PenguinCore:
         Args:
             agent_id: The agent identifier to clean up
         """
-        self._stream_manager.cleanup_agent(agent_id)
+        core_streaming_state.cleanup_agent_streaming(self, agent_id)
 
     async def _emit_opencode_session_status(
         self,
