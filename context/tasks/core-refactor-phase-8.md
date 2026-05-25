@@ -139,6 +139,15 @@ For a narrower cluster:
   -q
 ```
 
+Use the local random-order helper for focused order-leak checks without adding
+a pytest plugin or CI gate:
+
+```bash
+.venv/bin/python scripts/random_order_pytest.py --seed 7 --count 3 -- \
+  tests/core_runtime/test_action_mapping.py \
+  tests/tools/test_process_runtime.py
+```
+
 Do not add a random-order CI gate until the runner/plugin choice is explicit
 and proven non-flaky. For now, repeated targeted runs plus the default suite are
 the practical Phase 8 gate.
