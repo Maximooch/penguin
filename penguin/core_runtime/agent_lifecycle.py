@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from penguin.agent.persona_runtime import (
@@ -19,6 +20,7 @@ from penguin.system.execution_context import (
 from penguin.utils.parser import ActionExecutor
 
 __all__ = [
+    "publish_sub_agent_session_created",
     "register_agent_compat",
     "resolve_agent_execution_scope",
     "run_agent_prompt_in_session",
@@ -110,6 +112,131 @@ def register_agent_compat(core: Any, *args: Any, **kwargs: Any) -> None:
         )
         if getattr(persona_config, "activate_by_default", False):
             core.engine.set_default_agent(agent_id)
+
+
+async def publish_sub_agent_session_created(
+    core: Any,
+    agent_id: str,
+    *,
+    parent_agent_id: str | None = None,
+    share_session: bool = False,
+) -> dict[str, Any] | None:
+    """Bind isolated sub-agent session directory and emit session.created."""
+    if share_session:
+        return None
+
+    conversation_manager = getattr(core, "conversation_manager", None)
+    if conversation_manager is None:
+        return None
+
+    conversation = conversation_manager.get_agent_conversation(agent_id)
+    session = getattr(conversation, "session", None)
+    session_id = getattr(session, "id", None)
+    if not isinstance(session_id, str) or not session_id:
+        return None
+
+    resolved_directory = None
+    metadata = getattr(session, "metadata", None)
+    if isinstance(metadata, dict):
+        existing = metadata.get("directory")
+        if isinstance(existing, str) and existing.strip():
+            resolved_directory = existing.strip()
+
+    if not resolved_directory and parent_agent_id:
+        try:
+            parent_conv = conversation_manager.get_agent_conversation(parent_agent_id)
+            parent_session = getattr(parent_conv, "session", None)
+            parent_metadata = getattr(parent_session, "metadata", None)
+            if isinstance(parent_metadata, dict):
+                mapped = parent_metadata.get("directory")
+                if isinstance(mapped, str) and mapped.strip():
+                    resolved_directory = mapped.strip()
+            if not resolved_directory:
+                parent_session_id = getattr(parent_session, "id", None)
+                session_dirs = getattr(core, "_opencode_session_directories", None)
+                if isinstance(parent_session_id, str) and isinstance(
+                    session_dirs, dict
+                ):
+                    mapped = session_dirs.get(parent_session_id)
+                    if isinstance(mapped, str) and mapped.strip():
+                        resolved_directory = mapped.strip()
+        except Exception:
+            logger.debug(
+                "Failed to resolve parent directory for sub-agent '%s'",
+                agent_id,
+                exc_info=True,
+            )
+
+    if not resolved_directory:
+        context = get_current_execution_context()
+        if context and context.directory:
+            resolved_directory = context.directory
+
+    if not resolved_directory:
+        runtime = getattr(core, "runtime_config", None)
+        runtime_dir = getattr(runtime, "active_root", None) or getattr(
+            runtime, "project_root", None
+        )
+        if isinstance(runtime_dir, str) and runtime_dir.strip():
+            resolved_directory = runtime_dir.strip()
+
+    if not resolved_directory:
+        env_dir = os.getenv("PENGUIN_CWD")
+        if isinstance(env_dir, str) and env_dir.strip():
+            resolved_directory = env_dir.strip()
+
+    if not resolved_directory:
+        resolved_directory = os.getcwd()
+
+    session_dirs = getattr(core, "_opencode_session_directories", None)
+    if not isinstance(session_dirs, dict):
+        session_dirs = {}
+        core._opencode_session_directories = session_dirs
+    session_dirs[session_id] = resolved_directory
+
+    if not isinstance(metadata, dict):
+        metadata = {}
+        session.metadata = metadata
+    if metadata.get("directory") != resolved_directory:
+        metadata["directory"] = resolved_directory
+        try:
+            conversation._modified = True
+            conversation.save()
+        except Exception:
+            logger.debug(
+                "Failed to persist sub-agent session directory for '%s'",
+                agent_id,
+                exc_info=True,
+            )
+
+    try:
+        from penguin.web.services.session_view import get_session_info
+
+        info = get_session_info(core, session_id)
+    except Exception:
+        logger.debug(
+            "Failed to build session info for sub-agent '%s'",
+            agent_id,
+            exc_info=True,
+        )
+        return None
+
+    if not isinstance(info, dict):
+        return None
+
+    emit = getattr(getattr(core, "event_bus", None), "emit", None)
+    if callable(emit):
+        await emit(
+            "opencode_event",
+            {
+                "type": "session.created",
+                "properties": {
+                    "sessionID": session_id,
+                    "info": info,
+                },
+            },
+        )
+    return info
 
 
 def resolve_agent_execution_scope(
