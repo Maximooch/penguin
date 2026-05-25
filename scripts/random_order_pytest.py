@@ -62,8 +62,20 @@ def _clean_pytest_args(args: list[str]) -> list[str]:
     return args
 
 
+def _collect_pytest_args(pytest_args: list[str]) -> list[str]:
+    """Remove output-only quiet flags that hide node ids during collection."""
+
+    return [
+        arg
+        for arg in pytest_args
+        if arg not in {"-q", "--quiet"}
+        and not (arg.startswith("-") and set(arg[1:]) == {"q"})
+    ]
+
+
 def _collect_nodeids(pytest_args: list[str]) -> list[str]:
-    command = [sys.executable, "-m", "pytest", "--collect-only", "-q", *pytest_args]
+    collect_args = _collect_pytest_args(pytest_args)
+    command = [sys.executable, "-m", "pytest", "--collect-only", "-q", *collect_args]
     print(f"[random-order-pytest] collect: {' '.join(command)}", flush=True)
     result = subprocess.run(command, check=False, capture_output=True, text=True)
     if result.returncode != 0:
