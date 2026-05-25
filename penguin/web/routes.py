@@ -77,6 +77,12 @@ from penguin.web.services.session_view import (
     remove_session_info,
     update_session_info,
 )
+from penguin.web.services.session_events import (
+    emit_session_created_event as _emit_session_created_event,
+    emit_session_deleted_event as _emit_session_deleted_event,
+    emit_session_diff_event as _emit_session_diff_event,
+    emit_session_updated_event as _emit_session_updated_event,
+)
 from penguin.web.services.session_fork import fork_session
 from penguin.web.services.session_revert import revert_session, unrevert_session
 from penguin.web.services.session_summary import summarize_session_title
@@ -659,70 +665,6 @@ async def _persist_session_model_selection(
     )
     if isinstance(updated, dict):
         await _emit_session_updated_event(core, updated)
-
-
-async def _emit_session_event(
-    core: PenguinCore,
-    event_type: str,
-    info: Dict[str, Any],
-) -> None:
-    """Emit an OpenCode-shaped session lifecycle event."""
-    event_bus = getattr(core, "event_bus", None)
-    emit = getattr(event_bus, "emit", None)
-    if not callable(emit):
-        return
-
-    session_id = info.get("id") if isinstance(info, dict) else None
-    properties: Dict[str, Any] = {"info": info}
-    if isinstance(session_id, str) and session_id:
-        properties["sessionID"] = session_id
-
-    try:
-        await emit(
-            "opencode_event",
-            {
-                "type": event_type,
-                "properties": properties,
-            },
-        )
-    except Exception:
-        logger.debug("Failed to emit %s event", event_type, exc_info=True)
-
-
-async def _emit_session_created_event(core: PenguinCore, info: Dict[str, Any]) -> None:
-    """Emit OpenCode-shaped session.created event."""
-    await _emit_session_event(core, "session.created", info)
-
-
-async def _emit_session_updated_event(core: PenguinCore, info: Dict[str, Any]) -> None:
-    """Emit OpenCode-shaped session.updated event."""
-    await _emit_session_event(core, "session.updated", info)
-
-
-async def _emit_session_deleted_event(core: PenguinCore, info: Dict[str, Any]) -> None:
-    """Emit OpenCode-shaped session.deleted event."""
-    await _emit_session_event(core, "session.deleted", info)
-
-
-async def _emit_session_diff_event(
-    core: PenguinCore, session_id: str, diff: List[Dict[str, Any]]
-) -> None:
-    emit = getattr(getattr(core, "event_bus", None), "emit", None)
-    if not callable(emit):
-        return
-    try:
-        await emit(
-            "opencode_event",
-            {
-                "type": "session.diff",
-                "properties": {
-                    "sessionID": session_id,
-                    "diff": diff,
-                },
-            },
-        )
-    except Exception:
-        logger.debug("Failed to emit session.diff event", exc_info=True)
 
 
 def _title_log_info(message: str, *args: Any) -> None:
