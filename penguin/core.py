@@ -2795,32 +2795,16 @@ class PenguinCore:
 
     def refresh_api_client(self) -> None:
         """Recreate the active API client using the current model config."""
-        self.api_client = APIClient(model_config=self.model_config)
-        self.api_client.set_system_prompt(self.system_prompt)
-
-        if self.conversation_manager:
-            self.conversation_manager.api_client = self.api_client
-            try:
-                if hasattr(self.conversation_manager, "context_window"):
-                    cw = self.conversation_manager.context_window
-                    cw.api_client = self.api_client  # type: ignore[attr-defined]
-            except Exception as e:
-                logger.warning(
-                    f"Failed to propagate refreshed API client to ContextWindowManager: {e}"
-                )
-
-        if getattr(self, "engine", None) is not None:
-            try:
-                self.engine.api_client = self.api_client  # type: ignore[attr-defined]
-            except Exception as e:
-                logger.warning(
-                    f"Failed to propagate refreshed API client to Engine: {e}"
-                )
+        core_model_runtime.refresh_api_client(
+            self,
+            api_client_factory=APIClient,
+            log=logger,
+        )
 
     def _apply_new_model_config(
         self, new_model_config: ModelConfig, context_window_tokens: Optional[int] = None
     ) -> None:
-        """Internal helper that swaps the model configuration and re-wires dependent components.
+        """Swap model configuration and rewire dependent runtime components.
 
         This keeps the public ``load_model`` method concise and focused on
         validation / construction of the ``ModelConfig``.  All mutation of
@@ -2831,42 +2815,13 @@ class PenguinCore:
             new_model_config: The new ModelConfig to apply
             context_window_tokens: The safe context window size (85% of raw) to apply
         """
-        # Swap the model_config reference first so that any downstream logic
-        # reads the up-to-date values.
-        self.model_config = new_model_config
-
-        # 1. Re-create API client with new settings so that every subsequent
-        #    call uses the correct base URL / API key / etc.
-        self.refresh_api_client()
-
-        # 2. Propagate to ConversationManager components so token budgeting and
-        #    streaming limits are accurate.
-        if self.conversation_manager:
-            self.conversation_manager.model_config = new_model_config
-            # Update nested helpers if they expose the attributes we need.
-            try:
-                # ContextWindowManager lives under conversation_manager.context_window
-                if hasattr(self.conversation_manager, "context_window"):
-                    cw = self.conversation_manager.context_window
-                    cw.model_config = new_model_config  # type: ignore[attr-defined]
-                    # Update context window budget with safe window (85% of raw)
-                    if context_window_tokens:
-                        old_budget = cw.max_context_window_tokens
-                        cw.max_context_window_tokens = context_window_tokens
-                        cw._initialize_token_budgets()  # Re-compute category budgets
-                        logger.info(
-                            f"Updated context window: {old_budget} -> {context_window_tokens} tokens"
-                        )
-            except Exception as e:
-                logger.warning(
-                    f"Failed to propagate new model config to ContextWindowManager: {e}"
-                )
-
-        if getattr(self, "engine", None) is not None:
-            try:
-                self.engine.model_config = new_model_config  # type: ignore[attr-defined]
-            except Exception as e:
-                logger.warning(f"Failed to propagate new model config to Engine: {e}")
+        core_model_runtime.apply_new_model_config(
+            self,
+            new_model_config,
+            context_window_tokens=context_window_tokens,
+            refresh_active_client=self.refresh_api_client,
+            log=logger,
+        )
 
     async def _build_model_config_for_model(
         self, model_id: str

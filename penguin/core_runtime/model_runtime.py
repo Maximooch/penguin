@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 FetchModelSpecs = Callable[[str], Awaitable[dict[str, Any]]]
 ResolveModelProvider = Callable[[str], tuple[str | None, str]]
+ApiClientFactory = Callable[..., Any]
+RefreshActiveClient = Callable[[], None]
 
 
 def _coerce_optional_int(value: Any) -> int | None:
@@ -43,6 +45,91 @@ def _model_configs_dict(model_configs: Any) -> dict[str, dict[str, Any]]:
         if isinstance(key, str) and isinstance(value, dict):
             result[key] = dict(value)
     return result
+
+
+def refresh_api_client(
+    owner: Any,
+    *,
+    api_client_factory: ApiClientFactory,
+    log: logging.Logger | None = None,
+) -> None:
+    """Recreate and propagate the active API client for a core-like owner."""
+
+    active_logger = log or logger
+    owner.api_client = api_client_factory(model_config=owner.model_config)
+    owner.api_client.set_system_prompt(owner.system_prompt)
+
+    conversation_manager = getattr(owner, "conversation_manager", None)
+    if conversation_manager:
+        conversation_manager.api_client = owner.api_client
+        try:
+            if hasattr(conversation_manager, "context_window"):
+                context_window = conversation_manager.context_window
+                context_window.api_client = owner.api_client
+        except Exception as exc:
+            active_logger.warning(
+                "Failed to propagate refreshed API client to ContextWindowManager: %s",
+                exc,
+            )
+
+    engine = getattr(owner, "engine", None)
+    if engine is not None:
+        try:
+            engine.api_client = owner.api_client
+        except Exception as exc:
+            active_logger.warning(
+                "Failed to propagate refreshed API client to Engine: %s",
+                exc,
+            )
+
+
+def apply_new_model_config(
+    owner: Any,
+    new_model_config: ModelConfig,
+    *,
+    context_window_tokens: int | None = None,
+    refresh_active_client: RefreshActiveClient | None = None,
+    log: logging.Logger | None = None,
+) -> None:
+    """Apply a new model config and propagate dependent runtime state."""
+
+    active_logger = log or logger
+    owner.model_config = new_model_config
+
+    if refresh_active_client is not None:
+        refresh_active_client()
+
+    conversation_manager = getattr(owner, "conversation_manager", None)
+    if conversation_manager:
+        conversation_manager.model_config = new_model_config
+        try:
+            if hasattr(conversation_manager, "context_window"):
+                context_window = conversation_manager.context_window
+                context_window.model_config = new_model_config
+                if context_window_tokens:
+                    old_budget = context_window.max_context_window_tokens
+                    context_window.max_context_window_tokens = context_window_tokens
+                    context_window._initialize_token_budgets()
+                    active_logger.info(
+                        "Updated context window: %s -> %s tokens",
+                        old_budget,
+                        context_window_tokens,
+                    )
+        except Exception as exc:
+            active_logger.warning(
+                "Failed to propagate new model config to ContextWindowManager: %s",
+                exc,
+            )
+
+    engine = getattr(owner, "engine", None)
+    if engine is not None:
+        try:
+            engine.model_config = new_model_config
+        except Exception as exc:
+            active_logger.warning(
+                "Failed to propagate new model config to Engine: %s",
+                exc,
+            )
 
 
 def canonicalize_runtime_model_id(
@@ -293,9 +380,11 @@ def current_model_payload(
 
 
 __all__ = [
+    "apply_new_model_config",
     "build_model_config_for_model",
     "canonicalize_runtime_model_id",
     "current_model_payload",
     "list_available_models",
+    "refresh_api_client",
     "resolve_model_provider",
 ]

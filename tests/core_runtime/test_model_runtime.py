@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from hypothesis import given, settings, strategies as st
 
 from penguin.core_runtime.model_runtime import (
+    apply_new_model_config,
     build_model_config_for_model,
     canonicalize_runtime_model_id,
     current_model_payload,
     list_available_models,
+    refresh_api_client,
     resolve_model_provider,
 )
 from penguin.llm.model_config import ModelConfig
@@ -148,6 +152,67 @@ def test_current_model_payload_uses_explicit_output_token_name() -> None:
     assert payload is not None
     assert payload["max_output_tokens"] == 4096
     assert "max_tokens" not in payload
+
+
+def test_refresh_api_client_propagates_to_runtime_components() -> None:
+    model_config = ModelConfig(model="gpt-4o", provider="openai")
+    context_window = SimpleNamespace()
+    conversation_manager = SimpleNamespace(context_window=context_window)
+    engine = SimpleNamespace()
+    owner = SimpleNamespace(
+        model_config=model_config,
+        system_prompt="system",
+        conversation_manager=conversation_manager,
+        engine=engine,
+    )
+
+    class FakeAPIClient:
+        def __init__(self, *, model_config: ModelConfig) -> None:
+            self.model_config = model_config
+            self.system_prompt = None
+
+        def set_system_prompt(self, prompt: str) -> None:
+            self.system_prompt = prompt
+
+    refresh_api_client(owner, api_client_factory=FakeAPIClient)
+
+    assert owner.api_client.model_config is model_config
+    assert owner.api_client.system_prompt == "system"
+    assert conversation_manager.api_client is owner.api_client
+    assert context_window.api_client is owner.api_client
+    assert engine.api_client is owner.api_client
+
+
+def test_apply_new_model_config_propagates_budget_and_model_config() -> None:
+    old_config = ModelConfig(model="old", provider="openai")
+    new_config = ModelConfig(model="new", provider="openai")
+    context_window = SimpleNamespace(
+        max_context_window_tokens=100,
+        _initialize_token_budgets=MagicMock(),
+    )
+    conversation_manager = SimpleNamespace(context_window=context_window)
+    engine = SimpleNamespace()
+    owner = SimpleNamespace(
+        model_config=old_config,
+        conversation_manager=conversation_manager,
+        engine=engine,
+    )
+    refresh_calls: list[str] = []
+
+    apply_new_model_config(
+        owner,
+        new_config,
+        context_window_tokens=85,
+        refresh_active_client=lambda: refresh_calls.append(owner.model_config.model),
+    )
+
+    assert refresh_calls == ["new"]
+    assert owner.model_config is new_config
+    assert conversation_manager.model_config is new_config
+    assert context_window.model_config is new_config
+    assert context_window.max_context_window_tokens == 85
+    context_window._initialize_token_budgets.assert_called_once()
+    assert engine.model_config is new_config
 
 
 @pytest.mark.asyncio
