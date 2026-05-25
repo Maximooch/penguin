@@ -155,6 +155,8 @@ def fork_session(
         parent_id = new_info.get("parentID")
         if isinstance(parent_id, str) and parent_id in id_map:
             new_info["parentID"] = id_map[parent_id]
+        elif isinstance(parent_id, str) and parent_id != "root":
+            new_info.pop("parentID", None)
 
         parts = row.get("parts") if isinstance(row, dict) else None
         part_order: list[str] = []

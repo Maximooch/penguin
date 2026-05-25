@@ -277,6 +277,35 @@ def test_fork_session_rewrites_corrupt_transcript_without_source_id_bleed(
             assert part["id"] not in {"part_user_1", "part_assistant_1"}
 
 
+def test_fork_session_drops_parent_outside_fork_boundary(tmp_path: Path) -> None:
+    core = _Core(tmp_path)
+    source = _seed_session(core, tmp_path)
+    transcript = source.metadata[TRANSCRIPT_KEY]
+    assistant_info = transcript["messages"]["msg_assistant_1"]["info"]
+    assistant_info["parentID"] = "msg_user_2"
+    before_metadata = copy.deepcopy(source.metadata)
+
+    info = fork_session(cast(Any, core), source.id, message_id="msg_user_2")
+
+    assert info is not None
+    assert source.metadata == before_metadata
+    forked = core.conversation_manager.session_manager.load_session(info["id"])
+    assert forked is not None
+
+    rows = get_session_messages(cast(Any, core), forked.id)
+    assert rows is not None
+    assert len(rows) == 2
+    assert "parentID" not in rows[1]["info"]
+    assert rows[1]["info"]["sessionID"] == forked.id
+
+    cloned_info = forked.messages[1].metadata["opencode_info"]
+    assert "parentID" not in cloned_info
+    assert source.id not in {
+        rows[0]["info"]["sessionID"],
+        rows[1]["info"]["sessionID"],
+    }
+
+
 @pytest.mark.asyncio
 async def test_session_fork_route_emits_created_event(tmp_path: Path) -> None:
     core = _Core(tmp_path)
