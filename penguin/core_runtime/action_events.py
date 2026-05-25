@@ -8,11 +8,16 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any
+from typing import Any, Callable
+
+from . import opencode_bridge as core_opencode_bridge
 
 __all__ = [
     "handle_tui_action",
     "handle_tui_action_result",
+    "handle_tui_lsp_diagnostics",
+    "handle_tui_lsp_updated",
+    "handle_tui_todo_updated",
     "resolve_action_session_id",
     "tool_key_for",
 ]
@@ -148,6 +153,89 @@ async def handle_tui_action_result(
     tool_info.pop(tool_key, None)
 
 
+async def handle_tui_todo_updated(
+    owner: Any,
+    event_type: str,
+    data: dict[str, Any],
+    *,
+    execution_context: Any = None,
+    session_directories: Any = None,
+    update_session_todo: Callable[[Any, str, list[dict[str, str]]], Any] | None = None,
+) -> None:
+    """Translate a TUI todo update into an OpenCode event and persisted todo list."""
+
+    if event_type != "todo.updated":
+        return
+
+    properties, session_id = core_opencode_bridge.prepare_scoped_event_properties(
+        data,
+        execution_context=execution_context,
+        session_directories=session_directories,
+        require_session=True,
+    )
+    if properties is None or not session_id:
+        return
+
+    normalized_todos = owner._normalize_todo_items(properties.get("todos"))
+    if update_session_todo is None:
+        update_session_todo = _default_update_session_todo
+    try:
+        persisted = update_session_todo(owner, str(session_id), normalized_todos)
+        if isinstance(persisted, list):
+            normalized_todos = persisted
+    except Exception:
+        pass
+    properties["todos"] = normalized_todos
+
+    await owner.event_bus.emit(
+        "opencode_event",
+        {
+            "type": "todo.updated",
+            "properties": properties,
+        },
+    )
+
+
+async def handle_tui_lsp_updated(
+    owner: Any,
+    event_type: str,
+    data: dict[str, Any],
+    *,
+    execution_context: Any = None,
+    session_directories: Any = None,
+) -> None:
+    """Translate a TUI LSP file update into an OpenCode event."""
+
+    await _emit_scoped_opencode_event(
+        owner,
+        event_type,
+        data,
+        expected_type="lsp.updated",
+        execution_context=execution_context,
+        session_directories=session_directories,
+    )
+
+
+async def handle_tui_lsp_diagnostics(
+    owner: Any,
+    event_type: str,
+    data: dict[str, Any],
+    *,
+    execution_context: Any = None,
+    session_directories: Any = None,
+) -> None:
+    """Translate a TUI LSP diagnostic update into an OpenCode event."""
+
+    await _emit_scoped_opencode_event(
+        owner,
+        event_type,
+        data,
+        expected_type="lsp.client.diagnostics",
+        execution_context=execution_context,
+        session_directories=session_directories,
+    )
+
+
 def _decode_json_params(params: Any) -> Any:
     if isinstance(params, str) and params.strip().startswith(("{", "[")):
         try:
@@ -192,3 +280,39 @@ def _info_value(info: Any, key: str) -> Any:
     if not isinstance(info, dict):
         return None
     return info.get(key)
+
+
+async def _emit_scoped_opencode_event(
+    owner: Any,
+    event_type: str,
+    data: dict[str, Any],
+    *,
+    expected_type: str,
+    execution_context: Any = None,
+    session_directories: Any = None,
+) -> None:
+    if event_type != expected_type:
+        return
+    properties, _ = core_opencode_bridge.prepare_scoped_event_properties(
+        data,
+        execution_context=execution_context,
+        session_directories=session_directories,
+    )
+
+    await owner.event_bus.emit(
+        "opencode_event",
+        {
+            "type": expected_type,
+            "properties": properties,
+        },
+    )
+
+
+def _default_update_session_todo(
+    owner: Any,
+    session_id: str,
+    todos: list[dict[str, str]],
+) -> Any:
+    from penguin.web.services.session_view import update_session_todo
+
+    return update_session_todo(owner, session_id, todos)

@@ -4178,72 +4178,32 @@ class PenguinCore:
         await core_action_events.handle_tui_action_result(self, event_type, data)
 
     async def _on_tui_todo_updated(self, event_type: str, data: Dict[str, Any]) -> None:
-        if event_type != "todo.updated":
-            return
-
-        context = get_current_execution_context()
-        properties, session_id = core_opencode_bridge.prepare_scoped_event_properties(
-            data,
-            execution_context=context,
-            session_directories=getattr(self, "_opencode_session_directories", None),
-            require_session=True,
-        )
-        if properties is None or not session_id:
-            return
-
-        normalized_todos = self._normalize_todo_items(properties.get("todos"))
-        try:
-            from penguin.web.services.session_view import update_session_todo
-
-            persisted = update_session_todo(self, str(session_id), normalized_todos)
-            if isinstance(persisted, list):
-                normalized_todos = persisted
-        except Exception:
-            pass
-        properties["todos"] = normalized_todos
-
-        await self.event_bus.emit(
-            "opencode_event",
-            {
-                "type": "todo.updated",
-                "properties": properties,
-            },
-        )
-
-    async def _on_tui_lsp_updated(self, event_type: str, data: Dict[str, Any]) -> None:
-        if event_type != "lsp.updated":
-            return
-        properties, _ = core_opencode_bridge.prepare_scoped_event_properties(
+        await core_action_events.handle_tui_todo_updated(
+            self,
+            event_type,
             data,
             execution_context=get_current_execution_context(),
             session_directories=getattr(self, "_opencode_session_directories", None),
         )
 
-        await self.event_bus.emit(
-            "opencode_event",
-            {
-                "type": "lsp.updated",
-                "properties": properties,
-            },
+    async def _on_tui_lsp_updated(self, event_type: str, data: Dict[str, Any]) -> None:
+        await core_action_events.handle_tui_lsp_updated(
+            self,
+            event_type,
+            data,
+            execution_context=get_current_execution_context(),
+            session_directories=getattr(self, "_opencode_session_directories", None),
         )
 
     async def _on_tui_lsp_diagnostics(
         self, event_type: str, data: Dict[str, Any]
     ) -> None:
-        if event_type != "lsp.client.diagnostics":
-            return
-        properties, _ = core_opencode_bridge.prepare_scoped_event_properties(
+        await core_action_events.handle_tui_lsp_diagnostics(
+            self,
+            event_type,
             data,
             execution_context=get_current_execution_context(),
             session_directories=getattr(self, "_opencode_session_directories", None),
-        )
-
-        await self.event_bus.emit(
-            "opencode_event",
-            {
-                "type": "lsp.client.diagnostics",
-                "properties": properties,
-            },
         )
 
     def _find_session_store(
