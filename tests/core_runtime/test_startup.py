@@ -17,6 +17,80 @@ class _RuntimeConfig:
         self.observers.append(observer)
 
 
+def test_build_initial_model_config_uses_live_config_and_api_base_fallback() -> None:
+    captured: dict[str, Any] = {}
+    config = SimpleNamespace(
+        model_config=SimpleNamespace(
+            model="gpt-5",
+            provider="openai",
+            api_base=None,
+            use_assistants_api=True,
+            client_preference="openai",
+            streaming_enabled=False,
+            max_output_tokens=4096,
+            max_context_window_tokens=128000,
+            service_tier="flex",
+        ),
+        api=SimpleNamespace(base_url="https://api.example.test/v1"),
+    )
+
+    def _factory(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return kwargs
+
+    model_config = startup.build_initial_model_config(
+        config,
+        model=None,
+        provider=None,
+        default_model="default-model",
+        default_provider="default-provider",
+        model_config_factory=_factory,
+    )
+
+    assert model_config == captured
+    assert model_config == {
+        "model": "gpt-5",
+        "provider": "openai",
+        "api_base": "https://api.example.test/v1",
+        "use_assistants_api": True,
+        "client_preference": "openai",
+        "streaming_enabled": False,
+        "max_output_tokens": 4096,
+        "max_context_window_tokens": 128000,
+        "service_tier": "flex",
+    }
+
+
+def test_build_initial_model_config_prefers_explicit_overrides_and_old_token_name() -> (
+    None
+):
+    config = SimpleNamespace(
+        model_config=SimpleNamespace(
+            model="configured-model",
+            provider="configured-provider",
+            api_base="https://model.example.test/v1",
+            max_output_tokens=None,
+            max_tokens=2048,
+        ),
+    )
+
+    model_config = startup.build_initial_model_config(
+        config,
+        model="override-model",
+        provider="override-provider",
+        default_model="default-model",
+        default_provider="default-provider",
+        model_config_factory=lambda **kwargs: kwargs,
+    )
+
+    assert model_config["model"] == "override-model"
+    assert model_config["provider"] == "override-provider"
+    assert model_config["api_base"] == "https://model.example.test/v1"
+    assert model_config["client_preference"] == "openrouter"
+    assert model_config["streaming_enabled"] is True
+    assert model_config["max_output_tokens"] == 2048
+
+
 def test_initialize_runtime_config_builds_config_and_registers_tool_observer() -> None:
     owner = SimpleNamespace()
     tool_manager = SimpleNamespace(on_runtime_config_change=lambda _payload: None)

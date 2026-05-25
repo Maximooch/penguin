@@ -439,51 +439,13 @@ class PenguinCore:
                         progress_callback(
                             current_step_index, total_steps, "Creating model config"
                         )
-                    # Source of truth for runtime model settings is the live Config.model_config.
-                    # Allow explicit overrides via function args for tests/CLI.
-                    model_config = ModelConfig(
-                        model=(
-                            model
-                            or getattr(config.model_config, "model", DEFAULT_MODEL)
-                        ),
-                        provider=(
-                            provider
-                            or getattr(
-                                config.model_config, "provider", DEFAULT_PROVIDER
-                            )
-                        ),
-                        api_base=(
-                            getattr(config.model_config, "api_base", None)
-                            or (
-                                config.api.base_url
-                                if hasattr(config, "api")
-                                and hasattr(config.api, "base_url")
-                                else None
-                            )
-                        ),
-                        use_assistants_api=bool(
-                            getattr(config.model_config, "use_assistants_api", False)
-                        ),
-                        client_preference=getattr(
-                            config.model_config, "client_preference", "openrouter"
-                        ),
-                        streaming_enabled=bool(
-                            getattr(config.model_config, "streaming_enabled", True)
-                        ),
-                        # Generation cap should be the configured model's value; do not substitute context window here
-                        max_output_tokens=getattr(
-                            config.model_config,
-                            "max_output_tokens",
-                            getattr(
-                                config.model_config,
-                                "max_output_tokens",
-                                getattr(config.model_config, "max_tokens", None),
-                            ),  # Prefer new name
-                        ),
-                        max_context_window_tokens=getattr(
-                            config.model_config, "max_context_window_tokens", None
-                        ),
-                        service_tier=getattr(config.model_config, "service_tier", None),
+                    model_config = core_startup.build_initial_model_config(
+                        config,
+                        model=model,
+                        provider=provider,
+                        default_model=DEFAULT_MODEL,
+                        default_provider=DEFAULT_PROVIDER,
+                        model_config_factory=ModelConfig,
                     )
                     logger.info(
                         f"STARTUP: Using model={model_config.model}, provider={model_config.provider}, client={model_config.client_preference}"

@@ -5,16 +5,54 @@ from __future__ import annotations
 from typing import Any, Callable
 
 RuntimeConfigFactory = Callable[[dict[str, Any]], Any]
+ModelConfigFactory = Callable[..., Any]
 SystemPromptBuilder = Callable[[str], str]
 OutputFormatter = Callable[[str], Any]
 
 __all__ = [
+    "ModelConfigFactory",
     "OutputFormatter",
     "RuntimeConfigFactory",
     "SystemPromptBuilder",
+    "build_initial_model_config",
     "initialize_prompt_and_output_state",
     "initialize_runtime_config",
 ]
+
+
+def build_initial_model_config(
+    config: Any,
+    *,
+    model: str | None,
+    provider: str | None,
+    default_model: str,
+    default_provider: str,
+    model_config_factory: ModelConfigFactory,
+) -> Any:
+    """Build the startup model config from live config plus explicit overrides."""
+
+    source_model_config = getattr(config, "model_config", None)
+    return model_config_factory(
+        model=model or getattr(source_model_config, "model", default_model),
+        provider=provider or getattr(source_model_config, "provider", default_provider),
+        api_base=_initial_api_base(config, source_model_config),
+        use_assistants_api=bool(
+            getattr(source_model_config, "use_assistants_api", False)
+        ),
+        client_preference=getattr(
+            source_model_config,
+            "client_preference",
+            "openrouter",
+        ),
+        streaming_enabled=bool(getattr(source_model_config, "streaming_enabled", True)),
+        max_output_tokens=_initial_max_output_tokens(source_model_config),
+        max_context_window_tokens=getattr(
+            source_model_config,
+            "max_context_window_tokens",
+            None,
+        ),
+        service_tier=getattr(source_model_config, "service_tier", None),
+    )
 
 
 def initialize_runtime_config(
@@ -113,3 +151,31 @@ def _load_output_formatter() -> OutputFormatter:
     from penguin.prompt.builder import set_output_formatting
 
     return set_output_formatting
+
+
+def _initial_api_base(config: Any, source_model_config: Any) -> str | None:
+    api_base = getattr(source_model_config, "api_base", None)
+    if api_base:
+        return api_base
+
+    api_config = getattr(config, "api", None)
+    return getattr(api_config, "base_url", None)
+
+
+def _initial_max_output_tokens(source_model_config: Any) -> Any:
+    try:
+        raw_values = vars(source_model_config)
+    except TypeError:
+        raw_values = {}
+
+    if isinstance(raw_values, dict):
+        max_output_tokens = raw_values.get("max_output_tokens")
+        if max_output_tokens is not None:
+            return max_output_tokens
+        if "max_tokens" in raw_values:
+            return raw_values.get("max_tokens")
+
+    max_output_tokens = getattr(source_model_config, "max_output_tokens", None)
+    if max_output_tokens is not None:
+        return max_output_tokens
+    return None
