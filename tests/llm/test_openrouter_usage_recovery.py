@@ -4,12 +4,69 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, Dict, Optional, cast
+from typing import Any, cast
 
 import pytest
 
+from penguin.llm.contracts import ErrorCategory, FinishReason, ProviderRequestStatus
 from penguin.llm.model_config import ModelConfig
 from penguin.llm.openrouter_gateway import OpenRouterGateway
+
+
+class _DirectStreamResponse:
+    def __init__(
+        self,
+        lines: list[str],
+        *,
+        headers: dict[str, str] | None = None,
+        status_code: int = 200,
+    ) -> None:
+        self._lines = lines
+        self.status_code = status_code
+        self.headers: dict[str, str] = dict(headers or {})
+
+    async def aread(self) -> bytes:
+        return b""
+
+    async def aiter_lines(self):
+        for line in self._lines:
+            yield line
+
+
+class _DirectStreamContext:
+    def __init__(self, response: _DirectStreamResponse) -> None:
+        self._response = response
+
+    async def __aenter__(self) -> _DirectStreamResponse:
+        return self._response
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: Any | None,
+    ) -> bool:
+        del exc_type, exc, tb
+        return False
+
+
+class _DirectStreamClient:
+    def __init__(
+        self,
+        lines: list[str],
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self._lines = lines
+        self._headers = headers
+
+    def stream(
+        self, method: str, url: str, headers: dict[str, str], json: dict[str, Any]
+    ) -> _DirectStreamContext:
+        del method, url, headers, json
+        return _DirectStreamContext(
+            _DirectStreamResponse(self._lines, headers=self._headers)
+        )
 
 
 def test_extract_generation_id_from_chunk_variants(
@@ -75,7 +132,7 @@ async def test_direct_stream_interrupt_recovers_usage_from_generation(
     class _StreamResponse:
         def __init__(self) -> None:
             self.status_code = 200
-            self.headers: Dict[str, str] = {
+            self.headers: dict[str, str] = {
                 "x-openrouter-generation-id": "gen-test-123"
             }
 
@@ -95,9 +152,9 @@ async def test_direct_stream_interrupt_recovers_usage_from_generation(
 
         async def __aexit__(
             self,
-            exc_type: Optional[type[BaseException]],
-            exc: Optional[BaseException],
-            tb: Optional[Any],
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: Any | None,
         ) -> bool:
             del exc_type, exc, tb
             return False
@@ -107,7 +164,7 @@ async def test_direct_stream_interrupt_recovers_usage_from_generation(
             self.status_code = 200
             self.content = json.dumps(generation_payload).encode("utf-8")
 
-        def json(self) -> Dict[str, Any]:
+        def json(self) -> dict[str, Any]:
             return generation_payload
 
     class _Client:
@@ -115,7 +172,7 @@ async def test_direct_stream_interrupt_recovers_usage_from_generation(
             self.get_calls = 0
 
         def stream(
-            self, method: str, url: str, headers: Dict[str, str], json: Dict[str, Any]
+            self, method: str, url: str, headers: dict[str, str], json: dict[str, Any]
         ):
             del method, url, headers, json
             return _StreamContext(_StreamResponse())
@@ -123,8 +180,8 @@ async def test_direct_stream_interrupt_recovers_usage_from_generation(
         async def get(
             self,
             url: str,
-            headers: Dict[str, str],
-            params: Dict[str, str],
+            headers: dict[str, str],
+            params: dict[str, str],
             timeout: Any,
         ) -> _GetResponse:
             del url, headers, params, timeout
@@ -155,6 +212,137 @@ async def test_direct_stream_interrupt_recovers_usage_from_generation(
     assert usage["reasoning_tokens"] == 0
     assert usage["cache_read_tokens"] == 0
     assert usage["total_tokens"] == 8164
+
+
+@pytest.mark.asyncio
+async def test_direct_stream_midstream_error_preserves_partial_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    gateway = OpenRouterGateway(
+        ModelConfig(
+            model="anthropic/claude-sonnet-4.5",
+            provider="openrouter",
+            client_preference="openrouter",
+            reasoning_enabled=True,
+            reasoning_effort="medium",
+        )
+    )
+    gateway._start_request_lifecycle(messages=[], stream=True)
+
+    partial_chunk = {
+        "id": "chatcmpl-test",
+        "choices": [{"delta": {"content": "partial answer"}, "finish_reason": None}],
+    }
+    error_chunk = {
+        "id": "chatcmpl-test",
+        "choices": [{"delta": {}, "finish_reason": "error"}],
+        "error": {
+            "code": "server_error",
+            "message": "synthetic direct stream error",
+            "metadata": {"provider_name": "fixture-provider"},
+        },
+    }
+    lines = [
+        f"data: {json.dumps(partial_chunk)}",
+        f"data: {json.dumps(error_chunk)}",
+    ]
+    chunks: list[tuple[str, str]] = []
+
+    async def _callback(chunk: str, message_type: str = "assistant") -> None:
+        chunks.append((chunk, message_type))
+
+    result = await gateway._handle_streaming_response(
+        client=cast(Any, _DirectStreamClient(lines)),
+        url="https://openrouter.ai/api/v1/chat/completions",
+        headers={"Authorization": "Bearer test-key"},
+        params={"model": gateway.model_config.model, "messages": []},
+        stream_callback=cast(Any, _callback),
+    )
+
+    assert result == (
+        "partial answer\n\n"
+        "[Error: Stream interrupted by fixture-provider: "
+        "synthetic direct stream error]"
+    )
+    assert chunks == [("partial answer", "assistant")]
+    assert gateway.get_last_finish_reason() == FinishReason.ERROR
+    assert gateway.has_pending_tool_call() is False
+
+    last_error = gateway.get_last_error()
+    assert last_error is not None
+    assert last_error.message == "synthetic direct stream error"
+    assert last_error.finish_reason == FinishReason.ERROR
+
+    lifecycle = gateway.get_last_request_lifecycle()
+    assert lifecycle is not None
+    assert lifecycle.status == ProviderRequestStatus.FAILED
+    assert lifecycle.error is last_error
+
+
+@pytest.mark.asyncio
+async def test_direct_stream_incomplete_tool_call_releases_pending_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    gateway = OpenRouterGateway(
+        ModelConfig(
+            model="anthropic/claude-sonnet-4.5",
+            provider="openrouter",
+            client_preference="openrouter",
+            reasoning_enabled=True,
+            reasoning_effort="medium",
+            interrupt_on_tool_call=True,
+        )
+    )
+    gateway._start_request_lifecycle(messages=[], stream=True)
+
+    tool_chunk = {
+        "id": "chatcmpl-test",
+        "choices": [
+            {
+                "delta": {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call_incomplete",
+                            "type": "function",
+                            "function": {
+                                "name": "read_file",
+                                "arguments": '{"path":"README.md"}',
+                            },
+                        }
+                    ]
+                },
+                "finish_reason": None,
+            }
+        ],
+    }
+
+    result = await gateway._handle_streaming_response(
+        client=cast(Any, _DirectStreamClient([f"data: {json.dumps(tool_chunk)}"])),
+        url="https://openrouter.ai/api/v1/chat/completions",
+        headers={"Authorization": "Bearer test-key"},
+        params={"model": gateway.model_config.model, "messages": []},
+        stream_callback=None,
+    )
+
+    assert result == (
+        "[Error: OpenRouter stream ended before finish_reason (output_state=tool_call)]"
+    )
+    assert gateway.get_last_finish_reason() == FinishReason.ERROR
+    assert gateway.has_pending_tool_call() is False
+    assert gateway.get_and_clear_pending_tool_calls() == []
+
+    last_error = gateway.get_last_error()
+    assert last_error is not None
+    assert last_error.category == ErrorCategory.NETWORK
+    assert last_error.retryable is True
+
+    lifecycle = gateway.get_last_request_lifecycle()
+    assert lifecycle is not None
+    assert lifecycle.status == ProviderRequestStatus.DISCONNECTED
+    assert lifecycle.error is last_error
 
 
 @pytest.mark.asyncio
@@ -215,7 +403,7 @@ async def test_direct_stream_stall_returns_timeout_error(
     class _StreamResponse:
         def __init__(self) -> None:
             self.status_code = 200
-            self.headers: Dict[str, str] = {}
+            self.headers: dict[str, str] = {}
 
         async def aread(self) -> bytes:
             return b""
@@ -234,16 +422,16 @@ async def test_direct_stream_stall_returns_timeout_error(
 
         async def __aexit__(
             self,
-            exc_type: Optional[type[BaseException]],
-            exc: Optional[BaseException],
-            tb: Optional[Any],
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: Any | None,
         ) -> bool:
             del exc_type, exc, tb
             return False
 
     class _Client:
         def stream(
-            self, method: str, url: str, headers: Dict[str, str], json: Dict[str, Any]
+            self, method: str, url: str, headers: dict[str, str], json: dict[str, Any]
         ):
             del method, url, headers, json
             return _StreamContext(_StreamResponse())
