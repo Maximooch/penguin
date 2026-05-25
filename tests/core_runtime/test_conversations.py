@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
 from penguin.core import PenguinCore
 from penguin.core_runtime import conversations
@@ -84,6 +85,92 @@ def test_list_conversations_forwards_pagination_and_search() -> None:
 
     assert result == [{"id": "conv_1"}]
     assert manager.calls == [("list", (5, 10, "build"))]
+
+
+def test_resolve_conversation_manager_prefers_engine_scoped_manager() -> None:
+    default_manager = SimpleNamespace(name="default")
+    scoped_manager = SimpleNamespace(name="planner")
+    engine = SimpleNamespace(
+        get_conversation_manager=Mock(return_value=scoped_manager),
+    )
+    owner = SimpleNamespace(conversation_manager=default_manager, engine=engine)
+    log = Mock()
+
+    resolved = conversations.resolve_conversation_manager(
+        owner,
+        "planner",
+        log=log,
+    )
+
+    assert resolved is scoped_manager
+    engine.get_conversation_manager.assert_called_once_with("planner")
+    log.warning.assert_not_called()
+
+
+def test_resolve_conversation_manager_keeps_default_when_engine_returns_none() -> None:
+    default_manager = SimpleNamespace(name="default")
+    engine = SimpleNamespace(get_conversation_manager=Mock(return_value=None))
+    owner = SimpleNamespace(conversation_manager=default_manager, engine=engine)
+
+    resolved = conversations.resolve_conversation_manager(
+        owner,
+        "planner",
+        log=Mock(),
+    )
+
+    assert resolved is default_manager
+
+
+def test_resolve_conversation_manager_logs_engine_lookup_failures() -> None:
+    default_manager = SimpleNamespace(name="default")
+    engine = SimpleNamespace(
+        get_conversation_manager=Mock(side_effect=RuntimeError("boom")),
+    )
+    owner = SimpleNamespace(conversation_manager=default_manager, engine=engine)
+    log = Mock()
+
+    resolved = conversations.resolve_conversation_manager(
+        owner,
+        "planner",
+        log=log,
+    )
+
+    assert resolved is default_manager
+    log.warning.assert_called_once()
+    assert "Engine conversation manager lookup failed" in log.warning.call_args.args[0]
+
+
+def test_resolve_conversation_manager_activates_legacy_agent_without_engine() -> None:
+    manager = SimpleNamespace(set_current_agent=Mock())
+    owner = SimpleNamespace(conversation_manager=manager, engine=None)
+
+    resolved = conversations.resolve_conversation_manager(
+        owner,
+        "planner",
+        log=Mock(),
+    )
+
+    assert resolved is manager
+    manager.set_current_agent.assert_called_once_with("planner")
+
+
+def test_resolve_conversation_manager_logs_legacy_activation_failure() -> None:
+    def _raise(_agent_id: str) -> None:
+        raise RuntimeError("cannot switch")
+
+    manager = SimpleNamespace(set_current_agent=_raise)
+    owner = SimpleNamespace(conversation_manager=manager, engine=None)
+    log = Mock()
+
+    resolved = conversations.resolve_conversation_manager(
+        owner,
+        "planner",
+        log=log,
+    )
+
+    assert resolved is manager
+    log.warning.assert_called_once()
+    assert "Failed to activate agent" in log.warning.call_args.args[0]
 
 
 def test_get_conversation_loads_and_serializes_current_session() -> None:

@@ -1646,26 +1646,11 @@ class PenguinCore:
             streaming: Whether to use streaming mode for responses
         """
         try:
-            # Resolve the active conversation manager for the agent (if provided)
-            conversation_manager = self.conversation_manager
-            if self.engine:
-                try:
-                    candidate_cm = self.engine.get_conversation_manager(agent_id)
-                    if candidate_cm is not None:
-                        conversation_manager = candidate_cm
-                except Exception as engine_err:
-                    logger.warning(
-                        f"Engine conversation manager lookup failed for agent '{agent_id}': {engine_err}"
-                    )
-            elif agent_id:
-                # Legacy fallback only: activate agent on shared manager when Engine is unavailable.
-                try:
-                    if hasattr(conversation_manager, "set_current_agent"):
-                        conversation_manager.set_current_agent(agent_id)
-                except Exception as agent_err:
-                    logger.warning(
-                        f"Failed to activate agent '{agent_id}' on ConversationManager: {agent_err}"
-                    )
+            conversation_manager = core_conversations.resolve_conversation_manager(
+                self,
+                agent_id,
+                log=logger,
+            )
 
             # Add context if provided
             if context:
@@ -2108,25 +2093,11 @@ class PenguinCore:
 
         if process_input.is_empty:
             return {"assistant_response": "No input provided", "action_results": []}
-        conversation_manager = self.conversation_manager
-        if self.engine:
-            try:
-                candidate_cm = self.engine.get_conversation_manager(agent_id)
-                if candidate_cm is not None:
-                    conversation_manager = candidate_cm
-            except Exception as engine_err:
-                logger.warning(
-                    f"Engine conversation manager lookup failed for agent '{agent_id}': {engine_err}"
-                )
-        elif agent_id:
-            # Legacy fallback only: activate agent on shared manager when Engine is unavailable.
-            try:
-                if hasattr(conversation_manager, "set_current_agent"):
-                    conversation_manager.set_current_agent(agent_id)
-            except Exception as agent_err:
-                logger.warning(
-                    f"Failed to activate agent '{agent_id}' on ConversationManager: {agent_err}"
-                )
+        conversation_manager = core_conversations.resolve_conversation_manager(
+            self,
+            agent_id,
+            log=logger,
+        )
 
         execution_context = get_current_execution_context()
         request_session_id = (

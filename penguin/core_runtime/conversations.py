@@ -11,6 +11,7 @@ __all__ = [
     "get_conversation_history",
     "get_conversation_stats",
     "list_conversations",
+    "resolve_conversation_manager",
     "session_payload",
 ]
 
@@ -28,6 +29,40 @@ def list_conversations(
         offset=offset,
         search_term=search_term,
     )
+
+
+def resolve_conversation_manager(
+    owner: Any,
+    agent_id: str | None,
+    *,
+    log: Any,
+) -> Any:
+    """Resolve the conversation manager for an optional agent-scoped request."""
+
+    conversation_manager = owner.conversation_manager
+    engine = getattr(owner, "engine", None)
+    if engine:
+        try:
+            candidate_cm = engine.get_conversation_manager(agent_id)
+            if candidate_cm is not None:
+                conversation_manager = candidate_cm
+        except Exception as engine_err:
+            log.warning(
+                "Engine conversation manager lookup failed for agent '%s': %s",
+                agent_id,
+                engine_err,
+            )
+    elif agent_id:
+        try:
+            if hasattr(conversation_manager, "set_current_agent"):
+                conversation_manager.set_current_agent(agent_id)
+        except Exception as agent_err:
+            log.warning(
+                "Failed to activate agent '%s' on ConversationManager: %s",
+                agent_id,
+                agent_err,
+            )
+    return conversation_manager
 
 
 def session_payload(session: Any) -> dict[str, Any]:
