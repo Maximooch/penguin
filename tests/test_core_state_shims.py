@@ -12,6 +12,9 @@ from penguin.core import PenguinCore
 def test_core_state_methods_delegate_to_runtime(monkeypatch) -> None:
     core = PenguinCore.__new__(PenguinCore)
     calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+    facade_globals = PenguinCore.validate_path.__globals__
+    core_state_runtime = facade_globals["core_state_runtime"]
+    expected_diagnostics = facade_globals["diagnostics"]
 
     def _validate_path(*args: Any, **kwargs: Any) -> None:
         calls.append(("validate", args, kwargs))
@@ -44,40 +47,25 @@ def test_core_state_methods_delegate_to_runtime(monkeypatch) -> None:
         calls.append(("branch_from_snapshot", args, kwargs))
         return "snapshot_branch"
 
+    monkeypatch.setattr(core_state_runtime, "validate_path", _validate_path)
     monkeypatch.setattr(
-        "penguin.core.core_state_runtime.validate_path",
-        _validate_path,
-    )
-    monkeypatch.setattr(
-        "penguin.core.core_state_runtime.register_progress_callback",
+        core_state_runtime,
+        "register_progress_callback",
         _register_progress_callback,
     )
+    monkeypatch.setattr(core_state_runtime, "notify_progress", _notify_progress)
+    monkeypatch.setattr(core_state_runtime, "reset_context", _reset_context)
+    monkeypatch.setattr(core_state_runtime, "reset_state", _reset_state)
     monkeypatch.setattr(
-        "penguin.core.core_state_runtime.notify_progress",
-        _notify_progress,
-    )
-    monkeypatch.setattr(
-        "penguin.core.core_state_runtime.reset_context",
-        _reset_context,
-    )
-    monkeypatch.setattr(
-        "penguin.core.core_state_runtime.reset_state",
-        _reset_state,
-    )
-    monkeypatch.setattr(
-        "penguin.core.core_state_runtime.list_context_files",
+        core_state_runtime,
+        "list_context_files",
         _list_context_files,
     )
+    monkeypatch.setattr(core_state_runtime, "create_snapshot", _create_snapshot)
+    monkeypatch.setattr(core_state_runtime, "restore_snapshot", _restore_snapshot)
     monkeypatch.setattr(
-        "penguin.core.core_state_runtime.create_snapshot",
-        _create_snapshot,
-    )
-    monkeypatch.setattr(
-        "penguin.core.core_state_runtime.restore_snapshot",
-        _restore_snapshot,
-    )
-    monkeypatch.setattr(
-        "penguin.core.core_state_runtime.branch_from_snapshot",
+        core_state_runtime,
+        "branch_from_snapshot",
         _branch_from_snapshot,
     )
 
@@ -103,10 +91,10 @@ def test_core_state_methods_delegate_to_runtime(monkeypatch) -> None:
     assert calls[2] == ("notify", (core, 1, 3, "step"), {})
     assert calls[3][0] == "reset"
     assert calls[3][1] == (core,)
-    assert sorted(calls[3][2]) == ["diagnostics_manager"]
+    assert calls[3][2] == {"diagnostics_manager": expected_diagnostics}
     assert calls[4][0] == "reset_state"
     assert calls[4][1] == (core,)
-    assert sorted(calls[4][2]) == ["diagnostics_manager"]
+    assert calls[4][2] == {"diagnostics_manager": expected_diagnostics}
     assert calls[5] == ("list_context_files", (core,), {})
     assert calls[6] == ("create_snapshot", (core,), {"meta": {"name": "save"}})
     assert calls[7] == ("restore_snapshot", (core, "snapshot_1"), {})

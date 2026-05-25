@@ -105,7 +105,6 @@ See Also:
 
 import asyncio
 import logging
-from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -139,7 +138,6 @@ from .core_runtime import action_execution as core_action_execution
 from .core_runtime import agent_lifecycle_facade as core_agent_lifecycle_facade
 from .core_runtime import checkpoint_runtime as core_checkpoint_runtime
 from .core_runtime import conversations as core_conversations
-from .core_runtime import core_state as core_state_runtime
 from .core_runtime import diagnostics_facade as core_diagnostics_facade
 from .core_runtime import message_processing as core_message_processing
 from .core_runtime import model_runtime as core_model_runtime
@@ -148,6 +146,7 @@ from .core_runtime import process_runtime as core_process_runtime
 from .core_runtime import prompt_settings as core_prompt_settings
 from .core_runtime import response_generation as core_response_generation
 from .core_runtime import runmode_lifecycle as core_runmode_lifecycle
+from .core_runtime import state_facade as core_state_facade
 from .core_runtime import startup as core_startup
 from .core_runtime import streaming_facade as core_streaming_facade
 from .core_runtime import token_usage_facade as core_token_usage_facade
@@ -171,7 +170,6 @@ from penguin.system_prompt import SYSTEM_PROMPT, get_system_prompt
 # Tools and Processing
 from penguin.tools import ToolManager
 from penguin.utils.diagnostics import (
-    diagnostics,
     disable_diagnostics,
 )
 from penguin.utils.log_error import log_error
@@ -218,6 +216,7 @@ def _trace_log_info(message: str, *args: Any) -> None:
 class PenguinCore(
     core_agent_lifecycle_facade.AgentLifecycleCoreFacade,
     core_diagnostics_facade.DiagnosticsCoreFacade,
+    core_state_facade.StateCoreFacade,
     core_streaming_facade.StreamingCoreFacade,
     core_token_usage_facade.TokenUsageCoreFacade,
     core_opencode_facade.OpenCodeCoreFacade,
@@ -385,37 +384,6 @@ class PenguinCore(
     def get_output_style(self) -> str:
         return core_prompt_settings.get_output_style(self)
 
-    def validate_path(self, path: Path):
-        """Validate and create a directory path if needed."""
-        core_state_runtime.validate_path(path)
-
-    def register_progress_callback(
-        self, callback: Callable[[int, int, Optional[str]], None]
-    ) -> None:
-        """Register a callback for progress updates during multi-step processing."""
-        core_state_runtime.register_progress_callback(self, callback)
-
-    def notify_progress(
-        self, iteration: int, max_iterations: int, message: Optional[str] = None
-    ) -> None:
-        """Notify all registered callbacks about progress."""
-        core_state_runtime.notify_progress(
-            self,
-            iteration,
-            max_iterations,
-            message,
-        )
-
-    def reset_context(self):
-        """
-        Reset conversation context and diagnostics.
-
-        This method clears the current conversation state and resets all
-        tools and diagnostics. Use this between different conversation
-        sessions.
-        """
-        core_state_runtime.reset_context(self, diagnostics_manager=diagnostics)
-
     def set_system_prompt(self, prompt: str) -> None:
         """Set the system prompt for both core and API client."""
         core_prompt_settings.set_core_system_prompt(self, prompt)
@@ -528,42 +496,6 @@ class PenguinCore(
     async def execute_action(self, action) -> Dict[str, Any]:
         """Execute an action and return structured result"""
         return await core_action_execution.execute_action(self, action)
-
-    async def reset_state(self):
-        """
-        Reset the core state completely.
-
-        This method performs a more comprehensive reset than reset_context:
-        - Resets all conversation state
-        - Clears interrupt flags
-        - Closes external resources like browser instances
-
-        Use this when switching between entirely different tasks or at
-        application shutdown.
-        """
-        core_state_runtime.reset_state(self, diagnostics_manager=diagnostics)
-
-    def list_context_files(self) -> List[Dict[str, Any]]:
-        """List all available context files"""
-        return core_state_runtime.list_context_files(self)
-
-    # ------------------------------------------------------------------
-    # Snapshot / Restore wrappers (Phase 3 integration)
-    # ------------------------------------------------------------------
-
-    def create_snapshot(self, meta: Optional[Dict[str, Any]] = None) -> Optional[str]:
-        """Persist current conversation state and return snapshot_id."""
-        return core_state_runtime.create_snapshot(self, meta=meta)
-
-    def restore_snapshot(self, snapshot_id: str) -> bool:
-        """Load conversation from snapshot; returns success bool."""
-        return core_state_runtime.restore_snapshot(self, snapshot_id)
-
-    def branch_from_snapshot(
-        self, snapshot_id: str, meta: Optional[Dict[str, Any]] = None
-    ) -> Optional[str]:
-        """Fork a snapshot into a new branch and load it."""
-        return core_state_runtime.branch_from_snapshot(self, snapshot_id, meta=meta)
 
     # ------------------------------------------------------------------
     # Checkpoint Management API (NEW - V2.1 Conversation Plane)
