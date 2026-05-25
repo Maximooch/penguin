@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from penguin.core import PenguinCore
+from penguin.core_runtime import action_mapping
 from penguin.system.execution_context import (
     ExecutionContext,
     execution_context_scope,
@@ -524,20 +525,16 @@ def test_map_action_to_tool_supports_apply_patch_payload() -> None:
     assert metadata == {"files": ["src/main.py"]}
 
 
-def test_map_action_to_tool_preserves_apply_patch_files_on_parse_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    core = PenguinCore.__new__(PenguinCore)
-
+def test_action_mapping_preserves_apply_patch_files_on_parse_error() -> None:
     patch = "*** Begin Patch\n*** Update File: src/main.py\n@@\n-old\n+new\n"
-    monkeypatch.setattr(
-        "penguin.core.parse_apply_patch_payload",
-        lambda _params: {"patch": patch, "error": "malformed patch"},
-    )
 
-    mapped_tool, tool_input, metadata = core._map_action_to_tool(
+    mapped_tool, tool_input, metadata = action_mapping.map_action_to_tool(
         "apply_patch",
         {"patch": patch},
+        parse_apply_patch=lambda _params: {
+            "patch": patch,
+            "error": "malformed patch",
+        },
     )
 
     assert mapped_tool == "edit"

@@ -20,11 +20,20 @@ class _ContextWindow:
 class _ConversationManager:
     context_window = _ContextWindow()
 
-    def __init__(self, usage: Any | None = None) -> None:
+    def __init__(
+        self,
+        usage: Any | None = None,
+        *,
+        current_session: Any | None = None,
+    ) -> None:
         self._usage = usage
+        self._current_session = current_session
 
     def get_token_usage(self) -> Any:
         return self._usage
+
+    def get_current_session(self) -> Any | None:
+        return self._current_session
 
 
 class _Core:
@@ -34,11 +43,21 @@ class _Core:
         session: Any | None = None,
         sessions: list[Any] | None = None,
         runtime_usage: Any | None = None,
+        current_session: Any | None = None,
+        latest_model_usage: Any | None = None,
+        fail_apply_usage: bool = False,
     ) -> None:
-        self.conversation_manager = _ConversationManager(runtime_usage)
+        self.conversation_manager = _ConversationManager(
+            runtime_usage,
+            current_session=current_session,
+        )
         self.sessions = {item.id: item for item in (sessions or [])}
         if session is not None:
             self.sessions[session.id] = session
+        self.latest_model_usage = latest_model_usage or {}
+        self.latest_model_usage_calls = 0
+        self.applied_usage: list[tuple[str | None, dict[str, Any]]] = []
+        self.fail_apply_usage = fail_apply_usage
 
     def _find_session_store(self, session_id: str) -> tuple[Any | None, None]:
         session = self.sessions.get(session_id)
@@ -71,6 +90,19 @@ class _Core:
             session,
             agent_id=agent_id,
         )
+
+    def _latest_model_usage(self) -> Any:
+        self.latest_model_usage_calls += 1
+        return self.latest_model_usage
+
+    async def _apply_opencode_usage_to_latest_message(
+        self,
+        session_id: str | None,
+        usage: dict[str, Any],
+    ) -> None:
+        if self.fail_apply_usage:
+            raise RuntimeError("usage bridge unavailable")
+        self.applied_usage.append((session_id, dict(usage)))
 
 
 def _message(
@@ -358,6 +390,115 @@ def test_get_session_token_usage_does_not_mutate_persisted_usage_snapshot() -> N
     assert "scope" not in snapshot
     assert "session_id" not in snapshot
     assert "agent_id" not in snapshot
+
+
+@pytest.mark.asyncio
+async def test_collect_process_token_usage_enriches_and_persists_response_usage() -> (
+    None
+):
+    session = _session("session_a")
+    response_usage = {
+        "input_tokens": 4,
+        "output_tokens": 6,
+        "reasoning_tokens": 2,
+    }
+    core = _Core(
+        runtime_usage={
+            "current_total_tokens": 0,
+            "max_context_window_tokens": 100,
+            "categories": {"DIALOG": 0},
+            "truncations": {"total_truncations": 0},
+        },
+        current_session=session,
+    )
+
+    token_data = await token_usage_runtime.collect_process_token_usage(
+        core,
+        core.conversation_manager,
+        {"usage": response_usage},
+        "session_a",
+    )
+
+    assert token_data["current_total_tokens"] == 12
+    assert token_data["available_tokens"] == 88
+    assert token_data["percentage"] == 12
+    assert session.metadata["_opencode_usage_v1"] == {
+        "current_total_tokens": 12,
+        "max_context_window_tokens": 100,
+        "available_tokens": 88,
+        "percentage": 12,
+        "categories": {"DIALOG": 0},
+        "truncations": {"total_truncations": 0},
+    }
+    assert core.applied_usage == [("session_a", response_usage)]
+    assert core.latest_model_usage_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_collect_process_token_usage_falls_back_to_latest_model_usage() -> None:
+    session = _session("session_a")
+    core = _Core(
+        runtime_usage={
+            "current_total_tokens": 0,
+            "max_tokens": 20,
+            "categories": {},
+            "truncations": {},
+        },
+        current_session=session,
+        latest_model_usage={"total_tokens": 7},
+    )
+
+    token_data = await token_usage_runtime.collect_process_token_usage(
+        core,
+        core.conversation_manager,
+        {"assistant_response": "ok"},
+        "session_a",
+    )
+
+    assert token_data["current_total_tokens"] == 7
+    assert token_data["max_context_window_tokens"] == 20
+    assert token_data["available_tokens"] == 13
+    assert core.latest_model_usage_calls == 1
+    assert core.applied_usage == [("session_a", {"total_tokens": 7})]
+
+
+@pytest.mark.asyncio
+async def test_collect_process_token_usage_keeps_data_when_apply_fails() -> None:
+    session = _session("session_a")
+    core = _Core(
+        runtime_usage={
+            "current_total_tokens": 0,
+            "max_context_window_tokens": 10,
+            "categories": {},
+            "truncations": {},
+        },
+        current_session=session,
+        fail_apply_usage=True,
+    )
+
+    token_data = await token_usage_runtime.collect_process_token_usage(
+        core,
+        core.conversation_manager,
+        {"usage": {"total_tokens": 3}},
+        "session_a",
+    )
+
+    assert token_data["current_total_tokens"] == 3
+    assert token_data["available_tokens"] == 7
+    assert session.metadata["_opencode_usage_v1"]["current_total_tokens"] == 3
+    assert core.applied_usage == []
+
+
+def test_merge_latest_usage_into_token_data_preserves_existing_totals() -> None:
+    token_data = {"current_total_tokens": 9, "max_context_window_tokens": 10}
+
+    merged = token_usage_runtime.merge_latest_usage_into_token_data(
+        token_data,
+        {"total_tokens": 3},
+    )
+
+    assert merged is token_data
+    assert merged["current_total_tokens"] == 9
 
 
 @pytest.mark.asyncio

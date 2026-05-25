@@ -213,12 +213,6 @@ from penguin.utils.log_error import log_error
 from penguin.utils.parser import (
     ActionExecutor,
     parse_action,
-    parse_apply_patch_payload,
-    parse_edit_file_payload,
-    parse_patch_file_payload,
-    parse_patch_files_payload,
-    parse_read_file_payload,
-    parse_write_file_payload,
 )
 from penguin.utils.profiling import (
     profile_startup_phase,
@@ -2502,83 +2496,13 @@ class PenguinCore:
             # Engine retries once with stream=False, then raises LLMEmptyResponseError.
             # WALLET_GUARD in finalize_streaming_message injects placeholder for empty streams.
 
-            token_data = conversation_manager.get_token_usage()
-            latest_usage: Dict[str, Any] = {}
-            try:
-                if isinstance(response, dict):
-                    response_usage = response.get("usage")
-                    if isinstance(response_usage, dict):
-                        latest_usage = response_usage
-                if not latest_usage:
-                    latest_usage = self._latest_model_usage()
-
-                if isinstance(token_data, dict) and latest_usage:
-                    current_total_tokens = int(
-                        token_data.get("current_total_tokens", 0) or 0
-                    )
-                    if current_total_tokens <= 0:
-                        usage_total_tokens = int(
-                            latest_usage.get("total_tokens", 0) or 0
-                        )
-                        if usage_total_tokens <= 0:
-                            usage_total_tokens = (
-                                int(latest_usage.get("input_tokens", 0) or 0)
-                                + int(latest_usage.get("output_tokens", 0) or 0)
-                                + int(latest_usage.get("reasoning_tokens", 0) or 0)
-                                + int(latest_usage.get("cache_read_tokens", 0) or 0)
-                                + int(latest_usage.get("cache_write_tokens", 0) or 0)
-                            )
-                        if usage_total_tokens > 0:
-                            token_data = dict(token_data)
-                            token_data["current_total_tokens"] = usage_total_tokens
-                            max_tokens_value = token_data.get(
-                                "max_context_window_tokens"
-                            )
-                            if max_tokens_value is None:
-                                max_tokens_value = token_data.get("max_tokens")
-                            if isinstance(max_tokens_value, (int, float)):
-                                max_tokens_int = int(max_tokens_value)
-                                if max_tokens_int > 0:
-                                    token_data["max_context_window_tokens"] = (
-                                        max_tokens_int
-                                    )
-                                    token_data["max_tokens"] = max_tokens_int
-                                    token_data["available_tokens"] = max(
-                                        max_tokens_int - usage_total_tokens,
-                                        0,
-                                    )
-                                    token_data["percentage"] = (
-                                        usage_total_tokens / max_tokens_int
-                                    ) * 100
-
-                try:
-                    current_session = conversation_manager.get_current_session()
-                    if current_session and isinstance(
-                        getattr(current_session, "metadata", None), dict
-                    ):
-                        current_session.metadata["_opencode_usage_v1"] = {
-                            "current_total_tokens": token_data.get(
-                                "current_total_tokens", 0
-                            ),
-                            "max_context_window_tokens": token_data.get(
-                                "max_context_window_tokens",
-                                token_data.get("max_tokens"),
-                            ),
-                            "available_tokens": token_data.get("available_tokens", 0),
-                            "percentage": token_data.get("percentage", 0),
-                            "categories": token_data.get("categories", {}),
-                            "truncations": token_data.get("truncations", {}),
-                        }
-                except Exception:
-                    logger.debug("Unable to persist usage snapshot", exc_info=True)
-
-                if latest_usage:
-                    await self._apply_opencode_usage_to_latest_message(
-                        request_session_id,
-                        latest_usage,
-                    )
-            except Exception:
-                logger.debug("Unable to emit OpenCode usage metadata", exc_info=True)
+            token_data = await core_token_usage_runtime.collect_process_token_usage(
+                self,
+                conversation_manager,
+                response,
+                request_session_id,
+                log=logger,
+            )
 
             # Ensure conversation is saved after processing
             conversation_manager.save()
@@ -3356,16 +3280,7 @@ class PenguinCore:
     def _map_action_to_tool(
         self, action: str, params: Any
     ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
-        return core_action_mapping.map_action_to_tool(
-            action,
-            params,
-            parse_apply_patch=parse_apply_patch_payload,
-            parse_edit_file=parse_edit_file_payload,
-            parse_patch_file=parse_patch_file_payload,
-            parse_patch_files=parse_patch_files_payload,
-            parse_read_file=parse_read_file_payload,
-            parse_write_file=parse_write_file_payload,
-        )
+        return core_action_mapping.map_action_to_tool(action, params)
 
     def _map_action_result_metadata(
         self,

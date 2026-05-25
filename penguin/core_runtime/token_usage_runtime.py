@@ -11,8 +11,11 @@ from penguin.system.state import MessageCategory
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "build_usage_snapshot",
+    "collect_process_token_usage",
     "get_session_token_usage",
     "get_token_usage",
+    "merge_latest_usage_into_token_data",
     "usage_from_session_messages",
 ]
 
@@ -214,12 +217,135 @@ def usage_from_session_messages(
     }
 
 
+async def collect_process_token_usage(
+    core: Any,
+    conversation_manager: Any,
+    response: Any,
+    request_session_id: str | None,
+    *,
+    log: logging.Logger | None = None,
+) -> Any:
+    """Collect, snapshot, and publish per-turn usage after ``core.process``."""
+
+    token_data = conversation_manager.get_token_usage()
+    active_logger = log or logger
+    try:
+        latest_usage = _latest_response_or_model_usage(core, response)
+        token_data = merge_latest_usage_into_token_data(token_data, latest_usage)
+        _persist_usage_snapshot(conversation_manager, token_data, log=active_logger)
+
+        if latest_usage:
+            await core._apply_opencode_usage_to_latest_message(
+                request_session_id,
+                latest_usage,
+            )
+    except Exception:
+        active_logger.debug("Unable to emit OpenCode usage metadata", exc_info=True)
+    return token_data
+
+
+def merge_latest_usage_into_token_data(token_data: Any, latest_usage: Any) -> Any:
+    """Fill empty context usage totals from provider-reported latest usage."""
+
+    if not isinstance(token_data, dict) or not isinstance(latest_usage, dict):
+        return token_data
+
+    current_total_tokens = _coerce_non_negative_int(
+        token_data.get("current_total_tokens", 0)
+    )
+    if current_total_tokens > 0:
+        return token_data
+
+    usage_total_tokens = _latest_usage_total_tokens(latest_usage)
+    if usage_total_tokens <= 0:
+        return token_data
+
+    updated = dict(token_data)
+    updated["current_total_tokens"] = usage_total_tokens
+    max_tokens_value = updated.get("max_context_window_tokens")
+    if max_tokens_value is None:
+        max_tokens_value = updated.get("max_tokens")
+    if isinstance(max_tokens_value, (int, float)):
+        max_tokens_int = int(max_tokens_value)
+        if max_tokens_int > 0:
+            updated["max_context_window_tokens"] = max_tokens_int
+            updated["max_tokens"] = max_tokens_int
+            updated["available_tokens"] = max(max_tokens_int - usage_total_tokens, 0)
+            updated["percentage"] = (usage_total_tokens / max_tokens_int) * 100
+    return updated
+
+
+def build_usage_snapshot(token_data: Any) -> dict[str, Any] | None:
+    """Build persisted OpenCode usage metadata from a token usage payload."""
+
+    if not isinstance(token_data, dict):
+        return None
+    return {
+        "current_total_tokens": token_data.get("current_total_tokens", 0),
+        "max_context_window_tokens": token_data.get(
+            "max_context_window_tokens",
+            token_data.get("max_tokens"),
+        ),
+        "available_tokens": token_data.get("available_tokens", 0),
+        "percentage": token_data.get("percentage", 0),
+        "categories": token_data.get("categories", {}),
+        "truncations": token_data.get("truncations", {}),
+    }
+
+
 def _empty_runtime_usage() -> dict[str, Any]:
     return {
         "scope": "runtime",
         "total": {"input": 0, "output": 0},
         "session": {"input": 0, "output": 0},
     }
+
+
+def _latest_response_or_model_usage(core: Any, response: Any) -> dict[str, Any]:
+    latest_usage: dict[str, Any] = {}
+    if isinstance(response, dict):
+        response_usage = response.get("usage")
+        if isinstance(response_usage, dict):
+            latest_usage = response_usage
+    if latest_usage:
+        return latest_usage
+
+    latest_model_usage = core._latest_model_usage()
+    return latest_model_usage if isinstance(latest_model_usage, dict) else {}
+
+
+def _latest_usage_total_tokens(latest_usage: dict[str, Any]) -> int:
+    usage_total_tokens = _coerce_non_negative_int(latest_usage.get("total_tokens", 0))
+    if usage_total_tokens > 0:
+        return usage_total_tokens
+    return sum(
+        _coerce_non_negative_int(latest_usage.get(key, 0))
+        for key in (
+            "input_tokens",
+            "output_tokens",
+            "reasoning_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+        )
+    )
+
+
+def _persist_usage_snapshot(
+    conversation_manager: Any,
+    token_data: Any,
+    *,
+    log: logging.Logger,
+) -> None:
+    try:
+        current_session = conversation_manager.get_current_session()
+        if current_session and isinstance(
+            getattr(current_session, "metadata", None), dict
+        ):
+            snapshot = build_usage_snapshot(token_data)
+            if snapshot is not None:
+                current_session.metadata["_opencode_usage_v1"] = snapshot
+    except Exception:
+        log.debug("Unable to persist usage snapshot", exc_info=True)
 
 
 def _log_background_task_exception(task: asyncio.Task[Any]) -> None:
