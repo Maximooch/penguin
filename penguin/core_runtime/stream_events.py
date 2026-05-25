@@ -10,11 +10,17 @@ from typing import Any
 from penguin.system.execution_context import get_current_execution_context
 from penguin.system.state import Message, MessageCategory
 
+from . import opencode_bridge as core_opencode_bridge
+
 __all__ = [
     "abort_session",
     "abort_streaming_message",
     "active_part_text",
     "emit_opencode_session_status",
+    "emit_opencode_stream_chunk",
+    "emit_opencode_stream_end",
+    "emit_opencode_stream_start",
+    "emit_opencode_user_message_with_metadata",
     "filter_internal_markers_from_event",
     "finalize_streaming_message",
     "handle_stream_chunk",
@@ -799,6 +805,99 @@ async def handle_stream_chunk(
                 event_data["chunk"],
                 event_data.get("message_type", "assistant"),
             )
+
+
+async def emit_opencode_stream_start(
+    owner: Any,
+    *,
+    agent_id: str = "default",
+    model_id: str | None = None,
+    provider_id: str | None = None,
+    execution_context: Any = None,
+) -> tuple[str, str]:
+    """Initialize OpenCode streaming and remember the message adapter."""
+
+    context = execution_context
+    if context is None:
+        context = get_current_execution_context()
+    session_id = core_opencode_bridge.resolve_session_id(
+        execution_context=context,
+        conversation_manager=getattr(owner, "conversation_manager", None),
+    )
+    adapter = owner._get_tui_adapter(session_id)
+    model_state = owner._resolve_opencode_model_state(
+        session_id=session_id,
+        model_id=model_id,
+        provider_id=provider_id,
+    )
+    message_id, part_id = await adapter.on_stream_start(
+        agent_id,
+        model_state.get("modelID"),
+        model_state.get("providerID"),
+        model_state.get("variant"),
+    )
+
+    message_adapters = getattr(owner, "_opencode_message_adapters", None)
+    if not isinstance(message_adapters, dict):
+        message_adapters = {}
+        owner._opencode_message_adapters = message_adapters
+    message_adapters[message_id] = adapter
+    return message_id, part_id
+
+
+async def emit_opencode_stream_chunk(
+    owner: Any,
+    message_id: str,
+    part_id: str,
+    chunk: str,
+    message_type: str = "assistant",
+) -> None:
+    """Emit an OpenCode-compatible stream chunk with delta."""
+
+    message_adapters = getattr(owner, "_opencode_message_adapters", {})
+    adapter = message_adapters.get(message_id, owner._tui_adapter)
+    await adapter.on_stream_chunk(message_id, part_id, chunk, message_type)
+
+
+async def emit_opencode_stream_end(
+    owner: Any,
+    message_id: str,
+    part_id: str,
+) -> None:
+    """Finalize an OpenCode-compatible stream."""
+
+    message_adapters = getattr(owner, "_opencode_message_adapters", {})
+    adapter = message_adapters.pop(message_id, owner._tui_adapter)
+    await adapter.on_stream_end(message_id, part_id)
+
+
+async def emit_opencode_user_message_with_metadata(
+    owner: Any,
+    content: str,
+    *,
+    message_id: str | None = None,
+    agent_id: str | None = None,
+    execution_context: Any = None,
+) -> str:
+    """Emit a user message in OpenCode format with stable message metadata."""
+
+    context = execution_context
+    if context is None:
+        context = get_current_execution_context()
+    session_id = core_opencode_bridge.resolve_session_id(
+        execution_context=context,
+        conversation_manager=getattr(owner, "conversation_manager", None),
+    )
+    adapter = owner._get_tui_adapter(session_id)
+    model_state = owner._resolve_opencode_model_state(session_id=session_id)
+    return await adapter.on_user_message_with_metadata(
+        content,
+        message_id=message_id,
+        agent_id=agent_id or "default",
+        model_id=model_state.get("modelID"),
+        provider_id=model_state.get("providerID"),
+        variant=model_state.get("variant"),
+    )
 
 
 async def handle_tui_stream_chunk(

@@ -4310,36 +4310,29 @@ class PenguinCore:
         provider_id: Optional[str] = None,
     ) -> Tuple[str, str]:
         """Initialize OpenCode streaming - creates Message and TextPart."""
-        session_id = core_opencode_bridge.resolve_session_id(
-            execution_context=get_current_execution_context(),
-            conversation_manager=getattr(self, "conversation_manager", None),
-        )
-        adapter = self._get_tui_adapter(session_id)
-        model_state = self._resolve_opencode_model_state(
-            session_id=session_id,
+        return await core_stream_events.emit_opencode_stream_start(
+            self,
+            agent_id=agent_id,
             model_id=model_id,
             provider_id=provider_id,
+            execution_context=get_current_execution_context(),
         )
-        message_id, part_id = await adapter.on_stream_start(
-            agent_id,
-            model_state.get("modelID"),
-            model_state.get("providerID"),
-            model_state.get("variant"),
-        )
-        self._opencode_message_adapters[message_id] = adapter
-        return message_id, part_id
 
     async def _emit_opencode_stream_chunk(
         self, message_id: str, part_id: str, chunk: str, message_type: str = "assistant"
     ):
         """Emit OpenCode-compatible stream chunk with delta."""
-        adapter = self._opencode_message_adapters.get(message_id, self._tui_adapter)
-        await adapter.on_stream_chunk(message_id, part_id, chunk, message_type)
+        await core_stream_events.emit_opencode_stream_chunk(
+            self,
+            message_id,
+            part_id,
+            chunk,
+            message_type,
+        )
 
     async def _emit_opencode_stream_end(self, message_id: str, part_id: str):
         """Finalize OpenCode streaming."""
-        adapter = self._opencode_message_adapters.pop(message_id, self._tui_adapter)
-        await adapter.on_stream_end(message_id, part_id)
+        await core_stream_events.emit_opencode_stream_end(self, message_id, part_id)
 
     def _latest_model_usage(self) -> Dict[str, Any]:
         """Return normalized usage metadata from active model handler."""
@@ -4376,17 +4369,10 @@ class PenguinCore:
         agent_id: Optional[str] = None,
     ) -> str:
         """Emit user message in OpenCode format with stable message metadata."""
-        session_id = core_opencode_bridge.resolve_session_id(
-            execution_context=get_current_execution_context(),
-            conversation_manager=getattr(self, "conversation_manager", None),
-        )
-        adapter = self._get_tui_adapter(session_id)
-        model_state = self._resolve_opencode_model_state(session_id=session_id)
-        return await adapter.on_user_message_with_metadata(
+        return await core_stream_events.emit_opencode_user_message_with_metadata(
+            self,
             content,
             message_id=message_id,
-            agent_id=agent_id or "default",
-            model_id=model_state.get("modelID"),
-            provider_id=model_state.get("providerID"),
-            variant=model_state.get("variant"),
+            agent_id=agent_id,
+            execution_context=get_current_execution_context(),
         )

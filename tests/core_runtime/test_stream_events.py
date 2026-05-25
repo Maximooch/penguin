@@ -653,6 +653,151 @@ async def test_handle_stream_chunk_cancels_aborted_session_before_state_mutation
 
 
 @pytest.mark.asyncio
+async def test_emit_opencode_stream_helpers_route_through_session_adapter() -> None:
+    class _Adapter:
+        def __init__(self) -> None:
+            self.starts: list[tuple[str, str | None, str | None, str | None]] = []
+            self.chunks: list[tuple[str, str, str, str]] = []
+            self.ends: list[tuple[str, str]] = []
+
+        async def on_stream_start(
+            self,
+            agent_id: str = "default",
+            model_id: str | None = None,
+            provider_id: str | None = None,
+            variant: str | None = None,
+        ) -> tuple[str, str]:
+            self.starts.append((agent_id, model_id, provider_id, variant))
+            return "msg_1", "part_1"
+
+        async def on_stream_chunk(
+            self,
+            message_id: str,
+            part_id: str,
+            chunk: str,
+            message_type: str,
+        ) -> None:
+            self.chunks.append((message_id, part_id, chunk, message_type))
+
+        async def on_stream_end(self, message_id: str, part_id: str) -> None:
+            self.ends.append((message_id, part_id))
+
+    adapter = _Adapter()
+    model_state_calls: list[dict[str, Any]] = []
+    owner = SimpleNamespace(
+        conversation_manager=SimpleNamespace(get_current_session=lambda: None),
+        _opencode_message_adapters={},
+        _tui_adapter=adapter,
+    )
+    owner._get_tui_adapter = lambda session_id: adapter
+
+    def _model_state(**kwargs: Any) -> dict[str, str]:
+        model_state_calls.append(kwargs)
+        return {
+            "modelID": "gpt-5.4",
+            "providerID": "openai",
+            "variant": "high",
+        }
+
+    owner._resolve_opencode_model_state = _model_state
+
+    message_id, part_id = await stream_events.emit_opencode_stream_start(
+        owner,
+        agent_id="agent-a",
+        model_id="requested-model",
+        provider_id="requested-provider",
+        execution_context=SimpleNamespace(
+            session_id="session_1",
+            conversation_id="session_1",
+        ),
+    )
+    await stream_events.emit_opencode_stream_chunk(
+        owner,
+        message_id,
+        part_id,
+        "hello",
+        "assistant",
+    )
+    await stream_events.emit_opencode_stream_end(owner, message_id, part_id)
+
+    assert (message_id, part_id) == ("msg_1", "part_1")
+    assert adapter.starts == [("agent-a", "gpt-5.4", "openai", "high")]
+    assert adapter.chunks == [("msg_1", "part_1", "hello", "assistant")]
+    assert adapter.ends == [("msg_1", "part_1")]
+    assert owner._opencode_message_adapters == {}
+    assert model_state_calls == [
+        {
+            "session_id": "session_1",
+            "model_id": "requested-model",
+            "provider_id": "requested-provider",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_emit_opencode_user_message_with_metadata_uses_model_state() -> None:
+    class _Adapter:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def on_user_message_with_metadata(
+            self,
+            content: str,
+            *,
+            message_id: str | None = None,
+            agent_id: str = "default",
+            model_id: str | None = None,
+            provider_id: str | None = None,
+            variant: str | None = None,
+        ) -> str:
+            self.calls.append(
+                {
+                    "content": content,
+                    "message_id": message_id,
+                    "agent_id": agent_id,
+                    "model_id": model_id,
+                    "provider_id": provider_id,
+                    "variant": variant,
+                }
+            )
+            return message_id or "msg_generated"
+
+    adapter = _Adapter()
+    owner = SimpleNamespace(
+        conversation_manager=SimpleNamespace(get_current_session=lambda: None),
+        _get_tui_adapter=lambda _session_id: adapter,
+        _resolve_opencode_model_state=lambda session_id: {
+            "modelID": "gpt-5.4",
+            "providerID": "openai",
+            "variant": "high",
+        },
+    )
+
+    message_id = await stream_events.emit_opencode_user_message_with_metadata(
+        owner,
+        "hello",
+        message_id="msg_client_1",
+        agent_id="agent-a",
+        execution_context=SimpleNamespace(
+            session_id="session_1",
+            conversation_id="session_1",
+        ),
+    )
+
+    assert message_id == "msg_client_1"
+    assert adapter.calls == [
+        {
+            "content": "hello",
+            "message_id": "msg_client_1",
+            "agent_id": "agent-a",
+            "model_id": "gpt-5.4",
+            "provider_id": "openai",
+            "variant": "high",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_handle_tui_stream_chunk_starts_tracks_and_finalizes_stream() -> None:
     adapter = _Adapter()
     owner = _Owner(adapter)
