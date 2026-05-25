@@ -123,7 +123,6 @@ from typing import (
     Tuple,
     Union,
 )
-import asyncio
 
 from dotenv import load_dotenv  # type: ignore
 from rich.console import Console  # type: ignore
@@ -165,10 +164,7 @@ from .core_runtime import model_runtime as core_model_runtime
 from .core_runtime import opencode_adapters as core_opencode_adapters
 from .core_runtime import opencode_bridge as core_opencode_bridge
 from .core_runtime import opencode_persistence as core_opencode_persistence
-from .core_runtime import process_engine as core_process_engine
-from .core_runtime import process_input as core_process_input
-from .core_runtime import process_lifecycle as core_process_lifecycle
-from .core_runtime import process_streaming as core_process_streaming
+from .core_runtime import process_runtime as core_process_runtime
 from .core_runtime import prompt_settings as core_prompt_settings
 from .core_runtime import response_generation as core_response_generation
 from .core_runtime import runmode_events as core_runmode_events
@@ -1465,200 +1461,23 @@ class PenguinCore:
         Returns:
             Dict containing assistant response and action results
         """
-        process_input = core_process_input.normalize_process_input(input_data)
-        message = process_input.message
-        image_paths = process_input.image_paths
-        client_message_id = process_input.client_message_id
-
-        if process_input.is_empty:
-            return {"assistant_response": "No input provided", "action_results": []}
-        conversation_manager = core_conversations.resolve_conversation_manager(
+        return await core_process_runtime.process(
             self,
-            agent_id,
+            input_data=input_data,
+            context=context,
+            conversation_id=conversation_id,
+            agent_id=agent_id,
+            max_iterations=max_iterations,
+            context_files=context_files,
+            streaming=streaming,
+            stream_callback=stream_callback,
+            multi_step=multi_step,
+            api_client_override=api_client_override,
+            model_config_override=model_config_override,
             log=logger,
+            trace_log_info=_trace_log_info,
+            log_error_fn=log_error,
         )
-
-        execution_context = get_current_execution_context()
-        request_session_id = (
-            execution_context.session_id
-            if execution_context and execution_context.session_id
-            else conversation_id
-        )
-        scoped_conversation = getattr(conversation_manager, "conversation", None)
-        scoped_session_before = getattr(
-            getattr(scoped_conversation, "session", None), "id", None
-        )
-        _trace_log_info(
-            "core.process.trace.start request=%s session=%s conversation=%s agent=%s cm=%s conv=%s conv_session=%s msg_len=%s context_files=%s images=%s streaming=%s multi_step=%s",
-            execution_context.request_id if execution_context else "unknown",
-            request_session_id or "unknown",
-            conversation_id or "",
-            agent_id or "default",
-            hex(id(conversation_manager)),
-            hex(id(scoped_conversation)) if scoped_conversation is not None else "none",
-            scoped_session_before or "unknown",
-            len(message or ""),
-            len(context_files or []),
-            len(image_paths or []),
-            streaming,
-            multi_step,
-        )
-        request_task = asyncio.current_task()
-        request_tracked = (
-            await core_process_lifecycle.register_opencode_process_request(
-                self,
-                request_session_id,
-                request_task,
-            )
-        )
-
-        try:
-            if conversation_id:
-                load_result = core_conversations.load_process_conversation(
-                    conversation_manager,
-                    conversation_id,
-                    log=logger,
-                )
-                _trace_log_info(
-                    "core.process.trace.load request=%s session=%s conversation=%s via=%s ok=%s conv_session=%s",
-                    execution_context.request_id if execution_context else "unknown",
-                    request_session_id or "unknown",
-                    conversation_id,
-                    load_result.via,
-                    load_result.ok,
-                    load_result.scoped_session_id or "unknown",
-                )
-
-            context_file_count = core_conversations.load_process_context_files(
-                conversation_manager,
-                context_files,
-            )
-            if context_file_count:
-                _trace_log_info(
-                    "core.process.trace.context request=%s session=%s conversation=%s count=%s",
-                    execution_context.request_id if execution_context else "unknown",
-                    request_session_id or "unknown",
-                    conversation_id or "",
-                    context_file_count,
-                )
-
-            await core_process_lifecycle.emit_process_user_message(
-                self,
-                message,
-                message_category=MessageCategory.DIALOG,
-                client_message_id=client_message_id,
-                agent_id=agent_id,
-                log=logger,
-            )
-
-            # Use new Engine layer if available
-            if self.engine:
-                execution_context = get_current_execution_context()
-                engine_process_context = (
-                    core_process_streaming.prepare_engine_process_context(
-                        self,
-                        conversation_manager=conversation_manager,
-                        conversation_id=conversation_id,
-                        agent_id=agent_id,
-                        streaming=streaming,
-                        stream_callback=stream_callback,
-                        execution_context=execution_context,
-                        log=logger,
-                    )
-                )
-                engine_stream_callback = engine_process_context.stream_callback
-                scoped_conversation_id = (
-                    engine_process_context.scoped_conversation_id
-                )
-                response = await core_process_engine.run_engine_process(
-                    self,
-                    message=message,
-                    image_paths=image_paths,
-                    max_iterations=max_iterations,
-                    context=context,
-                    multi_step=multi_step,
-                    streaming=streaming,
-                    stream_callback=stream_callback,
-                    engine_stream_callback=engine_stream_callback,
-                    agent_id=agent_id,
-                    api_client_override=api_client_override,
-                    model_config_override=model_config_override,
-                    conversation_manager=conversation_manager,
-                    execution_context=execution_context,
-                    request_session_id=request_session_id,
-                    scoped_conversation_id=scoped_conversation_id,
-                    trace_log_info=_trace_log_info,
-                )
-                _trace_log_info(
-                    "core.process.trace.done request=%s session=%s conversation=%s status=%s iterations=%s actions=%s usage=%s response_len=%s",
-                    execution_context.request_id if execution_context else "unknown",
-                    request_session_id or "unknown",
-                    scoped_conversation_id if self.engine else (conversation_id or ""),
-                    response.get("status") if isinstance(response, dict) else None,
-                    response.get("iterations") if isinstance(response, dict) else None,
-                    len(response.get("action_results", []) or [])
-                    if isinstance(response, dict)
-                    else None,
-                    response.get("usage") if isinstance(response, dict) else None,
-                    len(response.get("assistant_response", "") or "")
-                    if isinstance(response, dict)
-                    else None,
-                )
-            else:
-                # ---------- Legacy path (fallback) ----------
-                # Prepare conversation and call get_response directly
-                conversation_manager.conversation.prepare_conversation(
-                    message, image_paths=image_paths
-                )
-
-                # FIX: Set the callback for event-based streaming, even in legacy mode
-                internal_stream_callback = (
-                    self._handle_stream_chunk if streaming else None
-                )
-
-                response, _ = await self.get_response(
-                    stream_callback=internal_stream_callback,  # Pass the correct callback
-                    streaming=streaming,
-                )
-
-            await core_process_lifecycle.finalize_process_response(
-                self,
-                conversation_manager,
-                response,
-                request_session_id,
-                streaming=streaming,
-                agent_id=agent_id,
-                collect_token_usage=(
-                    core_token_usage_runtime.collect_process_token_usage
-                ),
-                message_category=MessageCategory.DIALOG,
-                log=logger,
-            )
-
-            return response
-
-        except asyncio.CancelledError:
-            return core_process_lifecycle.handle_process_cancelled(
-                self,
-                request_session_id,
-            )
-
-        except Exception as e:
-            return await core_process_lifecycle.handle_process_error(
-                self,
-                e,
-                input_data,
-                log=logger,
-                log_error_fn=log_error,
-            )
-
-        finally:
-            await core_process_lifecycle.finalize_opencode_process_request(
-                self,
-                request_session_id,
-                request_task,
-                request_tracked=request_tracked,
-            )
 
     def list_conversations(
         self,
