@@ -617,6 +617,13 @@ The web/API surface is intentionally being brought back into alignment with back
 - Clarification answer/resume now has an explicit web route (`POST /api/v1/tasks/{task_id}/clarification/resume`) rather than existing only as an internal runtime capability.
 - SSE/OpenCode event compatibility now includes session-scoped clarification status bridging so web clients can observe `clarification_needed` and `clarification_answered` state instead of silently missing those transitions.
 - The programmatic `PenguinAPI` wrapper is being kept aligned with the web routes so embedded callers and HTTP callers do not receive different lifecycle semantics.
+- Token/context-window telemetry is explicitly scoped. `GET /api/v1/token-usage`
+  without identifiers reports runtime/global core usage with `scope="runtime"`;
+  `GET /api/v1/token-usage?session_id=...` and
+  `GET /api/v1/sessions/{session_id}/token-usage` report persisted
+  session-scoped usage with `scope="session"` or fail explicitly for missing
+  sessions/agent scopes. Clients must not render transcript-specific context
+  horizon lines from runtime/global telemetry.
 
 This matters because a technically working route that hides clarification, phase truth, or non-terminal outcomes is still a broken interface. The surface has to tell the same truth as the runtime or users end up debugging documentation-shaped lies.
 

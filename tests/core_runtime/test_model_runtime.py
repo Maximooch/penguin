@@ -208,6 +208,55 @@ async def test_build_model_config_for_model_fetches_openrouter_specs() -> None:
 
 
 @pytest.mark.asyncio
+async def test_build_model_config_for_model_does_not_synthesize_output_cap() -> None:
+    async def _fetch_specs(model_id: str) -> dict[str, Any]:
+        assert model_id == "z-ai/glm-5.1"
+        return {
+            "context_length": 204800,
+            "max_output_tokens": None,
+            "supports_vision": False,
+        }
+
+    model_config, safe_window = await build_model_config_for_model(
+        "openrouter/z-ai/glm-5.1",
+        model_configs={},
+        fetch_specs=_fetch_specs,
+    )
+
+    assert model_config.model == "z-ai/glm-5.1"
+    assert model_config.max_output_tokens is None
+    assert model_config.max_context_window_tokens == 204800
+    assert model_config.max_history_tokens == 174080
+    assert safe_window == 174080
+
+
+@pytest.mark.asyncio
+async def test_build_model_config_for_model_clamps_config_output_cap() -> None:
+    async def _fetch_specs(model_id: str) -> dict[str, Any]:
+        assert model_id == "z-ai/glm-5.1"
+        return {
+            "context_length": 204800,
+            "max_output_tokens": None,
+            "supports_vision": False,
+        }
+
+    model_config, safe_window = await build_model_config_for_model(
+        "openrouter/z-ai/glm-5.1",
+        model_configs={
+            "openrouter/z-ai/glm-5.1": {
+                "provider": "openrouter",
+                "client_preference": "openrouter",
+                "max_output_tokens": 202752,
+            }
+        },
+        fetch_specs=_fetch_specs,
+    )
+
+    assert model_config.max_output_tokens == 174080
+    assert safe_window == 174080
+
+
+@pytest.mark.asyncio
 async def test_build_model_config_for_model_does_not_mutate_current_config() -> None:
     current = ModelConfig(
         model="anthropic/claude-3-5-sonnet",

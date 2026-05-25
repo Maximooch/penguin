@@ -162,6 +162,7 @@ from penguin.llm.api_client import APIClient
 from penguin.llm.model_config import ModelConfig, fetch_model_specs
 from .core_runtime import checkpoint_runtime as core_checkpoint_runtime
 from .core_runtime import model_runtime as core_model_runtime
+from .core_runtime import token_usage_runtime as core_token_usage_runtime
 from penguin.llm.stream_handler import (
     StreamingStateManager,
     AgentStreamingStateManager,
@@ -1907,38 +1908,77 @@ class PenguinCore:
         await self._emit_opencode_session_status(sid, "idle")
         return aborted
 
-    def get_token_usage(self) -> Dict[str, Dict[str, int]]:
-        """Get token usage via conversation manager"""
-        try:
-            if not self.conversation_manager:
-                return {
-                    "total": {"input": 0, "output": 0},
-                    "session": {"input": 0, "output": 0},
-                }
+    def get_token_usage(
+        self,
+        session_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Return runtime or scoped token/context-window telemetry.
 
-            usage = self.conversation_manager.get_token_usage()
+        Args:
+            session_id: Optional session identifier to scope usage. Takes
+                precedence over the runtime context window and never falls back
+                to runtime usage when not found.
+            conversation_id: Optional conversation identifier. Used as the
+                lookup id when ``session_id`` is absent and echoed in scoped
+                responses.
+            agent_id: Optional agent identifier. When scoped usage is requested,
+                filters messages by ``Message.agent_id`` or uses an isolated
+                session whose metadata owner matches this id. Missing ownership
+                returns ``scope="missing"`` instead of whole-session totals.
 
-            # Emit UI event for token update (only if event loop is running)
-            try:
-                token_event_data = usage.copy()
-                # Only create task if we have a real emit_ui_event method (not a mock)
-                if hasattr(self, "emit_ui_event") and not hasattr(
-                    self.emit_ui_event, "_mock_name"
-                ):
-                    asyncio.create_task(
-                        self.emit_ui_event("token_update", token_event_data)
-                    )
-            except (RuntimeError, AttributeError):
-                # No event loop running or method is a mock, skip event emission
-                pass
+        Returns:
+            Dict[str, Any]: Runtime calls return ``scope="runtime"`` plus the
+            conversation manager's legacy usage fields. Scoped calls return
+            ``scope="session"``, ``session_id``, ``conversation_id``, optional
+            ``agent_id``, ``current_total_tokens``,
+            ``max_context_window_tokens``, ``available_tokens``, ``percentage``,
+            ``categories``, and ``truncations``. Missing scoped lookups return
+            ``scope="missing"`` with identifiers and ``error`` for HTTP layers
+            to translate to 404.
 
-            return usage
-        except Exception as e:
-            logger.error(f"Error getting token usage: {e}")
-            return {
-                "total": {"input": 0, "output": 0},
-                "session": {"input": 0, "output": 0},
-            }
+        Raises:
+            None. Runtime telemetry failures are logged and return zeroed
+            runtime usage; missing scoped lookups are returned as data.
+        """
+
+        return core_token_usage_runtime.get_token_usage(
+            self,
+            session_id=session_id,
+            conversation_id=conversation_id,
+            agent_id=agent_id,
+        )
+
+    def _get_session_token_usage(
+        self,
+        session_id: str,
+        *,
+        conversation_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Return usage for one persisted session without global fallback."""
+
+        return core_token_usage_runtime.get_session_token_usage(
+            self,
+            session_id,
+            conversation_id=conversation_id,
+            agent_id=agent_id,
+        )
+
+    def _usage_from_session_messages(
+        self,
+        session: Any,
+        *,
+        agent_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Build a conservative session-scoped usage payload from messages."""
+
+        return core_token_usage_runtime.usage_from_session_messages(
+            self,
+            session,
+            agent_id=agent_id,
+        )
 
     def set_system_prompt(self, prompt: str) -> None:
         """Set the system prompt for both core and API client."""
@@ -3057,6 +3097,7 @@ class PenguinCore:
                             ),
                             "available_tokens": token_data.get("available_tokens", 0),
                             "percentage": token_data.get("percentage", 0),
+                            "categories": token_data.get("categories", {}),
                             "truncations": token_data.get("truncations", {}),
                         }
                 except Exception:

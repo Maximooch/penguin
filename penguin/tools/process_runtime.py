@@ -96,7 +96,7 @@ class ProcessRuntime:
             return self._error(resolved_id, "process_id_already_exists")
         try:
             process = subprocess.Popen(
-                ["bash", "-lc", command],
+                ["bash", "-c", command],
                 cwd=resolved_cwd,
                 env=effective_env,
                 stdin=subprocess.PIPE,

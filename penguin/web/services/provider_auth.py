@@ -11,6 +11,7 @@ import os
 import secrets
 import time
 from dataclasses import dataclass
+from html import escape
 from threading import RLock
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -19,6 +20,7 @@ import httpx
 
 from penguin.web.services.provider_credentials import (
     get_provider_credential,
+    oauth_record_needs_refresh,
     set_provider_credential,
 )
 
@@ -37,6 +39,10 @@ _AUTH_LOCK = RLock()
 _PENDING_OAUTH: dict[str, dict[str, Any]] = {}
 _CALLBACK_LOCKS_GUARD = RLock()
 _CALLBACK_LOCKS: dict[str, asyncio.Lock] = {}
+_BROWSER_CALLBACK_SERVER_GUARD = RLock()
+_BROWSER_CALLBACK_SERVER: asyncio.AbstractServer | None = None
+_BROWSER_CALLBACK_SERVER_PORT: int | None = None
+_RECENT_OAUTH_COMPLETIONS: dict[str, float] = {}
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +93,36 @@ def _openai_oauth_redirect_uri() -> str:
     if isinstance(configured, str) and configured.strip():
         return configured.strip()
     return _OPENAI_OAUTH_BROWSER_REDIRECT_URI_DEFAULT
+
+
+def _browser_callback_html(title: str, body: str) -> str:
+    """Return a tiny OAuth callback page for the local browser flow."""
+    return (
+        "<!doctype html><html><head><meta charset=\"utf-8\">"
+        f"<title>{escape(title)}</title>"
+        "<style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;"
+        "background:#101010;color:#f4f4f4;display:grid;place-items:center;"
+        "height:100vh;margin:0}.box{max-width:560px;padding:24px}"
+        "p{color:#b8b8b8;line-height:1.5}</style></head>"
+        f"<body><main class=\"box\"><h1>{escape(title)}</h1>"
+        f"<p>{escape(body)}</p></main></body></html>"
+    )
+
+
+def _http_response(
+    *,
+    status: str,
+    body: str,
+    content_type: str = "text/html; charset=utf-8",
+) -> bytes:
+    body_bytes = body.encode("utf-8")
+    return (
+        f"HTTP/1.1 {status}\r\n"
+        f"Content-Type: {content_type}\r\n"
+        f"Content-Length: {len(body_bytes)}\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    ).encode("ascii") + body_bytes
 
 
 @dataclass
@@ -231,6 +267,185 @@ def _parse_browser_callback_code(raw_code: str) -> tuple[str, str | None]:
             return code, state
 
     return value, None
+
+
+def _find_pending_browser_oauth(
+    state: str | None,
+) -> tuple[str, dict[str, Any]] | None:
+    if not isinstance(state, str) or not state:
+        return None
+    with _AUTH_LOCK:
+        _cleanup_pending_oauth()
+        for provider_id, pending in _PENDING_OAUTH.items():
+            if str(pending.get("type") or "") != "openai_browser":
+                continue
+            pending_state = pending.get("state")
+            if pending_state != state:
+                continue
+            return provider_id, dict(pending)
+    return None
+
+
+async def _handle_openai_browser_callback_connection(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+) -> None:
+    try:
+        raw = await reader.readuntil(b"\r\n\r\n")
+    except Exception:
+        writer.close()
+        await writer.wait_closed()
+        return
+
+    try:
+        request_line = raw.split(b"\r\n", 1)[0].decode("ascii", errors="replace")
+        method, target, _version = request_line.split(" ", 2)
+    except ValueError:
+        writer.write(
+            _http_response(
+                status="400 Bad Request",
+                body=_browser_callback_html(
+                    "Authorization Failed", "Malformed OAuth callback request."
+                ),
+            )
+        )
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+        return
+
+    parsed = urlparse(target)
+    query = parse_qs(parsed.query)
+    code = query.get("code", [""])[0]
+    state = query.get("state", [""])[0] or None
+    error = query.get("error", [""])[0]
+    error_description = query.get("error_description", [""])[0]
+
+    if method.upper() != "GET" or parsed.path != "/auth/callback":
+        writer.write(
+            _http_response(
+                status="404 Not Found",
+                body=_browser_callback_html(
+                    "Not Found", "This local server only handles OAuth callbacks."
+                ),
+            )
+        )
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+        return
+
+    match = _find_pending_browser_oauth(state)
+    if match is None:
+        writer.write(
+            _http_response(
+                status="400 Bad Request",
+                body=_browser_callback_html(
+                    "Authorization Failed",
+                    "No pending Penguin OAuth authorization matched this callback.",
+                ),
+            )
+        )
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+        return
+
+    provider_id, pending = match
+    method_index = int(pending.get("method_index") or 0)
+    future = pending.get("callback_future")
+
+    try:
+        if error:
+            raise ProviderOAuthError(
+                stage="callback.browser.redirect_error",
+                detail=error_description or error,
+                provider_id=provider_id,
+                method_index=method_index,
+            )
+        if not code:
+            raise ProviderOAuthError(
+                stage="callback.browser.code",
+                detail="OAuth callback did not include an authorization code",
+                provider_id=provider_id,
+                method_index=method_index,
+            )
+
+        record = await _openai_complete_browser_flow(
+            pending=pending,
+            provider_id=provider_id,
+            method_index=method_index,
+            code=target,
+        )
+        set_provider_credential(provider_id, record)
+        with _AUTH_LOCK:
+            _PENDING_OAUTH.pop(provider_id, None)
+            _RECENT_OAUTH_COMPLETIONS[provider_id] = time.monotonic()
+        if isinstance(future, asyncio.Future) and not future.done():
+            future.set_result(True)
+        writer.write(
+            _http_response(
+                status="200 OK",
+                body=_browser_callback_html(
+                    "Authorization Complete",
+                    "Penguin is connected. You can close this browser tab.",
+                ),
+            )
+        )
+    except Exception as exc:
+        if isinstance(future, asyncio.Future) and not future.done():
+            future.set_exception(exc)
+        writer.write(
+            _http_response(
+                status="400 Bad Request",
+                body=_browser_callback_html("Authorization Failed", str(exc)),
+            )
+        )
+
+    await writer.drain()
+    writer.close()
+    await writer.wait_closed()
+
+
+async def _ensure_openai_browser_callback_server(redirect_uri: str) -> bool:
+    global _BROWSER_CALLBACK_SERVER, _BROWSER_CALLBACK_SERVER_PORT
+
+    parsed = urlparse(redirect_uri)
+    if parsed.scheme != "http" or parsed.hostname not in {"localhost", "127.0.0.1"}:
+        return False
+    if parsed.path != "/auth/callback" or parsed.port is None:
+        return False
+
+    with _BROWSER_CALLBACK_SERVER_GUARD:
+        if (
+            _BROWSER_CALLBACK_SERVER is not None
+            and _BROWSER_CALLBACK_SERVER_PORT == parsed.port
+        ):
+            return True
+
+    try:
+        server = await asyncio.start_server(
+            _handle_openai_browser_callback_connection,
+            host="127.0.0.1",
+            port=parsed.port,
+        )
+    except OSError as exc:
+        logger.warning(
+            "openai.oauth.callback_server unavailable port=%s error=%s",
+            parsed.port,
+            exc,
+        )
+        return False
+
+    with _BROWSER_CALLBACK_SERVER_GUARD:
+        if _BROWSER_CALLBACK_SERVER is not None:
+            server.close()
+            return _BROWSER_CALLBACK_SERVER_PORT == parsed.port
+        _BROWSER_CALLBACK_SERVER = server
+        _BROWSER_CALLBACK_SERVER_PORT = parsed.port
+
+    logger.info("openai.oauth.callback_server started port=%s", parsed.port)
+    return True
 
 
 def _base64url_decode(data: str) -> bytes:
@@ -491,6 +706,7 @@ async def _openai_authorize_browser_flow(
     redirect_uri = _openai_oauth_redirect_uri()
     state = secrets.token_urlsafe(32)
     code_verifier, code_challenge = _generate_pkce_pair()
+    callback_server_ready = await _ensure_openai_browser_callback_server(redirect_uri)
 
     logger.info(
         "openai.oauth.authorize.browser provider=%s method=%s "
@@ -524,13 +740,18 @@ async def _openai_authorize_browser_flow(
         "state": state,
         "code_verifier": code_verifier,
     }
+    if callback_server_ready:
+        pending["callback_future"] = asyncio.get_running_loop().create_future()
 
     auth = OAuthAuthorization(
         url=authorize_url,
-        method="code",
+        method="auto" if callback_server_ready else "code",
         instructions=(
-            "Complete authorization in your browser, then paste either the full "
-            "callback URL or the authorization code into Penguin."
+            "Complete authorization in your browser. This window will close "
+            "automatically."
+            if callback_server_ready
+            else "Complete authorization in your browser, then paste either "
+            "the full callback URL or the authorization code into Penguin."
         ),
     )
     return auth.to_dict(), pending
@@ -850,8 +1071,15 @@ async def callback_provider_oauth(
         with _AUTH_LOCK:
             _cleanup_pending_oauth()
             pending = dict(_PENDING_OAUTH.get(pid) or {})
+            recent_completion_at = _RECENT_OAUTH_COMPLETIONS.get(pid)
 
         if not pending:
+            if (
+                method_index == 0
+                and isinstance(recent_completion_at, (int, float))
+                and time.monotonic() - float(recent_completion_at) < 30
+            ):
+                return True
             raise ProviderOAuthError(
                 stage="callback.pending",
                 detail=(
@@ -875,6 +1103,33 @@ async def callback_provider_oauth(
             )
 
         flow = str(pending.get("type") or "").strip().lower()
+        if flow == "openai_browser" and code is None:
+            future = pending.get("callback_future")
+            if not isinstance(future, asyncio.Future):
+                raise ProviderOAuthError(
+                    stage="callback.browser.code",
+                    detail=(
+                        "Browser OAuth callback requires a code. Paste either "
+                        "the full callback URL or the authorization code."
+                    ),
+                    provider_id=pid,
+                    method_index=method_index,
+                )
+            try:
+                return bool(
+                    await asyncio.wait_for(
+                        asyncio.shield(future),
+                        timeout=_OPENAI_OAUTH_TIMEOUT_SECONDS,
+                    )
+                )
+            except asyncio.TimeoutError as exc:
+                raise ProviderOAuthError(
+                    stage="callback.browser.timeout",
+                    detail="OpenAI OAuth browser flow timed out waiting for callback",
+                    provider_id=pid,
+                    method_index=method_index,
+                ) from exc
+
         if flow == "openai_browser":
             record = await _openai_complete_browser_flow(
                 pending=pending,
@@ -899,6 +1154,7 @@ async def callback_provider_oauth(
         set_provider_credential(pid, record)
         with _AUTH_LOCK:
             _PENDING_OAUTH.pop(pid, None)
+            _RECENT_OAUTH_COMPLETIONS[pid] = time.monotonic()
         logger.info(
             "provider.oauth.callback success provider=%s method=%s flow=%s "
             "account_id_present=%s",
@@ -951,6 +1207,22 @@ async def refresh_provider_oauth(
 
     lock = _callback_lock(pid)
     async with lock:
+        latest = get_provider_credential(pid)
+        if isinstance(latest, dict) and latest.get("type") == "oauth":
+            latest_refresh = latest.get("refresh")
+            if isinstance(latest_refresh, str) and latest_refresh.strip():
+                if not oauth_record_needs_refresh(latest):
+                    logger.info(
+                        "provider.oauth.refresh reused current persisted "
+                        "credential provider=%s method=%s",
+                        pid,
+                        method_index,
+                    )
+                    return dict(latest)
+                if latest_refresh.strip() != refresh.strip():
+                    record = dict(latest)
+                    refresh = latest_refresh
+
         refreshed = await _openai_refresh_oauth_record(
             refresh_token=refresh.strip(),
             provider_id=pid,

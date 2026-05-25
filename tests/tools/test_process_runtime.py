@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from pathlib import Path
 import time
+from typing import TYPE_CHECKING
 
-import pytest
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    import pytest
 
 from penguin.tools.process_runtime import ProcessRuntime
 from penguin.tools.runtime import ToolCall, tool_call_with_schedule_metadata
