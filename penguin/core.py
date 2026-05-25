@@ -167,6 +167,7 @@ from .core_runtime import model_runtime as core_model_runtime
 from .core_runtime import opencode_adapters as core_opencode_adapters
 from .core_runtime import opencode_bridge as core_opencode_bridge
 from .core_runtime import opencode_persistence as core_opencode_persistence
+from .core_runtime import prompt_settings as core_prompt_settings
 from .core_runtime import runmode_events as core_runmode_events
 from .core_runtime import session_lookup as core_session_lookup
 from .core_runtime import stream_events as core_stream_events
@@ -936,29 +937,16 @@ class PenguinCore:
 
         Modes: direct, review, implement, test, bench_minimal, terse, explain
         """
-        try:
-            mode_normalized = str(mode).strip().lower()
-            prompt = get_system_prompt(mode_normalized)
-            self.system_prompt = prompt
-            # Replace on the active conversation as well
-            try:
-                if hasattr(self.conversation_manager, "set_system_prompt"):
-                    self.conversation_manager.set_system_prompt(prompt)
-            except Exception:
-                pass
-            self.prompt_mode = mode_normalized
-            return f"Prompt mode set to '{mode_normalized}'."
-        except Exception as e:
-            msg = f"Failed to set prompt mode '{mode}': {e}"
-            logger.warning(msg)
-            return msg
+        return core_prompt_settings.set_prompt_mode(
+            self,
+            mode,
+            get_system_prompt=get_system_prompt,
+            logger=logger,
+        )
 
     def get_prompt_mode(self) -> str:
         """Return current prompt mode name."""
-        try:
-            return getattr(self, "prompt_mode", "direct")
-        except Exception:
-            return "direct"
+        return core_prompt_settings.get_prompt_mode(self)
 
     # ------------------------------------------------------------------
     # Output style control
@@ -968,35 +956,18 @@ class PenguinCore:
 
         Styles: steps_final, plain, json_guided
         """
-        try:
-            style_normalized = str(style).strip().lower()
-            from penguin.prompt.builder import set_output_formatting
+        from penguin.prompt.builder import set_output_formatting
 
-            set_output_formatting(style_normalized)
-            self.output_style = style_normalized
-            # Rebuild prompt with current mode
-            try:
-                if hasattr(self, "conversation_manager") and hasattr(
-                    self.conversation_manager, "set_system_prompt"
-                ):
-                    prompt = get_system_prompt(self.prompt_mode)
-                    self.system_prompt = prompt
-                    self.conversation_manager.set_system_prompt(prompt)
-                else:
-                    self.system_prompt = get_system_prompt(self.prompt_mode)
-            except Exception:
-                pass
-            return f"Output style set to '{style_normalized}'."
-        except Exception as e:
-            msg = f"Failed to set output style '{style}': {e}"
-            logger.warning(msg)
-            return msg
+        return core_prompt_settings.set_output_style(
+            self,
+            style,
+            get_system_prompt=get_system_prompt,
+            set_output_formatting=set_output_formatting,
+            logger=logger,
+        )
 
     def get_output_style(self) -> str:
-        try:
-            return getattr(self, "output_style", "steps_final")
-        except Exception:
-            return "steps_final"
+        return core_prompt_settings.get_output_style(self)
 
     def validate_path(self, path: Path):
         """Validate and create a directory path if needed."""
