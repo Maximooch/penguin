@@ -23,6 +23,7 @@ __all__ = [
     "build_assistant_message_info",
     "latest_model_usage",
     "normalize_optional_string",
+    "prepare_scoped_event_properties",
     "resolve_adapter_directory",
     "resolve_model_state",
     "resolve_session_id",
@@ -132,6 +133,48 @@ def resolve_adapter_directory(
         return env_directory
 
     return str(cwd_getter())
+
+
+def prepare_scoped_event_properties(
+    data: Any,
+    *,
+    execution_context: Any = None,
+    session_directories: Any = None,
+    require_session: bool = False,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Return OpenCode event properties decorated with session and directory."""
+
+    properties = dict(data or {})
+    session_id = (
+        normalize_optional_string(properties.get("sessionID"))
+        or normalize_optional_string(properties.get("session_id"))
+        or normalize_optional_string(properties.get("conversation_id"))
+    )
+
+    if not session_id and execution_context is not None:
+        session_id = normalize_optional_string(
+            getattr(execution_context, "session_id", None)
+        ) or normalize_optional_string(
+            getattr(execution_context, "conversation_id", None)
+        )
+
+    if not session_id and require_session:
+        return None, None
+
+    if session_id:
+        properties.setdefault("sessionID", session_id)
+        properties.setdefault("conversation_id", session_id)
+
+    if "directory" not in properties:
+        directory = normalize_optional_string(
+            getattr(execution_context, "directory", None)
+        )
+        if not directory and session_id and isinstance(session_directories, dict):
+            directory = normalize_optional_string(session_directories.get(session_id))
+        if directory:
+            properties["directory"] = directory
+
+    return properties, session_id
 
 
 def build_assistant_message_info(

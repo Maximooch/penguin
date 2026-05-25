@@ -4886,20 +4886,15 @@ class PenguinCore:
         if event_type != "todo.updated":
             return
 
-        properties = dict(data or {})
         context = get_current_execution_context()
-        session_id = (
-            properties.get("sessionID")
-            or properties.get("session_id")
-            or properties.get("conversation_id")
+        properties, session_id = core_opencode_bridge.prepare_scoped_event_properties(
+            data,
+            execution_context=context,
+            session_directories=getattr(self, "_opencode_session_directories", None),
+            require_session=True,
         )
-        if not session_id and context is not None:
-            session_id = context.session_id or context.conversation_id
-        if not session_id:
+        if properties is None or not session_id:
             return
-
-        properties.setdefault("sessionID", session_id)
-        properties.setdefault("conversation_id", session_id)
 
         normalized_todos = self._normalize_todo_items(properties.get("todos"))
         try:
@@ -4912,17 +4907,6 @@ class PenguinCore:
             pass
         properties["todos"] = normalized_todos
 
-        if "directory" not in properties:
-            directory = context.directory if context is not None else None
-            if not directory:
-                session_dirs = getattr(self, "_opencode_session_directories", None)
-                if isinstance(session_dirs, dict):
-                    mapped = session_dirs.get(str(session_id))
-                    if isinstance(mapped, str) and mapped.strip():
-                        directory = mapped
-            if directory:
-                properties["directory"] = directory
-
         await self.event_bus.emit(
             "opencode_event",
             {
@@ -4934,29 +4918,11 @@ class PenguinCore:
     async def _on_tui_lsp_updated(self, event_type: str, data: Dict[str, Any]) -> None:
         if event_type != "lsp.updated":
             return
-        properties = dict(data or {})
-        context = get_current_execution_context()
-        session_id = (
-            properties.get("sessionID")
-            or properties.get("session_id")
-            or properties.get("conversation_id")
+        properties, _ = core_opencode_bridge.prepare_scoped_event_properties(
+            data,
+            execution_context=get_current_execution_context(),
+            session_directories=getattr(self, "_opencode_session_directories", None),
         )
-        if not session_id and context is not None:
-            session_id = context.session_id or context.conversation_id
-        if session_id:
-            properties.setdefault("sessionID", session_id)
-            properties.setdefault("conversation_id", session_id)
-
-        if "directory" not in properties:
-            directory = context.directory if context is not None else None
-            if not directory and session_id:
-                session_dirs = getattr(self, "_opencode_session_directories", None)
-                if isinstance(session_dirs, dict):
-                    mapped = session_dirs.get(str(session_id))
-                    if isinstance(mapped, str) and mapped.strip():
-                        directory = mapped
-            if directory:
-                properties["directory"] = directory
 
         await self.event_bus.emit(
             "opencode_event",
@@ -4971,29 +4937,11 @@ class PenguinCore:
     ) -> None:
         if event_type != "lsp.client.diagnostics":
             return
-        properties = dict(data or {})
-        context = get_current_execution_context()
-        session_id = (
-            properties.get("sessionID")
-            or properties.get("session_id")
-            or properties.get("conversation_id")
+        properties, _ = core_opencode_bridge.prepare_scoped_event_properties(
+            data,
+            execution_context=get_current_execution_context(),
+            session_directories=getattr(self, "_opencode_session_directories", None),
         )
-        if not session_id and context is not None:
-            session_id = context.session_id or context.conversation_id
-        if session_id:
-            properties.setdefault("sessionID", session_id)
-            properties.setdefault("conversation_id", session_id)
-
-        if "directory" not in properties:
-            directory = context.directory if context is not None else None
-            if not directory and session_id:
-                session_dirs = getattr(self, "_opencode_session_directories", None)
-                if isinstance(session_dirs, dict):
-                    mapped = session_dirs.get(str(session_id))
-                    if isinstance(mapped, str) and mapped.strip():
-                        directory = mapped
-            if directory:
-                properties["directory"] = directory
 
         await self.event_bus.emit(
             "opencode_event",

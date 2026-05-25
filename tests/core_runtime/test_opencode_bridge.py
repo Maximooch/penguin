@@ -123,6 +123,57 @@ def test_resolve_adapter_directory_falls_back_by_context_runtime_env_cwd() -> No
     assert cwd_directory == "/cwd/project"
 
 
+def test_prepare_scoped_event_properties_prefers_context_directory() -> None:
+    properties, session_id = opencode_bridge.prepare_scoped_event_properties(
+        {"session_id": "session_1", "payload": True},
+        execution_context=SimpleNamespace(
+            session_id="session_ctx",
+            conversation_id="conversation_ctx",
+            directory="/context/project",
+        ),
+        session_directories={"session_1": "/session/project"},
+    )
+
+    assert session_id == "session_1"
+    assert properties is not None
+    assert properties["sessionID"] == "session_1"
+    assert properties["conversation_id"] == "session_1"
+    assert properties["directory"] == "/context/project"
+    assert properties["payload"] is True
+
+
+def test_prepare_scoped_event_properties_uses_context_session_then_directory_map() -> (
+    None
+):
+    properties, session_id = opencode_bridge.prepare_scoped_event_properties(
+        {"payload": True},
+        execution_context=SimpleNamespace(
+            session_id="session_ctx",
+            conversation_id="conversation_ctx",
+            directory="",
+        ),
+        session_directories={"session_ctx": " /session/project "},
+    )
+
+    assert session_id == "session_ctx"
+    assert properties is not None
+    assert properties["sessionID"] == "session_ctx"
+    assert properties["conversation_id"] == "session_ctx"
+    assert properties["directory"] == "/session/project"
+
+
+def test_prepare_scoped_event_properties_can_require_session() -> None:
+    properties, session_id = opencode_bridge.prepare_scoped_event_properties(
+        {"payload": True},
+        execution_context=None,
+        session_directories={},
+        require_session=True,
+    )
+
+    assert properties is None
+    assert session_id is None
+
+
 def test_build_assistant_message_info_uses_fallback_tokens_and_variant() -> None:
     info = opencode_bridge.build_assistant_message_info(
         message_id="msg_1",
