@@ -1436,74 +1436,7 @@ class PenguinCore:
         Includes per-agent session, conversation object identity, context window
         limits and usage, and Engine registry presence.
         """
-        cm = self.conversation_manager
-        summary: Dict[str, Any] = {
-            "active_agent": getattr(cm, "current_agent_id", "default"),
-            "agents": [],
-            "shared_conversations": [],
-            "engine_registry": {},
-        }
-
-        # Build per-agent info and detect shared ConversationSystem groups
-        conv_to_agents: Dict[int, list] = {}
-        for aid, conv in getattr(cm, "agent_sessions", {}).items():
-            try:
-                session_id = getattr(conv.session, "id", None)
-                cw = (
-                    cm.agent_context_windows.get(aid)
-                    if hasattr(cm, "agent_context_windows")
-                    else getattr(cm, "context_window", None)
-                )
-                cw_usage = {}
-                cw_max = None
-                if cw and hasattr(cw, "get_token_usage"):
-                    try:
-                        u = cw.get_token_usage()
-                        # Normalize usage fields
-                        cw_usage = {
-                            "total": u.get("total", u.get("current_total_tokens")),
-                            "available": u.get("available", u.get("available_tokens")),
-                        }
-                        cw_max = u.get(
-                            "max",
-                            u.get("max_context_window_tokens", u.get("max_tokens")),
-                        )  # max_context_window_tokens is the canonical key
-                    except Exception:
-                        pass
-                # Record agent info
-                summary["agents"].append(
-                    {
-                        "agent_id": aid,
-                        "session_id": session_id,
-                        "conversation_obj": id(conv),
-                        "context_window_max": cw_max,
-                        "context_window_usage": cw_usage,
-                    }
-                )
-                conv_to_agents.setdefault(id(conv), []).append(aid)
-            except Exception:
-                continue
-
-        # Shared conversation groups
-        summary["shared_conversations"] = [
-            {"conversation_obj": k, "agents": v}
-            for k, v in conv_to_agents.items()
-            if len(v) > 1
-        ]
-
-        # Engine registry presence
-        try:
-            engine_agents = (
-                set(self.engine.list_agents())
-                if getattr(self, "engine", None)
-                else set()
-            )
-        except Exception:
-            engine_agents = set()
-        for a in [a.get("agent_id") for a in summary["agents"]]:
-            summary["engine_registry"][a] = a in engine_agents
-
-        return summary
+        return core_agent_lifecycle.smoke_check_agents(self)
 
     @property
     def total_tokens_used(self) -> int:

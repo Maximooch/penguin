@@ -24,6 +24,7 @@ __all__ = [
     "register_agent_compat",
     "resolve_agent_execution_scope",
     "run_agent_prompt_in_session",
+    "smoke_check_agents",
 ]
 
 logger = logging.getLogger(__name__)
@@ -237,6 +238,88 @@ async def publish_sub_agent_session_created(
             },
         )
     return info
+
+
+def smoke_check_agents(core: Any) -> dict[str, Any]:
+    """Return a diagnostic snapshot of agent wiring and context windows."""
+    conversation_manager = core.conversation_manager
+    summary: dict[str, Any] = {
+        "active_agent": getattr(conversation_manager, "current_agent_id", "default"),
+        "agents": [],
+        "shared_conversations": [],
+        "engine_registry": {},
+    }
+
+    conversation_to_agents: dict[int, list[str]] = {}
+    agent_sessions = getattr(conversation_manager, "agent_sessions", {})
+    for agent_id, conversation in agent_sessions.items():
+        try:
+            session_id = getattr(conversation.session, "id", None)
+            context_windows = getattr(
+                conversation_manager,
+                "agent_context_windows",
+                None,
+            )
+            context_window = (
+                context_windows.get(agent_id)
+                if isinstance(context_windows, dict)
+                else getattr(conversation_manager, "context_window", None)
+            )
+            context_window_usage = {}
+            context_window_max = None
+            if context_window and hasattr(context_window, "get_token_usage"):
+                try:
+                    usage = context_window.get_token_usage()
+                    context_window_usage = {
+                        "total": usage.get(
+                            "total",
+                            usage.get("current_total_tokens"),
+                        ),
+                        "available": usage.get(
+                            "available",
+                            usage.get("available_tokens"),
+                        ),
+                    }
+                    context_window_max = usage.get(
+                        "max",
+                        usage.get(
+                            "max_context_window_tokens",
+                            usage.get("max_tokens"),
+                        ),
+                    )
+                except Exception:
+                    pass
+
+            summary["agents"].append(
+                {
+                    "agent_id": agent_id,
+                    "session_id": session_id,
+                    "conversation_obj": id(conversation),
+                    "context_window_max": context_window_max,
+                    "context_window_usage": context_window_usage,
+                }
+            )
+            conversation_to_agents.setdefault(id(conversation), []).append(agent_id)
+        except Exception:
+            continue
+
+    summary["shared_conversations"] = [
+        {"conversation_obj": conversation_id, "agents": agent_ids}
+        for conversation_id, agent_ids in conversation_to_agents.items()
+        if len(agent_ids) > 1
+    ]
+
+    try:
+        engine_agents = (
+            set(core.engine.list_agents()) if getattr(core, "engine", None) else set()
+        )
+    except Exception:
+        engine_agents = set()
+    for agent in summary["agents"]:
+        agent_id = agent.get("agent_id")
+        summary["engine_registry"][agent_id] = agent_id in engine_agents
+
+    return summary
 
 
 def resolve_agent_execution_scope(

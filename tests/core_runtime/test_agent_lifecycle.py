@@ -12,6 +12,7 @@ from penguin.core_runtime.agent_lifecycle import (
     publish_sub_agent_session_created,
     resolve_agent_execution_scope,
     run_agent_prompt_in_session,
+    smoke_check_agents,
 )
 from penguin.system.execution_context import (
     ExecutionContext,
@@ -36,6 +37,14 @@ class _Conversation:
 
     def save(self) -> None:
         self.save_calls += 1
+
+
+class _ContextWindow:
+    def __init__(self, usage: dict[str, Any]) -> None:
+        self.usage = usage
+
+    def get_token_usage(self) -> dict[str, Any]:
+        return self.usage
 
 
 def test_resolve_agent_execution_scope_uses_session_metadata_and_inherited_roots(
@@ -299,3 +308,113 @@ async def test_publish_sub_agent_session_created_skips_shared_session() -> None:
 
     assert result is None
     assert core.event_bus.events == []
+
+
+def test_smoke_check_agents_reports_shared_conversations_and_engine_registry() -> None:
+    shared = SimpleNamespace(session=SimpleNamespace(id="session_shared"))
+    isolated = SimpleNamespace(session=SimpleNamespace(id="session_isolated"))
+    conversation_manager = SimpleNamespace(
+        current_agent_id="default",
+        agent_sessions={
+            "default": shared,
+            "assistant": shared,
+            "worker": isolated,
+        },
+        agent_context_windows={
+            "default": _ContextWindow(
+                {
+                    "current_total_tokens": 12,
+                    "available_tokens": 88,
+                    "max_context_window_tokens": 100,
+                }
+            ),
+            "assistant": _ContextWindow(
+                {
+                    "total": 7,
+                    "available": 93,
+                    "max": 100,
+                }
+            ),
+            "worker": _ContextWindow(
+                {
+                    "current_total_tokens": 3,
+                    "available_tokens": 97,
+                    "max_tokens": 100,
+                }
+            ),
+        },
+    )
+    core = SimpleNamespace(
+        conversation_manager=conversation_manager,
+        engine=SimpleNamespace(list_agents=lambda: ["default", "worker"]),
+    )
+
+    summary = smoke_check_agents(core)
+
+    assert summary["active_agent"] == "default"
+    assert [agent["agent_id"] for agent in summary["agents"]] == [
+        "default",
+        "assistant",
+        "worker",
+    ]
+    assert summary["agents"][0]["context_window_usage"] == {
+        "total": 12,
+        "available": 88,
+    }
+    assert summary["agents"][0]["context_window_max"] == 100
+    assert summary["shared_conversations"] == [
+        {
+            "conversation_obj": id(shared),
+            "agents": ["default", "assistant"],
+        }
+    ]
+    assert summary["engine_registry"] == {
+        "default": True,
+        "assistant": False,
+        "worker": True,
+    }
+
+
+def test_smoke_check_agents_skips_bad_agent_and_tolerates_engine_failure() -> None:
+    class _BrokenConversation:
+        @property
+        def session(self) -> Any:
+            raise RuntimeError("session unavailable")
+
+    class _BrokenEngine:
+        def list_agents(self) -> list[str]:
+            raise RuntimeError("engine unavailable")
+
+    good = SimpleNamespace(session=SimpleNamespace(id="session_good"))
+    conversation_manager = SimpleNamespace(
+        current_agent_id="good",
+        agent_sessions={
+            "good": good,
+            "bad": _BrokenConversation(),
+        },
+        context_window=_ContextWindow(
+            {
+                "current_total_tokens": 5,
+                "available_tokens": 95,
+                "max_context_window_tokens": 100,
+            }
+        ),
+    )
+    core = SimpleNamespace(
+        conversation_manager=conversation_manager,
+        engine=_BrokenEngine(),
+    )
+
+    summary = smoke_check_agents(core)
+
+    assert summary["agents"] == [
+        {
+            "agent_id": "good",
+            "session_id": "session_good",
+            "conversation_obj": id(good),
+            "context_window_max": 100,
+            "context_window_usage": {"total": 5, "available": 95},
+        }
+    ]
+    assert summary["shared_conversations"] == []
+    assert summary["engine_registry"] == {"good": False}
