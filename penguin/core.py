@@ -162,6 +162,7 @@ from penguin.llm.model_config import ModelConfig, fetch_model_specs
 from .core_runtime import action_mapping as core_action_mapping
 from .core_runtime import checkpoint_runtime as core_checkpoint_runtime
 from .core_runtime import model_runtime as core_model_runtime
+from .core_runtime import opencode_bridge as core_opencode_bridge
 from .core_runtime import token_usage_runtime as core_token_usage_runtime
 from penguin.llm.stream_handler import (
     StreamingStateManager,
@@ -241,9 +242,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 console = Console()
 
-_SESSION_MODEL_ID_KEY = "_opencode_model_id_v1"
-_SESSION_PROVIDER_ID_KEY = "_opencode_provider_id_v1"
-_SESSION_VARIANT_KEY = "_opencode_variant_v1"
+_SESSION_MODEL_ID_KEY = core_opencode_bridge.SESSION_MODEL_ID_KEY
+_SESSION_PROVIDER_ID_KEY = core_opencode_bridge.SESSION_PROVIDER_ID_KEY
+_SESSION_VARIANT_KEY = core_opencode_bridge.SESSION_VARIANT_KEY
 
 
 def _trace_log_info(message: str, *args: Any) -> None:
@@ -5194,15 +5195,10 @@ class PenguinCore:
         variant: Optional[str] = None,
     ) -> Dict[str, Optional[str]]:
         """Resolve model/provider/variant for OpenCode event persistence."""
-
-        def _normalize(value: Any) -> Optional[str]:
-            if not isinstance(value, str):
-                return None
-            stripped = value.strip()
-            return stripped or None
-
-        normalized_session_id = _normalize(session_id)
         session_meta: Dict[str, Any] = {}
+        normalized_session_id = core_opencode_bridge.normalize_optional_string(
+            session_id
+        )
         if normalized_session_id:
             session, _ = self._find_session_store(normalized_session_id)
             metadata = (
@@ -5211,32 +5207,13 @@ class PenguinCore:
             if isinstance(metadata, dict):
                 session_meta = metadata
 
-        resolved_provider = (
-            _normalize(provider_id)
-            or _normalize(session_meta.get(_SESSION_PROVIDER_ID_KEY))
-            or _normalize(session_meta.get("providerID"))
-            or _normalize(session_meta.get("provider_id"))
-            or _normalize(
-                getattr(getattr(self, "model_config", None), "provider", None)
-            )
+        return core_opencode_bridge.resolve_model_state(
+            session_metadata=session_meta,
+            model_config=getattr(self, "model_config", None),
+            model_id=model_id,
+            provider_id=provider_id,
+            variant=variant,
         )
-        resolved_model = (
-            _normalize(model_id)
-            or _normalize(session_meta.get(_SESSION_MODEL_ID_KEY))
-            or _normalize(session_meta.get("modelID"))
-            or _normalize(session_meta.get("model_id"))
-            or _normalize(getattr(getattr(self, "model_config", None), "model", None))
-        )
-        resolved_variant = (
-            _normalize(variant)
-            or _normalize(session_meta.get(_SESSION_VARIANT_KEY))
-            or _normalize(session_meta.get("variant"))
-        )
-        return {
-            "providerID": resolved_provider,
-            "modelID": resolved_model,
-            "variant": resolved_variant,
-        }
 
     async def _persist_opencode_event(
         self, event_type: str, properties: Dict[str, Any]
@@ -5340,30 +5317,12 @@ class PenguinCore:
                 )
                 model_state = self._resolve_opencode_model_state(session_id=session_id)
                 entry = {
-                    "info": {
-                        "id": message_id,
-                        "sessionID": session_id,
-                        "role": "assistant",
-                        "time": {"created": int(time.time() * 1000)},
-                        "parentID": "root",
-                        "modelID": model_state.get("modelID") or "penguin-default",
-                        "providerID": model_state.get("providerID") or "penguin",
-                        "mode": "chat",
-                        "agent": "default",
-                        "path": {"cwd": fallback_directory, "root": fallback_directory},
-                        "cost": 0,
-                        "tokens": {
-                            "input": 0,
-                            "output": 0,
-                            "reasoning": 0,
-                            "cache": {"read": 0, "write": 0},
-                        },
-                        **(
-                            {"variant": model_state.get("variant")}
-                            if model_state.get("variant")
-                            else {}
-                        ),
-                    },
+                    "info": core_opencode_bridge.build_assistant_message_info(
+                        message_id=message_id,
+                        session_id=session_id,
+                        directory=fallback_directory,
+                        model_state=model_state,
+                    ),
                     "parts": {},
                     "part_order": [],
                 }
@@ -5432,20 +5391,10 @@ class PenguinCore:
         provider_id: Optional[str] = None,
     ) -> Tuple[str, str]:
         """Initialize OpenCode streaming - creates Message and TextPart."""
-        execution_context = get_current_execution_context()
-        session_id = None
-        if execution_context:
-            session_id = (
-                execution_context.session_id or execution_context.conversation_id
-            )
-        if not session_id:
-            get_current_session = getattr(
-                self.conversation_manager, "get_current_session", None
-            )
-            current_session = (
-                get_current_session() if callable(get_current_session) else None
-            )
-            session_id = current_session.id if current_session else "unknown"
+        session_id = core_opencode_bridge.resolve_session_id(
+            execution_context=get_current_execution_context(),
+            conversation_manager=getattr(self, "conversation_manager", None),
+        )
         adapter = self._get_tui_adapter(session_id)
         model_state = self._resolve_opencode_model_state(
             session_id=session_id,
@@ -5475,15 +5424,9 @@ class PenguinCore:
 
     def _latest_model_usage(self) -> Dict[str, Any]:
         """Return normalized usage metadata from active model handler."""
-        handler = getattr(getattr(self, "api_client", None), "client_handler", None)
-        getter = getattr(handler, "get_last_usage", None)
-        if not callable(getter):
-            return {}
-        try:
-            data = getter()
-        except Exception:
-            return {}
-        return data if isinstance(data, dict) else {}
+        return core_opencode_bridge.latest_model_usage(
+            getattr(self, "api_client", None)
+        )
 
     async def _apply_opencode_usage_to_latest_message(
         self,
@@ -5534,23 +5477,10 @@ class PenguinCore:
         if not callable(updater):
             return
 
-        tokens = {
-            "input": int(usage.get("input_tokens", 0) or 0),
-            "output": int(usage.get("output_tokens", 0) or 0),
-            "reasoning": int(usage.get("reasoning_tokens", 0) or 0),
-            "cache": {
-                "read": int(usage.get("cache_read_tokens", 0) or 0),
-                "write": int(usage.get("cache_write_tokens", 0) or 0),
-            },
-        }
-        cost = usage.get("cost")
-        try:
-            normalized_cost = float(cost) if cost is not None else 0.0
-        except Exception:
-            normalized_cost = 0.0
+        tokens, normalized_cost = core_opencode_bridge.usage_tokens_and_cost(usage)
 
         try:
-            await updater(message_id, tokens=tokens, cost=max(normalized_cost, 0.0))
+            await updater(message_id, tokens=tokens, cost=normalized_cost)
             usage_log = (
                 "opencode.usage.applied session=%s message=%s input=%s output=%s "
                 "reasoning=%s cache_read=%s cache_write=%s total=%s cost=%s"
@@ -5564,7 +5494,7 @@ class PenguinCore:
                 tokens["cache"]["read"],
                 tokens["cache"]["write"],
                 int(usage.get("total_tokens", 0) or 0),
-                max(normalized_cost, 0.0),
+                normalized_cost,
             )
             logger.info(usage_log, *usage_args)
             uvicorn_logger = logging.getLogger("uvicorn.error")
@@ -5585,20 +5515,10 @@ class PenguinCore:
         agent_id: Optional[str] = None,
     ) -> str:
         """Emit user message in OpenCode format with stable message metadata."""
-        execution_context = get_current_execution_context()
-        session_id = None
-        if execution_context:
-            session_id = (
-                execution_context.session_id or execution_context.conversation_id
-            )
-        if not session_id:
-            get_current_session = getattr(
-                self.conversation_manager, "get_current_session", None
-            )
-            current_session = (
-                get_current_session() if callable(get_current_session) else None
-            )
-            session_id = current_session.id if current_session else "unknown"
+        session_id = core_opencode_bridge.resolve_session_id(
+            execution_context=get_current_execution_context(),
+            conversation_manager=getattr(self, "conversation_manager", None),
+        )
         adapter = self._get_tui_adapter(session_id)
         model_state = self._resolve_opencode_model_state(session_id=session_id)
         return await adapter.on_user_message_with_metadata(

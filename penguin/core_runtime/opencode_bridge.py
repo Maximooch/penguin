@@ -1,0 +1,180 @@
+"""OpenCode bridge helpers used by :mod:`penguin.core`.
+
+The async adapter calls remain in PenguinCore for now. This module owns the
+deterministic payload shaping around model metadata, session fallback, and usage
+metadata so those contracts can be tested without a core instance.
+"""
+
+from __future__ import annotations
+
+import os
+import time
+from math import isfinite
+from typing import Any
+
+SESSION_MODEL_ID_KEY = "_opencode_model_id_v1"
+SESSION_PROVIDER_ID_KEY = "_opencode_provider_id_v1"
+SESSION_VARIANT_KEY = "_opencode_variant_v1"
+
+__all__ = [
+    "SESSION_MODEL_ID_KEY",
+    "SESSION_PROVIDER_ID_KEY",
+    "SESSION_VARIANT_KEY",
+    "build_assistant_message_info",
+    "latest_model_usage",
+    "normalize_optional_string",
+    "resolve_model_state",
+    "resolve_session_id",
+    "usage_tokens_and_cost",
+]
+
+
+def normalize_optional_string(value: Any) -> str | None:
+    """Return a stripped string or ``None`` for missing/blank values."""
+
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def resolve_model_state(
+    *,
+    session_metadata: Any = None,
+    model_config: Any = None,
+    model_id: Any = None,
+    provider_id: Any = None,
+    variant: Any = None,
+) -> dict[str, str | None]:
+    """Resolve OpenCode model/provider/variant metadata by precedence."""
+
+    metadata = session_metadata if isinstance(session_metadata, dict) else {}
+    resolved_provider = (
+        normalize_optional_string(provider_id)
+        or normalize_optional_string(metadata.get(SESSION_PROVIDER_ID_KEY))
+        or normalize_optional_string(metadata.get("providerID"))
+        or normalize_optional_string(metadata.get("provider_id"))
+        or normalize_optional_string(getattr(model_config, "provider", None))
+    )
+    resolved_model = (
+        normalize_optional_string(model_id)
+        or normalize_optional_string(metadata.get(SESSION_MODEL_ID_KEY))
+        or normalize_optional_string(metadata.get("modelID"))
+        or normalize_optional_string(metadata.get("model_id"))
+        or normalize_optional_string(getattr(model_config, "model", None))
+    )
+    resolved_variant = (
+        normalize_optional_string(variant)
+        or normalize_optional_string(metadata.get(SESSION_VARIANT_KEY))
+        or normalize_optional_string(metadata.get("variant"))
+    )
+    return {
+        "providerID": resolved_provider,
+        "modelID": resolved_model,
+        "variant": resolved_variant,
+    }
+
+
+def resolve_session_id(
+    *,
+    execution_context: Any = None,
+    conversation_manager: Any = None,
+    default: str = "unknown",
+) -> str:
+    """Resolve the OpenCode session id for event emission."""
+
+    if execution_context is not None:
+        session_id = normalize_optional_string(
+            getattr(execution_context, "session_id", None)
+        ) or normalize_optional_string(
+            getattr(execution_context, "conversation_id", None)
+        )
+        if session_id:
+            return session_id
+
+    get_current_session = getattr(conversation_manager, "get_current_session", None)
+    current_session = get_current_session() if callable(get_current_session) else None
+    current_session_id = normalize_optional_string(getattr(current_session, "id", None))
+    return current_session_id or default
+
+
+def build_assistant_message_info(
+    *,
+    message_id: str,
+    session_id: str,
+    directory: str | None,
+    model_state: dict[str, Any],
+    created_ms: int | None = None,
+    agent: str = "default",
+) -> dict[str, Any]:
+    """Build fallback OpenCode assistant message metadata for part-first events."""
+
+    fallback_directory = directory or os.getcwd()
+    info: dict[str, Any] = {
+        "id": message_id,
+        "sessionID": session_id,
+        "role": "assistant",
+        "time": {
+            "created": created_ms if created_ms is not None else int(time.time() * 1000)
+        },
+        "parentID": "root",
+        "modelID": model_state.get("modelID") or "penguin-default",
+        "providerID": model_state.get("providerID") or "penguin",
+        "mode": "chat",
+        "agent": agent,
+        "path": {"cwd": fallback_directory, "root": fallback_directory},
+        "cost": 0,
+        "tokens": {
+            "input": 0,
+            "output": 0,
+            "reasoning": 0,
+            "cache": {"read": 0, "write": 0},
+        },
+    }
+    variant = model_state.get("variant")
+    if variant:
+        info["variant"] = variant
+    return info
+
+
+def latest_model_usage(api_client: Any) -> dict[str, Any]:
+    """Return normalized usage metadata from an active model handler."""
+
+    handler = getattr(api_client, "client_handler", None)
+    getter = getattr(handler, "get_last_usage", None)
+    if not callable(getter):
+        return {}
+    try:
+        data = getter()
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _usage_int(usage: dict[str, Any], key: str) -> int:
+    try:
+        return max(int(usage.get(key, 0) or 0), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def usage_tokens_and_cost(usage: dict[str, Any]) -> tuple[dict[str, Any], float]:
+    """Return OpenCode token payload and non-negative cost from usage metadata."""
+
+    tokens = {
+        "input": _usage_int(usage, "input_tokens"),
+        "output": _usage_int(usage, "output_tokens"),
+        "reasoning": _usage_int(usage, "reasoning_tokens"),
+        "cache": {
+            "read": _usage_int(usage, "cache_read_tokens"),
+            "write": _usage_int(usage, "cache_write_tokens"),
+        },
+    }
+    cost = usage.get("cost")
+    try:
+        normalized_cost = float(cost) if cost is not None else 0.0
+    except (TypeError, ValueError):
+        normalized_cost = 0.0
+    if not isfinite(normalized_cost):
+        normalized_cost = 0.0
+    return tokens, max(normalized_cost, 0.0)
