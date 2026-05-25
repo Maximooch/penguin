@@ -168,6 +168,7 @@ from .core_runtime import model_runtime as core_model_runtime
 from .core_runtime import opencode_adapters as core_opencode_adapters
 from .core_runtime import opencode_bridge as core_opencode_bridge
 from .core_runtime import opencode_persistence as core_opencode_persistence
+from .core_runtime import process_engine as core_process_engine
 from .core_runtime import process_input as core_process_input
 from .core_runtime import process_lifecycle as core_process_lifecycle
 from .core_runtime import process_streaming as core_process_streaming
@@ -2130,91 +2131,25 @@ class PenguinCore:
                 scoped_conversation_id = (
                     engine_process_context.scoped_conversation_id
                 )
-
-                if multi_step:
-                    # Check if this is a formal task (RunMode) or conversational multi-step
-                    is_formal_task = context and context.get("task_mode", False)
-                    _trace_log_info(
-                        "core.process.trace.engine request=%s session=%s conversation=%s agent=%s formal_task=%s cm=%s conv=%s conv_session=%s",
-                        execution_context.request_id
-                        if execution_context
-                        else "unknown",
-                        request_session_id or "unknown",
-                        scoped_conversation_id or "",
-                        agent_id or "default",
-                        bool(is_formal_task),
-                        hex(id(conversation_manager)),
-                        hex(id(getattr(conversation_manager, "conversation", None)))
-                        if getattr(conversation_manager, "conversation", None)
-                        is not None
-                        else "none",
-                        getattr(
-                            getattr(
-                                getattr(conversation_manager, "conversation", None),
-                                "session",
-                                None,
-                            ),
-                            "id",
-                            None,
-                        )
-                        or "unknown",
-                    )
-
-                    if is_formal_task:
-                        # Bridge the simple stream_callback to the Engine's richer message_callback
-                        engine_message_callback = None
-                        if stream_callback:
-                            # The engine expects an async callback that takes (message, type, **kwargs)
-                            async def bridged_callback(
-                                message: str,
-                                msg_type: str,
-                                action_name: Optional[str] = None,
-                                **kwargs,
-                            ):
-                                # We only care about streaming assistant thoughts for this callback
-                                if msg_type == "assistant":
-                                    # Create a task to run the potentially non-async callback
-                                    # This ensures we don't block the engine's event loop.
-                                    asyncio.create_task(
-                                        asyncio.to_thread(stream_callback, message)
-                                    )
-
-                            engine_message_callback = bridged_callback
-
-                        # Use the task-oriented engine for formal tasks
-                        response = await self.engine.run_task(
-                            task_prompt=message,
-                            image_paths=image_paths,
-                            max_iterations=max_iterations,
-                            task_context=context,
-                            message_callback=engine_message_callback,
-                            agent_id=agent_id,
-                            api_client_override=api_client_override,
-                            model_config_override=model_config_override,
-                        )
-                    else:
-                        # Use the new conversational multi-step engine
-                        response = await self.engine.run_response(
-                            prompt=message,
-                            image_paths=image_paths,
-                            max_iterations=max_iterations,
-                            streaming=streaming,
-                            stream_callback=engine_stream_callback,
-                            agent_id=agent_id,
-                            api_client_override=api_client_override,
-                            model_config_override=model_config_override,
-                        )
-                else:
-                    # Use the single-turn conversational engine
-                    response = await self.engine.run_single_turn(
-                        message,
-                        image_paths=image_paths,
-                        streaming=streaming,
-                        stream_callback=engine_stream_callback,
-                        agent_id=agent_id,
-                        api_client_override=api_client_override,
-                        model_config_override=model_config_override,
-                    )
+                response = await core_process_engine.run_engine_process(
+                    self,
+                    message=message,
+                    image_paths=image_paths,
+                    max_iterations=max_iterations,
+                    context=context,
+                    multi_step=multi_step,
+                    streaming=streaming,
+                    stream_callback=stream_callback,
+                    engine_stream_callback=engine_stream_callback,
+                    agent_id=agent_id,
+                    api_client_override=api_client_override,
+                    model_config_override=model_config_override,
+                    conversation_manager=conversation_manager,
+                    execution_context=execution_context,
+                    request_session_id=request_session_id,
+                    scoped_conversation_id=scoped_conversation_id,
+                    trace_log_info=_trace_log_info,
+                )
                 _trace_log_info(
                     "core.process.trace.done request=%s session=%s conversation=%s status=%s iterations=%s actions=%s usage=%s response_len=%s",
                     execution_context.request_id if execution_context else "unknown",
