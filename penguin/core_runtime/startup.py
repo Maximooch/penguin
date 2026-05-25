@@ -52,6 +52,7 @@ __all__ = [
     "build_initial_model_config",
     "build_tool_manager",
     "configure_startup_logging",
+    "create_core_instance",
     "ensure_tokenizers_parallelism",
     "finalize_core_startup_state",
     "initialize_conversation_action_state",
@@ -61,6 +62,7 @@ __all__ = [
     "initialize_prompt_and_output_state",
     "initialize_runtime_config",
     "initialize_tui_bridge_state",
+    "load_penguin_cli",
     "load_startup_config",
     "log_startup_failure",
     "log_startup_summary",
@@ -259,6 +261,200 @@ def configure_startup_logging(
     for logger_name in ("httpx", "sentence_transformers", "LiteLLM", "tools", "llm"):
         get_logger(logger_name).setLevel(logging.WARNING)
     get_logger("chat").setLevel(logging.DEBUG)
+
+
+def load_penguin_cli() -> Any:
+    """Load the CLI class lazily so headless startup avoids chat imports."""
+
+    from penguin.chat.cli import PenguinCLI
+
+    return PenguinCLI
+
+
+async def create_core_instance(
+    core_factory: Callable[..., Any],
+    *,
+    config: Any | None,
+    model: str | None,
+    provider: str | None,
+    workspace_path: str | None,
+    enable_cli: bool,
+    show_progress: bool,
+    progress_callback: ProgressCallback | None,
+    fast_startup: bool,
+    default_model: str,
+    default_provider: str,
+    system_prompt: str,
+    config_loader: ConfigLoader,
+    model_config_factory: ModelConfigFactory,
+    api_client_factory: ApiClientFactory,
+    tool_manager_factory: ToolManagerFactory,
+    ensure_env_loaded: EnvLoader,
+    log_error: Callable[..., Any],
+    tqdm_factory: TqdmFactory,
+    profile_phase: Callable[[str], Any],
+    logger: Any,
+    cli_factory_loader: Callable[[], Any] | None = None,
+) -> Any:
+    """Create a PenguinCore instance and optional CLI with startup telemetry."""
+
+    ensure_tokenizers_parallelism()
+    startup_timing = StartupTiming()
+    progress = None
+
+    try:
+        with profile_phase("PenguinCore.create_total"):
+            progress = StartupProgress.create(
+                enable_cli=enable_cli,
+                show_progress=show_progress,
+                progress_callback=progress_callback,
+                tqdm_factory=tqdm_factory,
+            )
+
+            with profile_phase("Load environment"):
+                logger.info("STARTUP: Loading environment variables")
+                progress.start_step("Loading environment")
+                progress.complete_step()
+                startup_timing.record_step("Load environment", logger=logger)
+
+            with profile_phase("Setup logging"):
+                logger.info("STARTUP: Setting up logging configuration")
+                progress.start_step("Setting up logging")
+                configure_startup_logging()
+                progress.complete_step()
+                startup_timing.record_step("Setup logging", logger=logger)
+
+            with profile_phase("Load configuration"):
+                logger.info("STARTUP: Loading and parsing configuration")
+                progress.start_step("Loading configuration")
+                start_config_time = startup_timing.mark()
+                config = load_startup_config(
+                    config,
+                    workspace_path=workspace_path,
+                    config_loader=config_loader,
+                )
+                fast_startup = resolve_fast_startup(config, fast_startup)
+                logger.info(
+                    "STARTUP: Config loaded in %.4fs",
+                    startup_timing.elapsed_since(start_config_time),
+                )
+                progress.complete_step()
+                startup_timing.record_step("Load configuration", logger=logger)
+
+            with profile_phase("Create model config"):
+                logger.info("STARTUP: Creating model configuration")
+                progress.start_step("Creating model config")
+                model_config = build_initial_model_config(
+                    config,
+                    model=model,
+                    provider=provider,
+                    default_model=default_model,
+                    default_provider=default_provider,
+                    model_config_factory=model_config_factory,
+                )
+                logger.info(
+                    "STARTUP: Using model=%s, provider=%s, client=%s",
+                    model_config.model,
+                    model_config.provider,
+                    model_config.client_preference,
+                )
+                progress.complete_step()
+                startup_timing.record_step("Create model config", logger=logger)
+
+            with profile_phase("Initialize API client"):
+                logger.info("STARTUP: Initializing API client")
+                progress.start_step("Initializing API client")
+                api_client_start = startup_timing.mark()
+                api_client = build_api_client(
+                    model_config,
+                    system_prompt=system_prompt,
+                    api_client_factory=api_client_factory,
+                    ensure_env_loaded=ensure_env_loaded,
+                )
+                logger.info(
+                    "STARTUP: API client initialized in %.4fs",
+                    startup_timing.elapsed_since(api_client_start),
+                )
+                progress.complete_step()
+                startup_timing.record_step("Initialize API client", logger=logger)
+
+            with profile_phase("Create tool manager"):
+                logger.info(
+                    "STARTUP: Creating tool manager (fast_startup=%s)",
+                    fast_startup,
+                )
+                progress.start_step("Creating tool manager")
+                tool_manager_start = startup_timing.mark()
+                print("DEBUG: Creating ToolManager in PenguinCore...")
+                print(f"DEBUG: Passing config of type {type(config)} to ToolManager.")
+                print(
+                    f"DEBUG: Passing log_error of type {type(log_error)} to "
+                    "ToolManager."
+                )
+                print(f"DEBUG: Fast startup mode: {fast_startup}")
+                tool_manager = build_tool_manager(
+                    config,
+                    log_error=log_error,
+                    fast_startup=fast_startup,
+                    tool_manager_factory=tool_manager_factory,
+                )
+                logger.info(
+                    "STARTUP: Tool manager created in %.4fs with %s tools",
+                    startup_timing.elapsed_since(tool_manager_start),
+                    len(tool_manager.tools)
+                    if hasattr(tool_manager, "tools")
+                    else "unknown",
+                )
+                progress.complete_step()
+                startup_timing.record_step("Create tool manager", logger=logger)
+
+            with profile_phase("Create core instance"):
+                logger.info("STARTUP: Creating core instance")
+                progress.start_step("Creating core instance")
+                core_start = startup_timing.mark()
+                instance = core_factory(
+                    config=config,
+                    api_client=api_client,
+                    tool_manager=tool_manager,
+                    model_config=model_config,
+                )
+                logger.info(
+                    "STARTUP: Core instance created in %.4fs",
+                    startup_timing.elapsed_since(core_start),
+                )
+                progress.complete_step()
+                startup_timing.record_step("Create core instance", logger=logger)
+
+            cli = None
+            if enable_cli:
+                with profile_phase("Initialize CLI"):
+                    logger.info("STARTUP: Initializing CLI")
+                    progress.start_step("Initializing CLI")
+                    cli_start = startup_timing.mark()
+                    cli_factory = (cli_factory_loader or load_penguin_cli)()
+                    cli = cli_factory(instance)
+                    logger.info(
+                        "STARTUP: CLI initialized in %.4fs",
+                        startup_timing.elapsed_since(cli_start),
+                    )
+                    progress.complete_step()
+                    startup_timing.record_step("Initialize CLI", logger=logger)
+
+            progress.finish()
+            log_startup_summary(
+                startup_timing,
+                fast_startup=fast_startup,
+                tool_manager=tool_manager,
+                logger=logger,
+            )
+
+            return instance if not enable_cli else (instance, cli)
+
+    except Exception as error:
+        if progress is not None:
+            progress.close()
+        error_msg = log_startup_failure(startup_timing, error, logger=logger)
+        raise RuntimeError(error_msg) from error
 
 
 def load_startup_config(

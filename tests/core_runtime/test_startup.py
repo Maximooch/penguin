@@ -7,6 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from penguin.core_runtime import startup
 
 
@@ -64,6 +66,22 @@ class _SequenceClock:
         value = self.values[self.index]
         self.index += 1
         return value
+
+
+class _ProfilePhase:
+    def __init__(self, labels: list[str], label: str) -> None:
+        self.labels = labels
+        self.label = label
+
+    def __enter__(self) -> None:
+        self.labels.append(self.label)
+
+    def __exit__(self, *_args: Any) -> bool:
+        return False
+
+
+def _profile_factory(labels: list[str]):
+    return lambda label: _ProfilePhase(labels, label)
 
 
 def test_startup_progress_uses_tqdm_without_external_callback() -> None:
@@ -223,6 +241,228 @@ def test_configure_startup_logging_sets_expected_logger_levels() -> None:
         "llm": logging.WARNING,
         "chat": logging.DEBUG,
     }
+
+
+@pytest.mark.asyncio
+async def test_create_core_instance_builds_core_with_startup_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(startup, "configure_startup_logging", lambda: None)
+    logger = _FakeLogger()
+    profile_labels: list[str] = []
+    progress_calls: list[tuple[int, int, str]] = []
+    env_calls: list[str] = []
+    log_error = object()
+    config = SimpleNamespace(
+        model_config=SimpleNamespace(
+            model="configured-model",
+            provider="configured-provider",
+            client_preference="openai",
+        ),
+        api=SimpleNamespace(base_url="https://api.example.test/v1"),
+        fast_startup=True,
+        to_dict=lambda: {"config": True},
+    )
+    created: dict[str, Any] = {}
+
+    class _ModelConfig:
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+            self.model = kwargs["model"]
+            self.provider = kwargs["provider"]
+            self.client_preference = kwargs["client_preference"]
+
+    class _ApiClient:
+        def __init__(self, *, model_config: Any) -> None:
+            self.model_config = model_config
+            self.system_prompt = ""
+
+        def set_system_prompt(self, prompt: str) -> None:
+            self.system_prompt = prompt
+
+    class _ToolManager:
+        def __init__(
+            self,
+            payload: dict[str, Any],
+            error_logger: Any,
+            *,
+            fast_startup: bool,
+        ) -> None:
+            self.payload = payload
+            self.error_logger = error_logger
+            self.fast_startup = fast_startup
+            self.tools = {"read": object()}
+
+        def get_startup_stats(self) -> dict[str, int]:
+            return {"tools": len(self.tools)}
+
+    class _Core:
+        def __init__(self, **kwargs: Any) -> None:
+            created.update(kwargs)
+            self.kwargs = kwargs
+
+    result = await startup.create_core_instance(
+        _Core,
+        config=config,
+        model="override-model",
+        provider="override-provider",
+        workspace_path=None,
+        enable_cli=False,
+        show_progress=True,
+        progress_callback=lambda current, total, label: progress_calls.append(
+            (current, total, label)
+        ),
+        fast_startup=True,
+        default_model="default-model",
+        default_provider="default-provider",
+        system_prompt="system prompt",
+        config_loader=lambda: SimpleNamespace(name="unused"),
+        model_config_factory=_ModelConfig,
+        api_client_factory=_ApiClient,
+        tool_manager_factory=_ToolManager,
+        ensure_env_loaded=lambda: env_calls.append("loaded"),
+        log_error=log_error,
+        tqdm_factory=lambda *_args, **_kwargs: _FakeProgressBar(),
+        profile_phase=_profile_factory(profile_labels),
+        logger=logger,
+    )
+
+    assert isinstance(result, _Core)
+    assert created["config"] is config
+    assert created["model_config"].model == "override-model"
+    assert created["model_config"].provider == "override-provider"
+    assert created["api_client"].system_prompt == "system prompt"
+    assert created["tool_manager"].payload == {"config": True}
+    assert created["tool_manager"].error_logger is log_error
+    assert created["tool_manager"].fast_startup is True
+    assert env_calls == ["loaded"]
+    assert progress_calls == [
+        (1, 7, "Loading environment"),
+        (2, 7, "Setting up logging"),
+        (3, 7, "Loading configuration"),
+        (4, 7, "Creating model config"),
+        (5, 7, "Initializing API client"),
+        (6, 7, "Creating tool manager"),
+        (7, 7, "Creating core instance"),
+    ]
+    assert profile_labels == [
+        "PenguinCore.create_total",
+        "Load environment",
+        "Setup logging",
+        "Load configuration",
+        "Create model config",
+        "Initialize API client",
+        "Create tool manager",
+        "Create core instance",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_create_core_instance_returns_cli_tuple_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(startup, "configure_startup_logging", lambda: None)
+    config = SimpleNamespace(
+        model_config=SimpleNamespace(model="gpt-5", provider="openai"),
+        to_dict=lambda: {},
+    )
+
+    class _ModelConfig:
+        model = "gpt-5"
+        provider = "openai"
+        client_preference = "openai"
+
+        def __init__(self, **_kwargs: Any) -> None:
+            return None
+
+    class _ApiClient:
+        def __init__(self, *, model_config: Any) -> None:
+            self.model_config = model_config
+
+        def set_system_prompt(self, _prompt: str) -> None:
+            return None
+
+    class _ToolManager:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            self.tools: dict[str, Any] = {}
+
+        def get_startup_stats(self) -> dict[str, int]:
+            return {}
+
+    class _Core:
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+
+    class _Cli:
+        def __init__(self, core: Any) -> None:
+            self.core = core
+
+    core, cli = await startup.create_core_instance(
+        _Core,
+        config=config,
+        model=None,
+        provider=None,
+        workspace_path=None,
+        enable_cli=True,
+        show_progress=False,
+        progress_callback=None,
+        fast_startup=True,
+        default_model="default-model",
+        default_provider="default-provider",
+        system_prompt="system prompt",
+        config_loader=lambda: config,
+        model_config_factory=_ModelConfig,
+        api_client_factory=_ApiClient,
+        tool_manager_factory=_ToolManager,
+        ensure_env_loaded=lambda: None,
+        log_error=lambda *_args, **_kwargs: None,
+        tqdm_factory=lambda *_args, **_kwargs: _FakeProgressBar(),
+        profile_phase=_profile_factory([]),
+        logger=_FakeLogger(),
+        cli_factory_loader=lambda: _Cli,
+    )
+
+    assert isinstance(core, _Core)
+    assert isinstance(cli, _Cli)
+    assert cli.core is core
+
+
+@pytest.mark.asyncio
+async def test_create_core_instance_closes_progress_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(startup, "configure_startup_logging", lambda: None)
+    pbar = _FakeProgressBar()
+
+    def _raise_config() -> None:
+        raise RuntimeError("config failed")
+
+    with pytest.raises(RuntimeError, match="Failed to initialize PenguinCore"):
+        await startup.create_core_instance(
+            lambda **_kwargs: SimpleNamespace(),
+            config=None,
+            model=None,
+            provider=None,
+            workspace_path=None,
+            enable_cli=False,
+            show_progress=True,
+            progress_callback=None,
+            fast_startup=True,
+            default_model="default-model",
+            default_provider="default-provider",
+            system_prompt="system prompt",
+            config_loader=_raise_config,
+            model_config_factory=lambda **kwargs: kwargs,
+            api_client_factory=lambda **_kwargs: SimpleNamespace(),
+            tool_manager_factory=lambda *_args, **_kwargs: SimpleNamespace(),
+            ensure_env_loaded=lambda: None,
+            log_error=lambda *_args, **_kwargs: None,
+            tqdm_factory=lambda *_args, **_kwargs: pbar,
+            profile_phase=_profile_factory([]),
+            logger=_FakeLogger(),
+        )
+
+    assert pbar.closed is True
 
 
 def test_load_startup_config_temporarily_sets_workspace_env_and_restores(

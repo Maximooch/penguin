@@ -300,183 +300,29 @@ class PenguinCore:
         Args:
             fast_startup: If True (default), defer heavy operations like memory indexing until first use
         """
-        # Fix HuggingFace tokenizers parallelism warning early, before any model loading
-        core_startup.ensure_tokenizers_parallelism()
-
-        startup_timing = core_startup.StartupTiming()
-        progress = None
-
-        try:
-            with profile_startup_phase("PenguinCore.create_total"):
-                progress = core_startup.StartupProgress.create(
-                    enable_cli=enable_cli,
-                    show_progress=show_progress,
-                    progress_callback=progress_callback,
-                    tqdm_factory=tqdm,
-                )
-
-                # Step 1: Load environment
-                with profile_startup_phase("Load environment"):
-                    logger.info("STARTUP: Loading environment variables")
-                    progress.start_step("Loading environment")
-                    # load_dotenv() is already invoked centrally in config.py at import time.
-                    # Calling it again here is redundant and can subtly override earlier values.
-                    # Intentionally no-op.
-                    progress.complete_step()
-                    startup_timing.record_step("Load environment", logger=logger)
-
-                # Step 2: Initialize logging
-                with profile_startup_phase("Setup logging"):
-                    logger.info("STARTUP: Setting up logging configuration")
-                    progress.start_step("Setting up logging")
-                    core_startup.configure_startup_logging()
-                    progress.complete_step()
-                    startup_timing.record_step("Setup logging", logger=logger)
-
-                # Load configuration
-                with profile_startup_phase("Load configuration"):
-                    logger.info("STARTUP: Loading and parsing configuration")
-                    progress.start_step("Loading configuration")
-                    start_config_time = startup_timing.mark()
-                    config = core_startup.load_startup_config(
-                        config,
-                        workspace_path=workspace_path,
-                        config_loader=Config.load_config,
-                    )
-
-                    # Use fast_startup from config if not explicitly set
-                    fast_startup = core_startup.resolve_fast_startup(
-                        config,
-                        fast_startup,
-                    )
-
-                    logger.info(
-                        "STARTUP: Config loaded in %.4fs",
-                        startup_timing.elapsed_since(start_config_time),
-                    )
-                    progress.complete_step()
-                    startup_timing.record_step("Load configuration", logger=logger)
-
-                # Initialize model configuration
-                with profile_startup_phase("Create model config"):
-                    logger.info("STARTUP: Creating model configuration")
-                    progress.start_step("Creating model config")
-                    model_config = core_startup.build_initial_model_config(
-                        config,
-                        model=model,
-                        provider=provider,
-                        default_model=DEFAULT_MODEL,
-                        default_provider=DEFAULT_PROVIDER,
-                        model_config_factory=ModelConfig,
-                    )
-                    logger.info(
-                        f"STARTUP: Using model={model_config.model}, provider={model_config.provider}, client={model_config.client_preference}"
-                    )
-                    progress.complete_step()
-                    startup_timing.record_step("Create model config", logger=logger)
-
-                # Create API client
-                with profile_startup_phase("Initialize API client"):
-                    logger.info("STARTUP: Initializing API client")
-                    progress.start_step("Initializing API client")
-                    api_client_start = startup_timing.mark()
-                    api_client = core_startup.build_api_client(
-                        model_config,
-                        system_prompt=SYSTEM_PROMPT,
-                        api_client_factory=APIClient,
-                        ensure_env_loaded=_ensure_env_loaded,
-                    )
-                    logger.info(
-                        "STARTUP: API client initialized in %.4fs",
-                        startup_timing.elapsed_since(api_client_start),
-                    )
-                    progress.complete_step()
-                    startup_timing.record_step("Initialize API client", logger=logger)
-
-                # Initialize tool manager
-                with profile_startup_phase("Create tool manager"):
-                    logger.info(
-                        f"STARTUP: Creating tool manager (fast_startup={fast_startup})"
-                    )
-                    progress.start_step("Creating tool manager")
-                    tool_manager_start = startup_timing.mark()
-                    print("DEBUG: Creating ToolManager in PenguinCore...")
-                    print(
-                        f"DEBUG: Passing config of type {type(config)} to ToolManager."
-                    )
-                    print(
-                        f"DEBUG: Passing log_error of type {type(log_error)} to ToolManager."
-                    )
-                    print(f"DEBUG: Fast startup mode: {fast_startup}")
-                    tool_manager = core_startup.build_tool_manager(
-                        config,
-                        log_error=log_error,
-                        fast_startup=fast_startup,
-                        tool_manager_factory=ToolManager,
-                    )
-                    logger.info(
-                        "STARTUP: Tool manager created in %.4fs with %s tools",
-                        startup_timing.elapsed_since(tool_manager_start),
-                        len(tool_manager.tools)
-                        if hasattr(tool_manager, "tools")
-                        else "unknown",
-                    )
-                    progress.complete_step()
-                    startup_timing.record_step("Create tool manager", logger=logger)
-
-                # Create core instance
-                with profile_startup_phase("Create core instance"):
-                    logger.info("STARTUP: Creating core instance")
-                    progress.start_step("Creating core instance")
-                    core_start = startup_timing.mark()
-                    instance = cls(
-                        config=config,
-                        api_client=api_client,
-                        tool_manager=tool_manager,
-                        model_config=model_config,
-                    )
-                    logger.info(
-                        "STARTUP: Core instance created in %.4fs",
-                        startup_timing.elapsed_since(core_start),
-                    )
-                    progress.complete_step()
-                    startup_timing.record_step("Create core instance", logger=logger)
-
-                if enable_cli:
-                    with profile_startup_phase("Initialize CLI"):
-                        logger.info("STARTUP: Initializing CLI")
-                        progress.start_step("Initializing CLI")
-                        cli_start = startup_timing.mark()
-                        from penguin.chat.cli import PenguinCLI
-
-                        cli = PenguinCLI(instance)
-                        logger.info(
-                            "STARTUP: CLI initialized in %.4fs",
-                            startup_timing.elapsed_since(cli_start),
-                        )
-                        progress.complete_step()
-                        startup_timing.record_step("Initialize CLI", logger=logger)
-
-                progress.finish()
-
-                core_startup.log_startup_summary(
-                    startup_timing,
-                    fast_startup=fast_startup,
-                    tool_manager=tool_manager,
-                    logger=logger,
-                )
-
-                return instance if not enable_cli else (instance, cli)
-
-        except Exception as e:
-            if progress is not None:
-                progress.close()
-            error_msg = core_startup.log_startup_failure(
-                startup_timing,
-                e,
-                logger=logger,
-            )
-            raise RuntimeError(error_msg) from e
+        return await core_startup.create_core_instance(
+            cls,
+            config=config,
+            model=model,
+            provider=provider,
+            workspace_path=workspace_path,
+            enable_cli=enable_cli,
+            show_progress=show_progress,
+            progress_callback=progress_callback,
+            fast_startup=fast_startup,
+            default_model=DEFAULT_MODEL,
+            default_provider=DEFAULT_PROVIDER,
+            system_prompt=SYSTEM_PROMPT,
+            config_loader=Config.load_config,
+            model_config_factory=ModelConfig,
+            api_client_factory=APIClient,
+            tool_manager_factory=ToolManager,
+            ensure_env_loaded=_ensure_env_loaded,
+            log_error=log_error,
+            tqdm_factory=tqdm,
+            profile_phase=profile_startup_phase,
+            logger=logger,
+        )
 
     def __init__(
         self,
