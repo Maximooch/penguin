@@ -163,6 +163,7 @@ from .core_runtime import action_events as core_action_events
 from .core_runtime import action_mapping as core_action_mapping
 from .core_runtime import checkpoint_runtime as core_checkpoint_runtime
 from .core_runtime import model_runtime as core_model_runtime
+from .core_runtime import opencode_adapters as core_opencode_adapters
 from .core_runtime import opencode_bridge as core_opencode_bridge
 from .core_runtime import opencode_transcript as core_opencode_transcript
 from .core_runtime import session_lookup as core_session_lookup
@@ -4635,24 +4636,13 @@ class PenguinCore:
         if not isinstance(adapters, dict):
             adapters = {}
             self._tui_adapters = adapters
-        adapter = adapters.get(sid)
-        if adapter is not None:
-            if hasattr(adapter, "set_directory"):
-                adapter.set_directory(resolved_directory)
-            return adapter
-
-        from penguin.tui_adapter import PartEventAdapter
-
-        adapter = PartEventAdapter(
-            self.event_bus,
+        return core_opencode_adapters.get_or_create_session_adapter(
+            sid,
+            adapters=adapters,
+            event_bus=self.event_bus,
             persist_callback=self._persist_opencode_event,
-            emit_session_status_events=False,
+            directory=resolved_directory,
         )
-        adapter.set_session(sid)
-        if hasattr(adapter, "set_directory"):
-            adapter.set_directory(resolved_directory)
-        adapters[sid] = adapter
-        return adapter
 
     async def _on_tui_stream_chunk(self, event_type: str, data: Dict[str, Any]):
         """Handle stream chunk - manages stream lifecycle and emits with delta."""

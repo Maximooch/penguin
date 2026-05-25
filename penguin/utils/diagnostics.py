@@ -1,15 +1,46 @@
 import logging
-from typing import Dict
+from typing import Any, Dict
 
 import tiktoken  # type: ignore
 from rich.console import Console  # type: ignore
 from rich.panel import Panel  # type: ignore
 from rich.progress import BarColumn, Progress, TextColumn  # type: ignore
 
-console = Console()
-
 from penguin.constants import DEFAULT_MAX_HISTORY_TOKENS
+
+console = Console()
 MAX_CONTEXT_TOKENS = DEFAULT_MAX_HISTORY_TOKENS
+
+
+def _estimate_text_tokens(text: Any) -> int:
+    return len(str(text)) // 4 + 1
+
+
+def _estimate_content_tokens(content: Any) -> int:
+    if isinstance(content, list):
+        total = 0
+        for item in content:
+            if isinstance(item, dict) and item.get("type") in ["image", "image_url"]:
+                total += 4000
+            else:
+                total += _estimate_text_tokens(item)
+        return total
+    return _estimate_text_tokens(content)
+
+
+class _ApproximateTokenizer:
+    def encode(self, text: Any) -> list[int]:
+        return [0] * _estimate_text_tokens(text)
+
+
+def _load_tokenizer() -> Any:
+    try:
+        return tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "Falling back to approximate token counting", exc_info=True
+        )
+        return _ApproximateTokenizer()
 
 
 class TokenTracker:
@@ -19,22 +50,27 @@ class TokenTracker:
 
     def update(self, input_tokens: int, output_tokens: int):
         """Update token counts directly with numbers"""
-        print(f"[TokenTracker] Updating tokens: +{input_tokens} input, +{output_tokens} output")
+        print(
+            f"[TokenTracker] Updating tokens: +{input_tokens} input, "
+            f"+{output_tokens} output"
+        )
         self.tokens["input"] += input_tokens
         self.tokens["output"] += output_tokens
-        print(f"[TokenTracker] New token counts: {self.tokens['input']} input, {self.tokens['output']} output")
+        print(
+            f"[TokenTracker] New token counts: {self.tokens['input']} input, "
+            f"{self.tokens['output']} output"
+        )
 
     def reset(self):
         """Reset token counts"""
         print("[TokenTracker] Resetting token counts")
         self.tokens = {"input": 0, "output": 0}
-    
+
     @property
     def tokenizer(self):
         """Lazy load tokenizer when first needed"""
         if self._tokenizer is None:
-            import tiktoken
-            self._tokenizer = tiktoken.get_encoding("cl100k_base")
+            self._tokenizer = _load_tokenizer()
         return self._tokenizer
 
 
@@ -52,8 +88,7 @@ class Diagnostics:
     def tokenizer(self):
         """Lazy load tokenizer when first needed"""
         if self._tokenizer is None:
-            import tiktoken
-            self._tokenizer = tiktoken.get_encoding("cl100k_base")
+            self._tokenizer = _load_tokenizer()
         return self._tokenizer
 
     def count_tokens(self, text):
@@ -86,20 +121,9 @@ class Diagnostics:
             else:
                 # Fallback for any other type
                 return len(self.tokenizer.encode(str(text)))
-        except (TypeError, ValueError, AttributeError):
+        except Exception:
             # Fallback to character estimation
-            if isinstance(text, str):
-                return len(text) // 4 + 1
-            elif isinstance(text, list):
-                total = 0
-                for item in text:
-                    if isinstance(item, dict) and item.get("type") in ["image", "image_url"]:
-                        total += 4000  # Approximation for images
-                    else:
-                        total += len(str(item)) // 4 + 1
-                return total
-            else:
-                return len(str(text)) // 4 + 1
+            return _estimate_content_tokens(text)
 
     def update_tokens(self, tracker_name: str, input_text: str, output_text: str = ""):
         """Update token counts for a specific tracker"""
@@ -108,12 +132,15 @@ class Diagnostics:
             return
 
         print(f"[Diagnostics] Updating tokens for {tracker_name}")
-        
+
         input_tokens = self.count_tokens(input_text)
         output_tokens = self.count_tokens(output_text)
-        
+
         if tracker_name in self.token_trackers:
-            print(f"[Diagnostics] Counted {input_tokens} input tokens, {output_tokens} output tokens")
+            print(
+                f"[Diagnostics] Counted {input_tokens} input tokens, "
+                f"{output_tokens} output tokens"
+            )
             self.token_trackers[tracker_name].update(input_tokens, output_tokens)
         else:
             print(f"[Diagnostics] WARNING: Unknown tracker {tracker_name}")
@@ -158,11 +185,11 @@ class Diagnostics:
         """Get total tokens across all trackers"""
         if not self.enabled:
             return 0
-            
+
         total = 0
         for name, tracker in self.token_trackers.items():
             total += tracker.tokens["input"] + tracker.tokens["output"]
-        
+
         print(f"[Diagnostics] Total tokens used: {total}")
         return total
 
