@@ -77,6 +77,39 @@ def test_find_session_store_loads_indexed_agent_session() -> None:
     assert agent.loaded == ["session_agent"]
 
 
+def test_find_session_store_prefers_default_manager_when_ids_overlap() -> None:
+    default_session = SimpleNamespace(id="session_shared", owner="default")
+    agent_session = SimpleNamespace(id="session_shared", owner="agent")
+    default = _Manager(cached={"session_shared": (default_session, False)})
+    agent = _Manager(indexed={"session_shared": agent_session})
+
+    found, owner = session_lookup.find_session_store(
+        _core(default, build=agent),
+        "session_shared",
+    )
+
+    assert found is default_session
+    assert owner is default
+    assert agent.loaded == []
+
+
+def test_find_session_store_accepts_conversation_manager_directly() -> None:
+    session = SimpleNamespace(id="session_direct")
+    manager = _Manager(cached={"session_direct": (session, False)})
+    conversation_manager = SimpleNamespace(
+        session_manager=manager,
+        agent_session_managers={},
+    )
+
+    found, owner = session_lookup.find_session_store(
+        conversation_manager,
+        "session_direct",
+    )
+
+    assert found is session
+    assert owner is manager
+
+
 def test_find_session_store_continues_after_load_failure() -> None:
     broken = _Manager(indexed={"session_shared": None}, fail_load=True)
     session = SimpleNamespace(id="session_shared")
