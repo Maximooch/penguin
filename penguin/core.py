@@ -150,7 +150,7 @@ from .core_runtime import response_generation as core_response_generation
 from .core_runtime import runmode_lifecycle as core_runmode_lifecycle
 from .core_runtime import startup as core_startup
 from .core_runtime import streaming_facade as core_streaming_facade
-from .core_runtime import token_usage_runtime as core_token_usage_runtime
+from .core_runtime import token_usage_facade as core_token_usage_facade
 from penguin.llm.stream_handler import (
     AgentStreamingStateManager,
 )
@@ -219,6 +219,7 @@ def _trace_log_info(message: str, *args: Any) -> None:
 class PenguinCore(
     core_diagnostics_facade.DiagnosticsCoreFacade,
     core_streaming_facade.StreamingCoreFacade,
+    core_token_usage_facade.TokenUsageCoreFacade,
     core_opencode_facade.OpenCodeCoreFacade,
 ):
     """
@@ -719,78 +720,6 @@ class PenguinCore(
             message_type=message_type,
             metadata=metadata,
             channel=channel,
-        )
-
-    def get_token_usage(
-        self,
-        session_id: Optional[str] = None,
-        conversation_id: Optional[str] = None,
-        agent_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Return runtime or scoped token/context-window telemetry.
-
-        Args:
-            session_id: Optional session identifier to scope usage. Takes
-                precedence over the runtime context window and never falls back
-                to runtime usage when not found.
-            conversation_id: Optional conversation identifier. Used as the
-                lookup id when ``session_id`` is absent and echoed in scoped
-                responses.
-            agent_id: Optional agent identifier. When scoped usage is requested,
-                filters messages by ``Message.agent_id`` or uses an isolated
-                session whose metadata owner matches this id. Missing ownership
-                returns ``scope="missing"`` instead of whole-session totals.
-
-        Returns:
-            Dict[str, Any]: Runtime calls return ``scope="runtime"`` plus the
-            conversation manager's legacy usage fields. Scoped calls return
-            ``scope="session"``, ``session_id``, ``conversation_id``, optional
-            ``agent_id``, ``current_total_tokens``,
-            ``max_context_window_tokens``, ``available_tokens``, ``percentage``,
-            ``categories``, and ``truncations``. Missing scoped lookups return
-            ``scope="missing"`` with identifiers and ``error`` for HTTP layers
-            to translate to 404.
-
-        Raises:
-            None. Runtime telemetry failures are logged and return zeroed
-            runtime usage; missing scoped lookups are returned as data.
-        """
-
-        return core_token_usage_runtime.get_token_usage(
-            self,
-            session_id=session_id,
-            conversation_id=conversation_id,
-            agent_id=agent_id,
-        )
-
-    def _get_session_token_usage(
-        self,
-        session_id: str,
-        *,
-        conversation_id: Optional[str] = None,
-        agent_id: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
-        """Return usage for one persisted session without global fallback."""
-
-        return core_token_usage_runtime.get_session_token_usage(
-            self,
-            session_id,
-            conversation_id=conversation_id,
-            agent_id=agent_id,
-        )
-
-    def _usage_from_session_messages(
-        self,
-        session: Any,
-        *,
-        agent_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Build a conservative session-scoped usage payload from messages."""
-
-        return core_token_usage_runtime.usage_from_session_messages(
-            self,
-            session,
-            agent_id=agent_id,
         )
 
     def set_system_prompt(self, prompt: str) -> None:
