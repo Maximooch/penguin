@@ -147,11 +147,9 @@ from .core_runtime import opencode_facade as core_opencode_facade
 from .core_runtime import process_runtime as core_process_runtime
 from .core_runtime import prompt_settings as core_prompt_settings
 from .core_runtime import response_generation as core_response_generation
-from .core_runtime import runmode_events as core_runmode_events
 from .core_runtime import runmode_lifecycle as core_runmode_lifecycle
 from .core_runtime import startup as core_startup
-from .core_runtime import stream_events as core_stream_events
-from .core_runtime import streaming_state as core_streaming_state
+from .core_runtime import streaming_facade as core_streaming_facade
 from .core_runtime import system_diagnostics as core_system_diagnostics
 from .core_runtime import token_usage_runtime as core_token_usage_runtime
 from penguin.llm.stream_handler import (
@@ -168,14 +166,12 @@ from penguin.run_mode import RunMode
 
 # Core systems
 from penguin.system.conversation_manager import ConversationManager
-from penguin.system.state import MessageCategory, Message
 
 # System Prompt
 from penguin.system_prompt import SYSTEM_PROMPT, get_system_prompt
 
 # Tools and Processing
 from penguin.tools import ToolManager
-from penguin.utils.callbacks import adapt_stream_callback
 from penguin.utils.diagnostics import (
     diagnostics,
     disable_diagnostics,
@@ -222,7 +218,10 @@ def _trace_log_info(message: str, *args: Any) -> None:
 # ---------------------------------------------------------------------------
 # PenguinCore
 # ---------------------------------------------------------------------------
-class PenguinCore(core_opencode_facade.OpenCodeCoreFacade):
+class PenguinCore(
+    core_streaming_facade.StreamingCoreFacade,
+    core_opencode_facade.OpenCodeCoreFacade,
+):
     """
     Central coordinator for the Penguin AI assistant.
 
@@ -736,104 +735,6 @@ class PenguinCore(core_opencode_facade.OpenCodeCoreFacade):
         limits and usage, and Engine registry presence.
         """
         return core_agent_lifecycle.smoke_check_agents(self)
-
-    @property
-    def total_tokens_used(self) -> int:
-        """Get total tokens used via conversation manager"""
-        return core_streaming_state.total_tokens_used(self)
-
-    # ------------------------------------------------------------------
-    # Streaming State Properties (delegate to AgentStreamingStateManager)
-    # ------------------------------------------------------------------
-
-    @property
-    def streaming_active(self) -> bool:
-        """Whether streaming is currently active for the default agent."""
-        return core_streaming_state.streaming_active(self)
-
-    @property
-    def streaming_content(self) -> str:
-        """Accumulated assistant content from default agent's stream."""
-        return core_streaming_state.streaming_content(self)
-
-    @property
-    def streaming_reasoning_content(self) -> str:
-        """Accumulated reasoning content from default agent's stream."""
-        return core_streaming_state.streaming_reasoning_content(self)
-
-    @property
-    def streaming_stream_id(self) -> Optional[str]:
-        """Unique ID of the default agent's stream, or None if not streaming."""
-        return core_streaming_state.streaming_stream_id(self)
-
-    # --- Agent-Specific Streaming Methods ---
-
-    def is_agent_streaming(self, agent_id: str) -> bool:
-        """Check if a specific agent is currently streaming.
-
-        Args:
-            agent_id: The agent identifier to check
-
-        Returns:
-            True if the agent is actively streaming
-        """
-        return core_streaming_state.is_agent_streaming(self, agent_id)
-
-    def get_agent_streaming_content(self, agent_id: str) -> str:
-        """Get accumulated streaming content for a specific agent.
-
-        Args:
-            agent_id: The agent identifier
-
-        Returns:
-            Accumulated content string (empty if agent not found or not streaming)
-        """
-        return core_streaming_state.get_agent_streaming_content(self, agent_id)
-
-    def get_agent_streaming_reasoning(self, agent_id: str) -> str:
-        """Get accumulated reasoning content for a specific agent.
-
-        Args:
-            agent_id: The agent identifier
-
-        Returns:
-            Accumulated reasoning content string
-        """
-        return core_streaming_state.get_agent_streaming_reasoning(self, agent_id)
-
-    def get_active_streaming_agents(self) -> List[str]:
-        """Get list of agent IDs that are currently streaming.
-
-        Returns:
-            List of agent IDs with active streams
-        """
-        return core_streaming_state.get_active_streaming_agents(self)
-
-    def cleanup_agent_streaming(self, agent_id: str) -> None:
-        """Clean up streaming state for a terminated agent.
-
-        Args:
-            agent_id: The agent identifier to clean up
-        """
-        core_streaming_state.cleanup_agent_streaming(self, agent_id)
-
-    async def _emit_opencode_session_status(
-        self,
-        session_id: str,
-        status_type: str,
-        info: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        """Emit OpenCode session.status event for a session."""
-        await core_stream_events.emit_opencode_session_status(
-            self,
-            session_id,
-            status_type,
-            info=info,
-        )
-
-    async def abort_session(self, session_id: str) -> bool:
-        """Abort active streaming/tool state for a session."""
-        return await core_stream_events.abort_session(self, session_id, logger=logger)
 
     def get_token_usage(
         self,
@@ -1487,189 +1388,6 @@ class PenguinCore(core_opencode_facade.OpenCodeCoreFacade):
             return None
 
         return core_model_runtime.current_model_payload(self.model_config)
-
-    async def emit_ui_event(self, event_type: str, data: Dict[str, Any]) -> None:
-        """
-        Emit an event through the unified event bus.
-
-        Filters internal markers from content before emitting to UI.
-
-        Args:
-            event_type: Type of event (e.g., "stream_chunk", "token_update", etc.)
-            data: Event data relevant to the event type
-        """
-        await core_stream_events.emit_ui_event(
-            self,
-            event_type,
-            data,
-            logger=logger,
-        )
-
-    def _filter_internal_markers_from_event(
-        self, data: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """
-        Filter internal implementation markers from event data.
-
-        Removes tags like <execute>, <system-reminder>, <internal> from content fields.
-
-        Args:
-            data: Event data dictionary
-
-        Returns:
-            Filtered event data (shallow copy if modified)
-        """
-        return core_stream_events.filter_internal_markers_from_event(data)
-
-    def _resolve_stream_scope_id(
-        self,
-        execution_context: Optional[Any],
-        agent_id: Optional[str],
-    ) -> str:
-        """Resolve stream-state key for concurrent session isolation."""
-        return core_stream_events.resolve_stream_scope_id(
-            conversation_manager=getattr(self, "conversation_manager", None),
-            execution_context=execution_context,
-            agent_id=agent_id,
-        )
-
-    async def _handle_stream_chunk(
-        self,
-        chunk: str,
-        message_type: Optional[str] = None,
-        role: str = "assistant",
-        agent_id: Optional[str] = None,
-        stream_scope_id: Optional[str] = None,
-        session_id: Optional[str] = None,
-        conversation_id: Optional[str] = None,
-    ) -> None:
-        """
-        Central handler for all streaming content chunks from any source.
-        Delegates to AgentStreamingStateManager and emits events.
-
-        Args:
-            chunk: The content chunk to add
-            message_type: Type of message - "assistant", "reasoning", "tool_output", etc.
-            role: The role of the message (default: "assistant")
-            agent_id: Optional agent identifier for per-agent streaming (default: current agent)
-        """
-        await core_stream_events.handle_stream_chunk(
-            self,
-            chunk,
-            message_type=message_type,
-            role=role,
-            agent_id=agent_id,
-            stream_scope_id=stream_scope_id,
-            session_id=session_id,
-            conversation_id=conversation_id,
-            logger=logger,
-        )
-
-    def finalize_streaming_message(
-        self,
-        agent_id: Optional[str] = None,
-        session_id: Optional[str] = None,
-        conversation_id: Optional[str] = None,
-        stream_scope_id: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Finalizes the current streaming message for a specific agent, adds it to
-        ConversationManager, and resets the streaming state. Emits a final event
-        with is_final=True.
-
-        Args:
-            agent_id: Optional agent identifier (defaults to current agent)
-
-        Returns:
-            The finalized message dict or None if no streaming was active
-        """
-        return core_stream_events.finalize_streaming_message(
-            self,
-            agent_id=agent_id,
-            session_id=session_id,
-            conversation_id=conversation_id,
-            stream_scope_id=stream_scope_id,
-            logger=logger,
-            trace_log=_trace_log_info,
-        )
-
-    def abort_streaming_message(
-        self,
-        agent_id: Optional[str] = None,
-        session_id: Optional[str] = None,
-        conversation_id: Optional[str] = None,
-        stream_scope_id: Optional[str] = None,
-    ) -> bool:
-        """Abort an uncommitted streaming message without persisting dialog."""
-        return core_stream_events.abort_streaming_message(
-            self,
-            agent_id=agent_id,
-            session_id=session_id,
-            conversation_id=conversation_id,
-            stream_scope_id=stream_scope_id,
-            trace_log=_trace_log_info,
-        )
-
-    def _persist_finalized_message(
-        self,
-        *,
-        agent_id: str,
-        session_id: Optional[str],
-        message: Message,
-        category: MessageCategory,
-    ) -> bool:
-        """Persist a finalized streaming message without reloading shared conversations."""
-        return core_stream_events.persist_finalized_message(
-            self,
-            agent_id=agent_id,
-            session_id=session_id,
-            message=message,
-            category=category,
-            trace_log=_trace_log_info,
-        )
-
-    def _prepare_runmode_stream_callback(
-        self,
-        callback: Optional[Callable[..., Any]],
-    ) -> Optional[Callable[[str, str], Awaitable[None]]]:
-        """Normalize run mode stream callbacks to a common async signature."""
-        return core_stream_events.prepare_runmode_stream_callback(
-            callback,
-            adapter_factory=adapt_stream_callback,
-        )
-
-    async def _invoke_runmode_stream_callback(
-        self,
-        chunk: str,
-        message_type: str,
-        callback: Optional[Callable[[str, str], Awaitable[None]]] = None,
-    ) -> None:
-        await core_stream_events.invoke_runmode_stream_callback(
-            self,
-            chunk,
-            message_type,
-            callback=callback,
-            logger=logger,
-        )
-
-    # Update token usage notification to use events
-    def update_token_display(self) -> None:
-        """Emit token usage event to UI subscribers."""
-        core_token_usage_runtime.emit_token_display_update(self, log=logger)
-
-    # Keep existing register_stream_callback for backward compatibility
-
-    async def _handle_run_mode_event(self, event: Dict[str, Any]) -> None:
-        """
-        Central handler for all events emitted by RunMode.
-
-        This method is the bridge between RunMode's headless operation and the rest of the system.
-        It processes events from RunMode and updates ConversationManager appropriately.
-
-        Args:
-            event: Dictionary containing event data with at least a 'type' key
-        """
-        await core_runmode_events.handle_run_mode_event(self, event, logger=logger)
 
     def get_startup_stats(self) -> Dict[str, Any]:
         """Get comprehensive startup performance statistics."""

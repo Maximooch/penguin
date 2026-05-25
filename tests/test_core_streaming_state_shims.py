@@ -9,6 +9,9 @@ from penguin.core import PenguinCore
 
 def test_core_streaming_state_shims_delegate_to_runtime(monkeypatch) -> None:
     core = PenguinCore.__new__(PenguinCore)
+    streaming_state = PenguinCore.total_tokens_used.fget.__globals__[
+        "core_streaming_state"
+    ]
     calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
 
     def _value(name: str, value: Any):
@@ -18,44 +21,42 @@ def test_core_streaming_state_shims_delegate_to_runtime(monkeypatch) -> None:
 
         return _inner
 
+    monkeypatch.setattr(streaming_state, "total_tokens_used", _value("total", 9))
+    monkeypatch.setattr(streaming_state, "streaming_active", _value("active", True))
+    monkeypatch.setattr(streaming_state, "streaming_content", _value("content", "text"))
     monkeypatch.setattr(
-        "penguin.core.core_streaming_state.total_tokens_used",
-        _value("total", 9),
-    )
-    monkeypatch.setattr(
-        "penguin.core.core_streaming_state.streaming_active",
-        _value("active", True),
-    )
-    monkeypatch.setattr(
-        "penguin.core.core_streaming_state.streaming_content",
-        _value("content", "text"),
-    )
-    monkeypatch.setattr(
-        "penguin.core.core_streaming_state.streaming_reasoning_content",
+        streaming_state,
+        "streaming_reasoning_content",
         _value("reasoning", "why"),
     )
     monkeypatch.setattr(
-        "penguin.core.core_streaming_state.streaming_stream_id",
+        streaming_state,
+        "streaming_stream_id",
         _value("stream_id", "stream_1"),
     )
     monkeypatch.setattr(
-        "penguin.core.core_streaming_state.is_agent_streaming",
+        streaming_state,
+        "is_agent_streaming",
         _value("agent_active", False),
     )
     monkeypatch.setattr(
-        "penguin.core.core_streaming_state.get_agent_streaming_content",
+        streaming_state,
+        "get_agent_streaming_content",
         _value("agent_content", "agent text"),
     )
     monkeypatch.setattr(
-        "penguin.core.core_streaming_state.get_agent_streaming_reasoning",
+        streaming_state,
+        "get_agent_streaming_reasoning",
         _value("agent_reasoning", "agent why"),
     )
     monkeypatch.setattr(
-        "penguin.core.core_streaming_state.get_active_streaming_agents",
+        streaming_state,
+        "get_active_streaming_agents",
         _value("active_agents", ["worker"]),
     )
     monkeypatch.setattr(
-        "penguin.core.core_streaming_state.cleanup_agent_streaming",
+        streaming_state,
+        "cleanup_agent_streaming",
         _value("cleanup", None),
     )
 

@@ -13,6 +13,9 @@ def test_prepare_runmode_stream_callback_delegates_to_stream_events(
     monkeypatch,
 ) -> None:
     core = PenguinCore.__new__(PenguinCore)
+    stream_events = PenguinCore._prepare_runmode_stream_callback.__globals__[
+        "core_stream_events"
+    ]
     calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
     prepared = object()
 
@@ -20,10 +23,7 @@ def test_prepare_runmode_stream_callback_delegates_to_stream_events(
         calls.append((args, kwargs))
         return prepared
 
-    monkeypatch.setattr(
-        "penguin.core.core_stream_events.prepare_runmode_stream_callback",
-        _prepare,
-    )
+    monkeypatch.setattr(stream_events, "prepare_runmode_stream_callback", _prepare)
 
     callback = object()
 
@@ -39,15 +39,15 @@ async def test_invoke_runmode_stream_callback_delegates_to_stream_events(
     monkeypatch,
 ) -> None:
     core = PenguinCore.__new__(PenguinCore)
+    stream_events = PenguinCore._invoke_runmode_stream_callback.__globals__[
+        "core_stream_events"
+    ]
     calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
 
     async def _invoke(*args: Any, **kwargs: Any) -> None:
         calls.append((args, kwargs))
 
-    monkeypatch.setattr(
-        "penguin.core.core_stream_events.invoke_runmode_stream_callback",
-        _invoke,
-    )
+    monkeypatch.setattr(stream_events, "invoke_runmode_stream_callback", _invoke)
 
     callback = object()
 
