@@ -11,7 +11,11 @@ import pytest
 from penguin.core_runtime.agent_lifecycle import (
     create_sub_agent,
     delete_agent_conversation,
+    delete_agent_conversation_guarded,
     ensure_agent_conversation,
+    get_agent_profile,
+    get_agent_roster,
+    get_persona_catalog,
     is_agent_paused,
     publish_sub_agent_session_created,
     resolve_agent_execution_scope,
@@ -652,6 +656,126 @@ def test_delete_agent_conversation_rejects_default_agent() -> None:
 
     with pytest.raises(ValueError, match="default agent"):
         delete_agent_conversation(core, "default")
+
+
+def test_delete_agent_conversation_guarded_blocks_shared_session_delete() -> None:
+    delete_calls: list[tuple[str, str]] = []
+    conversation_manager = SimpleNamespace(
+        agents_sharing_session=lambda agent_id: ["default", agent_id],
+        get_agent_conversation=lambda _agent_id: SimpleNamespace(
+            session=SimpleNamespace(id="conv_shared")
+        ),
+        delete_agent_conversation=lambda agent_id, conversation_id: delete_calls.append(
+            (agent_id, conversation_id)
+        )
+        or True,
+    )
+    core = SimpleNamespace(conversation_manager=conversation_manager)
+
+    result = delete_agent_conversation_guarded(core, "worker", "conv_shared")
+
+    assert result["success"] is False
+    assert "worker" in (result["warning"] or "")
+    assert delete_calls == []
+
+
+def test_delete_agent_conversation_guarded_allows_force_delete() -> None:
+    delete_calls: list[tuple[str, str]] = []
+    conversation_manager = SimpleNamespace(
+        agents_sharing_session=lambda agent_id: ["default", agent_id],
+        get_agent_conversation=lambda _agent_id: SimpleNamespace(
+            session=SimpleNamespace(id="conv_shared")
+        ),
+        delete_agent_conversation=lambda agent_id, conversation_id: delete_calls.append(
+            (agent_id, conversation_id)
+        )
+        or True,
+    )
+    core = SimpleNamespace(conversation_manager=conversation_manager)
+
+    result = delete_agent_conversation_guarded(
+        core,
+        "worker",
+        "conv_shared",
+        force=True,
+    )
+
+    assert result == {"success": True, "warning": None}
+    assert delete_calls == [("worker", "conv_shared")]
+
+
+def test_delete_agent_conversation_guarded_continues_when_guard_fails() -> None:
+    delete_calls: list[tuple[str, str]] = []
+
+    def _raise_guard(_agent_id: str) -> list[str]:
+        raise RuntimeError("metadata unavailable")
+
+    conversation_manager = SimpleNamespace(
+        agents_sharing_session=_raise_guard,
+        delete_agent_conversation=lambda agent_id, conversation_id: delete_calls.append(
+            (agent_id, conversation_id)
+        )
+        or False,
+    )
+    core = SimpleNamespace(conversation_manager=conversation_manager)
+
+    result = delete_agent_conversation_guarded(core, "worker", "conv_missing")
+
+    assert result == {"success": False, "warning": None}
+    assert delete_calls == [("worker", "conv_missing")]
+
+
+def test_agent_catalog_and_roster_helpers_delegate(monkeypatch: pytest.MonkeyPatch):
+    calls: list[tuple[str, tuple[Any, ...]]] = []
+
+    def _catalog(config: Any) -> list[dict[str, Any]]:
+        calls.append(("catalog", (config,)))
+        return [{"id": "persona"}]
+
+    class _AgentManager:
+        def __init__(
+            self,
+            *,
+            conversation_manager: Any,
+            config: Any,
+            runtime_config: Any,
+            is_paused_fn: Any,
+        ) -> None:
+            calls.append(
+                (
+                    "manager",
+                    (conversation_manager, config, runtime_config, is_paused_fn),
+                )
+            )
+
+        def get_roster(self) -> list[dict[str, Any]]:
+            calls.append(("roster", ()))
+            return [{"id": "worker"}]
+
+        def get_profile(self, agent_id: str) -> dict[str, Any] | None:
+            calls.append(("profile", (agent_id,)))
+            return {"id": agent_id}
+
+    monkeypatch.setattr("penguin.agent.manager.get_persona_catalog", _catalog)
+    monkeypatch.setattr("penguin.agent.manager.AgentManager", _AgentManager)
+
+    core = SimpleNamespace(
+        config=SimpleNamespace(name="config"),
+        conversation_manager=SimpleNamespace(name="cm"),
+        runtime_config=SimpleNamespace(name="runtime"),
+        is_agent_paused=lambda _agent_id: False,
+    )
+
+    assert get_persona_catalog(core) == [{"id": "persona"}]
+    assert get_agent_roster(core) == [{"id": "worker"}]
+    assert get_agent_profile(core, "worker") == {"id": "worker"}
+    assert [call[0] for call in calls] == [
+        "catalog",
+        "manager",
+        "roster",
+        "manager",
+        "profile",
+    ]
 
 
 def test_unregister_agent_can_preserve_conversation() -> None:

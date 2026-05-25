@@ -18,7 +18,11 @@ from penguin.utils.parser import ActionExecutor
 __all__ = [
     "create_sub_agent",
     "delete_agent_conversation",
+    "delete_agent_conversation_guarded",
     "ensure_agent_conversation",
+    "get_agent_profile",
+    "get_agent_roster",
+    "get_persona_catalog",
     "is_agent_paused",
     "publish_sub_agent_session_created",
     "register_agent_compat",
@@ -31,6 +35,35 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+
+def get_persona_catalog(core: Any) -> list[dict[str, Any]]:
+    """Return configured personas as serialisable dictionaries."""
+    from penguin.agent.manager import get_persona_catalog as build_persona_catalog
+
+    return build_persona_catalog(core.config)
+
+
+def _build_agent_manager(core: Any) -> Any:
+    """Build the AgentManager facade used by roster/profile API shims."""
+    from penguin.agent.manager import AgentManager
+
+    return AgentManager(
+        conversation_manager=getattr(core, "conversation_manager", None),
+        config=core.config,
+        runtime_config=getattr(core, "runtime_config", None),
+        is_paused_fn=core.is_agent_paused,
+    )
+
+
+def get_agent_roster(core: Any) -> list[dict[str, Any]]:
+    """Return registered agents with their conversation metadata."""
+    return _build_agent_manager(core).get_roster()
+
+
+def get_agent_profile(core: Any, agent_id: str) -> dict[str, Any] | None:
+    """Return roster information for a single agent identifier."""
+    return _build_agent_manager(core).get_profile(agent_id)
 
 
 def register_agent_compat(core: Any, *args: Any, **kwargs: Any) -> None:
@@ -205,6 +238,42 @@ def delete_agent_conversation(core: Any, agent_id: str) -> bool:
         core.set_active_agent("default")
 
     return removed
+
+
+def delete_agent_conversation_guarded(
+    core: Any,
+    agent_id: str,
+    conversation_id: str,
+    *,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Delete a conversation with safety checks for shared sessions."""
+    conversation_manager = core.conversation_manager
+
+    try:
+        shared_agents = conversation_manager.agents_sharing_session(agent_id)
+        if len(shared_agents) > 1:
+            conversation = conversation_manager.get_agent_conversation(agent_id)
+            current_id = getattr(getattr(conversation, "session", None), "id", None)
+            if current_id == conversation_id and not force:
+                warning = (
+                    f"Conversation {conversation_id} is shared by agents "
+                    f"{shared_agents}. Deletion aborted. Use force=True to delete "
+                    "anyway."
+                )
+                return {"success": False, "warning": warning}
+    except Exception:
+        logger.debug(
+            "Failed to evaluate shared-session guard for '%s'",
+            agent_id,
+            exc_info=True,
+        )
+
+    success = conversation_manager.delete_agent_conversation(
+        agent_id,
+        conversation_id,
+    )
+    return {"success": success, "warning": None}
 
 
 def create_sub_agent(

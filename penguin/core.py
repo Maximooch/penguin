@@ -1010,39 +1010,21 @@ class PenguinCore:
 
     def get_persona_catalog(self) -> List[Dict[str, Any]]:
         """Return configured personas as serialisable dictionaries."""
-        from penguin.agent.manager import get_persona_catalog
-
-        return get_persona_catalog(self.config)
+        return core_agent_lifecycle.get_persona_catalog(self)
 
     def get_agent_roster(self) -> List[Dict[str, Any]]:
         """Return list of registered agents with their conversation metadata.
 
         Delegates to AgentManager for the actual implementation.
         """
-        from penguin.agent.manager import AgentManager
-
-        manager = AgentManager(
-            conversation_manager=getattr(self, "conversation_manager", None),
-            config=self.config,
-            runtime_config=getattr(self, "runtime_config", None),
-            is_paused_fn=self.is_agent_paused,
-        )
-        return manager.get_roster()
+        return core_agent_lifecycle.get_agent_roster(self)
 
     def get_agent_profile(self, agent_id: str) -> Optional[Dict[str, Any]]:
         """Return roster information for a single agent identifier.
 
         Delegates to AgentManager for the actual implementation.
         """
-        from penguin.agent.manager import AgentManager
-
-        manager = AgentManager(
-            conversation_manager=getattr(self, "conversation_manager", None),
-            config=self.config,
-            runtime_config=getattr(self, "runtime_config", None),
-            is_paused_fn=self.is_agent_paused,
-        )
-        return manager.get_profile(agent_id)
+        return core_agent_lifecycle.get_agent_profile(self, agent_id)
 
     def register_agent(self, *args, **kwargs) -> None:
         """Compatibility shim for legacy persona-based agent registration.
@@ -1087,28 +1069,12 @@ class PenguinCore:
 
         Returns a dict: {"success": bool, "warning": Optional[str]}
         """
-        cm = self.conversation_manager
-        warning = None
-
-        try:
-            # Determine if the target conversation is currently shared
-            shared_agents = cm.agents_sharing_session(agent_id)
-            if len(shared_agents) > 1:
-                # Confirm this shared group is pointing at the same session id
-                conv = cm.get_agent_conversation(agent_id)
-                current_id = getattr(conv.session, "id", None)
-                if current_id == conversation_id and not force:
-                    warning = (
-                        f"Conversation {conversation_id} is shared by agents {shared_agents}. "
-                        f"Deletion aborted. Use force=True to delete anyway."
-                    )
-                    return {"success": False, "warning": warning}
-        except Exception:
-            # Best-effort safeguard only; continue with delete
-            pass
-
-        ok = cm.delete_agent_conversation(agent_id, conversation_id)
-        return {"success": ok, "warning": None}
+        return core_agent_lifecycle.delete_agent_conversation_guarded(
+            self,
+            agent_id,
+            conversation_id,
+            force=force,
+        )
 
     def list_agents(self) -> List[str]:
         """Return all registered agent identifiers."""
