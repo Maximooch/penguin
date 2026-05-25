@@ -490,6 +490,86 @@ def test_finalize_streaming_message_falls_back_only_when_unscoped() -> None:
 
 
 @pytest.mark.asyncio
+async def test_abort_streaming_message_derives_scope_and_emits_filtered_event() -> None:
+    trace_messages: list[tuple[str, tuple[Any, ...]]] = []
+    emitted: list[tuple[str, dict[str, Any]]] = []
+
+    class _StreamManager:
+        def __init__(self) -> None:
+            self.abort_calls: list[str | None] = []
+
+        def abort(self, agent_id: str | None = None) -> list[SimpleNamespace]:
+            self.abort_calls.append(agent_id)
+            return [
+                SimpleNamespace(
+                    event_type="stream_interrupted",
+                    data={"chunk": "keep <internal>drop</internal>"},
+                )
+            ]
+
+    stream_manager = _StreamManager()
+    owner = SimpleNamespace(
+        conversation_manager=SimpleNamespace(current_agent_id="ambient-agent"),
+        _stream_manager=stream_manager,
+    )
+    owner._filter_internal_markers_from_event = (
+        stream_events.filter_internal_markers_from_event
+    )
+
+    async def _emit_ui_event(event_type: str, data: dict[str, Any]) -> None:
+        emitted.append((event_type, data))
+
+    owner.emit_ui_event = _emit_ui_event
+
+    aborted = stream_events.abort_streaming_message(
+        owner,
+        stream_scope_id="session_1:agent-a",
+        trace_log=lambda template, *args: trace_messages.append((template, args)),
+    )
+    await asyncio.sleep(0)
+
+    assert aborted is True
+    assert stream_manager.abort_calls == ["session_1:agent-a"]
+    assert emitted == [
+        (
+            "stream_interrupted",
+            {
+                "chunk": "keep",
+                "session_id": "session_1",
+                "conversation_id": "session_1",
+                "agent_id": "agent-a",
+            },
+        )
+    ]
+    assert trace_messages[-1][1][1:5] == (
+        "session_1",
+        "session_1",
+        "agent-a",
+        "session_1:agent-a",
+    )
+
+
+def test_abort_streaming_message_returns_false_without_events() -> None:
+    class _StreamManager:
+        def abort(self, agent_id: str | None = None) -> list[Any]:
+            del agent_id
+            return []
+
+    owner = SimpleNamespace(
+        conversation_manager=SimpleNamespace(current_agent_id="default"),
+        _stream_manager=_StreamManager(),
+    )
+
+    aborted = stream_events.abort_streaming_message(
+        owner,
+        session_id="session_1",
+        conversation_id="session_1",
+    )
+
+    assert aborted is False
+
+
+@pytest.mark.asyncio
 async def test_handle_tui_stream_chunk_starts_tracks_and_finalizes_stream() -> None:
     adapter = _Adapter()
     owner = _Owner(adapter)

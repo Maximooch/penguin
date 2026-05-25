@@ -12,6 +12,7 @@ from penguin.system.state import Message, MessageCategory
 
 __all__ = [
     "abort_session",
+    "abort_streaming_message",
     "active_part_text",
     "emit_opencode_session_status",
     "filter_internal_markers_from_event",
@@ -586,6 +587,110 @@ def finalize_streaming_message(
             )
 
     return message.to_dict()
+
+
+def abort_streaming_message(
+    owner: Any,
+    *,
+    agent_id: str | None = None,
+    session_id: str | None = None,
+    conversation_id: str | None = None,
+    stream_scope_id: str | None = None,
+    trace_log: Any = None,
+) -> bool:
+    """Abort an uncommitted streaming message without persisting dialog."""
+
+    execution_context = get_current_execution_context()
+    conversation_manager = getattr(owner, "conversation_manager", None)
+    explicit_agent_id = agent_id is not None
+    if agent_id is None:
+        if execution_context and execution_context.agent_id:
+            agent_id = execution_context.agent_id
+        else:
+            agent_id = getattr(conversation_manager, "current_agent_id", "default")
+
+    resolved_agent_id = agent_id or "default"
+    resolved_conversation_id = conversation_id
+    resolved_session_id = session_id or conversation_id
+    if execution_context:
+        resolved_conversation_id = (
+            resolved_conversation_id
+            or execution_context.conversation_id
+            or execution_context.session_id
+        )
+        resolved_session_id = (
+            resolved_session_id
+            or execution_context.session_id
+            or resolved_conversation_id
+        )
+
+    resolved_stream_scope_id = stream_scope_id
+    if not resolved_stream_scope_id and resolved_session_id:
+        resolved_stream_scope_id = f"{resolved_session_id}:{resolved_agent_id}"
+    if not resolved_stream_scope_id:
+        scope_resolver = getattr(owner, "_resolve_stream_scope_id", None)
+        if callable(scope_resolver):
+            resolved_stream_scope_id = scope_resolver(
+                execution_context,
+                resolved_agent_id,
+            )
+        else:
+            resolved_stream_scope_id = resolve_stream_scope_id(
+                conversation_manager=conversation_manager,
+                execution_context=execution_context,
+                agent_id=resolved_agent_id,
+            )
+
+    if resolved_stream_scope_id and not explicit_agent_id:
+        _scope_session, _, scope_agent_id = resolved_stream_scope_id.partition(":")
+        if scope_agent_id.strip():
+            resolved_agent_id = scope_agent_id.strip()
+    if (
+        resolved_stream_scope_id
+        and ":" in resolved_stream_scope_id
+        and (not resolved_session_id or not resolved_conversation_id)
+    ):
+        scope_session_id = resolved_stream_scope_id.split(":", 1)[0].strip()
+        if scope_session_id:
+            resolved_session_id = resolved_session_id or scope_session_id
+            resolved_conversation_id = resolved_conversation_id or resolved_session_id
+
+    events = owner._stream_manager.abort(agent_id=resolved_stream_scope_id)
+    if not events:
+        return False
+
+    for event in events:
+        event_data = (
+            dict(event.data) if isinstance(event.data, dict) else {"data": event.data}
+        )
+        if resolved_conversation_id:
+            event_data["session_id"] = resolved_session_id or resolved_conversation_id
+            event_data["conversation_id"] = resolved_conversation_id
+        elif resolved_session_id:
+            event_data["session_id"] = resolved_session_id
+            event_data["conversation_id"] = resolved_session_id
+        else:
+            event_data["session_id"] = "unknown"
+            event_data["conversation_id"] = "unknown"
+        event_data["agent_id"] = resolved_agent_id
+        event_data = owner._filter_internal_markers_from_event(event_data)
+        _schedule_background_task(
+            owner,
+            owner.emit_ui_event(event.event_type, event_data),
+        )
+
+    if callable(trace_log):
+        trace_log(
+            "core.stream.abort request=%s session=%s conversation=%s agent=%s "
+            "scope=%s events=%s",
+            execution_context.request_id if execution_context else "unknown",
+            resolved_session_id or "unknown",
+            resolved_conversation_id or "",
+            resolved_agent_id,
+            resolved_stream_scope_id,
+            len(events),
+        )
+    return True
 
 
 async def handle_tui_stream_chunk(
