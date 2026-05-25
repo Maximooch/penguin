@@ -5066,25 +5066,15 @@ class PenguinCore:
 
             entry = messages.get(message_id)
             if not isinstance(entry, dict):
-                session_dirs = getattr(self, "_opencode_session_directories", {})
-                mapped_directory = (
-                    session_dirs.get(session_id)
-                    if isinstance(session_dirs, dict)
-                    else None
-                )
-                context = get_current_execution_context()
-                context_directory = context.directory if context else None
-                runtime_directory = getattr(
-                    getattr(self, "runtime_config", None),
-                    "active_root",
-                    None,
-                )
-                fallback_directory = (
-                    mapped_directory
-                    or context_directory
-                    or runtime_directory
-                    or os.getenv("PENGUIN_CWD")
-                    or os.getcwd()
+                fallback_directory = core_opencode_bridge.resolve_adapter_directory(
+                    str(session_id),
+                    session_directories=getattr(
+                        self,
+                        "_opencode_session_directories",
+                        None,
+                    ),
+                    execution_context=get_current_execution_context(),
+                    runtime_config=getattr(self, "runtime_config", None),
                 )
                 model_state = self._resolve_opencode_model_state(session_id=session_id)
                 entry = {
