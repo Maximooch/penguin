@@ -164,6 +164,7 @@ from .core_runtime import action_mapping as core_action_mapping
 from .core_runtime import agent_lifecycle as core_agent_lifecycle
 from .core_runtime import checkpoint_runtime as core_checkpoint_runtime
 from .core_runtime import conversations as core_conversations
+from .core_runtime import message_processing as core_message_processing
 from .core_runtime import model_runtime as core_model_runtime
 from .core_runtime import opencode_adapters as core_opencode_adapters
 from .core_runtime import opencode_bridge as core_opencode_bridge
@@ -1631,36 +1632,20 @@ class PenguinCore:
             context_files: Optional list of context files to load
             streaming: Whether to use streaming mode for responses
         """
-        try:
-            conversation_manager = core_conversations.resolve_conversation_manager(
-                self,
-                agent_id,
-                log=logger,
-            )
-
-            # Add context if provided
-            if context:
-                for key, value in context.items():
-                    conversation_manager.add_context(f"{key}: {value}")
-            # Process through conversation manager (handles context files)
-            return await conversation_manager.process_message(
-                message=message,
-                conversation_id=conversation_id,
-                streaming=streaming,
-                context_files=context_files,
-            )
-
-        except Exception as e:
-            error_msg = f"Error processing message: {str(e)}"
-            log_error(
-                e,
-                context={
-                    "component": "core",
-                    "method": "process_message",
-                    "message": message,
-                },
-            )
-            return error_msg
+        return await core_message_processing.process_message(
+            self,
+            message=message,
+            context=context,
+            conversation_id=conversation_id,
+            agent_id=agent_id,
+            context_files=context_files,
+            streaming=streaming,
+            resolve_conversation_manager=(
+                core_conversations.resolve_conversation_manager
+            ),
+            log_error=log_error,
+            log=logger,
+        )
 
     async def get_response(
         self,
