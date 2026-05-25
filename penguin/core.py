@@ -131,7 +131,6 @@ from penguin.config import (
 )
 from penguin.config import config as raw_config
 from penguin.constants import DEFAULT_MAX_MESSAGES_PER_SESSION
-from penguin._version import __version__ as PENGUIN_VERSION
 
 # LLM and API
 from penguin.llm.api_client import APIClient
@@ -141,6 +140,7 @@ from .core_runtime import agent_lifecycle as core_agent_lifecycle
 from .core_runtime import checkpoint_runtime as core_checkpoint_runtime
 from .core_runtime import conversations as core_conversations
 from .core_runtime import core_state as core_state_runtime
+from .core_runtime import diagnostics_facade as core_diagnostics_facade
 from .core_runtime import message_processing as core_message_processing
 from .core_runtime import model_runtime as core_model_runtime
 from .core_runtime import opencode_facade as core_opencode_facade
@@ -150,7 +150,6 @@ from .core_runtime import response_generation as core_response_generation
 from .core_runtime import runmode_lifecycle as core_runmode_lifecycle
 from .core_runtime import startup as core_startup
 from .core_runtime import streaming_facade as core_streaming_facade
-from .core_runtime import system_diagnostics as core_system_diagnostics
 from .core_runtime import token_usage_runtime as core_token_usage_runtime
 from penguin.llm.stream_handler import (
     AgentStreamingStateManager,
@@ -182,7 +181,6 @@ from penguin.utils.parser import (
 )
 from penguin.utils.profiling import (
     profile_startup_phase,
-    profiler,
 )
 
 try:
@@ -219,6 +217,7 @@ def _trace_log_info(message: str, *args: Any) -> None:
 # PenguinCore
 # ---------------------------------------------------------------------------
 class PenguinCore(
+    core_diagnostics_facade.DiagnosticsCoreFacade,
     core_streaming_facade.StreamingCoreFacade,
     core_opencode_facade.OpenCodeCoreFacade,
 ):
@@ -722,20 +721,6 @@ class PenguinCore(
             channel=channel,
         )
 
-    async def get_telemetry_summary(self) -> Dict[str, Any]:
-        return await core_system_diagnostics.get_telemetry_summary(self)
-
-    # ------------------------------------------------------------------
-    # Diagnostics: Smoke test for agent wiring
-    # ------------------------------------------------------------------
-    def smoke_check_agents(self) -> Dict[str, Any]:
-        """Return a diagnostic snapshot of agent wiring and context windows.
-
-        Includes per-agent session, conversation object identity, context window
-        limits and usage, and Engine registry presence.
-        """
-        return core_agent_lifecycle.smoke_check_agents(self)
-
     def get_token_usage(
         self,
         session_id: Optional[str] = None,
@@ -1059,32 +1044,6 @@ class PenguinCore(
             self.conversation_manager
         )
 
-    # System Diagnostics and Information API
-    # ------------------------------------------------------------------
-
-    def get_system_info(self) -> Dict[str, Any]:
-        """
-        Get comprehensive system information.
-
-        Returns:
-            Dictionary containing system information including model config,
-            component status, and capabilities
-        """
-        return core_system_diagnostics.get_system_info(
-            self,
-            version=PENGUIN_VERSION,
-            logger=logger,
-        )
-
-    def get_system_status(self) -> Dict[str, Any]:
-        """
-        Get current system status including runtime state.
-
-        Returns:
-            Dictionary containing current system status and runtime information
-        """
-        return core_system_diagnostics.get_system_status(self, logger=logger)
-
     async def process(
         self,
         input_data: Union[Dict[str, Any], str],
@@ -1388,19 +1347,3 @@ class PenguinCore(
             return None
 
         return core_model_runtime.current_model_payload(self.model_config)
-
-    def get_startup_stats(self) -> Dict[str, Any]:
-        """Get comprehensive startup performance statistics."""
-        return core_system_diagnostics.get_startup_stats(self, profiler=profiler)
-
-    def print_startup_report(self) -> None:
-        """Print a comprehensive startup performance report."""
-        core_system_diagnostics.print_startup_report(self, profiler=profiler)
-
-    def enable_fast_startup_globally(self) -> None:
-        """Enable fast startup mode for future operations."""
-        core_system_diagnostics.enable_fast_startup_globally(self, logger=logger)
-
-    def get_memory_provider_status(self) -> Dict[str, Any]:
-        """Get current status of memory provider and indexing."""
-        return core_system_diagnostics.get_memory_provider_status(self)
