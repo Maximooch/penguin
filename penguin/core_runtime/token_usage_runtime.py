@@ -24,6 +24,14 @@ def _normalize_identifier(value: str | None) -> str | None:
     return stripped or None
 
 
+def _coerce_non_negative_int(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(parsed, 0)
+
+
 def get_token_usage(
     core: Any,
     *,
@@ -62,9 +70,10 @@ def get_token_usage(
         if not conversation_manager:
             return _empty_runtime_usage()
 
-        usage = conversation_manager.get_token_usage()
-        if isinstance(usage, dict):
-            usage = {"scope": "runtime", **usage}
+        raw_usage = conversation_manager.get_token_usage()
+        if not isinstance(raw_usage, dict):
+            return _empty_runtime_usage()
+        usage = {"scope": "runtime", **raw_usage}
 
         try:
             token_event_data = usage.copy()
@@ -172,7 +181,7 @@ def usage_from_session_messages(
     current_total_tokens = 0
 
     for message in messages:
-        token_count = int(getattr(message, "tokens", 0) or 0)
+        token_count = _coerce_non_negative_int(getattr(message, "tokens", 0))
         current_total_tokens += token_count
 
         category = getattr(message, "category", None)

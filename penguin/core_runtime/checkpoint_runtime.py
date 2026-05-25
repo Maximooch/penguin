@@ -61,7 +61,7 @@ def list_checkpoints(
     if resolved_session_id is None:
         current_session = conversation_manager.get_current_session()
         if current_session:
-            resolved_session_id = current_session.id
+            resolved_session_id = getattr(current_session, "id", None)
 
     return conversation_manager.list_checkpoints(
         session_id=resolved_session_id,
@@ -87,7 +87,10 @@ def get_checkpoint_stats(conversation_manager: Any) -> dict[str, Any]:
         }
 
     checkpoints = conversation_manager.list_checkpoints(limit=1000)
-    config = checkpoint_manager.config
+    config = getattr(checkpoint_manager, "config", None)
+    retention = getattr(config, "retention", None)
+    if not isinstance(retention, dict):
+        retention = {}
 
     return {
         "enabled": True,
@@ -110,8 +113,8 @@ def get_checkpoint_stats(conversation_manager: Any) -> dict[str, Any]:
             ]
         ),
         "config": {
-            "frequency": config.frequency,
-            "retention_hours": config.retention["keep_all_hours"],
-            "max_age_days": config.retention["max_age_days"],
+            "frequency": getattr(config, "frequency", None),
+            "retention_hours": retention.get("keep_all_hours"),
+            "max_age_days": retention.get("max_age_days"),
         },
     }

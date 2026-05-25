@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
-from hypothesis import given, strategies as st
+from hypothesis import given, settings, strategies as st
 
 from penguin.core_runtime.model_runtime import (
     build_model_config_for_model,
@@ -254,6 +255,37 @@ async def test_build_model_config_for_model_clamps_config_output_cap() -> None:
 
     assert model_config.max_output_tokens == 174080
     assert safe_window == 174080
+
+
+@given(
+    context_length=st.integers(min_value=1, max_value=1_000_000),
+    max_output_tokens=st.integers(min_value=1, max_value=1_000_000),
+)
+@settings(max_examples=50)
+def test_build_model_config_for_model_never_exposes_output_cap_above_safe_window(
+    context_length: int,
+    max_output_tokens: int,
+) -> None:
+    async def _fetch_specs(model_id: str) -> dict[str, Any]:
+        assert model_id == "example/model"
+        return {
+            "context_length": context_length,
+            "max_output_tokens": max_output_tokens,
+            "supports_vision": False,
+        }
+
+    model_config, safe_window = asyncio.run(
+        build_model_config_for_model(
+            "openrouter/example/model",
+            model_configs={},
+            fetch_specs=_fetch_specs,
+        )
+    )
+
+    if safe_window is None:
+        assert model_config.max_output_tokens == max_output_tokens
+    else:
+        assert model_config.max_output_tokens <= safe_window
 
 
 @pytest.mark.asyncio

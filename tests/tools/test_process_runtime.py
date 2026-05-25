@@ -75,6 +75,32 @@ def test_process_runtime_writes_stdin_and_stops() -> None:
     assert stopped["process_status"] == "exited"
 
 
+def test_process_runtime_captures_stderr() -> None:
+    runtime = ProcessRuntime()
+
+    started = runtime.start("printf 'problem\\n' >&2")
+    process_id = started["process_id"]
+    polled = _poll_until_output(runtime, process_id, "problem")
+
+    assert "[stderr] problem" in polled["output"]
+
+
+def test_process_runtime_retains_bounded_event_history() -> None:
+    runtime = ProcessRuntime(max_events_per_process=2)
+
+    process_id = runtime.start("cat")["process_id"]
+    for value in ("one", "two", "three"):
+        runtime.write_stdin(process_id, f"{value}\n")
+        _poll_until_output(runtime, process_id, value)
+
+    polled = runtime.poll(process_id, since_sequence=0)
+    runtime.stop(process_id)
+
+    assert "one" not in polled["output"]
+    assert "two" in polled["output"]
+    assert "three" in polled["output"]
+
+
 def test_process_poll_output_is_bounded() -> None:
     runtime = ProcessRuntime()
 

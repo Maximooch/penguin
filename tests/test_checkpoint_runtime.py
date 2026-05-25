@@ -65,6 +65,20 @@ def test_list_checkpoints_preserves_explicit_session_and_limit() -> None:
     assert manager.calls == [{"session_id": "session_explicit", "limit": 2}]
 
 
+def test_list_checkpoints_tolerates_current_session_without_id() -> None:
+    manager = _ConversationManager()
+    manager.current_session = SimpleNamespace()
+
+    checkpoints = list_checkpoints(manager)
+
+    assert [checkpoint["id"] for checkpoint in checkpoints] == [
+        "cp_manual",
+        "cp_auto",
+        "cp_branch",
+    ]
+    assert manager.calls == [{"session_id": None, "limit": 50}]
+
+
 def test_get_checkpoint_stats_counts_checkpoint_types() -> None:
     manager = _ConversationManager()
 
@@ -83,6 +97,23 @@ def test_get_checkpoint_stats_counts_checkpoint_types() -> None:
         },
     }
     assert manager.calls == [{"session_id": None, "limit": 1000}]
+
+
+def test_get_checkpoint_stats_tolerates_partial_retention_config() -> None:
+    manager = _ConversationManager()
+    manager.checkpoint_manager.config = SimpleNamespace(
+        frequency=10,
+        retention={"keep_all_hours": 6},
+    )
+
+    stats = get_checkpoint_stats(manager)
+
+    assert stats["enabled"] is True
+    assert stats["config"] == {
+        "frequency": 10,
+        "retention_hours": 6,
+        "max_age_days": None,
+    }
 
 
 def test_get_checkpoint_stats_reports_disabled_without_checkpoint_manager() -> None:
