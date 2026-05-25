@@ -510,6 +510,157 @@ def test_initialize_tui_bridge_state_wires_event_stream_and_opencode_state() -> 
     ]
 
 
+def test_build_default_checkpoint_config_uses_core_checkpoint_defaults() -> None:
+    checkpoint_config = startup.build_default_checkpoint_config(
+        checkpoint_config_factory=lambda **kwargs: kwargs,
+    )
+
+    assert checkpoint_config == {
+        "enabled": True,
+        "frequency": 1,
+        "planes": {"conversation": True, "tasks": False, "code": False},
+        "retention": {
+            "keep_all_hours": 24,
+            "keep_every_nth": 10,
+            "max_age_days": 30,
+        },
+        "max_auto_checkpoints": 1000,
+    }
+
+
+def test_initialize_conversation_action_state_wires_managers_and_backrefs(
+    tmp_path,
+) -> None:
+    checkpoint_payloads: list[dict[str, Any]] = []
+    conversation_payloads: list[dict[str, Any]] = []
+    action_payloads: list[dict[str, Any]] = []
+    set_core_calls: list[Any] = []
+
+    def _checkpoint_factory(**kwargs: Any) -> SimpleNamespace:
+        checkpoint_payloads.append(kwargs)
+        return SimpleNamespace(name="checkpoint", payload=kwargs)
+
+    class _ConversationManager:
+        def __init__(self, **kwargs: Any) -> None:
+            conversation_payloads.append(kwargs)
+            self.kwargs = kwargs
+
+    def _action_executor_factory(
+        tool_manager: Any,
+        project_manager: Any,
+        conversation_manager: Any,
+        *,
+        ui_event_callback: Any,
+    ) -> SimpleNamespace:
+        action_payloads.append(
+            {
+                "tool_manager": tool_manager,
+                "project_manager": project_manager,
+                "conversation_manager": conversation_manager,
+                "ui_event_callback": ui_event_callback,
+            }
+        )
+        return SimpleNamespace(name="executor")
+
+    def _emit_ui_event(event_type: str, payload: dict[str, Any]) -> None:
+        del event_type, payload
+
+    tool_manager = SimpleNamespace(
+        project_root=tmp_path / "repo",
+        set_core=lambda owner: set_core_calls.append(owner),
+    )
+    owner = SimpleNamespace(
+        config=SimpleNamespace(to_dict=lambda: {"skills": {"enabled": True}}),
+        model_config=SimpleNamespace(name="model"),
+        api_client=SimpleNamespace(name="api"),
+        system_prompt="system prompt",
+        tool_manager=tool_manager,
+        project_manager=SimpleNamespace(name="project"),
+        emit_ui_event=_emit_ui_event,
+    )
+
+    startup.initialize_conversation_action_state(
+        owner,
+        workspace_path=tmp_path,
+        checkpoint_config_factory=_checkpoint_factory,
+        conversation_manager_factory=_ConversationManager,
+        action_executor_factory=_action_executor_factory,
+        default_max_messages_per_session=42,
+    )
+
+    assert checkpoint_payloads == [
+        {
+            "enabled": True,
+            "frequency": 1,
+            "planes": {"conversation": True, "tasks": False, "code": False},
+            "retention": {
+                "keep_all_hours": 24,
+                "keep_every_nth": 10,
+                "max_age_days": 30,
+            },
+            "max_auto_checkpoints": 1000,
+        }
+    ]
+    assert conversation_payloads == [
+        {
+            "model_config": owner.model_config,
+            "api_client": owner.api_client,
+            "workspace_path": tmp_path,
+            "system_prompt": "system prompt",
+            "max_messages_per_session": 42,
+            "max_sessions_in_memory": 20,
+            "auto_save_interval": 60,
+            "checkpoint_config": owner.conversation_manager.kwargs["checkpoint_config"],
+            "skills_config": {"skills": {"enabled": True}},
+            "project_root": tmp_path / "repo",
+        }
+    ]
+    assert owner.conversation_manager.core is owner
+    assert set_core_calls == [owner]
+    assert owner.action_executor.name == "executor"
+    assert action_payloads == [
+        {
+            "tool_manager": tool_manager,
+            "project_manager": owner.project_manager,
+            "conversation_manager": owner.conversation_manager,
+            "ui_event_callback": _emit_ui_event,
+        }
+    ]
+    assert owner.current_runmode_status_summary == "RunMode idle."
+
+
+def test_initialize_conversation_action_state_uses_empty_skills_without_config_dict(
+    tmp_path,
+) -> None:
+    conversation_payloads: list[dict[str, Any]] = []
+
+    class _BrokenConfig:
+        def to_dict(self) -> dict[str, Any]:
+            raise RuntimeError("config unavailable")
+
+    startup.initialize_conversation_action_state(
+        SimpleNamespace(
+            config=_BrokenConfig(),
+            model_config=None,
+            api_client=None,
+            system_prompt="prompt",
+            tool_manager=None,
+            project_manager=SimpleNamespace(name="project"),
+            emit_ui_event=lambda *_args, **_kwargs: None,
+        ),
+        workspace_path=tmp_path,
+        checkpoint_config_factory=lambda **kwargs: kwargs,
+        conversation_manager_factory=lambda **kwargs: (
+            conversation_payloads.append(kwargs) or SimpleNamespace()
+        ),
+        action_executor_factory=lambda *_args, **_kwargs: SimpleNamespace(),
+        default_max_messages_per_session=7,
+    )
+
+    assert conversation_payloads[0]["skills_config"] == {}
+    assert conversation_payloads[0]["project_root"] is None
+
+
 def test_initialize_prompt_and_output_state_prefers_typed_output_config() -> None:
     formatted: list[str] = []
     owner = SimpleNamespace(

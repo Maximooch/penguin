@@ -9,8 +9,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, MutableMapping
 
-ConfigLoader = Callable[[], Any]
+ActionExecutorFactory = Callable[..., Any]
 ApiClientFactory = Callable[..., Any]
+CheckpointConfigFactory = Callable[..., Any]
+ConfigLoader = Callable[[], Any]
+ConversationManagerFactory = Callable[..., Any]
 RuntimeConfigFactory = Callable[[dict[str, Any]], Any]
 ModelConfigFactory = Callable[..., Any]
 ToolManagerFactory = Callable[..., Any]
@@ -22,9 +25,12 @@ TqdmFactory = Callable[..., Any]
 Clock = Callable[[], float]
 
 __all__ = [
+    "ActionExecutorFactory",
     "ApiClientFactory",
+    "CheckpointConfigFactory",
     "Clock",
     "ConfigLoader",
+    "ConversationManagerFactory",
     "EnvLoader",
     "ModelConfigFactory",
     "OutputFormatter",
@@ -36,10 +42,12 @@ __all__ = [
     "ToolManagerFactory",
     "TqdmFactory",
     "build_api_client",
+    "build_default_checkpoint_config",
     "build_initial_model_config",
     "build_tool_manager",
     "configure_startup_logging",
     "ensure_tokenizers_parallelism",
+    "initialize_conversation_action_state",
     "initialize_prompt_and_output_state",
     "initialize_runtime_config",
     "initialize_tui_bridge_state",
@@ -58,6 +66,11 @@ _BASE_STARTUP_STEPS = [
     "Creating tool manager",
     "Creating core instance",
 ]
+
+_CONVERSATION_MAX_SESSIONS_IN_MEMORY = 20
+_CONVERSATION_AUTO_SAVE_INTERVAL_SECONDS = 60
+_CHECKPOINT_FREQUENCY_MESSAGES = 1
+_CHECKPOINT_MAX_AUTO_CHECKPOINTS = 1000
 
 
 @dataclass
@@ -381,6 +394,63 @@ def initialize_tui_bridge_state(
     owner._runmode_stream_callback = None
     owner._runmode_active = False
     owner.run_mode = None
+
+
+def build_default_checkpoint_config(
+    *,
+    checkpoint_config_factory: CheckpointConfigFactory,
+) -> Any:
+    """Build the default checkpoint config used by PenguinCore construction."""
+
+    return checkpoint_config_factory(
+        enabled=True,
+        frequency=_CHECKPOINT_FREQUENCY_MESSAGES,
+        planes={"conversation": True, "tasks": False, "code": False},
+        retention={"keep_all_hours": 24, "keep_every_nth": 10, "max_age_days": 30},
+        max_auto_checkpoints=_CHECKPOINT_MAX_AUTO_CHECKPOINTS,
+    )
+
+
+def initialize_conversation_action_state(
+    owner: Any,
+    *,
+    workspace_path: Path,
+    checkpoint_config_factory: CheckpointConfigFactory,
+    conversation_manager_factory: ConversationManagerFactory,
+    action_executor_factory: ActionExecutorFactory,
+    default_max_messages_per_session: int,
+) -> None:
+    """Initialize conversation manager, tool back-reference, and action executor."""
+
+    tool_manager = getattr(owner, "tool_manager", None)
+    checkpoint_config = build_default_checkpoint_config(
+        checkpoint_config_factory=checkpoint_config_factory,
+    )
+    owner.conversation_manager = conversation_manager_factory(
+        model_config=owner.model_config,
+        api_client=owner.api_client,
+        workspace_path=workspace_path,
+        system_prompt=owner.system_prompt,
+        max_messages_per_session=default_max_messages_per_session,
+        max_sessions_in_memory=_CONVERSATION_MAX_SESSIONS_IN_MEMORY,
+        auto_save_interval=_CONVERSATION_AUTO_SAVE_INTERVAL_SECONDS,
+        checkpoint_config=checkpoint_config,
+        skills_config=_safe_config_dict(owner.config),
+        project_root=getattr(tool_manager, "project_root", None),
+    )
+    owner.conversation_manager.core = owner
+
+    set_core = getattr(tool_manager, "set_core", None)
+    if tool_manager is not None and callable(set_core):
+        set_core(owner)
+
+    owner.action_executor = action_executor_factory(
+        tool_manager,
+        owner.project_manager,
+        owner.conversation_manager,
+        ui_event_callback=owner.emit_ui_event,
+    )
+    owner.current_runmode_status_summary = "RunMode idle."
 
 
 def build_tool_manager(

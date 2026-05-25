@@ -542,49 +542,16 @@ class PenguinCore:
         if not self.config.diagnostics.enabled:
             disable_diagnostics()
 
-        # Initialize conversation manager (replaces conversation system)
         from penguin.system.checkpoint_manager import CheckpointConfig
 
-        # Create checkpoint configuration
-        checkpoint_config = CheckpointConfig(
-            enabled=True,
-            frequency=1,  # Checkpoint every message
-            planes={"conversation": True, "tasks": False, "code": False},
-            retention={"keep_all_hours": 24, "keep_every_nth": 10, "max_age_days": 30},
-            max_auto_checkpoints=1000,  # TODO: review magic numbers and at least put them into constants.py or parametrize them via Config
-        )
-
-        self.conversation_manager = ConversationManager(
-            model_config=model_config,
-            api_client=api_client,
+        core_startup.initialize_conversation_action_state(
+            self,
             workspace_path=workspace_path,
-            system_prompt=self.system_prompt,
-            max_messages_per_session=DEFAULT_MAX_MESSAGES_PER_SESSION,
-            max_sessions_in_memory=20,
-            auto_save_interval=60,
-            checkpoint_config=checkpoint_config,
-            skills_config=self.config.to_dict()
-            if hasattr(self.config, "to_dict")
-            else {},
-            project_root=getattr(self.tool_manager, "project_root", None),
+            checkpoint_config_factory=CheckpointConfig,
+            conversation_manager_factory=ConversationManager,
+            action_executor_factory=ActionExecutor,
+            default_max_messages_per_session=DEFAULT_MAX_MESSAGES_PER_SESSION,
         )
-        # Attach a back-reference so Engine (and other helpers) can emit UI events
-        # and finalize streaming messages via the Core. Without this the Engine
-        # silently skips those steps which caused tool results to be lost and
-        # streaming panels to merge into a single message in the CLI.
-        self.conversation_manager.core = self  # type: ignore[attr-defined]
-
-        # Inject core reference into tool_manager now that ConversationManager exists.
-        if self.tool_manager and hasattr(self.tool_manager, "set_core"):
-            self.tool_manager.set_core(self)
-
-        self.action_executor = ActionExecutor(
-            self.tool_manager,
-            self.project_manager,
-            self.conversation_manager,
-            ui_event_callback=self.emit_ui_event,
-        )
-        self.current_runmode_status_summary: str = "RunMode idle."  # New attribute
 
         # ------------------- Engine Initialization -------------------
         try:
