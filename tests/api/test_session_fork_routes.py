@@ -12,7 +12,11 @@ from fastapi import HTTPException
 from penguin.system.state import Message, MessageCategory, Session
 from penguin.web.routes import SessionForkRequest, api_session_fork, session_fork
 from penguin.web.services.session_fork import fork_session
-from penguin.web.services.session_view import TRANSCRIPT_KEY, get_session_messages
+from penguin.web.services.session_view import (
+    AGENT_MODE_KEY,
+    TRANSCRIPT_KEY,
+    get_session_messages,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -304,6 +308,37 @@ def test_fork_session_drops_parent_outside_fork_boundary(tmp_path: Path) -> None
         rows[0]["info"]["sessionID"],
         rows[1]["info"]["sessionID"],
     }
+
+
+def test_fork_session_copies_permission_and_agent_mode_without_mutable_bleed(
+    tmp_path: Path,
+) -> None:
+    core = _Core(tmp_path)
+    source = _seed_session(core, tmp_path)
+    source.metadata["permission"] = [
+        {"type": "edit", "scope": {"path": "src/app.py"}},
+    ]
+    source.metadata["agent_mode"] = "PLAN"
+    before_metadata = copy.deepcopy(source.metadata)
+
+    info = fork_session(cast(Any, core), source.id, message_id="msg_user_2")
+
+    assert info is not None
+    assert source.metadata == before_metadata
+
+    forked = core.conversation_manager.session_manager.load_session(info["id"])
+    assert forked is not None
+    assert forked.metadata["permission"] == source.metadata["permission"]
+    assert forked.metadata["permission"] is not source.metadata["permission"]
+    assert forked.metadata["permission"][0] is not source.metadata["permission"][0]
+    assert forked.metadata[AGENT_MODE_KEY] == "plan"
+
+    forked.metadata["permission"][0]["scope"]["path"] = "changed.py"
+
+    assert source.metadata["permission"][0]["scope"]["path"] == "src/app.py"
+    assert forked.metadata["forked_from_session_id"] == source.id
+    assert forked.metadata["forked_from_message_id"] == "msg_user_2"
+    assert core._opencode_session_directories[forked.id] == str(tmp_path)
 
 
 @pytest.mark.asyncio
