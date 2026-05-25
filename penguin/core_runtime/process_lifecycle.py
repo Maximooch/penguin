@@ -9,6 +9,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "discard_opencode_abort_session",
+    "emit_process_user_message",
     "finalize_opencode_process_request",
     "register_opencode_process_request",
 ]
@@ -35,6 +36,37 @@ def discard_opencode_abort_session(owner: Any, session_id: Any) -> None:
         return
     _ensure_request_state(owner)
     owner._opencode_abort_sessions.discard(sid)
+
+
+async def emit_process_user_message(
+    owner: Any,
+    message: Any,
+    *,
+    message_category: Any,
+    client_message_id: str | None,
+    agent_id: str | None,
+    log: Any,
+) -> None:
+    """Emit process user-message events without failing on OpenCode metadata."""
+
+    user_message = {
+        "role": "user",
+        "content": message,
+        "category": message_category,
+    }
+    if agent_id:
+        user_message["agent_id"] = agent_id
+
+    log.debug("Emitting user message event: %s...", message[:30])
+    await owner.emit_ui_event("message", user_message)
+    try:
+        await owner._emit_opencode_user_message_with_metadata(
+            message,
+            message_id=client_message_id,
+            agent_id=agent_id,
+        )
+    except Exception:
+        log.debug("Failed to emit OpenCode user message", exc_info=True)
 
 
 async def register_opencode_process_request(

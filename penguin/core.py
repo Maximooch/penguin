@@ -2163,26 +2163,14 @@ class PenguinCore:
                     context_file_count,
                 )
 
-            # Add user message to conversation explicitly
-            user_message_dict = {
-                "role": "user",
-                "content": message,
-                "category": MessageCategory.DIALOG,
-            }
-            if agent_id:
-                user_message_dict["agent_id"] = agent_id
-
-            # Emit user message event before processing
-            logger.debug(f"Emitting user message event: {message[:30]}...")
-            await self.emit_ui_event("message", user_message_dict)
-            try:
-                await self._emit_opencode_user_message_with_metadata(
-                    message,
-                    message_id=client_message_id,
-                    agent_id=agent_id,
-                )
-            except Exception:
-                logger.debug("Failed to emit OpenCode user message", exc_info=True)
+            await core_process_lifecycle.emit_process_user_message(
+                self,
+                message,
+                message_category=MessageCategory.DIALOG,
+                client_message_id=client_message_id,
+                agent_id=agent_id,
+                log=logger,
+            )
 
             # Use new Engine layer if available
             if self.engine:
