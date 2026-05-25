@@ -1531,10 +1531,7 @@ class PenguinCore:
 
     def set_system_prompt(self, prompt: str) -> None:
         """Set the system prompt for both core and API client."""
-        self.system_prompt = prompt
-        if self.api_client:
-            self.api_client.set_system_prompt(prompt)
-        self.conversation_manager.set_system_prompt(prompt)
+        core_prompt_settings.set_core_system_prompt(self, prompt)
 
     def set_llm_config(
         self,

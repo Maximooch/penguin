@@ -7,6 +7,7 @@ from typing import Any, Callable
 __all__ = [
     "get_output_style",
     "get_prompt_mode",
+    "set_core_system_prompt",
     "set_output_style",
     "set_prompt_mode",
 ]
@@ -46,6 +47,16 @@ def get_prompt_mode(owner: Any) -> str:
         return getattr(owner, "prompt_mode", "direct")
     except Exception:
         return "direct"
+
+
+def set_core_system_prompt(owner: Any, prompt: str) -> None:
+    """Set the active system prompt across core, API client, and conversation."""
+
+    owner.system_prompt = prompt
+    api_client = getattr(owner, "api_client", None)
+    if api_client:
+        api_client.set_system_prompt(prompt)
+    owner.conversation_manager.set_system_prompt(prompt)
 
 
 def set_output_style(

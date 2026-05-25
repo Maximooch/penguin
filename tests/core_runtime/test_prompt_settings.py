@@ -58,6 +58,20 @@ def test_prompt_and_output_style_getters_default_when_missing() -> None:
     assert prompt_settings.get_output_style(owner) == "steps_final"
 
 
+def test_set_core_system_prompt_updates_api_client_and_conversation() -> None:
+    api_prompts: list[str] = []
+    owner = SimpleNamespace(
+        api_client=SimpleNamespace(set_system_prompt=api_prompts.append),
+        conversation_manager=_ConversationManager(),
+    )
+
+    prompt_settings.set_core_system_prompt(owner, "system")
+
+    assert owner.system_prompt == "system"
+    assert api_prompts == ["system"]
+    assert owner.conversation_manager.prompts == ["system"]
+
+
 def test_set_output_style_updates_formatting_and_rebuilds_prompt() -> None:
     formats: list[str] = []
     owner = SimpleNamespace(
@@ -103,12 +117,18 @@ def test_core_prompt_setting_shims_delegate_to_runtime(monkeypatch) -> None:
     monkeypatch.setattr("penguin.core.get_system_prompt", _prompt)
     monkeypatch.setattr("penguin.prompt.builder.set_output_formatting", formats.append)
 
+    core.api_client = SimpleNamespace(set_system_prompt=formats.append)
     assert core.set_prompt_mode("TEST") == "Prompt mode set to 'test'."
     assert core.get_prompt_mode() == "test"
+    core.set_system_prompt("manual")
     assert core.set_output_style("JSON_GUIDED") == (
         "Output style set to 'json_guided'."
     )
     assert core.get_output_style() == "json_guided"
     assert core.system_prompt == "prompt:test"
-    assert core.conversation_manager.prompts == ["prompt:test", "prompt:test"]
-    assert formats == ["json_guided"]
+    assert core.conversation_manager.prompts == [
+        "prompt:test",
+        "manual",
+        "prompt:test",
+    ]
+    assert formats == ["manual", "json_guided"]
