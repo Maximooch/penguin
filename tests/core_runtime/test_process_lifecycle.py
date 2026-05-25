@@ -200,6 +200,70 @@ def test_discard_abort_session_ignores_blank_session_and_repairs_state() -> None
     assert owner._opencode_active_requests == {}
 
 
+def test_handle_process_cancelled_clears_abort_marker_and_returns_payload() -> None:
+    owner = SimpleNamespace(
+        _opencode_abort_sessions={"session_1"},
+        _opencode_process_tasks={},
+        _opencode_active_requests={},
+    )
+
+    payload = process_lifecycle.handle_process_cancelled(owner, "session_1")
+
+    assert owner._opencode_abort_sessions == set()
+    assert payload == {
+        "assistant_response": "",
+        "action_results": [],
+        "aborted": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_handle_process_error_logs_emits_and_returns_safe_payload() -> None:
+    owner = _Owner()
+    error_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    logged_errors: list[dict[str, object]] = []
+    log = SimpleNamespace(
+        error=lambda *args, **kwargs: error_calls.append((args, kwargs))
+    )
+
+    def log_error_fn(exc: Exception, *, context: dict[str, object]) -> None:
+        logged_errors.append({"exc": exc, "context": context})
+
+    exc = RuntimeError("provider exploded")
+    payload = await process_lifecycle.handle_process_error(
+        owner,
+        exc,
+        {"text": "hello"},
+        log=log,
+        log_error_fn=log_error_fn,
+    )
+
+    assert payload == {
+        "assistant_response": (
+            "I apologize, but an error occurred while processing your request."
+        ),
+        "action_results": [],
+        "error": "provider exploded",
+    }
+    assert owner.ui_events == [
+        (
+            "error",
+            {
+                "message": "Error processing your request",
+                "source": "core.process",
+                "details": "provider exploded",
+            },
+        )
+    ]
+    assert "Error in process method: provider exploded" in error_calls[0][0][1]
+    assert logged_errors == [
+        {
+            "exc": exc,
+            "context": {"method": "process", "input_data": {"text": "hello"}},
+        }
+    ]
+
+
 @pytest.mark.asyncio
 async def test_emit_process_user_message_emits_ui_and_metadata_events() -> None:
     owner = _Owner()

@@ -107,7 +107,6 @@ import asyncio
 import inspect
 import logging
 import time
-import traceback
 import os
 from dataclasses import asdict, fields
 from pathlib import Path
@@ -1971,36 +1970,19 @@ class PenguinCore:
             return response
 
         except asyncio.CancelledError:
-            core_process_lifecycle.discard_opencode_abort_session(
+            return core_process_lifecycle.handle_process_cancelled(
                 self,
                 request_session_id,
             )
-            return {
-                "assistant_response": "",
-                "action_results": [],
-                "aborted": True,
-            }
 
         except Exception as e:
-            error_msg = f"Error in process method: {str(e)}"
-            logger.error(f"{error_msg}\n{traceback.format_exc()}")
-            log_error(e, context={"method": "process", "input_data": input_data})
-
-            # Emit error event
-            await self.emit_ui_event(
-                "error",
-                {
-                    "message": "Error processing your request",
-                    "source": "core.process",
-                    "details": str(e),
-                },
+            return await core_process_lifecycle.handle_process_error(
+                self,
+                e,
+                input_data,
+                log=logger,
+                log_error_fn=log_error,
             )
-
-            return {
-                "assistant_response": "I apologize, but an error occurred while processing your request.",
-                "action_results": [],
-                "error": str(e),
-            }
 
         finally:
             await core_process_lifecycle.finalize_opencode_process_request(

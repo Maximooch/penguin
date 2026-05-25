@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import traceback
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -12,6 +13,8 @@ __all__ = [
     "emit_process_user_message",
     "finalize_opencode_process_request",
     "finalize_process_response",
+    "handle_process_cancelled",
+    "handle_process_error",
     "register_opencode_process_request",
 ]
 
@@ -37,6 +40,49 @@ def discard_opencode_abort_session(owner: Any, session_id: Any) -> None:
         return
     _ensure_request_state(owner)
     owner._opencode_abort_sessions.discard(sid)
+
+
+def handle_process_cancelled(owner: Any, session_id: Any) -> dict[str, Any]:
+    """Clear abort state and return the public aborted process payload."""
+
+    discard_opencode_abort_session(owner, session_id)
+    return {
+        "assistant_response": "",
+        "action_results": [],
+        "aborted": True,
+    }
+
+
+async def handle_process_error(
+    owner: Any,
+    exc: Exception,
+    input_data: Any,
+    *,
+    log: Any,
+    log_error_fn: Any,
+) -> dict[str, Any]:
+    """Log a process failure, emit UI error state, and return API-safe payload."""
+
+    error_msg = f"Error in process method: {exc!s}"
+    log.error("%s\n%s", error_msg, traceback.format_exc())
+    log_error_fn(exc, context={"method": "process", "input_data": input_data})
+
+    await owner.emit_ui_event(
+        "error",
+        {
+            "message": "Error processing your request",
+            "source": "core.process",
+            "details": str(exc),
+        },
+    )
+
+    return {
+        "assistant_response": (
+            "I apologize, but an error occurred while processing your request."
+        ),
+        "action_results": [],
+        "error": str(exc),
+    }
 
 
 async def emit_process_user_message(
