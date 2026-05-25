@@ -229,6 +229,40 @@ class _TimeoutThenKillProcess:
         self.terminate()
 
 
+class _BrokenStdin:
+    def write(self, text: str) -> int:
+        del text
+        raise BrokenPipeError("stdin closed")
+
+    def flush(self) -> None:
+        raise AssertionError("flush should not run after failed write")
+
+
+class _BrokenStdinProcess:
+    stdin = _BrokenStdin()
+    stdout = None
+    stderr = None
+
+    def poll(self) -> int | None:
+        return None
+
+
+def test_process_runtime_write_stdin_returns_error_for_broken_pipe() -> None:
+    runtime = ProcessRuntime()
+    runtime._processes["broken"] = ManagedProcess(
+        process_id="broken",
+        command="closed stdin",
+        cwd="/tmp",
+        process=cast(Any, _BrokenStdinProcess()),
+    )
+
+    result = runtime.write_stdin("broken", "ping\n")
+
+    assert result["status"] == "error"
+    assert result["error"].startswith("stdin_write_failed:")
+    assert "stdin closed" in result["error"]
+
+
 def test_process_runtime_terminate_timeout_escalates_to_kill() -> None:
     runtime = ProcessRuntime()
     process = _TimeoutThenKillProcess()

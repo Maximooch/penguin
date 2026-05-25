@@ -156,8 +156,11 @@ class ProcessRuntime:
             return self._error(process_id, "process_not_running")
         if record.process.stdin is None:
             return self._error(process_id, "stdin_unavailable")
-        record.process.stdin.write(text)
-        record.process.stdin.flush()
+        try:
+            record.process.stdin.write(text)
+            record.process.stdin.flush()
+        except (BrokenPipeError, OSError, ValueError) as exc:
+            return self._error(process_id, f"stdin_write_failed: {exc}")
         return self._snapshot(record, output="", since_sequence=0)
 
     def stop(
