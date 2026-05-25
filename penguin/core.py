@@ -164,6 +164,7 @@ from .core_runtime import action_mapping as core_action_mapping
 from .core_runtime import checkpoint_runtime as core_checkpoint_runtime
 from .core_runtime import model_runtime as core_model_runtime
 from .core_runtime import opencode_bridge as core_opencode_bridge
+from .core_runtime import opencode_transcript as core_opencode_transcript
 from .core_runtime import session_lookup as core_session_lookup
 from .core_runtime import stream_events as core_stream_events
 from .core_runtime import token_usage_runtime as core_token_usage_runtime
@@ -4863,18 +4864,10 @@ class PenguinCore:
         self, event_type: str, properties: Dict[str, Any]
     ) -> None:
         """Persist OpenCode message/part events for replay via session history."""
-        if event_type not in {
-            "message.updated",
-            "message.part.updated",
-            "message.part.removed",
-            "message.removed",
-        }:
-            return
-
-        session_id = properties.get("sessionID")
-        if not session_id and isinstance(properties.get("part"), dict):
-            session_id = properties["part"].get("sessionID")
-        if not session_id or session_id == "unknown":
+        session_id = core_opencode_transcript.resolve_event_session_id(
+            event_type, properties
+        )
+        if session_id is None:
             return
 
         session, manager = self._find_session_store(session_id)
@@ -4885,131 +4878,42 @@ class PenguinCore:
         if not isinstance(metadata, dict):
             return
 
-        key = "_opencode_transcript_v1"
-        transcript = metadata.get(key)
-        if not isinstance(transcript, dict):
-            transcript = {"messages": {}, "order": []}
-            metadata[key] = transcript
+        def assistant_info_factory(
+            message_id: str, resolved_session_id: str
+        ) -> Dict[str, Any]:
+            fallback_directory = core_opencode_bridge.resolve_adapter_directory(
+                resolved_session_id,
+                session_directories=getattr(
+                    self,
+                    "_opencode_session_directories",
+                    None,
+                ),
+                execution_context=get_current_execution_context(),
+                runtime_config=getattr(self, "runtime_config", None),
+            )
+            model_state = self._resolve_opencode_model_state(
+                session_id=resolved_session_id
+            )
+            return core_opencode_bridge.build_assistant_message_info(
+                message_id=message_id,
+                session_id=resolved_session_id,
+                directory=fallback_directory,
+                model_state=model_state,
+            )
 
-        messages = transcript.get("messages")
-        if not isinstance(messages, dict):
-            messages = {}
-            transcript["messages"] = messages
-
-        order = transcript.get("order")
-        if not isinstance(order, list):
-            order = []
-            transcript["order"] = order
-
-        should_save = False
-
-        if event_type == "message.updated":
-            message_id = properties.get("id")
-            if not message_id:
-                return
-            entry = messages.get(message_id)
-            if not isinstance(entry, dict):
-                entry = {}
-            parts = entry.get("parts")
-            if not isinstance(parts, dict):
-                parts = {}
-            part_order = entry.get("part_order")
-            if not isinstance(part_order, list):
-                part_order = []
-            entry["info"] = dict(properties)
-            entry["parts"] = parts
-            entry["part_order"] = part_order
-            messages[message_id] = entry
-            if message_id not in order:
-                order.append(message_id)
-
-            time_data = properties.get("time")
-            if isinstance(time_data, dict) and time_data.get("completed"):
-                should_save = True
-
-        elif event_type == "message.part.updated":
-            part = properties.get("part")
-            if not isinstance(part, dict):
-                return
-
-            message_id = part.get("messageID")
-            part_id = part.get("id")
-            if not message_id or not part_id:
-                return
-
-            entry = messages.get(message_id)
-            if not isinstance(entry, dict):
-                fallback_directory = core_opencode_bridge.resolve_adapter_directory(
-                    str(session_id),
-                    session_directories=getattr(
-                        self,
-                        "_opencode_session_directories",
-                        None,
-                    ),
-                    execution_context=get_current_execution_context(),
-                    runtime_config=getattr(self, "runtime_config", None),
-                )
-                model_state = self._resolve_opencode_model_state(session_id=session_id)
-                entry = {
-                    "info": core_opencode_bridge.build_assistant_message_info(
-                        message_id=message_id,
-                        session_id=session_id,
-                        directory=fallback_directory,
-                        model_state=model_state,
-                    ),
-                    "parts": {},
-                    "part_order": [],
-                }
-                messages[message_id] = entry
-                if message_id not in order:
-                    order.append(message_id)
-
-            parts = entry.get("parts")
-            if not isinstance(parts, dict):
-                parts = {}
-                entry["parts"] = parts
-            part_order = entry.get("part_order")
-            if not isinstance(part_order, list):
-                part_order = []
-                entry["part_order"] = part_order
-
-            parts[part_id] = dict(part)
-            if part_id not in part_order:
-                part_order.append(part_id)
-
-            if part.get("type") == "tool":
-                state = part.get("state")
-                if isinstance(state, dict) and state.get("status") in {
-                    "completed",
-                    "error",
-                }:
-                    should_save = True
-
-        elif event_type == "message.part.removed":
-            message_id = properties.get("messageID")
-            part_id = properties.get("partID")
-            if not message_id or not part_id:
-                return
-            entry = messages.get(message_id)
-            if not isinstance(entry, dict):
-                return
-            parts = entry.get("parts")
-            if isinstance(parts, dict):
-                parts.pop(part_id, None)
-            part_order = entry.get("part_order")
-            if isinstance(part_order, list):
-                entry["part_order"] = [item for item in part_order if item != part_id]
-
-        elif event_type == "message.removed":
-            message_id = properties.get("messageID")
-            if not message_id:
-                return
-            messages.pop(message_id, None)
-            transcript["order"] = [item for item in order if item != message_id]
+        result = core_opencode_transcript.apply_transcript_event(
+            metadata=metadata,
+            event_type=event_type,
+            properties=properties,
+            session_id=session_id,
+            assistant_info_factory=assistant_info_factory,
+        )
+        if not result.mark_modified:
+            return
 
         try:
             manager.mark_session_modified(session_id)
-            if should_save:
+            if result.should_save:
                 manager.save_session(session)
         except Exception:
             logger.warning("Unable to persist OpenCode transcript event", exc_info=True)
