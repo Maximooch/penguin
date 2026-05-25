@@ -5067,68 +5067,36 @@ class PenguinCore:
         session_id: Optional[str],
         usage: Dict[str, Any],
     ) -> None:
-        if not isinstance(session_id, str) or not session_id.strip():
-            return
-        if not isinstance(usage, dict) or not usage:
-            return
-
-        message_id: Optional[str] = None
-        states = getattr(self, "_opencode_stream_states", None)
-        if isinstance(states, dict):
-            state = states.get(session_id)
-            if isinstance(state, dict):
-                state_message_id = state.get("message_id")
-                if isinstance(state_message_id, str) and state_message_id:
-                    message_id = state_message_id
-
-            if not message_id:
-                scoped_prefix = f"{session_id}:"
-                for key, state_value in states.items():
-                    if not isinstance(key, str) or not key.startswith(scoped_prefix):
-                        continue
-                    if not isinstance(state_value, dict):
-                        continue
-                    state_message_id = state_value.get("message_id")
-                    if isinstance(state_message_id, str) and state_message_id:
-                        message_id = state_message_id
-                        break
-
-        adapter = (
-            self._opencode_message_adapters.get(message_id) if message_id else None
+        target = core_opencode_bridge.resolve_usage_update_target(
+            session_id,
+            usage,
+            stream_states=getattr(self, "_opencode_stream_states", None),
+            message_adapters=getattr(self, "_opencode_message_adapters", None),
+            get_adapter=self._get_tui_adapter,
         )
-        if adapter is None:
-            adapter = self._get_tui_adapter(session_id)
-
-        if not message_id:
-            adapter_message_id = getattr(adapter, "_current_message_id", None)
-            if isinstance(adapter_message_id, str) and adapter_message_id:
-                message_id = adapter_message_id
-
-        if not isinstance(message_id, str) or not message_id:
+        if target is None:
             return
 
-        updater = getattr(adapter, "update_assistant_usage", None)
+        updater = getattr(target.adapter, "update_assistant_usage", None)
         if not callable(updater):
             return
 
-        tokens, normalized_cost = core_opencode_bridge.usage_tokens_and_cost(usage)
-
         try:
-            await updater(message_id, tokens=tokens, cost=normalized_cost)
+            await updater(target.message_id, tokens=target.tokens, cost=target.cost)
             usage_log = (
                 "opencode.usage.applied session=%s message=%s input=%s output=%s "
                 "reasoning=%s cache_read=%s cache_write=%s total=%s cost=%s"
             )
             usage_args = (
                 session_id,
-                message_id,
-                tokens["input"],
-                tokens["output"],
-                tokens["reasoning"],
-                tokens["cache"]["read"],
-                tokens["cache"]["write"],
-                int(usage.get("total_tokens", 0) or 0),
-                normalized_cost,
+                target.message_id,
+                target.tokens["input"],
+                target.tokens["output"],
+                target.tokens["reasoning"],
+                target.tokens["cache"]["read"],
+                target.tokens["cache"]["write"],
+                target.total_tokens,
+                target.cost,
             )
             logger.info(usage_log, *usage_args)
             uvicorn_logger = logging.getLogger("uvicorn.error")

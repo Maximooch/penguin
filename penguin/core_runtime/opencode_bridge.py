@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import os
 import time
+from dataclasses import dataclass
 from math import isfinite
-from typing import Any
+from typing import Any, Callable
 
 SESSION_MODEL_ID_KEY = "_opencode_model_id_v1"
 SESSION_PROVIDER_ID_KEY = "_opencode_provider_id_v1"
@@ -20,15 +21,29 @@ __all__ = [
     "SESSION_MODEL_ID_KEY",
     "SESSION_PROVIDER_ID_KEY",
     "SESSION_VARIANT_KEY",
+    "UsageUpdateTarget",
     "build_assistant_message_info",
     "latest_model_usage",
     "normalize_optional_string",
     "prepare_scoped_event_properties",
     "resolve_adapter_directory",
+    "resolve_latest_usage_message_id",
     "resolve_model_state",
     "resolve_session_id",
+    "resolve_usage_update_target",
     "usage_tokens_and_cost",
 ]
+
+
+@dataclass(frozen=True)
+class UsageUpdateTarget:
+    """Resolved target for applying provider usage to an OpenCode message."""
+
+    adapter: Any
+    message_id: str
+    tokens: dict[str, Any]
+    cost: float
+    total_tokens: int
 
 
 def normalize_optional_string(value: Any) -> str | None:
@@ -230,6 +245,42 @@ def latest_model_usage(api_client: Any) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def resolve_latest_usage_message_id(
+    session_id: str,
+    *,
+    stream_states: Any = None,
+    adapter: Any = None,
+) -> str | None:
+    """Resolve the latest assistant message id for a session usage update."""
+
+    message_id: str | None = None
+    if isinstance(stream_states, dict):
+        state = stream_states.get(session_id)
+        if isinstance(state, dict):
+            state_message_id = state.get("message_id")
+            if isinstance(state_message_id, str) and state_message_id:
+                message_id = state_message_id
+
+        if not message_id:
+            scoped_prefix = f"{session_id}:"
+            for key, state_value in stream_states.items():
+                if not isinstance(key, str) or not key.startswith(scoped_prefix):
+                    continue
+                if not isinstance(state_value, dict):
+                    continue
+                state_message_id = state_value.get("message_id")
+                if isinstance(state_message_id, str) and state_message_id:
+                    message_id = state_message_id
+                    break
+
+    if not message_id and adapter is not None:
+        adapter_message_id = getattr(adapter, "_current_message_id", None)
+        if isinstance(adapter_message_id, str) and adapter_message_id:
+            message_id = adapter_message_id
+
+    return message_id
+
+
 def _usage_int(usage: dict[str, Any], key: str) -> int:
     try:
         return max(int(usage.get(key, 0) or 0), 0)
@@ -257,3 +308,57 @@ def usage_tokens_and_cost(usage: dict[str, Any]) -> tuple[dict[str, Any], float]
     if not isfinite(normalized_cost):
         normalized_cost = 0.0
     return tokens, max(normalized_cost, 0.0)
+
+
+def _usage_total_tokens(usage: dict[str, Any]) -> int:
+    try:
+        return max(int(usage.get("total_tokens", 0) or 0), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def resolve_usage_update_target(
+    session_id: Any,
+    usage: Any,
+    *,
+    stream_states: Any = None,
+    message_adapters: Any = None,
+    get_adapter: Callable[[str], Any],
+) -> UsageUpdateTarget | None:
+    """Resolve adapter/message/tokens for applying usage to an OpenCode message."""
+
+    if not isinstance(session_id, str) or not session_id.strip():
+        return None
+    normalized_session_id = session_id.strip()
+    if not isinstance(usage, dict) or not usage:
+        return None
+
+    message_id = resolve_latest_usage_message_id(
+        normalized_session_id,
+        stream_states=stream_states,
+    )
+    adapter = (
+        message_adapters.get(message_id)
+        if message_id and isinstance(message_adapters, dict)
+        else None
+    )
+    if adapter is None:
+        adapter = get_adapter(normalized_session_id)
+
+    if not message_id:
+        message_id = resolve_latest_usage_message_id(
+            normalized_session_id,
+            adapter=adapter,
+        )
+
+    if not isinstance(message_id, str) or not message_id:
+        return None
+
+    tokens, normalized_cost = usage_tokens_and_cost(usage)
+    return UsageUpdateTarget(
+        adapter=adapter,
+        message_id=message_id,
+        tokens=tokens,
+        cost=normalized_cost,
+        total_tokens=_usage_total_tokens(usage),
+    )
