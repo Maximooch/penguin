@@ -6,6 +6,7 @@ PenguinCore keeps private compatibility shims that delegate here.
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from typing import Any, Callable
@@ -190,7 +191,7 @@ def extract_todos_from_result(result: Any) -> list[dict[str, str]]:
 
 def parse_action_payload(params: Any) -> dict[str, Any]:
     if isinstance(params, dict):
-        return dict(params)
+        return _copy_payload_dict(params)
     if not isinstance(params, str):
         return {}
     text = params.strip()
@@ -291,7 +292,7 @@ def build_spawn_subagent_task_card(
     share_session = bool(payload.get("share_session", False))
     if share_session:
         if isinstance(params, dict):
-            return dict(params), {}
+            return _copy_payload_dict(params), {}
         return {"params": params}, {}
 
     raw_agent = payload.get("persona") or payload.get("id") or "subagent"
@@ -757,10 +758,17 @@ def map_action_to_tool(
         return "grep", tool_input, metadata
 
     if isinstance(params, dict):
-        tool_input = dict(params)
+        tool_input = _copy_payload_dict(params)
     else:
         tool_input = {"params": params}
     return action_name or "unknown", tool_input, metadata
+
+
+def _copy_payload_dict(value: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return copy.deepcopy(value)
+    except Exception:
+        return dict(value)
 
 
 def map_action_result_metadata(

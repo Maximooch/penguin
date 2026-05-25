@@ -284,6 +284,57 @@ def test_unknown_action_mapping_copies_input_dict_to_avoid_mutation_bleed() -> N
     assert params["path"] == "src/app.py"
 
 
+def test_unknown_action_mapping_deep_copies_nested_json_payloads() -> None:
+    params = {
+        "path": "src/app.py",
+        "nested": {"keep": True},
+        "items": [{"id": "item_1"}],
+    }
+
+    _mapped_tool, tool_input, _metadata = action_mapping.map_action_to_tool(
+        "custom_tool",
+        params,
+    )
+
+    assert tool_input == params
+    assert tool_input is not params
+    assert tool_input["nested"] is not params["nested"]
+    assert tool_input["items"] is not params["items"]
+    assert tool_input["items"][0] is not params["items"][0]
+
+    tool_input["nested"]["keep"] = False
+    tool_input["items"][0]["id"] = "changed"
+
+    assert params == {
+        "path": "src/app.py",
+        "nested": {"keep": True},
+        "items": [{"id": "item_1"}],
+    }
+
+
+def test_shared_session_spawn_subagent_deep_copies_payload() -> None:
+    params = {
+        "id": "shared_agent",
+        "share_session": True,
+        "metadata": {"parent": "session_parent"},
+    }
+
+    mapped_tool, tool_input, metadata = action_mapping.map_action_to_tool(
+        "spawn_sub_agent",
+        params,
+    )
+
+    assert mapped_tool == "spawn_sub_agent"
+    assert tool_input == params
+    assert tool_input is not params
+    assert tool_input["metadata"] is not params["metadata"]
+    assert metadata == {}
+
+    tool_input["metadata"]["parent"] = "changed"
+
+    assert params["metadata"]["parent"] == "session_parent"
+
+
 @settings(max_examples=80, deadline=None)
 @given(
     action=st.text(max_size=24),
