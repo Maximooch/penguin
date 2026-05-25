@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 from penguin.core_runtime import opencode_adapters
@@ -87,3 +88,54 @@ def test_get_or_create_session_adapter_uses_unknown_session_fallback() -> None:
     assert adapters["unknown"] is adapter
     assert adapter.sessions == ["unknown"]
     assert adapter.directories == [None]
+
+
+def test_get_tui_adapter_initializes_owner_cache_and_resolves_directory() -> None:
+    event_bus = object()
+    persist_callback = object()
+    owner = SimpleNamespace(
+        event_bus=event_bus,
+        _persist_opencode_event=persist_callback,
+        _opencode_session_directories={"session_1": "/tmp/session-project"},
+        runtime_config=SimpleNamespace(active_root="/tmp/runtime-project"),
+    )
+
+    adapter = opencode_adapters.get_tui_adapter(
+        owner,
+        "session_1",
+        execution_context=SimpleNamespace(directory="/tmp/context-project"),
+        adapter_factory=_Adapter,
+    )
+
+    assert isinstance(adapter, _Adapter)
+    assert owner._tui_adapters["session_1"] is adapter
+    assert adapter.event_bus is event_bus
+    assert adapter.persist_callback is persist_callback
+    assert adapter.sessions == ["session_1"]
+    assert adapter.directories == ["/tmp/session-project"]
+
+
+def test_get_tui_adapter_reuses_cached_adapter_and_refreshes_directory() -> None:
+    owner = SimpleNamespace(
+        event_bus=object(),
+        _persist_opencode_event=object(),
+        _opencode_session_directories={},
+        runtime_config=SimpleNamespace(active_root="/tmp/runtime-project"),
+        _tui_adapters={},
+    )
+    first = opencode_adapters.get_tui_adapter(
+        owner,
+        "session_1",
+        execution_context=SimpleNamespace(directory="/tmp/context-a"),
+        adapter_factory=_Adapter,
+    )
+
+    second = opencode_adapters.get_tui_adapter(
+        owner,
+        "session_1",
+        execution_context=SimpleNamespace(directory="/tmp/context-b"),
+        adapter_factory=_Adapter,
+    )
+
+    assert second is first
+    assert first.directories == ["/tmp/context-a", "/tmp/context-b"]

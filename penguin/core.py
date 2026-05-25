@@ -4035,24 +4035,10 @@ class PenguinCore:
 
     def _get_tui_adapter(self, session_id: Optional[str]) -> Any:
         """Return a session-scoped TUI adapter to avoid cross-session bleed."""
-        sid = session_id or "unknown"
-        resolved_directory = core_opencode_bridge.resolve_adapter_directory(
-            sid,
-            session_directories=getattr(self, "_opencode_session_directories", None),
+        return core_opencode_adapters.get_tui_adapter(
+            self,
+            session_id,
             execution_context=get_current_execution_context(),
-            runtime_config=getattr(self, "runtime_config", None),
-        )
-
-        adapters = getattr(self, "_tui_adapters", None)
-        if not isinstance(adapters, dict):
-            adapters = {}
-            self._tui_adapters = adapters
-        return core_opencode_adapters.get_or_create_session_adapter(
-            sid,
-            adapters=adapters,
-            event_bus=self.event_bus,
-            persist_callback=self._persist_opencode_event,
-            directory=resolved_directory,
         )
 
     async def _on_tui_stream_chunk(self, event_type: str, data: Dict[str, Any]):
