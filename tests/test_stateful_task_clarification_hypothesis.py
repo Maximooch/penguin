@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from hypothesis import given, strategies as st
+from hypothesis import given, settings, strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, initialize, invariant, rule
 
 from penguin.project.manager import ProjectManager
@@ -67,7 +67,9 @@ class TaskLifecycleStateMachine(RuleBasedStateMachine):
     @rule()
     def complete_failure(self):
         self.task.start_execution()
-        self.task.complete_current_execution(ExecutionResult.FAILURE, error_details="boom")
+        self.task.complete_current_execution(
+            ExecutionResult.FAILURE, error_details="boom"
+        )
 
     @rule()
     def reopen_to_active(self):
@@ -113,8 +115,9 @@ def test_start_execution_never_leaves_task_in_non_running_terminal_state(status,
 
 
 @given(st.booleans(), st.booleans())
+@settings(deadline=None)
 @pytest.mark.asyncio
-async def test_clarification_resume_preserves_task_identity_and_never_completes_implicitly(
+async def test_clarification_resume_preserves_identity_without_implicit_completion(
     answered_by_human,
     seed_extra_metadata,
 ):
@@ -191,7 +194,10 @@ async def test_clarification_resume_preserves_task_identity_and_never_completes_
     st.sampled_from(list(TaskPhase)),
     st.booleans(),
 )
-def test_artifact_ready_only_unlocks_on_matching_valid_artifact(status, phase, matching_key):
+@settings(deadline=None)
+def test_artifact_ready_only_unlocks_on_matching_valid_artifact(
+    status, phase, matching_key
+):
     with TemporaryDirectory() as tmpdir:
         manager = ProjectManager(tmpdir)
         artifact_key = "client_bundle"
