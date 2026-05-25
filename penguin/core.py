@@ -162,6 +162,7 @@ from .core_runtime import action_execution as core_action_execution
 from .core_runtime import action_events as core_action_events
 from .core_runtime import action_mapping as core_action_mapping
 from .core_runtime import checkpoint_runtime as core_checkpoint_runtime
+from .core_runtime import conversations as core_conversations
 from .core_runtime import model_runtime as core_model_runtime
 from .core_runtime import opencode_adapters as core_opencode_adapters
 from .core_runtime import opencode_bridge as core_opencode_bridge
@@ -3024,8 +3025,11 @@ class PenguinCore:
         Returns:
             List of conversations with metadata
         """
-        return self.conversation_manager.list_conversations(
-            limit=limit, offset=offset, search_term=search_term
+        return core_conversations.list_conversations(
+            self.conversation_manager,
+            limit=limit,
+            offset=offset,
+            search_term=search_term,
         )
 
     def get_conversation(self, conversation_id: str) -> Optional[Dict[str, Any]]:
@@ -3038,30 +3042,10 @@ class PenguinCore:
         Returns:
             Conversation data or None if not found
         """
-        if self.conversation_manager.load(conversation_id):
-            session = self.conversation_manager.get_current_session()
-            if not session:
-                return None
-
-            return {
-                "id": session.id,
-                "messages": [
-                    {
-                        "role": msg.role,
-                        "content": msg.content,
-                        "timestamp": msg.timestamp,
-                        "agent_id": msg.agent_id,
-                        "recipient_id": msg.recipient_id,
-                        "message_type": msg.message_type,
-                        "metadata": msg.metadata,
-                    }
-                    for msg in session.messages
-                ],
-                "created_at": session.created_at,
-                "last_active": session.last_active,
-                "metadata": session.metadata,
-            }
-        return None
+        return core_conversations.get_conversation(
+            self.conversation_manager,
+            conversation_id,
+        )
 
     def get_conversation_history(
         self,
@@ -3070,7 +3054,8 @@ class PenguinCore:
         include_system: bool = True,
         limit: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
-        return self.conversation_manager.get_conversation_history(
+        return core_conversations.get_conversation_history(
+            self.conversation_manager,
             conversation_id,
             include_system=include_system,
             limit=limit,
@@ -3083,7 +3068,7 @@ class PenguinCore:
         Returns:
             ID of the new conversation
         """
-        return self.conversation_manager.create_new_conversation()
+        return core_conversations.create_conversation(self.conversation_manager)
 
     def delete_conversation(self, conversation_id: str) -> bool:
         """
@@ -3095,7 +3080,10 @@ class PenguinCore:
         Returns:
             True if successful, False otherwise
         """
-        return self.conversation_manager.delete_conversation(conversation_id)
+        return core_conversations.delete_conversation(
+            self.conversation_manager,
+            conversation_id,
+        )
 
     def get_conversation_stats(self) -> Dict[str, Any]:
         """
@@ -3104,7 +3092,7 @@ class PenguinCore:
         Returns:
             Dictionary with conversation statistics
         """
-        return self.conversation_manager.get_session_stats()
+        return core_conversations.get_conversation_stats(self.conversation_manager)
 
     async def start_run_mode(
         self,
