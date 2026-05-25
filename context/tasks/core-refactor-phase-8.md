@@ -105,6 +105,59 @@ Run stress/fault combinations that are still practical for a developer loop:
 - A future reliability backlog is updated with overkill testing and
   observability candidates.
 
+## Current Assault Inventory
+
+The `refactor-core-acbra` branch now has deterministic default-suite coverage
+around the highest-risk extracted Phase 8 surfaces:
+
+- checkpoint/fork/revert lineage and source-session immutability
+- provider runtime contracts for OpenAI, OpenAI-compatible, Anthropic, and
+  OpenRouter streaming/non-streaming behavior
+- incomplete provider streams, mid-stream provider errors, retry/release
+  behavior, cancellation, usage metadata, reasoning metadata, and tool-call
+  replay/adjacency
+- process runtime lifecycle behavior: stdin after exit, cleanup, terminate to
+  kill escalation, large stdout/stderr, and interleaved streams
+- token usage aggregation across session and agent scopes
+- session lookup/store ownership helpers
+- OpenCode action mapping, action-result metadata, task-card summaries, todo
+  normalization, action event bridging, adapter directory resolution, and usage
+  payload shaping
+
+Use repeated targeted runs locally before broad refactors, for example:
+
+```bash
+for i in 1 2 3; do \
+  .venv/bin/python -m pytest \
+    tests/test_core_tool_mapping.py \
+    tests/core_runtime \
+    tests/tools/test_process_runtime.py \
+    tests/llm/test_provider_contract_matrix.py \
+    -q || exit 1; \
+done
+```
+
+Do not add a random-order CI gate until the runner/plugin choice is explicit
+and proven non-flaky. For now, repeated targeted runs plus the default suite are
+the practical Phase 8 gate.
+
+## Mutation-Test Candidates
+
+Defer mutation tooling setup, but keep the initial target list limited to small,
+deterministic modules where mutant results should be actionable:
+
+- `penguin/core_runtime/action_mapping.py`
+- `penguin/core_runtime/checkpoint_runtime.py`
+- `penguin/core_runtime/opencode_bridge.py`
+- `penguin/core_runtime/session_lookup.py`
+- `penguin/core_runtime/token_usage_runtime.py`
+- `penguin/tools/process_runtime.py`
+- `penguin/llm/contracts.py`
+- `penguin/llm/provider_transform.py`
+
+Do not mutation-test `penguin/core.py`, route god files, live provider paths, or
+legacy files with broad side effects during Phase 8.
+
 ## Verification
 
 Run targeted assault clusters first, then:
