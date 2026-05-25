@@ -266,6 +266,24 @@ def test_extract_result_file_paths_ignores_corrupt_payloads() -> None:
     assert action_mapping.extract_result_file_paths({"files": [1, None, ""]}) == []
 
 
+def test_unknown_action_mapping_copies_input_dict_to_avoid_mutation_bleed() -> None:
+    params = {"path": "src/app.py", "nested": {"keep": True}}
+
+    mapped_tool, tool_input, metadata = action_mapping.map_action_to_tool(
+        "custom_tool",
+        params,
+    )
+
+    assert mapped_tool == "custom_tool"
+    assert tool_input == params
+    assert tool_input is not params
+    assert metadata == {}
+
+    tool_input["path"] = "changed.py"
+
+    assert params["path"] == "src/app.py"
+
+
 @settings(max_examples=80, deadline=None)
 @given(
     action=st.text(max_size=24),

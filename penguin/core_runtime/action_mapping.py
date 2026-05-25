@@ -757,7 +757,7 @@ def map_action_to_tool(
         return "grep", tool_input, metadata
 
     if isinstance(params, dict):
-        tool_input = params
+        tool_input = dict(params)
     else:
         tool_input = {"params": params}
     return action_name or "unknown", tool_input, metadata

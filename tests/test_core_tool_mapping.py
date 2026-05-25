@@ -644,6 +644,25 @@ def test_map_action_to_tool_supports_canonical_patch_files_payload() -> None:
     assert metadata["files"] == ["src/a.py", "src/b.py"]
 
 
+def test_core_map_action_to_tool_unknown_action_does_not_return_caller_dict() -> None:
+    core = PenguinCore.__new__(PenguinCore)
+    params = {"path": "src/app.py"}
+
+    mapped_tool, tool_input, metadata = core._map_action_to_tool(
+        "custom_tool",
+        params,
+    )
+
+    assert mapped_tool == "custom_tool"
+    assert tool_input == {"path": "src/app.py"}
+    assert tool_input is not params
+    assert metadata == {}
+
+    tool_input["path"] = "changed.py"
+
+    assert params == {"path": "src/app.py"}
+
+
 def test_map_action_result_metadata_extracts_todos_for_todowrite() -> None:
     core = PenguinCore.__new__(PenguinCore)
     result = (
