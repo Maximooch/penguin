@@ -104,9 +104,8 @@ See Also:
 """
 
 import asyncio
-import inspect
 import logging
-from dataclasses import asdict, fields
+from dataclasses import fields
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -114,17 +113,12 @@ from typing import (
     Awaitable,
     Callable,
     Dict,
-    Iterable,
     List,
-    Mapping,
     Optional,
-    Sequence,
-    Set,
     Tuple,
     Union,
 )
 
-from dotenv import load_dotenv  # type: ignore
 from rich.console import Console  # type: ignore
 from tenacity import (  # type: ignore
     retry,
@@ -138,10 +132,7 @@ from tqdm import tqdm
 from penguin.config import (
     DEFAULT_MODEL,
     DEFAULT_PROVIDER,
-    TASK_COMPLETION_PHRASE,
     MAX_TASK_ITERATIONS,
-    AgentModelSettings,
-    AgentPersonaConfig,
     Config,
     _ensure_env_loaded,  # Lazy env loading for startup performance
 )
@@ -176,9 +167,7 @@ from .core_runtime import streaming_state as core_streaming_state
 from .core_runtime import system_diagnostics as core_system_diagnostics
 from .core_runtime import token_usage_runtime as core_token_usage_runtime
 from penguin.llm.stream_handler import (
-    StreamingStateManager,
     AgentStreamingStateManager,
-    StreamingConfig,
 )
 from penguin.multi import coordinator_runtime as multi_coordinator_runtime
 from penguin.multi import routing as multi_routing
@@ -199,15 +188,11 @@ from penguin.system.state import MessageCategory, Message
 # System Prompt
 from penguin.system_prompt import SYSTEM_PROMPT, get_system_prompt
 
-# Workflow Prompt
-from penguin.prompt_workflow import PENGUIN_WORKFLOW
-
 # Tools and Processing
 from penguin.tools import ToolManager
 from penguin.utils.callbacks import adapt_stream_callback
 from penguin.utils.diagnostics import (
     diagnostics,
-    enable_diagnostics,
     disable_diagnostics,
 )
 from penguin.utils.log_error import log_error
@@ -216,9 +201,7 @@ from penguin.utils.parser import (
 )
 from penguin.utils.profiling import (
     profile_startup_phase,
-    profile_operation,
     profiler,
-    print_startup_report,
 )
 
 try:
