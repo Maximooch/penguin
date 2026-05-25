@@ -182,6 +182,75 @@ def test_filter_internal_markers_returns_original_when_unchanged() -> None:
     assert filtered is payload
 
 
+def test_prepare_runmode_stream_callback_uses_adapter_factory() -> None:
+    calls: list[tuple[Any, bool]] = []
+    callback = object()
+    prepared = object()
+
+    result = stream_events.prepare_runmode_stream_callback(
+        callback,
+        adapter_factory=lambda cb, *, suppress_errors: calls.append(
+            (cb, suppress_errors)
+        )
+        or prepared,
+    )
+
+    assert result is prepared
+    assert calls == [(callback, True)]
+
+
+@pytest.mark.asyncio
+async def test_invoke_runmode_stream_callback_prefers_explicit_callback() -> None:
+    calls: list[tuple[str, str, str]] = []
+
+    async def owner_callback(chunk: str, message_type: str) -> None:
+        calls.append(("owner", chunk, message_type))
+
+    async def explicit_callback(chunk: str, message_type: str) -> None:
+        calls.append(("explicit", chunk, message_type))
+
+    owner = SimpleNamespace(_runmode_stream_callback=owner_callback)
+
+    await stream_events.invoke_runmode_stream_callback(
+        owner,
+        "hello",
+        "assistant",
+        callback=explicit_callback,
+        logger=logging.getLogger(__name__),
+    )
+
+    assert calls == [("explicit", "hello", "assistant")]
+
+
+@pytest.mark.asyncio
+async def test_invoke_runmode_stream_callback_logs_and_suppresses_failures() -> None:
+    class _Logger:
+        def __init__(self) -> None:
+            self.debug_calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+
+        def debug(self, message: str, *args: Any, **kwargs: Any) -> None:
+            self.debug_calls.append((message, args, kwargs))
+
+    async def failing_callback(_chunk: str, _message_type: str) -> None:
+        raise RuntimeError("callback failed")
+
+    logger = _Logger()
+    owner = SimpleNamespace(_runmode_stream_callback=failing_callback)
+
+    await stream_events.invoke_runmode_stream_callback(
+        owner,
+        "hello",
+        "assistant",
+        logger=logger,
+    )
+
+    assert len(logger.debug_calls) == 1
+    message, args, kwargs = logger.debug_calls[0]
+    assert message == "RunMode stream callback execution failed: %s"
+    assert str(args[0]) == "callback failed"
+    assert kwargs == {"exc_info": True}
+
+
 def test_resolve_stream_scope_id_prefers_execution_context_session_and_agent() -> None:
     context = SimpleNamespace(
         session_id="session_1",

@@ -26,7 +26,9 @@ __all__ = [
     "finalize_streaming_message",
     "handle_stream_chunk",
     "handle_tui_stream_chunk",
+    "invoke_runmode_stream_callback",
     "persist_finalized_message",
+    "prepare_runmode_stream_callback",
     "resolve_stream_scope_id",
     "should_emit_final_content",
     "stream_state_for",
@@ -125,6 +127,33 @@ def should_emit_final_content(adapter: Any, part_id: str, final_content: Any) ->
         return not bool(active_part_text(adapter, part_id))
     except Exception:
         return True
+
+
+def prepare_runmode_stream_callback(
+    callback: Any,
+    *,
+    adapter_factory: Any,
+) -> Any:
+    """Normalize a RunMode stream callback to Penguin's async callback shape."""
+    return adapter_factory(callback, suppress_errors=True)
+
+
+async def invoke_runmode_stream_callback(
+    owner: Any,
+    chunk: str,
+    message_type: str,
+    *,
+    callback: Any = None,
+    logger: Any,
+) -> None:
+    """Invoke the active RunMode stream callback and isolate callback failures."""
+    cb = callback or getattr(owner, "_runmode_stream_callback", None)
+    if not cb:
+        return
+    try:
+        await cb(chunk, message_type)
+    except Exception as exc:
+        logger.debug("RunMode stream callback execution failed: %s", exc, exc_info=True)
 
 
 def filter_internal_markers_from_event(data: dict[str, Any]) -> dict[str, Any]:

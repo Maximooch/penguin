@@ -2409,7 +2409,10 @@ class PenguinCore:
         callback: Optional[Callable[..., Any]],
     ) -> Optional[Callable[[str, str], Awaitable[None]]]:
         """Normalize run mode stream callbacks to a common async signature."""
-        return adapt_stream_callback(callback, suppress_errors=True)
+        return core_stream_events.prepare_runmode_stream_callback(
+            callback,
+            adapter_factory=adapt_stream_callback,
+        )
 
     async def _invoke_runmode_stream_callback(
         self,
@@ -2417,15 +2420,13 @@ class PenguinCore:
         message_type: str,
         callback: Optional[Callable[[str, str], Awaitable[None]]] = None,
     ) -> None:
-        cb = callback or self._runmode_stream_callback
-        if not cb:
-            return
-        try:
-            await cb(chunk, message_type)
-        except Exception as exc:
-            logger.debug(
-                "RunMode stream callback execution failed: %s", exc, exc_info=True
-            )
+        await core_stream_events.invoke_runmode_stream_callback(
+            self,
+            chunk,
+            message_type,
+            callback=callback,
+            logger=logger,
+        )
 
     # Update token usage notification to use events
     def update_token_display(self) -> None:
