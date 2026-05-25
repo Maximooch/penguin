@@ -16,6 +16,7 @@ from penguin.core_runtime.model_runtime import (
     canonicalize_runtime_model_id,
     configure_llm_client,
     current_model_payload,
+    ensure_litellm_configured,
     list_available_models,
     load_model_for_core,
     refresh_api_client,
@@ -184,6 +185,60 @@ def test_refresh_api_client_propagates_to_runtime_components() -> None:
     assert conversation_manager.api_client is owner.api_client
     assert context_window.api_client is owner.api_client
     assert engine.api_client is owner.api_client
+
+
+def test_ensure_litellm_configured_disables_debugging_once() -> None:
+    calls: list[str] = []
+
+    class _Logging:
+        def _disable_debugging(self) -> None:
+            calls.append("disable_debugging")
+
+    class _LiteLLM:
+        _logging = _Logging()
+        set_verbose = True
+        drop_params = True
+
+    owner = SimpleNamespace(_litellm_configured=False)
+
+    ensure_litellm_configured(
+        owner,
+        litellm_loader=lambda reason: calls.append(reason) or _LiteLLM,
+    )
+    ensure_litellm_configured(
+        owner,
+        litellm_loader=lambda reason: calls.append(f"again:{reason}") or _LiteLLM,
+    )
+
+    assert owner._litellm_configured is True
+    assert calls == ["LiteLLM optional runtime", "disable_debugging"]
+    assert _LiteLLM.set_verbose is False
+    assert _LiteLLM.drop_params is False
+
+
+def test_ensure_litellm_configured_marks_done_after_loader_failure() -> None:
+    debug_calls: list[tuple[str, tuple[Any, ...]]] = []
+    owner = SimpleNamespace(_litellm_configured=False)
+
+    class _Logger:
+        def debug(self, message: str, *args: Any) -> None:
+            debug_calls.append((message, args))
+
+    def failing_loader(_reason: str) -> Any:
+        raise RuntimeError("missing optional dependency")
+
+    ensure_litellm_configured(
+        owner,
+        litellm_loader=failing_loader,
+        log=_Logger(),
+    )
+
+    assert owner._litellm_configured is True
+    assert len(debug_calls) == 1
+    assert debug_calls[0][0] == (
+        "LiteLLM optional runtime unavailable or not configured: %s"
+    )
+    assert str(debug_calls[0][1][0]) == "missing optional dependency"
 
 
 def test_configure_llm_client_creates_link_configured_client() -> None:

@@ -150,6 +150,25 @@ def test_get_current_model_no_config(core: PenguinCore) -> None:
     assert core.get_current_model() is None
 
 
+def test_litellm_configuration_shim_delegates_to_model_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core = PenguinCore.__new__(PenguinCore)
+    core.tool_manager = None
+    calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+    monkeypatch.setattr(
+        "penguin.core.core_model_runtime.ensure_litellm_configured",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    PenguinCore._ensure_litellm_configured(core)
+
+    assert calls
+    assert calls[0][0] == (core,)
+    assert sorted(calls[0][1]) == ["log"]
+
+
 @pytest.mark.asyncio
 async def test_resolve_request_runtime_uses_runtime_helper(
     core: PenguinCore,

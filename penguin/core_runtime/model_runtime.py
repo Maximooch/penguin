@@ -27,6 +27,7 @@ RefreshActiveClient = Callable[[], None]
 LLMClientFactory = Callable[[ModelConfig, Any], Any]
 LLMClientConfigFactory = Callable[..., Any]
 LinkConfigFactory = Callable[..., Any]
+LiteLLMLoader = Callable[[str], Any]
 
 
 def _coerce_optional_int(value: Any) -> int | None:
@@ -85,6 +86,37 @@ def refresh_api_client(
                 "Failed to propagate refreshed API client to Engine: %s",
                 exc,
             )
+
+
+def ensure_litellm_configured(
+    owner: Any,
+    *,
+    litellm_loader: LiteLLMLoader | None = None,
+    log: logging.Logger | None = None,
+) -> None:
+    """Configure LiteLLM once when the optional runtime is installed."""
+
+    if getattr(owner, "_litellm_configured", False):
+        return
+
+    active_logger = log or logger
+    try:
+        if litellm_loader is None:
+            from penguin.llm.litellm_support import load_litellm_module
+
+            litellm_loader = load_litellm_module
+
+        litellm = litellm_loader("LiteLLM optional runtime")
+        litellm._logging._disable_debugging()
+        litellm.set_verbose = False
+        litellm.drop_params = False
+        owner._litellm_configured = True
+    except Exception as exc:
+        active_logger.debug(
+            "LiteLLM optional runtime unavailable or not configured: %s",
+            exc,
+        )
+        owner._litellm_configured = True
 
 
 def configure_llm_client(
@@ -514,6 +546,7 @@ __all__ = [
     "build_model_config_for_model",
     "canonicalize_runtime_model_id",
     "current_model_payload",
+    "ensure_litellm_configured",
     "list_available_models",
     "load_model_for_core",
     "refresh_api_client",

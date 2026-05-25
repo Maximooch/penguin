@@ -215,7 +215,6 @@ from penguin.utils.diagnostics import (
     enable_diagnostics,
     disable_diagnostics,
 )
-from penguin.llm.litellm_support import load_litellm_module
 from penguin.utils.log_error import log_error
 from penguin.utils.parser import (
     ActionExecutor,
@@ -886,19 +885,7 @@ class PenguinCore:
 
     def _ensure_litellm_configured(self):
         """Configure LiteLLM on first use when the optional extra is installed."""
-        if not self._litellm_configured:
-            try:
-                litellm = load_litellm_module("LiteLLM optional runtime")
-                _logging = litellm._logging
-                _logging._disable_debugging()
-                litellm.set_verbose = False
-                litellm.drop_params = False
-                self._litellm_configured = True
-            except Exception as e:
-                logger.debug(
-                    "LiteLLM optional runtime unavailable or not configured: %s", e
-                )
-                self._litellm_configured = True  # Don't try again
+        core_model_runtime.ensure_litellm_configured(self, log=logger)
 
         # Streaming primitives are initialized in __init__ now
         self.current_runmode_status_summary: str = "RunMode idle."
