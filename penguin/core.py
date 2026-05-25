@@ -1594,31 +1594,15 @@ class PenguinCore:
         Returns:
             Dict with current LLM client status
         """
-        from penguin.llm.client import LLMClient, LLMClientConfig, LinkConfig
-
-        if not hasattr(self, "_llm_client") or self._llm_client is None:
-            config = LLMClientConfig(
-                base_url=base_url,
-                link=LinkConfig(
-                    user_id=link_user_id,
-                    session_id=link_session_id,
-                    agent_id=link_agent_id,
-                    workspace_id=link_workspace_id,
-                    api_key=link_api_key,
-                ),
-            )
-            self._llm_client = LLMClient(self.model_config, config)
-        else:
-            self._llm_client.update_config(
-                base_url=base_url,
-                link_user_id=link_user_id,
-                link_session_id=link_session_id,
-                link_agent_id=link_agent_id,
-                link_workspace_id=link_workspace_id,
-                link_api_key=link_api_key,
-            )
-
-        return self._llm_client.get_status()
+        return core_model_runtime.configure_llm_client(
+            self,
+            base_url=base_url,
+            link_user_id=link_user_id,
+            link_session_id=link_session_id,
+            link_agent_id=link_agent_id,
+            link_workspace_id=link_workspace_id,
+            link_api_key=link_api_key,
+        )
 
     def _check_interrupt(self) -> bool:
         """Check if execution has been interrupted"""

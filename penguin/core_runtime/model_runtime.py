@@ -23,6 +23,9 @@ FetchModelSpecs = Callable[[str], Awaitable[dict[str, Any]]]
 ResolveModelProvider = Callable[[str], tuple[str | None, str]]
 ApiClientFactory = Callable[..., Any]
 RefreshActiveClient = Callable[[], None]
+LLMClientFactory = Callable[[ModelConfig, Any], Any]
+LLMClientConfigFactory = Callable[..., Any]
+LinkConfigFactory = Callable[..., Any]
 
 
 def _coerce_optional_int(value: Any) -> int | None:
@@ -81,6 +84,62 @@ def refresh_api_client(
                 "Failed to propagate refreshed API client to Engine: %s",
                 exc,
             )
+
+
+def configure_llm_client(
+    owner: Any,
+    *,
+    base_url: str | None = None,
+    link_user_id: str | None = None,
+    link_session_id: str | None = None,
+    link_agent_id: str | None = None,
+    link_workspace_id: str | None = None,
+    link_api_key: str | None = None,
+    llm_client_factory: LLMClientFactory | None = None,
+    llm_client_config_factory: LLMClientConfigFactory | None = None,
+    link_config_factory: LinkConfigFactory | None = None,
+) -> dict[str, Any]:
+    """Create or update the runtime LLM client for Link-routed inference."""
+
+    if not hasattr(owner, "_llm_client") or owner._llm_client is None:
+        if (
+            llm_client_factory is None
+            or llm_client_config_factory is None
+            or link_config_factory is None
+        ):
+            from penguin.llm.client import (
+                LinkConfig,
+                LLMClient,
+                LLMClientConfig,
+            )
+
+            llm_client_factory = llm_client_factory or LLMClient
+            llm_client_config_factory = llm_client_config_factory or LLMClientConfig
+            link_config_factory = link_config_factory or LinkConfig
+
+        config = llm_client_config_factory(
+            base_url=base_url,
+            link=link_config_factory(
+                user_id=link_user_id,
+                session_id=link_session_id,
+                agent_id=link_agent_id,
+                workspace_id=link_workspace_id,
+                api_key=link_api_key,
+            ),
+        )
+        owner._llm_client = llm_client_factory(owner.model_config, config)
+    else:
+        owner._llm_client.update_config(
+            base_url=base_url,
+            link_user_id=link_user_id,
+            link_session_id=link_session_id,
+            link_agent_id=link_agent_id,
+            link_workspace_id=link_workspace_id,
+            link_api_key=link_api_key,
+        )
+
+    status = owner._llm_client.get_status()
+    return status if isinstance(status, dict) else {}
 
 
 def apply_new_model_config(

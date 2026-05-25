@@ -14,6 +14,7 @@ from penguin.core_runtime.model_runtime import (
     apply_new_model_config,
     build_model_config_for_model,
     canonicalize_runtime_model_id,
+    configure_llm_client,
     current_model_payload,
     list_available_models,
     refresh_api_client,
@@ -181,6 +182,105 @@ def test_refresh_api_client_propagates_to_runtime_components() -> None:
     assert conversation_manager.api_client is owner.api_client
     assert context_window.api_client is owner.api_client
     assert engine.api_client is owner.api_client
+
+
+def test_configure_llm_client_creates_link_configured_client() -> None:
+    model_config = ModelConfig(model="gpt-4o", provider="openai")
+    created_configs: list[Any] = []
+    created_links: list[dict[str, Any]] = []
+
+    class FakeLinkConfig:
+        def __init__(self, **kwargs: Any) -> None:
+            self.values = kwargs
+            created_links.append(kwargs)
+
+    class FakeLLMClientConfig:
+        def __init__(self, **kwargs: Any) -> None:
+            self.values = kwargs
+            created_configs.append(kwargs)
+
+    class FakeLLMClient:
+        def __init__(self, model_config: ModelConfig, config: Any) -> None:
+            self.model_config = model_config
+            self.config = config
+            self.update_calls: list[dict[str, Any]] = []
+
+        def get_status(self) -> dict[str, Any]:
+            return {"configured": True, "model": self.model_config.model}
+
+    owner = SimpleNamespace(model_config=model_config, _llm_client=None)
+
+    status = configure_llm_client(
+        owner,
+        base_url="http://localhost:3001/api/v1",
+        link_user_id="user_1",
+        link_session_id="session_1",
+        link_agent_id="agent_1",
+        link_workspace_id="workspace_1",
+        link_api_key="key_1",
+        llm_client_factory=FakeLLMClient,
+        llm_client_config_factory=FakeLLMClientConfig,
+        link_config_factory=FakeLinkConfig,
+    )
+
+    assert status == {"configured": True, "model": "gpt-4o"}
+    assert owner._llm_client.model_config is model_config
+    assert created_links == [
+        {
+            "user_id": "user_1",
+            "session_id": "session_1",
+            "agent_id": "agent_1",
+            "workspace_id": "workspace_1",
+            "api_key": "key_1",
+        }
+    ]
+    assert created_configs == [
+        {
+            "base_url": "http://localhost:3001/api/v1",
+            "link": owner._llm_client.config.values["link"],
+        }
+    ]
+
+
+def test_configure_llm_client_updates_existing_client() -> None:
+    class ExistingClient:
+        def __init__(self) -> None:
+            self.update_calls: list[dict[str, Any]] = []
+
+        def update_config(self, **kwargs: Any) -> None:
+            self.update_calls.append(kwargs)
+
+        def get_status(self) -> dict[str, Any]:
+            return {"updated": bool(self.update_calls)}
+
+    existing = ExistingClient()
+    owner = SimpleNamespace(
+        model_config=ModelConfig(model="gpt-4o", provider="openai"),
+        _llm_client=existing,
+    )
+
+    status = configure_llm_client(
+        owner,
+        base_url="http://localhost:4000",
+        link_user_id="user_2",
+        link_session_id="session_2",
+        link_agent_id="agent_2",
+        link_workspace_id="workspace_2",
+        link_api_key="key_2",
+    )
+
+    assert owner._llm_client is existing
+    assert status == {"updated": True}
+    assert existing.update_calls == [
+        {
+            "base_url": "http://localhost:4000",
+            "link_user_id": "user_2",
+            "link_session_id": "session_2",
+            "link_agent_id": "agent_2",
+            "link_workspace_id": "workspace_2",
+            "link_api_key": "key_2",
+        }
+    ]
 
 
 def test_apply_new_model_config_propagates_budget_and_model_config() -> None:
