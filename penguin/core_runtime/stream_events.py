@@ -6,7 +6,9 @@ import re
 from typing import Any
 
 __all__ = [
+    "abort_session",
     "active_part_text",
+    "emit_opencode_session_status",
     "filter_internal_markers_from_event",
     "handle_tui_stream_chunk",
     "resolve_stream_scope_id",
@@ -118,6 +120,124 @@ def resolve_stream_scope_id(
     if not session_scope:
         return resolved_agent
     return f"{session_scope}:{resolved_agent}"
+
+
+async def emit_opencode_session_status(
+    owner: Any,
+    session_id: str,
+    status_type: str,
+    info: dict[str, Any] | None = None,
+) -> None:
+    """Emit an OpenCode session.status event for a session."""
+
+    sid = session_id.strip() if isinstance(session_id, str) else ""
+    if not sid:
+        return
+
+    properties: dict[str, Any] = {
+        "sessionID": sid,
+        "status": {"type": status_type},
+    }
+    if info:
+        properties["info"] = info
+
+    await owner.event_bus.emit(
+        "opencode_event",
+        {
+            "type": "session.status",
+            "properties": properties,
+        },
+    )
+
+
+async def abort_session(
+    owner: Any,
+    session_id: str,
+    *,
+    logger: Any,
+) -> bool:
+    """Abort active OpenCode stream/tool state for a session."""
+
+    sid = session_id.strip() if isinstance(session_id, str) else ""
+    if not sid:
+        return False
+
+    abort_sessions = getattr(owner, "_opencode_abort_sessions", None)
+    if not isinstance(abort_sessions, set):
+        abort_sessions = set()
+        owner._opencode_abort_sessions = abort_sessions
+    abort_sessions.add(sid)
+    aborted = False
+
+    adapter = owner._get_tui_adapter(sid)
+    adapter_abort = getattr(adapter, "abort", None)
+    if callable(adapter_abort):
+        try:
+            adapter_aborted = await adapter_abort(
+                reason="Tool execution was interrupted"
+            )
+            aborted = bool(adapter_aborted) or aborted
+        except Exception:
+            logger.warning("Failed to abort active TUI parts", exc_info=True)
+
+    tasks_map = getattr(owner, "_opencode_process_tasks", None)
+    if isinstance(tasks_map, dict):
+        active_tasks = list(tasks_map.get(sid, set()))
+        for task in active_tasks:
+            if task.done():
+                continue
+            task.cancel()
+            aborted = True
+
+    states = getattr(owner, "_opencode_stream_states", None)
+    state = states.get(sid) if isinstance(states, dict) else None
+    if isinstance(state, dict):
+        message_id = state.get("message_id")
+        part_id = state.get("part_id")
+        if (
+            not callable(adapter_abort)
+            and isinstance(message_id, str)
+            and isinstance(part_id, str)
+        ):
+            try:
+                await adapter.on_stream_end(message_id, part_id)
+                aborted = True
+            except Exception:
+                logger.warning("Failed to force-finalize aborted stream", exc_info=True)
+        state["active"] = False
+        state["stream_id"] = None
+        state["part_id"] = None
+
+    tool_parts = getattr(owner, "_opencode_tool_parts", None)
+    if isinstance(tool_parts, dict):
+        for key in [
+            key
+            for key in tool_parts
+            if isinstance(key, str) and key.startswith(f"{sid}:")
+        ]:
+            tool_parts.pop(key, None)
+
+    tool_info = getattr(owner, "_opencode_tool_info", None)
+    if isinstance(tool_info, dict):
+        for key in [
+            key
+            for key in tool_info
+            if isinstance(key, str) and key.startswith(f"{sid}:")
+        ]:
+            tool_info.pop(key, None)
+
+    for scope in list(owner._stream_manager.get_active_agents()):
+        if scope != sid and not scope.startswith(f"{sid}:"):
+            continue
+        for event in owner._stream_manager.abort(agent_id=scope):
+            event_data = dict(event.data) if isinstance(event.data, dict) else {}
+            event_data["session_id"] = sid
+            event_data["conversation_id"] = sid
+            await owner.emit_ui_event(event.event_type, event_data)
+            aborted = True
+
+    await emit_opencode_session_status(owner, sid, "idle")
+    return aborted
 
 
 async def handle_tui_stream_chunk(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from types import SimpleNamespace
 from typing import Any
@@ -71,6 +72,14 @@ class _Owner:
             "providerID": "openai",
             "variant": "high",
         }
+
+
+class _EventBus:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, Any]]] = []
+
+    async def emit(self, event_type: str, data: dict[str, Any]) -> None:
+        self.events.append((event_type, data))
 
 
 def test_should_emit_final_content_detects_existing_part_text() -> None:
@@ -168,6 +177,127 @@ def test_resolve_stream_scope_id_uses_default_without_context_or_manager_agent()
     )
 
     assert scope_id == "default"
+
+
+@pytest.mark.asyncio
+async def test_emit_opencode_session_status_shapes_and_scopes_event() -> None:
+    owner = SimpleNamespace(event_bus=_EventBus())
+
+    await stream_events.emit_opencode_session_status(
+        owner,
+        " session_1 ",
+        "busy",
+        info={"task_id": "task_1"},
+    )
+    await stream_events.emit_opencode_session_status(owner, " ", "idle")
+
+    assert owner.event_bus.events == [
+        (
+            "opencode_event",
+            {
+                "type": "session.status",
+                "properties": {
+                    "sessionID": "session_1",
+                    "status": {"type": "busy"},
+                    "info": {"task_id": "task_1"},
+                },
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_abort_session_cancels_tasks_cleans_scoped_state_and_emits_idle() -> None:
+    class _AbortAdapter:
+        def __init__(self) -> None:
+            self.reasons: list[str] = []
+
+        async def abort(self, reason: str) -> bool:
+            self.reasons.append(reason)
+            return True
+
+    class _StreamManager:
+        def get_active_agents(self) -> list[str]:
+            return ["session_1:agent-a", "session_2:agent-b"]
+
+        def abort(self, agent_id: str) -> list[SimpleNamespace]:
+            return [
+                SimpleNamespace(
+                    event_type="stream_chunk",
+                    data={"agent_id": agent_id, "aborted": True},
+                )
+            ]
+
+    async def _sleep_forever() -> None:
+        await asyncio.sleep(60)
+
+    pending_task = asyncio.create_task(_sleep_forever())
+    adapter = _AbortAdapter()
+    owner = SimpleNamespace(
+        event_bus=_EventBus(),
+        _get_tui_adapter=lambda _session_id: adapter,
+        _stream_manager=_StreamManager(),
+        _opencode_abort_sessions=set(),
+        _opencode_process_tasks={"session_1": {pending_task}},
+        _opencode_stream_states={
+            "session_1": {
+                "active": True,
+                "stream_id": "stream_1",
+                "message_id": "msg_1",
+                "part_id": "part_1",
+            }
+        },
+        _opencode_tool_parts={
+            "session_1:call_1": "part_tool",
+            "session_2:call_2": "part_other",
+        },
+        _opencode_tool_info={
+            "session_1:call_1": {"tool": "bash"},
+            "session_2:call_2": {"tool": "read"},
+        },
+    )
+    owner.ui_events = []
+
+    async def _emit_ui_event(event_type: str, data: dict[str, Any]) -> None:
+        owner.ui_events.append((event_type, data))
+
+    owner.emit_ui_event = _emit_ui_event
+
+    aborted = await stream_events.abort_session(
+        owner,
+        "session_1",
+        logger=logging.getLogger("test.stream_events"),
+    )
+
+    assert aborted is True
+    assert adapter.reasons == ["Tool execution was interrupted"]
+    assert "session_1" in owner._opencode_abort_sessions
+    with pytest.raises(asyncio.CancelledError):
+        await pending_task
+
+    assert owner._opencode_stream_states["session_1"]["active"] is False
+    assert owner._opencode_stream_states["session_1"]["stream_id"] is None
+    assert owner._opencode_stream_states["session_1"]["part_id"] is None
+    assert "session_1:call_1" not in owner._opencode_tool_parts
+    assert "session_1:call_1" not in owner._opencode_tool_info
+    assert "session_2:call_2" in owner._opencode_tool_parts
+    assert "session_2:call_2" in owner._opencode_tool_info
+
+    assert owner.ui_events == [
+        (
+            "stream_chunk",
+            {
+                "agent_id": "session_1:agent-a",
+                "aborted": True,
+                "session_id": "session_1",
+                "conversation_id": "session_1",
+            },
+        )
+    ]
+    status_event = owner.event_bus.events[-1][1]
+    assert status_event["type"] == "session.status"
+    assert status_event["properties"]["sessionID"] == "session_1"
+    assert status_event["properties"]["status"]["type"] == "idle"
 
 
 @pytest.mark.asyncio

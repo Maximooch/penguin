@@ -1818,101 +1818,16 @@ class PenguinCore:
         info: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Emit OpenCode session.status event for a session."""
-        sid = session_id.strip() if isinstance(session_id, str) else ""
-        if not sid:
-            return
-
-        properties: Dict[str, Any] = {
-            "sessionID": sid,
-            "status": {"type": status_type},
-        }
-        if info:
-            properties["info"] = info
-
-        await self.event_bus.emit(
-            "opencode_event",
-            {
-                "type": "session.status",
-                "properties": properties,
-            },
+        await core_stream_events.emit_opencode_session_status(
+            self,
+            session_id,
+            status_type,
+            info=info,
         )
 
     async def abort_session(self, session_id: str) -> bool:
         """Abort active streaming/tool state for a session."""
-        sid = session_id.strip() if isinstance(session_id, str) else ""
-        if not sid:
-            return False
-
-        self._opencode_abort_sessions.add(sid)
-        aborted = False
-
-        adapter = self._get_tui_adapter(sid)
-        adapter_abort = getattr(adapter, "abort", None)
-        if callable(adapter_abort):
-            try:
-                adapter_aborted = await adapter_abort(
-                    reason="Tool execution was interrupted"
-                )
-                aborted = bool(adapter_aborted) or aborted
-            except Exception:
-                logger.warning("Failed to abort active TUI parts", exc_info=True)
-
-        tasks_map = getattr(self, "_opencode_process_tasks", None)
-        if isinstance(tasks_map, dict):
-            active_tasks = list(tasks_map.get(sid, set()))
-            for task in active_tasks:
-                if task.done():
-                    continue
-                task.cancel()
-                aborted = True
-
-        states = getattr(self, "_opencode_stream_states", None)
-        state = states.get(sid) if isinstance(states, dict) else None
-        if isinstance(state, dict):
-            message_id = state.get("message_id")
-            part_id = state.get("part_id")
-            if (
-                not callable(adapter_abort)
-                and isinstance(message_id, str)
-                and isinstance(part_id, str)
-            ):
-                try:
-                    await adapter.on_stream_end(message_id, part_id)
-                    aborted = True
-                except Exception:
-                    logger.warning(
-                        "Failed to force-finalize aborted stream", exc_info=True
-                    )
-            state["active"] = False
-            state["stream_id"] = None
-            state["part_id"] = None
-
-        tool_parts = getattr(self, "_opencode_tool_parts", None)
-        if isinstance(tool_parts, dict):
-            for key in [
-                k for k in tool_parts if isinstance(k, str) and k.startswith(f"{sid}:")
-            ]:
-                tool_parts.pop(key, None)
-
-        tool_info = getattr(self, "_opencode_tool_info", None)
-        if isinstance(tool_info, dict):
-            for key in [
-                k for k in tool_info if isinstance(k, str) and k.startswith(f"{sid}:")
-            ]:
-                tool_info.pop(key, None)
-
-        for scope in list(self._stream_manager.get_active_agents()):
-            if scope != sid and not scope.startswith(f"{sid}:"):
-                continue
-            for event in self._stream_manager.abort(agent_id=scope):
-                event_data = dict(event.data) if isinstance(event.data, dict) else {}
-                event_data["session_id"] = sid
-                event_data["conversation_id"] = sid
-                await self.emit_ui_event(event.event_type, event_data)
-                aborted = True
-
-        await self._emit_opencode_session_status(sid, "idle")
-        return aborted
+        return await core_stream_events.abort_session(self, session_id, logger=logger)
 
     def get_token_usage(
         self,
