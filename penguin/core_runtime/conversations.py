@@ -2,18 +2,31 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 __all__ = [
+    "ConversationLoadResult",
     "create_conversation",
     "delete_conversation",
     "get_conversation",
     "get_conversation_history",
     "get_conversation_stats",
     "list_conversations",
+    "load_process_context_files",
+    "load_process_conversation",
     "resolve_conversation_manager",
     "session_payload",
 ]
+
+
+@dataclass(frozen=True)
+class ConversationLoadResult:
+    """Result metadata for process conversation loading."""
+
+    via: str
+    ok: bool
+    scoped_session_id: str | None
 
 
 def list_conversations(
@@ -63,6 +76,65 @@ def resolve_conversation_manager(
                 agent_err,
             )
     return conversation_manager
+
+
+def _current_conversation_session_id(conversation_manager: Any) -> str | None:
+    return getattr(
+        getattr(
+            getattr(conversation_manager, "conversation", None),
+            "session",
+            None,
+        ),
+        "id",
+        None,
+    )
+
+
+def load_process_conversation(
+    conversation_manager: Any,
+    conversation_id: str,
+    *,
+    log: Any,
+) -> ConversationLoadResult:
+    """Load a process conversation through scoped conversation or manager."""
+
+    scoped_conversation = getattr(conversation_manager, "conversation", None)
+    via = "conversation"
+    if scoped_conversation is not None and hasattr(scoped_conversation, "load"):
+        ok = bool(scoped_conversation.load(conversation_id))
+    else:
+        via = "manager"
+        ok = bool(conversation_manager.load(conversation_id))
+
+    if not ok:
+        log.warning("Failed to load conversation %s", conversation_id)
+
+    return ConversationLoadResult(
+        via=via,
+        ok=ok,
+        scoped_session_id=_current_conversation_session_id(conversation_manager),
+    )
+
+
+def load_process_context_files(
+    conversation_manager: Any,
+    context_files: list[str] | None,
+) -> int:
+    """Load process context files through scoped conversation or manager."""
+
+    if not context_files:
+        return 0
+
+    scoped_conversation = getattr(conversation_manager, "conversation", None)
+    for file_path in context_files:
+        if scoped_conversation is not None and hasattr(
+            scoped_conversation,
+            "load_context_file",
+        ):
+            scoped_conversation.load_context_file(file_path)
+        else:
+            conversation_manager.load_context_file(file_path)
+    return len(context_files)
 
 
 def session_payload(session: Any) -> dict[str, Any]:

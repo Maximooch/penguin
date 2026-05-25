@@ -173,6 +173,84 @@ def test_resolve_conversation_manager_logs_legacy_activation_failure() -> None:
     assert "Failed to activate agent" in log.warning.call_args.args[0]
 
 
+def test_load_process_conversation_prefers_scoped_conversation() -> None:
+    scoped_conversation = SimpleNamespace(
+        session=SimpleNamespace(id="session_after_load"),
+        load=Mock(return_value=True),
+    )
+    manager = SimpleNamespace(
+        conversation=scoped_conversation,
+        load=Mock(return_value=False),
+    )
+
+    result = conversations.load_process_conversation(
+        manager,
+        "conv_1",
+        log=Mock(),
+    )
+
+    assert result == conversations.ConversationLoadResult(
+        via="conversation",
+        ok=True,
+        scoped_session_id="session_after_load",
+    )
+    scoped_conversation.load.assert_called_once_with("conv_1")
+    manager.load.assert_not_called()
+
+
+def test_load_process_conversation_falls_back_to_manager_and_logs_failure() -> None:
+    manager = SimpleNamespace(load=Mock(return_value=False))
+    log = Mock()
+
+    result = conversations.load_process_conversation(
+        manager,
+        "missing",
+        log=log,
+    )
+
+    assert result == conversations.ConversationLoadResult(
+        via="manager",
+        ok=False,
+        scoped_session_id=None,
+    )
+    manager.load.assert_called_once_with("missing")
+    log.warning.assert_called_once_with("Failed to load conversation %s", "missing")
+
+
+def test_load_process_context_files_prefers_scoped_conversation() -> None:
+    scoped_conversation = SimpleNamespace(load_context_file=Mock())
+    manager = SimpleNamespace(
+        conversation=scoped_conversation,
+        load_context_file=Mock(),
+    )
+
+    count = conversations.load_process_context_files(
+        manager,
+        ["notes.md", "plan.md"],
+    )
+
+    assert count == 2
+    assert [
+        call.args[0] for call in scoped_conversation.load_context_file.call_args_list
+    ] == ["notes.md", "plan.md"]
+    manager.load_context_file.assert_not_called()
+
+
+def test_load_process_context_files_falls_back_to_manager_and_skips_empty() -> None:
+    manager = SimpleNamespace(load_context_file=Mock())
+
+    assert conversations.load_process_context_files(manager, None) == 0
+    assert conversations.load_process_context_files(manager, []) == 0
+
+    count = conversations.load_process_context_files(
+        manager,
+        ["notes.md"],
+    )
+
+    assert count == 1
+    manager.load_context_file.assert_called_once_with("notes.md")
+
+
 def test_get_conversation_loads_and_serializes_current_session() -> None:
     manager = _ConversationManager()
 

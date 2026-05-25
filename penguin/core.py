@@ -2134,61 +2134,33 @@ class PenguinCore:
         )
 
         try:
-            # Load conversation if ID provided
             if conversation_id:
-                scoped_conversation = getattr(
-                    conversation_manager, "conversation", None
-                )
-                load_ok = True
-                load_via = "conversation"
-                if scoped_conversation is not None and hasattr(
-                    scoped_conversation, "load"
-                ):
-                    load_ok = bool(scoped_conversation.load(conversation_id))
-                    if not load_ok:
-                        logger.warning(f"Failed to load conversation {conversation_id}")
-                else:
-                    load_via = "manager"
-                    load_ok = bool(conversation_manager.load(conversation_id))
-                    if not load_ok:
-                        logger.warning(f"Failed to load conversation {conversation_id}")
-                scoped_session_after_load = getattr(
-                    getattr(
-                        getattr(conversation_manager, "conversation", None),
-                        "session",
-                        None,
-                    ),
-                    "id",
-                    None,
+                load_result = core_conversations.load_process_conversation(
+                    conversation_manager,
+                    conversation_id,
+                    log=logger,
                 )
                 _trace_log_info(
                     "core.process.trace.load request=%s session=%s conversation=%s via=%s ok=%s conv_session=%s",
                     execution_context.request_id if execution_context else "unknown",
                     request_session_id or "unknown",
                     conversation_id,
-                    load_via,
-                    load_ok,
-                    scoped_session_after_load or "unknown",
+                    load_result.via,
+                    load_result.ok,
+                    load_result.scoped_session_id or "unknown",
                 )
 
-            # Load context files if specified
-            if context_files:
-                scoped_conversation = getattr(
-                    conversation_manager, "conversation", None
-                )
-                for file_path in context_files:
-                    if scoped_conversation is not None and hasattr(
-                        scoped_conversation, "load_context_file"
-                    ):
-                        scoped_conversation.load_context_file(file_path)
-                    else:
-                        conversation_manager.load_context_file(file_path)
+            context_file_count = core_conversations.load_process_context_files(
+                conversation_manager,
+                context_files,
+            )
+            if context_file_count:
                 _trace_log_info(
                     "core.process.trace.context request=%s session=%s conversation=%s count=%s",
                     execution_context.request_id if execution_context else "unknown",
                     request_session_id or "unknown",
                     conversation_id or "",
-                    len(context_files),
+                    context_file_count,
                 )
 
             # Add user message to conversation explicitly
