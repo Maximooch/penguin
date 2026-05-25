@@ -163,6 +163,7 @@ from .core_runtime import action_mapping as core_action_mapping
 from .core_runtime import checkpoint_runtime as core_checkpoint_runtime
 from .core_runtime import model_runtime as core_model_runtime
 from .core_runtime import opencode_bridge as core_opencode_bridge
+from .core_runtime import session_lookup as core_session_lookup
 from .core_runtime import token_usage_runtime as core_token_usage_runtime
 from penguin.llm.stream_handler import (
     StreamingStateManager,
@@ -5147,44 +5148,7 @@ class PenguinCore:
         self, session_id: str
     ) -> tuple[Optional[Any], Optional[Any]]:
         """Locate session and owning session manager for a given session id."""
-        if not session_id:
-            return None, None
-
-        manager_candidates: list[Any] = []
-        conversation_manager = getattr(self, "conversation_manager", None)
-        if conversation_manager is None:
-            return None, None
-
-        default_manager = getattr(conversation_manager, "session_manager", None)
-        if default_manager is not None:
-            manager_candidates.append(default_manager)
-
-        agent_managers = getattr(conversation_manager, "agent_session_managers", {})
-        if isinstance(agent_managers, dict):
-            manager_candidates.extend(agent_managers.values())
-
-        seen: set[int] = set()
-        for manager in manager_candidates:
-            manager_id = id(manager)
-            if manager_id in seen:
-                continue
-            seen.add(manager_id)
-
-            cached = getattr(manager, "sessions", {})
-            if isinstance(cached, dict) and session_id in cached:
-                session = cached[session_id][0]
-                return session, manager
-
-            index = getattr(manager, "session_index", {})
-            if isinstance(index, dict) and session_id in index:
-                try:
-                    session = manager.load_session(session_id)
-                except Exception:
-                    session = None
-                if session is not None:
-                    return session, manager
-
-        return None, None
+        return core_session_lookup.find_session_store(self, session_id)
 
     def _resolve_opencode_model_state(
         self,
