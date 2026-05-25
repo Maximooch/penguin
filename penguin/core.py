@@ -4392,43 +4392,17 @@ class PenguinCore:
         session_id: Optional[str],
         usage: Dict[str, Any],
     ) -> None:
-        target = core_opencode_bridge.resolve_usage_update_target(
+        uvicorn_logger = logging.getLogger("uvicorn.error")
+        extra_loggers = (uvicorn_logger,) if uvicorn_logger is not logger else ()
+        await core_opencode_bridge.apply_usage_to_latest_message(
             session_id,
             usage,
             stream_states=getattr(self, "_opencode_stream_states", None),
             message_adapters=getattr(self, "_opencode_message_adapters", None),
             get_adapter=self._get_tui_adapter,
+            logger=logger,
+            extra_loggers=extra_loggers,
         )
-        if target is None:
-            return
-
-        updater = getattr(target.adapter, "update_assistant_usage", None)
-        if not callable(updater):
-            return
-
-        try:
-            await updater(target.message_id, tokens=target.tokens, cost=target.cost)
-            usage_log = (
-                "opencode.usage.applied session=%s message=%s input=%s output=%s "
-                "reasoning=%s cache_read=%s cache_write=%s total=%s cost=%s"
-            )
-            usage_args = (
-                session_id,
-                target.message_id,
-                target.tokens["input"],
-                target.tokens["output"],
-                target.tokens["reasoning"],
-                target.tokens["cache"]["read"],
-                target.tokens["cache"]["write"],
-                target.total_tokens,
-                target.cost,
-            )
-            logger.info(usage_log, *usage_args)
-            uvicorn_logger = logging.getLogger("uvicorn.error")
-            if uvicorn_logger is not logger:
-                uvicorn_logger.info(usage_log, *usage_args)
-        except Exception:
-            logger.debug("Failed to apply OpenCode usage metadata", exc_info=True)
 
     async def _emit_opencode_user_message(self, content: str) -> str:
         """Emit user message in OpenCode format."""

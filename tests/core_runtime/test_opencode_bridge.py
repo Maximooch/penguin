@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from hypothesis import given, strategies as st
 
 from penguin.core_runtime import opencode_bridge
@@ -308,6 +309,105 @@ def test_resolve_usage_update_target_returns_none_without_message() -> None:
     )
 
     assert target is None
+
+
+@pytest.mark.asyncio
+async def test_apply_usage_to_latest_message_updates_adapter_and_logs() -> None:
+    updates: list[tuple[str, dict[str, Any], float]] = []
+    log_messages: list[tuple[str, tuple[Any, ...]]] = []
+
+    class _Adapter:
+        async def update_assistant_usage(
+            self,
+            message_id: str,
+            *,
+            tokens: dict[str, Any],
+            cost: float,
+        ) -> None:
+            updates.append((message_id, tokens, cost))
+
+    class _Logger:
+        def info(self, template: str, *args: Any) -> None:
+            log_messages.append((template, args))
+
+    adapter = _Adapter()
+
+    applied = await opencode_bridge.apply_usage_to_latest_message(
+        "session_1",
+        {
+            "input_tokens": 3,
+            "output_tokens": 4,
+            "reasoning_tokens": 2,
+            "cache_read_tokens": 1,
+            "cache_write_tokens": 5,
+            "total_tokens": 15,
+            "cost": "0.25",
+        },
+        stream_states={"session_1": {"message_id": "msg_1"}},
+        message_adapters={"msg_1": adapter},
+        get_adapter=lambda _session_id: SimpleNamespace(),
+        logger=_Logger(),
+    )
+
+    assert applied is True
+    assert updates == [
+        (
+            "msg_1",
+            {
+                "input": 3,
+                "output": 4,
+                "reasoning": 2,
+                "cache": {"read": 1, "write": 5},
+            },
+            0.25,
+        )
+    ]
+    assert log_messages
+    assert log_messages[-1][1] == (
+        "session_1",
+        "msg_1",
+        3,
+        4,
+        2,
+        1,
+        5,
+        15,
+        0.25,
+    )
+
+
+@pytest.mark.asyncio
+async def test_apply_usage_to_latest_message_returns_false_on_update_error() -> None:
+    debug_calls: list[tuple[str, dict[str, Any]]] = []
+
+    class _Adapter:
+        async def update_assistant_usage(
+            self,
+            message_id: str,
+            *,
+            tokens: dict[str, Any],
+            cost: float,
+        ) -> None:
+            del message_id, tokens, cost
+            raise RuntimeError("boom")
+
+    class _Logger:
+        def debug(self, message: str, **kwargs: Any) -> None:
+            debug_calls.append((message, kwargs))
+
+    applied = await opencode_bridge.apply_usage_to_latest_message(
+        "session_1",
+        {"input_tokens": 3},
+        stream_states={"session_1": {"message_id": "msg_1"}},
+        message_adapters={"msg_1": _Adapter()},
+        get_adapter=lambda _session_id: SimpleNamespace(),
+        logger=_Logger(),
+    )
+
+    assert applied is False
+    assert debug_calls == [
+        ("Failed to apply OpenCode usage metadata", {"exc_info": True})
+    ]
 
 
 @given(

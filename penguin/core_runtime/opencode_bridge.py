@@ -1,8 +1,8 @@
 """OpenCode bridge helpers used by :mod:`penguin.core`.
 
-The async adapter calls remain in PenguinCore for now. This module owns the
-deterministic payload shaping around model metadata, session fallback, and usage
-metadata so those contracts can be tested without a core instance.
+This module owns deterministic payload shaping around model metadata, session
+fallback, usage metadata, and small adapter update contracts so those behaviors
+can be tested without a core instance.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ __all__ = [
     "SESSION_PROVIDER_ID_KEY",
     "SESSION_VARIANT_KEY",
     "UsageUpdateTarget",
+    "apply_usage_to_latest_message",
     "build_assistant_message_info",
     "latest_model_usage",
     "normalize_optional_string",
@@ -362,3 +363,66 @@ def resolve_usage_update_target(
         cost=normalized_cost,
         total_tokens=_usage_total_tokens(usage),
     )
+
+
+async def apply_usage_to_latest_message(
+    session_id: Any,
+    usage: Any,
+    *,
+    stream_states: Any = None,
+    message_adapters: Any = None,
+    get_adapter: Callable[[str], Any],
+    logger: Any = None,
+    extra_loggers: tuple[Any, ...] = (),
+) -> bool:
+    """Apply provider usage metadata to the latest OpenCode assistant message."""
+
+    target = resolve_usage_update_target(
+        session_id,
+        usage,
+        stream_states=stream_states,
+        message_adapters=message_adapters,
+        get_adapter=get_adapter,
+    )
+    if target is None:
+        return False
+
+    updater = getattr(target.adapter, "update_assistant_usage", None)
+    if not callable(updater):
+        return False
+
+    try:
+        await updater(target.message_id, tokens=target.tokens, cost=target.cost)
+    except Exception:
+        debug = getattr(logger, "debug", None)
+        if callable(debug):
+            debug("Failed to apply OpenCode usage metadata", exc_info=True)
+        return False
+
+    usage_log = (
+        "opencode.usage.applied session=%s message=%s input=%s output=%s "
+        "reasoning=%s cache_read=%s cache_write=%s total=%s cost=%s"
+    )
+    usage_args = (
+        session_id,
+        target.message_id,
+        target.tokens["input"],
+        target.tokens["output"],
+        target.tokens["reasoning"],
+        target.tokens["cache"]["read"],
+        target.tokens["cache"]["write"],
+        target.total_tokens,
+        target.cost,
+    )
+    seen_loggers: set[int] = set()
+    for candidate in (logger, *extra_loggers):
+        if candidate is None:
+            continue
+        logger_id = id(candidate)
+        if logger_id in seen_loggers:
+            continue
+        seen_loggers.add(logger_id)
+        info = getattr(candidate, "info", None)
+        if callable(info):
+            info(usage_log, *usage_args)
+    return True
