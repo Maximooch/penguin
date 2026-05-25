@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -374,6 +375,48 @@ def test_build_initial_model_config_prefers_explicit_overrides_and_old_token_nam
     assert model_config["max_output_tokens"] == 2048
 
 
+def test_initialize_core_base_state_attaches_constructor_inputs() -> None:
+    owner = SimpleNamespace()
+    config = SimpleNamespace(name="config")
+    api_client = SimpleNamespace(name="api")
+    tool_manager = SimpleNamespace(name="tools")
+    model_config = SimpleNamespace(name="model")
+
+    startup.initialize_core_base_state(
+        owner,
+        config=config,
+        api_client=api_client,
+        tool_manager=tool_manager,
+        model_config=model_config,
+        config_factory=lambda: SimpleNamespace(name="loaded"),
+    )
+
+    assert owner.config is config
+    assert owner.api_client is api_client
+    assert owner.tool_manager is tool_manager
+    assert owner.model_config is model_config
+    assert owner._interrupted is False
+    assert owner.progress_callbacks == []
+    assert owner.token_callbacks == []
+    assert owner._active_contexts == set()
+
+
+def test_initialize_core_base_state_loads_config_when_missing() -> None:
+    loaded = SimpleNamespace(name="loaded")
+    owner = SimpleNamespace()
+
+    startup.initialize_core_base_state(
+        owner,
+        config=None,
+        api_client=None,
+        tool_manager=None,
+        model_config=None,
+        config_factory=lambda: loaded,
+    )
+
+    assert owner.config is loaded
+
+
 def test_initialize_runtime_config_builds_config_and_registers_tool_observer() -> None:
     owner = SimpleNamespace()
     tool_manager = SimpleNamespace(on_runtime_config_change=lambda _payload: None)
@@ -434,6 +477,53 @@ def test_build_tool_manager_uses_empty_payload_when_config_dict_fails() -> None:
     )
 
     assert captured == [{"payload": {}, "fast_startup": False}]
+
+
+def test_initialize_project_diagnostics_state_builds_manager_and_disables(
+    tmp_path,
+) -> None:
+    owner = SimpleNamespace(
+        config=SimpleNamespace(
+            workspace_path=tmp_path,
+            diagnostics=SimpleNamespace(enabled=False),
+        )
+    )
+    disabled: list[bool] = []
+    project_payloads: list[dict[str, Any]] = []
+
+    def _project_manager_factory(*, workspace_path: Any) -> SimpleNamespace:
+        project_payloads.append({"workspace_path": workspace_path})
+        return SimpleNamespace(workspace_path=workspace_path)
+
+    workspace_path = startup.initialize_project_diagnostics_state(
+        owner,
+        default_workspace_path="/default/workspace",
+        project_manager_factory=_project_manager_factory,
+        diagnostics_disabler=lambda: disabled.append(True),
+    )
+
+    assert workspace_path == tmp_path
+    assert owner.project_manager.workspace_path == tmp_path
+    assert project_payloads == [{"workspace_path": tmp_path}]
+    assert disabled == [True]
+
+
+def test_initialize_project_diagnostics_state_uses_default_workspace() -> None:
+    owner = SimpleNamespace(config=SimpleNamespace(diagnostics=None))
+    disabled: list[bool] = []
+
+    workspace_path = startup.initialize_project_diagnostics_state(
+        owner,
+        default_workspace_path="/default/workspace",
+        project_manager_factory=lambda *, workspace_path: SimpleNamespace(
+            workspace_path=workspace_path
+        ),
+        diagnostics_disabler=lambda: disabled.append(True),
+    )
+
+    assert workspace_path == Path("/default/workspace")
+    assert owner.project_manager.workspace_path == Path("/default/workspace")
+    assert disabled == []
 
 
 def test_initialize_runtime_config_uses_supplied_runtime_config() -> None:

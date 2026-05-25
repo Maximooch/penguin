@@ -487,14 +487,14 @@ class PenguinCore:
         runtime_config: Optional["RuntimeConfig"] = None,
     ):
         """Initialize PenguinCore with required components."""
-        self.config = config or Config.load_config()
-        self.api_client = api_client
-        self.tool_manager = tool_manager
-        self.model_config = model_config
-        self._interrupted = False
-        self.progress_callbacks = []
-        self.token_callbacks = []
-        self._active_contexts = set()  # Track active execution contexts
+        core_startup.initialize_core_base_state(
+            self,
+            config=config,
+            api_client=api_client,
+            tool_manager=tool_manager,
+            model_config=model_config,
+            config_factory=Config.load_config,
+        )
 
         from penguin.config import RuntimeConfig
 
@@ -530,13 +530,12 @@ class PenguinCore:
         # Initialize project manager with workspace path from config
         from penguin.config import WORKSPACE_PATH
 
-        workspace_path = Path(getattr(self.config, "workspace_path", WORKSPACE_PATH))
-
-        self.project_manager = ProjectManager(workspace_path=workspace_path)
-
-        # Initialize diagnostics based on config
-        if not self.config.diagnostics.enabled:
-            disable_diagnostics()
+        workspace_path = core_startup.initialize_project_diagnostics_state(
+            self,
+            default_workspace_path=WORKSPACE_PATH,
+            project_manager_factory=ProjectManager,
+            diagnostics_disabler=disable_diagnostics,
+        )
 
         from penguin.system.checkpoint_manager import CheckpointConfig
 

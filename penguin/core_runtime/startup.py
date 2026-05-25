@@ -55,7 +55,9 @@ __all__ = [
     "ensure_tokenizers_parallelism",
     "finalize_core_startup_state",
     "initialize_conversation_action_state",
+    "initialize_core_base_state",
     "initialize_engine_state",
+    "initialize_project_diagnostics_state",
     "initialize_prompt_and_output_state",
     "initialize_runtime_config",
     "initialize_tui_bridge_state",
@@ -348,6 +350,27 @@ def build_initial_model_config(
     )
 
 
+def initialize_core_base_state(
+    owner: Any,
+    *,
+    config: Any | None,
+    api_client: Any | None,
+    tool_manager: Any | None,
+    model_config: Any | None,
+    config_factory: ConfigLoader,
+) -> None:
+    """Attach constructor inputs and initialize primitive runtime state."""
+
+    owner.config = config or config_factory()
+    owner.api_client = api_client
+    owner.tool_manager = tool_manager
+    owner.model_config = model_config
+    owner._interrupted = False
+    owner.progress_callbacks = []
+    owner.token_callbacks = []
+    owner._active_contexts = set()
+
+
 def initialize_runtime_config(
     owner: Any,
     *,
@@ -417,6 +440,27 @@ def build_default_checkpoint_config(
         retention={"keep_all_hours": 24, "keep_every_nth": 10, "max_age_days": 30},
         max_auto_checkpoints=_CHECKPOINT_MAX_AUTO_CHECKPOINTS,
     )
+
+
+def initialize_project_diagnostics_state(
+    owner: Any,
+    *,
+    default_workspace_path: Any,
+    project_manager_factory: Callable[..., Any],
+    diagnostics_disabler: Callable[[], Any],
+) -> Path:
+    """Initialize project manager and diagnostics from loaded core config."""
+
+    workspace_path = Path(
+        getattr(owner.config, "workspace_path", default_workspace_path)
+    )
+    owner.project_manager = project_manager_factory(workspace_path=workspace_path)
+
+    diagnostics_config = getattr(owner.config, "diagnostics", None)
+    if not getattr(diagnostics_config, "enabled", True):
+        diagnostics_disabler()
+
+    return workspace_path
 
 
 def initialize_conversation_action_state(
