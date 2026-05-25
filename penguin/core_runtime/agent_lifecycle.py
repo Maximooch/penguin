@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from penguin.agent.persona_runtime import (
@@ -9,9 +10,21 @@ from penguin.agent.persona_runtime import (
     model_config_metadata,
 )
 from penguin.llm.api_client import APIClient
+from penguin.system.execution_context import (
+    ExecutionContext,
+    execution_context_scope,
+    get_current_execution_context,
+    normalize_directory,
+)
 from penguin.utils.parser import ActionExecutor
 
-__all__ = ["register_agent_compat"]
+__all__ = [
+    "register_agent_compat",
+    "resolve_agent_execution_scope",
+    "run_agent_prompt_in_session",
+]
+
+logger = logging.getLogger(__name__)
 
 
 def register_agent_compat(core: Any, *args: Any, **kwargs: Any) -> None:
@@ -97,3 +110,119 @@ def register_agent_compat(core: Any, *args: Any, **kwargs: Any) -> None:
         )
         if getattr(persona_config, "activate_by_default", False):
             core.engine.set_default_agent(agent_id)
+
+
+def resolve_agent_execution_scope(
+    core: Any,
+    agent_id: str,
+    *,
+    session_id: str | None = None,
+    directory: str | None = None,
+    agent_mode: str | None = None,
+) -> dict[str, str | None]:
+    """Resolve session-scoped execution context for an agent run."""
+    resolved_session_id = session_id if isinstance(session_id, str) else None
+    resolved_directory = directory if isinstance(directory, str) else None
+    resolved_agent_mode = agent_mode if isinstance(agent_mode, str) else None
+
+    conversation_manager = getattr(core, "conversation_manager", None)
+    session = None
+    if conversation_manager is not None:
+        try:
+            conversation = conversation_manager.get_agent_conversation(agent_id)
+            session = getattr(conversation, "session", None)
+        except Exception:
+            logger.debug(
+                "Failed to resolve agent conversation for '%s'",
+                agent_id,
+                exc_info=True,
+            )
+
+    metadata = getattr(session, "metadata", None)
+    if not resolved_session_id:
+        candidate = getattr(session, "id", None)
+        if isinstance(candidate, str) and candidate.strip():
+            resolved_session_id = candidate.strip()
+
+    if isinstance(metadata, dict):
+        if not resolved_directory:
+            candidate_directory = metadata.get("directory")
+            if isinstance(candidate_directory, str) and candidate_directory.strip():
+                resolved_directory = candidate_directory.strip()
+        if not resolved_agent_mode:
+            candidate_mode = metadata.get("_opencode_agent_mode_v1") or metadata.get(
+                "agent_mode"
+            )
+            if isinstance(candidate_mode, str) and candidate_mode.strip():
+                resolved_agent_mode = candidate_mode.strip().lower()
+
+    if not resolved_directory and resolved_session_id:
+        session_dirs = getattr(core, "_opencode_session_directories", None)
+        if isinstance(session_dirs, dict):
+            mapped = session_dirs.get(resolved_session_id)
+            if isinstance(mapped, str) and mapped.strip():
+                resolved_directory = mapped.strip()
+
+    inherited_context = get_current_execution_context()
+    if not resolved_directory and inherited_context and inherited_context.directory:
+        resolved_directory = inherited_context.directory
+    if not resolved_agent_mode and inherited_context and inherited_context.agent_mode:
+        resolved_agent_mode = inherited_context.agent_mode
+
+    resolved_directory = normalize_directory(resolved_directory) or resolved_directory
+    project_root = (
+        inherited_context.project_root
+        if inherited_context and inherited_context.project_root
+        else resolved_directory
+    )
+    workspace_root = (
+        inherited_context.workspace_root
+        if inherited_context and inherited_context.workspace_root
+        else resolved_directory
+    )
+
+    return {
+        "session_id": resolved_session_id,
+        "conversation_id": resolved_session_id,
+        "directory": resolved_directory,
+        "project_root": project_root,
+        "workspace_root": workspace_root,
+        "agent_mode": resolved_agent_mode,
+    }
+
+
+async def run_agent_prompt_in_session(
+    core: Any,
+    agent_id: str,
+    prompt: str,
+    *,
+    session_id: str | None = None,
+    directory: str | None = None,
+    agent_mode: str | None = None,
+    streaming: bool | None = None,
+) -> dict[str, Any]:
+    """Run an agent prompt inside that agent's session-scoped execution context."""
+    scope = resolve_agent_execution_scope(
+        core,
+        agent_id,
+        session_id=session_id,
+        directory=directory,
+        agent_mode=agent_mode,
+    )
+    execution_context = ExecutionContext(
+        session_id=scope.get("session_id"),
+        conversation_id=scope.get("conversation_id"),
+        agent_id=agent_id,
+        agent_mode=scope.get("agent_mode"),
+        directory=scope.get("directory"),
+        project_root=scope.get("project_root"),
+        workspace_root=scope.get("workspace_root"),
+        request_id=(f"subagent:{agent_id}:{scope.get('conversation_id') or 'unknown'}"),
+    )
+    with execution_context_scope(execution_context):
+        return await core.process(
+            input_data={"text": prompt},
+            conversation_id=scope.get("conversation_id"),
+            agent_id=agent_id,
+            streaming=streaming,
+        )

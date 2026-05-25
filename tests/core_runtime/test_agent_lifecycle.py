@@ -1,0 +1,163 @@
+"""Tests for agent lifecycle runtime helpers."""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock
+
+import pytest
+
+from penguin.core_runtime.agent_lifecycle import (
+    resolve_agent_execution_scope,
+    run_agent_prompt_in_session,
+)
+from penguin.system.execution_context import (
+    ExecutionContext,
+    execution_context_scope,
+    get_current_execution_context,
+)
+
+
+def test_resolve_agent_execution_scope_uses_session_metadata_and_inherited_roots(
+    tmp_path,
+) -> None:
+    parent_dir = tmp_path / "parent"
+    child_dir = tmp_path / "child"
+    parent_dir.mkdir()
+    child_dir.mkdir()
+    session = SimpleNamespace(
+        id="session_child",
+        metadata={"directory": str(child_dir), "_opencode_agent_mode_v1": "PLAN"},
+    )
+    core = SimpleNamespace(
+        conversation_manager=SimpleNamespace(
+            get_agent_conversation=lambda _agent_id: SimpleNamespace(session=session)
+        ),
+        _opencode_session_directories={},
+    )
+
+    with execution_context_scope(
+        ExecutionContext(
+            session_id="session_parent",
+            conversation_id="session_parent",
+            agent_id="default",
+            directory=str(parent_dir),
+            project_root=str(parent_dir),
+            workspace_root=str(parent_dir),
+        )
+    ):
+        scope = resolve_agent_execution_scope(core, "child-agent")
+
+    assert scope == {
+        "session_id": "session_child",
+        "conversation_id": "session_child",
+        "directory": str(child_dir),
+        "project_root": str(parent_dir),
+        "workspace_root": str(parent_dir),
+        "agent_mode": "plan",
+    }
+
+
+def test_resolve_agent_execution_scope_uses_session_directory_map(tmp_path) -> None:
+    child_dir = tmp_path / "child"
+    child_dir.mkdir()
+    session = SimpleNamespace(id="session_child", metadata={})
+    core = SimpleNamespace(
+        conversation_manager=SimpleNamespace(
+            get_agent_conversation=lambda _agent_id: SimpleNamespace(session=session)
+        ),
+        _opencode_session_directories={"session_child": str(child_dir)},
+    )
+
+    scope = resolve_agent_execution_scope(core, "child-agent")
+
+    assert scope["session_id"] == "session_child"
+    assert scope["directory"] == str(child_dir)
+    assert scope["project_root"] == str(child_dir)
+    assert scope["workspace_root"] == str(child_dir)
+
+
+def test_resolve_agent_execution_scope_tolerates_conversation_lookup_failure(
+    tmp_path,
+) -> None:
+    parent_dir = tmp_path / "parent"
+    parent_dir.mkdir()
+
+    class _BrokenConversationManager:
+        def get_agent_conversation(self, _agent_id: str) -> Any:
+            raise RuntimeError("conversation store unavailable")
+
+    core = SimpleNamespace(
+        conversation_manager=_BrokenConversationManager(),
+        _opencode_session_directories={},
+    )
+
+    with execution_context_scope(
+        ExecutionContext(
+            session_id="session_parent",
+            conversation_id="session_parent",
+            agent_id="default",
+            agent_mode="build",
+            directory=str(parent_dir),
+            project_root=str(parent_dir),
+            workspace_root=str(parent_dir),
+        )
+    ):
+        scope = resolve_agent_execution_scope(core, "child-agent")
+
+    assert scope == {
+        "session_id": None,
+        "conversation_id": None,
+        "directory": str(parent_dir),
+        "project_root": str(parent_dir),
+        "workspace_root": str(parent_dir),
+        "agent_mode": "build",
+    }
+
+
+@pytest.mark.asyncio
+async def test_run_agent_prompt_in_session_sets_execution_context(tmp_path) -> None:
+    child_dir = tmp_path / "child"
+    child_dir.mkdir()
+    session = SimpleNamespace(
+        id="session_child",
+        metadata={"directory": str(child_dir), "agent_mode": "build"},
+    )
+    conversation_manager = SimpleNamespace(
+        get_agent_conversation=lambda _agent_id: SimpleNamespace(session=session)
+    )
+    captured: dict[str, Any] = {}
+
+    async def _process(**kwargs: Any) -> dict[str, str]:
+        captured["kwargs"] = kwargs
+        captured["context"] = get_current_execution_context()
+        return {"assistant_response": "done"}
+
+    core = SimpleNamespace(
+        conversation_manager=conversation_manager,
+        _opencode_session_directories={},
+        process=AsyncMock(side_effect=_process),
+    )
+
+    result = await run_agent_prompt_in_session(
+        core,
+        "child-agent",
+        "Child prompt",
+        streaming=False,
+    )
+
+    assert result == {"assistant_response": "done"}
+    assert captured["kwargs"] == {
+        "input_data": {"text": "Child prompt"},
+        "conversation_id": "session_child",
+        "agent_id": "child-agent",
+        "streaming": False,
+    }
+    context = captured["context"]
+    assert context is not None
+    assert context.session_id == "session_child"
+    assert context.conversation_id == "session_child"
+    assert context.agent_id == "child-agent"
+    assert context.directory == str(child_dir)
+    assert context.request_id == "subagent:child-agent:session_child"
