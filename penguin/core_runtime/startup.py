@@ -53,6 +53,7 @@ __all__ = [
     "build_tool_manager",
     "configure_startup_logging",
     "ensure_tokenizers_parallelism",
+    "finalize_core_startup_state",
     "initialize_conversation_action_state",
     "initialize_engine_state",
     "initialize_prompt_and_output_state",
@@ -497,6 +498,22 @@ def initialize_engine_state(
             exc_info=True,
         )
         owner.engine = None
+
+
+def finalize_core_startup_state(
+    owner: Any,
+    *,
+    workspace_path: Path,
+    logger: Any,
+) -> None:
+    """Set final construction flags and validate the active workspace."""
+
+    owner.initialized = True
+    logger.info("PenguinCore initialized successfully")
+    owner.validate_path(workspace_path)
+    owner.accumulated_tokens = {"prompt": 0, "completion": 0, "total": 0}
+    owner._litellm_configured = False
+    owner._last_model_load_error = None
 
 
 def build_tool_manager(

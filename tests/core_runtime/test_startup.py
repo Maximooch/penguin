@@ -837,6 +837,27 @@ def test_initialize_engine_state_sets_none_when_engine_construction_fails() -> N
     assert logger.warning_calls[0][2] == {"exc_info": True}
 
 
+def test_finalize_core_startup_state_sets_flags_and_validates_workspace(
+    tmp_path,
+) -> None:
+    logger = _FakeLogger()
+    validate_calls: list[Any] = []
+    owner = SimpleNamespace(validate_path=lambda path: validate_calls.append(path))
+
+    startup.finalize_core_startup_state(
+        owner,
+        workspace_path=tmp_path,
+        logger=logger,
+    )
+
+    assert owner.initialized is True
+    assert owner.accumulated_tokens == {"prompt": 0, "completion": 0, "total": 0}
+    assert owner._litellm_configured is False
+    assert owner._last_model_load_error is None
+    assert validate_calls == [tmp_path]
+    assert logger.info_calls[-1] == ("PenguinCore initialized successfully", ())
+
+
 def test_initialize_prompt_and_output_state_prefers_typed_output_config() -> None:
     formatted: list[str] = []
     owner = SimpleNamespace(

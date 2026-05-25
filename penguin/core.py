@@ -563,19 +563,11 @@ class PenguinCore:
             logger=logger,
         )
 
-        # State
-        self.initialized = True
-        logger.info("PenguinCore initialized successfully")
-
-        # Ensure the active workspace is writable.
-        self.validate_path(workspace_path)
-
-        # Add an accumulated token counter
-        self.accumulated_tokens = {"prompt": 0, "completion": 0, "total": 0}
-
-        # Defer LiteLLM configuration until first use to avoid import overhead
-        self._litellm_configured = False
-        self._last_model_load_error: Optional[str] = None
+        core_startup.finalize_core_startup_state(
+            self,
+            workspace_path=workspace_path,
+            logger=logger,
+        )
 
     def _ensure_litellm_configured(self):
         """Configure LiteLLM on first use when the optional extra is installed."""
