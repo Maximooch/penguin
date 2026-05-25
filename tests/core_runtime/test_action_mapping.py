@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import string
 from typing import Any
 
 from hypothesis import given, settings, strategies as st
@@ -80,6 +81,75 @@ def test_parse_action_payload_ignores_non_object_json() -> None:
     }
 
 
+def test_apply_diff_string_payload_strips_apply_flag_after_body_colons() -> None:
+    mapped_tool, tool_input, metadata = action_mapping.map_action_to_tool(
+        "apply_diff",
+        "src/app.py:@@\n-old: value\n+new: value\n:false",
+    )
+
+    assert mapped_tool == "edit"
+    assert tool_input == {"filePath": "src/app.py"}
+    assert "-old: value" in metadata["diff"]
+    assert "+new: value" in metadata["diff"]
+    assert not metadata["diff"].endswith(":false")
+
+
+def test_question_action_parses_json_list_string_and_filters_corrupt_items() -> None:
+    mapped_tool, tool_input, metadata = action_mapping.map_action_to_tool(
+        "question",
+        '[{"question": "Proceed?", "header": "Next"}, "bad", 3]',
+    )
+
+    assert mapped_tool == "question"
+    assert tool_input == {"questions": [{"question": "Proceed?", "header": "Next"}]}
+    assert metadata == {}
+
+
+def test_summary_status_ignores_corrupt_task_card_metadata() -> None:
+    assert action_mapping.summary_status({"summary": "bad"}, "fallback") == "fallback"
+    assert action_mapping.summary_status({"summary": [{}]}, "fallback") == "fallback"
+    assert (
+        action_mapping.summary_status({"summary": [{"state": {"status": ""}}]}, "x")
+        == "x"
+    )
+
+
+def test_spawn_subagent_task_card_uses_fallbacks_for_corrupt_payload() -> None:
+    tool_input, metadata = action_mapping.build_spawn_subagent_task_card("not-json")
+
+    assert tool_input == {
+        "description": "Subagent session for subagent",
+        "prompt": "",
+        "subagent_type": "subagent",
+    }
+    assert metadata["summary"] == [
+        {
+            "id": "subagent",
+            "tool": "subagent",
+            "state": {"status": "running"},
+        }
+    ]
+
+
+def test_result_metadata_merges_event_metadata_before_error_diff_rewrite() -> None:
+    metadata = action_mapping.map_action_result_metadata(
+        "apply_diff",
+        "failed",
+        existing={"diff": "--- a/a.py\n+++ b/a.py\n@@\n-old\n+new\n"},
+        status="error",
+        event_metadata={"sessionId": "session_child", "diff": "attempted"},
+    )
+
+    assert metadata["sessionId"] == "session_child"
+    assert metadata["attemptedDiff"] == "attempted"
+    assert "diff" not in metadata
+
+
+def test_extract_result_file_paths_ignores_corrupt_payloads() -> None:
+    assert action_mapping.extract_result_file_paths("not-json") == []
+    assert action_mapping.extract_result_file_paths({"files": [1, None, ""]}) == []
+
+
 @settings(max_examples=50)
 @given(
     items=st.lists(
@@ -105,3 +175,34 @@ def test_normalize_todo_items_produces_unique_valid_records(
         assert todo["content"]
         assert todo["status"] in {"pending", "in_progress", "completed", "cancelled"}
         assert todo["priority"] in {"high", "medium", "low"}
+
+
+@settings(max_examples=50)
+@given(
+    paths=st.lists(
+        st.text(
+            alphabet=string.ascii_letters + string.digits + "/._-",
+            min_size=1,
+            max_size=16,
+        ).filter(lambda value: value.strip() not in {"", ".", ".."}),
+        min_size=1,
+        max_size=20,
+    )
+)
+def test_extract_result_file_paths_dedupes_in_first_seen_order(
+    paths: list[str],
+) -> None:
+    payload = {
+        "file": paths[0],
+        "files": paths,
+        "created": list(reversed(paths)),
+        "files_edited": paths[:3],
+    }
+
+    result = action_mapping.extract_result_file_paths(payload)
+
+    expected: list[str] = []
+    for path in [paths[0], *paths, *reversed(paths), *paths[:3]]:
+        if path not in expected:
+            expected.append(path)
+    assert result == expected
