@@ -164,7 +164,7 @@ from .core_runtime import checkpoint_runtime as core_checkpoint_runtime
 from .core_runtime import model_runtime as core_model_runtime
 from .core_runtime import opencode_adapters as core_opencode_adapters
 from .core_runtime import opencode_bridge as core_opencode_bridge
-from .core_runtime import opencode_transcript as core_opencode_transcript
+from .core_runtime import opencode_persistence as core_opencode_persistence
 from .core_runtime import session_lookup as core_session_lookup
 from .core_runtime import stream_events as core_stream_events
 from .core_runtime import token_usage_runtime as core_token_usage_runtime
@@ -4221,21 +4221,9 @@ class PenguinCore:
         variant: Optional[str] = None,
     ) -> Dict[str, Optional[str]]:
         """Resolve model/provider/variant for OpenCode event persistence."""
-        session_meta: Dict[str, Any] = {}
-        normalized_session_id = core_opencode_bridge.normalize_optional_string(
-            session_id
-        )
-        if normalized_session_id:
-            session, _ = self._find_session_store(normalized_session_id)
-            metadata = (
-                getattr(session, "metadata", None) if session is not None else None
-            )
-            if isinstance(metadata, dict):
-                session_meta = metadata
-
-        return core_opencode_bridge.resolve_model_state(
-            session_metadata=session_meta,
-            model_config=getattr(self, "model_config", None),
+        return core_opencode_persistence.resolve_opencode_model_state(
+            self,
+            session_id=session_id,
             model_id=model_id,
             provider_id=provider_id,
             variant=variant,
@@ -4245,59 +4233,13 @@ class PenguinCore:
         self, event_type: str, properties: Dict[str, Any]
     ) -> None:
         """Persist OpenCode message/part events for replay via session history."""
-        session_id = core_opencode_transcript.resolve_event_session_id(
-            event_type, properties
-        )
-        if session_id is None:
-            return
-
-        session, manager = self._find_session_store(session_id)
-        if session is None or manager is None:
-            return
-
-        metadata = getattr(session, "metadata", None)
-        if not isinstance(metadata, dict):
-            return
-
-        def assistant_info_factory(
-            message_id: str, resolved_session_id: str
-        ) -> Dict[str, Any]:
-            fallback_directory = core_opencode_bridge.resolve_adapter_directory(
-                resolved_session_id,
-                session_directories=getattr(
-                    self,
-                    "_opencode_session_directories",
-                    None,
-                ),
-                execution_context=get_current_execution_context(),
-                runtime_config=getattr(self, "runtime_config", None),
-            )
-            model_state = self._resolve_opencode_model_state(
-                session_id=resolved_session_id
-            )
-            return core_opencode_bridge.build_assistant_message_info(
-                message_id=message_id,
-                session_id=resolved_session_id,
-                directory=fallback_directory,
-                model_state=model_state,
-            )
-
-        result = core_opencode_transcript.apply_transcript_event(
-            metadata=metadata,
+        await core_opencode_persistence.persist_opencode_event(
+            self,
             event_type=event_type,
             properties=properties,
-            session_id=session_id,
-            assistant_info_factory=assistant_info_factory,
+            logger=logger,
+            execution_context=get_current_execution_context(),
         )
-        if not result.mark_modified:
-            return
-
-        try:
-            manager.mark_session_modified(session_id)
-            if result.should_save:
-                manager.save_session(session)
-        except Exception:
-            logger.warning("Unable to persist OpenCode transcript event", exc_info=True)
 
     # ------------------------------------------------------------------
     # OpenCode TUI Adapter Integration
