@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import Any
+
+from penguin.system.state import Message, MessageCategory
 
 __all__ = [
     "abort_session",
@@ -11,6 +14,7 @@ __all__ = [
     "emit_opencode_session_status",
     "filter_internal_markers_from_event",
     "handle_tui_stream_chunk",
+    "persist_finalized_message",
     "resolve_stream_scope_id",
     "should_emit_final_content",
     "stream_state_for",
@@ -238,6 +242,60 @@ async def abort_session(
 
     await emit_opencode_session_status(owner, sid, "idle")
     return aborted
+
+
+def persist_finalized_message(
+    owner: Any,
+    *,
+    agent_id: str,
+    session_id: str | None,
+    message: Any,
+    category: MessageCategory,
+    trace_log: Any = None,
+) -> bool:
+    """Persist a finalized streaming message without reloading shared sessions."""
+
+    target_session_id = session_id.strip() if isinstance(session_id, str) else ""
+    if not target_session_id:
+        return False
+
+    session, manager = owner._find_session_store(target_session_id)
+    if session is None or manager is None:
+        if callable(trace_log):
+            trace_log(
+                "core.stream.persist session=%s agent=%s status=missing_store",
+                target_session_id,
+                agent_id,
+            )
+        return False
+
+    persisted_message = Message(
+        role=message.role,
+        content=message.content,
+        category=category,
+        id=getattr(message, "id", None) or f"msg_{datetime.now().timestamp()}",
+        timestamp=getattr(message, "timestamp", None) or datetime.now().isoformat(),
+        metadata=dict(getattr(message, "metadata", {}) or {}),
+        tokens=int(getattr(message, "tokens", 0) or 0),
+        agent_id=getattr(message, "agent_id", None) or agent_id,
+        recipient_id=getattr(message, "recipient_id", None),
+        message_type=getattr(message, "message_type", "message") or "message",
+    )
+    session.add_message(persisted_message)
+    saved = bool(manager.save_session(session))
+    if callable(trace_log):
+        trace_log(
+            "core.stream.persist session=%s agent=%s manager=%s message_id=%s "
+            "saved=%s message_len=%s category=%s",
+            target_session_id,
+            agent_id,
+            hex(id(manager)),
+            persisted_message.id,
+            saved,
+            len(persisted_message.content or ""),
+            category,
+        )
+    return saved
 
 
 async def handle_tui_stream_chunk(

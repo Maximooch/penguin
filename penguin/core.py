@@ -129,7 +129,6 @@ from typing import (
 )
 import asyncio
 import json
-from datetime import datetime
 
 from dotenv import load_dotenv  # type: ignore
 from rich.console import Console  # type: ignore
@@ -4156,44 +4155,14 @@ class PenguinCore:
         category: MessageCategory,
     ) -> bool:
         """Persist a finalized streaming message without reloading shared conversations."""
-        target_session_id = session_id.strip() if isinstance(session_id, str) else ""
-        if not target_session_id:
-            return False
-
-        session, manager = self._find_session_store(target_session_id)
-        if session is None or manager is None:
-            _trace_log_info(
-                "core.stream.persist session=%s agent=%s status=missing_store",
-                target_session_id,
-                agent_id,
-            )
-            return False
-
-        persisted_message = Message(
-            role=message.role,
-            content=message.content,
+        return core_stream_events.persist_finalized_message(
+            self,
+            agent_id=agent_id,
+            session_id=session_id,
+            message=message,
             category=category,
-            id=getattr(message, "id", None) or f"msg_{datetime.now().timestamp()}",
-            timestamp=getattr(message, "timestamp", None) or datetime.now().isoformat(),
-            metadata=dict(getattr(message, "metadata", {}) or {}),
-            tokens=int(getattr(message, "tokens", 0) or 0),
-            agent_id=getattr(message, "agent_id", None) or agent_id,
-            recipient_id=getattr(message, "recipient_id", None),
-            message_type=getattr(message, "message_type", "message") or "message",
+            trace_log=_trace_log_info,
         )
-        session.add_message(persisted_message)
-        saved = bool(manager.save_session(session))
-        _trace_log_info(
-            "core.stream.persist session=%s agent=%s manager=%s message_id=%s saved=%s message_len=%s category=%s",
-            target_session_id,
-            agent_id,
-            hex(id(manager)),
-            persisted_message.id,
-            saved,
-            len(persisted_message.content or ""),
-            category,
-        )
-        return saved
 
     def _prepare_runmode_stream_callback(
         self,

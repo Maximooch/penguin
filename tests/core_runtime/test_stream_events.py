@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from penguin.core_runtime import stream_events
+from penguin.system.state import MessageCategory
 
 
 class _Adapter:
@@ -298,6 +299,75 @@ async def test_abort_session_cancels_tasks_cleans_scoped_state_and_emits_idle() 
     assert status_event["type"] == "session.status"
     assert status_event["properties"]["sessionID"] == "session_1"
     assert status_event["properties"]["status"]["type"] == "idle"
+
+
+def test_persist_finalized_message_writes_target_session_store() -> None:
+    trace_messages: list[tuple[str, tuple[Any, ...]]] = []
+    persisted_messages: list[Any] = []
+    session = SimpleNamespace(
+        add_message=lambda message: persisted_messages.append(message)
+    )
+    manager = SimpleNamespace(
+        save_session=lambda saved_session: saved_session is session
+    )
+    owner = SimpleNamespace(
+        _find_session_store=lambda session_id: (
+            (session, manager) if session_id == "session_1" else (None, None)
+        )
+    )
+    message = SimpleNamespace(
+        id="msg_1",
+        role="assistant",
+        content="persist me",
+        metadata={"source": "stream"},
+        timestamp="2026-05-25T00:00:00",
+        tokens=7,
+        agent_id=None,
+        recipient_id="user",
+        message_type="message",
+    )
+
+    saved = stream_events.persist_finalized_message(
+        owner,
+        agent_id="agent-a",
+        session_id=" session_1 ",
+        message=message,
+        category=MessageCategory.DIALOG,
+        trace_log=lambda template, *args: trace_messages.append((template, args)),
+    )
+
+    assert saved is True
+    assert len(persisted_messages) == 1
+    persisted = persisted_messages[0]
+    assert persisted.id == "msg_1"
+    assert persisted.content == "persist me"
+    assert persisted.agent_id == "agent-a"
+    assert persisted.recipient_id == "user"
+    assert persisted.tokens == 7
+    assert trace_messages[-1][1][0] == "session_1"
+
+
+def test_persist_finalized_message_fails_closed_without_target_store() -> None:
+    trace_messages: list[tuple[str, tuple[Any, ...]]] = []
+    owner = SimpleNamespace(_find_session_store=lambda _session_id: (None, None))
+    message = SimpleNamespace(role="assistant", content="missing")
+
+    saved = stream_events.persist_finalized_message(
+        owner,
+        agent_id="agent-a",
+        session_id="missing_session",
+        message=message,
+        category=MessageCategory.DIALOG,
+        trace_log=lambda template, *args: trace_messages.append((template, args)),
+    )
+
+    assert saved is False
+    assert trace_messages == [
+        (
+            "core.stream.persist session=%s agent=%s status=missing_store",
+            ("missing_session", "agent-a"),
+        )
+    ]
 
 
 @pytest.mark.asyncio
