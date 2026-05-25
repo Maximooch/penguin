@@ -9,6 +9,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from penguin.core_runtime.agent_lifecycle import (
+    create_sub_agent,
+    delete_agent_conversation,
+    ensure_agent_conversation,
     is_agent_paused,
     publish_sub_agent_session_created,
     resolve_agent_execution_scope,
@@ -16,6 +19,7 @@ from penguin.core_runtime.agent_lifecycle import (
     set_active_agent,
     set_agent_paused,
     smoke_check_agents,
+    unregister_agent,
 )
 from penguin.system.execution_context import (
     ExecutionContext,
@@ -528,3 +532,133 @@ def test_set_active_agent_reraises_engine_failure_after_cm_switch() -> None:
         set_active_agent(core, "worker")
 
     assert calls == [("cm", "worker"), ("engine", "worker")]
+
+
+def test_ensure_agent_conversation_registers_engine_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    action_executor = object()
+    action_executor_calls: list[dict[str, Any]] = []
+
+    def _action_executor(*args: Any, **kwargs: Any) -> object:
+        action_executor_calls.append({"args": args, "kwargs": kwargs})
+        return action_executor
+
+    monkeypatch.setattr(
+        "penguin.core_runtime.agent_lifecycle.ActionExecutor",
+        _action_executor,
+    )
+
+    conversation = SimpleNamespace(system_prompts=[])
+    conversation.set_system_prompt = conversation.system_prompts.append
+    conversation_calls: list[tuple[str, bool]] = []
+    engine_calls: list[dict[str, Any]] = []
+    conversation_manager = SimpleNamespace(
+        get_agent_conversation=lambda agent_id, create_if_missing=False: (
+            conversation_calls.append((agent_id, create_if_missing)) or conversation
+        )
+    )
+    core = SimpleNamespace(
+        conversation_manager=conversation_manager,
+        engine=SimpleNamespace(
+            register_agent=lambda **kwargs: engine_calls.append(kwargs)
+        ),
+        tool_manager="tools",
+        project_manager="project",
+        emit_ui_event="emit",
+    )
+
+    ensure_agent_conversation(core, "worker", system_prompt="system")
+
+    assert conversation_calls == [("worker", True)]
+    assert conversation.system_prompts == ["system"]
+    assert action_executor_calls == [
+        {
+            "args": ("tools", "project", conversation),
+            "kwargs": {"ui_event_callback": "emit"},
+        }
+    ]
+    assert engine_calls == [
+        {
+            "agent_id": "worker",
+            "conversation_manager": conversation_manager,
+            "action_executor": action_executor,
+        }
+    ]
+
+
+def test_create_sub_agent_creates_child_and_ensures_conversation() -> None:
+    conversation = SimpleNamespace(system_prompts=[])
+    conversation.set_system_prompt = conversation.system_prompts.append
+    create_calls: list[dict[str, Any]] = []
+    ensure_calls: list[tuple[str, bool]] = []
+    conversation_manager = SimpleNamespace(
+        create_sub_agent=lambda agent_id, **kwargs: create_calls.append(
+            {"agent_id": agent_id, **kwargs}
+        ),
+        get_agent_conversation=lambda agent_id, create_if_missing=False: (
+            ensure_calls.append((agent_id, create_if_missing)) or conversation
+        ),
+    )
+    core = SimpleNamespace(conversation_manager=conversation_manager, engine=None)
+
+    create_sub_agent(
+        core,
+        "child",
+        parent_agent_id="parent",
+        system_prompt="child-system",
+        share_session=False,
+        share_context_window=False,
+        shared_context_window_max_tokens=2048,
+    )
+
+    assert create_calls == [
+        {
+            "agent_id": "child",
+            "parent_agent_id": "parent",
+            "share_session": False,
+            "share_context_window": False,
+            "shared_context_window_max_tokens": 2048,
+        }
+    ]
+    assert ensure_calls == [("child", True)]
+    assert conversation.system_prompts == ["child-system"]
+
+
+def test_delete_agent_conversation_removes_engine_agent_and_resets_active() -> None:
+    calls: list[tuple[str, str]] = []
+    conversation_manager = SimpleNamespace(
+        current_agent_id="worker",
+        remove_agent=lambda agent_id: calls.append(("remove", agent_id)) or True,
+    )
+    core = SimpleNamespace(
+        conversation_manager=conversation_manager,
+        engine=SimpleNamespace(
+            unregister_agent=lambda agent_id: calls.append(("engine", agent_id))
+        ),
+        set_active_agent=lambda agent_id: calls.append(("active", agent_id)),
+    )
+
+    assert delete_agent_conversation(core, "worker") is True
+    assert calls == [
+        ("remove", "worker"),
+        ("engine", "worker"),
+        ("active", "default"),
+    ]
+
+
+def test_delete_agent_conversation_rejects_default_agent() -> None:
+    core = SimpleNamespace()
+
+    with pytest.raises(ValueError, match="default agent"):
+        delete_agent_conversation(core, "default")
+
+
+def test_unregister_agent_can_preserve_conversation() -> None:
+    calls: list[str] = []
+    core = SimpleNamespace(
+        engine=SimpleNamespace(unregister_agent=lambda agent_id: calls.append(agent_id))
+    )
+
+    assert unregister_agent(core, "worker", preserve_conversation=True) is True
+    assert calls == ["worker"]

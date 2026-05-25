@@ -1152,29 +1152,12 @@ class PenguinCore:
             system_prompt: Optional system prompt for the agent
             **kwargs: Ignored (for backward compatibility with legacy callers)
         """
-        conv = self.conversation_manager.get_agent_conversation(
-            agent_id, create_if_missing=True
+        del kwargs
+        core_agent_lifecycle.ensure_agent_conversation(
+            self,
+            agent_id,
+            system_prompt=system_prompt,
         )
-        if system_prompt and conv:
-            conv.set_system_prompt(system_prompt)
-
-        # Register with Engine if available (just conversation, no API client)
-        if getattr(self, "engine", None):
-            try:
-                # Create a minimal action executor for this agent
-                action_executor = ActionExecutor(
-                    self.tool_manager,
-                    self.project_manager,
-                    conv,
-                    ui_event_callback=self.emit_ui_event,
-                )
-                self.engine.register_agent(
-                    agent_id=agent_id,
-                    conversation_manager=self.conversation_manager,
-                    action_executor=action_executor,
-                )
-            except Exception as e:
-                logger.debug(f"Engine registration for '{agent_id}' failed: {e}")
 
     def delete_agent_conversation(self, agent_id: str) -> bool:
         """Delete an agent's conversation.
@@ -1187,21 +1170,7 @@ class PenguinCore:
         Returns:
             True if agent was removed, False otherwise
         """
-        if agent_id == "default":
-            raise ValueError("Cannot delete the default agent")
-
-        removed = self.conversation_manager.remove_agent(agent_id)
-
-        if getattr(self, "engine", None):
-            try:
-                self.engine.unregister_agent(agent_id)
-            except Exception as e:
-                logger.debug(f"Engine unregister_agent failed for '{agent_id}': {e}")
-
-        if self.conversation_manager.current_agent_id == agent_id:
-            self.set_active_agent("default")
-
-        return removed
+        return core_agent_lifecycle.delete_agent_conversation(self, agent_id)
 
     def create_sub_agent(
         self,
@@ -1215,16 +1184,16 @@ class PenguinCore:
         **kwargs,  # Accept but ignore legacy params
     ) -> None:
         """Create a sub-agent linked to a parent agent."""
-        # Create sub-agent via conversation manager
-        self.conversation_manager.create_sub_agent(
+        del kwargs
+        core_agent_lifecycle.create_sub_agent(
+            self,
             agent_id,
             parent_agent_id=parent_agent_id,
+            system_prompt=system_prompt,
             share_session=share_session,
             share_context_window=share_context_window,
             shared_context_window_max_tokens=shared_context_window_max_tokens,
         )
-        # Ensure conversation exists
-        self.ensure_agent_conversation(agent_id, system_prompt=system_prompt)
 
     async def publish_sub_agent_session_created(
         self,
@@ -1283,17 +1252,11 @@ class PenguinCore:
         self, agent_id: str, *, preserve_conversation: bool = False
     ) -> bool:
         """Unregister an agent. Delegates to delete_agent_conversation()."""
-        if preserve_conversation:
-            # Just unregister from Engine, keep conversation
-            if getattr(self, "engine", None):
-                try:
-                    self.engine.unregister_agent(agent_id)
-                except Exception as e:
-                    logger.debug(
-                        f"Engine unregister_agent failed for '{agent_id}': {e}"
-                    )
-            return True
-        return self.delete_agent_conversation(agent_id)
+        return core_agent_lifecycle.unregister_agent(
+            self,
+            agent_id,
+            preserve_conversation=preserve_conversation,
+        )
 
     # ------------------------------
     # Message routing via Engine

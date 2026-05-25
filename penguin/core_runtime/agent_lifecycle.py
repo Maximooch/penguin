@@ -6,10 +6,6 @@ import logging
 import os
 from typing import Any
 
-from penguin.agent.persona_runtime import (
-    model_config_for_agent_settings,
-    model_config_metadata,
-)
 from penguin.llm.api_client import APIClient
 from penguin.system.execution_context import (
     ExecutionContext,
@@ -20,6 +16,9 @@ from penguin.system.execution_context import (
 from penguin.utils.parser import ActionExecutor
 
 __all__ = [
+    "create_sub_agent",
+    "delete_agent_conversation",
+    "ensure_agent_conversation",
     "is_agent_paused",
     "publish_sub_agent_session_created",
     "register_agent_compat",
@@ -28,6 +27,7 @@ __all__ = [
     "set_active_agent",
     "set_agent_paused",
     "smoke_check_agents",
+    "unregister_agent",
 ]
 
 logger = logging.getLogger(__name__)
@@ -35,6 +35,11 @@ logger = logging.getLogger(__name__)
 
 def register_agent_compat(core: Any, *args: Any, **kwargs: Any) -> None:
     """Register a legacy persona agent through the conversation-centered path."""
+
+    from penguin.agent.persona_runtime import (
+        model_config_for_agent_settings,
+        model_config_metadata,
+    )
 
     agent_id = kwargs.pop("agent_id", None)
     if agent_id is None and args:
@@ -140,6 +145,110 @@ def set_active_agent(core: Any, agent_id: str) -> None:
             exc_info=True,
         )
         raise
+
+
+def ensure_agent_conversation(
+    core: Any,
+    agent_id: str,
+    *,
+    system_prompt: str | None = None,
+) -> None:
+    """Ensure a conversation and optional Engine registration exist for an agent."""
+
+    conv = core.conversation_manager.get_agent_conversation(
+        agent_id,
+        create_if_missing=True,
+    )
+    if system_prompt and conv:
+        conv.set_system_prompt(system_prompt)
+
+    if getattr(core, "engine", None):
+        try:
+            action_executor = ActionExecutor(
+                core.tool_manager,
+                core.project_manager,
+                conv,
+                ui_event_callback=core.emit_ui_event,
+            )
+            core.engine.register_agent(
+                agent_id=agent_id,
+                conversation_manager=core.conversation_manager,
+                action_executor=action_executor,
+            )
+        except Exception:
+            logger.debug(
+                "Engine registration for '%s' failed",
+                agent_id,
+                exc_info=True,
+            )
+
+
+def delete_agent_conversation(core: Any, agent_id: str) -> bool:
+    """Delete an agent conversation and unregister the Engine agent if present."""
+
+    if agent_id == "default":
+        raise ValueError("Cannot delete the default agent")
+
+    removed = core.conversation_manager.remove_agent(agent_id)
+
+    if getattr(core, "engine", None):
+        try:
+            core.engine.unregister_agent(agent_id)
+        except Exception:
+            logger.debug(
+                "Engine unregister_agent failed for '%s'",
+                agent_id,
+                exc_info=True,
+            )
+
+    if core.conversation_manager.current_agent_id == agent_id:
+        core.set_active_agent("default")
+
+    return removed
+
+
+def create_sub_agent(
+    core: Any,
+    agent_id: str,
+    *,
+    parent_agent_id: str,
+    system_prompt: str | None = None,
+    share_session: bool = True,
+    share_context_window: bool = True,
+    shared_context_window_max_tokens: int | None = None,
+) -> None:
+    """Create a child agent and ensure its conversation exists."""
+
+    core.conversation_manager.create_sub_agent(
+        agent_id,
+        parent_agent_id=parent_agent_id,
+        share_session=share_session,
+        share_context_window=share_context_window,
+        shared_context_window_max_tokens=shared_context_window_max_tokens,
+    )
+    ensure_agent_conversation(core, agent_id, system_prompt=system_prompt)
+
+
+def unregister_agent(
+    core: Any,
+    agent_id: str,
+    *,
+    preserve_conversation: bool = False,
+) -> bool:
+    """Unregister an agent while preserving compatibility with legacy callers."""
+
+    if preserve_conversation:
+        if getattr(core, "engine", None):
+            try:
+                core.engine.unregister_agent(agent_id)
+            except Exception:
+                logger.debug(
+                    "Engine unregister_agent failed for '%s'",
+                    agent_id,
+                    exc_info=True,
+                )
+        return True
+    return delete_agent_conversation(core, agent_id)
 
 
 async def publish_sub_agent_session_created(
