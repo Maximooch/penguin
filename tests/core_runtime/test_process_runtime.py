@@ -25,6 +25,84 @@ def _trace(calls: list[str]):
     return trace_log_info
 
 
+def _process_kwargs(**overrides: Any) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "input_data": "hello",
+        "context": None,
+        "conversation_id": None,
+        "agent_id": None,
+        "max_iterations": 1,
+        "context_files": None,
+        "streaming": False,
+        "stream_callback": None,
+        "multi_step": True,
+        "api_client_override": None,
+        "model_config_override": None,
+        "log": _log(),
+        "trace_log_info": _trace([]),
+        "log_error_fn": lambda *_args, **_kwargs: None,
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+@pytest.mark.asyncio
+async def test_process_with_retry_retries_transient_runtime_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts: list[str] = []
+    sleeps: list[float] = []
+
+    async def flaky_process(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        attempts.append("attempt")
+        if len(attempts) == 1:
+            raise RuntimeError("transient")
+        return {"assistant_response": "done", "action_results": []}
+
+    async def no_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(process_runtime, "process", flaky_process)
+
+    result = await process_runtime.process_with_retry(
+        SimpleNamespace(),
+        retry_sleep=no_sleep,
+        **_process_kwargs(),
+    )
+
+    assert result == {"assistant_response": "done", "action_results": []}
+    assert attempts == ["attempt", "attempt"]
+    assert sleeps == [4.0]
+
+
+@pytest.mark.asyncio
+async def test_process_with_retry_returns_exception_after_retry_exhaustion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts: list[str] = []
+    sleeps: list[float] = []
+
+    async def failing_process(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        attempts.append("attempt")
+        raise RuntimeError("persistent")
+
+    async def no_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(process_runtime, "process", failing_process)
+
+    result = await process_runtime.process_with_retry(
+        SimpleNamespace(),
+        retry_sleep=no_sleep,
+        **_process_kwargs(),
+    )
+
+    assert isinstance(result, RuntimeError)
+    assert str(result) == "persistent"
+    assert attempts == ["attempt", "attempt", "attempt"]
+    assert sleeps == [4.0, 4.0]
+
+
 @pytest.mark.asyncio
 async def test_process_empty_input_returns_without_resolving_conversation(
     monkeypatch: pytest.MonkeyPatch,

@@ -120,12 +120,6 @@ from typing import (
 )
 
 from rich.console import Console  # type: ignore
-from tenacity import (  # type: ignore
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-    retry_if_exception_type,
-)
 from tqdm import tqdm
 
 # Configuration
@@ -1203,17 +1197,6 @@ class PenguinCore:
         """
         return core_system_diagnostics.get_system_status(self, logger=logger)
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        reraise=True,
-        retry=retry_if_exception_type(Exception),
-        retry_error_callback=lambda retry_state: (
-            None
-            if isinstance(retry_state.outcome.exception(), KeyboardInterrupt)
-            else retry_state.outcome.exception()
-        ),
-    )
     async def process(
         self,
         input_data: Union[Dict[str, Any], str],
@@ -1252,7 +1235,7 @@ class PenguinCore:
         Returns:
             Dict containing assistant response and action results
         """
-        return await core_process_runtime.process(
+        return await core_process_runtime.process_with_retry(
             self,
             input_data=input_data,
             context=context,

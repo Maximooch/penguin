@@ -5,6 +5,13 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any
 
+from tenacity import (
+    AsyncRetrying,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
+
 from penguin.system.execution_context import get_current_execution_context
 from penguin.system.state import MessageCategory
 
@@ -19,9 +26,75 @@ from . import (
 
 if TYPE_CHECKING:
     import logging
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
-__all__ = ["process"]
+__all__ = ["process", "process_with_retry"]
+
+
+def _process_retry_error_callback(retry_state: Any) -> Any:
+    """Preserve PenguinCore.process retry exhaustion behavior."""
+    exception = retry_state.outcome.exception()
+    if isinstance(exception, KeyboardInterrupt):
+        return None
+    return exception
+
+
+def _process_retrying(
+    *,
+    sleep: Callable[[float], Awaitable[None]] | None = None,
+) -> AsyncRetrying:
+    """Build the retry policy for public process requests."""
+    kwargs: dict[str, Any] = {
+        "stop": stop_after_attempt(3),
+        "wait": wait_exponential(multiplier=1, min=4, max=10),
+        "reraise": True,
+        "retry": retry_if_exception_type(Exception),
+        "retry_error_callback": _process_retry_error_callback,
+    }
+    if sleep is not None:
+        kwargs["sleep"] = sleep
+    return AsyncRetrying(**kwargs)
+
+
+async def process_with_retry(
+    owner: Any,
+    *,
+    input_data: dict[str, Any] | str,
+    context: dict[str, Any] | None,
+    conversation_id: str | None,
+    agent_id: str | None,
+    max_iterations: int,
+    context_files: list[str] | None,
+    streaming: bool | None,
+    stream_callback: Callable[[str], None] | None,
+    multi_step: bool,
+    api_client_override: Any,
+    model_config_override: Any,
+    log: logging.Logger,
+    trace_log_info: Callable[..., None],
+    log_error_fn: Callable[..., None],
+    retry_sleep: Callable[[float], Awaitable[None]] | None = None,
+) -> dict[str, Any] | BaseException:
+    """Process a user request with the public retry policy applied."""
+    retrying = _process_retrying(sleep=retry_sleep)
+    return await retrying(
+        process,
+        owner,
+        input_data=input_data,
+        context=context,
+        conversation_id=conversation_id,
+        agent_id=agent_id,
+        max_iterations=max_iterations,
+        context_files=context_files,
+        streaming=streaming,
+        stream_callback=stream_callback,
+        multi_step=multi_step,
+        api_client_override=api_client_override,
+        model_config_override=model_config_override,
+        log=log,
+        trace_log_info=trace_log_info,
+        log_error_fn=log_error_fn,
+    )
 
 
 async def process(
