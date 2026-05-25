@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from typing import Any
 
@@ -15,6 +16,94 @@ class _RuntimeConfig:
 
     def register_observer(self, observer: Any) -> None:
         self.observers.append(observer)
+
+
+def test_ensure_tokenizers_parallelism_sets_default_without_overwriting() -> None:
+    env: dict[str, str] = {}
+
+    startup.ensure_tokenizers_parallelism(env)
+    startup.ensure_tokenizers_parallelism(env)
+
+    assert env == {"TOKENIZERS_PARALLELISM": "false"}
+
+    env["TOKENIZERS_PARALLELISM"] = "true"
+    startup.ensure_tokenizers_parallelism(env)
+
+    assert env["TOKENIZERS_PARALLELISM"] == "true"
+
+
+def test_configure_startup_logging_sets_expected_logger_levels() -> None:
+    basic_calls: list[dict[str, Any]] = []
+    levels: dict[str, Any] = {}
+
+    class _Logger:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def setLevel(self, level: Any) -> None:
+            levels[self.name] = level
+
+    startup.configure_startup_logging(
+        basic_config=lambda **kwargs: basic_calls.append(kwargs),
+        get_logger=lambda name: _Logger(name),
+    )
+
+    assert basic_calls == [{"level": logging.WARNING}]
+    assert levels == {
+        "httpx": logging.WARNING,
+        "sentence_transformers": logging.WARNING,
+        "LiteLLM": logging.WARNING,
+        "tools": logging.WARNING,
+        "llm": logging.WARNING,
+        "chat": logging.DEBUG,
+    }
+
+
+def test_load_startup_config_temporarily_sets_workspace_env_and_restores(
+    tmp_path,
+) -> None:
+    env = {"PENGUIN_WORKSPACE": "/previous/workspace"}
+    seen_env: list[str | None] = []
+
+    def _load() -> SimpleNamespace:
+        seen_env.append(env.get("PENGUIN_WORKSPACE"))
+        return SimpleNamespace()
+
+    config = startup.load_startup_config(
+        None,
+        workspace_path=str(tmp_path),
+        config_loader=_load,
+        environ=env,
+    )
+
+    assert seen_env == [str(tmp_path.resolve())]
+    assert env == {"PENGUIN_WORKSPACE": "/previous/workspace"}
+    assert config.workspace_path == tmp_path.resolve()
+
+
+def test_load_startup_config_uses_supplied_config_and_clears_new_workspace_env(
+    tmp_path,
+) -> None:
+    env: dict[str, str] = {}
+    supplied = SimpleNamespace(workspace_path=None)
+
+    config = startup.load_startup_config(
+        supplied,
+        workspace_path=str(tmp_path),
+        config_loader=lambda: SimpleNamespace(loaded=True),
+        environ=env,
+    )
+
+    assert config is supplied
+    assert supplied.workspace_path == tmp_path.resolve()
+    assert env == {}
+
+
+def test_resolve_fast_startup_preserves_current_config_override_behavior() -> None:
+    assert startup.resolve_fast_startup(SimpleNamespace(fast_startup=True), False)
+    assert not startup.resolve_fast_startup(SimpleNamespace(fast_startup=False), False)
+    assert startup.resolve_fast_startup(SimpleNamespace(fast_startup=False), True)
+    assert not startup.resolve_fast_startup(SimpleNamespace(), False)
 
 
 def test_build_initial_model_config_uses_live_config_and_api_base_fallback() -> None:

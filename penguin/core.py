@@ -107,7 +107,6 @@ import asyncio
 import inspect
 import logging
 import time
-import os
 from dataclasses import asdict, fields
 from pathlib import Path
 from typing import (
@@ -307,7 +306,7 @@ class PenguinCore:
             fast_startup: If True (default), defer heavy operations like memory indexing until first use
         """
         # Fix HuggingFace tokenizers parallelism warning early, before any model loading
-        os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+        core_startup.ensure_tokenizers_parallelism()
 
         pbar = None  # Initialize pbar to None
         # Track detailed timing for profiling
@@ -375,16 +374,7 @@ class PenguinCore:
                         progress_callback(
                             current_step_index, total_steps, "Setting up logging"
                         )
-                    logging.basicConfig(level=logging.WARNING)
-                    for logger_name in [
-                        "httpx",
-                        "sentence_transformers",
-                        "LiteLLM",
-                        "tools",
-                        "llm",
-                    ]:
-                        logging.getLogger(logger_name).setLevel(logging.WARNING)
-                    logging.getLogger("chat").setLevel(logging.DEBUG)
+                    core_startup.configure_startup_logging()
                     if pbar:
                         pbar.update(1)
                     log_step_time("Setup logging")
@@ -400,27 +390,17 @@ class PenguinCore:
                             current_step_index, total_steps, "Loading configuration"
                         )
                     start_config_time = time.time()
-                    previous_workspace = os.environ.get("PENGUIN_WORKSPACE")
-                    if workspace_path:
-                        os.environ["PENGUIN_WORKSPACE"] = str(
-                            Path(workspace_path).expanduser().resolve()
-                        )
-                    try:
-                        config = config or Config.load_config()
-                    finally:
-                        if workspace_path:
-                            if previous_workspace is None:
-                                os.environ.pop("PENGUIN_WORKSPACE", None)
-                            else:
-                                os.environ["PENGUIN_WORKSPACE"] = previous_workspace
-                    if workspace_path:
-                        config.workspace_path = (
-                            Path(workspace_path).expanduser().resolve()
-                        )
+                    config = core_startup.load_startup_config(
+                        config,
+                        workspace_path=workspace_path,
+                        config_loader=Config.load_config,
+                    )
 
                     # Use fast_startup from config if not explicitly set
-                    if fast_startup is False and hasattr(config, "fast_startup"):
-                        fast_startup = config.fast_startup
+                    fast_startup = core_startup.resolve_fast_startup(
+                        config,
+                        fast_startup,
+                    )
 
                     logger.info(
                         f"STARTUP: Config loaded in {time.time() - start_config_time:.4f}s"

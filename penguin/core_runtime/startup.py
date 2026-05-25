@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable
+import logging
+import os
+from pathlib import Path
+from typing import Any, Callable, MutableMapping
 
+ConfigLoader = Callable[[], Any]
 RuntimeConfigFactory = Callable[[dict[str, Any]], Any]
 ModelConfigFactory = Callable[..., Any]
 ToolManagerFactory = Callable[..., Any]
@@ -11,6 +15,7 @@ SystemPromptBuilder = Callable[[str], str]
 OutputFormatter = Callable[[str], Any]
 
 __all__ = [
+    "ConfigLoader",
     "ModelConfigFactory",
     "OutputFormatter",
     "RuntimeConfigFactory",
@@ -18,9 +23,74 @@ __all__ = [
     "ToolManagerFactory",
     "build_initial_model_config",
     "build_tool_manager",
+    "configure_startup_logging",
+    "ensure_tokenizers_parallelism",
     "initialize_prompt_and_output_state",
     "initialize_runtime_config",
+    "load_startup_config",
+    "resolve_fast_startup",
 ]
+
+
+def ensure_tokenizers_parallelism(
+    environ: MutableMapping[str, str] | None = None,
+) -> None:
+    """Set the tokenizer parallelism default before model libraries initialize."""
+
+    env = environ if environ is not None else os.environ
+    env.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+
+def configure_startup_logging(
+    *,
+    basic_config: Callable[..., Any] = logging.basicConfig,
+    get_logger: Callable[[str], Any] = logging.getLogger,
+) -> None:
+    """Apply Penguin's quiet startup logging defaults."""
+
+    basic_config(level=logging.WARNING)
+    for logger_name in ("httpx", "sentence_transformers", "LiteLLM", "tools", "llm"):
+        get_logger(logger_name).setLevel(logging.WARNING)
+    get_logger("chat").setLevel(logging.DEBUG)
+
+
+def load_startup_config(
+    config: Any,
+    *,
+    workspace_path: str | None,
+    config_loader: ConfigLoader,
+    environ: MutableMapping[str, str] | None = None,
+) -> Any:
+    """Load Config with temporary workspace env override and restore env state."""
+
+    env = environ if environ is not None else os.environ
+    previous_workspace = env.get("PENGUIN_WORKSPACE")
+    resolved_workspace = (
+        str(Path(workspace_path).expanduser().resolve()) if workspace_path else None
+    )
+
+    if resolved_workspace:
+        env["PENGUIN_WORKSPACE"] = resolved_workspace
+    try:
+        loaded_config = config or config_loader()
+    finally:
+        if resolved_workspace:
+            if previous_workspace is None:
+                env.pop("PENGUIN_WORKSPACE", None)
+            else:
+                env["PENGUIN_WORKSPACE"] = previous_workspace
+
+    if resolved_workspace:
+        loaded_config.workspace_path = Path(resolved_workspace)
+    return loaded_config
+
+
+def resolve_fast_startup(config: Any, requested_fast_startup: bool) -> bool:
+    """Preserve current startup override behavior for Config.fast_startup."""
+
+    if requested_fast_startup is False and hasattr(config, "fast_startup"):
+        return bool(config.fast_startup)
+    return requested_fast_startup
 
 
 def build_initial_model_config(
