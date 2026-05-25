@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from hypothesis import given, strategies as st
+from hypothesis import given, settings, strategies as st
 
 from penguin.core_runtime import token_usage_runtime
 from penguin.system.state import MessageCategory
@@ -32,15 +32,33 @@ class _Core:
         self,
         *,
         session: Any | None = None,
+        sessions: list[Any] | None = None,
         runtime_usage: Any | None = None,
     ) -> None:
         self.conversation_manager = _ConversationManager(runtime_usage)
-        self.session = session
+        self.sessions = {item.id: item for item in (sessions or [])}
+        if session is not None:
+            self.sessions[session.id] = session
 
     def _find_session_store(self, session_id: str) -> tuple[Any | None, None]:
-        if self.session is not None and self.session.id == session_id:
-            return self.session, None
+        session = self.sessions.get(session_id)
+        if session is not None:
+            return session, None
         return None, None
+
+    def _get_session_token_usage(
+        self,
+        session_id: str,
+        *,
+        conversation_id: str | None = None,
+        agent_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        return token_usage_runtime.get_session_token_usage(
+            self,
+            session_id,
+            conversation_id=conversation_id,
+            agent_id=agent_id,
+        )
 
     def _usage_from_session_messages(
         self,
@@ -170,6 +188,69 @@ def test_usage_from_session_messages_scopes_tokens_by_agent(
     assert usage["categories"].get("CUSTOM", 0) == expected_custom
 
 
+@settings(max_examples=50)
+@given(
+    session_a=st.lists(
+        st.tuples(
+            st.integers(min_value=0, max_value=500),
+            st.sampled_from(["agent-a", "agent-b"]),
+        ),
+        max_size=20,
+    ),
+    session_b=st.lists(
+        st.tuples(
+            st.integers(min_value=0, max_value=500),
+            st.sampled_from(["agent-a", "agent-b"]),
+        ),
+        max_size=20,
+    ),
+)
+def test_get_token_usage_scoped_agent_never_bleeds_across_sessions(
+    session_a: list[tuple[int, str]],
+    session_b: list[tuple[int, str]],
+) -> None:
+    core = _Core(
+        sessions=[
+            _session(
+                "session_a",
+                messages=[
+                    _message(tokens, agent_id=agent_id)
+                    for tokens, agent_id in session_a
+                ],
+            ),
+            _session(
+                "session_b",
+                messages=[
+                    _message(tokens, agent_id=agent_id)
+                    for tokens, agent_id in session_b
+                ],
+            ),
+        ]
+    )
+
+    usage = token_usage_runtime.get_token_usage(
+        core,
+        session_id="session_b",
+        agent_id="agent-a",
+    )
+
+    expected = sum(tokens for tokens, agent_id in session_b if agent_id == "agent-a")
+    if any(agent_id == "agent-a" for _tokens, agent_id in session_b):
+        assert usage["scope"] == "session"
+        assert usage["session_id"] == "session_b"
+        assert usage["agent_id"] == "agent-a"
+        assert usage["current_total_tokens"] == expected
+        assert usage["categories"]["DIALOG"] == expected
+    else:
+        assert usage == {
+            "scope": "missing",
+            "session_id": "session_b",
+            "conversation_id": "session_b",
+            "agent_id": "agent-a",
+            "error": "agent token usage not found for session",
+        }
+
+
 def test_get_session_token_usage_does_not_let_metadata_owner_override_messages() -> (
     None
 ):
@@ -225,6 +306,25 @@ def test_get_session_token_usage_falls_back_when_snapshot_metadata_is_corrupt() 
     assert usage["scope"] == "session"
     assert usage["session_id"] == "session_a"
     assert usage["current_total_tokens"] == 7
+
+
+def test_get_session_token_usage_treats_corrupt_metadata_as_empty() -> None:
+    session = _session(
+        "session_a",
+        messages=[_message(5)],
+        metadata=["bad"],
+    )
+
+    usage = token_usage_runtime.get_session_token_usage(
+        _Core(session=session),
+        "session_a",
+    )
+
+    assert usage is not None
+    assert usage["scope"] == "session"
+    assert usage["session_id"] == "session_a"
+    assert "agent_id" not in usage
+    assert usage["current_total_tokens"] == 5
 
 
 def test_get_session_token_usage_does_not_mutate_persisted_usage_snapshot() -> None:
