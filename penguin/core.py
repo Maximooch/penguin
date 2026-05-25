@@ -168,6 +168,7 @@ from .core_runtime import model_runtime as core_model_runtime
 from .core_runtime import opencode_adapters as core_opencode_adapters
 from .core_runtime import opencode_bridge as core_opencode_bridge
 from .core_runtime import opencode_persistence as core_opencode_persistence
+from .core_runtime import process_lifecycle as core_process_lifecycle
 from .core_runtime import prompt_settings as core_prompt_settings
 from .core_runtime import runmode_events as core_runmode_events
 from .core_runtime import session_lookup as core_session_lookup
@@ -2172,30 +2173,14 @@ class PenguinCore:
             streaming,
             multi_step,
         )
-        if not isinstance(getattr(self, "_opencode_abort_sessions", None), set):
-            self._opencode_abort_sessions = set()
-        if not isinstance(getattr(self, "_opencode_process_tasks", None), dict):
-            self._opencode_process_tasks = {}
-        if not isinstance(getattr(self, "_opencode_active_requests", None), dict):
-            self._opencode_active_requests = {}
         request_task = asyncio.current_task()
-        request_tracked = False
-        if isinstance(request_session_id, str) and request_session_id:
-            self._opencode_abort_sessions.discard(request_session_id)
-            if request_task is not None:
-                tasks = self._opencode_process_tasks.get(request_session_id)
-                if not isinstance(tasks, set):
-                    tasks = set()
-                    self._opencode_process_tasks[request_session_id] = tasks
-                tasks.add(request_task)
-                request_tracked = True
-
-                next_count = (
-                    self._opencode_active_requests.get(request_session_id, 0) + 1
-                )
-                self._opencode_active_requests[request_session_id] = next_count
-                if next_count == 1:
-                    await self._emit_opencode_session_status(request_session_id, "busy")
+        request_tracked = (
+            await core_process_lifecycle.register_opencode_process_request(
+                self,
+                request_session_id,
+                request_task,
+            )
+        )
 
         try:
             # Load conversation if ID provided
@@ -2543,8 +2528,10 @@ class PenguinCore:
             return response
 
         except asyncio.CancelledError:
-            if isinstance(request_session_id, str) and request_session_id:
-                self._opencode_abort_sessions.discard(request_session_id)
+            core_process_lifecycle.discard_opencode_abort_session(
+                self,
+                request_session_id,
+            )
             return {
                 "assistant_response": "",
                 "action_results": [],
@@ -2573,28 +2560,12 @@ class PenguinCore:
             }
 
         finally:
-            if (
-                request_tracked
-                and isinstance(request_session_id, str)
-                and request_session_id
-            ):
-                tasks = self._opencode_process_tasks.get(request_session_id)
-                if isinstance(tasks, set) and request_task is not None:
-                    tasks.discard(request_task)
-                    if not tasks:
-                        self._opencode_process_tasks.pop(request_session_id, None)
-
-                current_count = self._opencode_active_requests.get(
-                    request_session_id, 0
-                )
-                if current_count > 1:
-                    self._opencode_active_requests[request_session_id] = (
-                        current_count - 1
-                    )
-                else:
-                    self._opencode_active_requests.pop(request_session_id, None)
-                    self._opencode_abort_sessions.discard(request_session_id)
-                    await self._emit_opencode_session_status(request_session_id, "idle")
+            await core_process_lifecycle.finalize_opencode_process_request(
+                self,
+                request_session_id,
+                request_task,
+                request_tracked=request_tracked,
+            )
 
     def list_conversations(
         self,
