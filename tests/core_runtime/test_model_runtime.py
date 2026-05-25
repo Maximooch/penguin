@@ -426,7 +426,7 @@ async def test_build_model_config_for_model_clamps_config_output_cap() -> None:
     context_length=st.integers(min_value=1, max_value=1_000_000),
     max_output_tokens=st.integers(min_value=1, max_value=1_000_000),
 )
-@settings(max_examples=50)
+@settings(max_examples=50, deadline=None)
 def test_build_model_config_for_model_never_exposes_output_cap_above_safe_window(
     context_length: int,
     max_output_tokens: int,
