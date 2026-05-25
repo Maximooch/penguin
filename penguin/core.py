@@ -214,7 +214,6 @@ from penguin.llm.litellm_support import load_litellm_module
 from penguin.utils.log_error import log_error
 from penguin.utils.parser import (
     ActionExecutor,
-    parse_action,
 )
 from penguin.utils.profiling import (
     profile_startup_phase,
@@ -1773,60 +1772,14 @@ class PenguinCore:
                     assistant_response
                 )
 
-            # Parse actions and continue with action handling
-            actions = parse_action(assistant_response)
-
-            # Check for task/response completion via finish_task or finish_response tools
-            # NOTE: Phrase-based detection is deprecated. Use finish_task/finish_response tools.
-            exit_continuation = any(
-                action.action_type.value
-                in ("finish_response", "finish_task", "task_completed")
-                for action in actions
+            action_processing = await core_action_execution.process_response_actions(
+                self,
+                assistant_response,
+                log=logger,
             )
-
-            # Execute actions with interrupt checking
-            action_results = []
-            for action in actions:
-                if self._check_interrupt():
-                    action_results.append(
-                        {
-                            "action": action.action_type.value,
-                            "result": "Action skipped due to interrupt",
-                            "status": "interrupted",
-                        }
-                    )
-                    continue
-
-                try:
-                    result = await self.action_executor.execute_action(action)
-                    if result is not None:
-                        action_results.append(
-                            {
-                                "action": action.action_type.value,
-                                "result": str(result),
-                                "status": "completed",
-                            }
-                        )
-
-                        # Update conversation with action result
-                        self.conversation_manager.add_action_result(
-                            action_type=action.action_type.value,
-                            result=str(result),
-                            status="completed",
-                        )
-                except Exception as e:
-                    error_result = {
-                        "action": action.action_type.value,
-                        "result": f"Error executing action: {str(e)}",
-                        "status": "error",
-                    }
-                    action_results.append(error_result)
-                    self.conversation_manager.add_action_result(
-                        action_type=action.action_type.value,
-                        result=f"Error executing action: {str(e)}",
-                        status="error",
-                    )
-                    logger.error(f"Action execution error: {str(e)}")
+            actions = action_processing.actions
+            action_results = action_processing.action_results
+            exit_continuation = action_processing.exit_continuation
 
             # Save the updated conversation state
             self.conversation_manager.save()
