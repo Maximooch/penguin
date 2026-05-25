@@ -172,6 +172,7 @@ from .core_runtime import process_input as core_process_input
 from .core_runtime import process_lifecycle as core_process_lifecycle
 from .core_runtime import prompt_settings as core_prompt_settings
 from .core_runtime import runmode_events as core_runmode_events
+from .core_runtime import runmode_lifecycle as core_runmode_lifecycle
 from .core_runtime import session_lookup as core_session_lookup
 from .core_runtime import stream_events as core_stream_events
 from .core_runtime import system_diagnostics as core_system_diagnostics
@@ -2524,89 +2525,20 @@ class PenguinCore:
             stream_callback_for_cli: Async callback for streaming LLM responses to UI.
             ui_update_callback_for_cli: Async callback for UI updates based on RunMode events.
         """
-        # Store UI update callback for _handle_run_mode_event to use
-        self._ui_update_callback = ui_update_callback_for_cli
-        self._runmode_stream_callback = self._prepare_runmode_stream_callback(
-            stream_callback_for_cli
+        await core_runmode_lifecycle.start_run_mode(
+            self,
+            name=name,
+            description=description,
+            context=context,
+            continuous=continuous,
+            time_limit=time_limit,
+            mode_type=mode_type,
+            stream_callback_for_cli=stream_callback_for_cli,
+            ui_update_callback_for_cli=ui_update_callback_for_cli,
+            run_mode_factory=RunMode,
+            log_error=log_error,
+            logger=logger,
         )
-        self._runmode_active = True
-
-        # Initialize status
-        self.current_runmode_status_summary = "Starting RunMode..."
-
-        run_mode = None
-        try:
-            run_mode = RunMode(
-                self,  # core instance
-                time_limit=time_limit,
-                event_callback=self._handle_run_mode_event,
-            )
-            self.run_mode = run_mode
-            self._continuous_mode = continuous
-
-            if continuous:
-                # RunMode's start_continuous will manage its internal continuous_mode flag.
-                # Project-scoped continuous execution must select from the ready frontier;
-                # passing the project name as a task name creates a synthetic user task and
-                # drifts out of project scope.
-                project_id = (
-                    (context or {}).get("project_id")
-                    if mode_type == "project"
-                    else None
-                )
-                await run_mode.start_continuous(
-                    specified_task_name=None if project_id else name,
-                    task_description=None if project_id else description,
-                    project_id=project_id,
-                )
-            else:
-                await run_mode.start(
-                    name=name, description=description, context=context
-                )
-
-        except Exception as e:
-            # Reset continuous mode flag if starting run_mode itself fails
-            self._continuous_mode = False
-
-            # Log the error
-            log_error(
-                e,
-                context={
-                    "component": "core",
-                    "method": "start_run_mode",
-                    "task_name": name,
-                    "description": description,
-                },
-            )
-
-            # Update error status
-            self.current_runmode_status_summary = f"Error starting RunMode: {str(e)}"
-
-            # Final UI update with error
-            if self._ui_update_callback:
-                try:
-                    await self._ui_update_callback()
-                except Exception as callback_err:
-                    logger.error(f"Error in UI update callback: {callback_err}")
-
-            raise  # Re-raise the exception so the caller knows starting run_mode failed
-
-        finally:
-            self._runmode_active = False
-            self._runmode_stream_callback = None
-            self.run_mode = None
-            # Clear the UI update callback reference when finished
-            self._ui_update_callback = None
-
-            # Ensure state is cleaned up if run mode was not continuous or if continuous mode exited
-            if run_mode is None:
-                self._continuous_mode = False
-            elif hasattr(run_mode, "continuous_mode") and not run_mode.continuous_mode:
-                self._continuous_mode = False
-
-            logger.info(
-                f"Exiting start_run_mode. Core _continuous_mode: {self._continuous_mode}"
-            )
 
     # ------------------------------------------------------------------
     # Model management helpers
