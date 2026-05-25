@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -89,6 +90,84 @@ def test_should_emit_final_content_detects_existing_part_text() -> None:
         )
         is True
     )
+
+
+def test_filter_internal_markers_removes_private_protocol_text_without_mutation() -> (
+    None
+):
+    payload = {
+        "content": "visible <execute>hidden</execute>",
+        "chunk": "<system-reminder>hide</system-reminder> keep",
+        "content_so_far": "a <internal>b</internal> c",
+        "message": "done </finish_response>",
+        "other": "<execute>preserved outside filtered fields</execute>",
+    }
+
+    filtered = stream_events.filter_internal_markers_from_event(payload)
+
+    assert filtered is not payload
+    assert payload["content"] == "visible <execute>hidden</execute>"
+    assert filtered == {
+        "content": "visible",
+        "chunk": "keep",
+        "content_so_far": "a  c",
+        "message": "done",
+        "other": "<execute>preserved outside filtered fields</execute>",
+    }
+
+
+def test_filter_internal_markers_returns_original_when_unchanged() -> None:
+    payload = {"chunk": "plain text", "count": 3}
+
+    filtered = stream_events.filter_internal_markers_from_event(payload)
+
+    assert filtered is payload
+
+
+def test_resolve_stream_scope_id_prefers_execution_context_session_and_agent() -> None:
+    context = SimpleNamespace(
+        session_id="session_1",
+        conversation_id="conversation_1",
+        agent_id="context-agent",
+    )
+    manager = SimpleNamespace(current_agent_id="manager-agent")
+
+    scope_id = stream_events.resolve_stream_scope_id(
+        conversation_manager=manager,
+        execution_context=context,
+        agent_id=None,
+    )
+
+    assert scope_id == "session_1:context-agent"
+
+
+def test_resolve_stream_scope_id_falls_back_to_conversation_and_manager_agent() -> None:
+    context = SimpleNamespace(
+        session_id=None,
+        conversation_id="conversation_1",
+        agent_id=None,
+    )
+    manager = SimpleNamespace(current_agent_id="manager-agent")
+
+    scope_id = stream_events.resolve_stream_scope_id(
+        conversation_manager=manager,
+        execution_context=context,
+        agent_id=None,
+    )
+
+    assert scope_id == "conversation_1:manager-agent"
+
+
+def test_resolve_stream_scope_id_uses_default_without_context_or_manager_agent() -> (
+    None
+):
+    scope_id = stream_events.resolve_stream_scope_id(
+        conversation_manager=SimpleNamespace(current_agent_id=None),
+        execution_context=None,
+        agent_id=None,
+    )
+
+    assert scope_id == "default"
 
 
 @pytest.mark.asyncio

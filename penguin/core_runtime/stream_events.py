@@ -2,14 +2,26 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 __all__ = [
     "active_part_text",
+    "filter_internal_markers_from_event",
     "handle_tui_stream_chunk",
+    "resolve_stream_scope_id",
     "should_emit_final_content",
     "stream_state_for",
 ]
+
+_INTERNAL_MARKER_PATTERNS = (
+    r"<execute>.*?</execute>",
+    r"<system-reminder>.*?</system-reminder>",
+    r"<internal>.*?</internal>",
+    r"</?finish_response\b[^>]*>?",
+)
+
+_FILTERED_CONTENT_FIELDS = ("content", "chunk", "content_so_far", "message")
 
 
 def stream_state_for(owner: Any, session_id: Any) -> dict[str, Any]:
@@ -56,6 +68,56 @@ def should_emit_final_content(adapter: Any, part_id: str, final_content: Any) ->
         return not bool(active_part_text(adapter, part_id))
     except Exception:
         return True
+
+
+def filter_internal_markers_from_event(data: dict[str, Any]) -> dict[str, Any]:
+    """Return event data with internal implementation markers removed."""
+
+    modified = False
+    filtered_data = data
+
+    for field in _FILTERED_CONTENT_FIELDS:
+        value = data.get(field)
+        if not isinstance(value, str):
+            continue
+
+        filtered_value = value
+        for pattern in _INTERNAL_MARKER_PATTERNS:
+            filtered_value = re.sub(pattern, "", filtered_value, flags=re.DOTALL)
+
+        if filtered_value != value:
+            if not modified:
+                filtered_data = dict(data)
+                modified = True
+            filtered_data[field] = filtered_value.strip()
+
+    return filtered_data
+
+
+def resolve_stream_scope_id(
+    *,
+    conversation_manager: Any,
+    execution_context: Any,
+    agent_id: str | None,
+) -> str:
+    """Resolve the stream-state key for concurrent session isolation."""
+
+    resolved_agent = agent_id
+    if not resolved_agent and execution_context is not None:
+        resolved_agent = getattr(execution_context, "agent_id", None)
+    if not resolved_agent:
+        resolved_agent = getattr(conversation_manager, "current_agent_id", None)
+    resolved_agent = resolved_agent or "default"
+
+    if execution_context is None:
+        return resolved_agent
+
+    session_scope = getattr(execution_context, "session_id", None) or getattr(
+        execution_context, "conversation_id", None
+    )
+    if not session_scope:
+        return resolved_agent
+    return f"{session_scope}:{resolved_agent}"
 
 
 async def handle_tui_stream_chunk(

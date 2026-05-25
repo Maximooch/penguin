@@ -3735,41 +3735,7 @@ class PenguinCore:
         Returns:
             Filtered event data (shallow copy if modified)
         """
-        import re
-
-        # Patterns for internal markers
-        internal_patterns = [
-            r"<execute>.*?</execute>",
-            r"<system-reminder>.*?</system-reminder>",
-            r"<internal>.*?</internal>",
-            r"</?finish_response\b[^>]*>?",
-        ]
-
-        # Fields that may contain content to filter
-        content_fields = ["content", "chunk", "content_so_far", "message"]
-
-        modified = False
-        filtered_data = data
-
-        for field in content_fields:
-            if field in data and isinstance(data[field], str):
-                original_content = data[field]
-                filtered_content = original_content
-
-                # Apply all filter patterns
-                for pattern in internal_patterns:
-                    filtered_content = re.sub(
-                        pattern, "", filtered_content, flags=re.DOTALL
-                    )
-
-                # Only create copy if content changed
-                if filtered_content != original_content:
-                    if not modified:
-                        filtered_data = dict(data)  # Shallow copy
-                        modified = True
-                    filtered_data[field] = filtered_content.strip()
-
-        return filtered_data
+        return core_stream_events.filter_internal_markers_from_event(data)
 
     def _resolve_stream_scope_id(
         self,
@@ -3777,24 +3743,11 @@ class PenguinCore:
         agent_id: Optional[str],
     ) -> str:
         """Resolve stream-state key for concurrent session isolation."""
-        resolved_agent = agent_id
-        if not resolved_agent and execution_context is not None:
-            resolved_agent = getattr(execution_context, "agent_id", None)
-        if not resolved_agent:
-            resolved_agent = getattr(
-                self.conversation_manager,
-                "current_agent_id",
-                None,
-            )
-        resolved_agent = resolved_agent or "default"
-        if execution_context is None:
-            return resolved_agent
-        session_scope = (
-            execution_context.session_id or execution_context.conversation_id
+        return core_stream_events.resolve_stream_scope_id(
+            conversation_manager=getattr(self, "conversation_manager", None),
+            execution_context=execution_context,
+            agent_id=agent_id,
         )
-        if not session_scope:
-            return resolved_agent
-        return f"{session_scope}:{resolved_agent}"
 
     async def _handle_stream_chunk(
         self,
