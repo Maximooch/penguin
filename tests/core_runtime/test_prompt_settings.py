@@ -113,8 +113,9 @@ def test_core_prompt_setting_shims_delegate_to_runtime(monkeypatch) -> None:
     formats: list[str] = []
     core = PenguinCore.__new__(PenguinCore)
     core.conversation_manager = _ConversationManager()
+    facade_globals = PenguinCore.set_prompt_mode.__globals__
 
-    monkeypatch.setattr("penguin.core.get_system_prompt", _prompt)
+    monkeypatch.setitem(facade_globals, "get_system_prompt", _prompt)
     monkeypatch.setattr("penguin.prompt.builder.set_output_formatting", formats.append)
 
     core.api_client = SimpleNamespace(set_system_prompt=formats.append)

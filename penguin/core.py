@@ -144,7 +144,7 @@ from .core_runtime import message_processing as core_message_processing
 from .core_runtime import model_runtime as core_model_runtime
 from .core_runtime import opencode_facade as core_opencode_facade
 from .core_runtime import process_runtime as core_process_runtime
-from .core_runtime import prompt_settings as core_prompt_settings
+from .core_runtime import prompt_facade as core_prompt_facade
 from .core_runtime import response_generation as core_response_generation
 from .core_runtime import runmode_lifecycle as core_runmode_lifecycle
 from .core_runtime import state_facade as core_state_facade
@@ -219,6 +219,7 @@ class PenguinCore(
     core_checkpoint_facade.CheckpointCoreFacade,
     core_conversation_facade.ConversationCoreFacade,
     core_diagnostics_facade.DiagnosticsCoreFacade,
+    core_prompt_facade.PromptCoreFacade,
     core_state_facade.StateCoreFacade,
     core_streaming_facade.StreamingCoreFacade,
     core_token_usage_facade.TokenUsageCoreFacade,
@@ -346,50 +347,6 @@ class PenguinCore(
     def get_coordinator(self):
         """Return a singleton MultiAgentCoordinator bound to this Core."""
         return multi_coordinator_runtime.get_core_coordinator(self, log=logger)
-
-    # ------------------------------------------------------------------
-    # Prompt mode control
-    # ------------------------------------------------------------------
-    def set_prompt_mode(self, mode: str) -> str:
-        """Rebuild and set the system prompt using the prompt builder mode.
-
-        Modes: direct, review, implement, test, bench_minimal, terse, explain
-        """
-        return core_prompt_settings.set_prompt_mode(
-            self,
-            mode,
-            get_system_prompt=get_system_prompt,
-            logger=logger,
-        )
-
-    def get_prompt_mode(self) -> str:
-        """Return current prompt mode name."""
-        return core_prompt_settings.get_prompt_mode(self)
-
-    # ------------------------------------------------------------------
-    # Output style control
-    # ------------------------------------------------------------------
-    def set_output_style(self, style: str) -> str:
-        """Set output formatting style and rebuild system prompt.
-
-        Styles: steps_final, plain, json_guided
-        """
-        from penguin.prompt.builder import set_output_formatting
-
-        return core_prompt_settings.set_output_style(
-            self,
-            style,
-            get_system_prompt=get_system_prompt,
-            set_output_formatting=set_output_formatting,
-            logger=logger,
-        )
-
-    def get_output_style(self) -> str:
-        return core_prompt_settings.get_output_style(self)
-
-    def set_system_prompt(self, prompt: str) -> None:
-        """Set the system prompt for both core and API client."""
-        core_prompt_settings.set_core_system_prompt(self, prompt)
 
     def set_llm_config(
         self,
