@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 RuntimeConfigFactory = Callable[[dict[str, Any]], Any]
 ModelConfigFactory = Callable[..., Any]
+ToolManagerFactory = Callable[..., Any]
 SystemPromptBuilder = Callable[[str], str]
 OutputFormatter = Callable[[str], Any]
 
@@ -14,7 +15,9 @@ __all__ = [
     "OutputFormatter",
     "RuntimeConfigFactory",
     "SystemPromptBuilder",
+    "ToolManagerFactory",
     "build_initial_model_config",
+    "build_tool_manager",
     "initialize_prompt_and_output_state",
     "initialize_runtime_config",
 ]
@@ -76,6 +79,22 @@ def initialize_runtime_config(
         owner.runtime_config.register_observer(observer)
 
 
+def build_tool_manager(
+    config: Any,
+    *,
+    log_error: Callable[..., Any],
+    fast_startup: bool,
+    tool_manager_factory: ToolManagerFactory,
+) -> Any:
+    """Build ToolManager with a deterministic dict payload from live Config."""
+
+    return tool_manager_factory(
+        _safe_config_dict(config),
+        log_error,
+        fast_startup=fast_startup,
+    )
+
+
 def initialize_prompt_and_output_state(
     owner: Any,
     raw_config: Any,
@@ -114,6 +133,13 @@ def _resolve_show_tool_results(output_config: Any, raw_config: Any) -> bool:
         return bool(show_tool_value)
     except Exception:
         return True
+
+
+def _safe_config_dict(config: Any) -> dict[str, Any]:
+    try:
+        return config.to_dict() if hasattr(config, "to_dict") else {}
+    except Exception:
+        return {}
 
 
 def _resolve_prompt_mode(raw_config: Any) -> str:

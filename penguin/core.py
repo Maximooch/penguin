@@ -497,15 +497,11 @@ class PenguinCore:
                         f"DEBUG: Passing log_error of type {type(log_error)} to ToolManager."
                     )
                     print(f"DEBUG: Fast startup mode: {fast_startup}")
-                    # Provide ToolManager with a deterministic dict derived from the live Config
-                    try:
-                        config_dict = (
-                            config.to_dict() if hasattr(config, "to_dict") else {}
-                        )
-                    except Exception:
-                        config_dict = {}
-                    tool_manager = ToolManager(
-                        config_dict, log_error, fast_startup=fast_startup
+                    tool_manager = core_startup.build_tool_manager(
+                        config,
+                        log_error=log_error,
+                        fast_startup=fast_startup,
+                        tool_manager_factory=ToolManager,
                     )
                     logger.info(
                         f"STARTUP: Tool manager created in {time.time() - tool_manager_start:.4f}s with {len(tool_manager.tools) if hasattr(tool_manager, 'tools') else 'unknown'} tools"

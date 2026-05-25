@@ -108,6 +108,51 @@ def test_initialize_runtime_config_builds_config_and_registers_tool_observer() -
     assert owner.runtime_config.observers == [tool_manager.on_runtime_config_change]
 
 
+def test_build_tool_manager_passes_deterministic_config_payload() -> None:
+    calls: list[tuple[dict[str, Any], Any, bool]] = []
+
+    def _log_error(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    def _factory(
+        payload: dict[str, Any],
+        log_error: Any,
+        *,
+        fast_startup: bool,
+    ) -> dict[str, Any]:
+        calls.append((payload, log_error, fast_startup))
+        return {"tools": payload}
+
+    result = startup.build_tool_manager(
+        SimpleNamespace(to_dict=lambda: {"tools": {"enabled": True}}),
+        log_error=_log_error,
+        fast_startup=True,
+        tool_manager_factory=_factory,
+    )
+
+    assert result == {"tools": {"tools": {"enabled": True}}}
+    assert calls == [({"tools": {"enabled": True}}, _log_error, True)]
+
+
+def test_build_tool_manager_uses_empty_payload_when_config_dict_fails() -> None:
+    class _BrokenConfig:
+        def to_dict(self) -> dict[str, Any]:
+            raise RuntimeError("config unavailable")
+
+    captured: list[dict[str, Any]] = []
+
+    startup.build_tool_manager(
+        _BrokenConfig(),
+        log_error=lambda *_args, **_kwargs: None,
+        fast_startup=False,
+        tool_manager_factory=lambda payload, _log, *, fast_startup: (
+            captured.append({"payload": payload, "fast_startup": fast_startup}) or {}
+        ),
+    )
+
+    assert captured == [{"payload": {}, "fast_startup": False}]
+
+
 def test_initialize_runtime_config_uses_supplied_runtime_config() -> None:
     owner = SimpleNamespace()
     runtime_config = _RuntimeConfig({"existing": True})
