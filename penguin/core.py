@@ -553,55 +553,15 @@ class PenguinCore:
             default_max_messages_per_session=DEFAULT_MAX_MESSAGES_PER_SESSION,
         )
 
-        # ------------------- Engine Initialization -------------------
-        try:
-            from penguin.engine import (
-                Engine,
-                EngineSettings,
-                TokenBudgetStop,
-                WallClockStop,
-            )  # type: ignore
+        from penguin.engine import Engine, EngineSettings, TokenBudgetStop
 
-            # Propagate the model's streaming preference into the Engine so that
-            # multi-step run modes (RunMode → Engine.run_task) inherit the same
-            # behaviour as interactive chat.  Without this, Engine defaults to
-            # non-streaming which for some providers (e.g. OpenRouter → Gemini)
-            # often returns an *empty* completion causing blank responses in
-            # RunMode even though regular chat works fine.
-
-            streaming_pref = True
-            try:
-                # ``model_config.streaming_enabled`` may be None; coerce to bool
-                streaming_pref = bool(self.model_config.streaming_enabled)
-            except Exception:
-                # Fall back to True which is the safer default for providers
-                streaming_pref = True
-
-            engine_settings = EngineSettings(streaming_default=streaming_pref)
-            default_stops = [TokenBudgetStop()]
-            self.engine = Engine(
-                engine_settings,
-                self.conversation_manager,
-                self.api_client,
-                self.tool_manager,
-                self.action_executor,
-                stop_conditions=default_stops,
-            )
-            try:
-                self.engine.model_config = self.model_config  # type: ignore[attr-defined]
-                self.engine.coordinator = self.get_coordinator()
-                self.engine.telemetry = getattr(self, "telemetry", None)
-                # Setup MessageBus integration for inter-agent communication
-                self.engine.setup_message_bus(ui_event_callback=self.emit_ui_event)
-            except Exception as coord_err:  # pragma: no cover
-                logger.debug(f"Coordinator unavailable during engine init: {coord_err}")
-        except Exception as e:
-            logger.warning(
-                "Failed to initialize Engine layer (fallback to legacy core processing): %s",
-                e,
-                exc_info=True,
-            )
-            self.engine = None
+        core_startup.initialize_engine_state(
+            self,
+            engine_factory=Engine,
+            engine_settings_factory=EngineSettings,
+            token_budget_stop_factory=TokenBudgetStop,
+            logger=logger,
+        )
 
         # State
         self.initialized = True

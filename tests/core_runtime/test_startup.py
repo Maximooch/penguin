@@ -36,11 +36,19 @@ class _FakeProgressBar:
 
 class _FakeLogger:
     def __init__(self) -> None:
+        self.debug_calls: list[tuple[str, tuple[Any, ...]]] = []
         self.info_calls: list[tuple[str, tuple[Any, ...]]] = []
+        self.warning_calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
         self.error_calls: list[tuple[str, tuple[Any, ...]]] = []
+
+    def debug(self, message: str, *args: Any) -> None:
+        self.debug_calls.append((message, args))
 
     def info(self, message: str, *args: Any) -> None:
         self.info_calls.append((message, args))
+
+    def warning(self, message: str, *args: Any, **kwargs: Any) -> None:
+        self.warning_calls.append((message, args, kwargs))
 
     def error(self, message: str, *args: Any) -> None:
         self.error_calls.append((message, args))
@@ -659,6 +667,174 @@ def test_initialize_conversation_action_state_uses_empty_skills_without_config_d
 
     assert conversation_payloads[0]["skills_config"] == {}
     assert conversation_payloads[0]["project_root"] is None
+
+
+def test_initialize_engine_state_wires_engine_and_runtime_integrations() -> None:
+    logger = _FakeLogger()
+    stop = SimpleNamespace(name="stop")
+
+    class _EngineSettings:
+        def __init__(self, *, streaming_default: bool) -> None:
+            self.streaming_default = streaming_default
+
+    class _Engine:
+        def __init__(
+            self,
+            settings: Any,
+            conversation_manager: Any,
+            api_client: Any,
+            tool_manager: Any,
+            action_executor: Any,
+            *,
+            stop_conditions: list[Any],
+        ) -> None:
+            self.settings = settings
+            self.conversation_manager = conversation_manager
+            self.api_client = api_client
+            self.tool_manager = tool_manager
+            self.action_executor = action_executor
+            self.stop_conditions = stop_conditions
+            self.message_bus_callbacks: list[Any] = []
+
+        def setup_message_bus(self, *, ui_event_callback: Any) -> None:
+            self.message_bus_callbacks.append(ui_event_callback)
+
+    def _emit_ui_event(event_type: str, payload: dict[str, Any]) -> None:
+        del event_type, payload
+
+    owner = SimpleNamespace(
+        model_config=SimpleNamespace(streaming_enabled=False),
+        conversation_manager=SimpleNamespace(name="conversation"),
+        api_client=SimpleNamespace(name="api"),
+        tool_manager=SimpleNamespace(name="tools"),
+        action_executor=SimpleNamespace(name="actions"),
+        telemetry=SimpleNamespace(name="telemetry"),
+        emit_ui_event=_emit_ui_event,
+        get_coordinator=lambda: SimpleNamespace(name="coordinator"),
+    )
+
+    startup.initialize_engine_state(
+        owner,
+        engine_factory=_Engine,
+        engine_settings_factory=_EngineSettings,
+        token_budget_stop_factory=lambda: stop,
+        logger=logger,
+    )
+
+    assert owner.engine.settings.streaming_default is False
+    assert owner.engine.conversation_manager is owner.conversation_manager
+    assert owner.engine.api_client is owner.api_client
+    assert owner.engine.tool_manager is owner.tool_manager
+    assert owner.engine.action_executor is owner.action_executor
+    assert owner.engine.stop_conditions == [stop]
+    assert owner.engine.model_config is owner.model_config
+    assert owner.engine.coordinator.name == "coordinator"
+    assert owner.engine.telemetry is owner.telemetry
+    assert owner.engine.message_bus_callbacks == [_emit_ui_event]
+    assert logger.debug_calls == []
+    assert logger.warning_calls == []
+
+
+def test_initialize_engine_state_defaults_streaming_when_model_config_unavailable() -> (
+    None
+):
+    class _BrokenModelConfig:
+        @property
+        def streaming_enabled(self) -> bool:
+            raise RuntimeError("missing")
+
+    engine_settings: list[Any] = []
+
+    class _Engine:
+        def __init__(self, settings: Any, *_args: Any, **_kwargs: Any) -> None:
+            engine_settings.append(settings)
+
+        def setup_message_bus(self, *, ui_event_callback: Any) -> None:
+            del ui_event_callback
+
+    startup.initialize_engine_state(
+        SimpleNamespace(
+            model_config=_BrokenModelConfig(),
+            conversation_manager=None,
+            api_client=None,
+            tool_manager=None,
+            action_executor=None,
+            emit_ui_event=lambda *_args, **_kwargs: None,
+            get_coordinator=lambda: None,
+        ),
+        engine_factory=_Engine,
+        engine_settings_factory=lambda **kwargs: kwargs,
+        token_budget_stop_factory=lambda: object(),
+        logger=_FakeLogger(),
+    )
+
+    assert engine_settings == [{"streaming_default": True}]
+
+
+def test_initialize_engine_state_keeps_engine_when_coordination_setup_fails() -> None:
+    logger = _FakeLogger()
+
+    class _Engine:
+        def setup_message_bus(self, *, ui_event_callback: Any) -> None:
+            del ui_event_callback
+
+    def _get_coordinator() -> None:
+        raise RuntimeError("coordinator unavailable")
+
+    owner = SimpleNamespace(
+        model_config=SimpleNamespace(streaming_enabled=True),
+        conversation_manager=None,
+        api_client=None,
+        tool_manager=None,
+        action_executor=None,
+        emit_ui_event=lambda *_args, **_kwargs: None,
+        get_coordinator=_get_coordinator,
+    )
+
+    startup.initialize_engine_state(
+        owner,
+        engine_factory=lambda *_args, **_kwargs: _Engine(),
+        engine_settings_factory=lambda **kwargs: kwargs,
+        token_budget_stop_factory=lambda: object(),
+        logger=logger,
+    )
+
+    assert isinstance(owner.engine, _Engine)
+    assert logger.debug_calls[0][0] == "Coordinator unavailable during engine init: %s"
+    assert isinstance(logger.debug_calls[0][1][0], RuntimeError)
+    assert str(logger.debug_calls[0][1][0]) == "coordinator unavailable"
+    assert logger.warning_calls == []
+
+
+def test_initialize_engine_state_sets_none_when_engine_construction_fails() -> None:
+    logger = _FakeLogger()
+
+    def _engine_factory(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("engine unavailable")
+
+    owner = SimpleNamespace(
+        model_config=SimpleNamespace(streaming_enabled=True),
+        conversation_manager=None,
+        api_client=None,
+        tool_manager=None,
+        action_executor=None,
+    )
+
+    startup.initialize_engine_state(
+        owner,
+        engine_factory=_engine_factory,
+        engine_settings_factory=lambda **kwargs: kwargs,
+        token_budget_stop_factory=lambda: object(),
+        logger=logger,
+    )
+
+    assert owner.engine is None
+    assert logger.warning_calls[0][0] == (
+        "Failed to initialize Engine layer (fallback to legacy core processing): %s"
+    )
+    assert isinstance(logger.warning_calls[0][1][0], RuntimeError)
+    assert str(logger.warning_calls[0][1][0]) == "engine unavailable"
+    assert logger.warning_calls[0][2] == {"exc_info": True}
 
 
 def test_initialize_prompt_and_output_state_prefers_typed_output_config() -> None:

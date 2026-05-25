@@ -14,8 +14,11 @@ ApiClientFactory = Callable[..., Any]
 CheckpointConfigFactory = Callable[..., Any]
 ConfigLoader = Callable[[], Any]
 ConversationManagerFactory = Callable[..., Any]
+EngineFactory = Callable[..., Any]
+EngineSettingsFactory = Callable[..., Any]
 RuntimeConfigFactory = Callable[[dict[str, Any]], Any]
 ModelConfigFactory = Callable[..., Any]
+StopConditionFactory = Callable[[], Any]
 ToolManagerFactory = Callable[..., Any]
 SystemPromptBuilder = Callable[[str], str]
 OutputFormatter = Callable[[str], Any]
@@ -31,6 +34,8 @@ __all__ = [
     "Clock",
     "ConfigLoader",
     "ConversationManagerFactory",
+    "EngineFactory",
+    "EngineSettingsFactory",
     "EnvLoader",
     "ModelConfigFactory",
     "OutputFormatter",
@@ -38,6 +43,7 @@ __all__ = [
     "RuntimeConfigFactory",
     "StartupProgress",
     "StartupTiming",
+    "StopConditionFactory",
     "SystemPromptBuilder",
     "ToolManagerFactory",
     "TqdmFactory",
@@ -48,6 +54,7 @@ __all__ = [
     "configure_startup_logging",
     "ensure_tokenizers_parallelism",
     "initialize_conversation_action_state",
+    "initialize_engine_state",
     "initialize_prompt_and_output_state",
     "initialize_runtime_config",
     "initialize_tui_bridge_state",
@@ -453,6 +460,45 @@ def initialize_conversation_action_state(
     owner.current_runmode_status_summary = "RunMode idle."
 
 
+def initialize_engine_state(
+    owner: Any,
+    *,
+    engine_factory: EngineFactory,
+    engine_settings_factory: EngineSettingsFactory,
+    token_budget_stop_factory: StopConditionFactory,
+    logger: Any,
+) -> None:
+    """Initialize Engine wiring and preserve legacy fallback behavior."""
+
+    try:
+        streaming_pref = _resolve_engine_streaming_default(owner.model_config)
+        engine_settings = engine_settings_factory(streaming_default=streaming_pref)
+        default_stops = [token_budget_stop_factory()]
+        owner.engine = engine_factory(
+            engine_settings,
+            owner.conversation_manager,
+            owner.api_client,
+            owner.tool_manager,
+            owner.action_executor,
+            stop_conditions=default_stops,
+        )
+        try:
+            owner.engine.model_config = owner.model_config
+            owner.engine.coordinator = owner.get_coordinator()
+            owner.engine.telemetry = getattr(owner, "telemetry", None)
+            owner.engine.setup_message_bus(ui_event_callback=owner.emit_ui_event)
+        except Exception as coord_err:  # pragma: no cover
+            logger.debug("Coordinator unavailable during engine init: %s", coord_err)
+    except Exception as error:
+        logger.warning(
+            "Failed to initialize Engine layer "
+            "(fallback to legacy core processing): %s",
+            error,
+            exc_info=True,
+        )
+        owner.engine = None
+
+
 def build_tool_manager(
     config: Any,
     *,
@@ -545,6 +591,13 @@ def _apply_output_style(
         return output_style
     except Exception:
         return "steps_final"
+
+
+def _resolve_engine_streaming_default(model_config: Any) -> bool:
+    try:
+        return bool(model_config.streaming_enabled)
+    except Exception:
+        return True
 
 
 def _load_output_formatter() -> OutputFormatter:
