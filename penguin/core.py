@@ -121,31 +121,21 @@ from rich.console import Console  # type: ignore
 from tqdm import tqdm
 
 # Configuration
-from penguin.config import (
-    DEFAULT_MODEL,
-    DEFAULT_PROVIDER,
-    MAX_TASK_ITERATIONS,
-    Config,
-    _ensure_env_loaded,  # Lazy env loading for startup performance
-)
+from penguin.config import DEFAULT_MODEL, DEFAULT_PROVIDER, Config, _ensure_env_loaded
 from penguin.config import config as raw_config
 from penguin.constants import DEFAULT_MAX_MESSAGES_PER_SESSION
 
 # LLM and API
 from penguin.llm.api_client import APIClient
 from penguin.llm.model_config import ModelConfig, fetch_model_specs
-from .core_runtime import action_execution as core_action_execution
 from .core_runtime import agent_lifecycle_facade as core_agent_lifecycle_facade
 from .core_runtime import checkpoint_facade as core_checkpoint_facade
 from .core_runtime import conversation_facade as core_conversation_facade
-from .core_runtime import conversations as core_conversations
 from .core_runtime import diagnostics_facade as core_diagnostics_facade
-from .core_runtime import message_processing as core_message_processing
 from .core_runtime import model_runtime as core_model_runtime
 from .core_runtime import opencode_facade as core_opencode_facade
-from .core_runtime import process_runtime as core_process_runtime
+from .core_runtime import process_facade as core_process_facade
 from .core_runtime import prompt_facade as core_prompt_facade
-from .core_runtime import response_generation as core_response_generation
 from .core_runtime import runmode_facade as core_runmode_facade
 from .core_runtime import state_facade as core_state_facade
 from .core_runtime import startup as core_startup
@@ -200,14 +190,6 @@ logger = logging.getLogger(__name__)
 console = Console()
 
 
-def _trace_log_info(message: str, *args: Any) -> None:
-    """Mirror core trace logs to uvicorn for live server debugging."""
-    logger.info(message, *args)
-    uvicorn_logger = logging.getLogger("uvicorn.error")
-    if uvicorn_logger is not logger:
-        uvicorn_logger.info(message, *args)
-
-
 # ---------------------------------------------------------------------------
 # PenguinCore
 # ---------------------------------------------------------------------------
@@ -216,6 +198,7 @@ class PenguinCore(
     core_checkpoint_facade.CheckpointCoreFacade,
     core_conversation_facade.ConversationCoreFacade,
     core_diagnostics_facade.DiagnosticsCoreFacade,
+    core_process_facade.ProcessCoreFacade,
     core_prompt_facade.PromptCoreFacade,
     core_runmode_facade.RunModeCoreFacade,
     core_state_facade.StateCoreFacade,
@@ -379,136 +362,6 @@ class PenguinCore(
             link_agent_id=link_agent_id,
             link_workspace_id=link_workspace_id,
             link_api_key=link_api_key,
-        )
-
-    def _check_interrupt(self) -> bool:
-        """Check if execution has been interrupted"""
-        return self._interrupted
-
-    async def process_message(
-        self,
-        message: str,
-        context: Optional[Dict[str, Any]] = None,
-        conversation_id: Optional[str] = None,
-        agent_id: Optional[str] = None,
-        context_files: Optional[List[str]] = None,
-        streaming: bool = False,
-    ) -> str:
-        """
-        Process a message with optional conversation support.
-
-        Args:
-            message: The user message to process
-            context: Optional additional context for processing
-            conversation_id: Optional ID to continue an existing conversation
-            agent_id: Optional agent identifier to scope the request
-            context_files: Optional list of context files to load
-            streaming: Whether to use streaming mode for responses
-        """
-        return await core_message_processing.process_message(
-            self,
-            message=message,
-            context=context,
-            conversation_id=conversation_id,
-            agent_id=agent_id,
-            context_files=context_files,
-            streaming=streaming,
-            resolve_conversation_manager=(
-                core_conversations.resolve_conversation_manager
-            ),
-            log_error=log_error,
-            log=logger,
-        )
-
-    async def get_response(
-        self,
-        current_iteration: Optional[int] = None,
-        max_iterations: Optional[int] = None,
-        stream_callback: Optional[Callable[[str], None]] = None,
-        streaming: Optional[bool] = None,
-    ) -> Tuple[Dict[str, Any], bool]:
-        """
-        Generate a response using the conversation context and execute any actions.
-
-        Args:
-            current_iteration: Current iteration number for multi-step processing
-            max_iterations: Maximum iterations for multi-step processing
-            stream_callback: Optional callback function for handling streaming output chunks.
-            streaming: Whether to use streaming mode for responses
-
-        Returns:
-            Tuple of (response data, exit continuation flag)
-        """
-        return await core_response_generation.get_response(
-            self,
-            current_iteration=current_iteration,
-            max_iterations=max_iterations,
-            stream_callback=stream_callback,
-            streaming=streaming,
-            process_response_actions=core_action_execution.process_response_actions,
-            sleep=asyncio.sleep,
-            log_error=log_error,
-            log=logger,
-        )
-
-    async def execute_action(self, action) -> Dict[str, Any]:
-        """Execute an action and return structured result"""
-        return await core_action_execution.execute_action(self, action)
-
-    async def process(
-        self,
-        input_data: Union[Dict[str, Any], str],
-        context: Optional[Dict[str, Any]] = None,
-        conversation_id: Optional[str] = None,
-        agent_id: Optional[str] = None,
-        max_iterations: int = MAX_TASK_ITERATIONS,  # Use config value (default 5000) #TODO:247 mode and other loops need to be infinite.
-        context_files: Optional[List[str]] = None,
-        streaming: Optional[bool] = None,
-        stream_callback: Optional[Callable[[str], None]] = None,
-        multi_step: bool = True,
-        api_client_override: Optional[APIClient] = None,
-        model_config_override: Optional[ModelConfig] = None,
-    ) -> Dict[str, Any]:
-        """
-        Process a message with Penguin.
-
-        This method serves as the primary interface for external systems
-        (CLI, API, etc.) to interact with Penguin's capabilities. It handles:
-        - Input preprocessing
-        - Conversation loading/management
-        - Delegating to multi-step processing
-        - Error handling and retries
-
-        Args:
-            input_data: Either a dictionary with a 'text' key or a string message directly
-            context: Optional additional context for processing
-            conversation_id: Optional ID for conversation continuity
-            agent_id: Optional agent identifier to scope the request
-            max_iterations: Maximum reasoning-action cycles (default: 5) #TODO:247 mode and other loops need to be infinite.
-            context_files: Optional list of context files to load
-            streaming: Whether to use streaming mode for responses.
-            stream_callback: Optional callback function for handling streaming output chunks.
-            multi_step: If True, use the multi-step `run_task` engine. Defaults to True.
-
-        Returns:
-            Dict containing assistant response and action results
-        """
-        return await core_process_runtime.process_with_retry(
-            self,
-            input_data=input_data,
-            context=context,
-            conversation_id=conversation_id,
-            agent_id=agent_id,
-            max_iterations=max_iterations,
-            context_files=context_files,
-            streaming=streaming,
-            stream_callback=stream_callback,
-            multi_step=multi_step,
-            api_client_override=api_client_override,
-            model_config_override=model_config_override,
-            log=logger,
-            trace_log_info=_trace_log_info,
-            log_error_fn=log_error,
         )
 
     # ------------------------------------------------------------------

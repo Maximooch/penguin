@@ -18,8 +18,10 @@ async def test_core_process_delegates_to_retry_runtime(monkeypatch) -> None:
         calls.append((args, kwargs))
         return {"assistant_response": "done", "action_results": []}
 
+    facade_globals = PenguinCore.process.__globals__
     monkeypatch.setattr(
-        "penguin.core.core_process_runtime.process_with_retry",
+        facade_globals["core_process_runtime"],
+        "process_with_retry",
         _process_with_retry,
     )
 
