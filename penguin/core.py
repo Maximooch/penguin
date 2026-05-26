@@ -111,7 +111,6 @@ from typing import (
     Awaitable,
     Callable,
     Dict,
-    List,
     Optional,
     Tuple,
     Union,
@@ -121,26 +120,18 @@ from rich.console import Console  # type: ignore
 from tqdm import tqdm
 
 # Configuration
-from penguin.config import DEFAULT_MODEL, DEFAULT_PROVIDER, Config, _ensure_env_loaded
-from penguin.config import config as raw_config
+from penguin.config import (
+    DEFAULT_MODEL,
+    DEFAULT_PROVIDER,
+    Config,
+    _ensure_env_loaded,
+    config as raw_config,
+)
 from penguin.constants import DEFAULT_MAX_MESSAGES_PER_SESSION
 
 # LLM and API
 from penguin.llm.api_client import APIClient
-from penguin.llm.model_config import ModelConfig, fetch_model_specs
-from .core_runtime import agent_lifecycle_facade as core_agent_lifecycle_facade
-from .core_runtime import checkpoint_facade as core_checkpoint_facade
-from .core_runtime import conversation_facade as core_conversation_facade
-from .core_runtime import diagnostics_facade as core_diagnostics_facade
-from .core_runtime import model_runtime as core_model_runtime
-from .core_runtime import opencode_facade as core_opencode_facade
-from .core_runtime import process_facade as core_process_facade
-from .core_runtime import prompt_facade as core_prompt_facade
-from .core_runtime import runmode_facade as core_runmode_facade
-from .core_runtime import state_facade as core_state_facade
-from .core_runtime import startup as core_startup
-from .core_runtime import streaming_facade as core_streaming_facade
-from .core_runtime import token_usage_facade as core_token_usage_facade
+from penguin.llm.model_config import ModelConfig
 from penguin.llm.stream_handler import (
     AgentStreamingStateManager,
 )
@@ -166,6 +157,22 @@ from penguin.utils.parser import (
 )
 from penguin.utils.profiling import (
     profile_startup_phase,
+)
+
+from .core_runtime import (
+    agent_lifecycle_facade as core_agent_lifecycle_facade,
+    checkpoint_facade as core_checkpoint_facade,
+    conversation_facade as core_conversation_facade,
+    diagnostics_facade as core_diagnostics_facade,
+    model_facade as core_model_facade,
+    opencode_facade as core_opencode_facade,
+    process_facade as core_process_facade,
+    prompt_facade as core_prompt_facade,
+    runmode_facade as core_runmode_facade,
+    startup as core_startup,
+    state_facade as core_state_facade,
+    streaming_facade as core_streaming_facade,
+    token_usage_facade as core_token_usage_facade,
 )
 
 try:
@@ -198,6 +205,7 @@ class PenguinCore(
     core_checkpoint_facade.CheckpointCoreFacade,
     core_conversation_facade.ConversationCoreFacade,
     core_diagnostics_facade.DiagnosticsCoreFacade,
+    core_model_facade.ModelCoreFacade,
     core_process_facade.ProcessCoreFacade,
     core_prompt_facade.PromptCoreFacade,
     core_runmode_facade.RunModeCoreFacade,
@@ -280,9 +288,8 @@ class PenguinCore(
         runtime_config: Optional["RuntimeConfig"] = None,
     ):
         """Initialize PenguinCore with required components."""
-        from penguin.config import RuntimeConfig
         from penguin.cli.events import EventBus, EventType
-        from penguin.config import WORKSPACE_PATH
+        from penguin.config import WORKSPACE_PATH, RuntimeConfig
         from penguin.engine import Engine, EngineSettings, TokenBudgetStop
         from penguin.system.checkpoint_manager import CheckpointConfig
         from penguin.tui_adapter import PartEventAdapter
@@ -318,172 +325,9 @@ class PenguinCore(
             logger=logger,
         )
 
-    def _ensure_litellm_configured(self):
-        """Configure LiteLLM on first use when the optional extra is installed."""
-        core_model_runtime.ensure_litellm_runtime_state(self, log=logger)
-
     # ------------------------------------------------------------------
     # Coordinator accessor (singleton per Core)
     # ------------------------------------------------------------------
     def get_coordinator(self):
         """Return a singleton MultiAgentCoordinator bound to this Core."""
         return multi_coordinator_runtime.get_core_coordinator(self, log=logger)
-
-    def set_llm_config(
-        self,
-        base_url: Optional[str] = None,
-        link_user_id: Optional[str] = None,
-        link_session_id: Optional[str] = None,
-        link_agent_id: Optional[str] = None,
-        link_workspace_id: Optional[str] = None,
-        link_api_key: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Configure LLM endpoint and Link integration at runtime.
-
-        This method is typically called by Link when starting a Penguin session
-        to route LLM requests through Link's inference proxy for billing.
-
-        Args:
-            base_url: LLM API endpoint (e.g., "http://localhost:3001/api/v1")
-            link_user_id: Link user ID for billing attribution
-            link_session_id: Link session ID for tracking
-            link_agent_id: Link agent ID for multi-agent scenarios
-            link_workspace_id: Link workspace ID for org billing
-            link_api_key: Link API key for production auth
-
-        Returns:
-            Dict with current LLM client status
-        """
-        return core_model_runtime.configure_llm_client(
-            self,
-            base_url=base_url,
-            link_user_id=link_user_id,
-            link_session_id=link_session_id,
-            link_agent_id=link_agent_id,
-            link_workspace_id=link_workspace_id,
-            link_api_key=link_api_key,
-        )
-
-    # ------------------------------------------------------------------
-    # Model management helpers
-    # ------------------------------------------------------------------
-
-    def refresh_api_client(self) -> None:
-        """Recreate the active API client using the current model config."""
-        core_model_runtime.refresh_api_client(
-            self,
-            api_client_factory=APIClient,
-            log=logger,
-        )
-
-    def _apply_new_model_config(
-        self, new_model_config: ModelConfig, context_window_tokens: Optional[int] = None
-    ) -> None:
-        """Swap model configuration and rewire dependent runtime components.
-
-        This keeps the public ``load_model`` method concise and focused on
-        validation / construction of the ``ModelConfig``.  All mutation of
-        run-time state happens here so that we only need to test it in one
-        place.
-
-        Args:
-            new_model_config: The new ModelConfig to apply
-            context_window_tokens: The safe context window size (85% of raw) to apply
-        """
-        core_model_runtime.apply_new_model_config(
-            self,
-            new_model_config,
-            context_window_tokens=context_window_tokens,
-            refresh_active_client=self.refresh_api_client,
-            log=logger,
-        )
-
-    async def _build_model_config_for_model(
-        self, model_id: str
-    ) -> tuple[ModelConfig, Optional[int]]:
-        """Resolve a runtime model id into a concrete ModelConfig without mutating global state."""
-        return await core_model_runtime.build_model_config_for_model(
-            model_id,
-            model_configs=getattr(self.config, "model_configs", None),
-            current_model_config=getattr(self, "model_config", None),
-            fetch_specs=fetch_model_specs,
-            resolve_provider=self._resolve_model_provider,
-        )
-
-    async def resolve_request_runtime(
-        self,
-        model_id: Optional[str] = None,
-    ) -> tuple[ModelConfig, APIClient]:
-        """Build a request-scoped model config and API client without mutating global state."""
-        return await core_model_runtime.resolve_request_runtime(
-            self,
-            model_id,
-            api_client_factory=APIClient,
-        )
-
-    async def load_model(self, model_id: str) -> bool:
-        """Replace the active model at runtime.
-
-        The *model_id* argument can be either:
-        1. A key present in ``config.yml -> model_configs``
-        2. A fully-qualified model string of the form ``<provider>/<model_name>``.
-
-        Returns ``True`` on success, ``False`` otherwise.
-        """
-        return await core_model_runtime.load_model_for_core(
-            self,
-            model_id,
-            log=logger,
-        )
-
-    def _canonicalize_runtime_model_id(
-        self,
-        model_id: str,
-        provider: str,
-        client_preference: str,
-    ) -> str:
-        """Canonicalize model IDs into provider-local form for runtime adapters."""
-        return core_model_runtime.canonicalize_runtime_model_id(
-            model_id,
-            provider,
-            client_preference,
-        )
-
-    def _resolve_model_provider(self, model_id: str) -> tuple[Optional[str], str]:
-        """Resolve provider and client preference for a model ID.
-
-        Returns:
-            Tuple of (provider, client_preference), or (None, "") on error.
-        """
-        return core_model_runtime.resolve_model_provider(
-            model_id,
-            getattr(self.config, "model_configs", None),
-            current_client_preference=(
-                self.model_config.client_preference if self.model_config else None
-            ),
-        )
-
-    def list_available_models(self) -> List[Dict[str, Any]]:
-        """Return a list of model metadata derived from ``config.yml``.
-
-        This helper is intentionally lightweight so it can be called at any
-        time without additional network requests.  Richer model discovery (e.g.
-        OpenRouter catalogue) is handled in *PenguinInterface*.
-        """
-        current_model_name = self.model_config.model if self.model_config else None
-        return core_model_runtime.list_available_models(
-            getattr(self.config, "model_configs", None),
-            current_model_name=current_model_name,
-        )
-
-    def get_current_model(self) -> Optional[Dict[str, Any]]:
-        """
-        Get information about the currently loaded model.
-
-        Returns:
-            Dictionary with current model information, or None if no model is loaded
-        """
-        if not self.model_config:
-            return None
-
-        return core_model_runtime.current_model_payload(self.model_config)

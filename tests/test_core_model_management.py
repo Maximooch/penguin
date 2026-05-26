@@ -156,9 +156,11 @@ def test_litellm_configuration_shim_delegates_to_model_runtime(
     core = PenguinCore.__new__(PenguinCore)
     core.tool_manager = None
     calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    facade_globals = PenguinCore._ensure_litellm_configured.__globals__
 
     monkeypatch.setattr(
-        "penguin.core.core_model_runtime.ensure_litellm_configured",
+        facade_globals["core_model_runtime"],
+        "ensure_litellm_runtime_state",
         lambda *args, **kwargs: calls.append((args, kwargs)),
     )
 
@@ -172,6 +174,7 @@ def test_litellm_configuration_shim_delegates_to_model_runtime(
 @pytest.mark.asyncio
 async def test_resolve_request_runtime_uses_runtime_helper(
     core: PenguinCore,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     core.system_prompt = "system"
     core.resolve_request_runtime = PenguinCore.resolve_request_runtime.__get__(core)
@@ -188,8 +191,10 @@ async def test_resolve_request_runtime_uses_runtime_helper(
         def set_system_prompt(self, prompt: str) -> None:
             self.system_prompt = prompt
 
-    with patch("penguin.core.APIClient", FakeAPIClient):
-        model_config, api_client = await core.resolve_request_runtime("gpt-5")
+    facade_globals = PenguinCore.resolve_request_runtime.__globals__
+    monkeypatch.setitem(facade_globals, "APIClient", FakeAPIClient)
+
+    model_config, api_client = await core.resolve_request_runtime("gpt-5")
 
     assert model_config is requested_config
     assert api_client.model_config is requested_config
@@ -245,7 +250,8 @@ async def test_load_model_openrouter_spec_failure_fails(
     async def _empty_specs(_model_id: str) -> dict[str, Any]:
         return {}
 
-    monkeypatch.setattr("penguin.core.fetch_model_specs", _empty_specs)
+    facade_globals = PenguinCore._build_model_config_for_model.__globals__
+    monkeypatch.setitem(facade_globals, "fetch_model_specs", _empty_specs)
 
     result = await core.load_model("openrouter/openai/gpt-4o")
 
@@ -309,7 +315,8 @@ def test_apply_new_model_config_propagates_to_runtime_components(
         streaming_enabled=True,
     )
 
-    with patch("penguin.core.APIClient", FakeAPIClient):
+    facade_globals = PenguinCore.refresh_api_client.__globals__
+    with patch.dict(facade_globals, {"APIClient": FakeAPIClient}):
         core._apply_new_model_config(new_config, context_window_tokens=108800)
 
     assert core.model_config is new_config
