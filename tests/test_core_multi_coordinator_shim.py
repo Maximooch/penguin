@@ -16,8 +16,10 @@ def test_get_coordinator_delegates_to_multi_runtime(monkeypatch) -> None:
         calls.append((args, kwargs))
         return coordinator
 
+    facade_globals = PenguinCore.get_coordinator.__globals__
     monkeypatch.setattr(
-        "penguin.core.multi_coordinator_runtime.get_core_coordinator",
+        facade_globals["multi_coordinator_runtime"],
+        "get_core_coordinator",
         _get_core_coordinator,
     )
 

@@ -135,7 +135,6 @@ from penguin.llm.model_config import ModelConfig
 from penguin.llm.stream_handler import (
     AgentStreamingStateManager,
 )
-from penguin.multi import coordinator_runtime as multi_coordinator_runtime
 
 # Project manager
 from penguin.project.manager import ProjectManager
@@ -163,6 +162,7 @@ from .core_runtime import (
     agent_lifecycle_facade as core_agent_lifecycle_facade,
     checkpoint_facade as core_checkpoint_facade,
     conversation_facade as core_conversation_facade,
+    coordinator_facade as core_coordinator_facade,
     diagnostics_facade as core_diagnostics_facade,
     model_facade as core_model_facade,
     opencode_facade as core_opencode_facade,
@@ -204,6 +204,7 @@ class PenguinCore(
     core_agent_lifecycle_facade.AgentLifecycleCoreFacade,
     core_checkpoint_facade.CheckpointCoreFacade,
     core_conversation_facade.ConversationCoreFacade,
+    core_coordinator_facade.CoordinatorCoreFacade,
     core_diagnostics_facade.DiagnosticsCoreFacade,
     core_model_facade.ModelCoreFacade,
     core_process_facade.ProcessCoreFacade,
@@ -324,10 +325,3 @@ class PenguinCore(
             token_budget_stop_factory=TokenBudgetStop,
             logger=logger,
         )
-
-    # ------------------------------------------------------------------
-    # Coordinator accessor (singleton per Core)
-    # ------------------------------------------------------------------
-    def get_coordinator(self):
-        """Return a singleton MultiAgentCoordinator bound to this Core."""
-        return multi_coordinator_runtime.get_core_coordinator(self, log=logger)
