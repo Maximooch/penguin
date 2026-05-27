@@ -18,8 +18,6 @@ import type {
   ProviderAuthMethod,
   VcsInfo,
 } from "@opencode-ai/sdk/v2"
-import fs from "fs"
-import path from "path"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { useSDK } from "@tui/context/sdk"
 import { Binary } from "@opencode-ai/util/binary"
@@ -38,6 +36,12 @@ import {
   upsertPenguinMessage,
 } from "./session-hydration"
 import { fetchBootstrapJson } from "./sync-bootstrap"
+import {
+  extractSyncEventDirectory,
+  extractSyncEventSessionID,
+  normalizeSyncDirectory,
+  shouldIgnorePenguinScopedEvent,
+} from "./sync-scope"
 import { expandSessionSearchResults, removeSessionRecord, upsertSessionRecord } from "../util/session-family"
 
 type SessionUsage = {
@@ -180,30 +184,6 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       setStore("session", reconcile(removeSessionRecord(store.session, sessionID)))
     }
 
-    const normalizeDirectory = (value?: string) => {
-      if (!value || typeof value !== "string") return undefined
-      const trimmed = value.trim()
-      if (!trimmed) return undefined
-      const resolved = iife(() => {
-        try {
-          if (fs.realpathSync.native) return fs.realpathSync.native(trimmed)
-        } catch {
-          // no-op
-        }
-        try {
-          return fs.realpathSync(trimmed)
-        } catch {
-          // no-op
-        }
-        try {
-          return path.resolve(trimmed)
-        } catch {
-          return trimmed
-        }
-      })
-      return resolved.replace(/\\/g, "/")
-    }
-
     const resolveDirectory = (sessionID?: string) => {
       if (sessionID) {
         const session = store.session.find((item) => item.id === sessionID)
@@ -214,65 +194,12 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       return process.cwd()
     }
 
-    const appDirectory = () => normalizeDirectory(resolveDirectory())
+    const appDirectory = () => normalizeSyncDirectory(resolveDirectory())
 
     const sessionDirectory = (sessionID?: string) => {
       if (!sessionID) return undefined
       const session = store.session.find((item) => item.id === sessionID)
-      return normalizeDirectory(session?.directory)
-    }
-
-    const eventSessionID = (event: { properties: unknown }) => {
-      const props = event.properties
-      if (!props || typeof props !== "object") return undefined
-      const root = props as Record<string, unknown>
-      const direct = root.sessionID ?? root.session_id ?? root.conversation_id
-      if (typeof direct === "string" && direct) return direct
-      const info = root.info
-      if (info && typeof info === "object") {
-        const infoSession =
-          (info as Record<string, unknown>).sessionID ??
-          (info as Record<string, unknown>).session_id ??
-          (info as Record<string, unknown>).conversation_id
-        if (typeof infoSession === "string" && infoSession) return infoSession
-      }
-      const part = root.part
-      if (part && typeof part === "object") {
-        const partSession =
-          (part as Record<string, unknown>).sessionID ??
-          (part as Record<string, unknown>).session_id ??
-          (part as Record<string, unknown>).conversation_id
-        if (typeof partSession === "string" && partSession) return partSession
-      }
-      return undefined
-    }
-
-    const eventDirectory = (event: { properties: unknown }) => {
-      const props = event.properties
-      if (!props || typeof props !== "object") return undefined
-      const root = props as Record<string, unknown>
-      if (typeof root.directory === "string" && root.directory) return root.directory
-      const info = root.info
-      if (info && typeof info === "object") {
-        const infoRoot = info as Record<string, unknown>
-        if (typeof infoRoot.directory === "string" && infoRoot.directory) return infoRoot.directory
-        const pathRoot = infoRoot.path
-        if (pathRoot && typeof pathRoot === "object") {
-          const cwd = (pathRoot as Record<string, unknown>).cwd
-          if (typeof cwd === "string" && cwd) return cwd
-        }
-      }
-      const pathRoot = root.path
-      if (pathRoot && typeof pathRoot === "object") {
-        const cwd = (pathRoot as Record<string, unknown>).cwd
-        if (typeof cwd === "string" && cwd) return cwd
-      }
-      const part = root.part
-      if (part && typeof part === "object") {
-        const partRoot = part as Record<string, unknown>
-        if (typeof partRoot.directory === "string" && partRoot.directory) return partRoot.directory
-      }
-      return undefined
+      return normalizeSyncDirectory(session?.directory)
     }
 
     const usageRefreshInFlight = new Set<string>()
@@ -338,42 +265,16 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     sdk.event.listen((e) => {
       const event = e.details
       if (sdk.penguin) {
-        const sid = eventSessionID(event)
-        const dir = normalizeDirectory(eventDirectory(event))
-        const baseDir = appDirectory()
         const activeSessionID = route.data.type === "session" ? route.data.sessionID : undefined
-        if (activeSessionID) {
-          if (sid && sid !== activeSessionID) return
-          const activeDir = sessionDirectory(activeSessionID) ?? baseDir
-          if (!sid) {
-            if (dir && activeDir && dir !== activeDir) return
-            if (
-              !dir &&
-              (event.type === "lsp.updated" ||
-                event.type === "lsp.client.diagnostics" ||
-                event.type === "vcs.branch.updated")
-            ) {
-              return
-            }
-          }
-        } else {
-          if (sid) {
-            const sidDir = sessionDirectory(sid)
-            if (sidDir && baseDir && sidDir !== baseDir) return
-            if (!sidDir && dir && baseDir && dir !== baseDir) return
-          }
-          if (!sid) {
-            if (dir && baseDir && dir !== baseDir) return
-            if (
-              !dir &&
-              (event.type === "lsp.updated" ||
-                event.type === "lsp.client.diagnostics" ||
-                event.type === "vcs.branch.updated")
-            ) {
-              return
-            }
-          }
-        }
+        if (
+          shouldIgnorePenguinScopedEvent({
+            activeSessionID,
+            appDirectory: appDirectory(),
+            event,
+            sessionDirectory,
+          })
+        )
+          return
       }
       switch (event.type) {
         case "server.instance.disposed":
@@ -638,9 +539,9 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
 
         case "lsp.updated": {
           if (sdk.penguin) {
-            const sid = eventSessionID(event)
-            const scopedDirectory = eventDirectory(event) ?? resolveDirectory(sid)
-            const normalizedScoped = normalizeDirectory(scopedDirectory)
+            const sid = extractSyncEventSessionID(event)
+            const scopedDirectory = extractSyncEventDirectory(event) ?? resolveDirectory(sid)
+            const normalizedScoped = normalizeSyncDirectory(scopedDirectory)
             const normalizedBase = appDirectory()
             if (!scopedDirectory) break
             if (normalizedScoped && normalizedBase && normalizedScoped !== normalizedBase) break
