@@ -821,13 +821,70 @@ Follow-up correction - 2026-05-25:
 
 ### 5. Shrink sync/bootstrap drift
 
-- [ ] Review `context/sync.tsx` against upstream.
-- [ ] Extract bootstrap response mapping into a dedicated Penguin adapter.
-- [ ] Extract directory/session filtering into a helper.
-- [ ] Revisit usage refresh and session snapshot hydration responsibilities.
+- [x] Review `context/sync.tsx` against upstream.
+- [x] Extract bootstrap response mapping into a dedicated Penguin adapter.
+- [x] Extract directory/session filtering into a helper.
+- [x] Revisit usage refresh and session snapshot hydration responsibilities.
 - [ ] Prefer backend-provided OpenCode-shaped session records over client-side
       response probing.
-- [ ] Keep `sync.tsx` focused on store orchestration.
+- [x] Keep `sync.tsx` focused on store orchestration.
+
+### Phase 5 Sync/Bootstrap Results - 2026-05-27
+
+Scope:
+
+- This phase intentionally kept backend route shapes unchanged. The goal was to
+  move Penguin response probing and directory scoping out of `sync.tsx` without
+  changing runtime behavior.
+- `context/sync.tsx` was reduced from 1,159 lines to 771 lines. It still owns
+  fetch orchestration, store writes, and upstream OpenCode bootstrap flow, but
+  no longer owns the largest Penguin-only mapping and filtering blocks.
+
+Changes made:
+
+- Added `context/sync-scope.ts` for Penguin directory/session event scoping:
+  - directory normalization
+  - session ID extraction from direct, `info`, and `part` event shapes
+  - directory extraction from direct, `info.path.cwd`, `path.cwd`, and `part`
+    event shapes
+  - active-session and project-directory event filtering
+- Expanded `context/sync-bootstrap.ts` into the Penguin bootstrap adapter:
+  - `unwrapBootstrapData`
+  - `parsePenguinUsage`
+  - `mapPenguinBootstrap`
+  - fallback provider/model/provider-list/auth/config/agent/command state
+  - session, usage, and initial idle status mapping
+- Updated `context/sync.tsx` so the Penguin branch now:
+  - asks `sync-scope.ts` whether an event belongs to the current session or
+    directory before applying it
+  - delegates provider/config/session/usage/agent/command bootstrap mapping to
+    `mapPenguinBootstrap`
+  - keeps `refreshSessionUsage` and `syncSessionSnapshot` as local orchestration
+    functions because they still depend on live store state and backend route
+    timing
+- Existing `context/session-hydration.ts` remains the right home for snapshot
+  hydration and optimistic-message reconciliation. No new hydration abstraction
+  was needed in this phase.
+
+Verification:
+
+- `bun test test/cli/tui/sync-scope.test.ts test/cli/tui/sync-bootstrap.test.ts test/cli/tui/sync-hydration.test.ts`
+  passed after the event-scope extraction.
+- `bun test test/cli/tui/sync-bootstrap.test.ts test/cli/tui/sync-scope.test.ts test/cli/tui/sync-hydration.test.ts`
+  passed after the bootstrap-mapping extraction.
+- `bun run typecheck` passed after both extraction commits.
+- `git diff --check` passed before each commit.
+
+Deferred to Phase 6:
+
+- Backend-provided OpenCode-shaped session records are still the correct long
+  term fix. Phase 5 only isolated the current TUI-side mapping so it is easier
+  to delete later.
+- Usage refresh is still a TUI-side follow-up request after idle/completed
+  transitions. Backend status/session events should eventually carry durable
+  usage truth.
+- Session snapshot hydration still compensates for replay and optimistic-message
+  gaps. Backend message/part replay parity should eventually shrink this helper.
 
 ### 6. Push compatibility toward Penguin backend
 
