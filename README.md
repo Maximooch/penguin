@@ -231,7 +231,8 @@ You can also override the release endpoint for staging/testing with `PENGUIN_TUI
 
 Penguin is structured as a runtime for long-lived agent workflows.
 
-- `PenguinCore` coordinates configuration, interfaces, events, and runtime state.
+- `PenguinCore` handles construction, delegation, and compatibility methods.
+- `penguin.core_runtime` owns extracted runtime helpers for processing, model/provider behavior, checkpoints, token usage, action mapping, OpenCode/TUI bridging, diagnostics, and compatibility shims.
 - `Engine` runs the reasoning loop, model calls, and tool orchestration.
 - `ConversationManager` persists sessions, checkpoints, and conversation state.
 - `ContextWindowManager` manages long-session token budgets with category-aware truncation,

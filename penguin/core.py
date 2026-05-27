@@ -1,106 +1,68 @@
 """
-PenguinCore acts as the central nervous system for Penguin, orchestrating interactions between various subsystems.
-
+PenguinCore acts as the central nervous system for Penguin, orchestrating
+interactions between various subsystems.
 
 Architecture:
-    PenguinCore orchestrates interactions between specialized subsystems, delegating
-    functionality rather than implementing it directly. Key delegations:
+    PenguinCore is the low-level public runtime object that assembles configuration,
+    managers, provider clients, Engine, EventBus, TUI/OpenCode bridge state,
+    and compatibility methods used by CLI, web/API, and Python callers.
 
-    - Engine: Multi-step reasoning loops, agent registry, MessageBus integration
-    - ConversationManager: Message history, context, persistence
-    - StreamingStateManager: Streaming state machine, chunk coalescing (penguin/llm/stream_handler.py)
-    - EventBus: UI event delivery (penguin/cli/events.py)
-    - AgentManager: Agent roster queries (penguin/agent/manager.py)
-    - ToolManager: Tool registration and execution
-    - ActionExecutor: Action parsing and routing
-    - RunMode: Autonomous task execution
+    It wires long-lived collaborators and delegates behavior rather than
+    implementing provider logic, conversation lineage, action mapping, token
+    accounting, or orchestration rules directly.
 
-Key Features:
-    - Modular architecture with clear separation of concerns
-    - Streaming-first design with chunk coalescing
-    - Event-driven UI updates via EventBus
-    - Multi-agent support with Engine registry
-    - Checkpoint/snapshot management for conversation state
-    - Flexible model loading and switching
+Imported Systems:
+    - Config and constants:
+        Load runtime configuration, provider defaults, environment variables,
+        workspace paths, and session/message limits.
+    - APIClient and ModelConfig:
+        Provide model/provider communication, streaming, reasoning support,
+        provider-local model IDs, and runtime model configuration.
+    - AgentStreamingStateManager:
+        Tracks streaming state, assistant chunks, reasoning chunks, stream IDs,
+        and per-agent stream isolation.
+    - ProjectManager:
+        Owns SQLite-backed project/task state used by RunMode and web/API
+        orchestration surfaces.
+    - ConversationManager:
+        Owns sessions, messages, checkpoints, context-window trimming, and
+        per-agent conversation state.
+    - ToolManager and ActionExecutor:
+        Register tools, parse model actions, execute tool calls, and return
+        structured action results.
+    - EventBus, MessageBus, and telemetry:
+        Deliver UI/runtime events, route agent messages, and collect runtime
+        diagnostics.
+    - System prompt and startup helpers:
+        Build the active prompt, initialize collaborators, profile startup, and
+        apply fast-startup behavior.
 
-API Specification:
-
-Factory & Initialization:
-    @classmethod async create(model, provider, workspace_path, enable_cli, fast_startup) -> PenguinCore
-        Factory method - preferred way to instantiate PenguinCore
-
-Message Processing:
-    async process_message(message, context, streaming) -> str
-        Single-turn chat - process user message and return response
-
-    async process(input_data, max_iterations, streaming, multi_step) -> Dict
-        Multi-step processing with tool execution and action handling
-
-    async get_response(streaming, stream_callback) -> Tuple[Dict, bool]
-        Generate response using current conversation context
-
-RunMode (Autonomous Execution):
-    async start_run_mode(name, description, context, continuous, time_limit) -> None
-        Start autonomous task execution mode
-
-Agent Management:
-    ensure_agent_conversation(agent_id, system_prompt) -> None
-        Create or get agent conversation (replaces deprecated register_agent)
-
-    get_agent_roster() -> List[Dict]
-        List all agents with metadata (delegates to AgentManager)
-
-    set_active_agent(agent_id) -> None
-        Switch active agent context
-
-Messaging (via Engine):
-    async route_message(recipient_id, content, message_type) -> bool
-    async send_to_agent(agent_id, content) -> bool
-    async send_to_human(content, message_type) -> bool
-    async human_reply(agent_id, content) -> bool
-
-Model Management:
-    async load_model(model_id) -> bool
-        Switch to a different model
-
-    list_available_models() -> List[Dict]
-        Get available models from provider
-
-Conversation Management:
-    list_conversations(limit, offset) -> List[Dict]
-    create_conversation() -> str
-    delete_conversation(conversation_id) -> bool
-
-Checkpoints:
-    async create_checkpoint(name, description) -> Optional[str]
-    async rollback_to_checkpoint(checkpoint_id) -> bool
-    list_checkpoints(session_id, limit) -> List[Dict]
-
-UI Events:
-    async emit_ui_event(event_type, data) -> None
-        Emit event to all EventBus subscribers
-
-Properties:
-    total_tokens_used -> int
-    get_token_usage() -> Dict[str, Dict[str, int]]
+Core Runtime Delegations:
+    - Process methods:
+        Exposes process(), process_message(), get_response(), and direct action
+        execution while delegating to focused runtime helpers.
+    - Model methods:
+        Exposes model switching and current-model payloads backed by
+        core_runtime.model_runtime.
+    - Checkpoint methods:
+        Exposes checkpoint, rollback, branch, cleanup, and checkpoint stats
+        backed by core_runtime.checkpoint_runtime.
+    - Token usage methods:
+        Exposes runtime/session/agent token and context-window telemetry.
+    - Streaming and OpenCode methods:
+        Expose streaming state plus OpenCode/TUI event and transcript bridges.
+    - Agent lifecycle, conversation, runmode, diagnostics, prompt, process,
+      state, and coordinator methods:
+        Preserve historical PenguinCore methods while keeping business logic in
+        the owning runtime, manager, service, or domain module.
 
 Design Principles:
-    - Thin coordinator: Core delegates to specialized modules
-    - Single source of truth: Engine owns agent state, CM owns conversations
-    - Event-driven UI: All UI updates via EventBus.emit()
-    - Streaming-first: StreamingStateManager handles all streaming state
-
-Example:
-    core = await PenguinCore.create(model="gpt-5")
-    response = await core.process_message("Hello!")
-    await core.start_run_mode(name="coding_task")
-
-See Also:
-    - penguin/engine.py: Engine class for multi-step reasoning
-    - penguin/llm/stream_handler.py: StreamingStateManager
-    - penguin/cli/events.py: EventBus for UI events
-    - penguin/agent/manager.py: AgentManager for roster queries
-    - context/architecture/core-refactor-plan.md: Refactoring documentation
+    - Construction and delegation live here; business logic lives elsewhere.
+    - Engine owns reasoning loops, tool execution flow, and task execution.
+    - ConversationManager owns sessions, messages, checkpoints, and context.
+    - Web routes stay thin; web-specific behavior belongs in web services.
+    - Compatibility shims preserve public APIs without restoring deprecated
+      architecture.
 """
 
 import asyncio
@@ -216,16 +178,14 @@ class PenguinCore(
     core_opencode_facade.OpenCodeCoreFacade,
 ):
     """
-    Central coordinator for the Penguin AI assistant.
+    Construction, delegation, and compatibility surface for Penguin.
 
-    Acts as an integration point between:
-    - ConversationManager: Handles messages, context, and conversation state
-    - ToolManager: Provides access to available tools and actions
-    - ActionExecutor: Executes actions from LLM responses
-    - ProjectManager: Manages projects and tasks
-
-    This class focuses on coordination rather than direct implementation,
-    delegating most functionality to specialized components.
+    `PenguinCore` wires long-lived collaborators and exposes the stable public
+    methods that older callers still import from `penguin.core`. The actual
+    behavior behind those methods lives in `penguin.core_runtime`, `Engine`,
+    `RunMode`, `ConversationManager`, `ToolManager`, and web/service modules.
+    New runtime or domain behavior should be implemented in the owning module,
+    not directly on this class.
 
     Attributes:
         conversation_manager (ConversationManager): Manages conversations and context
@@ -247,14 +207,16 @@ class PenguinCore(
         enable_cli: bool = False,
         show_progress: bool = True,  # what is this again?
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
-        fast_startup: bool = True,  # Default True for faster startup (defers memory indexing)
+        # Default True for faster startup by deferring memory indexing.
+        fast_startup: bool = True,
     ) -> Union["PenguinCore", Tuple["PenguinCore", "PenguinCLI"]]:
         """
         Factory method for creating PenguinCore instance.
         Returns either PenguinCore alone or with CLI if enable_cli=True
 
         Args:
-            fast_startup: If True (default), defer heavy operations like memory indexing until first use
+            fast_startup: If True (default), defer heavy operations like memory
+                indexing until first use.
         """
         return await core_startup.create_core_instance(
             cls,

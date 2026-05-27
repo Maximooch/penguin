@@ -1,6 +1,6 @@
 # Engine
 
-The `Engine` is a high-level coordination layer introduced to manage the core reasoning and action loops within Penguin. It acts as the primary orchestrator when available, handling interactions between the `APIClient`, `ToolManager`, `ActionExecutor`, and `ConversationManager`.
+The `Engine` is the coordination layer for Penguin's reasoning and action loops. `PenguinCore` constructs and references it, but the Engine owns the loop-level behavior: model calls, tool/action execution, stop conditions, task execution, streaming callbacks, and MessageBus routing.
 
 ## Purpose
 
@@ -12,7 +12,7 @@ The `Engine` is a high-level coordination layer introduced to manage the core re
 
 ## Initialization
 
-The `Engine` is typically initialized within `PenguinCore.create` and requires several key components:
+The `Engine` is initialized during `PenguinCore` startup and requires several key components:
 
 -   `EngineSettings`: Configuration object defining default behaviors (retries, timeouts, etc.).
 -   `ConversationManager`: For accessing and managing conversation history.
@@ -21,7 +21,7 @@ The `Engine` is typically initialized within `PenguinCore.create` and requires s
 -   `ActionExecutor`: For executing parsed actions.
 -   `stop_conditions` (Optional): A sequence of `StopCondition` objects.
 
-If the `Engine` fails to initialize, `PenguinCore` falls back to its legacy internal processing logic.
+If Engine initialization fails, higher-level execution paths should fail clearly rather than hiding the problem behind a second loop implementation.
 
 ## Key Methods
 
@@ -50,5 +50,5 @@ The `run_task` loop can be controlled by `StopCondition` objects passed during i
 
 ## Integration with Core and RunMode
 
--   **PenguinCore:** When the `Engine` is initialized successfully, `PenguinCore.process` and `PenguinCore.multi_step_process` delegate their core logic to `Engine.run_single_turn` and `Engine.run_task`, respectively.
--   **RunMode:** The `RunMode._execute_task` method also utilizes `Engine.run_task` to perform autonomous task execution when the `Engine` is available, falling back to its internal loop otherwise. 
+-   **PenguinCore:** `PenguinCore.process` is a compatibility entrypoint backed by `penguin.core_runtime.process_runtime`; execution delegates to Engine-backed runtime flows.
+-   **RunMode:** `RunMode._execute_task` delegates autonomous task execution to `Engine.run_task` and returns explicit errors if Engine is unavailable.

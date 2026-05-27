@@ -29,7 +29,7 @@ print(agent.chat("Hello Penguin!"))
 | `penguin.agent.PenguinAgentAsync` | ✅ | Async variant with identical method names (returning coroutines) |
 | `penguin.project.manager.ProjectManager` | ✅ | SQLite-backed project CRUD and basic task helpers |
 | `penguin.web.app.PenguinAPI` | ✅ | Programmatic wrapper aligned with current RunMode/task clarification truth |
-| `penguin.core.PenguinCore` | ✅ | Low-level orchestrator (conversation, tools, run-mode) |
+| `penguin.core.PenguinCore` | ✅ | Low-level runtime object; advanced/compatibility surface |
 | `penguin.tools.ToolManager` | ✅ | Runtime registry & execution of tools |
 
 Anything else you may have seen in earlier drafts (Memory providers, BatchProcessor, PerformanceMonitor, custom plugin framework, etc.) has **not** landed yet.
@@ -142,7 +142,11 @@ Key async methods you can rely on:
 * `process(input_data, *, streaming=False, stream_callback=None)`
 * `start_run_mode(name, description=None, continuous=False, time_limit=None)`
 
-The rest of `PenguinCore` is internal and subject to change.
+`PenguinCore` primarily handles construction, delegation, and compatibility
+methods. Runtime behavior is owned by modules under `penguin.core_runtime`,
+`penguin.engine`,
+`penguin.run_mode`, and related service/domain packages. Prefer higher-level
+client APIs unless you specifically need this compatibility surface.
 
 ---
 
@@ -178,4 +182,4 @@ See the "Python API Roadmap" section in [future considerations](../advanced/futu
 
 ---
 
-*Last updated: June 13th 2025* 
+*Last updated: May 27th 2026*

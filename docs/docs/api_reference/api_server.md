@@ -1,6 +1,6 @@
 # API Server
 
-The Penguin API Server provides a web-based interface for interacting with the Penguin AI agent, enabling both programmatic access and a browser-based user interface.
+The Penguin API Server provides a web-based interface for interacting with Penguin, enabling both programmatic access and a browser-based user interface.
 
 ## Architecture
 
@@ -36,8 +36,8 @@ The API server is built using FastAPI and initializes the core components using 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     app = FastAPI(
-        title="Penguin AI",
-        description="AI Assistant with reasoning, memory, and tool use capabilities",
+        title="Penguin",
+        description="Coding agent with reasoning, memory, and tool use capabilities",
         version=__version__,
         docs_url="/api/docs",
         redoc_url="/api/redoc"
@@ -1585,7 +1585,7 @@ conversation_id = await api.create_conversation(name="Debug Session")
 conversations = await api.list_conversations()
 history = await api.get_conversation_history(conversation_id)
 
-# Execute tasks via Engine
+# Execute tasks via the Engine-backed runtime
 result = await api.run_task(
     task_description="Implement user authentication",
     max_iterations=10,
@@ -1600,45 +1600,38 @@ result = await api.run_task(
 - **Agent Routing**: Direct messages to specific agents via `agent_id`
 - **Reasoning Support**: Capture extended reasoning with `include_reasoning`
 - **Conversation Management**: Create, list, and manage conversation history
-- **Task Execution**: High-level task execution via Engine layer
+- **Task Execution**: High-level task execution via the Engine-backed runtime
 - **Health Monitoring**: Check system health and component status
 
 ## Integration with Core Components
 
-The API server integrates with Penguin's core components using a factory pattern:
+The API server integrates with Penguin's core components through a reusable `PenguinCore` instance. The web app currently builds the Config-derived `APIClient` and `ToolManager`, then constructs `PenguinCore`. Keep this layer focused on wiring; HTTP payload shaping and provider/auth behavior belong in `penguin.web.services.*`.
 
 ```python
 def _create_core() -> PenguinCore:
-    """Create a new PenguinCore instance with proper configuration."""
+    """Create a new PenguinCore instance for the web runtime."""
     config_obj = Config.load_config()
     model_config = config_obj.model_config
-
-    # Initialize components
     api_client = APIClient(model_config=model_config)
-    api_client.set_system_prompt(SYSTEM_PROMPT)
+    tool_manager = ToolManager(config_obj.to_dict(), log_error)
 
-    config_dict = config_obj.to_dict() if hasattr(config_obj, 'to_dict') else {}
-    tool_manager = ToolManager(config_dict, log_error)
-
-    # Create core with proper Config object
     core = PenguinCore(
         config=config_obj,
         api_client=api_client,
         tool_manager=tool_manager,
-        model_config=model_config
+        model_config=model_config,
     )
-
     return core
 ```
 
 This integration ensures:
 
-1. **ModelConfig**: Configures model behavior with provider abstraction
-2. **APIClient**: Handles LLM communication with streaming and reasoning support
-3. **ToolManager**: Executes tools with lazy loading and fast startup
-4. **PenguinCore**: Coordinates multi-agent system with event-driven architecture
-5. **ConversationManager**: Manages per-agent sessions with checkpointing
-6. **Engine**: Provides high-level task orchestration and stop conditions
+1. **ModelConfig/APIClient**: Configure provider behavior with streaming and reasoning support.
+2. **ToolManager**: Executes tools with lazy loading and fast startup.
+3. **PenguinCore**: Exposes compatibility methods used by routes and services.
+4. **ConversationManager**: Manages per-agent sessions with checkpointing.
+5. **Engine**: Owns reasoning, tool execution, MessageBus routing, and task loops.
+6. **Web services**: Keep HTTP payload shaping and provider/auth service behavior out of routes and out of `core.py`.
 
 ## Concurrency Isolation Audit (Recommended)
 

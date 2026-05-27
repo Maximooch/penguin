@@ -314,7 +314,7 @@ print(agent.chat("Hello Penguin!"))
 | `penguin.agent.PenguinAgent` | ✅ | Sync chat/stream/run_task wrapper |
 | `penguin.agent.PenguinAgentAsync` | ✅ | Async counterpart |
 | `penguin.project.manager.ProjectManager` | ✅ | SQLite-backed project + task CRUD |
-| `penguin.core.PenguinCore` | ✅ | Low-level orchestrator |
+| `penguin.core.PenguinCore` | ✅ | Low-level runtime object; advanced/compatibility surface |
 | `penguin.tools.ToolManager` | ✅ | Runtime tool registry |
 
 Everything else you may have seen in earlier drafts (memory providers, batch processors, plugin system, etc.) is **not implemented yet**.
@@ -369,6 +369,12 @@ print(res["assistant_response"])
 ```
 Stable public methods: `process`, `start_run_mode`.
 
+`PenguinCore` primarily handles construction, delegation, and compatibility
+methods. Runtime behavior is owned by modules under `penguin.core_runtime`,
+`penguin.engine`,
+`penguin.run_mode`, and related service/domain packages. Prefer higher-level
+client APIs unless you specifically need this compatibility surface.
+
 ---
 
 ## ToolManager
@@ -393,4 +399,4 @@ See the Python API roadmap in [future considerations](../advanced/future_conside
 
 ---
 
-*Last updated: July 22nd 2025* 
+*Last updated: July 22nd 2025*

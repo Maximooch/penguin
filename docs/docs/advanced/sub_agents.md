@@ -9,7 +9,7 @@ Sub-agents let a primary Penguin agent break large objectives into delegated tas
 ## Delegation Model
 
 1. **Primary agent** receives a user instruction and determines that a supporting workflow is needed.
-2. **Sub-agent spawn** happens via the core orchestration pipeline. Each sub-agent inherits the parent's system prompt, tools, and conversation metadata unless explicitly overridden.
+2. **Sub-agent spawn** happens through the Engine/conversation lifecycle. Each sub-agent inherits the parent's system prompt, tools, and conversation metadata unless explicitly overridden.
 3. **Scoped execution** ensures the sub-agent can only act within its delegated objective. Results are streamed back to the parent for evaluation.
 4. **Merge and respond**: The parent agent inspects the sub-agent's output (and optional partial checkpoints) and incorporates it into the final reply.
 
@@ -77,9 +77,9 @@ async def research_and_write(prompt: str) -> str:
 asyncio.run(research_and_write("Compile highlights from the latest changelog."))
 ```
 
-Under the hood the conversation manager clones the parent's system and context state, optionally clamping context-window budgets so the delegated run cannot exceed agreed limits. Advanced setups can combine this with `PenguinCore.register_agent` to wire dedicated executors once the engine is running.
+Under the hood the conversation manager clones the parent's system and context state, optionally clamping context-window budgets so the delegated run cannot exceed agreed limits. `PenguinCore.register_agent` remains available as an explicit compatibility shim, but new code should prefer conversation-centered helpers and client/CLI agent APIs rather than depending on a core-owned registry.
 
-Need repeatable personas? Define them in `config.yml` under the `agents:` section with system prompts, default tools, and model overrides (including alternate providers such as OpenRouter). Pass `persona="research"` to `PenguinCore.register_agent` or `client.create_sub_agent` to pull those defaults in without re-specifying each field.
+Need repeatable personas? Define them in `config.yml` under the `agents:` section with system prompts, default tools, and model overrides (including alternate providers such as OpenRouter). Pass `persona="research"` through the supported client/CLI creation path, or through the compatibility `register_agent` shim when maintaining older integrations.
 
 The CLI exposes these persona presets via `penguin agent personas`, and you can register or update agents with `penguin agent spawn` / `penguin agent set-persona`. The TUI mirrors the same affordances through `/agent …` commands so multi-agent rosters stay visible while you experiment.
 

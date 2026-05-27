@@ -16,7 +16,7 @@ Penguin can coordinate multiple high-level agents within the same runtime so eac
 
 ### Agent Identity
 
-Every API call accepts an optional `agent_id`. When provided, Penguin binds the request to an agent-scoped conversation, tool inventory, and runtime configuration. Agents that omit `agent_id` fall back to the default/global persona.
+Every API call accepts an optional `agent_id`. When provided, Penguin binds the request to an agent-scoped conversation, tool inventory, and runtime configuration through the Engine/conversation runtime. Agents that omit `agent_id` fall back to the default/global persona.
 
 ### Shared Infrastructure
 

@@ -15,7 +15,7 @@
 
 ## Overview
 
-Penguin is a sophisticated AI coding assistant built on a modular, event-driven architecture that orchestrates multiple subsystems to provide intelligent software engineering capabilities. The system operates as a distributed nervous system where PenguinCore acts as the central coordinator, managing interactions between specialized components while maintaining loose coupling and high cohesion.
+Penguin is a coding agent built on a modular, event-driven architecture for long-running software engineering workflows. `PenguinCore` handles construction, delegation, and compatibility methods; runtime behavior lives in owned modules such as `penguin.core_runtime`, `penguin.engine`, `penguin.run_mode`, `penguin.web.services`, and the relevant domain packages.
 
 ### Design Philosophy
 
@@ -39,10 +39,10 @@ Penguin is a sophisticated AI coding assistant built on a modular, event-driven 
 ┌─────────────────────────────────────────────────────────────────────┐
 │                          PenguinCore                                │
 │  ┌──────────────────────────────────────────────────────────────┐   │
-│  │ • Event Bus & MessageBus                                     │   │
-│  │ • UI Event Emission                                          │   │
-│  │ • Progress Callbacks                                         │   │
-│  │ • Runtime Configuration                                      │   │
+│  │ • Construction & dependency wiring                           │   │
+│  │ • Public compatibility methods                               │   │
+│  │ • EventBus / MessageBus references                           │   │
+│  │ • Runtime configuration references                           │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────┘
                                 │
@@ -104,20 +104,19 @@ The central nervous system that coordinates all subsystems:
 class PenguinCore:
     # Key Responsibilities:
     - Initialize and wire subsystems
-    - Route messages between components
-    - Manage agent lifecycle
-    - Handle UI event emission
-    - Coordinate multi-step processing
-    - Manage runtime configuration
+    - Hold long-lived collaborator references
+    - Expose compatibility methods for CLI, web/API, TUI, and Python callers
+    - Delegate runtime behavior to core_runtime, Engine, RunMode, and services
+    - Manage runtime configuration references
 ```
 
 **Key Features:**
 - Factory pattern creation with `PenguinCore.create()`
 - Progressive initialization with startup profiling
 - Fast startup mode for deferred heavy operations
-- Agent registration and management
-- MessageBus integration for inter-agent communication
-- Telemetry and diagnostics collection
+- Explicit compatibility mixins in `penguin.core_runtime`
+- MessageBus and EventBus integration references
+- Telemetry and diagnostics payloads delegated to runtime helpers
 
 ### 2. Engine (`engine.py`)
 
@@ -855,7 +854,7 @@ Penguin's architecture represents a sophisticated orchestration of specialized s
 - **Performance**: Optimized startup and execution paths
 - **Flexibility**: Multiple interfaces and deployment modes
 
-The system's strength lies not in any single component but in the seamless integration of its parts, creating an AI assistant that can handle complex, multi-step software development tasks while maintaining context, learning from interactions, and adapting to different workflows and requirements.
+The system's strength lies not in any single component but in the integration of its parts, creating a runtime that can handle complex, multi-step software development tasks while maintaining context, learning from interactions, and adapting to different workflows and requirements.
 
 
 ### 3. Prompt System (`prompt/`)
