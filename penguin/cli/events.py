@@ -203,6 +203,8 @@ class EventBus:
         if event_type in [
             EventType.STREAM_CHUNK.value,
             EventType.TOKEN_UPDATE.value,
+            "action",
+            "action_result",
             "opencode_event",
         ]:
             return False

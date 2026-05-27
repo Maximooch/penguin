@@ -621,7 +621,7 @@ export function Prompt(props: PromptProps) {
         keybind: "session_interrupt",
         category: "Session",
         hidden: true,
-        enabled: sdk.penguin ? !!props.sessionID && (store.pending || status().type !== "idle") : status().type !== "idle",
+        enabled: sdk.penguin ? !!props.sessionID && busy() : status().type !== "idle",
         onSelect: (dialog) => {
           if (autocomplete.visible) return
           if (!input.focused && !sdk.penguin) return
@@ -1520,7 +1520,7 @@ export function Prompt(props: PromptProps) {
                   props.sessionID &&
                   (keybind.match("session_interrupt", e) || e.name === "escape")
                 ) {
-                  const active = store.pending || status().type !== "idle"
+                  const active = busy()
                   if (active) {
                     sdk.client.session.abort({
                       sessionID: props.sessionID,
@@ -1536,7 +1536,7 @@ export function Prompt(props: PromptProps) {
                 if (keybind.match("app_exit", e)) {
                   if (store.prompt.input === "") {
                     await exitSession({
-                      busy: store.pending || status().type !== "idle",
+                      busy: busy(),
                       sessionID: props.sessionID,
                       dialog,
                       sdk,

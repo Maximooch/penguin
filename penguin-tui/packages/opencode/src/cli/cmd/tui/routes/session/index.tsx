@@ -27,6 +27,7 @@ import {
   RGBA,
 } from "@opentui/core"
 import { Prompt, type PromptRef } from "@tui/component/prompt"
+import { isPenguinAssistantOpen } from "@tui/component/prompt/penguin-run-state"
 import type { AssistantMessage, Part, ToolPart, UserMessage, TextPart, ReasoningPart } from "@opencode-ai/sdk/v2"
 import { useLocal } from "@tui/context/local"
 import { Locale } from "@/util/locale"
@@ -138,6 +139,17 @@ export function Session() {
   const lastAssistant = createMemo(() => {
     return messages().findLast((x) => x.role === "assistant")
   })
+  const penguinInterruptActive = createMemo(() => {
+    const state = sync.data.session_status?.[route.sessionID]
+    if (state?.type !== "idle" || !!pending()) return true
+
+    const assistant = lastAssistant()
+    if (!assistant) return false
+    return isPenguinAssistantOpen({
+      message: assistant,
+      parts: sync.data.part[assistant.id] ?? [],
+    })
+  })
 
   const dimensions = useTerminalDimensions()
   const [sidebar, setSidebar] = kv.signal<"auto" | "hide">("sidebar", "hide")
@@ -245,9 +257,7 @@ export function Session() {
   useKeyboard((evt) => {
     if (!sdk.penguin) return
     if (!(keybind.match("session_interrupt", evt) || evt.name === "escape")) return
-    const state = sync.data.session_status?.[route.sessionID]
-    const active = state?.type !== "idle" || !!pending()
-    if (!active) return
+    if (!penguinInterruptActive()) return
     sdk.client.session
       .abort({
         sessionID: route.sessionID,

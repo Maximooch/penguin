@@ -530,9 +530,16 @@ class PartEventAdapter:
         self._current_message_id = msg_id
         target_message_id = msg_id or "unknown"
         message = self._active_messages.get(target_message_id)
-        if message and message.finish != "tool-calls":
-            message.finish = "tool-calls"
-            await self._emit("message.updated", self._message_to_dict(message))
+        if message:
+            message_updated = False
+            if message.finish != "tool-calls":
+                message.finish = "tool-calls"
+                message_updated = True
+            if message.time_completed is not None:
+                message.time_completed = None
+                message_updated = True
+            if message_updated:
+                await self._emit("message.updated", self._message_to_dict(message))
 
         part_id = self._next_id("part")
         call_id = tool_call_id or self._next_id("call")
