@@ -50,15 +50,20 @@ export function isPenguinPartActive(part: TimedPart): boolean {
   return false
 }
 
+function isOpenFinish(finish: string | undefined): boolean {
+  return finish === "tool-calls" || finish === "tool_calls" || finish === "unknown"
+}
+
 export function isPenguinAssistantOpen(input: { message?: TimedMessage; parts?: TimedPart[] }): boolean {
   const message = input.message
   if (!message || message.role !== "assistant") return false
-  if (message.time?.completed !== undefined) return false
-
-  const finish = message.finish
-  if (finish && !["tool-calls", "unknown"].includes(finish)) return false
 
   if (input.parts?.some(isPenguinPartActive)) return true
+
+  const finish = message.finish
+  if (finish && !isOpenFinish(finish)) return false
+
+  if (message.time?.completed !== undefined) return false
   return true
 }
 

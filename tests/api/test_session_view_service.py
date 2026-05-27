@@ -17,6 +17,9 @@ from penguin.web.services.session_view import (
     REVERT_KEY,
     SUMMARY_KEY,
     TODO_KEY,
+    TITLE_SOURCE_AUTO,
+    TITLE_SOURCE_KEY,
+    TITLE_SOURCE_MANUAL,
     TRANSCRIPT_KEY,
     USAGE_KEY,
     VARIANT_KEY,
@@ -24,6 +27,7 @@ from penguin.web.services.session_view import (
     get_session_diff,
     get_session_info,
     get_session_messages,
+    get_session_title_source,
     get_session_todo,
     list_session_infos,
     list_session_statuses,
@@ -719,6 +723,47 @@ async def test_summarize_session_title_prefers_model_generation(
     info = get_session_info(core, session.id)
     assert info is not None
     assert info["title"] == "Session summarize parity"
+    assert session.metadata[TITLE_SOURCE_KEY] == TITLE_SOURCE_AUTO
+
+
+@pytest.mark.asyncio
+async def test_summarize_session_title_ignores_low_signal_greeting(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    session = _session("session_greeting", "Session greet", "2026-02-03T00:00:00")
+    session.metadata.pop("title", None)
+    session.messages.append(
+        Message(
+            id="msg_user",
+            role="user",
+            content="howdy",
+            category=MessageCategory.DIALOG,
+            timestamp="2026-02-03T00:00:00",
+        )
+    )
+    core = _core([session])
+
+    class _UnexpectedAPIClient:
+        def __init__(self, model_config):
+            del model_config
+            raise AssertionError("low-signal greeting should not title the session")
+
+    monkeypatch.setattr(
+        "penguin.web.services.session_summary.APIClient", _UnexpectedAPIClient
+    )
+
+    result = await summarize_session_title(
+        core,
+        session.id,
+        fallback_text="howdy",
+    )
+
+    assert result is not None
+    assert result["changed"] is False
+    assert result["source"] == "insufficient_context"
+    assert result["snippet_count"] == 0
+    assert "title" not in session.metadata
+    assert TITLE_SOURCE_KEY not in session.metadata
 
 
 @pytest.mark.asyncio
@@ -1070,6 +1115,7 @@ def test_create_update_remove_session_info_round_trip():
 
     session_id = created["id"]
     assert created["title"] == "Created Session"
+    assert get_session_title_source(core, session_id) == TITLE_SOURCE_MANUAL
     assert created["directory"] == "/tmp/workspace/project"
     assert created["parentID"] == "parent_1"
     assert created["providerID"] == "openrouter"
@@ -1088,6 +1134,7 @@ def test_create_update_remove_session_info_round_trip():
     )
     assert updated is not None
     assert updated["title"] == "Renamed Session"
+    assert get_session_title_source(core, session_id) == TITLE_SOURCE_MANUAL
     assert updated["time"]["archived"] == 123456789
     assert updated["providerID"] == "openrouter"
     assert updated["modelID"] == "qwen/qwen3.5-plus-02-15"

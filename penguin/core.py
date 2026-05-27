@@ -734,6 +734,7 @@ class PenguinCore:
         self._tui_adapters: Dict[str, Any] = {}
         self._opencode_abort_sessions: set[str] = set()
         self._opencode_active_requests: Dict[str, int] = {}
+        self._opencode_status_heartbeats: Dict[str, asyncio.Task[Any]] = {}
         self._opencode_process_tasks: Dict[str, Set[asyncio.Task[Any]]] = {}
 
         # Subscribe to stream events and translate to OpenCode format
@@ -1828,6 +1829,73 @@ class PenguinCore:
             },
         )
 
+    async def _opencode_session_status_heartbeat(
+        self,
+        session_id: str,
+        interval: float = 5.0,
+    ) -> None:
+        """Refresh busy status during long quiet provider/tool phases."""
+        current_task = asyncio.current_task()
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                active_requests = getattr(self, "_opencode_active_requests", None)
+                active_count = (
+                    active_requests.get(session_id, 0)
+                    if isinstance(active_requests, dict)
+                    else 0
+                )
+                if active_count <= 0:
+                    return
+                await self._emit_opencode_session_status(session_id, "busy")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug(
+                "OpenCode session status heartbeat failed for %s",
+                session_id,
+                exc_info=True,
+            )
+        finally:
+            heartbeats = getattr(self, "_opencode_status_heartbeats", None)
+            if (
+                isinstance(heartbeats, dict)
+                and heartbeats.get(session_id) is current_task
+            ):
+                heartbeats.pop(session_id, None)
+
+    def _ensure_opencode_session_status_heartbeat(
+        self,
+        session_id: str,
+        interval: float = 5.0,
+    ) -> None:
+        """Start one busy-status heartbeat for an active session request."""
+        sid = session_id.strip() if isinstance(session_id, str) else ""
+        if not sid:
+            return
+
+        heartbeats = getattr(self, "_opencode_status_heartbeats", None)
+        if not isinstance(heartbeats, dict):
+            heartbeats = {}
+            self._opencode_status_heartbeats = heartbeats
+
+        existing = heartbeats.get(sid)
+        if existing is not None and not existing.done():
+            return
+
+        heartbeats[sid] = asyncio.create_task(
+            self._opencode_session_status_heartbeat(sid, interval=interval)
+        )
+
+    def _cancel_opencode_session_status_heartbeat(self, session_id: str) -> None:
+        """Stop the busy-status heartbeat once a session request is fully idle."""
+        heartbeats = getattr(self, "_opencode_status_heartbeats", None)
+        if not isinstance(heartbeats, dict):
+            return
+        task = heartbeats.pop(session_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+
     async def abort_session(self, session_id: str) -> bool:
         """Abort active streaming/tool state for a session."""
         sid = session_id.strip() if isinstance(session_id, str) else ""
@@ -1902,6 +1970,7 @@ class PenguinCore:
                 await self.emit_ui_event(event.event_type, event_data)
                 aborted = True
 
+        self._cancel_opencode_session_status_heartbeat(sid)
         await self._emit_opencode_session_status(sid, "idle")
         return aborted
 
@@ -2900,6 +2969,7 @@ class PenguinCore:
                 self._opencode_active_requests[request_session_id] = next_count
                 if next_count == 1:
                     await self._emit_opencode_session_status(request_session_id, "busy")
+                    self._ensure_opencode_session_status_heartbeat(request_session_id)
 
         try:
             # Load conversation if ID provided
@@ -3365,6 +3435,7 @@ class PenguinCore:
                 else:
                     self._opencode_active_requests.pop(request_session_id, None)
                     self._opencode_abort_sessions.discard(request_session_id)
+                    self._cancel_opencode_session_status_heartbeat(request_session_id)
                     await self._emit_opencode_session_status(request_session_id, "idle")
 
     def list_conversations(

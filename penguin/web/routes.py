@@ -66,11 +66,14 @@ from penguin.web.services.conversations import (
     list_conversations_payload,
 )
 from penguin.web.services.session_view import (
+    TITLE_SOURCE_AUTO,
+    TITLE_SOURCE_MANUAL,
     create_session_info,
     get_session_diff,
     get_session_info,
     get_session_metadata_title,
     get_session_messages,
+    get_session_title_source,
     get_session_todo,
     list_session_infos,
     list_session_statuses,
@@ -755,6 +758,73 @@ def _preview_text(value: Any, limit: int = 120) -> str:
     return text[:limit] + ("..." if len(text) > limit else "")
 
 
+_AUTO_TITLE_MAX_USER_PROMPTS = 3
+_LOW_CONFIDENCE_LEGACY_TITLES = {
+    "friendly greeting",
+    "greeting session",
+    "hello greeting",
+    "howdy greeting",
+    "howdy greeting session",
+    "initial greeting",
+}
+
+
+def _count_title_user_prompts(core: PenguinCore, session_id: str) -> int:
+    rows = get_session_messages(core, session_id) or []
+    total = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        info = row.get("info")
+        if not isinstance(info, dict) or info.get("role") != "user":
+            continue
+        parts = row.get("parts")
+        if not isinstance(parts, list):
+            continue
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            if part.get("synthetic") is True:
+                continue
+            if str(part.get("type", "")).strip().lower() != "text":
+                continue
+            text = part.get("text")
+            if isinstance(text, str) and text.strip():
+                total += 1
+                break
+    return total
+
+
+def _is_low_confidence_legacy_title(title: str) -> bool:
+    normalized = " ".join(title.strip().lower().split())
+    return normalized in _LOW_CONFIDENCE_LEGACY_TITLES
+
+
+def _auto_title_refresh_block_reason(
+    core: PenguinCore,
+    session_id: str,
+    *,
+    explicit_title: str,
+    title_source: Optional[str],
+) -> Optional[str]:
+    """Return a reason to preserve the current title, or None if auto may run."""
+    if title_source == TITLE_SOURCE_MANUAL:
+        return "manual"
+
+    if title_source not in {"", TITLE_SOURCE_AUTO, None}:
+        return f"unknown_source:{title_source}"
+
+    if title_source in {"", None} and explicit_title:
+        if not _is_low_confidence_legacy_title(explicit_title):
+            return "legacy"
+
+    user_prompts = _count_title_user_prompts(core, session_id)
+    if user_prompts > _AUTO_TITLE_MAX_USER_PROMPTS:
+        return f"max_prompts:{user_prompts}"
+
+    return None
+
+
 async def _refresh_session_title_if_default(
     core: PenguinCore,
     session_id: str,
@@ -776,11 +846,42 @@ async def _refresh_session_title_if_default(
             return
 
         explicit_title = get_session_metadata_title(core, session_id)
+        title_source = get_session_title_source(core, session_id)
         if isinstance(explicit_title, str) and explicit_title:
+            block_reason = _auto_title_refresh_block_reason(
+                core,
+                session_id,
+                explicit_title=explicit_title,
+                title_source=title_source,
+            )
+            if block_reason is None:
+                _title_log_info(
+                    "session.title.auto_refresh session=%s attempt=%s "
+                    "status=retitle_allowed source=%s title=%r",
+                    session_id,
+                    attempt,
+                    title_source or "legacy",
+                    explicit_title,
+                )
+            else:
+                _title_log_info(
+                    "session.title.auto_refresh session=%s attempt=%s "
+                    "status=already_titled reason=%s source=%s title=%r",
+                    session_id,
+                    attempt,
+                    block_reason,
+                    title_source or "legacy",
+                    explicit_title,
+                )
+                return
+
+        if isinstance(title_source, str) and title_source == TITLE_SOURCE_MANUAL:
             _title_log_info(
-                "session.title.auto_refresh session=%s attempt=%s status=already_titled title=%r",
+                "session.title.auto_refresh session=%s attempt=%s "
+                "status=already_titled reason=manual source=%s title=%r",
                 session_id,
                 attempt,
+                title_source,
                 explicit_title,
             )
             return
@@ -5691,6 +5792,7 @@ async def session_update(
         core,
         session_id,
         title=title if isinstance(title, str) else None,
+        title_source=TITLE_SOURCE_MANUAL if isinstance(title, str) else None,
         archived=archived,
         agent_mode=normalized_agent_mode,
         provider_id=provider_id if isinstance(provider_id, str) else None,

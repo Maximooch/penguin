@@ -45,6 +45,7 @@ class Message:
     role: Literal["user", "assistant", "system"]
     time_created: float
     time_completed: Optional[float] = None
+    finish: Optional[str] = None
     model_id: Optional[str] = None
     provider_id: Optional[str] = None
     variant: Optional[str] = None
@@ -395,6 +396,7 @@ class PartEventAdapter:
             )
         else:
             message.time_completed = None
+            message.finish = None
             message.agent_id = agent_id or message.agent_id
             if model_id:
                 message.model_id = model_id
@@ -527,6 +529,11 @@ class PartEventAdapter:
         )
         self._current_message_id = msg_id
         target_message_id = msg_id or "unknown"
+        message = self._active_messages.get(target_message_id)
+        if message and message.finish != "tool-calls":
+            message.finish = "tool-calls"
+            await self._emit("message.updated", self._message_to_dict(message))
+
         part_id = self._next_id("part")
         call_id = tool_call_id or self._next_id("call")
 
@@ -786,7 +793,7 @@ class PartEventAdapter:
             },
         }
         if msg.role == "assistant":
-            return {
+            result = {
                 **base,
                 "parentID": msg.parent_id,
                 "modelID": msg.model_id,
@@ -798,6 +805,9 @@ class PartEventAdapter:
                 "cost": msg.cost,
                 "tokens": msg.tokens,
             }
+            if msg.finish:
+                result["finish"] = msg.finish
+            return result
         if msg.role == "user":
             return {
                 **base,

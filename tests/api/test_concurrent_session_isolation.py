@@ -535,6 +535,209 @@ async def test_rest_chat_skips_auto_title_refresh_for_custom_title(
 
 
 @pytest.mark.asyncio
+async def test_rest_chat_allows_early_auto_title_refresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "chat_repo_auto_title_replace"
+    repo.mkdir()
+    summarize_calls: list[str] = []
+
+    class _EventBus:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, dict[str, Any]]] = []
+
+        async def emit(self, event_type: str, data: dict[str, Any]) -> None:
+            self.events.append((event_type, data))
+
+    class _Core:
+        def __init__(self) -> None:
+            self.runtime_config = SimpleNamespace(
+                workspace_root=str(tmp_path),
+                project_root=str(tmp_path),
+                active_root=str(tmp_path),
+            )
+            self._opencode_session_directories: dict[str, str] = {}
+            self.event_bus = _EventBus()
+
+        async def process(self, **kwargs):  # type: ignore[no-untyped-def]
+            del kwargs
+            return {"assistant_response": "ok", "action_results": []}
+
+    async def _fake_summarize(
+        _core: Any,
+        session_id: str,
+        *,
+        provider_id: str | None = None,
+        model_id: str | None = None,
+        fallback_text: str | None = None,
+    ) -> dict[str, Any]:
+        del provider_id, model_id, fallback_text
+        summarize_calls.append(session_id)
+        return {
+            "changed": True,
+            "title": "Jesus Prayer Overview",
+            "source": "generated",
+            "snippet_count": 1,
+            "info": {"id": session_id, "title": "Jesus Prayer Overview"},
+        }
+
+    def _fake_get_session_info(_core: Any, session_id: str) -> dict[str, Any]:
+        return {"id": session_id, "title": "Greeting Session"}
+
+    def _fake_get_session_metadata_title(_core: Any, _session_id: str) -> str:
+        return "Greeting Session"
+
+    def _fake_get_session_title_source(_core: Any, _session_id: str) -> str:
+        return ""
+
+    def _fake_get_session_messages(
+        _core: Any, session_id: str, *, limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        del session_id, limit
+        return [
+            {
+                "info": {"id": "msg_1", "role": "user"},
+                "parts": [{"type": "text", "text": "howdy"}],
+            },
+            {
+                "info": {"id": "msg_2", "role": "user"},
+                "parts": [{"type": "text", "text": "what is the Jesus prayer?"}],
+            },
+        ]
+
+    monkeypatch.setattr("penguin.web.routes.summarize_session_title", _fake_summarize)
+    monkeypatch.setattr("penguin.web.routes.get_session_info", _fake_get_session_info)
+    monkeypatch.setattr(
+        "penguin.web.routes.get_session_metadata_title",
+        _fake_get_session_metadata_title,
+    )
+    monkeypatch.setattr(
+        "penguin.web.routes.get_session_title_source",
+        _fake_get_session_title_source,
+    )
+    monkeypatch.setattr(
+        "penguin.web.routes.get_session_messages",
+        _fake_get_session_messages,
+    )
+
+    core = _Core()
+    request = MessageRequest(
+        text="what is the Jesus prayer?",
+        session_id="session_auto_title_replace",
+        conversation_id="session_auto_title_replace",
+        directory=str(repo),
+        streaming=False,
+    )
+
+    response = await handle_chat_message(request, core=cast(Any, core))
+    assert response["response"] == "ok"
+
+    for _ in range(20):
+        tasks = getattr(core, "_opencode_title_tasks", {})
+        if not tasks:
+            break
+        await asyncio.sleep(0.01)
+
+    assert summarize_calls == ["session_auto_title_replace"]
+    assert core.event_bus.events
+
+
+@pytest.mark.asyncio
+async def test_rest_chat_freezes_mature_auto_title(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "chat_repo_auto_title_frozen"
+    repo.mkdir()
+    summarize_calls: list[str] = []
+
+    class _Core:
+        def __init__(self) -> None:
+            self.runtime_config = SimpleNamespace(
+                workspace_root=str(tmp_path),
+                project_root=str(tmp_path),
+                active_root=str(tmp_path),
+            )
+            self._opencode_session_directories: dict[str, str] = {}
+
+        async def process(self, **kwargs):  # type: ignore[no-untyped-def]
+            del kwargs
+            return {"assistant_response": "ok", "action_results": []}
+
+    async def _fake_summarize(
+        _core: Any,
+        session_id: str,
+        *,
+        provider_id: str | None = None,
+        model_id: str | None = None,
+        fallback_text: str | None = None,
+    ) -> dict[str, Any]:
+        del provider_id, model_id, fallback_text
+        summarize_calls.append(session_id)
+        return {
+            "changed": True,
+            "title": "Should not run",
+            "source": "generated",
+            "info": {"id": session_id, "title": "Should not run"},
+        }
+
+    def _fake_get_session_info(_core: Any, session_id: str) -> dict[str, Any]:
+        return {"id": session_id, "title": "Existing Auto Title"}
+
+    def _fake_get_session_metadata_title(_core: Any, _session_id: str) -> str:
+        return "Existing Auto Title"
+
+    def _fake_get_session_title_source(_core: Any, _session_id: str) -> str:
+        return "auto"
+
+    def _fake_get_session_messages(
+        _core: Any, session_id: str, *, limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        del session_id, limit
+        return [
+            {
+                "info": {"id": f"msg_{idx}", "role": "user"},
+                "parts": [{"type": "text", "text": f"substantive prompt {idx}"}],
+            }
+            for idx in range(4)
+        ]
+
+    monkeypatch.setattr("penguin.web.routes.summarize_session_title", _fake_summarize)
+    monkeypatch.setattr("penguin.web.routes.get_session_info", _fake_get_session_info)
+    monkeypatch.setattr(
+        "penguin.web.routes.get_session_metadata_title",
+        _fake_get_session_metadata_title,
+    )
+    monkeypatch.setattr(
+        "penguin.web.routes.get_session_title_source",
+        _fake_get_session_title_source,
+    )
+    monkeypatch.setattr(
+        "penguin.web.routes.get_session_messages",
+        _fake_get_session_messages,
+    )
+
+    core = _Core()
+    request = MessageRequest(
+        text="fourth prompt",
+        session_id="session_auto_title_frozen",
+        conversation_id="session_auto_title_frozen",
+        directory=str(repo),
+        streaming=False,
+    )
+
+    response = await handle_chat_message(request, core=cast(Any, core))
+    assert response["response"] == "ok"
+
+    for _ in range(10):
+        tasks = getattr(core, "_opencode_title_tasks", {})
+        if not tasks:
+            break
+        await asyncio.sleep(0.01)
+
+    assert summarize_calls == []
+
+
+@pytest.mark.asyncio
 async def test_rest_chat_auto_title_refresh_retries_until_snippets_exist(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

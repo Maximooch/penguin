@@ -176,6 +176,14 @@ async def test_tool_events_attach_to_completed_stream_message_when_available():
     assert tool_parts
     assert tool_parts[0]["messageID"] == message_id
 
+    assistant_updates = [
+        item
+        for item in _opencode_events(bus, "message.updated")
+        if item.get("role") == "assistant" and item.get("id") == message_id
+    ]
+    assert assistant_updates
+    assert any(item.get("finish") == "tool-calls" for item in assistant_updates)
+
 
 @pytest.mark.asyncio
 async def test_tool_only_turn_followed_by_stream_reuses_same_message() -> None:
@@ -218,6 +226,7 @@ async def test_tool_only_turn_followed_by_stream_reuses_same_message() -> None:
     assert assistant_updates[-1]["modelID"] == "gpt-5.4"
     assert assistant_updates[-1]["providerID"] == "openai"
     assert assistant_updates[-1]["variant"] == "high"
+    assert "finish" not in assistant_updates[-1]
 
     text_parts = [
         item.get("part", {})

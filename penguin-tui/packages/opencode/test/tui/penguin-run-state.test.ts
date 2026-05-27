@@ -124,4 +124,26 @@ describe("Penguin run state", () => {
       }),
     ).toBe(false)
   })
+
+  test("keeps a completed assistant message active while a tool part is running", () => {
+    expect(
+      isPenguinAssistantOpen({
+        message: {
+          role: "assistant",
+          time: { completed: 15_000, created: 10_000 },
+        },
+        parts: [{ type: "tool", state: { status: "running" } }],
+      }),
+    ).toBe(true)
+
+    expect(
+      isPenguinAssistantOpen({
+        message: {
+          finish: "tool_calls",
+          role: "assistant",
+          time: { created: 10_000 },
+        },
+      }),
+    ).toBe(true)
+  })
 })

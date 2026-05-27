@@ -15,10 +15,15 @@ function validTime(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value)
 }
 
+function isOpenFinish(finish: string | undefined): boolean {
+  return finish === "tool-calls" || finish === "tool_calls" || finish === "unknown"
+}
+
 export function isAssistantSettled(message: DurationMessage): boolean {
   if (message.role !== "assistant") return false
-  if (validTime(message.time?.completed)) return true
-  return !!message.finish && !["tool-calls", "unknown"].includes(message.finish)
+  if (isOpenFinish(message.finish)) return false
+  if (message.finish) return true
+  return validTime(message.time?.completed)
 }
 
 function userStartedAt(message: DurationMessage | undefined): number | undefined {
@@ -29,6 +34,7 @@ function userStartedAt(message: DurationMessage | undefined): number | undefined
 
 export function assistantDurationMs(message: DurationMessage, messages: DurationMessage[]): number {
   if (message.role !== "assistant") return 0
+  if (isOpenFinish(message.finish)) return 0
 
   const completed = message.time?.completed
   if (!validTime(completed)) return 0
