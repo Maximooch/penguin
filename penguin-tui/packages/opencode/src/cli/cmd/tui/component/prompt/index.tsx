@@ -34,6 +34,7 @@ import { useKV } from "../../context/kv"
 import { useTextareaKeybindings } from "../textarea-keybindings"
 import { exitSession } from "../../util/exit"
 import { DEFAULT_PENGUIN_STALE_MS, derivePenguinRunState } from "./penguin-run-state"
+import { applyPenguinFastCommand } from "./penguin-fast-command"
 import {
   createPenguinSession,
   emitPenguinOptimisticPrompt,
@@ -974,27 +975,15 @@ export function Prompt(props: PromptProps) {
       })
     }
     const handleFastCommand = () => {
-      const [command, argument = ""] = trimmed.split(/\s+/, 2)
-      if (command !== "/fast") return false
-
-      const value = argument.toLowerCase()
-      if (!value) {
-        local.model.fast.toggle()
-      } else if (value === "on") {
-        local.model.fast.set(true)
-      } else if (value === "off") {
-        local.model.fast.set(false)
-      } else if (value !== "status") {
-        toast.show({
-          variant: "warning",
-          message: "Usage: /fast [on|off|status]",
-        })
-        return true
-      }
+      const result = applyPenguinFastCommand({
+        fast: local.model.fast,
+        text: trimmed,
+      })
+      if (!result.matched) return false
 
       toast.show({
-        variant: "info",
-        message: local.model.fast.enabled() ? "Fast mode on" : "Fast mode off",
+        variant: result.variant,
+        message: result.message,
       })
       clearPromptState()
       props.onSubmit?.()

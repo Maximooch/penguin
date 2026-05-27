@@ -550,8 +550,8 @@ Follow-up suggestion:
 - [x] Extract Penguin session creation and send flow into a helper/service.
 - [x] Decide whether optimistic user-message emission should remain in the TUI.
 - [x] If optimistic emission remains, isolate it behind one helper with tests.
-- [ ] Keep `/fast`, project/task commands, settings, and local commands out of
-      the main prompt submission path where possible.
+- [x] Preserve Penguin `/fast` mode as a first-class command, while keeping its
+      parsing/toggle/status handling out of the main prompt submission path.
 - [x] Make failure recovery explicit and testable.
 
 ### Phase 4 Prompt-Layer Results - 2026-05-24
@@ -563,9 +563,9 @@ Scope:
 - Optimistic user-message emission remains in the TUI for now because Penguin's
   backend does not yet provide an immediate OpenCode-shaped user-message echo,
   durable replay, and status transition that fully replace it.
-- `/fast`, project/task commands, settings, and local command dispatch remain in
-  `component/prompt/index.tsx` as a follow-up. They are already partially
-  separated through `penguin-local-command.ts` and
+- Project/task commands, settings, and local command dispatch remain in
+  `component/prompt/index.tsx` as a later command-surface follow-up. They are
+  already partially separated through `penguin-local-command.ts` and
   `penguin-local-command-runtime.ts`, but the prompt still owns command
   registration/dispatch decisions.
 
@@ -660,15 +660,28 @@ Risks and follow-ups:
   those IDs, replaces them deterministically, or echoes a canonical mapping.
 - `sendPenguinPrompt` still posts to `/api/v1/chat/message`. That is now
   isolated, but it remains the central route to delete after compatibility work.
-- Move `/fast` and project/task/settings command registration behind one Penguin
-  command catalog or upstream plugin/command-palette style before a broad
-  OpenCode rebase.
+- Move project/task/settings command registration behind one Penguin command
+  catalog or upstream plugin/command-palette style before a broad OpenCode
+  rebase.
 - Phase 4.5 should address runtime-confidence UX before the larger
   sync/bootstrap extraction: spinner reliability, elapsed wall-clock timing, and
   stale/reconnecting state.
 - Phase 5 should then focus on `context/sync.tsx` bootstrap/hydration mapping.
   Phase 6 should prioritize backend route parity for sessions, messages, status,
   event replay, provider/model metadata, and attachments.
+
+Follow-up correction - 2026-05-27:
+
+- Clarified that `/fast` is a Penguin feature to preserve, not generic prompt
+  cleanup debt.
+- Added `component/prompt/penguin-fast-command.ts` so `/fast [on|off|status]`
+  parsing and status formatting live outside the main submit body while
+  retaining the command palette toggle, footer indicator, and `service_tier`
+  propagation through `penguin-send.ts`.
+- Added `test/tui/penguin-fast-command.test.ts` for no-match, toggle,
+  explicit on/off, status, invalid argument, and visible status formatting.
+- Phase 4 is now considered complete. Remaining command-surface cleanup should
+  happen under the later command/plugin/keymap track, not block Phase 5.
 
 ### 4.5. Runtime confidence UX
 
@@ -860,6 +873,48 @@ Follow-up correction - 2026-05-25:
       belongs in Penguin TUI, Link Agentboard, or both.
 - [ ] Document any Penguin TUI behavior that Link should copy before refactoring
       it away.
+
+### 9. Import direct upstream TUI feature wins
+
+- [ ] Import or adapt upstream's diff viewer UI and file-tree affordances.
+- [ ] Import or adapt full-session fork and session review affordances, mapped
+      to Penguin conversation/task semantics.
+- [ ] Bring over session picker sorting, sidebar session ID display, and
+      local-project default behavior where it fits Penguin.
+- [ ] Review upstream prompt duplicate-submit prevention and prompt history
+      behavior against Penguin's current prompt flow.
+- [ ] Bring over permission/question UI polish where Penguin route shapes
+      already align.
+- [ ] Add retry dialogs that show provider and failure reason once backend error
+      shapes are reliable enough.
+- [ ] Bring over malformed tool-input crash handling and other low-risk runtime
+      rendering hardening.
+
+### 10. Move backend-first upstream contracts into Penguin
+
+- [ ] Support or translate incremental `message.part.delta` events before
+      relying on TUI-side smoothing.
+- [ ] Move toward OpenCode-compatible v2 session API shapes and structured
+      public errors where they reduce TUI drift.
+- [ ] Recreate upstream's stronger event replay/projector behavior in Penguin's
+      backend or adapter layer.
+- [ ] Make busy/idle status truth durable enough that the TUI can stop
+      inferring active runs from local state.
+- [ ] Provide backend-owned provider/model/reasoning capability metadata.
+- [ ] Align permission/question IDs, validation, and route responses with the
+      upstream-compatible surface where feasible.
+- [ ] Ensure message/part persistence and replay can reconstruct active and
+      completed tool/reasoning/assistant state after reload or reconnect.
+
+### 11. Evaluate OpenTUI, keymap, and plugin-runtime upgrades
+
+- [ ] Evaluate the OpenTUI dependency jump from Penguin's embedded `0.1.75`
+      baseline toward upstream's `0.2.15` track separately from protocol work.
+- [ ] Review upstream flat keybind config and `@opentui/keymap` extraction.
+- [ ] Decide whether Penguin's local command/settings/skills surfaces should map
+      to upstream command palette, keymap, or plugin-runtime concepts.
+- [ ] Keep plugin/runtime adoption out of the first upstreaming pass unless a
+      specific direct feature depends on it.
 
 ## Open Questions
 
