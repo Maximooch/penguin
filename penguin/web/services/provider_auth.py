@@ -240,7 +240,7 @@ def _parse_browser_callback_code(raw_code: str) -> tuple[str, str | None]:
     if not value:
         return "", None
 
-    if "://" in value:
+    if "://" in value or value.startswith("/"):
         parsed = urlparse(value)
         query = parse_qs(parsed.query)
         code = ""
