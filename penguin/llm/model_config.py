@@ -715,9 +715,14 @@ class ModelSpecsService:
 
         raw_context_length = model.get("context_length")
         try:
-            context_length = int(raw_context_length) if raw_context_length else None
+            context_length = int(raw_context_length)
         except (TypeError, ValueError):
-            context_length = None
+            logger.debug(
+                "Skipping OpenRouter model %s with invalid context_length=%r",
+                model_id,
+                raw_context_length,
+            )
+            return None
         max_output = model.get("top_provider", {}).get("max_completion_tokens")
         if not max_output:
             max_output = model.get("max_output_tokens")
