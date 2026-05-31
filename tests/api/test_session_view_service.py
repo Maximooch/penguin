@@ -727,6 +727,45 @@ async def test_summarize_session_title_prefers_model_generation(
 
 
 @pytest.mark.asyncio
+async def test_summarize_session_title_preserves_manual_title(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    session = _session("session_manual_title", "Manual Title", "2026-02-03T00:00:00")
+    session.metadata[TITLE_SOURCE_KEY] = TITLE_SOURCE_MANUAL
+    session.messages.append(
+        Message(
+            id="msg_user",
+            role="user",
+            content="Implement OpenCode session summarize endpoint parity",
+            category=MessageCategory.DIALOG,
+            timestamp="2026-02-03T00:00:00",
+        )
+    )
+    core = _core([session])
+
+    class _FakeAPIClient:
+        def __init__(self, model_config):
+            self.model_config = model_config
+
+        async def get_response(self, messages, **kwargs):
+            del messages, kwargs
+            return "Generated Title"
+
+    monkeypatch.setattr(
+        "penguin.web.services.session_summary.APIClient", _FakeAPIClient
+    )
+
+    result = await summarize_session_title(core, session.id)
+
+    assert result is not None
+    assert result["changed"] is False
+    assert result["source"] == "manual"
+    assert result["title"] == "Manual Title"
+    assert session.metadata["title"] == "Manual Title"
+    assert session.metadata[TITLE_SOURCE_KEY] == TITLE_SOURCE_MANUAL
+
+
+@pytest.mark.asyncio
 async def test_summarize_session_title_ignores_low_signal_greeting(
     monkeypatch: pytest.MonkeyPatch,
 ):

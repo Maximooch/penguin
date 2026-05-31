@@ -886,6 +886,25 @@ Deferred to Phase 6:
 - Session snapshot hydration still compensates for replay and optimistic-message
   gaps. Backend message/part replay parity should eventually shrink this helper.
 
+Follow-up investigation - 2026-05-30:
+
+- A session-loading/config quirk can surface as an empty session with
+  `Model openai/GPT-5.5 is not valid` while the footer still shows the valid
+  lower-case `gpt-5.5` model. The observed cases were metadata-light sessions
+  such as `session_20260530_183131_df9d5e0e` and `recovery_20260530_183141`.
+- The likely cause is backend session listing treating runtime/cwd directory
+  fallback as authoritative before applying an explicit `directory` filter, so
+  legacy/recovery sessions with no stored directory can leak into the current
+  worktree session list.
+- Those sessions also lack model metadata, so session info falls back to global
+  config. A config value like `model.default: GPT-5.5` then reaches the TUI as
+  `openai/GPT-5.5`; the TUI validates model IDs by exact provider-catalog key,
+  where the valid OpenAI entry is lower-case `gpt-5.5`.
+- Short-term config workaround: keep OpenAI model defaults lower-case
+  (`gpt-5.5`). Proper Phase 6 fix: filter unknown-directory sessions out of
+  explicit directory-scoped lists and canonicalize provider/model IDs at the
+  backend compatibility boundary.
+
 ### 6. Push compatibility toward Penguin backend
 
 - [ ] Identify client workarounds that exist because Penguin endpoints are not
@@ -900,6 +919,8 @@ Deferred to Phase 6:
   - message/part event persistence and replay
   - busy/idle status truth
   - provider/model metadata
+  - unknown-directory legacy/recovery session filtering
+  - provider/model ID canonicalization before TUI validation
   - permission/question flows
   - path/vcs/lsp/formatter route shapes
 - [ ] Keep Penguin-only product features behind explicit Penguin endpoints.

@@ -10,9 +10,11 @@ from penguin.llm.api_client import APIClient
 from penguin.llm.model_config import ModelConfig
 from penguin.web.services.session_view import (
     TITLE_SOURCE_AUTO,
+    TITLE_SOURCE_MANUAL,
     get_session_info,
     get_session_metadata_title,
     get_session_messages,
+    get_session_title_source,
     update_session_info,
 )
 
@@ -345,7 +347,11 @@ async def summarize_session_title(
     changed = bool(title and title != current_title)
 
     info = existing
-    if changed:
+    if changed and get_session_title_source(core, session_id) == TITLE_SOURCE_MANUAL:
+        changed = False
+        source = "manual"
+        title = current_title
+    elif changed:
         updated = update_session_info(
             core,
             session_id,

@@ -1,6 +1,6 @@
 export type PenguinStreamEvent = {
   type: string
-  properties: any
+  properties: Record<string, unknown>
 }
 
 export type PenguinEventStreamOptions<T extends PenguinStreamEvent = PenguinStreamEvent> = {
@@ -19,14 +19,18 @@ export function cleanPenguinEvent<T extends PenguinStreamEvent>(event: T): T {
   if (event.type !== "message.part.updated") return event
 
   const part = event.properties.part
-  if (part && part.type === "text" && typeof part.text === "string") {
-    const text = cleanPenguinText(part.text)
-    if (text !== part.text) part.text = text
+  if (part && typeof part === "object") {
+    const textPart = part as { text?: unknown; type?: unknown }
+    if (textPart.type === "text" && typeof textPart.text === "string") {
+      const text = cleanPenguinText(textPart.text)
+      if (text !== textPart.text) textPart.text = text
+    }
   }
 
-  if (typeof event.properties.delta === "string") {
-    const delta = cleanPenguinText(event.properties.delta)
-    if (delta !== event.properties.delta) event.properties.delta = delta
+  const delta = event.properties.delta
+  if (typeof delta === "string") {
+    const cleanDelta = cleanPenguinText(delta)
+    if (cleanDelta !== delta) event.properties.delta = cleanDelta
   }
 
   return event

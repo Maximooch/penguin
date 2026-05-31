@@ -1847,7 +1847,16 @@ class PenguinCore:
                 )
                 if active_count <= 0:
                     return
-                await self._emit_opencode_session_status(session_id, "busy")
+                try:
+                    await self._emit_opencode_session_status(session_id, "busy")
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.debug(
+                        "OpenCode session status heartbeat emit failed for %s",
+                        session_id,
+                        exc_info=True,
+                    )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -2079,7 +2088,7 @@ class PenguinCore:
     ) -> Optional[Dict[str, Any]]:
         """Return usage for one persisted session without global fallback."""
 
-        session, _manager = self._find_session_store(session_id)
+        session, manager = self._find_session_store(session_id)
         if session is None:
             return None
 
@@ -2106,6 +2115,7 @@ class PenguinCore:
             if agent_id in message_agent_ids:
                 usage = self._usage_from_session_messages(
                     session,
+                    manager=manager,
                     agent_id=agent_id,
                 )
             elif metadata_agent_id == agent_id and not message_agent_ids:
@@ -2113,7 +2123,7 @@ class PenguinCore:
                 if isinstance(usage_snapshot, dict):
                     usage = dict(usage_snapshot)
                 else:
-                    usage = self._usage_from_session_messages(session)
+                    usage = self._usage_from_session_messages(session, manager=manager)
             else:
                 return {
                     "scope": "missing",
@@ -2127,7 +2137,7 @@ class PenguinCore:
             if isinstance(usage_snapshot, dict):
                 usage = dict(usage_snapshot)
             else:
-                usage = self._usage_from_session_messages(session)
+                usage = self._usage_from_session_messages(session, manager=manager)
 
         usage["scope"] = "session"
         usage["session_id"] = session_id
@@ -2143,6 +2153,7 @@ class PenguinCore:
         self,
         session: Any,
         *,
+        manager: Optional[Any] = None,
         agent_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Build a conservative session-scoped usage payload from messages."""
@@ -2170,7 +2181,11 @@ class PenguinCore:
                 category_name = "UNKNOWN"
             categories[category_name] = categories.get(category_name, 0) + token_count
 
-        context_window = getattr(self.conversation_manager, "context_window", None)
+        session_conversation_manager = getattr(session, "conversation_manager", None)
+        context_source = (
+            session_conversation_manager or manager or self.conversation_manager
+        )
+        context_window = getattr(context_source, "context_window", None)
         max_tokens = int(getattr(context_window, "max_context_window_tokens", 0) or 0)
         available_tokens = (
             max(max_tokens - current_total_tokens, 0) if max_tokens else 0
@@ -2926,15 +2941,15 @@ class PenguinCore:
                     f"Failed to activate agent '{agent_id}' on ConversationManager: {agent_err}"
                 )
 
+        scoped_conversation = getattr(conversation_manager, "conversation", None)
+        scoped_session_before = getattr(
+            getattr(scoped_conversation, "session", None), "id", None
+        )
         execution_context = get_current_execution_context()
         request_session_id = (
             execution_context.session_id
             if execution_context and execution_context.session_id
-            else conversation_id
-        )
-        scoped_conversation = getattr(conversation_manager, "conversation", None)
-        scoped_session_before = getattr(
-            getattr(scoped_conversation, "session", None), "id", None
+            else conversation_id or scoped_session_before
         )
         _trace_log_info(
             "core.process.trace.start request=%s session=%s conversation=%s agent=%s cm=%s conv=%s conv_session=%s msg_len=%s context_files=%s images=%s streaming=%s multi_step=%s",

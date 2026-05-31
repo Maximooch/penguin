@@ -1,4 +1,4 @@
-type PenguinFastMode = {
+export type PenguinFastMode = {
   enabled(): boolean
   set(value: boolean | undefined): void
   toggle(): void

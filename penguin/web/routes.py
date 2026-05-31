@@ -5557,10 +5557,16 @@ async def get_session_token_usage(
 ) -> Dict[str, Any]:
     """Get token usage statistics for a specific session."""
 
+    if conversation_id is not None and conversation_id != session_id:
+        raise HTTPException(
+            status_code=400,
+            detail="conversation_id must match session_id for session token usage",
+        )
+
     return get_token_usage_payload(
         core,
         session_id=session_id,
-        conversation_id=conversation_id or session_id,
+        conversation_id=session_id,
         agent_id=agent_id,
     )
 
@@ -5788,11 +5794,21 @@ async def session_update(
         else:
             raise HTTPException(status_code=400, detail="time.archived must be an int")
 
+    title_update = None
+    title_source_update = None
+    if isinstance(title, str) and title.strip():
+        stripped_title = title.strip()
+        existing = get_session_info(core, session_id)
+        existing_title = existing.get("title") if isinstance(existing, dict) else None
+        if stripped_title != existing_title:
+            title_update = stripped_title
+            title_source_update = TITLE_SOURCE_MANUAL
+
     updated = update_session_info(
         core,
         session_id,
-        title=title if isinstance(title, str) else None,
-        title_source=TITLE_SOURCE_MANUAL if isinstance(title, str) else None,
+        title=title_update,
+        title_source=title_source_update,
         archived=archived,
         agent_mode=normalized_agent_mode,
         provider_id=provider_id if isinstance(provider_id, str) else None,

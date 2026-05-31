@@ -17,6 +17,7 @@ class _Manager:
         self.session_index = {
             session.id: {"token_count": session.total_tokens} for session in sessions
         }
+        self.context_window = _ContextWindow()
 
     def load_session(self, session_id: str) -> Session | None:
         item = self.sessions.get(session_id)
@@ -149,6 +150,42 @@ async def test_session_token_usage_path_returns_404_for_missing_session() -> Non
 
     assert exc.value.status_code == 404
     assert exc.value.detail["scope"] == "missing"
+
+
+@pytest.mark.asyncio
+async def test_session_token_usage_path_rejects_conflicting_conversation_id() -> None:
+    with pytest.raises(HTTPException) as exc:
+        await get_session_token_usage(
+            "session_a",
+            conversation_id="session_b",
+            agent_id=None,
+            core=_core([_session("session_a", 10)]),
+        )
+
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_session_token_usage_uses_session_manager_context_window() -> None:
+    core = _core([_session("session_scoped", 600)])
+    core.conversation_manager.context_window = SimpleNamespace(
+        max_context_window_tokens=200_000
+    )
+    core.conversation_manager.session_manager.context_window = SimpleNamespace(
+        max_context_window_tokens=1_000
+    )
+
+    response = await get_session_token_usage(
+        "session_scoped",
+        conversation_id=None,
+        agent_id=None,
+        core=core,
+    )
+
+    usage = response["usage"]
+    assert usage["max_context_window_tokens"] == 1_000
+    assert usage["available_tokens"] == 400
+    assert usage["percentage"] == 60.0
 
 
 @pytest.mark.asyncio
