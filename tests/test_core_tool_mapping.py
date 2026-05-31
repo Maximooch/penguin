@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import suppress
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -701,6 +702,63 @@ async def test_core_created_tui_adapter_suppresses_live_session_status_events() 
         if event_type == "opencode_event" and payload.get("type") == "session.status"
     ]
     assert status_events == []
+
+
+@pytest.mark.asyncio
+async def test_opencode_status_heartbeat_refreshes_busy_status() -> None:
+    bus = _EventBus()
+    core = PenguinCore.__new__(PenguinCore)
+
+    setattr(core, "event_bus", bus)
+    setattr(core, "_opencode_active_requests", {"session_busy": 1})
+    setattr(core, "_opencode_status_heartbeats", {})
+
+    core._ensure_opencode_session_status_heartbeat("session_busy", interval=0.01)
+    task = core._opencode_status_heartbeats.get("session_busy")
+    await asyncio.sleep(0.035)
+
+    core._opencode_active_requests.pop("session_busy", None)
+    core._cancel_opencode_session_status_heartbeat("session_busy")
+    if task is not None:
+        with suppress(asyncio.CancelledError):
+            await task
+
+    status_events = [
+        payload
+        for event_type, payload in bus.events
+        if event_type == "opencode_event" and payload.get("type") == "session.status"
+    ]
+    assert status_events
+    assert all(
+        item["properties"]["sessionID"] == "session_busy" for item in status_events
+    )
+    assert all(item["properties"]["status"]["type"] == "busy" for item in status_events)
+
+
+@pytest.mark.asyncio
+async def test_opencode_status_heartbeat_continues_after_emit_failure() -> None:
+    core = PenguinCore.__new__(PenguinCore)
+    calls = 0
+
+    setattr(core, "_opencode_active_requests", {"session_busy": 1})
+    setattr(core, "_opencode_status_heartbeats", {})
+
+    async def _flaky_emit(_session_id: str, _status: str) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("transient emit failure")
+
+    setattr(core, "_emit_opencode_session_status", _flaky_emit)
+
+    task = asyncio.create_task(
+        core._opencode_session_status_heartbeat("session_busy", interval=0.01)
+    )
+    await asyncio.sleep(0.035)
+    core._opencode_active_requests.pop("session_busy", None)
+    await task
+
+    assert calls >= 2
 
 
 def test_map_action_result_metadata_moves_diff_to_attempted_diff_on_error() -> None:

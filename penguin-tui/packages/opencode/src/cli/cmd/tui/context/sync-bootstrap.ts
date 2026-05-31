@@ -1,6 +1,388 @@
+import type {
+  Agent,
+  Command,
+  Config,
+  Provider,
+  ProviderAuthMethod,
+  ProviderListResponse,
+  Session,
+  SessionStatus,
+} from "@opencode-ai/sdk/v2"
+import type { Path } from "@opencode-ai/sdk"
 import { Log } from "@/util/log"
 
 type BootstrapFetch = (input: string | URL, init?: RequestInit) => Promise<Response>
+
+export type SessionUsage = {
+  current_total_tokens: number
+  max_context_window_tokens: number | null
+  available_tokens: number
+  percentage: number | null
+  truncations: {
+    total_truncations: number
+    messages_removed: number
+    tokens_freed: number
+  }
+}
+
+export type PenguinSession = Session & {
+  agent_mode?: string
+  agent_id?: string
+  parent_agent_id?: string
+  providerID?: string
+  modelID?: string
+  variant?: string
+}
+
+export type PenguinBootstrapState = {
+  agent: Agent[]
+  command: Command[]
+  config: Config
+  path: Path
+  provider: Provider[]
+  provider_auth: Record<string, ProviderAuthMethod[]>
+  provider_default: Record<string, string>
+  provider_next: ProviderListResponse
+  session: PenguinSession[]
+  session_status: Record<string, SessionStatus>
+  session_usage: Record<string, SessionUsage>
+}
+
+export function parsePenguinUsage(raw: unknown): SessionUsage | undefined {
+  if (typeof raw !== "object" || !raw) return undefined
+  const root = raw as Record<string, unknown>
+  const usage = typeof root.usage === "object" && root.usage ? (root.usage as Record<string, unknown>) : root
+
+  const current = usage.current_total_tokens
+  if (typeof current !== "number") return undefined
+
+  const max = usage.max_context_window_tokens
+  const available = usage.available_tokens
+  const percentage = usage.percentage
+  const trunc =
+    typeof usage.truncations === "object" && usage.truncations ? (usage.truncations as Record<string, unknown>) : {}
+
+  return {
+    current_total_tokens: current,
+    max_context_window_tokens: typeof max === "number" ? max : null,
+    available_tokens: typeof available === "number" ? available : 0,
+    percentage: typeof percentage === "number" ? percentage : null,
+    truncations: {
+      total_truncations: typeof trunc.total_truncations === "number" ? trunc.total_truncations : 0,
+      messages_removed: typeof trunc.messages_removed === "number" ? trunc.messages_removed : 0,
+      tokens_freed: typeof trunc.tokens_freed === "number" ? trunc.tokens_freed : 0,
+    },
+  }
+}
+
+export function unwrapBootstrapData(value: unknown): unknown {
+  if (!value || typeof value !== "object") return value
+  const record = value as Record<string, unknown>
+  if (!("data" in record)) return value
+  const keys = Object.keys(record)
+  const wrapper = keys.every((key) => key === "data" || key === "meta")
+  return wrapper ? record.data : value
+}
+
+function createFallbackProvider(input: { baseUrl: string | URL; now: number }) {
+  const model = {
+    id: "penguin-default",
+    providerID: "penguin",
+    api: {
+      id: "penguin-web",
+      url: String(input.baseUrl),
+      npm: "penguin",
+    },
+    name: "Penguin Default",
+    capabilities: {
+      temperature: true,
+      reasoning: true,
+      attachment: false,
+      toolcall: false,
+      input: {
+        text: true,
+        audio: false,
+        image: false,
+        video: false,
+        pdf: false,
+      },
+      output: {
+        text: true,
+        audio: false,
+        image: false,
+        video: false,
+        pdf: false,
+      },
+      interleaved: false,
+    },
+    cost: {
+      input: 0,
+      output: 0,
+      cache: { read: 0, write: 0 },
+    },
+    limit: {
+      context: 100000,
+      output: 4096,
+    },
+    status: "beta" as const,
+    options: {},
+    headers: {},
+    release_date: new Date(input.now).toISOString(),
+  }
+  const provider = {
+    id: "penguin",
+    name: "Penguin",
+    source: "custom" as const,
+    env: [],
+    options: {},
+    models: {
+      [model.id]: model,
+    },
+  }
+  return { model, provider }
+}
+
+function createFallbackProviderList(input: {
+  model: ReturnType<typeof createFallbackProvider>["model"]
+  provider: ReturnType<typeof createFallbackProvider>["provider"]
+}): ProviderListResponse {
+  return {
+    all: [
+      {
+        id: input.provider.id,
+        name: input.provider.name,
+        env: input.provider.env,
+        models: {
+          [input.model.id]: {
+            id: input.model.id,
+            name: input.model.name,
+            release_date: input.model.release_date,
+            attachment: input.model.capabilities.attachment,
+            reasoning: input.model.capabilities.reasoning,
+            temperature: input.model.capabilities.temperature,
+            tool_call: input.model.capabilities.toolcall,
+            limit: input.model.limit,
+            status: input.model.status,
+            options: {},
+          },
+        },
+      },
+    ],
+    default: { [input.provider.id]: input.model.id },
+    connected: [input.provider.id],
+  }
+}
+
+function stamp(value: unknown, now: number): number {
+  const time = typeof value === "string" ? Date.parse(value) : NaN
+  return Number.isFinite(time) ? time : now
+}
+
+function mapPenguinSession(input: {
+  directory: string
+  item: Record<string, unknown>
+  now: number
+}): PenguinSession {
+  const sid = typeof input.item.id === "string" ? input.item.id : crypto.randomUUID()
+  const title = typeof input.item.title === "string" ? input.item.title : `Session ${sid.slice(-8)}`
+  const time = input.item.time
+  const created =
+    typeof time === "object" && time && "created" in time && typeof time.created === "number"
+      ? time.created
+      : stamp(input.item.created_at, input.now)
+  const updated =
+    typeof time === "object" && time && "updated" in time && typeof time.updated === "number"
+      ? time.updated
+      : stamp(input.item.last_active, input.now)
+  const directoryValue = typeof input.item.directory === "string" ? input.item.directory : input.directory
+  const payload: PenguinSession = {
+    id: sid,
+    slug: typeof input.item.slug === "string" ? input.item.slug : sid,
+    projectID: typeof input.item.projectID === "string" ? input.item.projectID : "penguin",
+    directory: directoryValue,
+    title,
+    version: typeof input.item.version === "string" ? input.item.version : "penguin",
+    time: {
+      created,
+      updated,
+    },
+  }
+  const parentID = typeof input.item.parentID === "string" ? input.item.parentID : undefined
+  if (parentID) payload.parentID = parentID
+  const permission = Array.isArray(input.item.permission) ? input.item.permission : undefined
+  if (permission) payload.permission = permission as Session["permission"]
+  const share = input.item.share
+  if (share && typeof share === "object" && typeof (share as { url?: unknown }).url === "string") {
+    payload.share = { url: (share as { url: string }).url }
+  }
+  const summary = input.item.summary
+  if (summary && typeof summary === "object") {
+    const source = summary as Record<string, unknown>
+    if (
+      typeof source.additions === "number" &&
+      typeof source.deletions === "number" &&
+      typeof source.files === "number"
+    ) {
+      payload.summary = {
+        additions: source.additions,
+        deletions: source.deletions,
+        files: source.files,
+        diffs: Array.isArray(source.diffs)
+          ? (source.diffs as Session["summary"] extends { diffs?: infer T } ? T : never)
+          : undefined,
+      }
+    }
+  }
+  const revert = input.item.revert
+  if (revert && typeof revert === "object" && typeof (revert as { messageID?: unknown }).messageID === "string") {
+    const source = revert as Record<string, unknown>
+    payload.revert = {
+      messageID: String(source.messageID),
+      ...(typeof source.partID === "string" ? { partID: source.partID } : {}),
+      ...(typeof source.snapshot === "string" ? { snapshot: source.snapshot } : {}),
+      ...(typeof source.diff === "string" ? { diff: source.diff } : {}),
+    }
+  }
+  const sessionMode = typeof input.item.agent_mode === "string" ? input.item.agent_mode : undefined
+  if (sessionMode) payload.agent_mode = sessionMode
+  const providerID = typeof input.item.providerID === "string" ? input.item.providerID : undefined
+  if (providerID) payload.providerID = providerID
+  const modelID = typeof input.item.modelID === "string" ? input.item.modelID : undefined
+  if (modelID) payload.modelID = modelID
+  const variant = typeof input.item.variant === "string" ? input.item.variant : undefined
+  if (variant) payload.variant = variant
+  const agentID = typeof input.item.agent_id === "string" ? input.item.agent_id : undefined
+  if (agentID) payload.agent_id = agentID
+  const parentAgentID = typeof input.item.parent_agent_id === "string" ? input.item.parent_agent_id : undefined
+  if (parentAgentID) payload.parent_agent_id = parentAgentID
+  return payload
+}
+
+function mapPenguinAgent(item: Record<string, unknown>): Agent | undefined {
+  const name = typeof item.id === "string" ? item.id : ""
+  if (!name) return undefined
+  const mode = item.is_sub_agent === true ? ("subagent" as const) : ("primary" as const)
+  const hidden = item.hidden === true
+  const permission = Array.isArray(item.permission) ? item.permission : []
+  const rawOptions = item.options
+  const options =
+    rawOptions && typeof rawOptions === "object"
+      ? ({ ...rawOptions } as Record<string, unknown>)
+      : ({} as Record<string, unknown>)
+  const sessionMode = typeof item.agent_mode === "string" ? item.agent_mode : undefined
+  if (sessionMode && !options.agent_mode) options.agent_mode = sessionMode
+  return {
+    name,
+    mode,
+    hidden,
+    permission,
+    options,
+  }
+}
+
+export function mapPenguinBootstrap(input: {
+  baseUrl: string | URL
+  configData: unknown
+  directory: string
+  now?: number
+  providerAuthData: unknown
+  providerListData: unknown
+  providersData: unknown
+  roster: Record<string, unknown>[]
+  sessions: Record<string, unknown>[]
+}): PenguinBootstrapState {
+  const now = input.now ?? Date.now()
+  const { model, provider } = createFallbackProvider({
+    baseUrl: input.baseUrl,
+    now,
+  })
+
+  const providersPayload = unwrapBootstrapData(input.providersData) as Record<string, unknown> | undefined
+  const providerListPayload = unwrapBootstrapData(input.providerListData) as Record<string, unknown> | undefined
+  const configPayload = unwrapBootstrapData(input.configData)
+  const providerAuthPayload = unwrapBootstrapData(input.providerAuthData)
+
+  const providers: Provider[] = Array.isArray(providersPayload?.providers)
+    ? (providersPayload.providers as Provider[])
+    : [provider]
+  const providerDefault =
+    providersPayload && typeof providersPayload.default === "object" && providersPayload.default
+      ? (providersPayload.default as Record<string, string>)
+      : { [provider.id]: model.id }
+  const providerNext =
+    providerListPayload &&
+    Array.isArray(providerListPayload.all) &&
+    providerListPayload.default &&
+    Array.isArray(providerListPayload.connected)
+      ? (providerListPayload as ProviderListResponse)
+      : createFallbackProviderList({ model, provider })
+  const providerAuth =
+    providerAuthPayload && typeof providerAuthPayload === "object"
+      ? (providerAuthPayload as Record<string, ProviderAuthMethod[]>)
+      : {}
+  const config: Config =
+    configPayload && typeof configPayload === "object" ? (configPayload as Config) : { share: "disabled" as const }
+  const session = input.sessions.map((item) =>
+    mapPenguinSession({
+      directory: input.directory,
+      item,
+      now,
+    }),
+  )
+  const sessionUsage = input.sessions.reduce<Record<string, SessionUsage>>(
+    (acc, item) => {
+      const sid = typeof item.id === "string" ? item.id : ""
+      if (!sid) return acc
+      const next = parsePenguinUsage(item)
+      if (!next) return acc
+      acc[sid] = next
+      return acc
+    },
+    {} as Record<string, SessionUsage>,
+  )
+  const baseAgent: Agent = {
+    name: "penguin",
+    mode: "primary",
+    permission: [],
+    options: {},
+  }
+  const agent = input.roster.map(mapPenguinAgent).filter((item): item is Agent => !!item)
+  const command: Command[] = [
+    {
+      name: "config",
+      description: "Show configuration sources",
+      template: "/config",
+      hints: [],
+    },
+    {
+      name: "tool_details",
+      description: "Toggle tool detail visibility",
+      template: "/tool_details",
+      hints: [],
+    },
+    {
+      name: "thinking",
+      description: "Toggle reasoning visibility",
+      template: "/thinking",
+      hints: [],
+    },
+  ]
+  const sessionStatus = Object.fromEntries(session.map((item) => [item.id, { type: "idle" as const }]))
+
+  return {
+    provider: providers,
+    provider_default: providerDefault,
+    provider_next: providerNext,
+    provider_auth: providerAuth,
+    agent: agent.length ? agent : [baseAgent],
+    command,
+    config,
+    session,
+    session_usage: sessionUsage,
+    session_status: sessionStatus,
+    path: { state: "", config: "", worktree: "", directory: input.directory },
+  }
+}
 
 export async function fetchBootstrapJson<T>(input: {
   fetch: BootstrapFetch

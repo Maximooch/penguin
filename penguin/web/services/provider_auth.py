@@ -379,6 +379,8 @@ async def _handle_openai_browser_callback_connection(
         )
         set_provider_credential(provider_id, record)
         with _AUTH_LOCK:
+            # TODO: Follow-up PR should only clear the pending OAuth entry if it
+            # still matches this callback's state, so newer flows are preserved.
             _PENDING_OAUTH.pop(provider_id, None)
             _RECENT_OAUTH_COMPLETIONS[provider_id] = time.monotonic()
         if isinstance(future, asyncio.Future) and not future.done():
@@ -424,6 +426,8 @@ async def _ensure_openai_browser_callback_server(redirect_uri: str) -> bool:
             return True
 
     try:
+        # TODO: Follow-up PR should bind to the redirect URI hostname and track
+        # host+port, so localhost redirects cannot miss a 127.0.0.1 listener.
         server = await asyncio.start_server(
             _handle_openai_browser_callback_connection,
             host="127.0.0.1",
@@ -1074,6 +1078,8 @@ async def callback_provider_oauth(
             recent_completion_at = _RECENT_OAUTH_COMPLETIONS.get(pid)
 
         if not pending:
+            # TODO: Follow-up PR should make this recent-completion fast path
+            # auto-wait-only, so stale explicit callback codes still fail.
             if (
                 method_index == 0
                 and isinstance(recent_completion_at, (int, float))
@@ -1153,6 +1159,8 @@ async def callback_provider_oauth(
 
         set_provider_credential(pid, record)
         with _AUTH_LOCK:
+            # TODO: Follow-up PR should only clear the pending OAuth entry if it
+            # still matches this callback's state, so newer flows are preserved.
             _PENDING_OAUTH.pop(pid, None)
             _RECENT_OAUTH_COMPLETIONS[pid] = time.monotonic()
         logger.info(

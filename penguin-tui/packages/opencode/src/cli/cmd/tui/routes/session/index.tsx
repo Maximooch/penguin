@@ -27,6 +27,7 @@ import {
   RGBA,
 } from "@opentui/core"
 import { Prompt, type PromptRef } from "@tui/component/prompt"
+import { isPenguinAssistantOpen } from "@tui/component/prompt/penguin-run-state"
 import type { AssistantMessage, Part, ToolPart, UserMessage, TextPart, ReasoningPart } from "@opencode-ai/sdk/v2"
 import { useLocal } from "@tui/context/local"
 import { Locale } from "@/util/locale"
@@ -77,6 +78,7 @@ import { PermissionPrompt } from "./permission"
 import { QuestionPrompt } from "./question"
 import { DialogExportOptions } from "../../ui/dialog-export-options"
 import { formatTranscript } from "../../util/transcript"
+import { assistantDurationMs, isAssistantSettled } from "./message-duration"
 
 addDefaultParsers(parsers.parsers)
 
@@ -136,6 +138,17 @@ export function Session() {
 
   const lastAssistant = createMemo(() => {
     return messages().findLast((x) => x.role === "assistant")
+  })
+  const penguinInterruptActive = createMemo(() => {
+    const state = sync.data.session_status?.[route.sessionID]
+    if (state?.type !== "idle" || !!pending()) return true
+
+    const assistant = lastAssistant()
+    if (!assistant) return false
+    return isPenguinAssistantOpen({
+      message: assistant,
+      parts: sync.data.part[assistant.id] ?? [],
+    })
   })
 
   const dimensions = useTerminalDimensions()
@@ -244,9 +257,7 @@ export function Session() {
   useKeyboard((evt) => {
     if (!sdk.penguin) return
     if (!(keybind.match("session_interrupt", evt) || evt.name === "escape")) return
-    const state = sync.data.session_status?.[route.sessionID]
-    const active = state?.type !== "idle" || !!pending()
-    if (!active) return
+    if (!penguinInterruptActive()) return
     sdk.client.session
       .abort({
         sessionID: route.sessionID,
@@ -1288,15 +1299,11 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
   const messages = createMemo(() => sync.data.message[props.message.sessionID] ?? [])
 
   const final = createMemo(() => {
-    return props.message.finish && !["tool-calls", "unknown"].includes(props.message.finish)
+    return isAssistantSettled(props.message)
   })
 
   const duration = createMemo(() => {
-    if (!final()) return 0
-    if (!props.message.time.completed) return 0
-    const user = messages().find((x) => x.role === "user" && x.id === props.message.parentID)
-    if (!user || !user.time) return 0
-    return props.message.time.completed - user.time.created
+    return assistantDurationMs(props.message, messages())
   })
 
   return (

@@ -33,7 +33,17 @@ import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
 import { useTextareaKeybindings } from "../textarea-keybindings"
 import { exitSession } from "../../util/exit"
-import { formatPenguinPromptFailure, recoverPenguinPromptFailure } from "./penguin-send"
+import { DEFAULT_PENGUIN_STALE_MS, derivePenguinRunState } from "./penguin-run-state"
+import { applyPenguinFastCommand } from "./penguin-fast-command"
+import {
+  createPenguinSession,
+  emitPenguinOptimisticPrompt,
+  formatPenguinPromptFailure,
+  recoverPenguinPromptFailure,
+  resolveSessionID,
+  sendPenguinPrompt,
+  shouldStripPenguinVirtualPart,
+} from "./penguin-send"
 import { parsePenguinLocalCommand } from "./penguin-local-command"
 import {
   executePenguinHttpLocalCommand,
@@ -75,13 +85,14 @@ export function Prompt(props: PromptProps) {
   const sync = useSync()
   const dialog = useDialog()
   const toast = useToast()
-  const status = createMemo(() => sync.data.session_status?.[props.sessionID ?? ""] ?? { type: "idle" })
   const history = usePromptHistory()
   const stash = usePromptStash()
   const command = useCommandDialog()
   const renderer = useRenderer()
   const { theme, syntax } = useTheme()
   const kv = useKV()
+  const activeSessionID = createMemo(() => props.sessionID ?? sdk.sessionID ?? "")
+  const status = createMemo(() => sync.data.session_status?.[activeSessionID()] ?? { type: "idle" })
   const model = createMemo(() => {
     const parsed = local.model.parsed()
     const current = local.model.current()
@@ -141,10 +152,25 @@ export function Prompt(props: PromptProps) {
   })
 
   const lastUserMessage = createMemo(() => {
-    if (!props.sessionID) return undefined
-    const messages = sync.data.message[props.sessionID]
+    const sessionID = activeSessionID()
+    if (!sessionID) return undefined
+    const messages = sync.data.message[sessionID]
     if (!messages) return undefined
     return messages.findLast((m) => m.role === "user")
+  })
+
+  const latestAssistantMessage = createMemo(() => {
+    const sessionID = activeSessionID()
+    if (!sessionID) return undefined
+    const messages = sync.data.message[sessionID]
+    if (!messages) return undefined
+    return messages.findLast((m) => m.role === "assistant")
+  })
+
+  const latestAssistantParts = createMemo(() => {
+    const assistant = latestAssistantMessage()
+    if (!assistant) return []
+    return sync.data.part[assistant.id] ?? []
   })
 
   const [store, setStore] = createStore<{
@@ -155,6 +181,7 @@ export function Prompt(props: PromptProps) {
     pending: boolean
     pendingSeenBusy: boolean
     placeholder: number
+    runStartedAt?: number
   }>({
     placeholder: Math.floor(Math.random() * PLACEHOLDERS.length),
     prompt: {
@@ -200,7 +227,28 @@ export function Prompt(props: PromptProps) {
     applyAgentMode(nextMode)
   }
 
-  const busy = createMemo(() => status().type !== "idle" || (sdk.penguin && store.pending))
+  const [clock, setClock] = createSignal(Date.now())
+
+  onMount(() => {
+    const timer = setInterval(() => setClock(Date.now()), 1000)
+    onCleanup(() => clearInterval(timer))
+  })
+
+  const runState = createMemo(() =>
+    derivePenguinRunState({
+      assistant: latestAssistantMessage(),
+      assistantParts: latestAssistantParts(),
+      localStartedAt: store.runStartedAt,
+      now: clock(),
+      pending: sdk.penguin && store.pending,
+      sessionStatus: status(),
+      staleAfterMs: DEFAULT_PENGUIN_STALE_MS,
+      stream: sdk.penguin ? sdk.stream : undefined,
+      user: lastUserMessage(),
+    }),
+  )
+
+  const busy = createMemo(() => (sdk.penguin ? runState().type !== "idle" : status().type !== "idle"))
 
   createEffect(() => {
     if (!sdk.penguin) return
@@ -212,6 +260,13 @@ export function Prompt(props: PromptProps) {
     if (!store.pendingSeenBusy) return
     setStore("pending", false)
     setStore("pendingSeenBusy", false)
+  })
+
+  createEffect(() => {
+    if (!sdk.penguin) return
+    if (runState().type === "idle" && store.runStartedAt !== undefined) {
+      setStore("runStartedAt", undefined)
+    }
   })
 
   // Initialize agent/model/variant from session info first, then last user message fallback.
@@ -567,7 +622,7 @@ export function Prompt(props: PromptProps) {
         keybind: "session_interrupt",
         category: "Session",
         hidden: true,
-        enabled: sdk.penguin ? !!props.sessionID && (store.pending || status().type !== "idle") : status().type !== "idle",
+        enabled: sdk.penguin ? !!props.sessionID && busy() : status().type !== "idle",
         onSelect: (dialog) => {
           if (autocomplete.visible) return
           if (!input.focused && !sdk.penguin) return
@@ -584,6 +639,7 @@ export function Prompt(props: PromptProps) {
             })
             setStore("pending", false)
             setStore("pendingSeenBusy", false)
+            setStore("runStartedAt", undefined)
             setStore("interrupt", 0)
             dialog.clear()
             return
@@ -866,14 +922,6 @@ export function Prompt(props: PromptProps) {
   ])
 
   async function submit() {
-    const resolveSessionID = (value: unknown): string | undefined => {
-      if (typeof value === "string" && value.trim()) return value.trim()
-      if (!value || typeof value !== "object") return undefined
-      const record = value as Record<string, unknown>
-      if (typeof record.id === "string" && record.id.trim()) return record.id.trim()
-      return resolveSessionID(record.data)
-    }
-
     if (props.disabled) return
     if (autocomplete?.visible) return
     if (!store.prompt.input) return
@@ -927,27 +975,15 @@ export function Prompt(props: PromptProps) {
       })
     }
     const handleFastCommand = () => {
-      const [command, argument = ""] = trimmed.split(/\s+/, 2)
-      if (command !== "/fast") return false
-
-      const value = argument.toLowerCase()
-      if (!value) {
-        local.model.fast.toggle()
-      } else if (value === "on") {
-        local.model.fast.set(true)
-      } else if (value === "off") {
-        local.model.fast.set(false)
-      } else if (value !== "status") {
-        toast.show({
-          variant: "warning",
-          message: "Usage: /fast [on|off|status]",
-        })
-        return true
-      }
+      const result = applyPenguinFastCommand({
+        fast: local.model.fast,
+        text: trimmed,
+      })
+      if (!result.matched) return false
 
       toast.show({
-        variant: "info",
-        message: local.model.fast.enabled() ? "Fast mode on" : "Fast mode off",
+        variant: result.variant,
+        message: result.message,
       })
       clearPromptState()
       props.onSubmit?.()
@@ -962,37 +998,14 @@ export function Prompt(props: PromptProps) {
         if (sdk.sessionID) return sdk.sessionID
 
         if (sdk.penguin) {
-          const createUrl = new URL("/session", sdk.url)
-          createUrl.searchParams.set("directory", initialDirectory)
-          const created = await sdk.fetch(createUrl, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              agent_mode: agentMode(),
-              providerID: selectedModel.providerID,
-              modelID: selectedModel.modelID,
-              variant,
-            }),
-          }).then(async (res) => {
-            if (!res.ok) {
-              const details = await res.text().catch(() => "")
-              throw new Error(
-                details
-                  ? `Session create failed (${res.status}): ${details}`
-                  : `Session create failed (${res.status})`,
-              )
-            }
-            return res.json().catch(() => undefined)
+          return await createPenguinSession({
+            agentMode: agentMode(),
+            baseUrl: sdk.url,
+            directory: initialDirectory,
+            fetch: sdk.fetch,
+            model: selectedModel,
+            variant,
           })
-          const createdID = resolveSessionID(created)
-          if (createdID) return createdID
-          const details =
-            created && typeof created === "object"
-              ? `response keys: ${Object.keys(created as Record<string, unknown>).join(",") || "none"}`
-              : `response type: ${typeof created}`
-          throw new Error(`Session create returned empty id (${details})`)
         }
 
         return await sdk.client.session.create({}).then((result) => {
@@ -1042,6 +1055,7 @@ export function Prompt(props: PromptProps) {
             props.onSubmit?.()
             setStore("pending", true)
             setStore("pendingSeenBusy", false)
+            setStore("runStartedAt", Date.now())
             if (!props.sessionID && commandSessionID) {
               setTimeout(() => {
                 route.navigate({ type: "session", sessionID: commandSessionID })
@@ -1055,6 +1069,7 @@ export function Prompt(props: PromptProps) {
               .finally(() => {
                 setStore("pending", false)
                 setStore("pendingSeenBusy", false)
+                setStore("runStartedAt", undefined)
               })
             return
           }
@@ -1099,8 +1114,7 @@ export function Prompt(props: PromptProps) {
           inputText = before + part.text + after
           continue
         }
-        const stripVirtualPart =
-          sdk.penguin && part.type === "file" && typeof part.mime === "string" && part.mime.startsWith("image/")
+        const stripVirtualPart = sdk.penguin && shouldStripPenguinVirtualPart(part)
         if (stripVirtualPart) {
           inputText = before + after
         }
@@ -1111,45 +1125,14 @@ export function Prompt(props: PromptProps) {
     const nonTextParts = store.prompt.parts.filter((part) => part.type !== "text")
 
     if (sdk.penguin) {
-      const now = Date.now()
-      const user = {
-        id: messageID,
-        sessionID,
-        role: "user" as const,
-        time: {
-          created: now,
-        },
-        agent: agent.name,
-        model: {
-          providerID: selectedModel.providerID,
-          modelID: selectedModel.modelID,
-        },
-      }
-      const part = {
-        id: sdk.penguin ? gen.next("part") : Identifier.ascending("part"),
-        sessionID,
+      emitPenguinOptimisticPrompt({
+        agentName: agent.name,
+        emit: (type, event) => sdk.event.emit(type as any, event as any),
         messageID,
-        type: "text" as const,
+        model: selectedModel,
+        partID: gen.next("part"),
+        sessionID,
         text: inputText,
-        time: {
-          start: now,
-          end: now,
-        },
-      }
-      sdk.event.emit("message.updated", {
-        type: "message.updated",
-        properties: { info: user },
-      })
-      sdk.event.emit("message.part.updated", {
-        type: "message.part.updated",
-        properties: { part, delta: inputText },
-      })
-      sdk.event.emit("session.status", {
-        type: "session.status",
-        properties: {
-          sessionID,
-          status: { type: "busy" as const },
-        },
       })
       history.append({
         ...store.prompt,
@@ -1184,53 +1167,38 @@ export function Prompt(props: PromptProps) {
       }
       setStore("pending", true)
       setStore("pendingSeenBusy", false)
+      setStore("runStartedAt", Date.now())
       const recover = () => {
         recoverPenguinPromptFailure({
           sessionID,
           clear: () => {
             setStore("pending", false)
             setStore("pendingSeenBusy", false)
+            setStore("runStartedAt", undefined)
           },
           emit: sdk.event.emit,
         })
       }
-      const url = new URL("/api/v1/chat/message", sdk.url)
-      sdk.fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          text: inputText,
-          model: `${selectedModel.providerID}/${selectedModel.modelID}`,
-          session_id: sessionID,
-          agent_id: agent.name,
-          agent_mode: agentMode(),
-          directory,
-          streaming: true,
-          variant,
-          service_tier: serviceTier,
-          client_message_id: messageID,
-          parts: nonTextParts,
-        }),
+      void sendPenguinPrompt({
+        text: inputText,
+        model: selectedModel,
+        sessionID,
+        agentName: agent.name,
+        agentMode: agentMode(),
+        baseUrl: sdk.url,
+        directory,
+        fetch: sdk.fetch,
+        variant,
+        serviceTier,
+        messageID,
+        parts: nonTextParts,
       })
-        .then(async (res) => {
-          if (res.ok) return
-          const details = await res.text().catch(() => "")
+        .then((result) => {
+          if (result.ok) return
           recover()
           toast.show({
             variant: "error",
-            message: formatPenguinPromptFailure({
-              status: res.status,
-              details,
-            }),
-          })
-        })
-        .catch((err) => {
-          recover()
-          toast.show({
-            variant: "error",
-            message: formatPenguinPromptFailure({ error: err }),
+            message: formatPenguinPromptFailure(result),
           })
         })
       return
@@ -1436,6 +1404,21 @@ export function Prompt(props: PromptProps) {
     }
   })
 
+  const runStatusText = createMemo(() => {
+    if (!sdk.penguin || status().type === "retry") return ""
+    const state = runState()
+    if (state.type === "idle") return ""
+
+    const elapsed = formatDuration(Math.floor(state.elapsedMs / 1000)) || "0s"
+    if (state.type === "pending") return `starting · ${elapsed}`
+    if (state.type === "reconnecting") return `reconnecting · ${elapsed}`
+    if (state.type === "stale") {
+      const age = formatDuration(Math.floor((state.lastEventAgeMs ?? state.elapsedMs) / 1000))
+      return `still running · ${age ? `no events ${age}` : "no events"} · ${elapsed}`
+    }
+    return `running · ${elapsed}`
+  })
+
   return (
     <>
       <Autocomplete
@@ -1526,13 +1509,14 @@ export function Prompt(props: PromptProps) {
                   props.sessionID &&
                   (keybind.match("session_interrupt", e) || e.name === "escape")
                 ) {
-                  const active = store.pending || status().type !== "idle"
+                  const active = busy()
                   if (active) {
                     sdk.client.session.abort({
                       sessionID: props.sessionID,
                     }).catch(() => {})
                     setStore("pending", false)
                     setStore("pendingSeenBusy", false)
+                    setStore("runStartedAt", undefined)
                     setStore("interrupt", 0)
                     e.preventDefault()
                     return
@@ -1541,7 +1525,7 @@ export function Prompt(props: PromptProps) {
                 if (keybind.match("app_exit", e)) {
                   if (store.prompt.input === "") {
                     await exitSession({
-                      busy: store.pending || status().type !== "idle",
+                      busy: busy(),
                       sessionID: props.sessionID,
                       dialog,
                       sdk,
@@ -1868,6 +1852,9 @@ export function Prompt(props: PromptProps) {
                       </Show>
                     )
                   })()}
+                  <Show when={runStatusText()}>
+                    {(text) => <text fg={theme.textMuted}>{text()}</text>}
+                  </Show>
                 </box>
               </box>
               <text fg={store.interrupt > 0 && !sdk.penguin ? theme.primary : theme.text}>

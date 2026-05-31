@@ -21,9 +21,13 @@ REVERT_SNAPSHOT_KEY = "_opencode_revert_snapshot_v1"
 MODEL_ID_KEY = "_opencode_model_id_v1"
 PROVIDER_ID_KEY = "_opencode_provider_id_v1"
 VARIANT_KEY = "_opencode_variant_v1"
+TITLE_SOURCE_KEY = "_penguin_title_source_v1"
+TITLE_SOURCE_AUTO = "auto"
+TITLE_SOURCE_MANUAL = "manual"
 
 _TODO_STATUS_VALUES = {"pending", "in_progress", "completed", "cancelled"}
 _TODO_PRIORITY_VALUES = {"high", "medium", "low"}
+_TITLE_SOURCE_VALUES = {TITLE_SOURCE_AUTO, TITLE_SOURCE_MANUAL}
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +46,15 @@ def _normalize_non_empty_string(value: Any) -> Optional[str]:
         return None
     normalized = value.strip()
     return normalized or None
+
+
+def _normalize_title_source(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    if normalized in _TITLE_SOURCE_VALUES:
+        return normalized
+    return None
 
 
 def _resolve_session_model_state(
@@ -379,6 +392,7 @@ def create_session_info(
 
     if isinstance(title, str) and title.strip():
         metadata["title"] = title.strip()
+        metadata[TITLE_SOURCE_KEY] = TITLE_SOURCE_MANUAL
     if isinstance(parent_id, str) and parent_id.strip():
         metadata["parentID"] = parent_id.strip()
     if isinstance(directory, str) and directory.strip():
@@ -409,6 +423,7 @@ def update_session_info(
     session_id: str,
     *,
     title: str | None = None,
+    title_source: str | None = None,
     archived: int | None = None,
     agent_mode: str | None = None,
     provider_id: str | None = None,
@@ -429,8 +444,12 @@ def update_session_info(
         stripped_title = title.strip()
         if stripped_title:
             metadata["title"] = stripped_title
+            metadata[TITLE_SOURCE_KEY] = (
+                _normalize_title_source(title_source) or TITLE_SOURCE_MANUAL
+            )
         elif "title" in metadata:
             metadata.pop("title", None)
+            metadata.pop(TITLE_SOURCE_KEY, None)
 
     if archived is not None:
         if archived > 0:
@@ -866,6 +885,25 @@ def get_session_metadata_title(core: Any, session_id: str) -> Optional[str]:
     if not isinstance(raw_title, str):
         return ""
     return raw_title.strip()
+
+
+def get_session_title_source(core: Any, session_id: str) -> Optional[str]:
+    """Return title ownership metadata for a session.
+
+    Returns:
+        None: session does not exist.
+        "": session exists but title source is missing/legacy.
+        "auto" or "manual": known title owner.
+    """
+    session, _manager = _find_session(core, session_id)
+    if session is None:
+        return None
+
+    metadata = getattr(session, "metadata", None)
+    if not isinstance(metadata, dict):
+        return ""
+
+    return _normalize_title_source(metadata.get(TITLE_SOURCE_KEY)) or ""
 
 
 def _default_assistant_info(

@@ -10,6 +10,8 @@ from typing import Any, Optional
 from penguin.system.state import Message, MessageCategory
 from penguin.web.services.session_view import (
     AGENT_MODE_KEY,
+    TITLE_SOURCE_KEY,
+    TITLE_SOURCE_MANUAL,
     TRANSCRIPT_KEY,
     _build_session_info,
     _find_session,
@@ -115,6 +117,7 @@ def fork_session(
         or _build_session_info(core, source, manager)["title"]
     )
     metadata["title"] = _fork_title(source_title)
+    metadata[TITLE_SOURCE_KEY] = TITLE_SOURCE_MANUAL
     metadata["forked_from_session_id"] = str(session_id)
     if isinstance(message_id, str) and message_id.strip():
         metadata["forked_from_message_id"] = message_id.strip()

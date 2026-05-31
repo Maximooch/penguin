@@ -18,6 +18,7 @@ CONTEXT_WINDOW_SAFETY_FRACTION = max(
     0.5,
 )
 OPENAI_SERVICE_TIERS = frozenset({"auto", "default", "flex", "priority"})
+SUSPICIOUS_MAX_OUTPUT_RATIO = 0.8
 
 
 def safe_context_window(context_length: Optional[int]) -> Optional[int]:
@@ -712,7 +713,16 @@ class ModelSpecsService:
         if not model_id:
             return None
 
-        context_length = model.get("context_length", 0)
+        raw_context_length = model.get("context_length")
+        try:
+            context_length = int(raw_context_length)
+        except (TypeError, ValueError):
+            logger.debug(
+                "Skipping OpenRouter model %s with invalid context_length=%r",
+                model_id,
+                raw_context_length,
+            )
+            return None
         max_output = model.get("top_provider", {}).get("max_completion_tokens")
         if not max_output:
             max_output = model.get("max_output_tokens")
@@ -720,7 +730,12 @@ class ModelSpecsService:
             max_output = int(max_output) if max_output else None
         except (TypeError, ValueError):
             max_output = None
-        if context_length and max_output and max_output >= int(context_length * 0.8):
+        if (
+            context_length is not None
+            and context_length > 0
+            and max_output
+            and max_output >= int(context_length * SUSPICIOUS_MAX_OUTPUT_RATIO)
+        ):
             logger.debug(
                 "Ignoring suspicious OpenRouter max_completion_tokens=%s for %s "
                 "with context_length=%s",
