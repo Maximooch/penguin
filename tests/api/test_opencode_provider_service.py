@@ -176,6 +176,15 @@ async def test_provider_oauth_callback_browser_rejects_state_mismatch(
     assert "state does not match" in str(exc.value)
 
 
+def test_parse_browser_callback_code_accepts_http_request_target() -> None:
+    code, state = provider_service.provider_auth_service._parse_browser_callback_code(
+        "/auth/callback?code=abc123&scope=openid+profile&state=state-xyz"
+    )
+
+    assert code == "abc123"
+    assert state == "state-xyz"
+
+
 @pytest.mark.asyncio
 async def test_provider_oauth_callback_persists_oauth_record(
     tmp_path: Path,

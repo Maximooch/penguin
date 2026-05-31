@@ -861,15 +861,13 @@ class APIClient:
                 context_limit_int is not None
                 and estimated_input_tokens is not None
                 and estimated_input_tokens > 0
+                and effective_max_output_tokens is not None
             ):
                 available_output_tokens = max(
                     context_limit_int - estimated_input_tokens - 512,
                     1,
                 )
-                if (
-                    effective_max_output_tokens is None
-                    or effective_max_output_tokens > available_output_tokens
-                ):
+                if effective_max_output_tokens > available_output_tokens:
                     self.logger.warning(
                         "[APIClient:%s] Clamping max_output_tokens from %s to %s "
                         "based on context_limit=%s estimated_input_tokens=%s",
