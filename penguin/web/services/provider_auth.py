@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 import httpx
 
 from penguin.web.services.provider_credentials import (
+    apply_credentials_to_environment,
     get_provider_credential,
     oauth_record_needs_refresh,
     set_provider_credential,
@@ -235,6 +236,12 @@ def _generate_pkce_pair() -> tuple[str, str]:
     return verifier, challenge
 
 
+def _persist_provider_credential(provider_id: str, record: dict[str, Any]) -> None:
+    """Persist provider credentials and refresh process env for this runtime."""
+    set_provider_credential(provider_id, record)
+    apply_credentials_to_environment(provider_id, record)
+
+
 def _parse_browser_callback_code(raw_code: str) -> tuple[str, str | None]:
     value = raw_code.strip()
     if not value:
@@ -377,7 +384,7 @@ async def _handle_openai_browser_callback_connection(
             method_index=method_index,
             code=target,
         )
-        set_provider_credential(provider_id, record)
+        _persist_provider_credential(provider_id, record)
         with _AUTH_LOCK:
             # TODO: Follow-up PR should only clear the pending OAuth entry if it
             # still matches this callback's state, so newer flows are preserved.
@@ -1157,7 +1164,7 @@ async def callback_provider_oauth(
                 method_index=method_index,
             )
 
-        set_provider_credential(pid, record)
+        _persist_provider_credential(pid, record)
         with _AUTH_LOCK:
             # TODO: Follow-up PR should only clear the pending OAuth entry if it
             # still matches this callback's state, so newer flows are preserved.
@@ -1241,7 +1248,7 @@ async def refresh_provider_oauth(
             if isinstance(account_id, str) and account_id.strip():
                 refreshed["accountId"] = account_id.strip()
 
-        set_provider_credential(pid, refreshed)
+        _persist_provider_credential(pid, refreshed)
         logger.info(
             "provider.oauth.refresh success provider=%s method=%s "
             "account_id_present=%s",

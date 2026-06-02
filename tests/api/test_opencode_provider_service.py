@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -38,7 +39,11 @@ def _jwt(payload: dict[str, Any]) -> str:
 
 
 @pytest.fixture(autouse=True)
-def _clear_pending_oauth() -> None:
+def _clear_pending_oauth(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OPENAI_OAUTH_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_OAUTH_REFRESH_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_OAUTH_EXPIRES_AT_MS", raising=False)
+    monkeypatch.delenv("OPENAI_ACCOUNT_ID", raising=False)
     provider_service._PENDING_OAUTH.clear()
     provider_service.provider_auth_service._RECENT_OAUTH_COMPLETIONS.clear()
     yield
@@ -185,6 +190,33 @@ def test_parse_browser_callback_code_accepts_http_request_target() -> None:
     assert state == "state-xyz"
 
 
+def test_persist_provider_credential_refreshes_stale_oauth_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PENGUIN_PROVIDER_AUTH_STORE", str(tmp_path / "auth.json"))
+    monkeypatch.setenv("OPENAI_OAUTH_ACCESS_TOKEN", "stale-access")
+    monkeypatch.setenv("OPENAI_OAUTH_REFRESH_TOKEN", "stale-refresh")
+    monkeypatch.setenv("OPENAI_OAUTH_EXPIRES_AT_MS", "9999999999999")
+    monkeypatch.setenv("OPENAI_ACCOUNT_ID", "acct_stale")
+
+    provider_service.provider_auth_service._persist_provider_credential(
+        "openai",
+        {
+            "type": "oauth",
+            "access": "fresh-access",
+            "refresh": "fresh-refresh",
+            "expires": 10_000_000_000_000,
+            "accountId": "acct_fresh",
+        },
+    )
+
+    assert os.environ["OPENAI_OAUTH_ACCESS_TOKEN"] == "fresh-access"
+    assert os.environ["OPENAI_OAUTH_REFRESH_TOKEN"] == "fresh-refresh"
+    assert os.environ["OPENAI_OAUTH_EXPIRES_AT_MS"] == "10000000000000"
+    assert os.environ["OPENAI_ACCOUNT_ID"] == "acct_fresh"
+
+
 @pytest.mark.asyncio
 async def test_provider_oauth_callback_persists_oauth_record(
     tmp_path: Path,
@@ -192,6 +224,9 @@ async def test_provider_oauth_callback_persists_oauth_record(
 ) -> None:
     store_path = tmp_path / "provider_auth_oauth.json"
     monkeypatch.setenv("PENGUIN_PROVIDER_AUTH_STORE", str(store_path))
+    monkeypatch.setenv("OPENAI_OAUTH_ACCESS_TOKEN", "stale-access")
+    monkeypatch.setenv("OPENAI_OAUTH_REFRESH_TOKEN", "stale-refresh")
+    monkeypatch.setenv("OPENAI_OAUTH_EXPIRES_AT_MS", "9999999999999")
 
     id_token = _jwt({"chatgpt_account_id": "acct_123"})
     calls: list[str] = []
@@ -246,6 +281,8 @@ async def test_provider_oauth_callback_persists_oauth_record(
 
     assert success is True
     assert any(url.endswith("/oauth/token") for url in calls)
+    assert os.environ["OPENAI_OAUTH_ACCESS_TOKEN"] == "access-token-xyz"
+    assert os.environ["OPENAI_OAUTH_REFRESH_TOKEN"] == "refresh-token-xyz"
     records = provider_service.get_provider_auth_records()
     openai_record = records["openai"]
     assert openai_record["type"] == "oauth"
