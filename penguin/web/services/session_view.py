@@ -10,6 +10,7 @@ import subprocess
 from typing import Any, Optional
 
 from penguin import __version__
+from penguin.web.services.provider_catalog import canonical_model_id
 
 TRANSCRIPT_KEY = "_opencode_transcript_v1"
 USAGE_KEY = "_opencode_usage_v1"
@@ -48,6 +49,28 @@ def _normalize_non_empty_string(value: Any) -> Optional[str]:
     return normalized or None
 
 
+def _normalize_provider_id(value: Any) -> Optional[str]:
+    normalized = _normalize_non_empty_string(value)
+    return normalized.lower() if normalized else None
+
+
+def _normalize_model_id(provider_id: Optional[str], value: Any) -> Optional[str]:
+    normalized = _normalize_non_empty_string(value)
+    if not normalized:
+        return None
+
+    model_id = canonical_model_id(provider_id or "", normalized)
+    if (provider_id or "").lower() in {
+        "anthropic",
+        "google",
+        "ollama",
+        "openai",
+        "openrouter",
+    }:
+        return model_id.lower()
+    return model_id
+
+
 def _normalize_title_source(value: Any) -> Optional[str]:
     if not isinstance(value, str):
         return None
@@ -72,7 +95,7 @@ def _resolve_session_model_state(
     message_model = message_meta.get("model")
     message_model_dict = message_model if isinstance(message_model, dict) else {}
 
-    provider_id = (
+    provider_id = _normalize_provider_id(
         _normalize_non_empty_string(message_meta.get("providerID"))
         or _normalize_non_empty_string(message_meta.get("provider_id"))
         or _normalize_non_empty_string(message_model_dict.get("providerID"))
@@ -83,7 +106,8 @@ def _resolve_session_model_state(
             getattr(getattr(core, "model_config", None), "provider", None)
         )
     )
-    model_id = (
+    model_id = _normalize_model_id(
+        provider_id,
         _normalize_non_empty_string(message_meta.get("modelID"))
         or _normalize_non_empty_string(message_meta.get("model_id"))
         or _normalize_non_empty_string(message_model_dict.get("modelID"))

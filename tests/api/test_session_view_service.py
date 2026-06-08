@@ -1132,6 +1132,31 @@ def test_get_session_info_returns_none_for_missing_session():
     assert get_session_info(core, "session_missing") is None
 
 
+def test_get_session_info_canonicalizes_openai_model_metadata():
+    session = _session("session_model_case", "Model Case", "2026-02-03T00:00:00")
+    session.metadata[PROVIDER_ID_KEY] = "OpenAI"
+    session.metadata[MODEL_ID_KEY] = "openai/GPT-5.5"
+    core = _core([session])
+
+    info = get_session_info(core, session.id)
+
+    assert info is not None
+    assert info["providerID"] == "openai"
+    assert info["modelID"] == "gpt-5.5"
+
+
+def test_get_session_info_canonicalizes_global_model_fallback():
+    session = _session("session_global_model", "Global Model", "2026-02-03T00:00:00")
+    core = _core([session])
+    core.model_config = SimpleNamespace(provider="OpenAI", model="openai/GPT-5.5")
+
+    info = get_session_info(core, session.id)
+
+    assert info is not None
+    assert info["providerID"] == "openai"
+    assert info["modelID"] == "gpt-5.5"
+
+
 def test_create_update_remove_session_info_round_trip():
     core = _core([])
 
