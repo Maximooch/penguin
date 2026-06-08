@@ -883,6 +883,11 @@ Deferred to Phase 6:
 - Usage refresh is still a TUI-side follow-up request after idle/completed
   transitions. Backend status/session events should eventually carry durable
   usage truth.
+- Session-scoped context-window stats now refresh through
+  `GET /api/v1/sessions/{session_id}/token-usage` after hydration/status
+  transitions. Remaining follow-up: backend status/session events should
+  eventually carry durable usage truth so the TUI does not need a follow-up
+  request.
 - Session snapshot hydration still compensates for replay and optimistic-message
   gaps. Backend message/part replay parity should eventually shrink this helper.
 
@@ -905,6 +910,19 @@ Follow-up investigation - 2026-05-30:
   explicit directory-scoped lists and canonicalize provider/model IDs at the
   backend compatibility boundary.
 
+Follow-up investigation - 2026-06-04, addressed in Phase 6.1:
+
+- Context-window stats should be session scoped in the TUI. The backend exposes
+  `GET /api/v1/token-usage?session_id=...` and
+  `GET /api/v1/sessions/{session_id}/token-usage`; `refreshSessionUsage` now
+  uses the session-specific route instead of rehydrating `/session/{id}`.
+- The compatibility boundary makes session-specific token/CWM usage
+  authoritative: compute from the located session and owning session/agent
+  context window on the backend, then have the TUI update `session_usage` from
+  the session token-usage route after hydration and idle/completed transitions.
+- Keep `_opencode_usage_v1` in `/session/{id}` as a fast bootstrap/fallback
+  snapshot, not the source of truth for session context-window meters.
+
 ### 6. Push compatibility toward Penguin backend
 
 - [ ] Identify client workarounds that exist because Penguin endpoints are not
@@ -921,6 +939,7 @@ Follow-up investigation - 2026-05-30:
   - provider/model metadata
   - unknown-directory legacy/recovery session filtering
   - provider/model ID canonicalization before TUI validation
+  - session-scoped token/CWM usage from session-specific token-usage routes
   - permission/question flows
   - path/vcs/lsp/formatter route shapes
 - [ ] Keep Penguin-only product features behind explicit Penguin endpoints.
