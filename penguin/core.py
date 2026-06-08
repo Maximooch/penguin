@@ -2133,11 +2133,15 @@ class PenguinCore:
                     "error": "agent token usage not found for session",
                 }
         else:
-            usage_snapshot = metadata.get("_opencode_usage_v1")
-            if isinstance(usage_snapshot, dict):
-                usage = dict(usage_snapshot)
-            else:
+            messages = getattr(session, "messages", []) or []
+            if messages:
                 usage = self._usage_from_session_messages(session, manager=manager)
+            else:
+                usage_snapshot = metadata.get("_opencode_usage_v1")
+                if isinstance(usage_snapshot, dict):
+                    usage = dict(usage_snapshot)
+                else:
+                    usage = self._usage_from_session_messages(session, manager=manager)
 
         usage["scope"] = "session"
         usage["session_id"] = session_id
