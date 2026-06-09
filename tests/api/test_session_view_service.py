@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
 from datetime import datetime
 from pathlib import Path
-import subprocess
 from types import SimpleNamespace
 
 import pytest
 
+from penguin.system.session_manager import SessionManager
 from penguin.system.state import Message, MessageCategory, Session
 from penguin.web.services.session_summary import summarize_session_title
 from penguin.web.services.session_view import (
@@ -16,10 +18,10 @@ from penguin.web.services.session_view import (
     PROVIDER_ID_KEY,
     REVERT_KEY,
     SUMMARY_KEY,
-    TODO_KEY,
     TITLE_SOURCE_AUTO,
     TITLE_SOURCE_KEY,
     TITLE_SOURCE_MANUAL,
+    TODO_KEY,
     TRANSCRIPT_KEY,
     USAGE_KEY,
     VARIANT_KEY,
@@ -32,8 +34,8 @@ from penguin.web.services.session_view import (
     list_session_infos,
     list_session_statuses,
     remove_session_info,
-    update_session_todo,
     update_session_info,
+    update_session_todo,
 )
 
 
@@ -226,6 +228,67 @@ def test_list_session_infos_directory_filter_falls_back_to_exact_directory(
     result = list_session_infos(core, directory=str(alpha_dir))
 
     assert [item["id"] for item in result] == ["session_alpha"]
+
+
+def test_list_session_infos_directory_filter_excludes_unknown_directory(
+    tmp_path: Path,
+):
+    alpha_dir = tmp_path / "alpha"
+    alpha_dir.mkdir()
+
+    alpha = _session("session_alpha", "Alpha", "2026-02-01T00:00:00")
+    alpha.metadata["directory"] = str(alpha_dir)
+
+    unknown = _session("session_unknown", "Unknown", "2026-02-02T00:00:00")
+    unknown.metadata.pop("directory", None)
+
+    core = _core([alpha, unknown])
+    core.runtime_config.active_root = str(alpha_dir)
+    core.runtime_config.project_root = str(alpha_dir)
+
+    result = list_session_infos(core, directory=str(alpha_dir))
+
+    assert [item["id"] for item in result] == ["session_alpha"]
+
+
+def test_list_session_infos_loads_project_session_missing_from_index(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    manager = SessionManager(
+        base_path=str(tmp_path / "conversations"),
+        auto_save_interval=0,
+    )
+    session = _session(
+        "session_missing_index",
+        "PM System Roadmap",
+        "2026-06-08T19:47:18",
+    )
+    session.metadata["directory"] = str(project_dir)
+    session_path = manager.base_path / f"{session.id}.json"
+    session_path.write_text(json.dumps(session.to_dict()), encoding="utf-8")
+
+    conversation_manager = SimpleNamespace(
+        session_manager=manager,
+        agent_session_managers={},
+    )
+    core = SimpleNamespace(
+        conversation_manager=conversation_manager,
+        runtime_config=SimpleNamespace(
+            active_root=str(project_dir),
+            project_root=str(project_dir),
+        ),
+        model_config=SimpleNamespace(model="test-model", provider="test-provider"),
+    )
+
+    result = list_session_infos(core, directory=str(project_dir))
+    info = get_session_info(core, session.id)
+
+    assert [item["id"] for item in result] == [session.id]
+    assert info is not None
+    assert info["title"] == "PM System Roadmap"
 
 
 def test_session_info_includes_usage_snapshot():

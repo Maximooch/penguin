@@ -68,6 +68,17 @@ export const PenguinSessionSchema = z
 
 export const PenguinSessionArraySchema = z.array(PenguinSessionSchema)
 
+export function parsePenguinSessionArray(value: unknown): PenguinSession[] | undefined {
+  if (!Array.isArray(value)) return undefined
+
+  const sessions: PenguinSession[] = []
+  for (const item of value) {
+    const parsed = PenguinSessionSchema.safeParse(item)
+    if (parsed.success) sessions.push(parsed.data as PenguinSession)
+  }
+  return sessions
+}
+
 export type PenguinBootstrapState = {
   agent: Agent[]
   command: Command[]

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
 import {
   fetchBootstrapJson,
   mapPenguinBootstrap,
+  parsePenguinSessionArray,
   PenguinSessionArraySchema,
   parsePenguinUsage,
   unwrapBootstrapData,
@@ -121,6 +122,27 @@ describe("sync bootstrap", () => {
         },
       ]).success,
     ).toBe(false)
+  })
+
+  test("keeps valid Penguin session rows when one row is malformed", () => {
+    expect(
+      parsePenguinSessionArray([
+        {
+          id: "ses_1",
+          title: "Mapped Session",
+          time: {
+            created: 100,
+            updated: 200,
+          },
+        },
+        {
+          id: "ses_2",
+          title: "Missing Time",
+        },
+      ])?.map((item) => item.id),
+    ).toEqual(["ses_1"])
+
+    expect(parsePenguinSessionArray({ data: [] })).toBeUndefined()
   })
 
   test("maps Penguin bootstrap responses into TUI store state", () => {

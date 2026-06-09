@@ -7,7 +7,7 @@ import { Locale } from "@/util/locale"
 import { useKeybind } from "../context/keybind"
 import { useTheme } from "../context/theme"
 import { useSDK } from "../context/sdk"
-import { PenguinSessionArraySchema, type PenguinSession } from "../context/sync-bootstrap"
+import { parsePenguinSessionArray, type PenguinSession } from "../context/sync-bootstrap"
 import { DialogSessionRename } from "./dialog-session-rename"
 import { useKV } from "../context/kv"
 import { createDebouncedSignal } from "../util/signal"
@@ -64,8 +64,7 @@ export function DialogSessionList() {
       const response = await sdk.fetch(url)
       if (!response.ok) return undefined
       const data = await response.json().catch(() => undefined)
-      const parsed = PenguinSessionArraySchema.safeParse(data)
-      return parsed.success ? (parsed.data as PenguinSession[]) : undefined
+      return parsePenguinSessionArray(data)
     }
 
     if (!query) return undefined

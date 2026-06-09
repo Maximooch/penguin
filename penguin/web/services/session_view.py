@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 import logging
 import os
-from pathlib import Path
 import subprocess
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Optional
 
 from penguin import __version__
@@ -184,6 +184,57 @@ def _iter_session_managers(core: Any) -> list[Any]:
     return unique
 
 
+def _session_file_ids(manager: Any) -> list[str]:
+    """Return session ids found on disk for a manager."""
+    base_path = getattr(manager, "base_path", None)
+    if not base_path:
+        return []
+
+    try:
+        root = Path(base_path)
+    except TypeError:
+        return []
+    if not root.exists() or not root.is_dir():
+        return []
+
+    session_format = getattr(manager, "format", "json")
+    if not isinstance(session_format, str) or not session_format.strip():
+        session_format = "json"
+
+    ids: list[str] = []
+    for path in root.glob(f"*.{session_format}"):
+        if path.name == f"session_index.{session_format}":
+            continue
+        ids.append(path.stem)
+    return ids
+
+
+def _manager_session_ids(manager: Any) -> list[str]:
+    """Return unique cached, indexed, and file-backed session ids."""
+    ids: list[str] = []
+    seen: set[str] = set()
+    sources = (
+        getattr(manager, "sessions", {}),
+        getattr(manager, "session_index", {}),
+        _session_file_ids(manager),
+    )
+
+    for source in sources:
+        if isinstance(source, dict):
+            values = source.keys()
+        elif isinstance(source, list):
+            values = source
+        else:
+            continue
+        for value in values:
+            session_id = str(value)
+            if not session_id or session_id in seen:
+                continue
+            seen.add(session_id)
+            ids.append(session_id)
+    return ids
+
+
 def _find_session(core: Any, session_id: str) -> tuple[Optional[Any], Optional[Any]]:
     """Find a session and its manager by id."""
     for manager in _iter_session_managers(core):
@@ -193,6 +244,10 @@ def _find_session(core: Any, session_id: str) -> tuple[Optional[Any], Optional[A
 
         index = getattr(manager, "session_index", {})
         if isinstance(index, dict) and session_id in index:
+            session = _load_session_view_only(manager, session_id)
+            if session is not None:
+                return session, manager
+        if session_id in _session_file_ids(manager):
             session = _load_session_view_only(manager, session_id)
             if session is not None:
                 return session, manager
@@ -294,6 +349,24 @@ def _display_message_count(session: Any) -> int:
     return max(transcript_count, legacy_count)
 
 
+def _explicit_session_directory(core: Any, session: Any) -> tuple[str, str]:
+    """Return a persisted or in-memory session directory, without runtime fallback."""
+    metadata = getattr(session, "metadata", {})
+    session_dirs = getattr(core, "_opencode_session_directories", {})
+
+    if isinstance(metadata, dict):
+        raw_directory = metadata.get("directory")
+        if isinstance(raw_directory, str) and raw_directory.strip():
+            return raw_directory, "metadata"
+
+    if isinstance(session_dirs, dict):
+        mapped = session_dirs.get(str(getattr(session, "id", "")))
+        if isinstance(mapped, str) and mapped.strip():
+            return mapped, "session_map"
+
+    return "", "missing"
+
+
 def _build_session_info(core: Any, session: Any, manager: Any) -> dict[str, Any]:
     """Build OpenCode-compatible Session.Info payload."""
     runtime = getattr(core, "runtime_config", None)
@@ -301,18 +374,8 @@ def _build_session_info(core: Any, session: Any, manager: Any) -> dict[str, Any]
         runtime, "project_root", None
     )
     metadata = getattr(session, "metadata", {})
-    session_dirs = getattr(core, "_opencode_session_directories", {})
 
-    directory = ""
-    directory_source = "missing"
-    if isinstance(session_dirs, dict):
-        mapped = session_dirs.get(str(session.id))
-        if isinstance(mapped, str) and mapped.strip():
-            directory = mapped
-            directory_source = "session_map"
-    if isinstance(metadata, dict) and isinstance(metadata.get("directory"), str):
-        directory = metadata["directory"]
-        directory_source = "metadata"
+    directory, directory_source = _explicit_session_directory(core, session)
     if not directory and runtime_dir:
         directory = str(runtime_dir)
         directory_source = "runtime"
@@ -923,11 +986,7 @@ def list_session_infos(
     normalized_directory = _normalize_existing_directory(directory)
 
     for manager in _iter_session_managers(core):
-        index = getattr(manager, "session_index", {})
-        if not isinstance(index, dict):
-            continue
-
-        for session_id in list(index.keys()):
+        for session_id in _manager_session_ids(manager):
             session = None
             cached = getattr(manager, "sessions", {})
             if isinstance(cached, dict) and session_id in cached:
@@ -937,16 +996,21 @@ def list_session_infos(
             if session is None:
                 continue
 
-            info = _build_session_info(core, session, manager)
-
-            if roots and info.get("parentID"):
-                continue
             if normalized_directory:
-                session_directory = _normalize_existing_directory(info.get("directory"))
+                explicit_directory, _directory_source = _explicit_session_directory(
+                    core,
+                    session,
+                )
+                session_directory = _normalize_existing_directory(explicit_directory)
                 if not session_directory:
                     continue
                 if not _directory_matches(session_directory, normalized_directory):
                     continue
+
+            info = _build_session_info(core, session, manager)
+
+            if roots and info.get("parentID"):
+                continue
             if start is not None and info["time"]["updated"] < start:
                 continue
             if lowered_search and lowered_search not in info["title"].lower():
