@@ -883,6 +883,11 @@ Deferred to Phase 6:
 - Usage refresh is still a TUI-side follow-up request after idle/completed
   transitions. Backend status/session events should eventually carry durable
   usage truth.
+- Session-scoped context-window stats now refresh through
+  `GET /api/v1/sessions/{session_id}/token-usage` after hydration/status
+  transitions. Remaining follow-up: backend status/session events should
+  eventually carry durable usage truth so the TUI does not need a follow-up
+  request.
 - Session snapshot hydration still compensates for replay and optimistic-message
   gaps. Backend message/part replay parity should eventually shrink this helper.
 
@@ -905,6 +910,19 @@ Follow-up investigation - 2026-05-30:
   explicit directory-scoped lists and canonicalize provider/model IDs at the
   backend compatibility boundary.
 
+Follow-up investigation - 2026-06-04, addressed in Phase 6.1:
+
+- Context-window stats should be session scoped in the TUI. The backend exposes
+  `GET /api/v1/token-usage?session_id=...` and
+  `GET /api/v1/sessions/{session_id}/token-usage`; `refreshSessionUsage` now
+  uses the session-specific route instead of rehydrating `/session/{id}`.
+- The compatibility boundary makes session-specific token/CWM usage
+  authoritative: compute from the located session and owning session/agent
+  context window on the backend, then have the TUI update `session_usage` from
+  the session token-usage route after hydration and idle/completed transitions.
+- Keep `_opencode_usage_v1` in `/session/{id}` as a fast bootstrap/fallback
+  snapshot, not the source of truth for session context-window meters.
+
 ### 6. Push compatibility toward Penguin backend
 
 - [ ] Identify client workarounds that exist because Penguin endpoints are not
@@ -920,10 +938,50 @@ Follow-up investigation - 2026-05-30:
   - busy/idle status truth
   - provider/model metadata
   - unknown-directory legacy/recovery session filtering
+  - paginated/cursor-backed session list loading so the TUI can replace the
+    temporary deep fixed fetch used by the Penguin session dialog
   - provider/model ID canonicalization before TUI validation
+  - session-scoped token/CWM usage from session-specific token-usage routes
   - permission/question flows
   - path/vcs/lsp/formatter route shapes
 - [ ] Keep Penguin-only product features behind explicit Penguin endpoints.
+
+### 6.5. TUI startup performance
+
+Investigation snapshot - 2026-06-08:
+
+- The 5-10s perceived TUI startup delay is primarily in launch/runtime
+  initialization, not in the Penguin HTTP bootstrap. API bootstrap requests are
+  visible after the process is already up.
+- Python startup currently imports more than the launcher needs:
+  `penguin/__init__.py` eagerly imports core/config/engine paths, and
+  `penguin/cli/__init__.py` imports the full Typer CLI before the OpenCode TUI
+  launcher path can run.
+- The launcher prefers local source execution when
+  `penguin-tui/packages/opencode` exists, so development worktrees commonly run
+  `bun run --conditions=browser ./src/index.ts` instead of a built binary or
+  lighter sidecar path.
+- The TUI also waits on terminal background-color probing and starts the
+  OpenCode worker/server/config machinery even when running as a Penguin
+  web-backed client.
+- Measured local examples during investigation:
+  - `uv run penguin-tui --help`: about 2.5s
+  - local Bun source help path: about 4.3s warm and 11.5s cold
+  - built arm64 OpenCode binary help path: about 2.4s
+
+Planned work:
+
+- [ ] Lazy-load Python package and CLI imports so `penguin-tui` reaches the
+      launcher without importing PenguinCore/config/engine.
+- [ ] Make launch-mode selection explicit. `--use-global-opencode` should
+      bypass local source preference, and a future env/flag should choose
+      source, built dist, sidecar, or global binary deliberately.
+- [ ] Move terminal background-color probing after first paint or cap its wait
+      more aggressively.
+- [ ] Audit whether Penguin web-backed mode can defer or skip OpenCode worker
+      initialization until a feature actually needs it.
+- [ ] Add lightweight startup timing instrumentation around Python launcher,
+      Bun/binary spawn, first render, and Penguin bootstrap completion.
 
 ### 7. Testing and verification
 

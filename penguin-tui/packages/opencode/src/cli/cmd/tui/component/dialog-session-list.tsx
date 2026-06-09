@@ -7,11 +7,35 @@ import { Locale } from "@/util/locale"
 import { useKeybind } from "../context/keybind"
 import { useTheme } from "../context/theme"
 import { useSDK } from "../context/sdk"
+import { parsePenguinSessionArray, type PenguinSession } from "../context/sync-bootstrap"
 import { DialogSessionRename } from "./dialog-session-rename"
 import { useKV } from "../context/kv"
 import { createDebouncedSignal } from "../util/signal"
-import { expandSessionSearchResults, formatSessionListTitle, getSessionListEntries } from "../util/session-family"
+import {
+  expandSessionSearchResults,
+  formatSessionListTitle,
+  getSessionListEntries,
+  upsertSessionRecord,
+} from "../util/session-family"
+import type { Session } from "@opencode-ai/sdk/v2"
 import "opentui-spinner/solid"
+
+// TODO: Replace this deep fixed fetch with paginated/cursor loading once the
+// Penguin session dialog has backend pagination and incremental list rendering.
+const PENGUIN_SESSION_DIALOG_LIMIT = 1000
+const OPENCODE_SESSION_SEARCH_LIMIT = 30
+
+function isBlankPenguinSession(session: Session | PenguinSession) {
+  const penguin = session as PenguinSession
+  const fallbackTitle = penguin.fallback_title === true
+  return fallbackTitle && penguin.display_message_count === 0
+}
+
+function appendSessionIfMissing<T extends { id: string }>(sessions: T[], session: T | undefined) {
+  if (!session) return sessions
+  if (sessions.some((item) => item.id === session.id)) return sessions
+  return [...sessions, session]
+}
 
 export function DialogSessionList() {
   const dialog = useDialog()
@@ -24,10 +48,27 @@ export function DialogSessionList() {
 
   const [toDelete, setToDelete] = createSignal<string>()
   const [search, setSearch] = createDebouncedSignal("", 150)
+  const sessionListQuery = createMemo(() => ({
+    directory: sync.data.path.directory || sdk.directory,
+    search: search(),
+  }))
 
-  const [searchResults] = createResource(search, async (query) => {
+  const [searchResults] = createResource(sessionListQuery, async (input) => {
+    const query = input.search.trim()
+    if (sdk.penguin) {
+      const url = new URL("/session", sdk.url)
+      if (input.directory) url.searchParams.set("directory", input.directory)
+      url.searchParams.set("limit", String(PENGUIN_SESSION_DIALOG_LIMIT))
+      if (query) url.searchParams.set("search", query)
+
+      const response = await sdk.fetch(url)
+      if (!response.ok) return undefined
+      const data = await response.json().catch(() => undefined)
+      return parsePenguinSessionArray(data)
+    }
+
     if (!query) return undefined
-    const result = await sdk.client.session.list({ search: query, limit: 30 })
+    const result = await sdk.client.session.list({ search: query, limit: OPENCODE_SESSION_SEARCH_LIMIT })
     return result.data ?? []
   })
 
@@ -35,7 +76,17 @@ export function DialogSessionList() {
 
   const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
-  const sessions = createMemo(() => expandSessionSearchResults(searchResults(), sync.data.session))
+  const sessions = createMemo(() => {
+    const activeSessionID = currentSessionID()
+    const currentSession = sync.data.session.find((item) => item.id === activeSessionID)
+    const expanded = expandSessionSearchResults(searchResults(), sync.data.session)
+    const withCurrent =
+      sdk.penguin && !search().trim() ? appendSessionIfMissing(expanded, currentSession) : expanded
+
+    return withCurrent.filter(
+      (session) => !sdk.penguin || session.id === activeSessionID || !isBlankPenguinSession(session),
+    )
+  })
 
   const options = createMemo(() => {
     const today = new Date().toDateString()
@@ -82,6 +133,10 @@ export function DialogSessionList() {
         setToDelete(undefined)
       }}
       onSelect={(option) => {
+        const selected = sessions().find((item) => item.id === option.value)
+        if (selected) {
+          sync.set("session", upsertSessionRecord(sync.data.session, selected))
+        }
         route.navigate({
           type: "session",
           sessionID: option.value,

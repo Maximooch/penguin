@@ -10,6 +10,7 @@ import type {
 } from "@opencode-ai/sdk/v2"
 import type { Path } from "@opencode-ai/sdk"
 import { Log } from "@/util/log"
+import z from "zod"
 
 type BootstrapFetch = (input: string | URL, init?: RequestInit) => Promise<Response>
 
@@ -32,6 +33,50 @@ export type PenguinSession = Session & {
   providerID?: string
   modelID?: string
   variant?: string
+  message_count?: number
+  display_message_count?: number
+  fallback_title?: boolean
+}
+
+const PenguinSessionTimeSchema = z
+  .object({
+    created: z.number(),
+    updated: z.number(),
+    compacting: z.number().optional(),
+    archived: z.number().optional(),
+  })
+  .passthrough()
+
+export const PenguinSessionSchema = z
+  .object({
+    id: z.string(),
+    title: z.string(),
+    time: PenguinSessionTimeSchema,
+    parentID: z.string().optional(),
+    directory: z.string().optional(),
+    agent_mode: z.string().optional(),
+    agent_id: z.string().optional(),
+    parent_agent_id: z.string().optional(),
+    providerID: z.string().optional(),
+    modelID: z.string().optional(),
+    variant: z.string().optional(),
+    message_count: z.number().optional(),
+    display_message_count: z.number().optional(),
+    fallback_title: z.boolean().optional(),
+  })
+  .passthrough()
+
+export const PenguinSessionArraySchema = z.array(PenguinSessionSchema)
+
+export function parsePenguinSessionArray(value: unknown): PenguinSession[] | undefined {
+  if (!Array.isArray(value)) return undefined
+
+  const sessions: PenguinSession[] = []
+  for (const item of value) {
+    const parsed = PenguinSessionSchema.safeParse(item)
+    if (parsed.success) sessions.push(parsed.data as PenguinSession)
+  }
+  return sessions
 }
 
 export type PenguinBootstrapState = {
@@ -251,6 +296,13 @@ function mapPenguinSession(input: {
   if (modelID) payload.modelID = modelID
   const variant = typeof input.item.variant === "string" ? input.item.variant : undefined
   if (variant) payload.variant = variant
+  const messageCount = typeof input.item.message_count === "number" ? input.item.message_count : undefined
+  if (messageCount !== undefined) payload.message_count = messageCount
+  const displayMessageCount =
+    typeof input.item.display_message_count === "number" ? input.item.display_message_count : undefined
+  if (displayMessageCount !== undefined) payload.display_message_count = displayMessageCount
+  const fallbackTitle = typeof input.item.fallback_title === "boolean" ? input.item.fallback_title : undefined
+  if (fallbackTitle !== undefined) payload.fallback_title = fallbackTitle
   const agentID = typeof input.item.agent_id === "string" ? input.item.agent_id : undefined
   if (agentID) payload.agent_id = agentID
   const parentAgentID = typeof input.item.parent_agent_id === "string" ? input.item.parent_agent_id : undefined

@@ -174,7 +174,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       if (usageRefreshInFlight.has(sessionID) || now - last < 400) return
       usageRefreshInFlight.add(sessionID)
       usageRefreshAt.set(sessionID, now)
-      const url = new URL(`/session/${encodeURIComponent(sessionID)}`, sdk.url)
+      const url = new URL(`/api/v1/sessions/${encodeURIComponent(sessionID)}/token-usage`, sdk.url)
       sdk.fetch(url)
         .then((res) => (res.ok ? res.json() : undefined))
         .then((data) => {
@@ -218,6 +218,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         }),
       )
       fullSyncedSessions.add(sessionID)
+      refreshSessionUsage(sessionID)
     }
 
     sdk.event.listen((e) => {

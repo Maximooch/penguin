@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
 from datetime import datetime
 from pathlib import Path
-import subprocess
 from types import SimpleNamespace
 
 import pytest
 
+from penguin.system.session_manager import SessionManager
 from penguin.system.state import Message, MessageCategory, Session
 from penguin.web.services.session_summary import summarize_session_title
 from penguin.web.services.session_view import (
@@ -16,10 +18,10 @@ from penguin.web.services.session_view import (
     PROVIDER_ID_KEY,
     REVERT_KEY,
     SUMMARY_KEY,
-    TODO_KEY,
     TITLE_SOURCE_AUTO,
     TITLE_SOURCE_KEY,
     TITLE_SOURCE_MANUAL,
+    TODO_KEY,
     TRANSCRIPT_KEY,
     USAGE_KEY,
     VARIANT_KEY,
@@ -32,8 +34,8 @@ from penguin.web.services.session_view import (
     list_session_infos,
     list_session_statuses,
     remove_session_info,
-    update_session_todo,
     update_session_info,
+    update_session_todo,
 )
 
 
@@ -128,6 +130,39 @@ def test_list_session_infos_sorted_and_filtered():
     assert [item["id"] for item in filtered] == ["session_a"]
 
 
+def test_session_info_marks_blank_fallback_title_sessions():
+    blank = _session("session_20260608_185439", "", "2026-02-01T00:00:00")
+    blank.metadata.pop("title", None)
+    active = _session("session_20260608_190001", "", "2026-02-02T00:00:00")
+    active.metadata.pop("title", None)
+    manual = _session("session_manual_suffix", "", "2026-02-03T00:00:00")
+    manual.metadata["title"] = f"Session {manual.id[-8:]}"
+    active.messages.append(
+        Message(
+            id="msg_user_active",
+            role="user",
+            content="Assess PM system gaps",
+            category=MessageCategory.DIALOG,
+            timestamp="2026-02-02T00:00:00",
+        )
+    )
+    core = _core([blank, active, manual])
+
+    result = {item["id"]: item for item in list_session_infos(core)}
+
+    assert result[blank.id]["title"] == f"Session {blank.id[-8:]}"
+    assert result[blank.id]["fallback_title"] is True
+    assert result[blank.id]["message_count"] == 0
+    assert result[blank.id]["display_message_count"] == 0
+    assert result[active.id]["title"] == "Assess PM system gaps"
+    assert result[active.id]["fallback_title"] is False
+    assert result[active.id]["message_count"] == 1
+    assert result[active.id]["display_message_count"] == 1
+    assert result[manual.id]["title"] == f"Session {manual.id[-8:]}"
+    assert result[manual.id]["fallback_title"] is False
+    assert result[manual.id]["display_message_count"] == 0
+
+
 def test_list_session_infos_directory_filter_matches_exact_directory_only(
     tmp_path: Path,
 ):
@@ -193,6 +228,67 @@ def test_list_session_infos_directory_filter_falls_back_to_exact_directory(
     result = list_session_infos(core, directory=str(alpha_dir))
 
     assert [item["id"] for item in result] == ["session_alpha"]
+
+
+def test_list_session_infos_directory_filter_excludes_unknown_directory(
+    tmp_path: Path,
+):
+    alpha_dir = tmp_path / "alpha"
+    alpha_dir.mkdir()
+
+    alpha = _session("session_alpha", "Alpha", "2026-02-01T00:00:00")
+    alpha.metadata["directory"] = str(alpha_dir)
+
+    unknown = _session("session_unknown", "Unknown", "2026-02-02T00:00:00")
+    unknown.metadata.pop("directory", None)
+
+    core = _core([alpha, unknown])
+    core.runtime_config.active_root = str(alpha_dir)
+    core.runtime_config.project_root = str(alpha_dir)
+
+    result = list_session_infos(core, directory=str(alpha_dir))
+
+    assert [item["id"] for item in result] == ["session_alpha"]
+
+
+def test_list_session_infos_loads_project_session_missing_from_index(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    manager = SessionManager(
+        base_path=str(tmp_path / "conversations"),
+        auto_save_interval=0,
+    )
+    session = _session(
+        "session_missing_index",
+        "PM System Roadmap",
+        "2026-06-08T19:47:18",
+    )
+    session.metadata["directory"] = str(project_dir)
+    session_path = manager.base_path / f"{session.id}.json"
+    session_path.write_text(json.dumps(session.to_dict()), encoding="utf-8")
+
+    conversation_manager = SimpleNamespace(
+        session_manager=manager,
+        agent_session_managers={},
+    )
+    core = SimpleNamespace(
+        conversation_manager=conversation_manager,
+        runtime_config=SimpleNamespace(
+            active_root=str(project_dir),
+            project_root=str(project_dir),
+        ),
+        model_config=SimpleNamespace(model="test-model", provider="test-provider"),
+    )
+
+    result = list_session_infos(core, directory=str(project_dir))
+    info = get_session_info(core, session.id)
+
+    assert [item["id"] for item in result] == [session.id]
+    assert info is not None
+    assert info["title"] == "PM System Roadmap"
 
 
 def test_session_info_includes_usage_snapshot():
@@ -1127,9 +1223,70 @@ def test_list_session_infos_does_not_mutate_current_session() -> None:
     assert manager.current_session is current
 
 
+def test_session_view_skips_recovery_substitute_from_view_load() -> None:
+    corrupt = _session("session_corrupt", "Corrupt", "2026-02-01T00:00:00")
+    recovery = _session("recovery_20260608_185439", "Recovery", "2026-02-02T00:00:00")
+
+    class _RecoverySubstituteManager(_Manager):
+        def __init__(self) -> None:
+            super().__init__([corrupt])
+            self.sessions.clear()
+            self.current_session = None
+
+        def load_session(self, session_id: str) -> Session | None:
+            if session_id == corrupt.id:
+                self.current_session = recovery
+                return recovery
+            return None
+
+    manager = _RecoverySubstituteManager()
+    conversation_manager = SimpleNamespace(
+        session_manager=manager,
+        agent_session_managers={"default": manager},
+    )
+    runtime_config = SimpleNamespace(
+        active_root="/tmp/workspace", project_root="/tmp/workspace"
+    )
+    model_config = SimpleNamespace(model="test-model", provider="test-provider")
+    core = SimpleNamespace(
+        conversation_manager=conversation_manager,
+        runtime_config=runtime_config,
+        model_config=model_config,
+    )
+
+    assert list_session_infos(core) == []
+    assert get_session_info(core, corrupt.id) is None
+    assert manager.current_session is None
+
+
 def test_get_session_info_returns_none_for_missing_session():
     core = _core([])
     assert get_session_info(core, "session_missing") is None
+
+
+def test_get_session_info_canonicalizes_openai_model_metadata():
+    session = _session("session_model_case", "Model Case", "2026-02-03T00:00:00")
+    session.metadata[PROVIDER_ID_KEY] = "OpenAI"
+    session.metadata[MODEL_ID_KEY] = "openai/GPT-5.5"
+    core = _core([session])
+
+    info = get_session_info(core, session.id)
+
+    assert info is not None
+    assert info["providerID"] == "openai"
+    assert info["modelID"] == "gpt-5.5"
+
+
+def test_get_session_info_canonicalizes_global_model_fallback():
+    session = _session("session_global_model", "Global Model", "2026-02-03T00:00:00")
+    core = _core([session])
+    core.model_config = SimpleNamespace(provider="OpenAI", model="openai/GPT-5.5")
+
+    info = get_session_info(core, session.id)
+
+    assert info is not None
+    assert info["providerID"] == "openai"
+    assert info["modelID"] == "gpt-5.5"
 
 
 def test_create_update_remove_session_info_round_trip():

@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
 import {
   fetchBootstrapJson,
   mapPenguinBootstrap,
+  parsePenguinSessionArray,
+  PenguinSessionArraySchema,
   parsePenguinUsage,
   unwrapBootstrapData,
 } from "../../../src/cli/cmd/tui/context/sync-bootstrap"
@@ -96,6 +98,53 @@ describe("sync bootstrap", () => {
     expect(parsePenguinUsage({ usage: {} })).toBeUndefined()
   })
 
+  test("validates Penguin session list payloads", () => {
+    expect(
+      PenguinSessionArraySchema.safeParse([
+        {
+          id: "ses_1",
+          title: "Mapped Session",
+          time: {
+            created: 100,
+            updated: 200,
+          },
+          display_message_count: 1,
+          fallback_title: false,
+        },
+      ]).success,
+    ).toBe(true)
+
+    expect(
+      PenguinSessionArraySchema.safeParse([
+        {
+          id: "ses_1",
+          title: "Missing Time",
+        },
+      ]).success,
+    ).toBe(false)
+  })
+
+  test("keeps valid Penguin session rows when one row is malformed", () => {
+    expect(
+      parsePenguinSessionArray([
+        {
+          id: "ses_1",
+          title: "Mapped Session",
+          time: {
+            created: 100,
+            updated: 200,
+          },
+        },
+        {
+          id: "ses_2",
+          title: "Missing Time",
+        },
+      ])?.map((item) => item.id),
+    ).toEqual(["ses_1"])
+
+    expect(parsePenguinSessionArray({ data: [] })).toBeUndefined()
+  })
+
   test("maps Penguin bootstrap responses into TUI store state", () => {
     const result = mapPenguinBootstrap({
       baseUrl: "http://127.0.0.1:9000",
@@ -131,6 +180,9 @@ describe("sync bootstrap", () => {
           agent_mode: "build",
           providerID: "openai",
           modelID: "gpt-5.5",
+          message_count: 0,
+          display_message_count: 0,
+          fallback_title: false,
           usage: {
             current_total_tokens: 42,
             max_context_window_tokens: 100,
@@ -160,6 +212,9 @@ describe("sync bootstrap", () => {
       agent_mode: "build",
       providerID: "openai",
       modelID: "gpt-5.5",
+      message_count: 0,
+      display_message_count: 0,
+      fallback_title: false,
     })
     expect(result.session_usage.ses_1?.current_total_tokens).toBe(42)
     expect(result.session_status.ses_1).toEqual({ type: "idle" })

@@ -2095,6 +2095,7 @@ class PenguinCore:
         metadata = getattr(session, "metadata", None)
         if not isinstance(metadata, dict):
             metadata = {}
+        usage_snapshot = metadata.get("_opencode_usage_v1")
 
         metadata_agent_id = metadata.get("agent_id")
         if isinstance(metadata_agent_id, str):
@@ -2119,7 +2120,6 @@ class PenguinCore:
                     agent_id=agent_id,
                 )
             elif metadata_agent_id == agent_id and not message_agent_ids:
-                usage_snapshot = metadata.get("_opencode_usage_v1")
                 if isinstance(usage_snapshot, dict):
                     usage = dict(usage_snapshot)
                 else:
@@ -2133,11 +2133,17 @@ class PenguinCore:
                     "error": "agent token usage not found for session",
                 }
         else:
-            usage_snapshot = metadata.get("_opencode_usage_v1")
-            if isinstance(usage_snapshot, dict):
-                usage = dict(usage_snapshot)
-            else:
+            messages = getattr(session, "messages", []) or []
+            if messages:
                 usage = self._usage_from_session_messages(session, manager=manager)
+                PenguinCore._preserve_session_usage_truncations(
+                    usage, usage_snapshot
+                )
+            else:
+                if isinstance(usage_snapshot, dict):
+                    usage = dict(usage_snapshot)
+                else:
+                    usage = self._usage_from_session_messages(session, manager=manager)
 
         usage["scope"] = "session"
         usage["session_id"] = session_id
@@ -2148,6 +2154,32 @@ class PenguinCore:
             usage["agent_id"] = metadata_agent_id
 
         return usage
+
+    @staticmethod
+    def _preserve_session_usage_truncations(
+        usage: Dict[str, Any], usage_snapshot: Optional[Mapping[str, Any]]
+    ) -> None:
+        """Copy persisted truncation telemetry onto recomputed usage totals."""
+        if not isinstance(usage_snapshot, dict):
+            return
+        snapshot_truncations = usage_snapshot.get("truncations")
+        if not isinstance(snapshot_truncations, dict):
+            return
+
+        current_truncations = usage.get("truncations")
+        preserved = (
+            dict(current_truncations) if isinstance(current_truncations, dict) else {}
+        )
+        for key in (
+            "total_truncations",
+            "messages_removed",
+            "tokens_freed",
+            "by_category",
+            "recent_events",
+        ):
+            if key in snapshot_truncations:
+                preserved[key] = snapshot_truncations[key]
+        usage["truncations"] = preserved
 
     def _usage_from_session_messages(
         self,
@@ -2181,10 +2213,15 @@ class PenguinCore:
                 category_name = "UNKNOWN"
             categories[category_name] = categories.get(category_name, 0) + token_count
 
-        session_conversation_manager = getattr(session, "conversation_manager", None)
-        context_source = (
-            session_conversation_manager or manager or self.conversation_manager
-        )
+        context_source = None
+        for candidate in (
+            getattr(session, "conversation_manager", None),
+            manager,
+            getattr(self, "conversation_manager", None),
+        ):
+            if getattr(candidate, "context_window", None) is not None:
+                context_source = candidate
+                break
         context_window = getattr(context_source, "context_window", None)
         max_tokens = int(getattr(context_window, "max_context_window_tokens", 0) or 0)
         available_tokens = (
