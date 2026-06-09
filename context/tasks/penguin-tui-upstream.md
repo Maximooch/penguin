@@ -938,6 +938,8 @@ Follow-up investigation - 2026-06-04, addressed in Phase 6.1:
   - busy/idle status truth
   - provider/model metadata
   - unknown-directory legacy/recovery session filtering
+  - paginated/cursor-backed session list loading so the TUI can replace the
+    temporary deep fixed fetch used by the Penguin session dialog
   - provider/model ID canonicalization before TUI validation
   - session-scoped token/CWM usage from session-specific token-usage routes
   - permission/question flows

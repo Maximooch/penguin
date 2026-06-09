@@ -131,6 +131,9 @@ describe("sync bootstrap", () => {
           agent_mode: "build",
           providerID: "openai",
           modelID: "gpt-5.5",
+          message_count: 0,
+          display_message_count: 0,
+          fallback_title: false,
           usage: {
             current_total_tokens: 42,
             max_context_window_tokens: 100,
@@ -160,6 +163,9 @@ describe("sync bootstrap", () => {
       agent_mode: "build",
       providerID: "openai",
       modelID: "gpt-5.5",
+      message_count: 0,
+      display_message_count: 0,
+      fallback_title: false,
     })
     expect(result.session_usage.ses_1?.current_total_tokens).toBe(42)
     expect(result.session_status.ses_1).toEqual({ type: "idle" })

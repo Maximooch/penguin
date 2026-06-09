@@ -128,6 +128,39 @@ def test_list_session_infos_sorted_and_filtered():
     assert [item["id"] for item in filtered] == ["session_a"]
 
 
+def test_session_info_marks_blank_fallback_title_sessions():
+    blank = _session("session_20260608_185439", "", "2026-02-01T00:00:00")
+    blank.metadata.pop("title", None)
+    active = _session("session_20260608_190001", "", "2026-02-02T00:00:00")
+    active.metadata.pop("title", None)
+    manual = _session("session_manual_suffix", "", "2026-02-03T00:00:00")
+    manual.metadata["title"] = f"Session {manual.id[-8:]}"
+    active.messages.append(
+        Message(
+            id="msg_user_active",
+            role="user",
+            content="Assess PM system gaps",
+            category=MessageCategory.DIALOG,
+            timestamp="2026-02-02T00:00:00",
+        )
+    )
+    core = _core([blank, active, manual])
+
+    result = {item["id"]: item for item in list_session_infos(core)}
+
+    assert result[blank.id]["title"] == f"Session {blank.id[-8:]}"
+    assert result[blank.id]["fallback_title"] is True
+    assert result[blank.id]["message_count"] == 0
+    assert result[blank.id]["display_message_count"] == 0
+    assert result[active.id]["title"] == "Assess PM system gaps"
+    assert result[active.id]["fallback_title"] is False
+    assert result[active.id]["message_count"] == 1
+    assert result[active.id]["display_message_count"] == 1
+    assert result[manual.id]["title"] == f"Session {manual.id[-8:]}"
+    assert result[manual.id]["fallback_title"] is False
+    assert result[manual.id]["display_message_count"] == 0
+
+
 def test_list_session_infos_directory_filter_matches_exact_directory_only(
     tmp_path: Path,
 ):
@@ -1125,6 +1158,42 @@ def test_list_session_infos_does_not_mutate_current_session() -> None:
 
     assert [item["id"] for item in result] == ["session_target", "session_current"]
     assert manager.current_session is current
+
+
+def test_session_view_skips_recovery_substitute_from_view_load() -> None:
+    corrupt = _session("session_corrupt", "Corrupt", "2026-02-01T00:00:00")
+    recovery = _session("recovery_20260608_185439", "Recovery", "2026-02-02T00:00:00")
+
+    class _RecoverySubstituteManager(_Manager):
+        def __init__(self) -> None:
+            super().__init__([corrupt])
+            self.sessions.clear()
+            self.current_session = None
+
+        def load_session(self, session_id: str):
+            if session_id == corrupt.id:
+                self.current_session = recovery
+                return recovery
+            return None
+
+    manager = _RecoverySubstituteManager()
+    conversation_manager = SimpleNamespace(
+        session_manager=manager,
+        agent_session_managers={"default": manager},
+    )
+    runtime_config = SimpleNamespace(
+        active_root="/tmp/workspace", project_root="/tmp/workspace"
+    )
+    model_config = SimpleNamespace(model="test-model", provider="test-provider")
+    core = SimpleNamespace(
+        conversation_manager=conversation_manager,
+        runtime_config=runtime_config,
+        model_config=model_config,
+    )
+
+    assert list_session_infos(core) == []
+    assert get_session_info(core, corrupt.id) is None
+    assert manager.current_session is None
 
 
 def test_get_session_info_returns_none_for_missing_session():

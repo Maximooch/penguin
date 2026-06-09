@@ -7,6 +7,7 @@ import { Locale } from "@/util/locale"
 import { useKeybind } from "../context/keybind"
 import { useTheme } from "../context/theme"
 import { useSDK } from "../context/sdk"
+import type { PenguinSession } from "../context/sync-bootstrap"
 import { DialogSessionRename } from "./dialog-session-rename"
 import { useKV } from "../context/kv"
 import { createDebouncedSignal } from "../util/signal"
@@ -19,8 +20,16 @@ import {
 import type { Session } from "@opencode-ai/sdk/v2"
 import "opentui-spinner/solid"
 
+// TODO: Replace this deep fixed fetch with paginated/cursor loading once the
+// Penguin session dialog has backend pagination and incremental list rendering.
 const PENGUIN_SESSION_DIALOG_LIMIT = 1000
 const OPENCODE_SESSION_SEARCH_LIMIT = 30
+
+function isBlankPenguinSession(session: Session | PenguinSession) {
+  const penguin = session as PenguinSession
+  const fallbackTitle = penguin.fallback_title === true || session.title === `Session ${session.id.slice(-8)}`
+  return fallbackTitle && penguin.display_message_count === 0
+}
 
 export function DialogSessionList() {
   const dialog = useDialog()
@@ -49,7 +58,7 @@ export function DialogSessionList() {
       const response = await sdk.fetch(url)
       if (!response.ok) return undefined
       const data = await response.json().catch(() => undefined)
-      return Array.isArray(data) ? (data as Session[]) : undefined
+      return Array.isArray(data) ? (data as PenguinSession[]) : undefined
     }
 
     if (!query) return undefined
@@ -61,7 +70,11 @@ export function DialogSessionList() {
 
   const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
-  const sessions = createMemo(() => expandSessionSearchResults(searchResults(), sync.data.session))
+  const sessions = createMemo(() =>
+    expandSessionSearchResults(searchResults(), sync.data.session).filter(
+      (session) => !sdk.penguin || !isBlankPenguinSession(session),
+    ),
+  )
 
   const options = createMemo(() => {
     const today = new Date().toDateString()

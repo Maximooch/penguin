@@ -185,7 +185,17 @@ def _load_session_view_only(manager: Any, session_id: str) -> Optional[Any]:
     """Load a session for inspection without changing shared current_session."""
     previous = getattr(manager, "current_session", None)
     try:
-        return manager.load_session(session_id)
+        session = manager.load_session(session_id)
+        loaded_id = str(getattr(session, "id", "")) if session is not None else ""
+        if session is not None and loaded_id != str(session_id):
+            logger.debug(
+                "session.view.load_mismatch requested=%s returned=%s manager=%s",
+                session_id,
+                loaded_id,
+                hex(id(manager)),
+            )
+            return None
+        return session
     except Exception:
         logger.warning(
             "session.view.load_failed session=%s manager=%s",
@@ -217,6 +227,53 @@ def _infer_title(session: Any) -> str:
             if line:
                 return line[:64]
     return f"Session {str(getattr(session, 'id', 'unknown'))[-8:]}"
+
+
+def _has_fallback_title(session: Any) -> bool:
+    """Return whether session title falls back to its id suffix."""
+    metadata = getattr(session, "metadata", {})
+    if isinstance(metadata, dict) and isinstance(metadata.get("title"), str):
+        if metadata["title"].strip():
+            return False
+
+    messages = getattr(session, "messages", [])
+    for item in messages:
+        if getattr(item, "role", None) != "user":
+            continue
+        content = getattr(item, "content", "")
+        if isinstance(content, str) and content.split("\n", 1)[0].strip():
+            return False
+    return True
+
+
+def _display_message_count(session: Any) -> int:
+    """Count messages expected to produce visible TUI session rows."""
+    metadata = getattr(session, "metadata", {})
+    transcript = metadata.get(TRANSCRIPT_KEY) if isinstance(metadata, dict) else None
+    transcript_count = 0
+
+    if isinstance(transcript, dict):
+        messages = transcript.get("messages")
+        order = transcript.get("order")
+        if isinstance(messages, dict) and isinstance(order, list):
+            for message_id in order:
+                entry = messages.get(message_id)
+                if not isinstance(entry, dict):
+                    continue
+                parts = entry.get("parts")
+                part_order = entry.get("part_order")
+                if isinstance(parts, dict) and isinstance(part_order, list):
+                    if any(
+                        isinstance(parts.get(part_id), dict) for part_id in part_order
+                    ):
+                        transcript_count += 1
+
+    legacy_count = sum(
+        1
+        for message in getattr(session, "messages", [])
+        if getattr(message, "role", "") in {"user", "assistant", "tool"}
+    )
+    return max(transcript_count, legacy_count)
 
 
 def _build_session_info(core: Any, session: Any, manager: Any) -> dict[str, Any]:
@@ -263,6 +320,7 @@ def _build_session_info(core: Any, session: Any, manager: Any) -> dict[str, Any]
     if updated <= 0:
         updated = created
 
+    messages = getattr(session, "messages", [])
     payload: dict[str, Any] = {
         "id": str(session.id),
         "slug": str(session.id),
@@ -270,6 +328,9 @@ def _build_session_info(core: Any, session: Any, manager: Any) -> dict[str, Any]
         "directory": directory,
         "agent_mode": "build",
         "title": _infer_title(session),
+        "message_count": len(messages) if isinstance(messages, list) else 0,
+        "display_message_count": _display_message_count(session),
+        "fallback_title": _has_fallback_title(session),
         "version": __version__,
         "time": {
             "created": created,
