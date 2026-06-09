@@ -47,6 +47,12 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         const first = agents()[0]
         if (first) setAgentStore("current", first.name)
       })
+      const fallbackAgent = createMemo<Agent>(() => ({
+        name: agentStore.current,
+        mode: "primary",
+        permission: [],
+        options: {},
+      }))
       const { theme } = useTheme()
       const colors = createMemo(() => [
         theme.secondary,
@@ -64,7 +70,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           return (
             agents().find((x) => x.name === agentStore.current) ??
             agents()[0] ??
-            ({ name: agentStore.current } as Agent)
+            fallbackAgent()
           )
         },
         set(name: string) {
