@@ -153,7 +153,8 @@ async def test_session_token_usage_prefers_messages_over_stale_snapshot() -> Non
     assert usage["scope"] == "session"
     assert usage["current_total_tokens"] == 321
     assert usage["categories"]["DIALOG"] == 321
-    assert usage["truncations"]["total_truncations"] == 0
+    assert usage["truncations"]["total_truncations"] == 9
+    assert usage["truncations"]["tokens_freed"] == 88_888
 
 
 @pytest.mark.asyncio
