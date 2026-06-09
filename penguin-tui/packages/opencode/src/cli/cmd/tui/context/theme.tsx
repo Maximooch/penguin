@@ -51,6 +51,7 @@ import { createStore, produce } from "solid-js/store"
 import { Global } from "@/global"
 import { Filesystem } from "@/util/filesystem"
 import { useSDK } from "./sdk"
+import { profileStartup } from "../util/startup-profile"
 
 type ThemeColors = {
   primary: RGBA
@@ -314,9 +315,21 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
     })
 
     function init() {
+      profileStartup("theme.init.start", {
+        active: store.active,
+        mode: store.mode,
+      })
+      if (store.active !== "system" && store.themes[store.active]) {
+        setStore("ready", true)
+      }
       resolveSystemTheme()
+      const customThemeStart = Date.now()
       getCustomThemes()
         .then((custom) => {
+          profileStartup("theme.custom_themes.done", {
+            duration_ms: Date.now() - customThemeStart,
+            count: Object.keys(custom).length,
+          })
           setStore(
             produce((draft) => {
               Object.assign(draft.themes, custom)
@@ -324,6 +337,9 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
           )
         })
         .catch(() => {
+          profileStartup("theme.custom_themes.error", {
+            duration_ms: Date.now() - customThemeStart,
+          })
           setStore("active", defaultTheme)
         })
         .finally(() => {
@@ -336,13 +352,16 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
     onMount(init)
 
     function resolveSystemTheme() {
-      console.log("resolveSystemTheme")
+      const paletteStart = Date.now()
       renderer
         .getPalette({
           size: 16,
         })
         .then((colors) => {
-          console.log(colors.palette)
+          profileStartup("theme.palette.done", {
+            duration_ms: Date.now() - paletteStart,
+            palette_colors: colors.palette.length,
+          })
           if (!colors.palette[0]) {
             if (store.active === "system") {
               setStore(
