@@ -2157,7 +2157,7 @@ class PenguinCore:
 
     @staticmethod
     def _preserve_session_usage_truncations(
-        usage: Dict[str, Any], usage_snapshot: Any
+        usage: Dict[str, Any], usage_snapshot: Optional[Mapping[str, Any]]
     ) -> None:
         """Copy persisted truncation telemetry onto recomputed usage totals."""
         if not isinstance(usage_snapshot, dict):

@@ -946,6 +946,43 @@ Follow-up investigation - 2026-06-04, addressed in Phase 6.1:
   - path/vcs/lsp/formatter route shapes
 - [ ] Keep Penguin-only product features behind explicit Penguin endpoints.
 
+### 6.5. TUI startup performance
+
+Investigation snapshot - 2026-06-08:
+
+- The 5-10s perceived TUI startup delay is primarily in launch/runtime
+  initialization, not in the Penguin HTTP bootstrap. API bootstrap requests are
+  visible after the process is already up.
+- Python startup currently imports more than the launcher needs:
+  `penguin/__init__.py` eagerly imports core/config/engine paths, and
+  `penguin/cli/__init__.py` imports the full Typer CLI before the OpenCode TUI
+  launcher path can run.
+- The launcher prefers local source execution when
+  `penguin-tui/packages/opencode` exists, so development worktrees commonly run
+  `bun run --conditions=browser ./src/index.ts` instead of a built binary or
+  lighter sidecar path.
+- The TUI also waits on terminal background-color probing and starts the
+  OpenCode worker/server/config machinery even when running as a Penguin
+  web-backed client.
+- Measured local examples during investigation:
+  - `uv run penguin-tui --help`: about 2.5s
+  - local Bun source help path: about 4.3s warm and 11.5s cold
+  - built arm64 OpenCode binary help path: about 2.4s
+
+Planned work:
+
+- [ ] Lazy-load Python package and CLI imports so `penguin-tui` reaches the
+      launcher without importing PenguinCore/config/engine.
+- [ ] Make launch-mode selection explicit. `--use-global-opencode` should
+      bypass local source preference, and a future env/flag should choose
+      source, built dist, sidecar, or global binary deliberately.
+- [ ] Move terminal background-color probing after first paint or cap its wait
+      more aggressively.
+- [ ] Audit whether Penguin web-backed mode can defer or skip OpenCode worker
+      initialization until a feature actually needs it.
+- [ ] Add lightweight startup timing instrumentation around Python launcher,
+      Bun/binary spawn, first render, and Penguin bootstrap completion.
+
 ### 7. Testing and verification
 
 - [ ] Add focused tests for extracted helpers before behavior changes.

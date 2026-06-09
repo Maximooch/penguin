@@ -10,6 +10,7 @@ import type {
 } from "@opencode-ai/sdk/v2"
 import type { Path } from "@opencode-ai/sdk"
 import { Log } from "@/util/log"
+import z from "zod"
 
 type BootstrapFetch = (input: string | URL, init?: RequestInit) => Promise<Response>
 
@@ -36,6 +37,36 @@ export type PenguinSession = Session & {
   display_message_count?: number
   fallback_title?: boolean
 }
+
+const PenguinSessionTimeSchema = z
+  .object({
+    created: z.number(),
+    updated: z.number(),
+    compacting: z.number().optional(),
+    archived: z.number().optional(),
+  })
+  .passthrough()
+
+export const PenguinSessionSchema = z
+  .object({
+    id: z.string(),
+    title: z.string(),
+    time: PenguinSessionTimeSchema,
+    parentID: z.string().optional(),
+    directory: z.string().optional(),
+    agent_mode: z.string().optional(),
+    agent_id: z.string().optional(),
+    parent_agent_id: z.string().optional(),
+    providerID: z.string().optional(),
+    modelID: z.string().optional(),
+    variant: z.string().optional(),
+    message_count: z.number().optional(),
+    display_message_count: z.number().optional(),
+    fallback_title: z.boolean().optional(),
+  })
+  .passthrough()
+
+export const PenguinSessionArraySchema = z.array(PenguinSessionSchema)
 
 export type PenguinBootstrapState = {
   agent: Agent[]

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
 import {
   fetchBootstrapJson,
   mapPenguinBootstrap,
+  PenguinSessionArraySchema,
   parsePenguinUsage,
   unwrapBootstrapData,
 } from "../../../src/cli/cmd/tui/context/sync-bootstrap"
@@ -94,6 +95,32 @@ describe("sync bootstrap", () => {
       },
     })
     expect(parsePenguinUsage({ usage: {} })).toBeUndefined()
+  })
+
+  test("validates Penguin session list payloads", () => {
+    expect(
+      PenguinSessionArraySchema.safeParse([
+        {
+          id: "ses_1",
+          title: "Mapped Session",
+          time: {
+            created: 100,
+            updated: 200,
+          },
+          display_message_count: 1,
+          fallback_title: false,
+        },
+      ]).success,
+    ).toBe(true)
+
+    expect(
+      PenguinSessionArraySchema.safeParse([
+        {
+          id: "ses_1",
+          title: "Missing Time",
+        },
+      ]).success,
+    ).toBe(false)
   })
 
   test("maps Penguin bootstrap responses into TUI store state", () => {

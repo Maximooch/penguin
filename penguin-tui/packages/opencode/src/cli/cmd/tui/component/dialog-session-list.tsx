@@ -7,7 +7,7 @@ import { Locale } from "@/util/locale"
 import { useKeybind } from "../context/keybind"
 import { useTheme } from "../context/theme"
 import { useSDK } from "../context/sdk"
-import type { PenguinSession } from "../context/sync-bootstrap"
+import { PenguinSessionArraySchema, type PenguinSession } from "../context/sync-bootstrap"
 import { DialogSessionRename } from "./dialog-session-rename"
 import { useKV } from "../context/kv"
 import { createDebouncedSignal } from "../util/signal"
@@ -29,6 +29,12 @@ function isBlankPenguinSession(session: Session | PenguinSession) {
   const penguin = session as PenguinSession
   const fallbackTitle = penguin.fallback_title === true
   return fallbackTitle && penguin.display_message_count === 0
+}
+
+function appendSessionIfMissing<T extends { id: string }>(sessions: T[], session: T | undefined) {
+  if (!session) return sessions
+  if (sessions.some((item) => item.id === session.id)) return sessions
+  return [...sessions, session]
 }
 
 export function DialogSessionList() {
@@ -58,7 +64,8 @@ export function DialogSessionList() {
       const response = await sdk.fetch(url)
       if (!response.ok) return undefined
       const data = await response.json().catch(() => undefined)
-      return Array.isArray(data) ? (data as PenguinSession[]) : undefined
+      const parsed = PenguinSessionArraySchema.safeParse(data)
+      return parsed.success ? (parsed.data as PenguinSession[]) : undefined
     }
 
     if (!query) return undefined
@@ -70,11 +77,17 @@ export function DialogSessionList() {
 
   const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
-  const sessions = createMemo(() =>
-    expandSessionSearchResults(searchResults(), sync.data.session).filter(
-      (session) => !sdk.penguin || !isBlankPenguinSession(session),
-    ),
-  )
+  const sessions = createMemo(() => {
+    const activeSessionID = currentSessionID()
+    const currentSession = sync.data.session.find((item) => item.id === activeSessionID)
+    const expanded = expandSessionSearchResults(searchResults(), sync.data.session)
+    const withCurrent =
+      sdk.penguin && !search().trim() ? appendSessionIfMissing(expanded, currentSession) : expanded
+
+    return withCurrent.filter(
+      (session) => !sdk.penguin || session.id === activeSessionID || !isBlankPenguinSession(session),
+    )
+  })
 
   const options = createMemo(() => {
     const today = new Date().toDateString()
