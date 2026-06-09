@@ -47,35 +47,7 @@ def get_cli_app():
     return _cli_app
 
 
-# Try to expose CLI components
-try:
-    from .cli import app as cli_app
-    # Note: individual command modules don't exist yet, so we'll skip those imports for now
-    
-    __all__ = [
-        "cli_app",
-        "get_cli_app",
-        "PenguinCLI"
-    ]
-    
-    # Import PenguinCLI class if available
-    try:
-        from .cli import PenguinCLI
-    except ImportError:
-        # PenguinCLI class might not be available in all setups
-        pass
-    
-except ImportError:
-    # CLI dependencies not available (minimal install)
-    __all__ = ["get_cli_app"]
-
-
-
-# Import journal commands to register them
-try:
-    from .journal_commands import journal_command
-except ImportError:
-    pass  # journal commands might not be available
+__all__ = ["cli_app", "get_cli_app", "journal_command", "PenguinCLI"]
 
 class PenguinCLI:
     """Main CLI interface class for programmatic access."""
@@ -94,4 +66,24 @@ class PenguinCLI:
             args = []
         # This would integrate with typer's testing functionality
         # For now, it's a placeholder
-        return self.app(args) 
+        return self.app(args)
+
+
+def __getattr__(name: str) -> object:
+    """Lazy-load optional CLI exports."""
+    if name == "cli_app":
+        app = get_cli_app()
+        if app is None:
+            raise AttributeError(
+                "CLI dependencies not available. Install with: pip install penguin-ai"
+            )
+        return app
+
+    if name == "journal_command":
+        try:
+            from .journal_commands import journal_command
+        except ImportError as exc:
+            raise AttributeError("journal_command is unavailable") from exc
+        return journal_command
+
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

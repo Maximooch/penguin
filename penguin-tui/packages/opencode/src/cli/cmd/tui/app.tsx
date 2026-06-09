@@ -39,11 +39,14 @@ import open from "open"
 import { writeHeapSnapshot } from "v8"
 import { PromptRefProvider, usePromptRef } from "./context/prompt"
 import { exitSession } from "./util/exit"
+import { profileStartup } from "./util/startup-profile"
 
 const PENGUIN_DOCS_URL = "https://penguin-rho.vercel.app"
 const OPENCODE_DOCS_URL = "https://opencode.ai/docs"
+const TERMINAL_BACKGROUND_TIMEOUT_MS = 1000
+const PENGUIN_TERMINAL_BACKGROUND_TIMEOUT_MS = 150
 
-async function getTerminalBackgroundColor(): Promise<"dark" | "light"> {
+async function getTerminalBackgroundColor(timeoutMs = TERMINAL_BACKGROUND_TIMEOUT_MS): Promise<"dark" | "light"> {
   // can't set raw mode if not a TTY
   if (!process.stdin.isTTY) return "dark"
 
@@ -99,7 +102,7 @@ async function getTerminalBackgroundColor(): Promise<"dark" | "light"> {
     timeout = setTimeout(() => {
       cleanup()
       resolve("dark")
-    }, 1000)
+    }, timeoutMs)
   })
 }
 
@@ -117,12 +120,21 @@ export function tui(input: {
 }) {
   // promise to prevent immediate exit
   return new Promise<void>(async (resolve) => {
-    const mode = await getTerminalBackgroundColor()
+    profileStartup("tui.start", { penguin: input.penguin })
+    const terminalColorStart = Date.now()
+    const terminalColorTimeout = input.penguin ? PENGUIN_TERMINAL_BACKGROUND_TIMEOUT_MS : TERMINAL_BACKGROUND_TIMEOUT_MS
+    const mode = await getTerminalBackgroundColor(terminalColorTimeout)
+    profileStartup("terminal_background.done", {
+      duration_ms: Date.now() - terminalColorStart,
+      timeout_ms: terminalColorTimeout,
+      mode,
+    })
     const onExit = async () => {
       await input.onExit?.()
       resolve()
     }
 
+    profileStartup("render.start")
     render(
       () => {
         return (
@@ -187,6 +199,7 @@ export function tui(input: {
         },
       },
     )
+    profileStartup("render.returned")
   })
 }
 

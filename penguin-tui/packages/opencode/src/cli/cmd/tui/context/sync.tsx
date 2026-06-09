@@ -49,10 +49,13 @@ import {
   shouldIgnorePenguinScopedEvent,
 } from "./sync-scope"
 import { expandSessionSearchResults, removeSessionRecord, upsertSessionRecord } from "../util/session-family"
+import { profileStartup } from "../util/startup-profile"
 
 export const { use: useSync, provider: SyncProvider } = createSimpleContext({
   name: "Sync",
   init: () => {
+    const sdk = useSDK()
+    const route = useRoute()
     const [store, setStore] = createStore<{
       status: "loading" | "partial" | "complete"
       provider: Provider[]
@@ -105,7 +108,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       },
       provider_auth: {},
       config: {},
-      status: "loading",
+      status: sdk.penguin ? "partial" : "loading",
       agent: [],
       permission: {},
       question: {},
@@ -126,9 +129,6 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       vcs: undefined,
       path: { state: "", config: "", worktree: "", directory: "" },
     })
-
-    const sdk = useSDK()
-    const route = useRoute()
     const fullSyncedSessions = new Set<string>()
 
     const sessionIndex = (sessionID: string) => store.session.findIndex((item) => item.id === sessionID)
@@ -528,9 +528,29 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
 
     async function bootstrap(refreshActive = false) {
       console.log("bootstrapping")
+      profileStartup("sync.bootstrap.start", {
+        penguin: sdk.penguin,
+        refreshActive,
+      })
       if (sdk.penguin) {
         fullSyncedSessions.clear()
         const directory = store.path.directory || sdk.directory || process.cwd()
+        const timed = async <T,>(label: string, promise: Promise<T>) => {
+          const start = Date.now()
+          try {
+            const result = await promise
+            profileStartup(`sync.bootstrap.${label}.done`, {
+              duration_ms: Date.now() - start,
+            })
+            return result
+          } catch (error) {
+            profileStartup(`sync.bootstrap.${label}.error`, {
+              duration_ms: Date.now() - start,
+              error: error instanceof Error ? error.message : String(error),
+            })
+            throw error
+          }
+        }
         const sessionsUrl = iife(() => {
           const url = new URL("/session", sdk.url)
           url.searchParams.set("directory", directory)
@@ -539,40 +559,59 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         })
         const [providersData, providerListData, configData, providerAuthData, sessionsData, roster] = await Promise.all(
           [
-            fetchBootstrapJson({
-              fetch: sdk.fetch,
-              path: new URL("/config/providers", sdk.url),
-              endpoint: "/config/providers",
-              fallback: undefined,
-            }),
-            fetchBootstrapJson({
-              fetch: sdk.fetch,
-              path: new URL("/provider", sdk.url),
-              endpoint: "/provider",
-              fallback: undefined,
-            }),
-            fetchBootstrapJson({
-              fetch: sdk.fetch,
-              path: new URL("/config", sdk.url),
-              endpoint: "/config",
-              fallback: undefined,
-            }),
-            fetchBootstrapJson({
-              fetch: sdk.fetch,
-              path: new URL("/provider/auth", sdk.url),
-              endpoint: "/provider/auth",
-              fallback: undefined,
-            }),
-            sdk.fetch(sessionsUrl)
-              .then((res) => (res.ok ? res.json() : undefined))
-              .then((data) => (Array.isArray(data) ? data : []))
-              .catch(() => []),
-            sdk.fetch(new URL("/api/v1/agents", sdk.url))
-              .then((res) => (res.ok ? res.json() : undefined))
-              .then((data) => (Array.isArray(data) ? data : []))
-              .catch(() => []),
+            timed(
+              "config_providers",
+              fetchBootstrapJson({
+                fetch: sdk.fetch,
+                path: new URL("/config/providers", sdk.url),
+                endpoint: "/config/providers",
+                fallback: undefined,
+              }),
+            ),
+            timed(
+              "provider",
+              fetchBootstrapJson({
+                fetch: sdk.fetch,
+                path: new URL("/provider", sdk.url),
+                endpoint: "/provider",
+                fallback: undefined,
+              }),
+            ),
+            timed(
+              "config",
+              fetchBootstrapJson({
+                fetch: sdk.fetch,
+                path: new URL("/config", sdk.url),
+                endpoint: "/config",
+                fallback: undefined,
+              }),
+            ),
+            timed(
+              "provider_auth",
+              fetchBootstrapJson({
+                fetch: sdk.fetch,
+                path: new URL("/provider/auth", sdk.url),
+                endpoint: "/provider/auth",
+                fallback: undefined,
+              }),
+            ),
+            timed(
+              "sessions",
+              sdk.fetch(sessionsUrl)
+                .then((res) => (res.ok ? res.json() : undefined))
+                .then((data) => (Array.isArray(data) ? data : []))
+                .catch(() => []),
+            ),
+            timed(
+              "agents",
+              sdk.fetch(new URL("/api/v1/agents", sdk.url))
+                .then((res) => (res.ok ? res.json() : undefined))
+                .then((data) => (Array.isArray(data) ? data : []))
+                .catch(() => []),
+            ),
           ],
         )
+        const mapStart = Date.now()
         const bootstrapState = mapPenguinBootstrap({
           baseUrl: sdk.url,
           configData,
@@ -582,6 +621,9 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           providersData,
           roster: Array.isArray(roster) ? roster : [],
           sessions: Array.isArray(sessionsData) ? sessionsData : [],
+        })
+        profileStartup("sync.bootstrap.map.done", {
+          duration_ms: Date.now() - mapStart,
         })
         batch(() => {
           setStore("provider", reconcile(bootstrapState.provider))
@@ -597,6 +639,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           setStore("path", reconcile(bootstrapState.path))
           setStore("status", "complete")
         })
+        profileStartup("sync.bootstrap.primary_store.done")
 
         const systemUrl = (pathname: string) => {
           const url = new URL(pathname, sdk.url)
@@ -605,30 +648,42 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         }
 
         await Promise.all([
-          fetchBootstrapJson({
-            fetch: sdk.fetch,
-            path: systemUrl("/lsp"),
-            endpoint: "/lsp",
-            fallback: [] as LspStatus[],
-          }),
-          fetchBootstrapJson({
-            fetch: sdk.fetch,
-            path: systemUrl("/formatter"),
-            endpoint: "/formatter",
-            fallback: [] as FormatterStatus[],
-          }),
-          fetchBootstrapJson({
-            fetch: sdk.fetch,
-            path: systemUrl("/vcs"),
-            endpoint: "/vcs",
-            fallback: undefined,
-          }),
-          fetchBootstrapJson({
-            fetch: sdk.fetch,
-            path: systemUrl("/path"),
-            endpoint: "/path",
-            fallback: undefined,
-          }),
+          timed(
+            "lsp",
+            fetchBootstrapJson({
+              fetch: sdk.fetch,
+              path: systemUrl("/lsp"),
+              endpoint: "/lsp",
+              fallback: [] as LspStatus[],
+            }),
+          ),
+          timed(
+            "formatter",
+            fetchBootstrapJson({
+              fetch: sdk.fetch,
+              path: systemUrl("/formatter"),
+              endpoint: "/formatter",
+              fallback: [] as FormatterStatus[],
+            }),
+          ),
+          timed(
+            "vcs",
+            fetchBootstrapJson({
+              fetch: sdk.fetch,
+              path: systemUrl("/vcs"),
+              endpoint: "/vcs",
+              fallback: undefined,
+            }),
+          ),
+          timed(
+            "path",
+            fetchBootstrapJson({
+              fetch: sdk.fetch,
+              path: systemUrl("/path"),
+              endpoint: "/path",
+              fallback: undefined,
+            }),
+          ),
         ]).then((result) => {
           const lsp = result[0]
           const formatter = result[1]
@@ -641,10 +696,17 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             if (path) setStore("path", reconcile(path))
           })
         })
+        profileStartup("sync.bootstrap.system_store.done")
         const activeSessionID = route.data.type === "session" ? route.data.sessionID : undefined
         if (activeSessionID && (refreshActive || store.session.some((item) => item.id === activeSessionID))) {
+          const hydrateStart = Date.now()
           await syncSessionSnapshot(activeSessionID, true)
+          profileStartup("sync.bootstrap.active_session.done", {
+            duration_ms: Date.now() - hydrateStart,
+            sessionID: activeSessionID,
+          })
         }
+        profileStartup("sync.bootstrap.done")
         return
       }
       const start = Date.now() - 30 * 24 * 60 * 60 * 1000

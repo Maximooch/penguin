@@ -52,48 +52,11 @@ package_dir = os.path.dirname(os.path.abspath(__file__))
 if package_dir not in sys.path:
     sys.path.insert(0, package_dir)
 
-# Core exports - main public API
-from .core import PenguinCore
-from .config import config
-from .engine import Engine, EngineSettings
-
 # ---------------------------------------------------------------------------
 # Agent exports – simplified high-level wrapper
 # ---------------------------------------------------------------------------
 
-import warnings
-
 from ._version import __author__, __email__, __license__, __version__
-
-# The canonical package layout places ``penguin.agent`` as a *sibling* package
-# of this sub-package (``penguin.penguin``).  A simple relative import is all
-# that is required – tinkering with ``sys.path`` is both fragile and can mask
-# genuine packaging errors.
-
-try:
-    # NOTE: ``from ..agent`` resolves to the top-level ``penguin.agent`` because
-    # ``penguin.penguin`` lives one level below the root package.
-    from ..agent import PenguinAgent  # type: ignore
-except ImportError as exc:  # pragma: no cover – only trips in broken installs
-    # Emit a *single* runtime warning instead of writing directly to stderr so
-    # that callers retain full control over visibility (e.g. ``-W error``).
-    warnings.warn(
-        "PenguinAgent could not be imported – the agent module is missing. "
-        "Most high-level conveniences will be unavailable.\n"
-        f"Underlying error: {exc}",
-        category=ImportWarning,
-        stacklevel=2,
-    )
-
-    class PenguinAgent:  # pylint: disable=too-few-public-methods
-        """Placeholder that raises a helpful error when instantiated."""
-
-        def __init__(self, *_, **__):
-            raise ImportError(
-                "PenguinAgent is unavailable – the 'penguin.agent' sub-package "
-                "could not be imported. Please check your installation or "
-                "ensure optional dependencies are installed."
-            )
 
 # Project management exports - lazy load to avoid import overhead
 # from .project import ProjectManager, Project, Task
@@ -175,6 +138,60 @@ def __getattr__(name):
     """Lazy loading for optional exports to avoid import overhead."""
     if name in _optional_exports:
         return _optional_exports[name]
+
+    if name == "PenguinCore":
+        from .core import PenguinCore
+
+        _optional_exports["PenguinCore"] = PenguinCore
+        return PenguinCore
+
+    if name == "config":
+        from .config import config
+
+        _optional_exports["config"] = config
+        return config
+
+    if name in {"Engine", "EngineSettings"}:
+        from .engine import Engine, EngineSettings
+
+        _optional_exports.update(
+            {
+                "Engine": Engine,
+                "EngineSettings": EngineSettings,
+            }
+        )
+        return _optional_exports[name]
+
+    if name == "PenguinAgent":
+        try:
+            from .agent import PenguinAgent
+
+            _optional_exports["PenguinAgent"] = PenguinAgent
+            return PenguinAgent
+        except ImportError as exc:  # pragma: no cover - broken installs only
+            import warnings
+
+            warnings.warn(
+                "PenguinAgent could not be imported – the agent module is "
+                "missing. Most high-level conveniences will be unavailable.\n"
+                f"Underlying error: {exc}",
+                category=ImportWarning,
+                stacklevel=2,
+            )
+
+            class PenguinAgent:  # pylint: disable=too-few-public-methods
+                """Placeholder that raises a helpful error when instantiated."""
+
+                def __init__(self, *_, **__):
+                    raise ImportError(
+                        "PenguinAgent is unavailable – the 'penguin.agent' "
+                        "sub-package could not be imported. Please check your "
+                        "installation or ensure optional dependencies are "
+                        "installed."
+                    )
+
+            _optional_exports["PenguinAgent"] = PenguinAgent
+            return PenguinAgent
     
     # Try to load project management exports
     if name in ['ProjectManager', 'Project', 'Task']:

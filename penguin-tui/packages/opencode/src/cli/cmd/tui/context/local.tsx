@@ -12,6 +12,7 @@ import { Provider } from "@/provider/provider"
 import { useArgs } from "./args"
 import { useSDK } from "./sdk"
 import { RGBA } from "@opentui/core"
+import type { Agent } from "@opencode-ai/sdk/v2"
 
 export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
   name: "Local",
@@ -38,8 +39,20 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       const [agentStore, setAgentStore] = createStore<{
         current: string
       }>({
-        current: agents()[0].name,
+        current: "build",
       })
+      createEffect(() => {
+        const current = agents().find((x) => x.name === agentStore.current)
+        if (current) return
+        const first = agents()[0]
+        if (first) setAgentStore("current", first.name)
+      })
+      const fallbackAgent = createMemo<Agent>(() => ({
+        name: agentStore.current,
+        mode: "primary",
+        permission: [],
+        options: {},
+      }))
       const { theme } = useTheme()
       const colors = createMemo(() => [
         theme.secondary,
@@ -54,7 +67,11 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           return agents()
         },
         current() {
-          return agents().find((x) => x.name === agentStore.current)!
+          return (
+            agents().find((x) => x.name === agentStore.current) ??
+            agents()[0] ??
+            fallbackAgent()
+          )
         },
         set(name: string) {
           if (!agents().some((x) => x.name === name))
@@ -66,6 +83,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           setAgentStore("current", name)
         },
         move(direction: 1 | -1) {
+          if (!agents().length) return
           batch(() => {
             let next = agents().findIndex((x) => x.name === agentStore.current) + direction
             if (next < 0) next = agents().length - 1

@@ -971,17 +971,55 @@ Investigation snapshot - 2026-06-08:
 
 Planned work:
 
-- [ ] Lazy-load Python package and CLI imports so `penguin-tui` reaches the
+- [x] Lazy-load Python package and CLI imports so `penguin-tui` reaches the
       launcher without importing PenguinCore/config/engine.
-- [ ] Make launch-mode selection explicit. `--use-global-opencode` should
-      bypass local source preference, and a future env/flag should choose
-      source, built dist, sidecar, or global binary deliberately.
-- [ ] Move terminal background-color probing after first paint or cap its wait
+- [x] Make `--use-global-opencode` bypass local source preference.
+- [ ] Make launch-mode selection fully explicit with a future env/flag that
+      chooses source, built dist, sidecar, or global binary deliberately.
+- [x] Move terminal background-color probing after first paint or cap its wait
       more aggressively.
-- [ ] Audit whether Penguin web-backed mode can defer or skip OpenCode worker
+- [x] Audit whether Penguin web-backed mode can defer or skip OpenCode worker
       initialization until a feature actually needs it.
-- [ ] Add lightweight startup timing instrumentation around Python launcher,
+- [x] Add lightweight startup timing instrumentation around Python launcher,
       Bun/binary spawn, first render, and Penguin bootstrap completion.
+- [ ] Investigate Bun/source-mode module load cost before `thread.handler.start`;
+      this is now the largest remaining measured pre-render startup segment.
+
+Progress - 2026-06-08:
+
+- First fix lazy-loads `penguin.__init__` core/config/engine/agent exports and
+  `penguin.cli.__init__` CLI exports so the TUI launcher import no longer pays
+  for `PenguinCore`, tool manager, IPython/notebook helpers, or Rich/Typer CLI
+  setup.
+- Local timing improved from roughly `2.1s` to `0.28-0.45s` for
+  `uv run python -c 'import penguin.cli.opencode_launcher'`, and from roughly
+  `2.1s` to `0.54s` for `uv run penguin-tui --help`.
+- `--use-global-opencode` now prefers the global `opencode` binary before
+  considering local Bun/source execution.
+
+Progress - 2026-06-09:
+
+- Added env-gated startup profiling via `PENGUIN_TUI_PROFILE=1` /
+  `OPENCODE_TUI_PROFILE=1` across the Python launcher, TUI thread handler,
+  first render path, theme initialization, and Penguin bootstrap.
+- Penguin `SyncProvider` now starts in `partial` mode so first paint is not
+  blocked by `/config`, `/provider`, `/session`, `/lsp`, `/vcs`, or related
+  bootstrap fetches. `LocalProvider` now tolerates the temporarily empty agent
+  list during that early render.
+- Capped Penguin-mode terminal background-color probing at `150ms` instead of
+  allowing the full `1000ms` timeout on terminals that do not answer the color
+  query.
+- Deferred the OpenCode worker creation in Penguin web-backed mode until the
+  delayed upgrade check or reload/shutdown path needs it.
+- Live profile against local Penguin web on `127.0.0.1:8080`:
+  - launcher reaches Bun spawn at about `255ms`
+  - Bun/source mode reaches `thread.handler.start` at about `2.54s`
+  - terminal color probing now adds about `156ms`
+  - first render starts at about `2.69s`
+- Current conclusion: the original 10s blank was partly a readiness gate, but
+  the largest remaining cold-start target is Bun/source-mode module loading
+  before the TUI thread handler. A built/sidecar/global runtime path is likely
+  the next meaningful optimization after this surgical pass.
 
 ### 7. Testing and verification
 
