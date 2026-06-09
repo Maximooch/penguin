@@ -1020,16 +1020,88 @@ Progress - 2026-06-09:
   the largest remaining cold-start target is Bun/source-mode module loading
   before the TUI thread handler. A built/sidecar/global runtime path is likely
   the next meaningful optimization after this surgical pass.
+- Follow-up note: starting in `partial` mode needs seeded fallback
+  provider/model/config state. Without that, the TUI can first paint quickly but
+  leave the prompt/footer config blank until async bootstrap finishes. Phase 7
+  covers that regression.
 
 ### 7. Testing and verification
 
-- [ ] Add focused tests for extracted helpers before behavior changes.
+- [x] Add focused tests for extracted helpers before behavior changes.
 - [ ] Cover event parsing/filtering, session hydration, message ordering, and
       optimistic reconciliation.
 - [ ] Run TUI regression tests after each extraction.
 - [ ] Run backend API tests when moving compatibility into Penguin web routes.
 - [ ] Keep live-provider testing optional; use deterministic fake-provider
       coverage for correctness.
+- [ ] Follow `context/tasks/testing-pyramid.md`: use deterministic unit,
+      state-machine, contract, and hermetic integration tests as the correctness
+      proof; reserve live TUI/provider checks for smoke validation.
+
+Progress - 2026-06-09:
+
+- The Phase 6.5 partial-render optimization exposed a startup regression where
+  the TUI could render before provider/model/config state existed, leaving the
+  prompt/footer config blank until async bootstrap completed. Phase 7 now seeds
+  Penguin partial startup from the same fallback bootstrap mapper used for
+  sparse backend responses, so first paint has a usable provider, default model,
+  agent, commands, config, and directory while real bootstrap data loads.
+- Added a pure `session-dialog-list` helper seam for the Penguin `/sessions`
+  dialog so filtering and active-session retention can be tested without
+  rendering the TUI.
+- Covered blank fallback sessions with no display messages, meaningful titled
+  sessions, active blank sessions, current-session retention after a refresh,
+  and search mode avoiding accidental current-session injection.
+- Added a pure session-event reducer for `session.created`, `session.updated`,
+  and `session.deleted` so the cached session list mutation path is covered
+  without mounting the full sync provider. This locks in the behavior needed for
+  newly created sessions to become visible without a TUI restart.
+- Added run-state coverage for the final-response case where the assistant
+  message is completed, backend status is idle, and the event stream has gone
+  quiet. This locks the spinner/status behavior to `idle` instead of a stale
+  running state.
+- Added session-scoped usage parsing coverage for active tokens, percentage,
+  context-window max, truncation count, removed messages, and freed tokens.
+  Missing truncation telemetry now has explicit default coverage so the sidebar
+  does not lose the usage snapshot when truncation fields are absent.
+- Added TUI route-builder coverage proving usage refreshes target
+  `/api/v1/sessions/{session_id}/token-usage` with encoded session IDs, not the
+  legacy global `/api/v1/token-usage` route.
+- Added fallback-bootstrap coverage for partial startup render so future
+  startup optimizations cannot reintroduce an empty provider/model surface.
+- Manual startup smoke against an already-running Penguin web server on
+  `127.0.0.1:8080` showed first render at about `6.1s` in local Bun/source
+  mode on the latest run. First paint now shows a nonblank fallback config
+  (`Penguin Default (penguin-default) Penguin`) and upgrades to the real
+  provider/model config (`GPT-5.5 (gpt-5.5) OpenAI`, with `fast` and `xhigh`)
+  once async bootstrap completes. The dominant remaining startup cost is still
+  before `thread.handler.start`, so it is Bun/source-mode module loading rather
+  than async Penguin config bootstrap.
+- Manual session smoke confirmed `Ctrl+X L` opens `/sessions` without restart,
+  the newest Today session appears at the top of the list, and an older
+  `Greeting Penguin` session can be loaded from the dialog with messages,
+  settled duration, real model config, and session-scoped sidebar stats
+  (`12,144 6% ($0.00)`).
+- The full focused TUI helper/compatibility slice passed:
+  `bun test test/cli/tui`.
+- Focused TUI tests passed:
+  `bun test test/cli/tui/sync-session-usage.test.ts test/cli/tui/session-dialog-list.test.ts test/tui/penguin-run-state.test.ts test/cli/tui/sync-bootstrap.test.ts`.
+- Targeted backend tests passed for OpenAI model canonicalization and
+  session-scoped usage:
+  `uv run pytest -q tests/api/test_session_view_service.py::test_get_session_info_canonicalizes_openai_model_metadata tests/api/test_session_view_service.py::test_get_session_info_canonicalizes_global_model_fallback tests/api/test_token_usage_routes.py`.
+- `bun run typecheck` passed after extracting the helper seam.
+
+Remaining Phase 7 coverage targets:
+
+- Add a higher-level hermetic sync-provider event harness once the sync store can
+  be driven without mounting the full TUI provider. Pure session list mutation
+  for `session.created`, `session.updated`, and `session.deleted` is now
+  covered; the remaining gap is listener dispatch plus Solid store wiring.
+- Add focused provider/model canonicalization tests at the backend
+  compatibility boundary if another casing regression appears.
+- Keep the final Layer 6 smoke manual: create a session, open `/sessions`
+  without restart, load an older session, verify session-scoped sidebar stats,
+  send one prompt, and confirm spinner/status stop after the final response.
 
 ### 8. Keep Link alignment explicit
 

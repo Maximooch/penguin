@@ -99,6 +99,29 @@ describe("Penguin run state", () => {
     })
   })
 
+  test("does not mark a completed final response stale after the session is idle", () => {
+    expect(
+      derivePenguinRunState({
+        assistant: {
+          finish: "stop",
+          role: "assistant",
+          time: { completed: 20_000, created: 10_500 },
+        },
+        now: 60_000,
+        sessionStatus: { type: "idle" },
+        staleAfterMs: 15_000,
+        stream: { status: "connected", lastEventAt: 25_000 },
+        user: {
+          role: "user",
+          time: { created: 10_000 },
+        },
+      }),
+    ).toEqual({
+      elapsedMs: 0,
+      type: "idle",
+    })
+  })
+
   test("recognizes active tool and reasoning parts", () => {
     expect(isPenguinPartActive({ type: "tool", state: { status: "running" } })).toBe(true)
     expect(isPenguinPartActive({ type: "reasoning", time: { start: 10_000 } })).toBe(true)

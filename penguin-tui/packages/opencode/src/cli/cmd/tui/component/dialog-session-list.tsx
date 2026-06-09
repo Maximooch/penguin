@@ -11,12 +11,8 @@ import { parsePenguinSessionArray, type PenguinSession } from "../context/sync-b
 import { DialogSessionRename } from "./dialog-session-rename"
 import { useKV } from "../context/kv"
 import { createDebouncedSignal } from "../util/signal"
-import {
-  expandSessionSearchResults,
-  formatSessionListTitle,
-  getSessionListEntries,
-  upsertSessionRecord,
-} from "../util/session-family"
+import { getDialogSessions } from "../util/session-dialog-list"
+import { formatSessionListTitle, getSessionListEntries, upsertSessionRecord } from "../util/session-family"
 import type { Session } from "@opencode-ai/sdk/v2"
 import "opentui-spinner/solid"
 
@@ -24,18 +20,6 @@ import "opentui-spinner/solid"
 // Penguin session dialog has backend pagination and incremental list rendering.
 const PENGUIN_SESSION_DIALOG_LIMIT = 1000
 const OPENCODE_SESSION_SEARCH_LIMIT = 30
-
-function isBlankPenguinSession(session: Session | PenguinSession) {
-  const penguin = session as PenguinSession
-  const fallbackTitle = penguin.fallback_title === true
-  return fallbackTitle && penguin.display_message_count === 0
-}
-
-function appendSessionIfMissing<T extends { id: string }>(sessions: T[], session: T | undefined) {
-  if (!session) return sessions
-  if (sessions.some((item) => item.id === session.id)) return sessions
-  return [...sessions, session]
-}
 
 export function DialogSessionList() {
   const dialog = useDialog()
@@ -77,15 +61,13 @@ export function DialogSessionList() {
   const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
   const sessions = createMemo(() => {
-    const activeSessionID = currentSessionID()
-    const currentSession = sync.data.session.find((item) => item.id === activeSessionID)
-    const expanded = expandSessionSearchResults(searchResults(), sync.data.session)
-    const withCurrent =
-      sdk.penguin && !search().trim() ? appendSessionIfMissing(expanded, currentSession) : expanded
-
-    return withCurrent.filter(
-      (session) => !sdk.penguin || session.id === activeSessionID || !isBlankPenguinSession(session),
-    )
+    return getDialogSessions({
+      activeSessionID: currentSessionID(),
+      cachedSessions: sync.data.session,
+      penguin: sdk.penguin,
+      searchQuery: search(),
+      searchResults: searchResults(),
+    })
   })
 
   const options = createMemo(() => {

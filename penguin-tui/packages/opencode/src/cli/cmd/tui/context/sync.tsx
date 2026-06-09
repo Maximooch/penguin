@@ -36,6 +36,7 @@ import {
   upsertPenguinMessage,
 } from "./session-hydration"
 import {
+  createPenguinBootstrapFallback,
   fetchBootstrapJson,
   mapPenguinBootstrap,
   parsePenguinUsage,
@@ -48,7 +49,9 @@ import {
   normalizeSyncDirectory,
   shouldIgnorePenguinScopedEvent,
 } from "./sync-scope"
-import { expandSessionSearchResults, removeSessionRecord, upsertSessionRecord } from "../util/session-family"
+import { applySessionListEvent } from "./sync-session-events"
+import { createPenguinSessionUsageUrl } from "./sync-session-usage"
+import { upsertSessionRecord } from "../util/session-family"
 import { profileStartup } from "../util/startup-profile"
 
 export const { use: useSync, provider: SyncProvider } = createSimpleContext({
@@ -56,6 +59,12 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
   init: () => {
     const sdk = useSDK()
     const route = useRoute()
+    const initialPenguinState = sdk.penguin
+      ? createPenguinBootstrapFallback({
+          baseUrl: sdk.url,
+          directory: sdk.directory || process.cwd(),
+        })
+      : undefined
     const [store, setStore] = createStore<{
       status: "loading" | "partial" | "complete"
       provider: Provider[]
@@ -102,22 +111,22 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       path: Path
     }>({
       provider_next: {
-        all: [],
-        default: {},
-        connected: [],
+        all: initialPenguinState?.provider_next.all ?? [],
+        default: initialPenguinState?.provider_next.default ?? {},
+        connected: initialPenguinState?.provider_next.connected ?? [],
       },
-      provider_auth: {},
-      config: {},
+      provider_auth: initialPenguinState?.provider_auth ?? {},
+      config: initialPenguinState?.config ?? {},
       status: sdk.penguin ? "partial" : "loading",
-      agent: [],
+      agent: initialPenguinState?.agent ?? [],
       permission: {},
       question: {},
-      command: [],
-      provider: [],
-      provider_default: {},
-      session: [],
-      session_status: {},
-      session_usage: {},
+      command: initialPenguinState?.command ?? [],
+      provider: initialPenguinState?.provider ?? [],
+      provider_default: initialPenguinState?.provider_default ?? {},
+      session: initialPenguinState?.session ?? [],
+      session_status: initialPenguinState?.session_status ?? {},
+      session_usage: initialPenguinState?.session_usage ?? {},
       session_diff: {},
       todo: {},
       message: {},
@@ -127,20 +136,9 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       mcp_resource: {},
       formatter: [],
       vcs: undefined,
-      path: { state: "", config: "", worktree: "", directory: "" },
+      path: initialPenguinState?.path ?? { state: "", config: "", worktree: "", directory: "" },
     })
     const fullSyncedSessions = new Set<string>()
-
-    const sessionIndex = (sessionID: string) => store.session.findIndex((item) => item.id === sessionID)
-
-    const upsertSession = (session: Session) => {
-      setStore("session", reconcile(upsertSessionRecord(store.session, session)))
-    }
-
-    const removeSession = (sessionID: string) => {
-      if (sessionIndex(sessionID) === -1) return
-      setStore("session", reconcile(removeSessionRecord(store.session, sessionID)))
-    }
 
     const resolveDirectory = (sessionID?: string) => {
       if (sessionID) {
@@ -174,7 +172,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       if (usageRefreshInFlight.has(sessionID) || now - last < 400) return
       usageRefreshInFlight.add(sessionID)
       usageRefreshAt.set(sessionID, now)
-      const url = new URL(`/api/v1/sessions/${encodeURIComponent(sessionID)}/token-usage`, sdk.url)
+      const url = createPenguinSessionUsageUrl(sdk.url, sessionID)
       sdk.fetch(url)
         .then((res) => (res.ok ? res.json() : undefined))
         .then((data) => {
@@ -325,7 +323,8 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
 
         case "session.deleted": {
           const sessionID = event.properties.info.id
-          removeSession(sessionID)
+          const next = applySessionListEvent(store.session, event)
+          if (next !== store.session) setStore("session", reconcile(next))
           fullSyncedSessions.delete(sessionID)
           setStore(
             produce((draft) => {
@@ -344,7 +343,8 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         }
         case "session.created":
         case "session.updated": {
-          upsertSession(event.properties.info)
+          const next = applySessionListEvent(store.session, event)
+          if (next !== store.session) setStore("session", reconcile(next))
           break
         }
 
@@ -527,7 +527,6 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     const args = useArgs()
 
     async function bootstrap(refreshActive = false) {
-      console.log("bootstrapping")
       profileStartup("sync.bootstrap.start", {
         penguin: sdk.penguin,
         refreshActive,

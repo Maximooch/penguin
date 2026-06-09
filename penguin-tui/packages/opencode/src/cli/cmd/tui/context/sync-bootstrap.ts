@@ -436,6 +436,24 @@ export function mapPenguinBootstrap(input: {
   }
 }
 
+export function createPenguinBootstrapFallback(input: {
+  baseUrl: string | URL
+  directory: string
+  now?: number
+}): PenguinBootstrapState {
+  return mapPenguinBootstrap({
+    baseUrl: input.baseUrl,
+    configData: undefined,
+    directory: input.directory,
+    now: input.now,
+    providerAuthData: undefined,
+    providerListData: undefined,
+    providersData: undefined,
+    roster: [],
+    sessions: [],
+  })
+}
+
 export async function fetchBootstrapJson<T>(input: {
   fetch: BootstrapFetch
   path: string | URL

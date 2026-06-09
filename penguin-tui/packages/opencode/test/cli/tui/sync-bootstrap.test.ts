@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
 import {
+  createPenguinBootstrapFallback,
   fetchBootstrapJson,
   mapPenguinBootstrap,
   parsePenguinSessionArray,
@@ -96,6 +97,46 @@ describe("sync bootstrap", () => {
       },
     })
     expect(parsePenguinUsage({ usage: {} })).toBeUndefined()
+  })
+
+  test("parses session-scoped Penguin usage and preserves truncation telemetry", () => {
+    expect(
+      parsePenguinUsage({
+        current_total_tokens: 69_111,
+        max_context_window_tokens: 200_000,
+        available_tokens: 130_889,
+        percentage: 34,
+        truncations: {
+          total_truncations: 4,
+          messages_removed: 22,
+          tokens_freed: 48_000,
+        },
+      }),
+    ).toEqual({
+      current_total_tokens: 69_111,
+      max_context_window_tokens: 200_000,
+      available_tokens: 130_889,
+      percentage: 34,
+      truncations: {
+        total_truncations: 4,
+        messages_removed: 22,
+        tokens_freed: 48_000,
+      },
+    })
+  })
+
+  test("defaults missing truncation telemetry without dropping session usage", () => {
+    expect(
+      parsePenguinUsage({
+        current_total_tokens: 12_158,
+        max_context_window_tokens: 200_000,
+        percentage: 6,
+      })?.truncations,
+    ).toEqual({
+      total_truncations: 0,
+      messages_removed: 0,
+      tokens_freed: 0,
+    })
   })
 
   test("validates Penguin session list payloads", () => {
@@ -248,6 +289,25 @@ describe("sync bootstrap", () => {
         options: {},
       },
     ])
+    expect(result.path.directory).toBe("/tmp/project")
+  })
+
+  test("creates usable Penguin fallback state for partial startup render", () => {
+    const result = createPenguinBootstrapFallback({
+      baseUrl: "http://127.0.0.1:9000",
+      directory: "/tmp/project",
+      now: 1000,
+    })
+    const provider = result.provider[0]
+    const defaultModel = provider ? result.provider_default[provider.id] : undefined
+
+    expect(provider?.id).toBe("penguin")
+    expect(defaultModel).toBe("penguin-default")
+    expect(provider?.models[defaultModel!]).toBeDefined()
+    expect(result.provider_next.connected).toEqual(["penguin"])
+    expect(result.agent[0]?.name).toBe("penguin")
+    expect(result.command.map((item) => item.name)).toEqual(["config", "tool_details", "thinking"])
+    expect(result.config).toEqual({ share: "disabled" })
     expect(result.path.directory).toBe("/tmp/project")
   })
 })
