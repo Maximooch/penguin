@@ -252,6 +252,27 @@ async def test_session_token_usage_uses_session_manager_context_window() -> None
 
 
 @pytest.mark.asyncio
+async def test_session_token_usage_falls_back_to_conversation_context_window() -> None:
+    core = _core([_session("session_scoped", 600)])
+    core.conversation_manager.context_window = SimpleNamespace(
+        max_context_window_tokens=1_200
+    )
+    delattr(core.conversation_manager.session_manager, "context_window")
+
+    response = await get_session_token_usage(
+        "session_scoped",
+        conversation_id=None,
+        agent_id=None,
+        core=core,
+    )
+
+    usage = response["usage"]
+    assert usage["max_context_window_tokens"] == 1_200
+    assert usage["available_tokens"] == 600
+    assert usage["percentage"] == 50.0
+
+
+@pytest.mark.asyncio
 async def test_token_usage_filters_session_messages_by_agent_id() -> None:
     session = Session(id="session_agent")
     session.messages.extend(

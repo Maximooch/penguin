@@ -2185,10 +2185,15 @@ class PenguinCore:
                 category_name = "UNKNOWN"
             categories[category_name] = categories.get(category_name, 0) + token_count
 
-        session_conversation_manager = getattr(session, "conversation_manager", None)
-        context_source = (
-            session_conversation_manager or manager or self.conversation_manager
-        )
+        context_source = None
+        for candidate in (
+            getattr(session, "conversation_manager", None),
+            manager,
+            getattr(self, "conversation_manager", None),
+        ):
+            if getattr(candidate, "context_window", None) is not None:
+                context_source = candidate
+                break
         context_window = getattr(context_source, "context_window", None)
         max_tokens = int(getattr(context_window, "max_context_window_tokens", 0) or 0)
         available_tokens = (

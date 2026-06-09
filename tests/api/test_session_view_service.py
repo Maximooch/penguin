@@ -1170,7 +1170,7 @@ def test_session_view_skips_recovery_substitute_from_view_load() -> None:
             self.sessions.clear()
             self.current_session = None
 
-        def load_session(self, session_id: str):
+        def load_session(self, session_id: str) -> Session | None:
             if session_id == corrupt.id:
                 self.current_session = recovery
                 return recovery

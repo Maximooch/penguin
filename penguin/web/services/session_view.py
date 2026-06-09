@@ -49,12 +49,30 @@ def _normalize_non_empty_string(value: Any) -> Optional[str]:
     return normalized or None
 
 
-def _normalize_provider_id(value: Any) -> Optional[str]:
+def _normalize_provider_id(value: object) -> Optional[str]:
+    """Normalize a provider identifier.
+
+    Args:
+        value: Candidate provider identifier.
+
+    Returns:
+        Lowercased non-empty provider id, or None when value is not a string.
+    """
     normalized = _normalize_non_empty_string(value)
     return normalized.lower() if normalized else None
 
 
-def _normalize_model_id(provider_id: Optional[str], value: Any) -> Optional[str]:
+def _normalize_model_id(provider_id: Optional[str], value: object) -> Optional[str]:
+    """Normalize a model identifier for a provider.
+
+    Args:
+        provider_id: Optional normalized provider identifier.
+        value: Candidate model identifier.
+
+    Returns:
+        Canonical model id, lowercased for providers with case-insensitive
+        catalog ids, or None when value is not a non-empty string.
+    """
     normalized = _normalize_non_empty_string(value)
     if not normalized:
         return None

@@ -27,7 +27,7 @@ const OPENCODE_SESSION_SEARCH_LIMIT = 30
 
 function isBlankPenguinSession(session: Session | PenguinSession) {
   const penguin = session as PenguinSession
-  const fallbackTitle = penguin.fallback_title === true || session.title === `Session ${session.id.slice(-8)}`
+  const fallbackTitle = penguin.fallback_title === true
   return fallbackTitle && penguin.display_message_count === 0
 }
 
