@@ -23,6 +23,7 @@ MODEL_ID_KEY = "_opencode_model_id_v1"
 PROVIDER_ID_KEY = "_opencode_provider_id_v1"
 VARIANT_KEY = "_opencode_variant_v1"
 TITLE_SOURCE_KEY = "_penguin_title_source_v1"
+DIRECTORY_MISSING_KEY = "_penguin_directory_missing_v1"
 TITLE_SOURCE_AUTO = "auto"
 TITLE_SOURCE_MANUAL = "manual"
 
@@ -233,6 +234,324 @@ def _manager_session_ids(manager: Any) -> list[str]:
             seen.add(session_id)
             ids.append(session_id)
     return ids
+
+
+def _session_index(manager: Any) -> dict[str, dict[str, Any]]:
+    index = getattr(manager, "session_index", {})
+    if not isinstance(index, dict):
+        return {}
+    return {
+        str(session_id): metadata
+        for session_id, metadata in index.items()
+        if isinstance(metadata, dict)
+    }
+
+
+def _indexed_session_updated(metadata: dict[str, Any]) -> int:
+    value = metadata.get("last_active")
+    if isinstance(value, str):
+        return _iso_to_ms(value)
+    return 0
+
+
+def _indexed_session_directory(metadata: dict[str, Any]) -> str:
+    value = metadata.get("directory")
+    if isinstance(value, str) and value.strip():
+        return _normalize_existing_directory(value)
+    return ""
+
+
+def _session_file_updated_ms(manager: Any, session_id: str) -> int:
+    base_path = getattr(manager, "base_path", None)
+    if not base_path:
+        return 0
+    session_format = getattr(manager, "format", "json")
+    if not isinstance(session_format, str) or not session_format.strip():
+        session_format = "json"
+    try:
+        path = Path(base_path) / f"{session_id}.{session_format}"
+        return int(path.stat().st_mtime * 1000)
+    except (OSError, TypeError, ValueError):
+        return 0
+
+
+def _session_index_updated_ms(
+    manager: Any,
+    index: dict[str, dict[str, Any]],
+    session_id: str,
+) -> int:
+    metadata = index.get(session_id)
+    if metadata is not None:
+        return _indexed_session_updated(metadata)
+    return _session_file_updated_ms(manager, session_id)
+
+
+def _index_entry_from_session(session: Any) -> dict[str, Any]:
+    metadata_raw = getattr(session, "metadata", {})
+    metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
+    messages = getattr(session, "messages", [])
+    message_count = len(messages) if isinstance(messages, list) else 0
+    entry: dict[str, Any] = {
+        "created_at": getattr(session, "created_at", None),
+        "last_active": getattr(session, "last_active", None),
+        "message_count": message_count,
+        "title": _infer_title(session),
+        "display_message_count": _display_message_count(session),
+        "fallback_title": _has_fallback_title(session),
+    }
+    for key in (
+        "directory",
+        "title_source",
+        TITLE_SOURCE_KEY,
+        AGENT_MODE_KEY,
+        "agent_mode",
+        "parentID",
+        "parent_id",
+        "continued_from",
+        "agent_id",
+        "agentID",
+        "parent_agent_id",
+        "parentAgentID",
+        PROVIDER_ID_KEY,
+        MODEL_ID_KEY,
+        VARIANT_KEY,
+        "providerID",
+        "modelID",
+        "variant",
+        "archived_at_ms",
+    ):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            entry[key] = value.strip()
+        elif isinstance(value, int):
+            entry[key] = value
+    permission = metadata.get("permission")
+    if isinstance(permission, list):
+        entry["permission"] = permission
+    return entry
+
+
+def _hydrate_index_entry_from_session(
+    core: Any,
+    manager: Any,
+    index: dict[str, dict[str, Any]],
+    session_id: str,
+) -> dict[str, Any] | None:
+    session = _load_session_view_only(manager, session_id)
+    if session is None:
+        return None
+    entry = _index_entry_from_session(session)
+    explicit_directory, _directory_source = _explicit_session_directory(core, session)
+    if explicit_directory.strip():
+        entry["directory"] = explicit_directory.strip()
+    else:
+        entry[DIRECTORY_MISSING_KEY] = True
+    manager_index = getattr(manager, "session_index", None)
+    if isinstance(manager_index, dict):
+        manager_index[session_id] = entry
+    index[session_id] = entry
+    return entry
+
+
+def _indexed_limited_session_ids(
+    core: Any,
+    manager: Any,
+    *,
+    session_ids: list[str],
+    limit: Optional[int],
+    start: Optional[int],
+    normalized_directory: str,
+) -> list[str] | None:
+    if limit is None or limit <= 0:
+        return None
+
+    index = _session_index(manager)
+    if not index:
+        return None
+
+    ranked = sorted(
+        (
+            session_id
+            for session_id in session_ids
+            if start is None
+            or _session_index_updated_ms(manager, index, session_id) >= start
+        ),
+        key=lambda session_id: _session_index_updated_ms(manager, index, session_id),
+        reverse=True,
+    )
+    if not normalized_directory:
+        selected = ranked[:limit]
+        index_dirty = False
+        for session_id in selected:
+            if session_id in index:
+                continue
+            if _hydrate_index_entry_from_session(core, manager, index, session_id):
+                index_dirty = True
+        if index_dirty:
+            save_index = getattr(manager, "_save_index", None)
+            manager_index = getattr(manager, "session_index", index)
+            if callable(save_index) and isinstance(manager_index, dict):
+                save_index(manager_index)
+        return selected
+
+    selected: list[str] = []
+    index_dirty = False
+    for session_id in ranked:
+        metadata = index.get(session_id)
+        if metadata is None:
+            metadata = _hydrate_index_entry_from_session(
+                core,
+                manager,
+                index,
+                session_id,
+            )
+            if metadata is None:
+                continue
+            index_dirty = True
+        session_directory = _indexed_session_directory(metadata)
+        if not session_directory and metadata.get(DIRECTORY_MISSING_KEY) is True:
+            continue
+        if not session_directory:
+            metadata = _hydrate_index_entry_from_session(
+                core,
+                manager,
+                index,
+                session_id,
+            )
+            if metadata is None:
+                continue
+            session_directory = _indexed_session_directory(metadata)
+            index_dirty = True
+        if not session_directory:
+            continue
+        if not _directory_matches(session_directory, normalized_directory):
+            continue
+        selected.append(session_id)
+        if len(selected) >= limit:
+            break
+
+    if index_dirty:
+        save_index = getattr(manager, "_save_index", None)
+        manager_index = getattr(manager, "session_index", index)
+        if callable(save_index) and isinstance(manager_index, dict):
+            save_index(manager_index)
+    return selected
+
+
+def _metadata_string(metadata: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _metadata_int(metadata: dict[str, Any], key: str) -> int:
+    value = metadata.get(key)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return 0
+
+
+def _build_index_session_info(
+    core: Any,
+    session_id: str,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    """Build a lightweight Session.Info payload from session index metadata."""
+    runtime = getattr(core, "runtime_config", None)
+    runtime_dir = getattr(runtime, "active_root", None) or getattr(
+        runtime,
+        "project_root",
+        None,
+    )
+    directory = _metadata_string(metadata, "directory")
+    if not directory and runtime_dir:
+        directory = str(runtime_dir)
+    if not directory:
+        directory = str(Path.cwd())
+
+    created = _iso_to_ms(metadata.get("created_at"))
+    updated = _iso_to_ms(metadata.get("last_active"))
+    now = int(datetime.now().timestamp() * 1000)
+    if created <= 0:
+        created = now
+    if updated <= 0:
+        updated = created
+
+    fallback_title = f"Session {session_id[-8:]}"
+    title = _metadata_string(metadata, "title") or fallback_title
+    message_count = _metadata_int(metadata, "message_count")
+    display_count = _metadata_int(metadata, "display_message_count")
+    if "display_message_count" not in metadata:
+        display_count = message_count
+    raw_fallback_title = metadata.get("fallback_title")
+    has_fallback_title = (
+        raw_fallback_title
+        if isinstance(raw_fallback_title, bool)
+        else title == fallback_title and display_count == 0
+    )
+
+    payload: dict[str, Any] = {
+        "id": session_id,
+        "slug": session_id,
+        "projectID": "penguin",
+        "directory": directory,
+        "agent_mode": "build",
+        "title": title,
+        "message_count": message_count,
+        "display_message_count": display_count,
+        "fallback_title": has_fallback_title,
+        "version": __version__,
+        "time": {
+            "created": created,
+            "updated": updated,
+        },
+    }
+
+    agent_mode = _normalize_agent_mode(
+        metadata.get(AGENT_MODE_KEY) or metadata.get("agent_mode")
+    )
+    if agent_mode:
+        payload["agent_mode"] = agent_mode
+
+    parent_id = _metadata_string(metadata, "parentID", "parent_id", "continued_from")
+    if parent_id:
+        payload["parentID"] = parent_id
+    agent_id = _metadata_string(metadata, "agent_id", "agentID")
+    if agent_id:
+        payload["agent_id"] = agent_id
+    parent_agent_id = _metadata_string(metadata, "parent_agent_id", "parentAgentID")
+    if parent_agent_id:
+        payload["parent_agent_id"] = parent_agent_id
+
+    provider_id = _normalize_provider_id(
+        _metadata_string(metadata, PROVIDER_ID_KEY, "providerID", "provider_id")
+    )
+    model_id = _normalize_model_id(
+        provider_id,
+        _metadata_string(metadata, MODEL_ID_KEY, "modelID", "model_id"),
+    )
+    variant = _normalize_non_empty_string(
+        _metadata_string(metadata, VARIANT_KEY, "variant")
+    )
+    if provider_id:
+        payload["providerID"] = provider_id
+    if model_id:
+        payload["modelID"] = model_id
+    if variant:
+        payload["variant"] = variant
+
+    archived_ms = _metadata_int(metadata, "archived_at_ms")
+    if archived_ms > 0:
+        payload["time"]["archived"] = archived_ms
+    permission_rules = metadata.get("permission")
+    if isinstance(permission_rules, list):
+        payload["permission"] = permission_rules
+
+    return payload
 
 
 def _find_session(core: Any, session_id: str) -> tuple[Optional[Any], Optional[Any]]:
@@ -986,7 +1305,33 @@ def list_session_infos(
     normalized_directory = _normalize_existing_directory(directory)
 
     for manager in _iter_session_managers(core):
-        for session_id in _manager_session_ids(manager):
+        session_ids = _manager_session_ids(manager)
+        indexed_ids: list[str] | None = None
+        if not lowered_search and not roots:
+            indexed_ids = _indexed_limited_session_ids(
+                core,
+                manager,
+                session_ids=session_ids,
+                limit=limit,
+                start=start,
+                normalized_directory=normalized_directory,
+            )
+        if indexed_ids is not None:
+            index = _session_index(manager)
+            for session_id in indexed_ids:
+                metadata = index.get(session_id)
+                if not isinstance(metadata, dict):
+                    continue
+                results.append(
+                    _build_index_session_info(
+                        core,
+                        session_id,
+                        metadata,
+                    )
+                )
+            continue
+
+        for session_id in session_ids:
             session = None
             cached = getattr(manager, "sessions", {})
             if isinstance(cached, dict) and session_id in cached:

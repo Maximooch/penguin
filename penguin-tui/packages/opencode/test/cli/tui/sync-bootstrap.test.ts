@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
 import {
   createPenguinBootstrapFallback,
   fetchBootstrapJson,
+  hasSparsePenguinProviderCatalog,
   mapPenguinBootstrap,
   parsePenguinSessionArray,
   PenguinSessionArraySchema,
@@ -243,7 +244,7 @@ describe("sync bootstrap", () => {
 
     expect(result.provider.map((item) => item.id)).toEqual(["openai"])
     expect(result.provider_default).toEqual({ openai: "gpt-5.5" })
-    expect(result.provider_next.connected).toEqual(["penguin"])
+    expect(result.provider_next.connected).toEqual(["openai"])
     expect(result.provider_auth).toEqual({ openai: [{ type: "oauth", label: "OpenAI OAuth" }] })
     expect(result.config).toMatchObject({ share: "disabled", service_tier: "priority" })
     expect(result.session[0]).toMatchObject({
@@ -264,7 +265,7 @@ describe("sync bootstrap", () => {
     expect(result.command.map((item) => item.name)).toEqual(["config", "tool_details", "thinking"])
   })
 
-  test("uses fallback provider, config, and agent when bootstrap responses are sparse", () => {
+  test("keeps sparse bootstrap responses renderable without a sendable fallback model", () => {
     const result = mapPenguinBootstrap({
       baseUrl: "http://127.0.0.1:9000",
       directory: "/tmp/project",
@@ -277,9 +278,9 @@ describe("sync bootstrap", () => {
       roster: [],
     })
 
-    expect(result.provider[0]?.id).toBe("penguin")
-    expect(result.provider_default).toEqual({ penguin: "penguin-default" })
-    expect(result.provider_next.connected).toEqual(["penguin"])
+    expect(result.provider).toEqual([])
+    expect(result.provider_default).toEqual({})
+    expect(result.provider_next.connected).toEqual([])
     expect(result.config).toEqual({ share: "disabled" })
     expect(result.agent).toEqual([
       {
@@ -292,22 +293,55 @@ describe("sync bootstrap", () => {
     expect(result.path.directory).toBe("/tmp/project")
   })
 
-  test("creates usable Penguin fallback state for partial startup render", () => {
+  test("creates non-sendable Penguin fallback state for partial startup render", () => {
     const result = createPenguinBootstrapFallback({
       baseUrl: "http://127.0.0.1:9000",
       directory: "/tmp/project",
       now: 1000,
     })
-    const provider = result.provider[0]
-    const defaultModel = provider ? result.provider_default[provider.id] : undefined
 
-    expect(provider?.id).toBe("penguin")
-    expect(defaultModel).toBe("penguin-default")
-    expect(provider?.models[defaultModel!]).toBeDefined()
-    expect(result.provider_next.connected).toEqual(["penguin"])
+    expect(result.provider).toEqual([])
+    expect(result.provider_default).toEqual({})
+    expect(result.provider_next.connected).toEqual([])
     expect(result.agent[0]?.name).toBe("penguin")
     expect(result.command.map((item) => item.name)).toEqual(["config", "tool_details", "thinking"])
     expect(result.config).toEqual({ share: "disabled" })
     expect(result.path.directory).toBe("/tmp/project")
+  })
+
+  test("detects sparse provider catalogs that should be refreshed after startup", () => {
+    expect(hasSparsePenguinProviderCatalog([])).toBe(false)
+    expect(
+      hasSparsePenguinProviderCatalog([
+        {
+          models: {
+            "anthropic/claude-haiku-4.5": {
+              id: "anthropic/claude-haiku-4.5",
+              name: "Claude Haiku 4.5",
+            },
+            "anthropic/claude-opus-4.5": {
+              id: "anthropic/claude-opus-4.5",
+              name: "Claude Opus 4.5",
+            },
+            "anthropic/claude-sonnet-4.5": {
+              id: "anthropic/claude-sonnet-4.5",
+              name: "Claude Sonnet 4.5",
+            },
+          },
+        },
+      ]),
+    ).toBe(true)
+    expect(
+      hasSparsePenguinProviderCatalog([
+        {
+          models: Object.fromEntries(
+            Array.from({ length: 25 }, (_, index) => [
+              `model-${index}`,
+              { id: `model-${index}`, name: `Model ${index}` },
+            ]),
+          ),
+        },
+      ]),
+    ).toBe(false)
   })
 })

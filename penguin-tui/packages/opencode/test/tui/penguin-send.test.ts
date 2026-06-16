@@ -3,6 +3,7 @@ import {
   createPenguinSession,
   emitPenguinOptimisticPrompt,
   formatPenguinPromptFailure,
+  isPenguinSyntheticModel,
   recoverPenguinPromptFailure,
   resolveSessionID,
   sendPenguinPrompt,
@@ -33,7 +34,7 @@ describe("Penguin prompt send helper", () => {
       requestUrl = input instanceof URL ? input : new URL(String(input))
       body = JSON.parse(String(init?.body))
       return jsonResponse({ data: { id: "ses_created" } })
-    }) as typeof fetch
+    }) as unknown as typeof fetch
 
     const sessionID = await createPenguinSession({
       agentMode: "build",
@@ -56,6 +57,30 @@ describe("Penguin prompt send helper", () => {
       modelID: "claude-sonnet-4",
       variant: "thinking",
     })
+  })
+
+  test("rejects synthetic fallback models before creating Penguin sessions", async () => {
+    let called = false
+    const fetcher = (async () => {
+      called = true
+      return jsonResponse({ data: { id: "ses_created" } })
+    }) as unknown as typeof fetch
+
+    expect(isPenguinSyntheticModel({ providerID: "penguin", modelID: "penguin-default" })).toBe(true)
+    await expect(
+      createPenguinSession({
+        agentMode: "build",
+        baseUrl: "http://127.0.0.1:9000",
+        directory: "/tmp/project",
+        fetch: fetcher,
+        model: {
+          providerID: "penguin",
+          modelID: "penguin-default",
+        },
+      }),
+    ).rejects.toThrow("Provider configuration is still loading")
+
+    expect(called).toBe(false)
   })
 
   test("rejects empty session create responses with diagnostic details", async () => {
@@ -132,7 +157,7 @@ describe("Penguin prompt send helper", () => {
       requestUrl = input instanceof URL ? input : new URL(String(input))
       body = JSON.parse(String(init?.body))
       return new Response("", { status: 204 })
-    }) as typeof fetch
+    }) as unknown as typeof fetch
 
     const result = await sendPenguinPrompt({
       agentMode: "build",
@@ -167,6 +192,36 @@ describe("Penguin prompt send helper", () => {
       client_message_id: "msg_1",
       parts: [{ type: "file", mime: "image/png", url: "data:image/png;base64,abc" }],
     })
+  })
+
+  test("rejects synthetic fallback models before posting Penguin prompts", async () => {
+    let called = false
+    const fetcher = (async () => {
+      called = true
+      return new Response("", { status: 204 })
+    }) as unknown as typeof fetch
+
+    await expect(
+      sendPenguinPrompt({
+        agentMode: "build",
+        agentName: "general",
+        baseUrl: "http://127.0.0.1:9000",
+        directory: "/tmp/project",
+        fetch: fetcher,
+        messageID: "msg_1",
+        model: {
+          providerID: "penguin",
+          modelID: "penguin-default",
+        },
+        parts: [],
+        sessionID: "ses_1",
+        text: "hello",
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      details: "Provider configuration is still loading. Try again once the model list finishes loading.",
+    })
+    expect(called).toBe(false)
   })
 
   test("returns structured prompt send failures", async () => {

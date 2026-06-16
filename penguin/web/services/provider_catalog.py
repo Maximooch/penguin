@@ -155,10 +155,10 @@ def models_dev_catalog() -> dict[str, dict[str, Any]]:
     return fetched
 
 
-def models_dev_provider_models(
+def _models_dev_provider_models_from_catalog(
+    catalog: dict[str, dict[str, Any]],
     target_provider_ids: set[str],
 ) -> dict[str, dict[str, dict[str, Any]]]:
-    """Return provider-local model configs derived from models.dev data."""
     targets = {
         provider_id.strip().lower()
         for provider_id in target_provider_ids
@@ -167,7 +167,6 @@ def models_dev_provider_models(
     if not targets:
         return {}
 
-    catalog = models_dev_catalog()
     if not catalog:
         return {}
 
@@ -228,6 +227,35 @@ def models_dev_provider_models(
     return discovered
 
 
+def models_dev_cached_provider_models(
+    target_provider_ids: set[str],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Return provider-local model configs from the cached models.dev catalog."""
+    with _MODELS_DEV_CACHE_LOCK:
+        cached = _MODELS_DEV_CACHE.get("providers")
+        catalog = (
+            {
+                str(key): value
+                for key, value in cached.items()
+                if isinstance(key, str) and isinstance(value, dict)
+            }
+            if isinstance(cached, dict)
+            else {}
+        )
+
+    return _models_dev_provider_models_from_catalog(catalog, target_provider_ids)
+
+
+def models_dev_provider_models(
+    target_provider_ids: set[str],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Return provider-local model configs derived from models.dev data."""
+    return _models_dev_provider_models_from_catalog(
+        models_dev_catalog(),
+        target_provider_ids,
+    )
+
+
 def _openai_codex_model_input_modalities(raw_value: Any) -> list[str]:
     if not isinstance(raw_value, list):
         return []
@@ -243,23 +271,55 @@ def _openai_codex_model_reasoning_enabled(raw_value: Any) -> bool:
         return False
     return any(isinstance(item, dict) and item.get("effort") for item in raw_value)
 
+# TODO: Look into this later, could be an issue.
+def _openai_codex_cache_key(credential_record: dict[str, Any] | None) -> str | None:
+    if not isinstance(credential_record, dict):
+        return None
+    if credential_record.get("type") != "oauth":
+        return None
+
+    access = credential_record.get("access")
+    if not isinstance(access, str) or not access.strip():
+        return None
+
+    account_id = credential_record.get("accountId")
+    account_key = account_id.strip() if isinstance(account_id, str) else ""
+    return f"{access[-12:]}:{account_key}"
+
+
+def codex_oauth_cached_provider_models(
+    credential_record: dict[str, Any] | None,
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Return cached ChatGPT-backed Codex OAuth models when available."""
+    cache_key = _openai_codex_cache_key(credential_record)
+    if not cache_key:
+        return {}
+
+    with _OPENAI_CODEX_MODELS_CACHE_LOCK:
+        cached_models = _OPENAI_CODEX_MODELS_CACHE.get("models")
+        cached_key = str(_OPENAI_CODEX_MODELS_CACHE.get("cache_key") or "")
+        if cache_key != cached_key or not isinstance(cached_models, dict):
+            return {}
+        models = {
+            str(key): value
+            for key, value in cached_models.items()
+            if isinstance(key, str) and isinstance(value, dict)
+        }
+
+    return {"openai": models} if models else {}
+
 
 def codex_oauth_provider_models(
     credential_record: dict[str, Any] | None,
 ) -> dict[str, dict[str, dict[str, Any]]]:
     """Return OpenAI models available to a ChatGPT-backed Codex OAuth account."""
-    if not isinstance(credential_record, dict):
-        return {}
-    if credential_record.get("type") != "oauth":
-        return {}
-
-    access = credential_record.get("access")
-    if not isinstance(access, str) or not access.strip():
+    cache_key = _openai_codex_cache_key(credential_record)
+    if not cache_key:
         return {}
 
+    access = str(credential_record.get("access") or "").strip()
     account_id = credential_record.get("accountId")
     account_key = account_id.strip() if isinstance(account_id, str) else ""
-    cache_key = f"{access[-12:]}:{account_key}"
     now = time.time()
     with _OPENAI_CODEX_MODELS_CACHE_LOCK:
         fetched_at = float(_OPENAI_CODEX_MODELS_CACHE.get("fetched_at") or 0.0)

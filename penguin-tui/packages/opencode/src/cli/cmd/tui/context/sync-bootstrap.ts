@@ -93,6 +93,18 @@ export type PenguinBootstrapState = {
   session_usage: Record<string, SessionUsage>
 }
 
+const SPARSE_PROVIDER_CATALOG_MODEL_LIMIT = 20
+
+export function hasSparsePenguinProviderCatalog(
+  providers: ReadonlyArray<{ models?: Record<string, unknown> | null }>,
+): boolean {
+  const modelCount = providers.reduce(
+    (total, provider) => total + Object.keys(provider.models ?? {}).length,
+    0,
+  )
+  return modelCount > 0 && modelCount < SPARSE_PROVIDER_CATALOG_MODEL_LIMIT
+}
+
 export function parsePenguinUsage(raw: unknown): SessionUsage | undefined {
   if (typeof raw !== "object" || !raw) return undefined
   const root = raw as Record<string, unknown>
@@ -129,98 +141,43 @@ export function unwrapBootstrapData(value: unknown): unknown {
   return wrapper ? record.data : value
 }
 
-function createFallbackProvider(input: { baseUrl: string | URL; now: number }) {
-  const model = {
-    id: "penguin-default",
-    providerID: "penguin",
-    api: {
-      id: "penguin-web",
-      url: String(input.baseUrl),
-      npm: "penguin",
-    },
-    name: "Penguin Default",
-    capabilities: {
-      temperature: true,
-      reasoning: true,
-      attachment: false,
-      toolcall: false,
-      input: {
-        text: true,
-        audio: false,
-        image: false,
-        video: false,
-        pdf: false,
-      },
-      output: {
-        text: true,
-        audio: false,
-        image: false,
-        video: false,
-        pdf: false,
-      },
-      interleaved: false,
-    },
-    cost: {
-      input: 0,
-      output: 0,
-      cache: { read: 0, write: 0 },
-    },
-    limit: {
-      context: 100000,
-      output: 4096,
-    },
-    status: "beta" as const,
-    options: {},
-    headers: {},
-    release_date: new Date(input.now).toISOString(),
-  }
-  const provider = {
-    id: "penguin",
-    name: "Penguin",
-    source: "custom" as const,
-    env: [],
-    options: {},
-    models: {
-      [model.id]: model,
-    },
-  }
-  return { model, provider }
-}
-
-function createFallbackProviderList(input: {
-  model: ReturnType<typeof createFallbackProvider>["model"]
-  provider: ReturnType<typeof createFallbackProvider>["provider"]
-}): ProviderListResponse {
-  return {
-    all: [
-      {
-        id: input.provider.id,
-        name: input.provider.name,
-        env: input.provider.env,
-        models: {
-          [input.model.id]: {
-            id: input.model.id,
-            name: input.model.name,
-            release_date: input.model.release_date,
-            attachment: input.model.capabilities.attachment,
-            reasoning: input.model.capabilities.reasoning,
-            temperature: input.model.capabilities.temperature,
-            tool_call: input.model.capabilities.toolcall,
-            limit: input.model.limit,
-            status: input.model.status,
-            options: {},
-          },
-        },
-      },
-    ],
-    default: { [input.provider.id]: input.model.id },
-    connected: [input.provider.id],
-  }
-}
-
 function stamp(value: unknown, now: number): number {
   const time = typeof value === "string" ? Date.parse(value) : NaN
   return Number.isFinite(time) ? time : now
+}
+
+function providerListFromProviders(
+  providers: Provider[],
+  providerDefault: Record<string, string>,
+): ProviderListResponse {
+  const all: ProviderListResponse["all"] = providers.map((provider) => ({
+    id: provider.id,
+    name: provider.name,
+    env: provider.env ?? [],
+    models: Object.fromEntries(
+      Object.entries(provider.models ?? {}).map(([id, model]) => [
+        id,
+        {
+          id: model.id,
+          name: model.name,
+          release_date: model.release_date,
+          attachment: model.capabilities?.attachment ?? false,
+          reasoning: model.capabilities?.reasoning ?? false,
+          temperature: model.capabilities?.temperature ?? false,
+          tool_call: model.capabilities?.toolcall ?? false,
+          limit: model.limit,
+          status: model.status === "active" ? undefined : model.status,
+          options: model.options ?? {},
+        },
+      ]),
+    ),
+  }))
+
+  return {
+    all,
+    default: providerDefault,
+    connected: providers.map((provider) => provider.id),
+  }
 }
 
 function mapPenguinSession(input: {
@@ -344,10 +301,6 @@ export function mapPenguinBootstrap(input: {
   sessions: Record<string, unknown>[]
 }): PenguinBootstrapState {
   const now = input.now ?? Date.now()
-  const { model, provider } = createFallbackProvider({
-    baseUrl: input.baseUrl,
-    now,
-  })
 
   const providersPayload = unwrapBootstrapData(input.providersData) as Record<string, unknown> | undefined
   const providerListPayload = unwrapBootstrapData(input.providerListData) as Record<string, unknown> | undefined
@@ -356,18 +309,18 @@ export function mapPenguinBootstrap(input: {
 
   const providers: Provider[] = Array.isArray(providersPayload?.providers)
     ? (providersPayload.providers as Provider[])
-    : [provider]
+    : []
   const providerDefault =
     providersPayload && typeof providersPayload.default === "object" && providersPayload.default
       ? (providersPayload.default as Record<string, string>)
-      : { [provider.id]: model.id }
+      : {}
   const providerNext =
     providerListPayload &&
     Array.isArray(providerListPayload.all) &&
     providerListPayload.default &&
     Array.isArray(providerListPayload.connected)
       ? (providerListPayload as ProviderListResponse)
-      : createFallbackProviderList({ model, provider })
+      : providerListFromProviders(providers, providerDefault)
   const providerAuth =
     providerAuthPayload && typeof providerAuthPayload === "object"
       ? (providerAuthPayload as Record<string, ProviderAuthMethod[]>)

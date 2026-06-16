@@ -7,6 +7,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -249,6 +250,255 @@ def test_list_session_infos_directory_filter_excludes_unknown_directory(
     result = list_session_infos(core, directory=str(alpha_dir))
 
     assert [item["id"] for item in result] == ["session_alpha"]
+
+
+def test_list_session_infos_uses_index_to_bound_directory_limit(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    other_dir = tmp_path / "other"
+    project_dir.mkdir()
+    other_dir.mkdir()
+
+    class _IndexedOnlyManager:
+        def __init__(self, sessions: list[Session]) -> None:
+            self.sessions: dict[str, tuple[Session, bool]] = {}
+            self._sessions = {session.id: session for session in sessions}
+            self.session_index = {
+                session.id: {
+                    "created_at": session.created_at,
+                    "last_active": session.last_active,
+                    "message_count": len(session.messages),
+                    "title": session.metadata.get("title", ""),
+                    "directory": session.metadata.get("directory", ""),
+                }
+                for session in sessions
+            }
+            self.current_session: Session | None = None
+            self.base_path = tmp_path / "missing-conversations"
+            self.format = "json"
+            self.load_calls: list[str] = []
+
+        def load_session(self, session_id: str) -> Session | None:
+            self.load_calls.append(session_id)
+            return self._sessions.get(session_id)
+
+    def make_indexed_session(
+        session_id: str,
+        title: str,
+        ts: str,
+        directory: Path,
+    ) -> Session:
+        session = _session(session_id, title, ts)
+        session.metadata["directory"] = str(directory)
+        return session
+
+    alpha_old = make_indexed_session(
+        "session_alpha_old",
+        "Alpha Old",
+        "2026-02-01T00:00:00",
+        project_dir,
+    )
+    beta_new = make_indexed_session(
+        "session_beta_new",
+        "Beta New",
+        "2026-02-04T00:00:00",
+        other_dir,
+    )
+    alpha_new = make_indexed_session(
+        "session_alpha_new",
+        "Alpha New",
+        "2026-02-03T00:00:00",
+        project_dir,
+    )
+    alpha_latest = make_indexed_session(
+        "session_alpha_latest",
+        "Alpha Latest",
+        "2026-02-05T00:00:00",
+        project_dir,
+    )
+    manager = _IndexedOnlyManager([alpha_old, beta_new, alpha_new, alpha_latest])
+    core = SimpleNamespace(
+        conversation_manager=SimpleNamespace(
+            session_manager=manager,
+            agent_session_managers={},
+        ),
+        runtime_config=SimpleNamespace(
+            active_root=str(project_dir),
+            project_root=str(project_dir),
+        ),
+        model_config=SimpleNamespace(model="test-model", provider="test-provider"),
+    )
+
+    result = list_session_infos(cast(Any, core), directory=str(project_dir), limit=2)
+
+    assert [item["id"] for item in result] == [
+        "session_alpha_latest",
+        "session_alpha_new",
+    ]
+    assert manager.load_calls == []
+
+
+def test_list_session_infos_bounds_missing_index_directory_loads(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    other_dir = tmp_path / "other"
+    project_dir.mkdir()
+    other_dir.mkdir()
+
+    class _LegacyIndexManager:
+        def __init__(self, sessions: list[Session]) -> None:
+            self.sessions: dict[str, tuple[Session, bool]] = {}
+            self._sessions = {session.id: session for session in sessions}
+            self.session_index = {
+                session.id: {
+                    "created_at": session.created_at,
+                    "last_active": session.last_active,
+                    "message_count": len(session.messages),
+                    "title": session.metadata.get("title", ""),
+                }
+                for session in sessions
+            }
+            self.current_session: Session | None = None
+            self.base_path = tmp_path / "missing-conversations"
+            self.format = "json"
+            self.load_calls: list[str] = []
+            self.saved_index: dict[str, dict[str, Any]] | None = None
+
+        def load_session(self, session_id: str) -> Session | None:
+            self.load_calls.append(session_id)
+            session = self._sessions.get(session_id)
+            if session is not None:
+                self.sessions[session_id] = (session, False)
+            return session
+
+        def _save_index(self, index: dict[str, dict[str, Any]]) -> None:
+            self.saved_index = {key: dict(value) for key, value in index.items()}
+
+    def make_session(
+        session_id: str,
+        title: str,
+        ts: str,
+        directory: Path,
+    ) -> Session:
+        session = _session(session_id, title, ts)
+        session.metadata["directory"] = str(directory)
+        return session
+
+    sessions = [
+        make_session(
+            "session_other_newest",
+            "Other Newest",
+            "2026-02-05T00:00:00",
+            other_dir,
+        ),
+        make_session(
+            "session_project_latest",
+            "Project Latest",
+            "2026-02-04T00:00:00",
+            project_dir,
+        ),
+        make_session(
+            "session_project_older",
+            "Project Older",
+            "2026-02-03T00:00:00",
+            project_dir,
+        ),
+        make_session(
+            "session_other_oldest",
+            "Other Oldest",
+            "2026-02-02T00:00:00",
+            other_dir,
+        ),
+    ]
+    manager = _LegacyIndexManager(sessions)
+    core = SimpleNamespace(
+        conversation_manager=SimpleNamespace(
+            session_manager=manager,
+            agent_session_managers={},
+        ),
+        runtime_config=SimpleNamespace(
+            active_root=str(project_dir),
+            project_root=str(project_dir),
+        ),
+        model_config=SimpleNamespace(model="test-model", provider="test-provider"),
+    )
+
+    result = list_session_infos(cast(Any, core), directory=str(project_dir), limit=1)
+
+    assert [item["id"] for item in result] == ["session_project_latest"]
+    assert manager.load_calls == ["session_other_newest", "session_project_latest"]
+    assert manager.saved_index is not None
+    assert manager.saved_index["session_project_latest"]["directory"] == str(
+        project_dir
+    )
+
+
+def test_list_session_infos_caches_missing_directory_index_rows(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    class _LegacyIndexManager:
+        def __init__(self, sessions: list[Session]) -> None:
+            self.sessions: dict[str, tuple[Session, bool]] = {}
+            self._sessions = {session.id: session for session in sessions}
+            self.session_index = {
+                session.id: {
+                    "created_at": session.created_at,
+                    "last_active": session.last_active,
+                    "message_count": len(session.messages),
+                    "title": session.metadata.get("title", ""),
+                }
+                for session in sessions
+            }
+            self.current_session: Session | None = None
+            self.base_path = tmp_path / "missing-conversations"
+            self.format = "json"
+            self.load_calls: list[str] = []
+
+        def load_session(self, session_id: str) -> Session | None:
+            self.load_calls.append(session_id)
+            session = self._sessions.get(session_id)
+            if session is not None:
+                self.sessions[session_id] = (session, False)
+            return session
+
+        def _save_index(self, _index: dict[str, dict[str, Any]]) -> None:
+            return None
+
+    no_directory = _session(
+        "session_no_directory",
+        "No Directory",
+        "2026-02-05T00:00:00",
+    )
+    project_session = _session(
+        "session_project_latest",
+        "Project Latest",
+        "2026-02-04T00:00:00",
+    )
+    project_session.metadata["directory"] = str(project_dir)
+    manager = _LegacyIndexManager([no_directory, project_session])
+    core = SimpleNamespace(
+        conversation_manager=SimpleNamespace(
+            session_manager=manager,
+            agent_session_managers={},
+        ),
+        runtime_config=SimpleNamespace(
+            active_root=str(project_dir),
+            project_root=str(project_dir),
+        ),
+        model_config=SimpleNamespace(model="test-model", provider="test-provider"),
+    )
+
+    first = list_session_infos(cast(Any, core), directory=str(project_dir), limit=2)
+    assert [item["id"] for item in first] == ["session_project_latest"]
+    assert manager.load_calls == ["session_no_directory", "session_project_latest"]
+
+    manager.load_calls.clear()
+    second = list_session_infos(cast(Any, core), directory=str(project_dir), limit=2)
+    assert [item["id"] for item in second] == ["session_project_latest"]
+    assert manager.load_calls == []
 
 
 def test_list_session_infos_loads_project_session_missing_from_index(

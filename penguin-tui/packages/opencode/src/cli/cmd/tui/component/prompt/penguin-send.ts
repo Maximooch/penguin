@@ -23,6 +23,20 @@ type PenguinModel = {
 
 type PenguinAgentMode = "build" | "plan"
 
+const SYNTHETIC_PENGUIN_PROVIDER_ID = "penguin"
+const SYNTHETIC_PENGUIN_MODEL_ID = "penguin-default"
+const SYNTHETIC_MODEL_MESSAGE =
+  "Provider configuration is still loading. Try again once the model list finishes loading."
+
+export function isPenguinSyntheticModel(model: PenguinModel | undefined): boolean {
+  return model?.providerID === SYNTHETIC_PENGUIN_PROVIDER_ID && model.modelID === SYNTHETIC_PENGUIN_MODEL_ID
+}
+
+function assertPenguinSendableModel(model: PenguinModel) {
+  if (!isPenguinSyntheticModel(model)) return
+  throw new Error(SYNTHETIC_MODEL_MESSAGE)
+}
+
 export function recoverPenguinPromptFailure(input: {
   sessionID: string
   clear: () => void
@@ -55,6 +69,7 @@ export async function createPenguinSession(input: {
   model: PenguinModel
   variant?: string
 }): Promise<string> {
+  assertPenguinSendableModel(input.model)
   const createUrl = new URL("/session", input.baseUrl)
   createUrl.searchParams.set("directory", input.directory)
   const created = await input
@@ -176,6 +191,12 @@ export async function sendPenguinPrompt(input: {
   text: string
   variant?: string
 }): Promise<PenguinPromptSendResult> {
+  if (isPenguinSyntheticModel(input.model)) {
+    return {
+      ok: false,
+      details: SYNTHETIC_MODEL_MESSAGE,
+    }
+  }
   const url = new URL("/api/v1/chat/message", input.baseUrl)
   try {
     const res = await input.fetch(url, {

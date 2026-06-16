@@ -324,6 +324,66 @@ async def test_provider_list_includes_env_connected_provider(
 
 
 @pytest.mark.asyncio
+async def test_provider_payloads_do_not_fetch_catalogs_on_request_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    openrouter_cache = cast(Any, getattr(provider_service, "_OPENROUTER_CATALOG_CACHE"))
+    openrouter_cache["fetched_at"] = 0.0
+    openrouter_cache["models"] = {}
+    models_dev_cache = cast(Any, getattr(provider_catalog, "_MODELS_DEV_CACHE"))
+    models_dev_cache["fetched_at"] = 0.0
+    models_dev_cache["providers"] = {}
+    codex_cache = cast(Any, getattr(provider_catalog, "_OPENAI_CODEX_MODELS_CACHE"))
+    codex_cache["fetched_at"] = 0.0
+    codex_cache["cache_key"] = ""
+    codex_cache["models"] = {}
+
+    def fail_catalog_fetch(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("catalog fetch must not run on provider request path")
+
+    scheduled: list[dict[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        provider_service, "_openrouter_catalog_models", fail_catalog_fetch
+    )
+    monkeypatch.setattr(
+        provider_service, "models_dev_provider_models", fail_catalog_fetch
+    )
+    monkeypatch.setattr(
+        provider_service, "codex_oauth_provider_models", fail_catalog_fetch
+    )
+    monkeypatch.setattr(
+        provider_service,
+        "_schedule_provider_catalog_refresh",
+        lambda auth_records: scheduled.append(auth_records) is None,
+    )
+    monkeypatch.setattr(
+        provider_service,
+        "get_provider_credentials",
+        lambda: {
+            "openrouter": {"type": "api", "key": "sk-or-v1-cold"},
+            "openai": {
+                "type": "oauth",
+                "access": "access-token",
+                "accountId": "acct_123",
+            },
+        },
+    )
+
+    core = _Core(tmp_path)
+    typed_core = cast(Any, core)
+
+    providers_payload = await opencode_config_providers(core=typed_core)
+    provider_payload = await opencode_provider_list(core=typed_core)
+
+    provider_ids = {item["id"] for item in providers_payload["providers"]}
+    list_ids = {item["id"] for item in provider_payload["all"]}
+    assert "openrouter" in provider_ids
+    assert "openrouter" in list_ids
+    assert len(scheduled) == 2
+
+
+@pytest.mark.asyncio
 async def test_openrouter_catalog_expands_provider_payloads(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -393,6 +453,14 @@ async def test_openrouter_catalog_expands_provider_payloads(
         core=typed_core,
     )
     assert saved is True
+    assert provider_service._openrouter_catalog_models(
+        api_key="sk-or-v1-catalog-fixture"
+    )
+    monkeypatch.setattr(
+        provider_service,
+        "_schedule_provider_catalog_refresh",
+        lambda *_args, **_kwargs: False,
+    )
 
     providers_payload = await opencode_config_providers(core=typed_core)
     openrouter = next(
@@ -499,6 +567,12 @@ async def test_models_dev_catalog_expands_openai_and_anthropic_payloads(
             return _ModelsDevResponse()
 
     monkeypatch.setattr(provider_catalog.httpx, "Client", _ModelsDevClient)
+    assert provider_catalog.models_dev_provider_models({"openai", "anthropic"})
+    monkeypatch.setattr(
+        provider_service,
+        "_schedule_provider_catalog_refresh",
+        lambda *_args, **_kwargs: False,
+    )
 
     core = _Core(tmp_path)
     core.config.model_configs = {}
@@ -647,19 +721,23 @@ async def test_openai_oauth_catalog_replaces_static_openai_models(
             return _CodexModelsResponse()
 
     monkeypatch.setattr(provider_catalog.httpx, "Client", _CodexModelsClient)
-    monkeypatch.setattr(provider_service, "models_dev_provider_models", lambda *_: {})
+    oauth_record = {
+        "type": "oauth",
+        "access": "access-token",
+        "refresh": "refresh-token",
+        "expires": int(time.time() * 1000) + 3600000,
+        "accountId": "acct_123",
+    }
+    assert provider_catalog.codex_oauth_provider_models(oauth_record)
+    monkeypatch.setattr(
+        provider_service,
+        "_schedule_provider_catalog_refresh",
+        lambda *_args, **_kwargs: False,
+    )
     monkeypatch.setattr(
         provider_service,
         "get_provider_credentials",
-        lambda: {
-            "openai": {
-                "type": "oauth",
-                "access": "access-token",
-                "refresh": "refresh-token",
-                "expires": int(time.time() * 1000) + 3600000,
-                "accountId": "acct_123",
-            }
-        },
+        lambda: {"openai": oauth_record},
     )
 
     core = _Core(tmp_path)

@@ -26,7 +26,7 @@ import type { Snapshot } from "@/snapshot"
 import { useExit } from "./exit"
 import { useArgs } from "./args"
 import { useRoute } from "./route"
-import { batch, onMount } from "solid-js"
+import { batch, onCleanup, onMount } from "solid-js"
 import { Log } from "@/util/log"
 import { iife } from "@/util/iife"
 import type { Path } from "@opencode-ai/sdk"
@@ -38,6 +38,7 @@ import {
 import {
   createPenguinBootstrapFallback,
   fetchBootstrapJson,
+  hasSparsePenguinProviderCatalog,
   mapPenguinBootstrap,
   parsePenguinUsage,
   type PenguinSession,
@@ -139,6 +140,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       path: initialPenguinState?.path ?? { state: "", config: "", worktree: "", directory: "" },
     })
     const fullSyncedSessions = new Set<string>()
+    const providerCatalogRefreshTimers = new Set<ReturnType<typeof setTimeout>>()
 
     const resolveDirectory = (sessionID?: string) => {
       if (sessionID) {
@@ -184,6 +186,79 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         .finally(() => {
           usageRefreshInFlight.delete(sessionID)
         })
+    }
+
+    const refreshPenguinProviderCatalog = async (reason: string) => {
+      if (!sdk.penguin) return
+      const start = Date.now()
+      const directory = store.path.directory || sdk.directory || process.cwd()
+      try {
+        const [providersData, providerListData, providerAuthData] = await Promise.all([
+          fetchBootstrapJson({
+            fetch: sdk.fetch,
+            path: new URL("/config/providers", sdk.url),
+            endpoint: "/config/providers",
+            fallback: undefined,
+          }),
+          fetchBootstrapJson({
+            fetch: sdk.fetch,
+            path: new URL("/provider", sdk.url),
+            endpoint: "/provider",
+            fallback: undefined,
+          }),
+          fetchBootstrapJson({
+            fetch: sdk.fetch,
+            path: new URL("/provider/auth", sdk.url),
+            endpoint: "/provider/auth",
+            fallback: undefined,
+          }),
+        ])
+        const state = mapPenguinBootstrap({
+          baseUrl: sdk.url,
+          configData: store.config,
+          directory,
+          providerAuthData,
+          providerListData,
+          providersData,
+          roster: [],
+          sessions: [],
+        })
+        batch(() => {
+          setStore("provider", reconcile(state.provider))
+          setStore("provider_default", reconcile(state.provider_default))
+          setStore("provider_next", reconcile(state.provider_next))
+          setStore("provider_auth", reconcile(state.provider_auth))
+        })
+        profileStartup("sync.bootstrap.provider_catalog_refresh.done", {
+          duration_ms: Date.now() - start,
+          reason,
+          providers: state.provider.length,
+          models: state.provider.reduce(
+            (total, provider) => total + Object.keys(provider.models ?? {}).length,
+            0,
+          ),
+        })
+      } catch (error) {
+        profileStartup("sync.bootstrap.provider_catalog_refresh.error", {
+          duration_ms: Date.now() - start,
+          reason,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+
+    const schedulePenguinProviderCatalogRefresh = (reason: string) => {
+      if (!sdk.penguin) return
+      if (!hasSparsePenguinProviderCatalog(store.provider)) return
+
+      for (const delay of [1000, 3000, 7000]) {
+        const timer = setTimeout(() => {
+          providerCatalogRefreshTimers.delete(timer)
+          if (!hasSparsePenguinProviderCatalog(store.provider)) return
+          void refreshPenguinProviderCatalog(`${reason}:${delay}`)
+        }, delay)
+        providerCatalogRefreshTimers.add(timer)
+      }
     }
 
     const syncSessionSnapshot = async (sessionID: string, force = false) => {
@@ -556,60 +631,58 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           url.searchParams.set("limit", "50")
           return url
         })
-        const [providersData, providerListData, configData, providerAuthData, sessionsData, roster] = await Promise.all(
-          [
-            timed(
-              "config_providers",
-              fetchBootstrapJson({
-                fetch: sdk.fetch,
-                path: new URL("/config/providers", sdk.url),
-                endpoint: "/config/providers",
-                fallback: undefined,
-              }),
-            ),
-            timed(
-              "provider",
-              fetchBootstrapJson({
-                fetch: sdk.fetch,
-                path: new URL("/provider", sdk.url),
-                endpoint: "/provider",
-                fallback: undefined,
-              }),
-            ),
-            timed(
-              "config",
-              fetchBootstrapJson({
-                fetch: sdk.fetch,
-                path: new URL("/config", sdk.url),
-                endpoint: "/config",
-                fallback: undefined,
-              }),
-            ),
-            timed(
-              "provider_auth",
-              fetchBootstrapJson({
-                fetch: sdk.fetch,
-                path: new URL("/provider/auth", sdk.url),
-                endpoint: "/provider/auth",
-                fallback: undefined,
-              }),
-            ),
-            timed(
-              "sessions",
-              sdk.fetch(sessionsUrl)
-                .then((res) => (res.ok ? res.json() : undefined))
-                .then((data) => (Array.isArray(data) ? data : []))
-                .catch(() => []),
-            ),
-            timed(
-              "agents",
-              sdk.fetch(new URL("/api/v1/agents", sdk.url))
-                .then((res) => (res.ok ? res.json() : undefined))
-                .then((data) => (Array.isArray(data) ? data : []))
-                .catch(() => []),
-            ),
-          ],
+        const sessionsPromise = timed(
+          "sessions",
+          sdk.fetch(sessionsUrl)
+            .then((res) => (res.ok ? res.json() : undefined))
+            .then((data) => (Array.isArray(data) ? data : []))
+            .catch(() => []),
         )
+        const [providersData, providerListData, configData, providerAuthData, roster] = await Promise.all([
+          timed(
+            "config_providers",
+            fetchBootstrapJson({
+              fetch: sdk.fetch,
+              path: new URL("/config/providers", sdk.url),
+              endpoint: "/config/providers",
+              fallback: undefined,
+            }),
+          ),
+          timed(
+            "provider",
+            fetchBootstrapJson({
+              fetch: sdk.fetch,
+              path: new URL("/provider", sdk.url),
+              endpoint: "/provider",
+              fallback: undefined,
+            }),
+          ),
+          timed(
+            "config",
+            fetchBootstrapJson({
+              fetch: sdk.fetch,
+              path: new URL("/config", sdk.url),
+              endpoint: "/config",
+              fallback: undefined,
+            }),
+          ),
+          timed(
+            "provider_auth",
+            fetchBootstrapJson({
+              fetch: sdk.fetch,
+              path: new URL("/provider/auth", sdk.url),
+              endpoint: "/provider/auth",
+              fallback: undefined,
+            }),
+          ),
+          timed(
+            "agents",
+            sdk.fetch(new URL("/api/v1/agents", sdk.url))
+              .then((res) => (res.ok ? res.json() : undefined))
+              .then((data) => (Array.isArray(data) ? data : []))
+              .catch(() => []),
+          ),
+        ])
         const mapStart = Date.now()
         const bootstrapState = mapPenguinBootstrap({
           baseUrl: sdk.url,
@@ -619,7 +692,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           providerListData,
           providersData,
           roster: Array.isArray(roster) ? roster : [],
-          sessions: Array.isArray(sessionsData) ? sessionsData : [],
+          sessions: [],
         })
         profileStartup("sync.bootstrap.map.done", {
           duration_ms: Date.now() - mapStart,
@@ -632,13 +705,36 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           setStore("agent", reconcile(bootstrapState.agent))
           setStore("command", reconcile(bootstrapState.command))
           setStore("config", reconcile(bootstrapState.config))
-          setStore("session", reconcile(bootstrapState.session))
-          setStore("session_usage", reconcile(bootstrapState.session_usage))
-          setStore("session_status", reconcile(bootstrapState.session_status))
           setStore("path", reconcile(bootstrapState.path))
-          setStore("status", "complete")
+          setStore("status", "partial")
         })
         profileStartup("sync.bootstrap.primary_store.done")
+        schedulePenguinProviderCatalogRefresh("sparse-primary")
+
+        const sessionsStorePromise = sessionsPromise.then((sessionsData) => {
+          const sessionsMapStart = Date.now()
+          const sessionsState = mapPenguinBootstrap({
+            baseUrl: sdk.url,
+            configData,
+            directory,
+            providerAuthData,
+            providerListData,
+            providersData,
+            roster: Array.isArray(roster) ? roster : [],
+            sessions: Array.isArray(sessionsData) ? sessionsData : [],
+          })
+          profileStartup("sync.bootstrap.sessions_map.done", {
+            duration_ms: Date.now() - sessionsMapStart,
+          })
+          batch(() => {
+            setStore("session", reconcile(sessionsState.session))
+            setStore("session_usage", reconcile(sessionsState.session_usage))
+            setStore("session_status", reconcile(sessionsState.session_status))
+          })
+          profileStartup("sync.bootstrap.sessions_store.done", {
+            sessions: sessionsState.session.length,
+          })
+        })
 
         const systemUrl = (pathname: string) => {
           const url = new URL(pathname, sdk.url)
@@ -646,7 +742,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           return url
         }
 
-        await Promise.all([
+        const systemStorePromise = Promise.all([
           timed(
             "lsp",
             fetchBootstrapJson({
@@ -695,7 +791,9 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             if (path) setStore("path", reconcile(path))
           })
         })
-        profileStartup("sync.bootstrap.system_store.done")
+        systemStorePromise.then(() => profileStartup("sync.bootstrap.system_store.done"))
+        await Promise.all([sessionsStorePromise, systemStorePromise])
+        setStore("status", "complete")
         const activeSessionID = route.data.type === "session" ? route.data.sessionID : undefined
         if (activeSessionID && (refreshActive || store.session.some((item) => item.id === activeSessionID))) {
           const hydrateStart = Date.now()
@@ -789,6 +887,12 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
 
     onMount(() => {
       void bootstrap()
+    })
+    onCleanup(() => {
+      for (const timer of providerCatalogRefreshTimers) {
+        clearTimeout(timer)
+      }
+      providerCatalogRefreshTimers.clear()
     })
 
     const result = {

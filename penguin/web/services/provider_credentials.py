@@ -196,20 +196,26 @@ def get_provider_credentials() -> dict[str, dict[str, Any]]:
     """Return provider credential records with env values taking precedence."""
     with _CREDENTIALS_LOCK:
         providers = _load_store().get("providers")
-        records = {
-            str(key): value
-            for key, value in providers.items()
-            if isinstance(key, str) and isinstance(value, dict)
-        } if isinstance(providers, dict) else {}
+        records = (
+            {
+                str(key): value
+                for key, value in providers.items()
+                if isinstance(key, str) and isinstance(value, dict)
+            }
+            if isinstance(providers, dict)
+            else {}
+        )
 
         merged = dict(records)
         provider_ids = set(records.keys())
-        provider_ids.update({
-            "openai",
-            "openrouter",
-            "anthropic",
-            "google",
-        })
+        provider_ids.update(
+            {
+                "openai",
+                "openrouter",
+                "anthropic",
+                "google",
+            }
+        )
 
         for provider_id in provider_ids:
             env_record = _credential_record_from_environment(provider_id)
@@ -298,9 +304,12 @@ def remove_provider_credential(provider_id: str) -> bool:
         providers = store.setdefault("providers", {})
         if pid not in providers:
             return False
+        removed_record = providers.get(pid)
         providers.pop(pid, None)
         store["version"] = _CREDENTIALS_STORE_VERSION
         _write_store(store)
+    if isinstance(removed_record, dict):
+        _remove_credentials_from_environment(pid, removed_record)
     return True
 
 
@@ -311,12 +320,47 @@ def _provider_env_candidates(provider_id: str) -> list[str]:
         "openai": ["OPENAI_API_KEY"],
         "anthropic": ["ANTHROPIC_API_KEY"],
         "google": ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
+        "ollama": ["OLLAMA_HOST"],
     }
     if pid in mapping:
         return mapping[pid]
     if pid:
         return [f"{pid.upper()}_API_KEY"]
     return []
+
+
+def _clear_env_if_matches(env_name: str, expected_value: str) -> None:
+    if expected_value and os.getenv(env_name) == expected_value:
+        os.environ.pop(env_name, None)
+
+
+def _remove_credentials_from_environment(
+    provider_id: str,
+    credential_record: dict[str, Any],
+) -> None:
+    pid = provider_id.strip().lower()
+    auth_type = credential_record.get("type")
+
+    if auth_type == "api":
+        key = credential_record.get("key")
+        if isinstance(key, str):
+            for env_name in _provider_env_candidates(pid):
+                _clear_env_if_matches(env_name, key)
+        return
+
+    if auth_type == "oauth" and pid == "openai":
+        access = credential_record.get("access")
+        refresh = credential_record.get("refresh")
+        expires = credential_record.get("expires")
+        account_id = credential_record.get("accountId")
+        if isinstance(access, str):
+            _clear_env_if_matches("OPENAI_OAUTH_ACCESS_TOKEN", access)
+        if isinstance(refresh, str):
+            _clear_env_if_matches("OPENAI_OAUTH_REFRESH_TOKEN", refresh)
+        if isinstance(expires, int):
+            _clear_env_if_matches("OPENAI_OAUTH_EXPIRES_AT_MS", str(expires))
+        if isinstance(account_id, str):
+            _clear_env_if_matches("OPENAI_ACCOUNT_ID", account_id)
 
 
 def _credential_record_from_environment(provider_id: str) -> dict[str, Any] | None:

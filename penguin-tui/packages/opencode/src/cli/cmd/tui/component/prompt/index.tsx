@@ -39,6 +39,7 @@ import {
   createPenguinSession,
   emitPenguinOptimisticPrompt,
   formatPenguinPromptFailure,
+  isPenguinSyntheticModel,
   recoverPenguinPromptFailure,
   resolveSessionID,
   sendPenguinPrompt,
@@ -933,6 +934,14 @@ export function Prompt(props: PromptProps) {
     const selectedModel = local.model.current()
     if (!selectedModel) {
       promptModelWarning()
+      return
+    }
+    if (sdk.penguin && isPenguinSyntheticModel(selectedModel)) {
+      toast.show({
+        variant: "warning",
+        message: "Provider configuration is still loading. Try again once the model list finishes loading.",
+        duration: 3000,
+      })
       return
     }
     const currentMode = store.mode
