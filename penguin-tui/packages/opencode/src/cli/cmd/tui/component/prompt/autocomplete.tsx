@@ -13,6 +13,7 @@ import { Locale } from "@/util/locale"
 import type { PromptInfo } from "./history"
 import { useFrecency } from "./frecency"
 import { rankSlashAutocompleteOptions } from "./slash-autocomplete"
+import { formatMcpResourceAutocomplete } from "./mcp-autocomplete"
 
 function removeLineRange(input: string) {
   const hashIndex = input.lastIndexOf("#")
@@ -296,10 +297,10 @@ export function Autocomplete(props: {
     const width = props.anchor().width - 4
 
     for (const res of Object.values(sync.data.mcp_resource)) {
-      const text = `${res.name} (${res.uri})`
+      const resourceOption = formatMcpResourceAutocomplete(res, width)
       options.push({
-        display: Locale.truncateMiddle(text, width),
-        value: text,
+        display: resourceOption.display,
+        value: resourceOption.value,
         description: res.description,
         onSelect: () => {
           insertPart(res.name, {
@@ -399,6 +400,7 @@ export function Autocomplete(props: {
         "description",
         (obj) => obj.aliases?.join(" ") ?? "",
       ],
+      threshold: store.visible === "@" ? 0.5 : 0,
       limit: 10,
       scoreFn: (objResults) => {
         const displayResult = objResults[0]

@@ -1391,6 +1391,13 @@ shape and leave implementation to Phase 10.
       version, server status messages, progress timeout resets, readable
       structured tool output, resource templates, resource read tools, server
       instructions in context, server cwd/root support, and denied-access hiding.
+      - [x] Adapted the frontend-safe MCP autocomplete noise fix: resource
+            suggestions now display and fuzzy-match on resource name only, while
+            preserving URI/client metadata in the selected prompt part.
+      - [ ] Keep the remaining MCP runtime/protocol items as backend/service
+            inventory unless a stable Penguin endpoint already exposes the
+            required status, resource-template, progress, log, or capability
+            data.
 - [ ] Review MCP OAuth/error UX: manual OAuth URL printing, callback shutdown,
       escaped OAuth errors, IPv4 loopback binding, expired session recovery, and
       clearing closed clients.
