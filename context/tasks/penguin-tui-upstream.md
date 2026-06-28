@@ -1232,6 +1232,10 @@ shape and leave implementation to Phase 10.
 - [ ] Bring over session picker sorting, local-project defaults, long-path
       truncation, sidebar/session ID display, and stable navigation polish where
       it reduces Penguin TUI drift.
+      - [x] Adapted upstream's project-copy/session-list cue using Penguin's
+            existing session `directory` field: the session dialog now shows a
+            truncated directory basename for sessions outside the current
+            directory, without adding new backend project/worktree contracts.
 - [ ] Review session list directory filters, workspace filters, hidden/blank
       session handling, empty-state behavior, and recent-session scrolling.
 - [ ] Import low-risk missing-session cleanup behavior where Penguin can detect

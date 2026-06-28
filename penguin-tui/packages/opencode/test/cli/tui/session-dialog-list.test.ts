@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import type { PenguinSession } from "../../../src/cli/cmd/tui/context/sync-bootstrap"
 import {
   appendSessionIfMissing,
+  formatSessionDirectoryLabel,
   getDialogSessions,
   isBlankPenguinSession,
 } from "../../../src/cli/cmd/tui/util/session-dialog-list"
@@ -126,5 +127,32 @@ describe("Penguin dialog session list", () => {
         searchResults: [],
       }),
     ).toEqual([])
+  })
+
+  test("omits directory labels for sessions in the current directory", () => {
+    expect(
+      formatSessionDirectoryLabel({
+        currentDirectory: "/tmp/project",
+        sessionDirectory: "/tmp/project/",
+      }),
+    ).toBeUndefined()
+  })
+
+  test("shows truncated directory labels for copied sessions", () => {
+    expect(
+      formatSessionDirectoryLabel({
+        currentDirectory: "/tmp/project",
+        sessionDirectory: "/tmp/project-feature-branch-with-long-name",
+        maxLength: 20,
+      }),
+    ).toBe("project-feature-bra…")
+  })
+
+  test("shows directory labels when the current directory is not available", () => {
+    expect(
+      formatSessionDirectoryLabel({
+        sessionDirectory: "/tmp/attached-project",
+      }),
+    ).toBe("attached-project")
   })
 })
