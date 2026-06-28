@@ -8,6 +8,7 @@ import { createDialogProviderOptions, DialogProvider } from "./dialog-provider"
 import { useKeybind } from "../context/keybind"
 import { sortModelOptions } from "../util/model-options"
 import { resolveCatalogModel } from "../util/model-selection"
+import { mergeProviderCatalogs } from "../util/provider-catalog"
 import * as fuzzysort from "fuzzysort"
 
 export function useConnected() {
@@ -27,6 +28,7 @@ export function DialogModel(props: { providerID?: string }) {
 
   const connected = useConnected()
   const providers = createDialogProviderOptions()
+  const modelProviders = createMemo(() => mergeProviderCatalogs(sync.data.provider, sync.data.provider_next.all))
 
   const showExtra = createMemo(() => {
     if (!connected()) return false
@@ -49,9 +51,9 @@ export function DialogModel(props: { providerID?: string }) {
 
     const favoriteOptions = showSections
       ? favorites.flatMap((item) => {
-          const provider = sync.data.provider.find((x) => x.id === item.providerID)
+          const provider = modelProviders().find((x) => x.id === item.providerID)
           if (!provider) return []
-          const resolved = resolveCatalogModel(sync.data.provider, item)
+          const resolved = resolveCatalogModel(modelProviders(), item)
           if (!resolved) return []
           const model = provider.models[resolved.modelID]
           if (!model) return []
@@ -84,9 +86,9 @@ export function DialogModel(props: { providerID?: string }) {
 
     const recentOptions = showSections
       ? recentList.flatMap((item) => {
-          const provider = sync.data.provider.find((x) => x.id === item.providerID)
+          const provider = modelProviders().find((x) => x.id === item.providerID)
           if (!provider) return []
-          const resolved = resolveCatalogModel(sync.data.provider, item)
+          const resolved = resolveCatalogModel(modelProviders(), item)
           if (!resolved) return []
           const model = provider.models[resolved.modelID]
           if (!model) return []
@@ -118,7 +120,7 @@ export function DialogModel(props: { providerID?: string }) {
       : []
 
     const providerOptions = pipe(
-      sync.data.provider,
+      modelProviders(),
       sortBy(
         (provider) => provider.id !== "opencode",
         (provider) => provider.name,
@@ -200,7 +202,7 @@ export function DialogModel(props: { providerID?: string }) {
   })
 
   const provider = createMemo(() =>
-    props.providerID ? sync.data.provider.find((x) => x.id === props.providerID) : null,
+    props.providerID ? modelProviders().find((x) => x.id === props.providerID) : null,
   )
 
   const title = createMemo(() => {

@@ -15,6 +15,7 @@ import { RGBA } from "@opentui/core"
 import type { Agent } from "@opencode-ai/sdk/v2"
 import { nextVariantSelection } from "./variant-cycle"
 import { resolveCatalogModel } from "../util/model-selection"
+import { mergeProviderCatalogs } from "../util/provider-catalog"
 
 export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
   name: "Local",
@@ -22,9 +23,10 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const sync = useSync()
     const sdk = useSDK()
     const toast = useToast()
+    const modelProviders = createMemo(() => mergeProviderCatalogs(sync.data.provider, sync.data.provider_next.all))
 
     function resolveModel(model: { providerID: string; modelID: string }) {
-      return resolveCatalogModel(sync.data.provider, model)
+      return resolveCatalogModel(modelProviders(), model)
     }
 
     function isModelValid(model: { providerID: string; modelID: string }) {
@@ -220,10 +222,10 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           }
         }
 
-        const provider = sync.data.provider[0]
+        const provider = modelProviders()[0]
         if (!provider) return undefined
         const defaultModel = sync.data.provider_default[provider.id]
-        const firstModel = Object.values(provider.models)[0]
+        const firstModel = Object.values(provider.models ?? {})[0]
         const model = defaultModel ?? firstModel?.id
         if (!model) return undefined
         return {
@@ -263,8 +265,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
               reasoning: false,
             }
           }
-          const provider = sync.data.provider.find((x) => x.id === value.providerID)
-          const info = provider?.models[value.modelID]
+          const provider = modelProviders().find((x) => x.id === value.providerID)
+          const info = provider?.models?.[value.modelID]
           return {
             provider: provider?.name ?? value.providerID,
             model: info?.name ?? value.modelID,
@@ -378,8 +380,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           list() {
             const m = currentModel()
             if (!m) return []
-            const provider = sync.data.provider.find((x) => x.id === m.providerID)
-            const info = provider?.models[m.modelID]
+            const provider = modelProviders().find((x) => x.id === m.providerID)
+            const info = provider?.models?.[m.modelID]
             if (!info?.variants) return []
             return Object.keys(info.variants)
           },
