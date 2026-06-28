@@ -4,6 +4,7 @@ import { formatPart } from "../../../src/cli/cmd/tui/util/transcript"
 import {
   formatReasoningHeader,
   formatReasoningLabel,
+  isReasoningComplete,
   parseReasoningSummary,
 } from "../../../src/cli/cmd/tui/util/reasoning-summary"
 
@@ -49,5 +50,26 @@ describe("reasoning summary display", () => {
     )
 
     expect(result).toBe("_Thinking: Inspecting workflow_\n\nChecking files...\n\n")
+  })
+
+  test("treats missing reasoning time metadata as unfinished", () => {
+    expect(
+      isReasoningComplete({
+        part: {},
+        message: { time: {} },
+      }),
+    ).toBe(false)
+    expect(
+      isReasoningComplete({
+        part: { time: { end: 2 } },
+        message: { time: {} },
+      }),
+    ).toBe(true)
+    expect(
+      isReasoningComplete({
+        part: {},
+        message: { time: { completed: 3 } },
+      }),
+    ).toBe(true)
   })
 })

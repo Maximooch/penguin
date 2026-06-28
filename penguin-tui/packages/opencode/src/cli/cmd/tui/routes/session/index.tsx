@@ -79,7 +79,7 @@ import { PermissionPrompt } from "./permission"
 import { QuestionPrompt } from "./question"
 import { DialogExportOptions } from "../../ui/dialog-export-options"
 import { formatTranscript } from "../../util/transcript"
-import { formatReasoningLabel, parseReasoningSummary } from "../../util/reasoning-summary"
+import { formatReasoningLabel, isReasoningComplete, parseReasoningSummary } from "../../util/reasoning-summary"
 import { coerceToolInputRecord, formatPrimitiveToolInput } from "../../util/tool-input"
 import { assistantDurationMs, isAssistantSettled } from "./message-duration"
 import { deriveInlineToolState } from "./inline-tool-row"
@@ -1390,7 +1390,7 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
     return props.part.text.replace("[REDACTED]", "").trim()
   })
   const summary = createMemo(() => parseReasoningSummary(content()))
-  const done = createMemo(() => props.part.time.end !== undefined || props.message.time.completed !== undefined)
+  const done = createMemo(() => isReasoningComplete({ part: props.part, message: props.message }))
   const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
   return (
     <Show when={content() && ctx.showThinking()}>

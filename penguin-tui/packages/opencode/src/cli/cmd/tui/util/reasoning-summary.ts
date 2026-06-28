@@ -3,6 +3,19 @@ export type ReasoningSummary = {
   body: string
 }
 
+type ReasoningCompletionInput = {
+  part: {
+    time?: {
+      end?: number
+    } | null
+  }
+  message: {
+    time?: {
+      completed?: number
+    } | null
+  }
+}
+
 export function parseReasoningSummary(text: string): ReasoningSummary {
   const content = text.trim()
   const match = content.match(/^\*\*([^*\n]+)\*\*(?:\r?\n\r?\n|$)/)
@@ -21,4 +34,8 @@ export function formatReasoningHeader(title: string | null): string {
 export function formatReasoningLabel(title: string | null, done: boolean): string {
   const prefix = done ? "Thought" : "Thinking"
   return title ? `${prefix}: ${title}` : prefix
+}
+
+export function isReasoningComplete(input: ReasoningCompletionInput): boolean {
+  return input.part.time?.end !== undefined || input.message.time?.completed !== undefined
 }
