@@ -1314,6 +1314,12 @@ shape and leave implementation to Phase 10.
 - [ ] Review subagent runtime UI fixes: background subagent shortcut gating,
       subagent retry status, backgrounding synchronous/running subagents, and
       spinner unsticking.
+      - [x] Adapted the low-risk display portion: subagent task labels now keep
+            the background marker attached to the subagent label, and toolcall
+            count text is centralized behind tests.
+      - [ ] Defer backgrounding synchronous/running subagents and retry-dialog
+            navigation until Penguin's backend/session status contracts expose
+            enough truth to avoid TUI inference.
 - [ ] Bring over permission/question UI polish where Penguin route shapes
       already align, especially replies routed through the correct session
       directory.

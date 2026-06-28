@@ -81,6 +81,7 @@ import { formatTranscript } from "../../util/transcript"
 import { coerceToolInputRecord, formatPrimitiveToolInput } from "../../util/tool-input"
 import { assistantDurationMs, isAssistantSettled } from "./message-duration"
 import { deriveInlineToolState } from "./inline-tool-row"
+import { formatSubagentTaskDescription, formatSubagentTaskLabel, isBackgroundSubagentTask } from "./subagent-task"
 
 addDefaultParsers(parsers.parsers)
 
@@ -1895,12 +1896,18 @@ function Task(props: ToolProps<typeof TaskTool>) {
 
   const current = createMemo(() => props.metadata.summary?.findLast((x) => x.state.status !== "pending"))
   const color = createMemo(() => local.agent.color(props.input.subagent_type ?? "unknown"))
+  const label = createMemo(() =>
+    formatSubagentTaskLabel({
+      background: isBackgroundSubagentTask(props.metadata),
+      subagentType: props.input.subagent_type,
+    }),
+  )
 
   return (
     <Switch>
       <Match when={props.metadata.summary?.length}>
         <BlockTool
-          title={"# " + Locale.titlecase(props.input.subagent_type ?? "unknown") + " Task"}
+          title={"# " + label()}
           onClick={
             props.metadata.sessionId
               ? () => navigate({ type: "session", sessionID: props.metadata.sessionId! })
@@ -1910,7 +1917,10 @@ function Task(props: ToolProps<typeof TaskTool>) {
         >
           <box>
             <text style={{ fg: theme.textMuted }}>
-              {props.input.description} ({props.metadata.summary?.length} toolcalls)
+              {formatSubagentTaskDescription({
+                description: props.input.description,
+                toolcalls: props.metadata.summary?.length,
+              })}
             </text>
             <Show when={current()}>
               <text style={{ fg: current()!.state.status === "error" ? theme.error : theme.textMuted }}>
@@ -1933,8 +1943,7 @@ function Task(props: ToolProps<typeof TaskTool>) {
           complete={props.input.subagent_type ?? props.input.description}
           part={props.part}
         >
-          <span style={{ fg: theme.text }}>{Locale.titlecase(props.input.subagent_type ?? "unknown")}</span> Task "
-          {props.input.description}"
+          <span style={{ fg: theme.text }}>{label()}</span> "{props.input.description}"
         </InlineTool>
       </Match>
     </Switch>
