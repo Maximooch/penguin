@@ -13,6 +13,7 @@ import { useArgs } from "./args"
 import { useSDK } from "./sdk"
 import { RGBA } from "@opentui/core"
 import type { Agent } from "@opencode-ai/sdk/v2"
+import { nextVariantSelection } from "./variant-cycle"
 
 export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
   name: "Local",
@@ -376,19 +377,16 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             save()
           },
           cycle() {
-            const variants = this.list()
-            if (variants.length === 0) return
-            const current = this.current()
-            if (!current) {
-              this.set(variants[0])
+            const result = nextVariantSelection(this.list(), this.current())
+            if (result.type === "unavailable") {
+              toast.show({
+                title: "No variants available",
+                message: "The current model does not support any variants.",
+                variant: "info",
+              })
               return
             }
-            const index = variants.indexOf(current)
-            if (index === -1 || index === variants.length - 1) {
-              this.set(undefined)
-              return
-            }
-            this.set(variants[index + 1])
+            this.set(result.variant)
           },
         },
         fast: {
@@ -397,7 +395,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           },
           enabled() {
             const config = sync.data.config as { service_tier?: string }
-            return modelStore.fast ?? (config.service_tier?.toLowerCase() === "priority")
+            return modelStore.fast ?? config.service_tier?.toLowerCase() === "priority"
           },
           set(value: boolean | undefined) {
             setModelStore("fast", value)
