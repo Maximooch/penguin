@@ -1175,35 +1175,41 @@ shape and leave implementation to Phase 10.
 
 #### 9.0 Rebaseline current upstream before implementation
 
-- [ ] Record the new OpenCode upstream baseline:
+- [x] Record the new OpenCode upstream baseline:
       `dfeb1b5051a05b359bd4af711b204d2c0342c5f4` on `origin/dev`.
-- [ ] Record the release range now in scope: `v1.15.11` through `v1.17.11`.
-- [ ] Treat the local OpenCode checkout as a reference checkout only; compare
+- [x] Record the release range now in scope: `v1.15.11` through `v1.17.11`.
+- [x] Treat the local OpenCode checkout as a reference checkout only; compare
       against `origin/dev` or a clean worktree because local `dev` may be dirty
       and far behind.
-- [ ] Update file-path references: the old CLI TUI surface under
+- [x] Update file-path references: the old CLI TUI surface under
       `packages/opencode/src/cli/cmd/tui` has been substantially deleted or
       replaced. Current terminal runtime references live mostly under
       `packages/opencode/src/cli/cmd/run/*`.
-- [ ] Mine desktop/app-only ideas from `packages/app/src/*`, but do not assume
+- [x] Mine desktop/app-only ideas from `packages/app/src/*`, but do not assume
       those components can be copied into Penguin's terminal TUI.
-- [ ] Classify each upstream item as one of:
+- [x] Classify each upstream item as one of:
       direct Phase 9 import, Penguin-specific adaptation, Phase 10 backend
       contract, desktop/app reference only, or out of scope.
 
 #### 9.1 Prompt, composer, drafts, and submit safety
 
-- [ ] Review upstream responsive prompt sizing and prompt-size config from
+- [x] Review upstream responsive prompt sizing and prompt-size config from
       `v1.15.11`; adapt only if it improves Penguin terminal ergonomics.
-- [ ] Import prompt duplicate-submit prevention, submit state handling, and
+      - [x] Audited. No direct prompt-size config import was needed for Phase 9;
+            Penguin should keep terminal sizing behavior local unless a focused
+            prompt-resize regression appears.
+- [x] Import prompt duplicate-submit prevention, submit state handling, and
       shortcut gating where Penguin's current prompt flow can support it.
       - [x] Added a Penguin prompt submit gate so rapid repeated submits cannot
             create duplicate sessions or duplicate optimistic sends while the
             first send/local-command path is still settling.
-      - [ ] Continue reviewing upstream prompt submit state for shortcut gating,
+      - [x] Continue reviewing upstream prompt submit state for shortcut gating,
             restore-on-failure behavior, and prompt draft preservation that does
             not require backend-owned draft contracts.
-- [ ] Review prompt history behavior, mode navigation, and slash/model command
+      - [x] Kept the Phase 9 import to frontend-safe submit gating. Prompt draft
+            ownership and generated request-part contracts remain Phase 10
+            backend/protocol work.
+- [x] Review prompt history behavior, mode navigation, and slash/model command
       autocomplete fixes, including `/mo` preferring the models command.
       - [x] Moved prompt history browsing into a pure helper, matching the
             current upstream direction, so Penguin now filters blank entries,
@@ -1212,92 +1218,123 @@ shape and leave implementation to Phase 10.
       - [x] Added deterministic slash command ranking so command names and
             aliases sort ahead of display-label fuzziness, including `/mo`
             preferring the `/models` command when available.
-      - [ ] Continue reviewing mode navigation and prompt autocomplete behavior
+      - [x] Continue reviewing mode navigation and prompt autocomplete behavior
             against the current upstream `cmd/run` prompt runtime.
-- [ ] Preserve prompt text around tab/session/workspace switches where Penguin
+      - [x] Imported only the local autocomplete/history pieces. Deeper mode
+            navigation remains tied to session/draft truth and should follow
+            Phase 10 backend contracts.
+- [x] Preserve prompt text around tab/session/workspace switches where Penguin
       has enough session identity to do so safely.
-- [ ] Review upstream handling for paste/wide-character corruption and prompt
+      - [x] Classified as Phase 10 unless Penguin exposes backend-owned draft
+            identity across sessions/workspaces. Avoid TUI-only draft inference.
+- [x] Review upstream handling for paste/wide-character corruption and prompt
       editor edge cases; add deterministic tests before changing key handling.
-- [ ] Inventory desktop prompt features for later UI tracks: per-tab draft
+      - [x] Audited. No reproducible Penguin corruption case was identified in
+            Phase 9, so key handling was left unchanged rather than churned.
+- [x] Inventory desktop prompt features for later UI tracks: per-tab draft
       prompt state, scoped drafts from Home, project/server-bound prompt drafts,
       prompt rollback scoping, async attachment scoping, thinking-level selector,
       mobile composer controls, and new-session progress indicator.
-- [ ] Defer any prompt behavior that requires backend-owned session drafts or
+- [x] Defer any prompt behavior that requires backend-owned session drafts or
       generated protocol request parts to Phase 10.
 
 #### 9.2 Session navigation, lists, tabs, and switchers
 
-- [ ] Review upstream experimental session switcher improvements and adapt the
+- [x] Review upstream experimental session switcher improvements and adapt the
       pieces that fit Penguin's current session/conversation model.
-- [ ] Bring over session picker sorting, local-project defaults, long-path
+      - [x] Adapted the parts that are safe with current Penguin session
+            records: directory labels and blank-title fallbacks. Server-aware
+            switcher behavior remains Phase 10.
+- [x] Bring over session picker sorting, local-project defaults, long-path
       truncation, sidebar/session ID display, and stable navigation polish where
       it reduces Penguin TUI drift.
       - [x] Adapted upstream's project-copy/session-list cue using Penguin's
             existing session `directory` field: the session dialog now shows a
             truncated directory basename for sessions outside the current
             directory, without adding new backend project/worktree contracts.
-- [ ] Review session list directory filters, workspace filters, hidden/blank
+- [x] Review session list directory filters, workspace filters, hidden/blank
       session handling, empty-state behavior, and recent-session scrolling.
       - [x] Hardened blank-title rendering so meaningful or active sessions
             never appear as empty rows; the dialog falls back to the session ID
             while keeping child-session indentation.
-- [ ] Import low-risk missing-session cleanup behavior where Penguin can detect
+- [x] Import low-risk missing-session cleanup behavior where Penguin can detect
       a session no longer exists without adding new backend contracts.
-- [ ] Inventory desktop tab ideas for later: draggable tabs, fixed tab widths,
+      - [x] Classified as Phase 10/session-service work. Penguin TUI should not
+            delete or hide sessions based on local inference without a backend
+            missing-session signal.
+- [x] Inventory desktop tab ideas for later: draggable tabs, fixed tab widths,
       tab overflow scrolling/fade, Chrome-style `mod+1` through `mod+9` tab
       cycling, help button in tab bar, viewed-session notification clearing, and
       closing tabs for deleted sessions.
-- [ ] Defer server-aware session routes, tab-scoped servers, and same-session
+- [x] Defer server-aware session routes, tab-scoped servers, and same-session
       navigation across servers to Phase 10 unless Penguin already exposes a
       safe route-compatible equivalent.
 
 #### 9.3 Workspaces, project copies, and session moves
 
-- [ ] Review upstream workspace management dialog and decide whether Penguin TUI
+- [x] Review upstream workspace management dialog and decide whether Penguin TUI
       needs a terminal equivalent or only web/TUI-service support.
-- [ ] Adapt project-copy/session-move affordances that map cleanly to Penguin:
+      - [x] Classified as backend/service-first work. Phase 9 kept terminal
+            affordances limited to labels and reminders backed by current
+            session fields.
+- [x] Adapt project-copy/session-move affordances that map cleanly to Penguin:
       highlighting project copies, preserving the current location, deleting
       working copies from the move dialog, and injecting a working-directory
       reminder after moving a session.
-- [ ] Review managed workspace cloning, moving sessions between workspaces and
+      - [x] Adapted project-copy visibility through session-directory labels.
+            Move/delete semantics require stronger backend workspace ownership.
+- [x] Review managed workspace cloning, moving sessions between workspaces and
       directories, and stable remote-backed project identity as Phase 10 backend
       contract inputs.
-- [ ] Bring over editor-open fixes where safe: open external editors from the
+- [x] Bring over editor-open fixes where safe: open external editors from the
       worktree directory, support non-Git project paths, and fall back to local
       cwd for attach-mode sessions when the original project path is unavailable.
-- [ ] Inventory desktop project/workspace selectors, project avatars, directory
+      - [x] Audited as later workspace/session service work. No direct Phase 9
+            editor-open code change was made without a focused Penguin bug.
+- [x] Inventory desktop project/workspace selectors, project avatars, directory
       picker v2, WSL server management, and active-project attachment behavior
       for later UI work.
-- [ ] Defer default worktree/session isolation semantics until Penguin's backend
+- [x] Defer default worktree/session isolation semantics until Penguin's backend
       task/session ledger is explicit enough to avoid data loss.
 
 #### 9.4 Diff, review, file tree, and file search affordances
 
-- [ ] Import or adapt upstream diff viewer improvements: accelerated scrolling,
+- [x] Import or adapt upstream diff viewer improvements: accelerated scrolling,
       next/previous hunk navigation, configurable keybind to open the diff
       viewer, and compare-against-main mode.
-- [ ] Preserve Penguin route and permission semantics while adding malformed
+      - [x] Audited. No direct diff viewer import was made in Phase 9; richer
+            diff/review behavior should follow Penguin route and file-service
+            contracts rather than terminal-only inference.
+- [x] Preserve Penguin route and permission semantics while adding malformed
       path/diff metadata guards in permission and session views.
-- [ ] Review file-tree throttling, directory tree loading, file/folder picker
+      - [x] Malformed runtime/tool metadata guards were added where current
+            Penguin routes expose data. Permission/diff path contracts remain
+            backend-owned.
+- [x] Review file-tree throttling, directory tree loading, file/folder picker
       improvements, and session-directory scoping for direct Penguin usefulness.
-- [ ] Review upstream review-line-comment restoration and session review
+      - [x] Classified as later file-service/review work unless Penguin exposes
+            safe directory-tree and picker contracts.
+- [x] Review upstream review-line-comment restoration and session review
       refresh/VCS diff caching as later API/service work.
-- [ ] Inventory `fff`-backed file search tools and unified filesystem search as
+- [x] Inventory `fff`-backed file search tools and unified filesystem search as
       backend/service ideas; do not treat them as a Phase 9 terminal-only import
       unless Penguin's current tools can expose the same behavior safely.
-- [ ] Add focused tests around any imported diff/file review behavior, especially
+- [x] Add focused tests around any imported diff/file review behavior, especially
       malformed metadata and path normalization.
+      - [x] No standalone diff viewer behavior was imported in Phase 9. The
+            malformed metadata guards that were adapted are covered by focused
+            runtime/session rendering tests.
 
 #### 9.5 Runtime rendering, tools, permissions, and errors
 
-- [ ] Import low-risk runtime rendering hardening: duplicate renderable ID
+- [x] Import low-risk runtime rendering hardening: duplicate renderable ID
       prevention, worker rejection handling, inline tool row alignment, failed
       inline tool error expansion, and malformed tool-input crash handling.
       - [x] Added shared malformed tool-input guards for transcript export and
             session tool summaries. Non-record tool inputs now coerce to a
             display record, primitive summaries do not assume object inputs, and
             transcript export handles circular/non-JSON values without crashing.
-      - [ ] Keep upstream inline-tool row alignment and expandable failed-tool
+      - [x] Keep upstream inline-tool row alignment and expandable failed-tool
             errors as a follow-up UI rendering slice; Penguin's route has a
             different OpenTUI/layout baseline, so this should be adapted behind
             focused render tests instead of copied wholesale.
@@ -1311,16 +1348,16 @@ shape and leave implementation to Phase 10.
             already logs `unhandledRejection` and `uncaughtException`; later
             lifecycle cleanup can remove handlers on shutdown if the worker
             becomes reusable in-process.
-- [ ] Review subagent runtime UI fixes: background subagent shortcut gating,
+- [x] Review subagent runtime UI fixes: background subagent shortcut gating,
       subagent retry status, backgrounding synchronous/running subagents, and
       spinner unsticking.
       - [x] Adapted the low-risk display portion: subagent task labels now keep
             the background marker attached to the subagent label, and toolcall
             count text is centralized behind tests.
-      - [ ] Defer backgrounding synchronous/running subagents and retry-dialog
+      - [x] Defer backgrounding synchronous/running subagents and retry-dialog
             navigation until Penguin's backend/session status contracts expose
             enough truth to avoid TUI inference.
-- [ ] Bring over permission/question UI polish where Penguin route shapes
+- [x] Bring over permission/question UI polish where Penguin route shapes
       already align, especially replies routed through the correct session
       directory.
       - [x] Audited upstream directory-aware permission/question reply fixes
@@ -1328,19 +1365,26 @@ shape and leave implementation to Phase 10.
             permission/question routes do not accept or apply per-reply
             directory context, so this remains a Phase 10 backend/API contract
             item instead of a TUI-only field.
-- [ ] Review auth headers on RunCommand fetches and command `$ARGUMENTS` file
+- [x] Review auth headers on RunCommand fetches and command `$ARGUMENTS` file
       injection fixes for Penguin command execution.
       - [x] Adapted upstream RunCommand authorization-header preservation for
             Penguin's in-process CLI fetch path and shared it with the TUI
             worker auth helper.
-- [ ] Surface structured failures where Penguin already has provider/tool error
+- [x] Surface structured failures where Penguin already has provider/tool error
       categories; defer richer retry dialogs until backend error shape is stable.
-- [ ] Add tests for runtime display hardening rather than relying on manual TUI
+      - [x] Phase 9 surfaced only frontend-safe tool/runtime failures: malformed
+            tool inputs, expanded inline tool failures, and readable MCP
+            resource labels. Rich retry dialogs remain Phase 10/error-contract
+            work.
+- [x] Add tests for runtime display hardening rather than relying on manual TUI
       checks.
+      - [x] Added focused Bun tests for malformed tool input, inline tool row
+            state, subagent labels, duplicate renderable IDs, RunCommand auth,
+            MCP autocomplete, reasoning summaries, and notification policy.
 
 #### 9.6 Provider, model, reasoning, and auth UX
 
-- [ ] Review model/reasoning UI changes that can be frontend-only: thinking
+- [x] Review model/reasoning UI changes that can be frontend-only: thinking
       spinner restoration, variant hotkey toast when no variants exist,
       reasoning summary display blocks, and provider-gated reasoning summaries.
       - [x] Adapted upstream variant-key feedback for Penguin's actual
@@ -1547,24 +1591,43 @@ shape and leave implementation to Phase 10.
             priority and recency. Upstream compaction/session-context concepts
             should be translated only as future design work.
 
-#### 9.11 Phase 9 execution and verification plan
+#### 9.11 Phase 9 execution and verification record
 
-- [ ] Start with small PR-sized slices, ordered by least backend dependency:
+- [x] Start with small PR-sized slices, ordered by least backend dependency:
       prompt/submit safety, runtime rendering hardening, diff viewer affordances,
       session picker/list polish, then workspace/project move affordances.
-- [ ] For each slice, write or repair focused Bun/Python tests before importing
+- [x] For each slice, write or repair focused Bun/Python tests before importing
       behavior.
-- [ ] Use upstream file paths as references, but keep Penguin naming, Penguin
+- [x] Use upstream file paths as references, but keep Penguin naming, Penguin
       route shapes, and Penguin backend truth.
-- [ ] After each slice, classify anything blocked by missing backend truth and
+- [x] After each slice, classify anything blocked by missing backend truth and
       move it to Phase 10 rather than adding local TUI inference.
-- [ ] Run targeted TUI tests for changed components and any affected backend
+- [x] Run targeted TUI tests for changed components and any affected backend
       contract tests.
-- [ ] Periodically run the Penguin default Python suite when backend adapters or
+- [x] Periodically run the Penguin default Python suite when backend adapters or
       shared services are touched.
-- [ ] Before closing Phase 9, produce a short adoption matrix showing:
+- [x] Before closing Phase 9, produce a short adoption matrix showing:
       imported now, adapted for Penguin, deferred to Phase 10, desktop/reference
       only, and intentionally skipped.
+
+Phase 9 adoption matrix:
+
+| Classification | Upstream items | Penguin decision |
+| --- | --- | --- |
+| Direct import | Duplicate-submit prevention, local prompt history behavior, slash-command ranking, auth-header preservation for run-command fetches | Imported as focused helpers/tests where current Penguin state already supports the behavior. |
+| Penguin adaptation | Session directory labels, blank-title fallback, malformed tool-input guards, inline tool failure expansion, duplicate renderable IDs, subagent task labels, reasoning spinner/title display, provider-scoped release-date model sorting, MCP autocomplete labels, notification policy | Adapted to Penguin route shapes, OpenTUI rendering, current session records, and terminal constraints instead of copying OpenCode code directly. |
+| Deferred to Phase 10 | Backend-owned drafts, generated request parts, server-aware sessions/tabs, missing-session cleanup, managed workspaces, session moves, workspace isolation, richer diff/review/file-tree/search, permission directory replies, retry dialogs, provider/auth capability truth, MCP protocol/catalog/OAuth, replay/history/snapshots, canonical `RuntimeEvent`/`SessionEvent` | Requires backend/service/protocol truth. Do not infer these in the TUI. |
+| Desktop/reference only | Home tabs, draggable tab bars, status popovers, mobile controls, WSL/server management UI, update UI, settings v2, Link Agentboard references | Keep as product/design inputs for Link/Penguin adapter work after backend contracts stabilize. |
+| Intentionally skipped | Direct copy of OpenCode app/Electron/mobile code, direct adoption of OpenCode provider naming/capability metadata, TUI-side compaction semantics, OS/terminal notification delivery by default | Skipped to preserve Penguin backend truth, terminal portability, opt-in notification behavior, and CWM terminology. |
+
+Final Phase 9 verification targets:
+
+- Focused Bun tests for each changed helper/component.
+- `bun run typecheck` for TUI package changes.
+- Targeted formatting checks on touched TypeScript/TSX/Markdown files.
+- `git diff --check`.
+- Python/default Penguin suites only when backend adapters or shared services are
+  modified; Phase 9 code changes stayed inside the TUI package and plan docs.
 
 ### 10. Move backend-first upstream contracts into Penguin
 
