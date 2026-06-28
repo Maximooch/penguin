@@ -11,6 +11,7 @@ import {
   Switch,
   useContext,
 } from "solid-js"
+import "opentui-spinner/solid"
 import { Dynamic } from "solid-js/web"
 import path from "path"
 import { useRoute, useRouteData } from "@tui/context/route"
@@ -78,6 +79,7 @@ import { PermissionPrompt } from "./permission"
 import { QuestionPrompt } from "./question"
 import { DialogExportOptions } from "../../ui/dialog-export-options"
 import { formatTranscript } from "../../util/transcript"
+import { formatReasoningLabel, parseReasoningSummary } from "../../util/reasoning-summary"
 import { coerceToolInputRecord, formatPrimitiveToolInput } from "../../util/tool-input"
 import { assistantDurationMs, isAssistantSettled } from "./message-duration"
 import { deriveInlineToolState } from "./inline-tool-row"
@@ -1381,11 +1383,15 @@ const INLINE_TOOL_ICON_WIDTH = 2
 function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: AssistantMessage }) {
   const { theme, subtleSyntax } = useTheme()
   const ctx = use()
+  const kv = useKV()
   const content = createMemo(() => {
     // Filter out redacted reasoning chunks from OpenRouter
     // OpenRouter sends encrypted reasoning data that appears as [REDACTED]
     return props.part.text.replace("[REDACTED]", "").trim()
   })
+  const summary = createMemo(() => parseReasoningSummary(content()))
+  const done = createMemo(() => props.part.time.end !== undefined || props.message.time.completed !== undefined)
+  const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
   return (
     <Show when={content() && ctx.showThinking()}>
       <box
@@ -1397,15 +1403,23 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
         customBorderChars={SplitBorder.customBorderChars}
         borderColor={theme.backgroundElement}
       >
-        <code
-          filetype="markdown"
-          drawUnstyledText={false}
-          streaming={true}
-          syntaxStyle={subtleSyntax()}
-          content={"_Thinking:_ " + content()}
-          conceal={ctx.conceal()}
-          fg={theme.textMuted}
-        />
+        <box flexDirection="row" gap={1}>
+          <Show when={!done() && kv.get("animations_enabled", true)}>
+            <spinner frames={spinnerFrames} interval={80} color={theme.warning} />
+          </Show>
+          <text fg={theme.warning}>{formatReasoningLabel(summary().title, done())}</text>
+        </box>
+        <Show when={summary().body}>
+          <code
+            filetype="markdown"
+            drawUnstyledText={false}
+            streaming={true}
+            syntaxStyle={subtleSyntax()}
+            content={summary().body}
+            conceal={ctx.conceal()}
+            fg={theme.textMuted}
+          />
+        </Show>
       </box>
     </Show>
   )

@@ -1347,10 +1347,14 @@ shape and leave implementation to Phase 10.
             `variant.cycle` command: models with no variants now produce an
             informational toast instead of silently no-oping, with pure tests
             for the selection contract.
-      - [ ] Audit thinking spinner and reasoning summary display separately;
-            Penguin's current reasoning renderer is simpler than upstream's
-            summary/header model, so avoid guessing provider capability or
-            summary shape in the TUI.
+      - [x] Adapted frontend-safe thinking spinner restoration for Penguin's
+            simpler reasoning renderer: unfinished reasoning blocks now show a
+            spinner label, completed blocks show a static `Thought` label, and
+            no provider capability is inferred in the TUI.
+      - [x] Adapted the frontend-only reasoning summary display behavior:
+            reasoning blocks that begin with a bold summary title now render and
+            export the title separately from the markdown body, while ordinary
+            reasoning text keeps the existing display/export shape.
 - [ ] Inventory provider/model capability changes for Phase 10: OpenAI
       WebSocket transport, custom WebSocket base URLs, sticky `X-Session-Id`
       proxy headers, stored provider credentials, connector-based auth,
