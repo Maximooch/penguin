@@ -1385,7 +1385,7 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
   return (
     <Show when={content() && ctx.showThinking()}>
       <box
-        id={"text-" + props.part.id}
+        id={`text-${props.part.messageID}-${props.part.id}`}
         paddingLeft={2}
         marginTop={1}
         flexDirection="column"
@@ -1412,7 +1412,7 @@ function TextPart(props: { last: boolean; part: TextPart; message: AssistantMess
   const { theme, syntax } = useTheme()
   return (
     <Show when={props.part.text.trim()}>
-      <box id={"text-" + props.part.id} paddingLeft={3} marginTop={1} flexShrink={0}>
+      <box id={`text-${props.part.messageID}-${props.part.id}`} paddingLeft={3} marginTop={1} flexShrink={0}>
         <Switch>
           <Match when={Flag.OPENCODE_EXPERIMENTAL_MARKDOWN}>
             <markdown

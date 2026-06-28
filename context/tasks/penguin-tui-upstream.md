@@ -1301,6 +1301,12 @@ shape and leave implementation to Phase 10.
             errors as a follow-up UI rendering slice; Penguin's route has a
             different OpenTUI/layout baseline, so this should be adapted behind
             focused render tests instead of copied wholesale.
+      - [x] Adapted upstream duplicate renderable ID prevention for text and
+            reasoning parts by including `messageID` in renderable IDs.
+      - [x] Audited upstream worker rejection handling. Penguin's TUI worker
+            already logs `unhandledRejection` and `uncaughtException`; later
+            lifecycle cleanup can remove handlers on shutdown if the worker
+            becomes reusable in-process.
 - [ ] Review subagent runtime UI fixes: background subagent shortcut gating,
       subagent retry status, backgrounding synchronous/running subagents, and
       spinner unsticking.
