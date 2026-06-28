@@ -1358,24 +1358,32 @@ shape and leave implementation to Phase 10.
       - [x] Adapted release-date model ordering for provider-scoped model
             dialogs while preserving Penguin's existing free-first alphabetical
             ordering in the regular picker.
-- [ ] Inventory provider/model capability changes for Phase 10: OpenAI
+- [x] Inventory provider/model capability changes for Phase 10: OpenAI
       WebSocket transport, custom WebSocket base URLs, sticky `X-Session-Id`
       proxy headers, stored provider credentials, connector-based auth,
       provider integration IDs, and SDK refresh after credential changes.
-      - [ ] Upstream items identified so far include OpenAI WebSocket
+      - [x] Upstream items identified so far include OpenAI WebSocket
             transport, custom WebSocket base URLs, sticky session proxy
             headers, stored provider credentials, connector auth, and SDK
             refresh after credentials change; keep these in Phase 10 unless the
             Penguin backend exposes stable contracts first.
-- [ ] Review new provider support only as UI/catalog implications unless Penguin
+- [x] Review new provider support only as UI/catalog implications unless Penguin
       backend already supports it: Snowflake Cortex, Cohere North, GLM-5.2
       high/max thinking variants, MiniMax M3 thinking toggle, vLLM interleaved
       reasoning field, Bedrock OpenAI/Mantle/SAP AI Core variants, Cloudflare AI
       Gateway API key handling, Devstral casing, and Copilot custom headers.
-- [ ] Track auth/logout/search and expired remote-config auth recovery as
+      - [x] Classified as Phase 10/backend contract work. Penguin should adopt
+            these through provider/model services and generated SDK contracts,
+            not by hard-coding inferred capability truth in the terminal UI.
+- [x] Track auth/logout/search and expired remote-config auth recovery as
       backend/API work, not a Phase 9 UI-only import.
-- [ ] Preserve Penguin's existing provider contract tests before adopting any
+      - [x] Deferred to Phase 10 provider/auth work; no provider capability
+            metadata or OpenCode naming was adopted in this Phase 9.6 TUI pass.
+- [x] Preserve Penguin's existing provider contract tests before adopting any
       OpenCode naming or capability metadata.
+      - [x] No provider contract behavior changed in this section. Existing
+            provider tests remain the proof point for any later backend/provider
+            adoption.
 
 #### 9.7 MCP, plugins, commands, and extension surfaces
 
