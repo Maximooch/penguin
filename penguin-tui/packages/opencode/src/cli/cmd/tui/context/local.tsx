@@ -14,6 +14,7 @@ import { useSDK } from "./sdk"
 import { RGBA } from "@opentui/core"
 import type { Agent } from "@opencode-ai/sdk/v2"
 import { nextVariantSelection } from "./variant-cycle"
+import { resolveCatalogModel } from "../util/model-selection"
 
 export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
   name: "Local",
@@ -22,16 +23,20 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const sdk = useSDK()
     const toast = useToast()
 
+    function resolveModel(model: { providerID: string; modelID: string }) {
+      return resolveCatalogModel(sync.data.provider, model)
+    }
+
     function isModelValid(model: { providerID: string; modelID: string }) {
-      const provider = sync.data.provider.find((x) => x.id === model.providerID)
-      return !!provider?.models[model.modelID]
+      return resolveModel(model) !== undefined
     }
 
     function getFirstValidModel(...modelFns: (() => { providerID: string; modelID: string } | undefined)[]) {
       for (const modelFn of modelFns) {
         const model = modelFn()
         if (!model) continue
-        if (isModelValid(model)) return model
+        const resolved = resolveModel(model)
+        if (resolved) return resolved
       }
     }
 
@@ -178,15 +183,16 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           providerID: session.providerID,
           modelID: session.modelID,
         }
-        if (isModelValid(candidate)) return candidate
+        return resolveModel(candidate)
       })
       const fallbackModel = createMemo(() => {
         if (args.model) {
           const { providerID, modelID } = Provider.parseModel(args.model)
-          if (isModelValid({ providerID, modelID })) {
+          const resolved = resolveModel({ providerID, modelID })
+          if (resolved) {
             return {
               providerID,
-              modelID,
+              modelID: resolved.modelID,
             }
           }
         }
@@ -198,17 +204,19 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
 
         if (sync.data.config.model) {
           const { providerID, modelID } = Provider.parseModel(sync.data.config.model)
-          if (isModelValid({ providerID, modelID })) {
+          const resolved = resolveModel({ providerID, modelID })
+          if (resolved) {
             return {
               providerID,
-              modelID,
+              modelID: resolved.modelID,
             }
           }
         }
 
         for (const item of modelStore.recent) {
-          if (isModelValid(item)) {
-            return item
+          const resolved = resolveModel(item)
+          if (resolved) {
+            return resolved
           }
         }
 
@@ -277,7 +285,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           setModelStore("model", agent.current().name, { ...val })
         },
         cycleFavorite(direction: 1 | -1) {
-          const favorites = modelStore.favorite.filter((item) => isModelValid(item))
+          const favorites = modelStore.favorite.map(resolveModel).filter((item) => item !== undefined)
           if (!favorites.length) {
             toast.show({
               variant: "info",
@@ -309,19 +317,22 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           )
           save()
         },
-        set(model: { providerID: string; modelID: string }, options?: { recent?: boolean }) {
+        set(model: { providerID: string; modelID: string }, options?: { recent?: boolean; silentInvalid?: boolean }) {
           batch(() => {
-            if (!isModelValid(model)) {
-              toast.show({
-                message: `Model ${model.providerID}/${model.modelID} is not valid`,
-                variant: "warning",
-                duration: 3000,
-              })
+            const resolved = resolveModel(model)
+            if (!resolved) {
+              if (!options?.silentInvalid) {
+                toast.show({
+                  message: `Model ${model.providerID}/${model.modelID} is not valid`,
+                  variant: "warning",
+                  duration: 3000,
+                })
+              }
               return
             }
-            setModelStore("model", agent.current().name, model)
+            setModelStore("model", agent.current().name, resolved)
             if (options?.recent) {
-              const uniq = uniqueBy([model, ...modelStore.recent], (x) => `${x.providerID}/${x.modelID}`)
+              const uniq = uniqueBy([resolved, ...modelStore.recent], (x) => `${x.providerID}/${x.modelID}`)
               if (uniq.length > 10) uniq.pop()
               setModelStore(
                 "recent",
@@ -333,7 +344,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         },
         toggleFavorite(model: { providerID: string; modelID: string }) {
           batch(() => {
-            if (!isModelValid(model)) {
+            const resolved = resolveModel(model)
+            if (!resolved) {
               toast.show({
                 message: `Model ${model.providerID}/${model.modelID} is not valid`,
                 variant: "warning",
@@ -342,11 +354,13 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
               return
             }
             const exists = modelStore.favorite.some(
-              (x) => x.providerID === model.providerID && x.modelID === model.modelID,
+              (x) => x.providerID === resolved.providerID && x.modelID === resolved.modelID,
             )
             const next = exists
-              ? modelStore.favorite.filter((x) => x.providerID !== model.providerID || x.modelID !== model.modelID)
-              : [model, ...modelStore.favorite]
+              ? modelStore.favorite.filter(
+                  (x) => x.providerID !== resolved.providerID || x.modelID !== resolved.modelID,
+                )
+              : [resolved, ...modelStore.favorite]
             setModelStore(
               "favorite",
               next.map((x) => ({ providerID: x.providerID, modelID: x.modelID })),
@@ -433,15 +447,20 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     createEffect(() => {
       const value = agent.current()
       if (value.model) {
-        if (isModelValid(value.model))
-          model.set({
-            providerID: value.model.providerID,
-            modelID: value.model.modelID,
-          })
+        const configuredModel = `${value.model.providerID}/${value.model.modelID}`
+        const resolved = resolveModel(value.model)
+        if (resolved)
+          model.set(
+            {
+              providerID: resolved.providerID,
+              modelID: resolved.modelID,
+            },
+            { silentInvalid: true },
+          )
         else
           toast.show({
             variant: "warning",
-            message: `Agent ${value.name}'s configured model ${value.model.providerID}/${value.model.modelID} is not valid`,
+            message: `Agent ${value.name}'s configured model ${configuredModel} is not valid`,
             duration: 3000,
           })
       }

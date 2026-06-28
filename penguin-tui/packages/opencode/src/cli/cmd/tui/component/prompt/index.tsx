@@ -312,7 +312,7 @@ export function Prompt(props: PromptProps) {
       const messageModel = msg?.model
       const nextModel = sessionModel ?? messageModel
       if (nextModel) {
-        local.model.set(nextModel)
+        local.model.set(nextModel, { silentInvalid: true })
       }
 
       const nextVariant = session?.variant ?? msg?.variant

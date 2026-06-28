@@ -7,6 +7,7 @@ import { useDialog } from "@tui/ui/dialog"
 import { createDialogProviderOptions, DialogProvider } from "./dialog-provider"
 import { useKeybind } from "../context/keybind"
 import { sortModelOptions } from "../util/model-options"
+import { resolveCatalogModel } from "../util/model-selection"
 import * as fuzzysort from "fuzzysort"
 
 export function useConnected() {
@@ -50,14 +51,16 @@ export function DialogModel(props: { providerID?: string }) {
       ? favorites.flatMap((item) => {
           const provider = sync.data.provider.find((x) => x.id === item.providerID)
           if (!provider) return []
-          const model = provider.models[item.modelID]
+          const resolved = resolveCatalogModel(sync.data.provider, item)
+          if (!resolved) return []
+          const model = provider.models[resolved.modelID]
           if (!model) return []
           return [
             {
               key: item,
               value: {
                 providerID: provider.id,
-                modelID: model.id,
+                modelID: resolved.modelID,
               },
               title: model.name ?? item.modelID,
               description: provider.name,
@@ -69,7 +72,7 @@ export function DialogModel(props: { providerID?: string }) {
                 local.model.set(
                   {
                     providerID: provider.id,
-                    modelID: model.id,
+                    modelID: resolved.modelID,
                   },
                   { recent: true },
                 )
@@ -83,14 +86,16 @@ export function DialogModel(props: { providerID?: string }) {
       ? recentList.flatMap((item) => {
           const provider = sync.data.provider.find((x) => x.id === item.providerID)
           if (!provider) return []
-          const model = provider.models[item.modelID]
+          const resolved = resolveCatalogModel(sync.data.provider, item)
+          if (!resolved) return []
+          const model = provider.models[resolved.modelID]
           if (!model) return []
           return [
             {
               key: item,
               value: {
                 providerID: provider.id,
-                modelID: model.id,
+                modelID: resolved.modelID,
               },
               title: model.name ?? item.modelID,
               description: provider.name,
@@ -102,7 +107,7 @@ export function DialogModel(props: { providerID?: string }) {
                 local.model.set(
                   {
                     providerID: provider.id,
-                    modelID: model.id,
+                    modelID: resolved.modelID,
                   },
                   { recent: true },
                 )
