@@ -1512,24 +1512,40 @@ shape and leave implementation to Phase 10.
 
 #### 9.10 Replay, snapshots, history, and event-contract inventory
 
-- [ ] Inventory upstream `run --replay`, ACP/session replay fixes, session
+- [x] Inventory upstream `run --replay`, ACP/session replay fixes, session
       metadata API/SDK support, durable session history pages, generated
       protocol client, extracted public event definitions, and server contracts
       as Phase 10 prerequisites.
-- [ ] Inventory upstream session snapshot/revert controls, snapshot performance
+      - [x] Phase 10 ownership: run/replay belongs in Penguin run/session
+            services; durable history and metadata belong in web/session
+            services and conversation/session storage; generated protocol
+            clients and public events belong in future protocol modules.
+- [x] Inventory upstream session snapshot/revert controls, snapshot performance
       fixes, subdirectory snapshot path fixes, and file-change rollback UI for
       Penguin's checkpoint/fork/revert track.
-- [ ] Do not implement the canonical `RuntimeEvent`/`SessionEvent` envelope in
+      - [x] Phase 10 ownership: checkpoint/fork/revert services should own
+            source session lineage, subdirectory path handling, snapshot
+            performance, and rollback payloads before the TUI adds richer
+            controls.
+- [x] Do not implement the canonical `RuntimeEvent`/`SessionEvent` envelope in
       Phase 9. Current Penguin event shapes remain practical adapters until
       Phase 10 defines backend-owned replay and event projection.
-- [ ] Add notes linking each backend-dependent upstream feature to the Penguin
+      - [x] Preserved. Phase 9 added only local notification/UX helper payloads,
+            not a canonical runtime event envelope.
+- [x] Add notes linking each backend-dependent upstream feature to the Penguin
       service/module that should eventually own it: `web.services`,
       `core_runtime`, `run_mode`, `conversation_manager`, checkpoint services,
       provider/auth services, or future protocol modules.
-- [ ] Avoid describing Penguin's current context-window behavior as compaction;
+      - [x] Links captured in the bullets above and in Phase 10. Provider/auth
+            capability truth remains provider/auth service work; session status,
+            replay, and event projection remain backend-owned.
+- [x] Avoid describing Penguin's current context-window behavior as compaction;
       upstream "context overflow" and "compact v2 session context" concepts
       should be translated carefully against Penguin's category-priority and
       recency trimming model.
+      - [x] Recorded explicitly: Penguin's current CWM trims by category
+            priority and recency. Upstream compaction/session-context concepts
+            should be translated only as future design work.
 
 #### 9.11 Phase 9 execution and verification plan
 
