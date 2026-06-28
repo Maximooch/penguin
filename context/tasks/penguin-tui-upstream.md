@@ -1105,20 +1105,53 @@ Remaining Phase 7 coverage targets:
 
 ### 8. Keep Link alignment explicit
 
-- [ ] Treat Penguin TUI as both a user-facing interface and a reference runtime
+- [x] Treat Penguin TUI as both a user-facing interface and a reference runtime
       UI for Link's Agentboard.
-- [ ] Keep ID boundaries clear:
+- [x] Keep ID boundaries clear:
   - Link task/session IDs
   - Penguin conversation/task IDs
   - OpenCode session/message/part IDs
   - A2A task/message IDs
-- [ ] Do not make Penguin-specific frontend streams the long-term Link contract.
+- [x] Do not make Penguin-specific frontend streams the long-term Link contract.
       Link should consume Link-native runtime events projected from Penguin,
       OpenCode, A2A, Claude SDK, Codex, and future runtimes.
-- [ ] When upstream OpenCode has a better runtime UI pattern, decide whether it
+- [x] When upstream OpenCode has a better runtime UI pattern, decide whether it
       belongs in Penguin TUI, Link Agentboard, or both.
-- [ ] Document any Penguin TUI behavior that Link should copy before refactoring
+- [x] Document any Penguin TUI behavior that Link should copy before refactoring
       it away.
+
+Phase 8 clarification - 2026-06-27:
+
+- Treat Phase 8 as a plan-only alignment checkpoint. It decides boundaries and
+  sequencing; it should not implement the unified event envelope or pull broad
+  upstream UI changes.
+- Penguin TUI remains both a shipping terminal UI and a useful reference for
+  Link Agentboard runtime UX. That means Link may copy interaction patterns
+  such as tool cards, progress/status treatment, session switching, retry
+  affordances, and diff/file review, but not Penguin's current transport or
+  event names as-is.
+- Preserve runtime identity boundaries. Penguin conversation/task IDs,
+  OpenCode session/message/part IDs, Link task/session IDs, and A2A IDs should
+  be translated at adapter boundaries instead of treated as interchangeable.
+- Defer the canonical `RuntimeEvent`/`SessionEvent` envelope to Phase 10. The
+  current Penguin surface still includes multiple practical event shapes:
+  local event bus `event_type + data`, OpenCode-shaped `{ type, properties }`
+  events, RunMode status dictionaries, and message-bus protocol messages. Phase
+  10 should define the backend contract that projects those into a durable
+  runtime-event model.
+- Use the core ACBRA refactor branch as the backend-contract prerequisite, not
+  as part of Phase 8. Once that branch is merged, Phase 10 can build on
+  `penguin.core_runtime`, `penguin.web.services`, provider/session/token
+  services, and the deterministic default suite instead of adding new contract
+  logic to `PenguinCore` or route handlers.
+- Sequence after this clarification:
+  1. Phase 9 imports direct upstream OpenCode TUI feature wins that do not
+     require new backend truth.
+  2. Phase 10 moves backend-first upstream contracts into Penguin: replay,
+     session records, status truth, provider/model metadata, structured errors,
+     permission/question IDs, and message/part persistence.
+  3. Later reliability/observability work can harden the final contract with
+     runtime traces, replay fixtures, metrics, and broader fault/property tests.
 
 ### 9. Import direct upstream TUI feature wins
 
