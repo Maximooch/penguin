@@ -78,6 +78,7 @@ import { PermissionPrompt } from "./permission"
 import { QuestionPrompt } from "./question"
 import { DialogExportOptions } from "../../ui/dialog-export-options"
 import { formatTranscript } from "../../util/transcript"
+import { coerceToolInputRecord, formatPrimitiveToolInput } from "../../util/tool-input"
 import { assistantDurationMs, isAssistantSettled } from "./message-duration"
 
 addDefaultParsers(parsers.parsers)
@@ -1456,7 +1457,10 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
       return props.part.state.status === "pending" ? {} : (props.part.state.metadata ?? {})
     },
     get input() {
-      return props.part.state.input ?? {}
+      return coerceToolInputRecord(props.part.state.input)
+    },
+    get rawInput() {
+      return props.part.state.input
     },
     get output() {
       return props.part.state.status === "completed" ? props.part.state.output : undefined
@@ -1537,11 +1541,12 @@ type ToolProps<T extends Tool.Info> = {
   tool: string
   output?: string
   part: ToolPart
+  rawInput?: unknown
 }
 function GenericTool(props: ToolProps<any>) {
   return (
     <InlineTool icon="⚙" pending="Writing command..." complete={true} part={props.part}>
-      {props.tool} {input(props.input)}
+      {props.tool} {input(props.rawInput ?? props.input)}
     </InlineTool>
   )
 }
@@ -2140,13 +2145,8 @@ function normalizePath(input?: string) {
   return input
 }
 
-function input(input: Record<string, any>, omit?: string[]): string {
-  const primitives = Object.entries(input).filter(([key, value]) => {
-    if (omit?.includes(key)) return false
-    return typeof value === "string" || typeof value === "number" || typeof value === "boolean"
-  })
-  if (primitives.length === 0) return ""
-  return `[${primitives.map(([key, value]) => `${key}=${value}`).join(", ")}]`
+function input(input: unknown, omit?: string[]): string {
+  return formatPrimitiveToolInput(input, omit)
 }
 
 function filetype(input?: string) {

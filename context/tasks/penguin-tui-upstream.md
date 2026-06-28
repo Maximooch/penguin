@@ -1293,6 +1293,14 @@ shape and leave implementation to Phase 10.
 - [ ] Import low-risk runtime rendering hardening: duplicate renderable ID
       prevention, worker rejection handling, inline tool row alignment, failed
       inline tool error expansion, and malformed tool-input crash handling.
+      - [x] Added shared malformed tool-input guards for transcript export and
+            session tool summaries. Non-record tool inputs now coerce to a
+            display record, primitive summaries do not assume object inputs, and
+            transcript export handles circular/non-JSON values without crashing.
+      - [ ] Keep upstream inline-tool row alignment and expandable failed-tool
+            errors as a follow-up UI rendering slice; Penguin's route has a
+            different OpenTUI/layout baseline, so this should be adapted behind
+            focused render tests instead of copied wholesale.
 - [ ] Review subagent runtime UI fixes: background subagent shortcut gating,
       subagent retry status, backgrounding synchronous/running subagents, and
       spinner unsticking.
