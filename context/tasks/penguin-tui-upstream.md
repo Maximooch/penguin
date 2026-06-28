@@ -1387,29 +1387,39 @@ shape and leave implementation to Phase 10.
 
 #### 9.7 MCP, plugins, commands, and extension surfaces
 
-- [ ] Inventory MCP UI/runtime changes: log notifications, debug protocol
+- [x] Inventory MCP UI/runtime changes: log notifications, debug protocol
       version, server status messages, progress timeout resets, readable
       structured tool output, resource templates, resource read tools, server
       instructions in context, server cwd/root support, and denied-access hiding.
       - [x] Adapted the frontend-safe MCP autocomplete noise fix: resource
             suggestions now display and fuzzy-match on resource name only, while
             preserving URI/client metadata in the selected prompt part.
-      - [ ] Keep the remaining MCP runtime/protocol items as backend/service
+      - [x] Keep the remaining MCP runtime/protocol items as backend/service
             inventory unless a stable Penguin endpoint already exposes the
             required status, resource-template, progress, log, or capability
             data.
-- [ ] Review MCP OAuth/error UX: manual OAuth URL printing, callback shutdown,
+- [x] Review MCP OAuth/error UX: manual OAuth URL printing, callback shutdown,
       escaped OAuth errors, IPv4 loopback binding, expired session recovery, and
       clearing closed clients.
-- [ ] Review command palette/registry/plugin ideas as later architecture work:
+      - [x] Deferred to Phase 10/backend service work. Upstream fixes include
+            manual OAuth URL printing, surfaced/escaped callback errors, IPv4
+            loopback binding, idle callback shutdown, scoped auth status, closed
+            client cleanup, and credential refresh on reauthentication.
+- [x] Review command palette/registry/plugin ideas as later architecture work:
       command registry, namespaced hook API, V2 plugin API, plugin dispose hook,
       plugin client active-server reuse, plugin PTY environment, and plugin
       readiness before reference-backed config.
-- [ ] Keep plugin/runtime adoption out of Phase 9 unless a specific TUI feature
+      - [x] Classified as later architecture work. Penguin should map these
+            through its own plugin/command runtime boundaries instead of copying
+            OpenCode's host API directly.
+- [x] Keep plugin/runtime adoption out of Phase 9 unless a specific TUI feature
       needs a small compatibility hook.
-- [ ] Defer MCP server capability negotiation, catalog pagination, abort
+      - [x] No plugin runtime adoption was needed for Phase 9.7.
+- [x] Defer MCP server capability negotiation, catalog pagination, abort
       signals, and generated SDK protocol changes to Phase 10/backend contracts
       unless Penguin already exposes equivalent data.
+      - [x] Deferred. These require server/client capability truth and generated
+            protocol contracts, not terminal-side guessing.
 
 #### 9.8 Desktop/app UX ideas to mine without copying blindly
 
