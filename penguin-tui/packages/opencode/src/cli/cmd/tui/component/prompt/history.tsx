@@ -2,30 +2,17 @@ import path from "path"
 import { Global } from "@/global"
 import { onMount } from "solid-js"
 import { createStore, produce } from "solid-js/store"
-import { clone } from "remeda"
 import { createSimpleContext } from "../../context/helper"
 import { appendFile, writeFile } from "fs/promises"
-import type { AgentPart, FilePart, TextPart } from "@opencode-ai/sdk/v2"
+import {
+  appendPromptHistory,
+  emptyPrompt,
+  movePromptHistory,
+  normalizePromptHistory,
+  type PromptInfo,
+} from "./history-state"
 
-export type PromptInfo = {
-  input: string
-  mode?: "normal" | "shell"
-  parts: (
-    | Omit<FilePart, "id" | "messageID" | "sessionID">
-    | Omit<AgentPart, "id" | "messageID" | "sessionID">
-    | (Omit<TextPart, "id" | "messageID" | "sessionID"> & {
-        source?: {
-          text: {
-            start: number
-            end: number
-            value: string
-          }
-        }
-      })
-  )[]
-}
-
-const MAX_HISTORY_ENTRIES = 50
+export type { PromptHistoryBrowseState, PromptInfo } from "./history-state"
 
 export const { use: usePromptHistory, provider: PromptHistoryProvider } = createSimpleContext({
   name: "PromptHistory",
@@ -33,7 +20,7 @@ export const { use: usePromptHistory, provider: PromptHistoryProvider } = create
     const historyFile = Bun.file(path.join(Global.Path.state, "prompt-history.jsonl"))
     onMount(async () => {
       const text = await historyFile.text().catch(() => "")
-      const lines = text
+      const parsed = text
         .split("\n")
         .filter(Boolean)
         .map((line) => {
@@ -44,9 +31,13 @@ export const { use: usePromptHistory, provider: PromptHistoryProvider } = create
           }
         })
         .filter((line): line is PromptInfo => line !== null)
-        .slice(-MAX_HISTORY_ENTRIES)
+      const lines = normalizePromptHistory(parsed)
 
-      setStore("history", lines)
+      setStore({
+        draft: emptyPrompt(),
+        history: lines,
+        index: null,
+      })
 
       // Rewrite file with only valid entries to self-heal corruption
       if (lines.length > 0) {
@@ -56,42 +47,45 @@ export const { use: usePromptHistory, provider: PromptHistoryProvider } = create
     })
 
     const [store, setStore] = createStore({
-      index: 0,
+      draft: emptyPrompt(),
       history: [] as PromptInfo[],
+      index: null as number | null,
     })
 
     return {
-      move(direction: 1 | -1, input: string) {
-        if (!store.history.length) return undefined
-        const current = store.history.at(store.index)
-        if (!current) return undefined
-        if (current.input !== input && input.length) return
-        setStore(
-          produce((draft) => {
-            const next = store.index + direction
-            if (Math.abs(next) > store.history.length) return
-            if (next > 0) return
-            draft.index = next
-          }),
+      move(direction: 1 | -1, prompt: PromptInfo) {
+        const result = movePromptHistory(
+          {
+            draft: store.draft,
+            history: store.history,
+            index: store.index,
+          },
+          direction,
+          prompt,
         )
-        if (store.index === 0)
-          return {
-            input: "",
-            parts: [],
-          }
-        return store.history.at(store.index)
+        setStore({
+          draft: result.state.draft,
+          history: result.state.history,
+          index: result.state.index,
+        })
+        return result.prompt
       },
       append(item: PromptInfo) {
-        const entry = clone(item)
-        let trimmed = false
+        const history = appendPromptHistory(store.history, item)
+        if (history === store.history) {
+          setStore({
+            draft: emptyPrompt(),
+            index: null,
+          })
+          return
+        }
+
+        const trimmed = history.length < store.history.length + 1
         setStore(
           produce((draft) => {
-            draft.history.push(entry)
-            if (draft.history.length > MAX_HISTORY_ENTRIES) {
-              draft.history = draft.history.slice(-MAX_HISTORY_ENTRIES)
-              trimmed = true
-            }
-            draft.index = 0
+            draft.draft = emptyPrompt()
+            draft.history = history
+            draft.index = null
           }),
         )
 
@@ -101,7 +95,7 @@ export const { use: usePromptHistory, provider: PromptHistoryProvider } = create
           return
         }
 
-        appendFile(historyFile.name!, JSON.stringify(entry) + "\n").catch(() => {})
+        appendFile(historyFile.name!, JSON.stringify(history[history.length - 1]) + "\n").catch(() => {})
       },
     }
   },

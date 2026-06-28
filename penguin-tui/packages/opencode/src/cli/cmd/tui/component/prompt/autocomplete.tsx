@@ -12,6 +12,7 @@ import { useTerminalDimensions } from "@opentui/solid"
 import { Locale } from "@/util/locale"
 import type { PromptInfo } from "./history"
 import { useFrecency } from "./frecency"
+import { rankSlashAutocompleteOptions } from "./slash-autocomplete"
 
 function removeLineRange(input: string) {
   const hashIndex = input.lastIndexOf("#")
@@ -215,9 +216,7 @@ export function Autocomplete(props: {
       const { lineRange, baseQuery } = extractLineRange(query ?? "")
       const params = {
         query: baseQuery,
-        directory: sdk.sessionID
-          ? sync.session.get(sdk.sessionID)?.directory ?? sdk.directory
-          : sdk.directory,
+        directory: sdk.sessionID ? (sync.session.get(sdk.sessionID)?.directory ?? sdk.directory) : sdk.directory,
         session_id: sdk.sessionID,
       } as Parameters<typeof sdk.client.find.files>[0] & {
         session_id?: string
@@ -412,7 +411,9 @@ export function Autocomplete(props: {
       },
     })
 
-    return result.map((arr) => arr.obj)
+    const next = result.map((arr) => arr.obj)
+    if (store.visible === "/") return rankSlashAutocompleteOptions(currentFilter, next)
+    return next
   })
 
   createEffect(() => {
