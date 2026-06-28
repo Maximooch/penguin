@@ -1301,6 +1301,10 @@ shape and leave implementation to Phase 10.
             errors as a follow-up UI rendering slice; Penguin's route has a
             different OpenTUI/layout baseline, so this should be adapted behind
             focused render tests instead of copied wholesale.
+      - [x] Adapted the inline-tool row behavior behind a tested row-state
+            helper: wrapped completed rows use a fixed icon column, denied
+            permission errors remain struck through, and real tool failures are
+            expandable instead of always dumping error text inline.
       - [x] Adapted upstream duplicate renderable ID prevention for text and
             reasoning parts by including `messageID` in renderable IDs.
       - [x] Audited upstream worker rejection handling. Penguin's TUI worker

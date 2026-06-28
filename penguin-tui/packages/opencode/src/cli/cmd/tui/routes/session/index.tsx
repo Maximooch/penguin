@@ -80,6 +80,7 @@ import { DialogExportOptions } from "../../ui/dialog-export-options"
 import { formatTranscript } from "../../util/transcript"
 import { coerceToolInputRecord, formatPrimitiveToolInput } from "../../util/tool-input"
 import { assistantDurationMs, isAssistantSettled } from "./message-duration"
+import { deriveInlineToolState } from "./inline-tool-row"
 
 addDefaultParsers(parsers.parsers)
 
@@ -1374,6 +1375,8 @@ const PART_MAPPING = {
   reasoning: ReasoningPart,
 }
 
+const INLINE_TOOL_ICON_WIDTH = 2
+
 function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: AssistantMessage }) {
   const { theme, subtleSyntax } = useTheme()
   const ctx = use()
@@ -1571,9 +1574,11 @@ function InlineTool(props: {
   part: ToolPart
 }) {
   const [margin, setMargin] = createSignal(0)
+  const [errorExpanded, setErrorExpanded] = createSignal(false)
   const { theme } = useTheme()
   const ctx = use()
   const sync = useSync()
+  const renderer = useRenderer()
 
   const permission = createMemo(() => {
     const callID = sync.data.permission[ctx.sessionID]?.at(0)?.tool?.callID
@@ -1581,25 +1586,25 @@ function InlineTool(props: {
     return callID === props.part.callID
   })
 
+  const error = createMemo(() => (props.part.state.status === "error" ? props.part.state.error : undefined))
+  const state = createMemo(() => deriveInlineToolState({ error: error() }))
+
   const fg = createMemo(() => {
     if (permission()) return theme.warning
+    if (state().failed) return theme.error
     if (props.complete) return theme.textMuted
     return theme.text
   })
-
-  const error = createMemo(() => (props.part.state.status === "error" ? props.part.state.error : undefined))
-
-  const denied = createMemo(
-    () =>
-      error()?.includes("rejected permission") ||
-      error()?.includes("specified a rule") ||
-      error()?.includes("user dismissed"),
-  )
 
   return (
     <box
       marginTop={margin()}
       paddingLeft={3}
+      onMouseUp={() => {
+        if (!state().failed) return
+        if (renderer.getSelection()?.getSelectedText()) return
+        setErrorExpanded((value) => !value)
+      }}
       renderBefore={function () {
         const el = this as BoxRenderable
         const parent = el.parent
@@ -1623,13 +1628,31 @@ function InlineTool(props: {
         }
       }}
     >
-      <text paddingLeft={3} fg={fg()} attributes={denied() ? TextAttributes.STRIKETHROUGH : undefined}>
-        <Show fallback={<>~ {props.pending}</>} when={props.complete}>
-          <span style={{ fg: props.iconColor }}>{props.icon}</span> {props.children}
-        </Show>
-      </text>
-      <Show when={error() && !denied()}>
-        <text fg={theme.error}>{error()}</text>
+      <Show
+        fallback={
+          <text paddingLeft={3} fg={fg()} attributes={state().denied ? TextAttributes.STRIKETHROUGH : undefined}>
+            ~ {props.pending}
+          </text>
+        }
+        when={props.complete}
+      >
+        <box flexDirection="row">
+          <text
+            width={INLINE_TOOL_ICON_WIDTH}
+            fg={state().failed ? theme.error : (props.iconColor ?? fg())}
+            attributes={state().denied ? TextAttributes.STRIKETHROUGH : undefined}
+          >
+            {props.icon}
+          </text>
+          <text flexGrow={1} fg={fg()} attributes={state().denied ? TextAttributes.STRIKETHROUGH : undefined}>
+            {props.children}
+          </text>
+        </box>
+      </Show>
+      <Show when={state().failed && errorExpanded()}>
+        <box paddingLeft={INLINE_TOOL_ICON_WIDTH}>
+          <text fg={theme.error}>{error()}</text>
+        </box>
       </Show>
     </box>
   )
