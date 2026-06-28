@@ -1238,6 +1238,9 @@ shape and leave implementation to Phase 10.
             directory, without adding new backend project/worktree contracts.
 - [ ] Review session list directory filters, workspace filters, hidden/blank
       session handling, empty-state behavior, and recent-session scrolling.
+      - [x] Hardened blank-title rendering so meaningful or active sessions
+            never appear as empty rows; the dialog falls back to the session ID
+            while keeping child-session indentation.
 - [ ] Import low-risk missing-session cleanup behavior where Penguin can detect
       a session no longer exists without adding new backend contracts.
 - [ ] Inventory desktop tab ideas for later: draggable tabs, fixed tab widths,

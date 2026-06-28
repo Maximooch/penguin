@@ -89,7 +89,7 @@ export function DialogSessionList() {
       return {
         title: isDeleting
           ? `Press ${keybind.print("session_delete")} again to confirm`
-          : formatSessionListTitle(x.title, entry.depth),
+          : formatSessionListTitle(x.title, entry.depth, x.id),
         bg: isDeleting ? theme.error : undefined,
         value: x.id,
         category,
