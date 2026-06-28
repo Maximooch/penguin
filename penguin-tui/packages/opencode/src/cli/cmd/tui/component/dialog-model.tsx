@@ -6,6 +6,7 @@ import { DialogSelect, type DialogSelectRef } from "@tui/ui/dialog-select"
 import { useDialog } from "@tui/ui/dialog"
 import { createDialogProviderOptions, DialogProvider } from "./dialog-provider"
 import { useKeybind } from "../context/keybind"
+import { sortModelOptions } from "../util/model-options"
 import * as fuzzysort from "fuzzysort"
 
 export function useConnected() {
@@ -131,6 +132,7 @@ export function DialogModel(props: { providerID?: string }) {
             return {
               value,
               title: info.name ?? model,
+              releaseDate: info.release_date,
               description: favorites.some(
                 (item) => item.providerID === value.providerID && item.modelID === value.modelID,
               )
@@ -164,10 +166,7 @@ export function DialogModel(props: { providerID?: string }) {
             if (inRecents) return false
             return true
           }),
-          sortBy(
-            (x) => x.footer !== "Free",
-            (x) => x.title,
-          ),
+          (options) => sortModelOptions(options, props.providerID !== undefined),
         ),
       ),
     )

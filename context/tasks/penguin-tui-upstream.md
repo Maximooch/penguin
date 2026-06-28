@@ -1355,6 +1355,9 @@ shape and leave implementation to Phase 10.
             reasoning blocks that begin with a bold summary title now render and
             export the title separately from the markdown body, while ordinary
             reasoning text keeps the existing display/export shape.
+      - [x] Adapted release-date model ordering for provider-scoped model
+            dialogs while preserving Penguin's existing free-first alphabetical
+            ordering in the regular picker.
 - [ ] Inventory provider/model capability changes for Phase 10: OpenAI
       WebSocket transport, custom WebSocket base URLs, sticky `X-Session-Id`
       proxy headers, stored provider credentials, connector-based auth,
