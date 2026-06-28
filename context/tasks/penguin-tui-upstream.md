@@ -1423,21 +1423,38 @@ shape and leave implementation to Phase 10.
 
 #### 9.8 Desktop/app UX ideas to mine without copying blindly
 
-- [ ] Review desktop v2 home/session layout ideas for Penguin or Link: empty
+- [x] Review desktop v2 home/session layout ideas for Penguin or Link: empty
       home state, home tab toggle, archived sessions, jump-to-latest restyle,
       sessions list improvements, server sections, settings v2, status popover,
       titlebar/session controls, and debug bar.
-- [ ] Review session timeline improvements: faster timeline rendering, no
+      - [x] Mined as Link/Penguin UX references. Terminal-safe session-list
+            improvements such as project-copy labels and blank-title fallbacks
+            were already adapted earlier in Phase 9; desktop home tabs,
+            archived sessions, server sections, titlebar controls, and status
+            popovers should stay in the app/Link track.
+- [x] Review session timeline improvements: faster timeline rendering, no
       flicker/scroll jumps, rejected stale timeline ranges, virtualized
       measurement, and shared synced session data.
-- [ ] Review notification and session ownership ideas: late notification cleanup,
+      - [x] Classified as Phase 10/session-event-contract work for Penguin TUI.
+            The terminal route already has direct scroll/jump commands; deeper
+            timeline virtualization and stale-range rejection require backend
+            replay/history/session-event truth.
+- [x] Review notification and session ownership ideas: late notification cleanup,
       viewed-session clearing, todo docks preserved across sessions, provider
       dialogs tied to the starting session, and concurrent event reconciliation.
-- [ ] Treat mobile bottom navigation, WSL management, update UI, color themes,
+      - [x] Mapped notification ownership into Phase 9.9 terminal notification
+            policy. Viewed-session clearing, provider-dialog session ownership,
+            and concurrent reconciliation should follow Phase 10 runtime/session
+            event contracts.
+- [x] Treat mobile bottom navigation, WSL management, update UI, color themes,
       safe-area insets, and Electron-specific changes as design references, not
       immediate Penguin terminal TUI work.
-- [ ] Keep Link Agentboard needs in mind, but translate through Penguin's
+      - [x] Reference only. These are desktop/mobile runtime concerns and should
+            not be copied into terminal TUI behavior.
+- [x] Keep Link Agentboard needs in mind, but translate through Penguin's
       adapters instead of copying OpenCode app contracts directly.
+      - [x] Keep this as a Link/Penguin adapter input after Phase 10 backend
+            contracts are stable.
 
 #### 9.9 Terminal notifications and attention routing
 
