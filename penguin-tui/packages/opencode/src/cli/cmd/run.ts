@@ -9,6 +9,7 @@ import { EOL } from "os"
 import { select } from "@clack/prompts"
 import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk/v2"
 import { Server } from "../../server/server"
+import { createServerFetchRequest } from "../../server/auth-header"
 import { Provider } from "../../provider/provider"
 import { Agent } from "../../agent/agent"
 
@@ -340,7 +341,7 @@ export const RunCommand = cmd({
 
     await bootstrap(process.cwd(), async () => {
       const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
-        const request = new Request(input, init)
+        const request = createServerFetchRequest(input, init)
         return Server.App().fetch(request)
       }) as typeof globalThis.fetch
       const sdk = createOpencodeClient({ baseUrl: "http://opencode.internal", fetch: fetchFn })

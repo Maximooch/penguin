@@ -1307,8 +1307,16 @@ shape and leave implementation to Phase 10.
 - [ ] Bring over permission/question UI polish where Penguin route shapes
       already align, especially replies routed through the correct session
       directory.
+      - [x] Audited upstream directory-aware permission/question reply fixes
+            (`3cf1cef7fe`, `f4851e3bd9`). Penguin's current local
+            permission/question routes do not accept or apply per-reply
+            directory context, so this remains a Phase 10 backend/API contract
+            item instead of a TUI-only field.
 - [ ] Review auth headers on RunCommand fetches and command `$ARGUMENTS` file
       injection fixes for Penguin command execution.
+      - [x] Adapted upstream RunCommand authorization-header preservation for
+            Penguin's in-process CLI fetch path and shared it with the TUI
+            worker auth helper.
 - [ ] Surface structured failures where Penguin already has provider/tool error
       categories; defer richer retry dialogs until backend error shape is stable.
 - [ ] Add tests for runtime display hardening rather than relying on manual TUI
