@@ -1458,33 +1458,57 @@ shape and leave implementation to Phase 10.
 
 #### 9.9 Terminal notifications and attention routing
 
-- [ ] Design terminal notifications as a configurable user preference, not a
+- [x] Design terminal notifications as a configurable user preference, not a
       hard-coded sound effect. Suggested modes: off, visual only, terminal bell,
       OS notification, terminal-specific notification, sound, or combined.
-- [ ] Treat sound packs as a themeable layer. Start with generic sounds and
+      - [x] Added a pure notification policy helper with modes `off`, `visual`,
+            `bell`, `osc`, `os`, `terminal`, `sound`, and `combined`. Delivery
+            adapters are intentionally not invoked in Phase 9.
+- [x] Treat sound packs as a themeable layer. Start with generic sounds and
       optional novelty packs such as train-station or penguin/NOOT-NOOT sounds,
       but keep them disabled by default and easy to mute.
-- [ ] Support attention events with clear categories: run complete, run failed,
+      - [x] Added sound-pack selection metadata for generic, train-station, and
+            penguin/NOOT-NOOT-style payloads, disabled unless `sound` mode is
+            selected.
+- [x] Support attention events with clear categories: run complete, run failed,
       approval/question waiting, provider/auth needs action, background
       subagent update, long-running tool finished, and reconnect/replay failed.
-- [ ] Prefer portable terminal mechanisms first: BEL for bell-compatible
+      - [x] Captured these as explicit `AttentionCategory` values in the policy
+            helper.
+- [x] Prefer portable terminal mechanisms first: BEL for bell-compatible
       terminals and OSC notification escape sequences where supported.
-- [ ] Add OS-specific adapters only behind capability detection and explicit
+      - [x] Captured as channels only. Actual BEL/OSC emission remains a future
+            delivery adapter behind explicit settings.
+- [x] Add OS-specific adapters only behind capability detection and explicit
       settings: macOS notification/sound command, Linux desktop notification,
       and Windows notification path.
-- [ ] Add terminal-specific integrations as optional adapters, especially for
+      - [x] Captured as `os` channel payloads only; no OS command execution in
+            default TUI behavior.
+- [x] Add terminal-specific integrations as optional adapters, especially for
       CMUX and Ghostty. Do not require either terminal for Penguin TUI behavior.
-- [ ] Make notification text privacy-aware. Never include raw prompt text,
+      - [x] Captured as `terminal` channel payloads only; CMUX/Ghostty adapters
+            should be optional later.
+- [x] Make notification text privacy-aware. Never include raw prompt text,
       secrets, file contents, or provider credentials in desktop banners or
       terminal sidebars by default.
-- [ ] Add quiet-hours, focus, per-project, and per-event-category controls if
+      - [x] Payloads default to safe category titles/bodies and only include
+            caller-provided details when explicitly requested, with simple
+            secret/token redaction.
+- [x] Add quiet-hours, focus, per-project, and per-event-category controls if
       notifications become noisy during long multi-agent runs.
-- [ ] Add tests around notification policy selection and emitted notification
+      - [x] Added quiet-hours and per-category filtering to the pure policy.
+            Focus/per-project controls can layer on the same helper later.
+- [x] Add tests around notification policy selection and emitted notification
       payloads; keep actual OS/terminal notification delivery as an opt-in
       manual or integration check.
-- [ ] Keep this separate from the canonical runtime event envelope. Phase 9 can
+      - [x] Added deterministic Bun tests for disabled mode, combined visual+bell
+            payloads, novelty sound-pack selection, quiet hours, category
+            filters, privacy redaction, and channel mapping.
+- [x] Keep this separate from the canonical runtime event envelope. Phase 9 can
       map existing Penguin events to notifications; Phase 10 can later feed the
       same policy from backend-owned runtime events.
+      - [x] The helper accepts local `AttentionEvent` values only. It does not
+            define or require the future canonical runtime event envelope.
 
 #### 9.10 Replay, snapshots, history, and event-contract inventory
 
