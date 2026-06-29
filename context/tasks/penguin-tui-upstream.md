@@ -1763,12 +1763,12 @@ Follow-up before enabling the full interactive diff viewer:
 
 #### 10.6 Commands
 
-- [ ] Wire a backend command registry contract.
-- [ ] Backend declares available commands, labels, descriptions, shortcuts,
+- [x] Wire a backend command registry contract.
+- [x] Backend declares available commands, labels, descriptions, shortcuts,
       enablement, required context, and execution route/payload metadata.
-- [ ] TUI command palette consumes that contract and handles disabled or
+- [x] TUI command bootstrap consumes that contract and handles disabled or
       unavailable commands cleanly.
-- [ ] Add backend registry tests and TUI command-list/selection/execution tests.
+- [x] Add backend registry tests and TUI command-list/selection/execution tests.
 
 #### 10.7 Notifications
 

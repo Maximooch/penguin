@@ -635,55 +635,67 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             .then((data) => (Array.isArray(data) ? data : []))
             .catch(() => []),
         )
-        const [providersData, providerListData, configData, providerAuthData, roster] = await Promise.all([
-          timed(
-            "config_providers",
-            fetchBootstrapJson({
-              fetch: sdk.fetch,
-              path: new URL("/config/providers", sdk.url),
-              endpoint: "/config/providers",
-              fallback: undefined,
-            }),
-          ),
-          timed(
-            "provider",
-            fetchBootstrapJson({
-              fetch: sdk.fetch,
-              path: new URL("/provider", sdk.url),
-              endpoint: "/provider",
-              fallback: undefined,
-            }),
-          ),
-          timed(
-            "config",
-            fetchBootstrapJson({
-              fetch: sdk.fetch,
-              path: new URL("/config", sdk.url),
-              endpoint: "/config",
-              fallback: undefined,
-            }),
-          ),
-          timed(
-            "provider_auth",
-            fetchBootstrapJson({
-              fetch: sdk.fetch,
-              path: new URL("/provider/auth", sdk.url),
-              endpoint: "/provider/auth",
-              fallback: undefined,
-            }),
-          ),
-          timed(
-            "agents",
-            sdk
-              .fetch(new URL("/api/v1/agents", sdk.url))
-              .then((res) => (res.ok ? res.json() : undefined))
-              .then((data) => (Array.isArray(data) ? data : []))
-              .catch(() => []),
-          ),
-        ])
+        const [providersData, providerListData, configData, providerAuthData, roster, commandsData] = await Promise.all(
+          [
+            timed(
+              "config_providers",
+              fetchBootstrapJson({
+                fetch: sdk.fetch,
+                path: new URL("/config/providers", sdk.url),
+                endpoint: "/config/providers",
+                fallback: undefined,
+              }),
+            ),
+            timed(
+              "provider",
+              fetchBootstrapJson({
+                fetch: sdk.fetch,
+                path: new URL("/provider", sdk.url),
+                endpoint: "/provider",
+                fallback: undefined,
+              }),
+            ),
+            timed(
+              "config",
+              fetchBootstrapJson({
+                fetch: sdk.fetch,
+                path: new URL("/config", sdk.url),
+                endpoint: "/config",
+                fallback: undefined,
+              }),
+            ),
+            timed(
+              "provider_auth",
+              fetchBootstrapJson({
+                fetch: sdk.fetch,
+                path: new URL("/provider/auth", sdk.url),
+                endpoint: "/provider/auth",
+                fallback: undefined,
+              }),
+            ),
+            timed(
+              "agents",
+              sdk
+                .fetch(new URL("/api/v1/agents", sdk.url))
+                .then((res) => (res.ok ? res.json() : undefined))
+                .then((data) => (Array.isArray(data) ? data : []))
+                .catch(() => []),
+            ),
+            timed(
+              "commands",
+              fetchBootstrapJson({
+                fetch: sdk.fetch,
+                path: new URL("/api/v1/commands", sdk.url),
+                endpoint: "/api/v1/commands",
+                fallback: undefined,
+              }),
+            ),
+          ],
+        )
         const mapStart = Date.now()
         const bootstrapState = mapPenguinBootstrap({
           baseUrl: sdk.url,
+          commandsData,
           configData,
           directory,
           providerAuthData,
@@ -713,6 +725,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           const sessionsMapStart = Date.now()
           const sessionsState = mapPenguinBootstrap({
             baseUrl: sdk.url,
+            commandsData,
             configData,
             directory,
             providerAuthData,

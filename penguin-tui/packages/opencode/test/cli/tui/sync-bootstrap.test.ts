@@ -309,6 +309,52 @@ describe("sync bootstrap", () => {
     expect(result.path.directory).toBe("/tmp/project")
   })
 
+  test("uses backend command registry when available", () => {
+    const result = mapPenguinBootstrap({
+      baseUrl: "http://127.0.0.1:9000",
+      directory: "/tmp/project",
+      now: 1000,
+      commandsData: [
+        {
+          name: "project",
+          description: "Project commands",
+          template: "/project $ARGUMENTS",
+          hints: ["$ARGUMENTS"],
+          source: "command",
+        },
+        {
+          name: "disabled",
+          description: "Hidden",
+          template: "/disabled",
+          hints: [],
+          enabled: false,
+        },
+        {
+          name: "",
+          description: "Malformed",
+          template: "/bad",
+          hints: [],
+        },
+      ],
+      providersData: undefined,
+      providerListData: undefined,
+      configData: undefined,
+      providerAuthData: undefined,
+      sessions: [],
+      roster: [],
+    })
+
+    expect(result.command).toEqual([
+      {
+        name: "project",
+        description: "Project commands",
+        template: "/project $ARGUMENTS",
+        hints: ["$ARGUMENTS"],
+        source: "command",
+      },
+    ])
+  })
+
   test("detects sparse provider catalogs that should be refreshed after startup", () => {
     expect(hasSparsePenguinProviderCatalog([])).toBe(false)
     expect(

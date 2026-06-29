@@ -60,6 +60,7 @@ from penguin.web.services.configuration import (
     runtime_config_payload,
     settings_locations_payload,
 )
+from penguin.web.services.command_registry import list_opencode_commands
 from penguin.web.services.conversations import (
     create_conversation_payload,
     get_conversation_payload,
@@ -3412,6 +3413,12 @@ async def opencode_config_update(
     except Exception as e:
         logger.error(f"config.update error: {e}")
         raise HTTPException(status_code=500, detail="Failed to update config")
+
+
+@router.get("/api/v1/commands")
+async def api_command_list() -> list[dict[str, Any]]:
+    """Return Penguin command metadata for OpenCode-derived TUI clients."""
+    return list_opencode_commands()
 
 
 @router.get("/config/providers")
