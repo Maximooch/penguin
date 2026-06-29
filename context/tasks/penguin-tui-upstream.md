@@ -1633,9 +1633,12 @@ Final Phase 9 verification targets:
 - Focused Bun tests for each changed helper/component.
 - `bun run typecheck` for TUI package changes.
 - Targeted formatting checks on touched TypeScript/TSX/Markdown files.
+- Python/Responses tool surface coverage for `penguin/tools/tool_manager.py`
+  when default tool exposure changes.
 - `git diff --check`.
 - Python/default Penguin suites only when backend adapters or shared services are
-  modified; Phase 9 code changes stayed inside the TUI package and plan docs.
+  modified; Phase 9 code changes stayed mostly inside the TUI package and plan
+  docs, with narrow Python tool allowlist patches verified separately.
 
 ### 10. Move backend-first upstream contracts into Penguin
 

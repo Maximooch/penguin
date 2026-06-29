@@ -4,6 +4,7 @@ import { deriveInlineToolState, isDeniedInlineToolError } from "../../../src/cli
 describe("inline tool row state", () => {
   test("treats permission denials as denied instead of expandable failures", () => {
     expect(isDeniedInlineToolError("user dismissed permission prompt")).toBe(true)
+    expect(isDeniedInlineToolError("User Dismissed permission prompt")).toBe(true)
     expect(deriveInlineToolState({ error: "user dismissed permission prompt" })).toEqual({
       denied: true,
       failed: false,

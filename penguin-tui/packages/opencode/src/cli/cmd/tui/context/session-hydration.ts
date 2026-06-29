@@ -78,11 +78,7 @@ function latestUserBefore(messages: Message[], beforeIndex: number): Message | u
   return undefined
 }
 
-function inferLiveAssistantParent(
-  existing: Message[],
-  incoming: Message,
-  insertionIndex: number,
-): Message {
+function inferLiveAssistantParent(existing: Message[], incoming: Message, insertionIndex: number): Message {
   if (incoming.role !== "assistant") return incoming
   if (parentID(incoming)) return incoming
 
@@ -105,15 +101,18 @@ function inferLiveAssistantParent(
 export function upsertPenguinMessage(existing: Message[] | undefined, incoming: Message): Message[] {
   if (!Array.isArray(existing) || existing.length === 0) return [incoming]
   const match = existing.findIndex((item) => item.id === incoming.id)
-  const normalized = inferLiveAssistantParent(
-    existing,
-    incoming,
-    match === -1 ? existing.length : match,
-  )
+  const matched = match === -1 ? undefined : existing[match]
+  const matchedParentID = matched ? parentID(matched) : undefined
+  const inferredIncoming =
+    matchedParentID && !parentID(incoming)
+      ? ({
+          ...incoming,
+          parentID: matchedParentID,
+        } as Message)
+      : incoming
+  const normalized = inferLiveAssistantParent(existing, inferredIncoming, match === -1 ? existing.length : match)
   if (match !== -1) {
-    return existing
-      .map((item, index) => (index === match ? normalized : item))
-      .toSorted(compareMessagesByCreated)
+    return existing.map((item, index) => (index === match ? normalized : item)).toSorted(compareMessagesByCreated)
   }
   return [...existing, normalized].toSorted(compareMessagesByCreated)
 }

@@ -2794,7 +2794,6 @@ class ToolManager:
             "get_context_info",
             "sync_context",
             "delegate",
-            "delegate_explore_task",
             "send_message",
             # Memory and notes
             "add_summary_note",

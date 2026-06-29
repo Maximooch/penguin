@@ -9,6 +9,7 @@ import {
   emptyPrompt,
   movePromptHistory,
   normalizePromptHistory,
+  parsePromptHistoryLine,
   type PromptInfo,
 } from "./history-state"
 
@@ -23,13 +24,7 @@ export const { use: usePromptHistory, provider: PromptHistoryProvider } = create
       const parsed = text
         .split("\n")
         .filter(Boolean)
-        .map((line) => {
-          try {
-            return JSON.parse(line)
-          } catch {
-            return null
-          }
-        })
+        .map(parsePromptHistoryLine)
         .filter((line): line is PromptInfo => line !== null)
       const lines = normalizePromptHistory(parsed)
 

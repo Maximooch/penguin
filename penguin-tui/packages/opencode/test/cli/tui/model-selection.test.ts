@@ -33,6 +33,13 @@ describe("model selection", () => {
     })
   })
 
+  test("resolves provider and catalog key casing differences", () => {
+    expect(resolveCatalogModel(providers, { providerID: "OpenAI", modelID: "GPT-5.5-MINI" })).toEqual({
+      providerID: "openai",
+      modelID: "gpt-5.5-mini",
+    })
+  })
+
   test("rejects unknown models", () => {
     expect(resolveCatalogModel(providers, { providerID: "openai", modelID: "not-real" })).toBeUndefined()
     expect(isCatalogModelValid(providers, { providerID: "openai", modelID: "not-real" })).toBe(false)

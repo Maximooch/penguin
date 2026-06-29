@@ -15,7 +15,7 @@ import { RGBA } from "@opentui/core"
 import type { Agent } from "@opencode-ai/sdk/v2"
 import { nextVariantSelection } from "./variant-cycle"
 import { resolveCatalogModel } from "../util/model-selection"
-import { createModelCatalogProviders } from "../util/model-catalog"
+import { createModelCatalogProviders, hasSparseModelCatalog, modelCatalogCount } from "../util/model-catalog"
 
 export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
   name: "Local",
@@ -26,6 +26,10 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const modelProviders = createMemo(() =>
       createModelCatalogProviders(sync.data.provider, sync.data.provider_next.all),
     )
+    const modelCatalogReady = createMemo(() => {
+      const providers = modelProviders()
+      return modelCatalogCount(providers) > 0 && !hasSparseModelCatalog(providers)
+    })
 
     function resolveModel(model: { providerID: string; modelID: string }) {
       return resolveCatalogModel(modelProviders(), model)
@@ -461,7 +465,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             },
             { silentInvalid: true },
           )
-        else
+        else if (modelCatalogReady())
           toast.show({
             variant: "warning",
             message: `Agent ${value.name}'s configured model ${configuredModel} is not valid`,

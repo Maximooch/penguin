@@ -1,5 +1,6 @@
 import type { AgentPart, FilePart, TextPart } from "@opencode-ai/sdk/v2"
 import { clone } from "remeda"
+import z from "zod"
 
 export type PromptInfo = {
   input: string
@@ -25,6 +26,25 @@ export function emptyPrompt(): PromptInfo {
   return {
     input: "",
     parts: [],
+  }
+}
+
+const promptPartSchema = z.object({ type: z.string() }).passthrough()
+const promptHistoryRowSchema = z
+  .object({
+    input: z.string(),
+    mode: z.enum(["normal", "shell"]).optional(),
+    parts: z.array(promptPartSchema),
+  })
+  .passthrough()
+
+export function parsePromptHistoryLine(line: string): PromptInfo | null {
+  try {
+    const parsed = JSON.parse(line)
+    const result = promptHistoryRowSchema.safeParse(parsed)
+    return result.success ? (result.data as PromptInfo) : null
+  } catch {
+    return null
   }
 }
 

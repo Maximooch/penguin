@@ -3,6 +3,7 @@ import {
   appendPromptHistory,
   movePromptHistory,
   normalizePromptHistory,
+  parsePromptHistoryLine,
   type PromptHistoryBrowseState,
   type PromptInfo,
 } from "../../src/cli/cmd/tui/component/prompt/history-state"
@@ -76,5 +77,12 @@ describe("prompt history", () => {
     const restored = movePromptHistory(latest.state, 1, prompt("one"))
 
     expect(restored.prompt).toEqual(draftPrompt)
+  })
+
+  test("rejects malformed prompt history rows before normalization", () => {
+    expect(parsePromptHistoryLine(JSON.stringify({ input: "valid", parts: [] }))).toEqual(prompt("valid"))
+    expect(parsePromptHistoryLine(JSON.stringify({ input: 123, parts: [] }))).toBeNull()
+    expect(parsePromptHistoryLine(JSON.stringify({ input: "missing parts" }))).toBeNull()
+    expect(parsePromptHistoryLine("{not-json")).toBeNull()
   })
 })

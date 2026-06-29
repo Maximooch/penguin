@@ -215,10 +215,12 @@ export function Autocomplete(props: {
       if (!store.visible || store.visible === "/") return []
 
       const { lineRange, baseQuery } = extractLineRange(query ?? "")
+      const scopedSessionID = props.sessionID ?? sdk.sessionID
+      const scopedSession = scopedSessionID ? sync.session.get(scopedSessionID) : undefined
       const params = {
         query: baseQuery,
-        directory: sdk.sessionID ? (sync.session.get(sdk.sessionID)?.directory ?? sdk.directory) : sdk.directory,
-        session_id: sdk.sessionID,
+        directory: scopedSession?.directory ?? sdk.directory,
+        session_id: scopedSessionID,
       } as Parameters<typeof sdk.client.find.files>[0] & {
         session_id?: string
       }
@@ -330,22 +332,20 @@ export function Autocomplete(props: {
     const agents = sync.data.agent
     return agents
       .filter((agent) => !agent.hidden && agent.mode !== "primary")
-      .map(
-        (agent): AutocompleteOption => ({
-          display: "@" + agent.name,
-          onSelect: () => {
-            insertPart(agent.name, {
-              type: "agent",
-              name: agent.name,
-              source: {
-                start: 0,
-                end: 0,
-                value: "",
-              },
-            })
-          },
-        }),
-      )
+      .map((agent): AutocompleteOption => ({
+        display: "@" + agent.name,
+        onSelect: () => {
+          insertPart(agent.name, {
+            type: "agent",
+            name: agent.name,
+            source: {
+              start: 0,
+              end: 0,
+              value: "",
+            },
+          })
+        },
+      }))
   })
 
   const commands = createMemo((): AutocompleteOption[] => {

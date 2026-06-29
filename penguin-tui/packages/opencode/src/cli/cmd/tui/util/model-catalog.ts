@@ -75,6 +75,59 @@ function normalizeModels(provider: CatalogProviderInput): Record<string, ModelCa
   )
 }
 
+function mergeCapabilities(
+  available?: ModelCatalogModel["capabilities"],
+  configured?: ModelCatalogModel["capabilities"],
+): ModelCatalogModel["capabilities"] {
+  return {
+    attachment: Boolean(available?.attachment || configured?.attachment),
+    reasoning: Boolean(available?.reasoning || configured?.reasoning),
+    temperature: Boolean(available?.temperature || configured?.temperature),
+    toolcall: Boolean(available?.toolcall || configured?.toolcall),
+  }
+}
+
+function mergeRecords<T>(
+  available: Record<string, T> | undefined,
+  configured: Record<string, T> | undefined,
+): Record<string, T> | undefined {
+  const merged = {
+    ...(available ?? {}),
+    ...(configured ?? {}),
+  }
+  return Object.keys(merged).length > 0 ? merged : undefined
+}
+
+function mergeModelMaps(
+  availableModels: Record<string, ModelCatalogModel>,
+  configuredModels: Record<string, ModelCatalogModel>,
+): Record<string, ModelCatalogModel> {
+  const merged = { ...availableModels }
+
+  for (const [modelID, configured] of Object.entries(configuredModels)) {
+    const available = merged[modelID]
+    if (!available) {
+      merged[modelID] = configured
+      continue
+    }
+
+    const model = {
+      ...available,
+      ...configured,
+      capabilities: mergeCapabilities(available.capabilities, configured.capabilities),
+    }
+    const variants = mergeRecords(available.variants, configured.variants)
+    if (variants) model.variants = variants
+    const options = mergeRecords(available.options, configured.options)
+    if (options) model.options = options
+    const cost = mergeRecords(available.cost, configured.cost)
+    if (cost) model.cost = cost
+    merged[modelID] = model
+  }
+
+  return merged
+}
+
 export function modelCatalogCount(providers: ReadonlyArray<{ models?: Record<string, unknown> | null }>): number {
   return providers.reduce((total, provider) => total + Object.keys(provider.models ?? {}).length, 0)
 }
@@ -111,10 +164,10 @@ export function createModelCatalogProviders(
       id: providerID,
       name: configured?.name ?? available?.name ?? providerID,
       env: configured?.env ?? available?.env ?? [],
-      models: {
-        ...(available ? normalizeModels(available) : {}),
-        ...(configured ? normalizeModels(configured) : {}),
-      },
+      models: mergeModelMaps(
+        available ? normalizeModels(available) : {},
+        configured ? normalizeModels(configured) : {},
+      ),
     })
   }
 

@@ -17,22 +17,24 @@ function sameModelID(left: string | undefined, right: string): boolean {
   return typeof left === "string" && left.toLowerCase() === right.toLowerCase()
 }
 
-export function resolveCatalogModel(
-  providers: CatalogProvider[],
-  model: ModelSelection,
-): ModelSelection | undefined {
-  const provider = providers.find((item) => item.id === model.providerID)
+export function resolveCatalogModel(providers: CatalogProvider[], model: ModelSelection): ModelSelection | undefined {
+  const provider = providers.find((item) => sameModelID(item.id, model.providerID))
   if (!provider?.models) return undefined
 
-  if (provider.models[model.modelID]) {
+  const directCatalogID = Object.keys(provider.models).find((catalogID) => sameModelID(catalogID, model.modelID))
+  if (directCatalogID) {
     return {
       providerID: provider.id,
-      modelID: model.modelID,
+      modelID: directCatalogID,
     }
   }
 
   for (const [catalogID, info] of Object.entries(provider.models)) {
-    if (sameModelID(info.id, model.modelID) || sameModelID(info.name, model.modelID)) {
+    if (
+      sameModelID(catalogID, model.modelID) ||
+      sameModelID(info.id, model.modelID) ||
+      sameModelID(info.name, model.modelID)
+    ) {
       return {
         providerID: provider.id,
         modelID: catalogID,

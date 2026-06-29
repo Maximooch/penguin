@@ -1,4 +1,4 @@
-import { Flag } from "@/flag/flag"
+import { Flag } from "../flag/flag"
 
 export function createServerAuthorizationHeader(input?: { username?: string; password?: string }): string | undefined {
   const password = input?.password ?? Flag.OPENCODE_SERVER_PASSWORD
@@ -14,6 +14,7 @@ export function createServerFetchRequest(
 ): Request {
   const request = new Request(input, init)
   if (!authorization) return request
+  if (request.headers.has("Authorization")) return request
 
   const headers = new Headers(request.headers)
   headers.set("Authorization", authorization)

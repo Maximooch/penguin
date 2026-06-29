@@ -80,6 +80,65 @@ describe("model catalog", () => {
     expect(hasSparseModelCatalog(catalog)).toBe(false)
   })
 
+  test("deep-merges overlapping warmed and configured model metadata", () => {
+    const catalog = createModelCatalogProviders(
+      [
+        {
+          id: "openrouter",
+          name: "OpenRouter",
+          models: {
+            "vendor/model-0": {
+              id: "vendor/model-0",
+              name: "Configured Alias",
+              status: "active",
+              capabilities: {
+                attachment: false,
+                reasoning: false,
+                temperature: true,
+                toolcall: false,
+              },
+              options: { effort: "high" },
+            },
+          },
+        },
+      ],
+      [
+        {
+          id: "openrouter",
+          name: "OpenRouter",
+          models: {
+            "vendor/model-0": {
+              id: "vendor/model-0",
+              name: "Warmed Name",
+              release_date: "2026-06-01",
+              status: "active",
+              capabilities: {
+                attachment: true,
+                reasoning: true,
+                temperature: false,
+                toolcall: true,
+              },
+              variants: { default: { id: "vendor/model-0" } },
+            },
+          },
+        },
+      ],
+    )
+
+    const model = catalog[0]?.models["vendor/model-0"]
+
+    expect(model?.name).toBe("Configured Alias")
+    expect(model?.release_date).toBe("2026-06-01")
+    expect(model?.capabilities).toEqual({
+      attachment: true,
+      reasoning: true,
+      temperature: true,
+      toolcall: true,
+    })
+    expect(model?.variants).toEqual({ default: { id: "vendor/model-0" } })
+    expect(model?.options).toEqual({ effort: "high" })
+  })
+
   test("validates model selections against warmed catalog models", () => {
     const catalog = createModelCatalogProviders(
       [

@@ -28,9 +28,7 @@ export function DialogModel(props: { providerID?: string }) {
 
   const connected = useConnected()
   const providers = createDialogProviderOptions()
-  const modelProviders = createMemo(() =>
-    createModelCatalogProviders(sync.data.provider, sync.data.provider_next.all),
-  )
+  const modelProviders = createMemo(() => createModelCatalogProviders(sync.data.provider, sync.data.provider_next.all))
 
   onMount(() => {
     const refreshIfSparse = (reason: string) => {
@@ -59,19 +57,23 @@ export function DialogModel(props: { providerID?: string }) {
     const showSections = showExtra() && needle.length === 0
     const favorites = connected() ? local.model.favorite() : []
     const recents = local.model.recent()
+    const selectionKey = (item: { providerID: string; modelID: string }) =>
+      `${item.providerID.toLowerCase()}/${item.modelID.toLowerCase()}`
+    const resolvedSelectionKey = (item: { providerID: string; modelID: string }) => {
+      const resolved = resolveCatalogModel(modelProviders(), item)
+      return selectionKey(resolved ?? item)
+    }
+    const favoriteKeys = new Set(favorites.map(resolvedSelectionKey))
+    const recentKeys = new Set(recents.map(resolvedSelectionKey))
 
-    const recentList = showSections
-      ? recents.filter(
-          (item) => !favorites.some((fav) => fav.providerID === item.providerID && fav.modelID === item.modelID),
-        )
-      : []
+    const recentList = showSections ? recents.filter((item) => !favoriteKeys.has(resolvedSelectionKey(item))) : []
 
     const favoriteOptions = showSections
       ? favorites.flatMap((item) => {
-          const provider = modelProviders().find((x) => x.id === item.providerID)
-          if (!provider) return []
           const resolved = resolveCatalogModel(modelProviders(), item)
           if (!resolved) return []
+          const provider = modelProviders().find((x) => x.id === resolved.providerID)
+          if (!provider) return []
           const model = provider.models[resolved.modelID]
           if (!model) return []
           return [
@@ -103,10 +105,10 @@ export function DialogModel(props: { providerID?: string }) {
 
     const recentOptions = showSections
       ? recentList.flatMap((item) => {
-          const provider = modelProviders().find((x) => x.id === item.providerID)
-          if (!provider) return []
           const resolved = resolveCatalogModel(modelProviders(), item)
           if (!resolved) return []
+          const provider = modelProviders().find((x) => x.id === resolved.providerID)
+          if (!provider) return []
           const model = provider.models[resolved.modelID]
           if (!model) return []
           return [
@@ -157,11 +159,7 @@ export function DialogModel(props: { providerID?: string }) {
               value,
               title: info.name ?? model,
               releaseDate: info.release_date,
-              description: favorites.some(
-                (item) => item.providerID === value.providerID && item.modelID === value.modelID,
-              )
-                ? "(Favorite)"
-                : undefined,
+              description: favoriteKeys.has(selectionKey(value)) ? "(Favorite)" : undefined,
               category: connected() ? provider.name : undefined,
               disabled: provider.id === "opencode" && model.includes("-nano"),
               footer: info.cost?.input === 0 && provider.id === "opencode" ? "Free" : undefined,
@@ -180,14 +178,8 @@ export function DialogModel(props: { providerID?: string }) {
           filter((x) => {
             if (!showSections) return true
             const value = x.value
-            const inFavorites = favorites.some(
-              (item) => item.providerID === value.providerID && item.modelID === value.modelID,
-            )
-            if (inFavorites) return false
-            const inRecents = recents.some(
-              (item) => item.providerID === value.providerID && item.modelID === value.modelID,
-            )
-            if (inRecents) return false
+            if (favoriteKeys.has(selectionKey(value))) return false
+            if (recentKeys.has(selectionKey(value))) return false
             return true
           }),
           (options) => sortModelOptions(options, props.providerID !== undefined),
@@ -218,9 +210,7 @@ export function DialogModel(props: { providerID?: string }) {
     return [...favoriteOptions, ...recentOptions, ...providerOptions, ...popularProviders]
   })
 
-  const provider = createMemo(() =>
-    props.providerID ? modelProviders().find((x) => x.id === props.providerID) : null,
-  )
+  const provider = createMemo(() => (props.providerID ? modelProviders().find((x) => x.id === props.providerID) : null))
 
   const title = createMemo(() => {
     if (provider()) return provider()!.name

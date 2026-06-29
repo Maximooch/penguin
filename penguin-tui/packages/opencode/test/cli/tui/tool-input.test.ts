@@ -47,4 +47,10 @@ describe("tool input formatting", () => {
     expect(result).toContain('"callback": "[Function retry]"')
     expect(result).toContain('"self": "[Circular]"')
   })
+
+  test("does not mark shared acyclic references as circular", () => {
+    const shared = { path: "README.md" }
+
+    expect(stringifyToolInput({ first: shared, second: shared })).toContain('"second": {\n    "path": "README.md"\n  }')
+  })
 })

@@ -8,7 +8,8 @@ export type InlineToolState = {
 
 export function isDeniedInlineToolError(error: string | undefined): boolean {
   if (!error) return false
-  return DENIED_ERROR_MARKERS.some((marker) => error.includes(marker))
+  const normalized = error.toLowerCase()
+  return DENIED_ERROR_MARKERS.some((marker) => normalized.includes(marker))
 }
 
 export function deriveInlineToolState(input: { error?: string; onClick?: boolean }): InlineToolState {

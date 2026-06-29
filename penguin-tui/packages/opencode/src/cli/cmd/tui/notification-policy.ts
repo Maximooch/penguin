@@ -129,7 +129,12 @@ export function notificationPayloads(
 }
 
 export function sanitizeNotificationText(input: string): string {
-  return input.replace(/(api[_-]?key|token|password|secret)=\S+/gi, "$1=[redacted]").trim()
+  return input
+    .replace(/\b(authorization\s*:\s*)bearer\s+[\w.+/~=-]+/gi, "$1Bearer [redacted]")
+    .replace(/\bbearer\s+[\w.+/~=-]+/gi, "Bearer [redacted]")
+    .replace(/(["']?(?:api[_-]?key|token|password|secret)["']?\s*:\s*["']?)[^"',}\s]+(["']?)/gi, "$1[redacted]$2")
+    .replace(/\b(api[_-]?key|token|password|secret)\s*=\s*["']?[^"',\s]+["']?/gi, "$1=[redacted]")
+    .trim()
 }
 
 function isQuietTime(now: Date, quietHours: QuietHours): boolean {

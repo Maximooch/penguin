@@ -21,16 +21,20 @@ export function formatPrimitiveToolInput(value: unknown, omit: readonly string[]
 }
 
 export function stringifyToolInput(value: unknown, space = 2): string {
-  const seen = new WeakSet<object>()
+  const path: object[] = []
   const result = JSON.stringify(
     value,
-    (_key, item) => {
+    function replacer(this: unknown, _key, item) {
       if (typeof item === "bigint") return item.toString()
       if (typeof item === "function") return item.name ? `[Function ${item.name}]` : "[Function]"
       if (typeof item === "symbol") return item.toString()
       if (typeof item !== "object" || item === null) return item
-      if (seen.has(item)) return "[Circular]"
-      seen.add(item)
+
+      while (path.length > 0 && path.at(-1) !== this) {
+        path.pop()
+      }
+      if (path.includes(item)) return "[Circular]"
+      path.push(item)
       return item
     },
     space,

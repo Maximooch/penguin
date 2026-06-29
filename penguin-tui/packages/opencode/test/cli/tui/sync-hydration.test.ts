@@ -335,10 +335,7 @@ describe("sync hydration", () => {
       {},
     )
 
-    expect(merged.map((item) => item.id)).toEqual([
-      "msg_user_skewed",
-      "msg_assistant_skewed",
-    ])
+    expect(merged.map((item) => item.id)).toEqual(["msg_user_skewed", "msg_assistant_skewed"])
   })
 
   test("keeps live assistant response after its parent user when timestamps skew", () => {
@@ -356,10 +353,7 @@ describe("sync hydration", () => {
 
     const merged = upsertPenguinMessage([optimistic], streamed)
 
-    expect(merged.map((item) => item.id)).toEqual([
-      "msg_local_user",
-      "msg_streamed_assistant",
-    ])
+    expect(merged.map((item) => item.id)).toEqual(["msg_local_user", "msg_streamed_assistant"])
   })
 
   test("keeps live root assistant response after latest user when provider timestamp skews", () => {
@@ -387,10 +381,7 @@ describe("sync hydration", () => {
       time: { created: 30, completed: 41 },
     }
 
-    const merged = upsertPenguinMessage(
-      [previousUser, previousAssistant, optimistic],
-      streamed,
-    )
+    const merged = upsertPenguinMessage([previousUser, previousAssistant, optimistic], streamed)
 
     expect(merged.map((item) => item.id)).toEqual([
       "msg_previous_user",
@@ -399,9 +390,34 @@ describe("sync hydration", () => {
       "msg_openrouter_tool_response",
     ])
     expect(merged.at(-1)?.role).toBe("assistant")
-    expect((merged.at(-1) as Message & { parentID?: string })?.parentID).toBe(
-      "msg_current_user",
-    )
+    expect((merged.at(-1) as Message & { parentID?: string })?.parentID).toBe("msg_current_user")
+  })
+
+  test("preserves locally inferred live assistant parent on later root updates", () => {
+    const currentUser = {
+      ...user,
+      id: "msg_current_user",
+      time: { created: 40 },
+    }
+    const streamed = {
+      ...assistant,
+      id: "msg_streamed_root_assistant",
+      parentID: "root",
+      providerID: "openrouter",
+      time: { created: 30, completed: 41 },
+    }
+    const initial = upsertPenguinMessage([currentUser], streamed)
+    const updated = {
+      ...streamed,
+      time: { created: 50, completed: 60 },
+    }
+
+    const merged = upsertPenguinMessage(initial, updated)
+
+    const assistantMessage = merged.find((item) => item.id === streamed.id) as
+      (Message & { parentID?: string }) | undefined
+    expect(assistantMessage?.parentID).toBe("msg_current_user")
+    expect(merged.map((item) => item.id)).toEqual(["msg_current_user", "msg_streamed_root_assistant"])
   })
 
   test("does not reparent late old root assistant updates to newer user turns", () => {
@@ -426,19 +442,10 @@ describe("sync hydration", () => {
       time: { created: 5, completed: 8 },
     }
 
-    const merged = upsertPenguinMessage(
-      [previousUser, oldAssistant, currentUser],
-      oldAssistantUpdate,
-    )
+    const merged = upsertPenguinMessage([previousUser, oldAssistant, currentUser], oldAssistantUpdate)
 
-    expect(merged.map((item) => item.id)).toEqual([
-      "msg_old_root_assistant",
-      "msg_previous_user",
-      "msg_current_user",
-    ])
-    expect((merged[0] as Message & { parentID?: string }).parentID).toBe(
-      "root",
-    )
+    expect(merged.map((item) => item.id)).toEqual(["msg_old_root_assistant", "msg_previous_user", "msg_current_user"])
+    expect((merged[0] as Message & { parentID?: string }).parentID).toBe("root")
   })
 
   test("does not move messages without timestamps above current user turns", () => {
@@ -455,10 +462,7 @@ describe("sync hydration", () => {
 
     const merged = upsertPenguinMessage([optimistic], streamed)
 
-    expect(merged.map((item) => item.id)).toEqual([
-      "msg_1778539630840_00",
-      "msg_streamed_without_time",
-    ])
+    expect(merged.map((item) => item.id)).toEqual(["msg_1778539630840_00", "msg_streamed_without_time"])
   })
 
   test("reorders corrected live assistant update after parent user", () => {
@@ -480,10 +484,7 @@ describe("sync hydration", () => {
 
     const merged = upsertPenguinMessage([placeholder, parent], updated)
 
-    expect(merged.map((item) => item.id)).toEqual([
-      "msg_parent_user",
-      "msg_streamed_assistant",
-    ])
+    expect(merged.map((item) => item.id)).toEqual(["msg_parent_user", "msg_streamed_assistant"])
   })
 
   test("inserts late optimistic user before newer streamed tool response", () => {

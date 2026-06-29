@@ -920,8 +920,7 @@ export function Session() {
   const revertMessageID = createMemo(() => revertInfo()?.messageID)
   const hiddenMessageIDs = createMemo(() => {
     const info = revertInfo() as
-      | ({ hiddenMessageIDs?: string[] } & NonNullable<ReturnType<typeof revertInfo>>)
-      | undefined
+      ({ hiddenMessageIDs?: string[] } & NonNullable<ReturnType<typeof revertInfo>>) | undefined
     const hidden = info?.hiddenMessageIDs
     if (Array.isArray(hidden) && hidden.length > 0) return hidden
 
@@ -1387,7 +1386,7 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
   const content = createMemo(() => {
     // Filter out redacted reasoning chunks from OpenRouter
     // OpenRouter sends encrypted reasoning data that appears as [REDACTED]
-    return props.part.text.replace("[REDACTED]", "").trim()
+    return props.part.text.replaceAll("[REDACTED]", "").trim()
   })
   const summary = createMemo(() => parseReasoningSummary(content()))
   const done = createMemo(() => isReasoningComplete({ part: props.part, message: props.message }))
@@ -1563,7 +1562,12 @@ type ToolProps<T extends Tool.Info> = {
 }
 function GenericTool(props: ToolProps<any>) {
   return (
-    <InlineTool icon="⚙" pending="Writing command..." complete={true} part={props.part}>
+    <InlineTool
+      icon="⚙"
+      pending="Writing command..."
+      complete={props.part.state.status !== "pending"}
+      part={props.part}
+    >
       {props.tool} {input(props.rawInput ?? props.input)}
     </InlineTool>
   )
