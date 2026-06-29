@@ -70,11 +70,52 @@ export function compareMessagesByCreated(left: Message, right: Message): number 
   return left.id.localeCompare(right.id)
 }
 
+function latestUserBefore(messages: Message[], beforeIndex: number): Message | undefined {
+  for (let index = beforeIndex - 1; index >= 0; index--) {
+    const item = messages[index]
+    if (item?.role === "user") return item
+  }
+  return undefined
+}
+
+function inferLiveAssistantParent(
+  existing: Message[],
+  incoming: Message,
+  insertionIndex: number,
+): Message {
+  if (incoming.role !== "assistant") return incoming
+  if (parentID(incoming)) return incoming
+
+  const parent = latestUserBefore(existing, insertionIndex)
+  if (!parent) return incoming
+
+  const incomingCreatedAt = messageCreatedAt(incoming)
+  const parentCreatedAt = messageCreatedAt(parent)
+  if (incomingCreatedAt > parentCreatedAt) return incoming
+  if (incoming.time?.completed !== undefined && incoming.time.completed < parentCreatedAt) {
+    return incoming
+  }
+
+  return {
+    ...incoming,
+    parentID: parent.id,
+  } as Message
+}
+
 export function upsertPenguinMessage(existing: Message[] | undefined, incoming: Message): Message[] {
   if (!Array.isArray(existing) || existing.length === 0) return [incoming]
   const match = existing.findIndex((item) => item.id === incoming.id)
-  if (match !== -1) return existing.map((item, index) => (index === match ? incoming : item)).toSorted(compareMessagesByCreated)
-  return [...existing, incoming].toSorted(compareMessagesByCreated)
+  const normalized = inferLiveAssistantParent(
+    existing,
+    incoming,
+    match === -1 ? existing.length : match,
+  )
+  if (match !== -1) {
+    return existing
+      .map((item, index) => (index === match ? normalized : item))
+      .toSorted(compareMessagesByCreated)
+  }
+  return [...existing, normalized].toSorted(compareMessagesByCreated)
 }
 
 function insertPreservedMessages(hydrated: Message[], preserved: Message[]): Message[] {

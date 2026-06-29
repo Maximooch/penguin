@@ -362,6 +362,85 @@ describe("sync hydration", () => {
     ])
   })
 
+  test("keeps live root assistant response after latest user when provider timestamp skews", () => {
+    const previousUser = {
+      ...user,
+      id: "msg_previous_user",
+      time: { created: 10 },
+    }
+    const previousAssistant = {
+      ...assistant,
+      id: "msg_previous_assistant",
+      parentID: "msg_previous_user",
+      time: { created: 20, completed: 21 },
+    }
+    const optimistic = {
+      ...user,
+      id: "msg_current_user",
+      time: { created: 40 },
+    }
+    const streamed = {
+      ...assistant,
+      id: "msg_openrouter_tool_response",
+      parentID: "root",
+      providerID: "openrouter",
+      time: { created: 30, completed: 41 },
+    }
+
+    const merged = upsertPenguinMessage(
+      [previousUser, previousAssistant, optimistic],
+      streamed,
+    )
+
+    expect(merged.map((item) => item.id)).toEqual([
+      "msg_previous_user",
+      "msg_previous_assistant",
+      "msg_current_user",
+      "msg_openrouter_tool_response",
+    ])
+    expect(merged.at(-1)?.role).toBe("assistant")
+    expect((merged.at(-1) as Message & { parentID?: string })?.parentID).toBe(
+      "msg_current_user",
+    )
+  })
+
+  test("does not reparent late old root assistant updates to newer user turns", () => {
+    const previousUser = {
+      ...user,
+      id: "msg_previous_user",
+      time: { created: 10 },
+    }
+    const oldAssistant = {
+      ...assistant,
+      id: "msg_old_root_assistant",
+      parentID: "root",
+      time: { created: 5, completed: 8 },
+    }
+    const currentUser = {
+      ...user,
+      id: "msg_current_user",
+      time: { created: 40 },
+    }
+    const oldAssistantUpdate = {
+      ...oldAssistant,
+      time: { created: 5, completed: 8 },
+    }
+
+    const merged = upsertPenguinMessage(
+      [previousUser, oldAssistant, currentUser],
+      oldAssistantUpdate,
+    )
+
+    expect(merged.map((item) => item.id)).toEqual([
+      "msg_old_root_assistant",
+      "msg_previous_user",
+      "msg_current_user",
+    ])
+    expect((merged[0] as Message & { parentID?: string }).parentID).toBe(
+      "root",
+    )
+  })
+
   test("does not move messages without timestamps above current user turns", () => {
     const optimistic = {
       ...user,
