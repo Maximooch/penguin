@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import {
   createPasteDuplicateGuard,
   normalizePastedText,
+  shouldOwnPasteEvent,
   shouldSummarizePaste,
 } from "../../../src/cli/cmd/tui/component/prompt/paste-policy"
 
@@ -15,6 +16,12 @@ describe("prompt paste policy", () => {
     expect(shouldSummarizePaste("x".repeat(151))).toBe(true)
     expect(shouldSummarizePaste("one\ntwo\nthree", true)).toBe(false)
     expect(shouldSummarizePaste("short text")).toBe(false)
+  })
+
+  test("claims non-empty paste events before async probing", () => {
+    expect(shouldOwnPasteEvent("short text")).toBe(true)
+    expect(shouldOwnPasteEvent("one\r\ntwo")).toBe(true)
+    expect(shouldOwnPasteEvent("")).toBe(false)
   })
 
   test("drops only immediate duplicate paste events", () => {

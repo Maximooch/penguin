@@ -11,6 +11,10 @@ export function shouldSummarizePaste(text: string, disablePasteSummary?: boolean
   return lineCount >= 3 || text.length > 150
 }
 
+export function shouldOwnPasteEvent(text: string) {
+  return normalizePastedText(text).length > 0
+}
+
 export function createPasteDuplicateGuard(options?: { now?: () => number; windowMs?: number }) {
   const now = options?.now ?? Date.now
   const windowMs = options?.windowMs ?? DEFAULT_DUPLICATE_PASTE_WINDOW_MS

@@ -52,7 +52,12 @@ import {
   penguinHttpLocalCommandNeedsSession,
 } from "./penguin-local-command-runtime"
 import { createPenguinPromptSubmitGate, tryStartPenguinPromptSubmit } from "./penguin-submit-gate"
-import { createPasteDuplicateGuard, normalizePastedText, shouldSummarizePaste } from "./paste-policy"
+import {
+  createPasteDuplicateGuard,
+  normalizePastedText,
+  shouldOwnPasteEvent,
+  shouldSummarizePaste,
+} from "./paste-policy"
 
 export type PromptProps = {
   sessionID?: string
@@ -1633,6 +1638,13 @@ export function Prompt(props: PromptProps) {
                   return
                 }
 
+                if (shouldOwnPasteEvent(normalizedText)) {
+                  // OpenTUI does not await async onPaste handlers before applying
+                  // its default textarea paste. Claim the event before any file
+                  // probing awaits, then insert the intended text/content below.
+                  event.preventDefault()
+                }
+
                 const pastedContent = normalizedText.trim()
                 if (!pastedContent) {
                   command.trigger("prompt.paste")
@@ -1672,12 +1684,6 @@ export function Prompt(props: PromptProps) {
                   filepath.startsWith("file://") ||
                   /^[A-Za-z]:[\\/]/.test(filepath)
 
-                if (pathLike) {
-                  // Prevent default paste immediately so local path text does not
-                  // get inserted before we convert to [Image n].
-                  event.preventDefault()
-                }
-
                 for (const entry of candidates) {
                   const local = entry.startsWith("file://")
                     ? iife(() => {
@@ -1697,7 +1703,6 @@ export function Prompt(props: PromptProps) {
 
                     // Handle SVG as raw text content, not as base64 image
                     if (file.type === "image/svg+xml") {
-                      event.preventDefault()
                       const content = await file.text().catch(() => {})
                       if (content) {
                         pasteText(content, `[SVG: ${file.name ?? "image"}]`)
@@ -1705,7 +1710,6 @@ export function Prompt(props: PromptProps) {
                       }
                     }
                     if (file.type.startsWith("image/")) {
-                      event.preventDefault()
                       const content = await file
                         .arrayBuffer()
                         .then((buffer) => Buffer.from(buffer).toString("base64"))
@@ -1742,12 +1746,10 @@ export function Prompt(props: PromptProps) {
 
                 if (shouldSummarizePaste(pastedContent, sync.data.config.experimental?.disable_paste_summary)) {
                   const lineCount = (pastedContent.match(/\n/g)?.length ?? 0) + 1
-                  event.preventDefault()
                   pasteText(pastedContent, `[Pasted ~${lineCount} lines]`)
                   return
                 }
 
-                event.preventDefault()
                 input.insertText(normalizedText)
 
                 setTimeout(() => {
