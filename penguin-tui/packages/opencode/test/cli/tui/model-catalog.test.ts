@@ -29,9 +29,46 @@ describe("model catalog", () => {
     expect(hasSparseModelCatalog(coldCatalog)).toBe(true)
   })
 
+  test("prefers backend sparse catalog metadata over local model counts", () => {
+    const emptyButRefreshing = [
+      {
+        id: "openrouter",
+        catalog: {
+          model_count: 0,
+          sparse: true,
+          state: "empty",
+        },
+        models: {},
+      },
+    ]
+    const readyWithFewConfiguredAliases = [
+      {
+        id: "openrouter",
+        catalog: {
+          model_count: 3,
+          sparse: false,
+          state: "ready",
+        },
+        models: {
+          "haiku-4.5": { id: "haiku-4.5", name: "haiku-4.5" },
+          "opus-4.5": { id: "opus-4.5", name: "opus-4.5" },
+          "sonnet-4.5": { id: "sonnet-4.5", name: "sonnet-4.5" },
+        },
+      },
+    ]
+
+    expect(hasSparseModelCatalog(emptyButRefreshing)).toBe(true)
+    expect(hasSparseModelCatalog(readyWithFewConfiguredAliases)).toBe(false)
+  })
+
   test("merges warmed provider list models into sparse configured providers", () => {
     const configuredProviders = [
       {
+        catalog: {
+          model_count: 1,
+          sparse: true,
+          state: "sparse",
+        },
         id: "openrouter",
         name: "OpenRouter",
         env: ["OPENROUTER_API_KEY"],
@@ -53,6 +90,11 @@ describe("model catalog", () => {
     ]
     const warmedProviders = [
       {
+        catalog: {
+          model_count: 24,
+          sparse: false,
+          state: "ready",
+        },
         id: "openrouter",
         name: "OpenRouter",
         models: Object.fromEntries(
@@ -74,6 +116,11 @@ describe("model catalog", () => {
     const openrouter = catalog.find((provider) => provider.id === "openrouter")
 
     expect(openrouter).toBeDefined()
+    expect(openrouter!.catalog).toEqual({
+      model_count: 24,
+      sparse: false,
+      state: "ready",
+    })
     expect(Object.keys(openrouter!.models)).toHaveLength(25)
     expect(openrouter!.models["haiku-4.5"]?.capabilities.reasoning).toBe(true)
     expect(openrouter!.models["vendor/model-0"]?.capabilities.reasoning).toBe(true)

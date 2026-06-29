@@ -67,6 +67,7 @@ _PROVIDER_CATALOG_REFRESH_LOCK = RLock()
 _PROVIDER_CATALOG_REFRESH_IN_FLIGHT = False
 _PROVIDER_CATALOG_REFRESH_LAST_STARTED_AT = 0.0
 _PROVIDER_CATALOG_REFRESH_MIN_INTERVAL_SECONDS = 30.0
+_SPARSE_PROVIDER_CATALOG_LIMIT = 20
 
 
 def _normalize_provider_filter_values(raw_value: Any) -> set[str]:
@@ -226,6 +227,34 @@ def _model_variants_payload(
         "low": {"reasoning": {"effort": "low"}},
         "medium": {"reasoning": {"effort": "medium"}},
         "high": {"reasoning": {"effort": "high"}},
+    }
+
+
+def _provider_catalog_state(
+    *,
+    connected: bool,
+    model_count: int,
+    refresh_scheduled: bool,
+    source: str,
+) -> dict[str, Any]:
+    """Return backend-owned catalog metadata for TUI model-picker decisions."""
+    if model_count <= 0:
+        state = "empty"
+        sparse = connected
+    elif model_count < _SPARSE_PROVIDER_CATALOG_LIMIT:
+        state = "sparse"
+        sparse = True
+    else:
+        state = "ready"
+        sparse = False
+
+    return {
+        "connected": connected,
+        "model_count": max(model_count, 0),
+        "refresh_scheduled": bool(refresh_scheduled),
+        "source": source,
+        "sparse": sparse,
+        "state": state,
     }
 
 
@@ -773,7 +802,7 @@ def build_config_providers_payload(core: Any) -> dict[str, Any]:
     providers: list[dict[str, Any]] = []
     default: dict[str, str] = {}
     auth_records = get_provider_credentials()
-    _schedule_provider_catalog_refresh(auth_records)
+    refresh_scheduled = _schedule_provider_catalog_refresh(auth_records)
     provider_models = _merge_cached_provider_catalog_models(
         config_provider_models,
         auth_records,
@@ -823,11 +852,20 @@ def build_config_providers_payload(core: Any) -> dict[str, Any]:
                 if provider_connected(provider_id, auth_records)
                 else "custom"
             )
+        connected = provider_connected(provider_id, auth_records)
+        catalog = _provider_catalog_state(
+            connected=connected,
+            model_count=len(mapped_models),
+            refresh_scheduled=refresh_scheduled,
+            source=source,
+        )
         providers.append(
             {
                 "id": provider_id,
                 "name": provider_name(provider_id),
                 "source": source,
+                "connected": connected,
+                "catalog": catalog,
                 "env": provider_env(provider_id),
                 "options": {},
                 "models": mapped_models,
@@ -849,7 +887,7 @@ def build_provider_list_payload(core: Any) -> dict[str, Any]:
     """Build OpenCode-compatible ``provider.list`` payload."""
     config_provider_models = collect_provider_models(core)
     auth_records = get_provider_credentials()
-    _schedule_provider_catalog_refresh(auth_records)
+    refresh_scheduled = _schedule_provider_catalog_refresh(auth_records)
     provider_models = _merge_cached_provider_catalog_models(
         config_provider_models,
         auth_records,
@@ -893,12 +931,31 @@ def build_provider_list_payload(core: Any) -> dict[str, Any]:
             for model_id, conf in _sorted_model_items(models)
         }
         api_url, api_npm = provider_api(provider_id)
+        connected_flag = provider_connected(provider_id, auth_records)
+        source = "config" if config_provider_models.get(provider_id) else "api"
+        if not mapped_models:
+            source = (
+                "env"
+                if any(os.getenv(name) for name in provider_env(provider_id))
+                else "api"
+                if connected_flag
+                else "custom"
+            )
+        catalog = _provider_catalog_state(
+            connected=connected_flag,
+            model_count=len(mapped_models),
+            refresh_scheduled=refresh_scheduled,
+            source=source,
+        )
         all_providers.append(
             {
                 "id": provider_id,
                 "name": provider_name(provider_id),
                 "api": api_url,
                 "npm": api_npm,
+                "source": source,
+                "connected": connected_flag,
+                "catalog": catalog,
                 "env": provider_env(provider_id),
                 "models": mapped_models,
             }
@@ -909,7 +966,7 @@ def build_provider_list_payload(core: Any) -> dict[str, Any]:
         elif mapped_models:
             default[provider_id] = next(iter(mapped_models.keys()))
 
-        if provider_connected(provider_id, auth_records):
+        if connected_flag:
             connected.append(provider_id)
 
     return {
