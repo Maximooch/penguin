@@ -102,6 +102,15 @@ class StubConversationManager:
         return True
 
 
+class StubAPIClient:
+    def __init__(self, *, model_config: ModelConfig) -> None:
+        self.model_config = model_config
+        self.system_prompt: Optional[str] = None
+
+    def set_system_prompt(self, prompt: str) -> None:
+        self.system_prompt = prompt
+
+
 @pytest.fixture(autouse=True)
 def _disable_message_bus(monkeypatch: pytest.MonkeyPatch) -> None:
     import penguin.core as core_module
@@ -166,6 +175,9 @@ def test_load_config_respects_output_section(tmp_path) -> None:
 
 def test_register_agent_applies_persona_model(monkeypatch: pytest.MonkeyPatch) -> None:
     from penguin.core import PenguinCore
+    import penguin.core as core_module
+
+    monkeypatch.setattr(core_module, "APIClient", StubAPIClient)
 
     base_model = ModelConfig(
         model="openai/gpt-5-high",

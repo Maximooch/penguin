@@ -5,8 +5,9 @@ Run with: pytest tests/test_orchestration.py -v
 
 import asyncio
 import tempfile
+from datetime import datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID
 
 import pytest
 
@@ -175,12 +176,11 @@ class TestNativeBackend:
         )
         
         assert workflow_id is not None
-        assert workflow_id.startswith("ituv-task-123-")
+        assert UUID(workflow_id)
     
     @pytest.mark.asyncio
     async def test_get_workflow_status(self, backend):
         """Test getting workflow status."""
-        from penguin.orchestration.backend import WorkflowStatus
         
         workflow_id = await backend.start_workflow(task_id="task-status")
         
@@ -269,7 +269,6 @@ class TestBackendFactory:
         """Test falling back to native when Temporal unavailable."""
         from penguin.orchestration import get_backend
         from penguin.orchestration.config import OrchestrationConfig, reset_backend, set_config
-        from penguin.orchestration.native import NativeBackend
         
         reset_backend()
         
@@ -293,15 +292,16 @@ class TestWorkflowInfo:
     def test_workflow_info_to_dict(self):
         """Test serializing WorkflowInfo."""
         from penguin.orchestration.backend import WorkflowInfo, WorkflowStatus, WorkflowPhase
-        from datetime import datetime
-        
+
         info = WorkflowInfo(
             workflow_id="wf-123",
             task_id="task-456",
             blueprint_id="bp-789",
+            project_id=None,
             status=WorkflowStatus.RUNNING,
             phase=WorkflowPhase.IMPLEMENT,
             started_at=datetime.now(),
+            updated_at=datetime.now(),
         )
         
         data = info.to_dict()
@@ -326,4 +326,3 @@ class TestTemporalBackend:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
-

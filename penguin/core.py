@@ -105,7 +105,6 @@ See Also:
 
 import asyncio
 import copy
-import inspect
 import logging
 import re
 import time
@@ -119,11 +118,9 @@ from typing import (
     Awaitable,
     Callable,
     Dict,
-    Iterable,
     List,
     Mapping,
     Optional,
-    Sequence,
     Set,
     Tuple,
     Union,
@@ -132,7 +129,6 @@ import asyncio
 import json
 from datetime import datetime
 
-from dotenv import load_dotenv  # type: ignore
 from rich.console import Console  # type: ignore
 from tenacity import (  # type: ignore
     retry,
@@ -146,10 +142,7 @@ from tqdm import tqdm
 from penguin.config import (
     DEFAULT_MODEL,
     DEFAULT_PROVIDER,
-    TASK_COMPLETION_PHRASE,
     MAX_TASK_ITERATIONS,
-    AgentModelSettings,
-    AgentPersonaConfig,
     Config,
     _ensure_env_loaded,  # Lazy env loading for startup performance
 )
@@ -166,9 +159,7 @@ from penguin.llm.model_config import (
     safe_context_window,
 )
 from penguin.llm.stream_handler import (
-    StreamingStateManager,
     AgentStreamingStateManager,
-    StreamingConfig,
 )
 
 MODEL_CONFIG_FIELD_NAMES = {field.name for field in fields(ModelConfig)}
@@ -193,14 +184,12 @@ from penguin.system.state import MessageCategory, Message
 from penguin.system_prompt import SYSTEM_PROMPT, get_system_prompt
 
 # Workflow Prompt
-from penguin.prompt_workflow import PENGUIN_WORKFLOW
 
 # Tools and Processing
 from penguin.tools import ToolManager
 from penguin.utils.callbacks import adapt_stream_callback
 from penguin.utils.diagnostics import (
     diagnostics,
-    enable_diagnostics,
     disable_diagnostics,
 )
 from penguin.llm.litellm_support import load_litellm_module
@@ -217,9 +206,7 @@ from penguin.utils.parser import (
 )
 from penguin.utils.profiling import (
     profile_startup_phase,
-    profile_operation,
     profiler,
-    print_startup_report,
 )
 
 try:
@@ -805,7 +792,6 @@ class PenguinCore:
                 Engine,
                 EngineSettings,
                 TokenBudgetStop,
-                WallClockStop,
             )  # type: ignore
 
             # Propagate the model's streaming preference into the Engine so that
@@ -1070,25 +1056,131 @@ class PenguinCore:
         return manager.get_profile(agent_id)
 
     def register_agent(self, *args, **kwargs) -> None:
-        """REMOVED: Use ensure_agent_conversation() instead.
+        """Compatibility shim for legacy agent registration callers."""
+        agent_id = str(args[0] if args else kwargs.pop("agent_id", "")).strip()
+        if not agent_id:
+            raise ValueError("agent_id is required")
+        if not hasattr(self, "_agent_model_overrides"):
+            self._agent_model_overrides = {}
+        if not hasattr(self, "_agent_tool_defaults"):
+            self._agent_tool_defaults = {}
+        if not hasattr(self, "_agent_api_clients"):
+            self._agent_api_clients = {}
 
-        This method has been removed as part of the core.py refactoring.
-        See context/architecture/core-refactor-plan.md for migration guide.
+        persona_name = kwargs.get("persona")
+        personas = getattr(self.config, "agent_personas", {}) or {}
+        persona_config = personas.get(persona_name) if persona_name else None
+        system_prompt = kwargs.get("system_prompt")
+        if persona_config is not None:
+            system_prompt = system_prompt or getattr(persona_config, "system_prompt", None)
 
-        Migration:
-            # Old:
-            core.register_agent("analyzer", system_prompt="...", persona="code_analyzer")
+        share_session_with = kwargs.get("share_session_with")
+        if share_session_with:
+            self.conversation_manager.create_sub_agent(
+                agent_id,
+                parent_agent_id=share_session_with,
+                share_session=False,
+                share_context_window=False,
+                shared_context_window_max_tokens=(
+                    kwargs.get("shared_context_window_max_tokens")
+                    or kwargs.get("shared_cw_max_tokens")
+                    or kwargs.get("model_max_tokens")
+                ),
+            )
 
-            # New:
-            core.ensure_agent_conversation("analyzer", system_prompt="...")
-        """
-        raise NotImplementedError(
-            "register_agent() has been removed. Use ensure_agent_conversation() instead.\n"
-            "See context/architecture/core-refactor-plan.md for migration guide.\n\n"
-            "Quick migration:\n"
-            "  OLD: core.register_agent(agent_id, system_prompt=..., persona=...)\n"
-            "  NEW: core.ensure_agent_conversation(agent_id, system_prompt=...)"
+        conv = self.conversation_manager.get_agent_conversation(
+            agent_id, create_if_missing=True
         )
+        if system_prompt and conv:
+            conv.set_system_prompt(system_prompt)
+
+        model_config = copy.deepcopy(
+            getattr(self, "model_config", None)
+            or getattr(getattr(self, "config", None), "model_config", None)
+        )
+        if model_config is None:
+            model_config = ModelConfig(model=DEFAULT_MODEL, provider=DEFAULT_PROVIDER)
+        default_tools: tuple[str, ...] = ()
+        if persona_config is not None:
+            session = getattr(conv, "session", None)
+            metadata = getattr(session, "metadata", None)
+            if isinstance(metadata, dict):
+                metadata["persona"] = persona_name
+                description = getattr(persona_config, "description", None)
+                if description:
+                    metadata["persona_description"] = description
+
+            default_tools = tuple(getattr(persona_config, "default_tools", []) or ())
+            if isinstance(metadata, dict):
+                metadata["default_tools"] = list(default_tools)
+            model_settings = getattr(persona_config, "model", None)
+            model_id = getattr(model_settings, "id", None)
+            model_configs = getattr(self.config, "model_configs", {}) or {}
+            model_specific = (
+                model_configs.get(model_id, {})
+                if isinstance(model_configs, dict) and model_id
+                else {}
+            )
+            if model_id:
+                model_kwargs = {
+                    key: value
+                    for key, value in model_specific.items()
+                    if key in MODEL_CONFIG_FIELD_NAMES
+                }
+                model_kwargs["model"] = model_specific.get("model", model_id)
+                model_kwargs["provider"] = model_specific.get("provider") or (
+                    str(model_kwargs["model"]).split("/", 1)[0]
+                    if "/" in str(model_kwargs["model"])
+                    else getattr(model_config, "provider", DEFAULT_PROVIDER)
+                )
+                model_kwargs["client_preference"] = model_specific.get(
+                    "client_preference",
+                    "openrouter"
+                    if model_kwargs["provider"] == "openrouter"
+                    else "native",
+                )
+                model_config = ModelConfig(**model_kwargs)
+                if getattr(model_settings, "temperature", None) is not None:
+                    model_config.temperature = model_settings.temperature
+                if isinstance(metadata, dict):
+                    metadata["model"] = asdict(model_config)
+
+        self._agent_model_overrides.setdefault(agent_id, model_config)
+        self._agent_tool_defaults[agent_id] = default_tools
+        self._agent_api_clients[agent_id] = APIClient(model_config=model_config)
+        self._agent_api_clients[agent_id].set_system_prompt(
+            system_prompt or getattr(self, "system_prompt", "")
+        )
+
+        context_windows = getattr(
+            self.conversation_manager, "agent_context_windows", {}
+        )
+        if agent_id in context_windows and model_config is not None:
+            context_windows[agent_id].model_config = model_config
+            if model_config.max_context_window_tokens is not None:
+                context_windows[agent_id].max_context_window_tokens = (
+                    model_config.max_context_window_tokens
+                )
+
+        if getattr(self, "engine", None):
+            action_executor = ActionExecutor(
+                self.tool_manager,
+                self.project_manager,
+                conv,
+                ui_event_callback=self.emit_ui_event,
+            )
+            self.engine.register_agent(
+                agent_id=agent_id,
+                conversation_manager=self.conversation_manager,
+                api_client=self._agent_api_clients[agent_id],
+                tool_manager=self.tool_manager,
+                action_executor=action_executor,
+            )
+            activate = bool(kwargs.get("activate", False)) or bool(
+                getattr(persona_config, "activate_by_default", False)
+            )
+            if activate:
+                self.engine.set_default_agent(agent_id)
 
     def set_active_agent(self, agent_id: str) -> None:
         """Switch the active agent across ConversationManager and Engine."""

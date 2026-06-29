@@ -12,9 +12,11 @@ import json
 from typing import Any, Dict, Optional
 from datetime import datetime, timedelta
 import jwt
+import pytest
 
 
 BASE_URL = os.environ.get("PENGUIN_API_URL", "http://127.0.0.1:8000")
+pytestmark = pytest.mark.e2e
 
 # Test API keys (set these in environment for auth-enabled tests)
 TEST_API_KEY = os.getenv("TEST_API_KEY", "test-key-12345")

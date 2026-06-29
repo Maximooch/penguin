@@ -10,12 +10,10 @@ from fastapi import (
     Response,
     UploadFile,
     File,
-    Form,
     Query,
 )  # type: ignore
 from pydantic import BaseModel  # type: ignore
 from fastapi.responses import PlainTextResponse
-from dataclasses import asdict  # type: ignore
 from datetime import datetime  # type: ignore
 from collections import OrderedDict
 import asyncio
@@ -28,7 +26,6 @@ import os
 from pathlib import Path
 import re
 from contextlib import suppress
-import shutil
 import tempfile
 import time
 from threading import Lock
@@ -1010,7 +1007,7 @@ class MessageRequest(BaseModel):
     streaming: Optional[bool] = True
     max_iterations: Optional[int] = None  # Uses MAX_TASK_ITERATIONS if not specified
     image_paths: Optional[List[str]] = None  # Multiple images supported (max 10)
-    include_reasoning: Optional[bool] = True
+    include_reasoning: Optional[bool] = False
     agent_id: Optional[str] = None
     agent_mode: Optional[str] = None
     directory: Optional[str] = None

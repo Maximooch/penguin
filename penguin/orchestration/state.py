@@ -335,6 +335,8 @@ class WorkflowStateStorage:
                 params.append(project_id)
             
             if status_filter:
+                if isinstance(status_filter, WorkflowStatus):
+                    status_filter = [status_filter]
                 placeholders = ",".join("?" * len(status_filter))
                 query += f" AND status IN ({placeholders})"
                 params.extend([s.value for s in status_filter])
@@ -520,4 +522,3 @@ class WorkflowStateStorage:
         )
         self.save_snapshot(snapshot)
         return snapshot
-

@@ -40,6 +40,7 @@ def test_credentials_reads_legacy_store_when_primary_missing(
 ) -> None:
     monkeypatch.delenv("PENGUIN_PROVIDER_CREDENTIALS_STORE", raising=False)
     monkeypatch.delenv("PENGUIN_PROVIDER_AUTH_STORE", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
 
     legacy_path = tmp_path / ".config" / "penguin" / "provider_auth.json"

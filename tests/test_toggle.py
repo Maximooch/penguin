@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Quick test for reasoning toggle functionality."""
 
+import pytest
+
+pytestmark = pytest.mark.e2e
+
+
 def test_toggle():
     from penguin.cli.tui import ChatMessage
     

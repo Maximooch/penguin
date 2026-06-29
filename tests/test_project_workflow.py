@@ -16,8 +16,7 @@ from penguin.project.validation_manager import ValidationManager
 from penguin.project.git_manager import GitManager
 from penguin.project.models import TaskStatus
 
-# Marks all tests in this file as asyncio tests
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.e2e]
 
 @pytest.fixture
 def temp_workspace(tmp_path: Path) -> Path:
@@ -143,4 +142,4 @@ async def test_full_mvp_workflow(temp_workspace: Path, monkeypatch):
         text=True
     ).stdout
     assert "feat(task)" in log_output
-    assert tasks[0].title in log_output 
+    assert tasks[0].title in log_output

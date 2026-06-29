@@ -70,6 +70,7 @@ def _build_core_with_stubs(
     core.conversation_manager = cm
     core.engine = engine
     core.emit_ui_event = AsyncMock()
+    core._emit_opencode_user_message_with_metadata = AsyncMock(return_value="msg-1")
 
     async def _noop_stream(*args: Any, **kwargs: Any) -> None:
         return None
@@ -85,6 +86,9 @@ def _build_core_with_stubs(
     core._stream_manager.stream_id = None
     core.event_types = {"message", "token_update", "error"}
     core._interrupted = False
+    core._opencode_abort_sessions = set()
+    core._opencode_active_requests = {}
+    core._opencode_process_tasks = {}
     return core
 
 
@@ -94,7 +98,13 @@ def test_sub_agent_clamp_and_partial_share_once(tmp_path):
     cm.add_context("Parent shared context")
     parent_cw = cm.agent_context_windows[parent_id]
 
-    cm.create_sub_agent("child", parent_agent_id=parent_id, shared_cw_max_tokens=512)
+    cm.create_sub_agent(
+        "child",
+        parent_agent_id=parent_id,
+        share_session=False,
+        share_context_window=False,
+        shared_cw_max_tokens=512,
+    )
 
     child_cw = cm.agent_context_windows["child"]
     assert child_cw.max_tokens == min(parent_cw.max_tokens, 512)

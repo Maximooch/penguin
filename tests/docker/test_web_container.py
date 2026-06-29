@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import time
 import urllib.request
+import pytest
 
 try:
     from dotenv import load_dotenv  # type: ignore
@@ -12,6 +13,7 @@ except Exception:  # pragma: no cover - optional dep in CI
 
 IMAGE = os.environ.get("PENGUIN_TEST_IMAGE", "penguin:web")
 ENV_FILE = os.environ.get("PENGUIN_TEST_ENV_FILE", ".env")
+pytestmark = pytest.mark.e2e
 
 
 def _curl_health(port: int) -> bool:
@@ -85,5 +87,4 @@ def test_web_container_health(capsys):
     finally:
         print(f"Cleaning up container {cid[:12]}")
         subprocess.run(["docker", "rm", "-f", cid], capture_output=True)
-
 

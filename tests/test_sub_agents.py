@@ -13,10 +13,22 @@ Tests:
 import sys
 import asyncio
 import os
+
+import pytest
+
 sys.path.insert(0, ".")
 
 from penguin.config import Config
 from penguin.core import PenguinCore
+
+
+class StubAPIClient:
+    def __init__(self, *, model_config):
+        self.model_config = model_config
+        self.system_prompt = None
+
+    def set_system_prompt(self, prompt: str) -> None:
+        self.system_prompt = prompt
 
 
 def test_config_personas():
@@ -129,9 +141,13 @@ async def test_core_persona_catalog():
     return True
 
 
-async def test_register_agent_with_persona():
+async def test_register_agent_with_persona(monkeypatch):
     """Test registering an agent with a persona."""
     print("\n=== Test 6: Register Agent with Persona ===")
+
+    import penguin.core as core_module
+
+    monkeypatch.setattr(core_module, "APIClient", StubAPIClient)
 
     config = Config.load_config()
     core = PenguinCore(config=config)
@@ -202,6 +218,7 @@ async def test_create_sub_agent_with_persona():
     return True
 
 
+@pytest.mark.live
 def test_openrouter_haiku_api():
     """Test that haiku-4.5 works via OpenRouter API."""
     print("\n=== Test 8: OpenRouter Haiku-4.5 API ===")

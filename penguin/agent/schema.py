@@ -49,6 +49,10 @@ class AgentSecurity(BaseModel):
     # Future: filesystem_access: Literal["read_only", "workspace_write", "full_write"]
 
 
+# Backward-compatible alias for older agent launcher/container tests and callers.
+SecurityConfig = AgentSecurity
+
+
 class AgentMount(BaseModel):
     """Volume mounts for containerized agents (Docker/Firecracker)."""
 

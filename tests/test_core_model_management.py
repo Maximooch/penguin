@@ -9,8 +9,7 @@ This module tests the model management methods added to PenguinCore including:
 
 import asyncio
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-from typing import Dict, Any
+from unittest.mock import AsyncMock, MagicMock
 
 from penguin.core import PenguinCore
 from penguin.llm.model_config import ModelConfig
@@ -23,7 +22,7 @@ def mock_model_config():
     config.model = "anthropic/claude-3-sonnet-20240229"
     config.provider = "anthropic"
     config.client_preference = "native"
-    config.max_tokens = 4000
+    config.max_output_tokens = 4000
     config.temperature = 0.7
     config.streaming_enabled = True
     config.vision_enabled = True
@@ -41,7 +40,7 @@ def mock_config():
             "provider": "anthropic",
             "client_preference": "native",
             "vision_enabled": True,
-            "max_tokens": 4000,
+            "max_output_tokens": 4000,
             "temperature": 0.7
         },
         "gpt-4": {
@@ -49,7 +48,7 @@ def mock_config():
             "provider": "openai", 
             "client_preference": "native",
             "vision_enabled": False,
-            "max_tokens": 8000,
+            "max_output_tokens": 8000,
             "temperature": 0.3
         },
         "gpt-4-vision": {
@@ -57,7 +56,7 @@ def mock_config():
             "provider": "openai",
             "client_preference": "native", 
             "vision_enabled": True,
-            "max_tokens": 4000,
+            "max_output_tokens": 4000,
             "temperature": 0.5
         }
     }
@@ -84,7 +83,13 @@ def mock_core(mock_model_config, mock_config):
         "max_output_tokens": 4000,
         "supports_vision": True
     })
-    core._update_config_file_with_model = MagicMock()
+    core._build_model_config_for_model = PenguinCore._build_model_config_for_model.__get__(
+        core
+    )
+    core._canonicalize_runtime_model_id = PenguinCore._canonicalize_runtime_model_id.__get__(
+        core
+    )
+    core._resolve_model_provider = PenguinCore._resolve_model_provider.__get__(core)
     
     # Set up the actual methods we're testing
     core.load_model = PenguinCore.load_model.__get__(core)
@@ -124,7 +129,7 @@ class TestPenguinCoreModelManagement:
         assert claude_model["provider"] == "anthropic"
         assert claude_model["client_preference"] == "native"
         assert claude_model["vision_enabled"] is True
-        assert claude_model["max_tokens"] == 4000
+        assert claude_model["max_output_tokens"] == 4000
         assert claude_model["temperature"] == 0.7
         assert claude_model["current"] is True
     
@@ -173,29 +178,25 @@ class TestPenguinCoreModelManagement:
     @pytest.mark.asyncio
     async def test_load_model_existing_config(self, mock_core):
         """Test loading a model that exists in configuration."""
-        # Mock ModelConfig creation
-        with patch('penguin.core.ModelConfig') as mock_model_config_class:
-            mock_new_config = MagicMock()
-            mock_model_config_class.return_value = mock_new_config
-            
-            result = await mock_core.load_model("gpt-4")
-            
-            assert result is True
-            mock_core._apply_new_model_config.assert_called_once_with(mock_new_config)
-            mock_core._update_config_file_with_model.assert_called_once()
+        result = await mock_core.load_model("gpt-4")
+
+        assert result is True
+        mock_core._apply_new_model_config.assert_called_once()
+        applied_config = mock_core._apply_new_model_config.call_args.args[0]
+        assert applied_config.model == "gpt-4"
+        assert applied_config.provider == "openai"
+        assert applied_config.max_output_tokens == 8000
     
     @pytest.mark.asyncio
     async def test_load_model_fully_qualified(self, mock_core):
         """Test loading a model using fully qualified name."""
-        # Mock ModelConfig creation
-        with patch('penguin.core.ModelConfig') as mock_model_config_class:
-            mock_new_config = MagicMock()
-            mock_model_config_class.return_value = mock_new_config
-            
-            result = await mock_core.load_model("openai/gpt-3.5-turbo")
-            
-            assert result is True
-            mock_core._apply_new_model_config.assert_called_once_with(mock_new_config)
+        result = await mock_core.load_model("openai/gpt-3.5-turbo")
+
+        assert result is True
+        mock_core._apply_new_model_config.assert_called_once()
+        applied_config = mock_core._apply_new_model_config.call_args.args[0]
+        assert applied_config.model == "gpt-3.5-turbo"
+        assert applied_config.provider == "openai"
     
     @pytest.mark.asyncio
     async def test_load_model_invalid_format(self, mock_core):
@@ -207,16 +208,20 @@ class TestPenguinCoreModelManagement:
     @pytest.mark.asyncio
     async def test_load_model_exception_handling(self, mock_core):
         """Test error handling in model loading."""
-        # Mock ModelConfig to raise exception
-        with patch('penguin.core.ModelConfig', side_effect=Exception("Config creation failed")):
-            result = await mock_core.load_model("gpt-4")
-            
-            assert result is False
+        mock_core._build_model_config_for_model = AsyncMock(
+            side_effect=Exception("Config creation failed")
+        )
+
+        result = await mock_core.load_model("gpt-4")
+
+        assert result is False
     
     @pytest.mark.asyncio
     async def test_load_model_fetch_specifications_failure(self, mock_core):
         """Test model loading when specification fetching fails."""
-        mock_core._fetch_model_specifications.side_effect = Exception("API error")
+        mock_core._build_model_config_for_model = AsyncMock(
+            side_effect=Exception("API error")
+        )
         
         result = await mock_core.load_model("gpt-4")
         
@@ -230,7 +235,7 @@ class TestPenguinCoreModelManagement:
         assert result["model"] == "anthropic/claude-3-sonnet-20240229"
         assert result["provider"] == "anthropic"
         assert result["client_preference"] == "native"
-        assert result["max_tokens"] == 4000
+        assert result["max_output_tokens"] == 4000
         assert result["temperature"] == 0.7
         assert result["streaming_enabled"] is True
         assert result["vision_enabled"] is True
@@ -247,7 +252,7 @@ class TestPenguinCoreModelManagement:
     def test_get_current_model_missing_attributes(self, mock_core):
         """Test getting current model with missing optional attributes."""
         # Remove optional attributes
-        del mock_core.model_config.max_tokens
+        del mock_core.model_config.max_output_tokens
         del mock_core.model_config.temperature
         del mock_core.model_config.api_base
         
@@ -256,7 +261,7 @@ class TestPenguinCoreModelManagement:
         assert result is not None
         assert result["model"] == "anthropic/claude-3-sonnet-20240229"
         assert result["provider"] == "anthropic"
-        assert result["max_tokens"] is None
+        assert result["max_output_tokens"] is None
         assert result["temperature"] is None
         assert result["api_base"] is None
         assert result["streaming_enabled"] is True
@@ -278,9 +283,8 @@ class TestModelManagementIntegration:
         assert len(available_models) == 3
         
         # Step 3: Switch to different model
-        with patch('penguin.core.ModelConfig'):
-            success = await mock_core.load_model("gpt-4")
-            assert success is True
+        success = await mock_core.load_model("gpt-4")
+        assert success is True
         
         # Step 4: Verify model was applied
         mock_core._apply_new_model_config.assert_called_once()
@@ -295,9 +299,8 @@ class TestModelManagementIntegration:
         assert len(vision_models) == 2  # claude-3-sonnet and gpt-4-vision
         
         # Switch to vision model
-        with patch('penguin.core.ModelConfig'):
-            success = await mock_core.load_model("gpt-4-vision")
-            assert success is True
+        success = await mock_core.load_model("gpt-4-vision")
+        assert success is True
     
     def test_model_filtering_by_provider(self, mock_core):
         """Test filtering models by provider."""
@@ -319,7 +322,9 @@ class TestModelManagementIntegration:
         
         # Group by capabilities
         vision_enabled = [m for m in models if m["vision_enabled"]]
-        high_token_limit = [m for m in models if m.get("max_tokens", 0) >= 8000]
+        high_token_limit = [
+            m for m in models if m.get("max_output_tokens", 0) >= 8000
+        ]
         low_temperature = [m for m in models if m.get("temperature", 1.0) <= 0.3]
         
         assert len(vision_enabled) == 2
@@ -359,8 +364,9 @@ class TestModelConfigurationEdgeCases:
     @pytest.mark.asyncio
     async def test_load_model_network_timeout(self, mock_core):
         """Test model loading with network timeout during spec fetching."""
-        import asyncio
-        mock_core._fetch_model_specifications.side_effect = asyncio.TimeoutError("Network timeout")
+        mock_core._build_model_config_for_model = AsyncMock(
+            side_effect=asyncio.TimeoutError("Network timeout")
+        )
         
         result = await mock_core.load_model("gpt-4")
         

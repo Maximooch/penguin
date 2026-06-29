@@ -1702,44 +1702,63 @@ Out of scope for Phase 10:
 
 #### 10.2 Provider/model catalog
 
-- [ ] Make backend catalog payloads authoritative for provider IDs, connected
+- [x] Make backend catalog payloads authoritative for provider IDs, connected
       status, sparse catalogs, canonical provider/model IDs, aliases, display
       names, recents, favorites, reasoning options, and provider capability
       flags.
-- [ ] Fix OpenRouter/OpenAI/user-config catalog regressions at the backend
+- [x] Fix OpenRouter/OpenAI/user-config catalog regressions at the backend
       compatibility boundary instead of adding display-name workarounds in the
       TUI.
-- [ ] Ensure the TUI refreshes sparse active providers and resolves session
+- [x] Ensure the TUI refreshes sparse active providers and resolves session
       models after catalog warmup.
-- [ ] Add backend tests for provider connection state, sparse/full catalog
+- [x] Add backend tests for provider connection state, sparse/full catalog
       metadata, alias canonicalization, favorites/recents shapes, disconnected
       providers, and user-configured model entries.
-- [ ] Add Bun tests for canonical selection keys, favorites/recents de-duping,
+- [x] Add Bun tests for canonical selection keys, favorites/recents de-duping,
       sparse refresh, aliases, disconnected providers, and active-session model
       hydration.
 
+Completed in Phase 10: backend catalog payloads now carry catalog state,
+provider connection metadata, canonical IDs, alias-aware selection keys,
+reasoning options, recents/favorites, and sparse/full catalog state. The TUI
+uses backend catalog truth for model selection, retries sparse active-provider
+refresh while discovery warms up, and canonicalizes persisted recents/favorites
+before duplicate checks.
+
 #### 10.3 Session hydration
 
-- [ ] Make session hydration reliable for model/provider, title, cwd/workspace,
+- [x] Make session hydration reliable for model/provider, title, cwd/workspace,
       token/context stats, active run state, selected agent/session, and
       session-scoped usage.
-- [ ] Retry hydration only while data is legitimately pending. Do not overwrite
+- [x] Retry hydration only while data is legitimately pending. Do not overwrite
       good local state with stale, partial, or wrong-directory payloads.
-- [ ] Add backend tests for cold start, session switch, catalog-late hydration,
+- [x] Add backend tests for cold start, session switch, catalog-late hydration,
       explicit directory scoping, and stale-session protection.
-- [ ] Add Bun tests for TUI hydration retry, status preservation, model
+- [x] Add Bun tests for TUI hydration retry, status preservation, model
       restoration after catalog warmup, and session-scoped usage refresh.
+
+Completed in Phase 10: session view hydration now exposes model/provider,
+title, directory, token/context usage, run state, diff state, and session usage
+from backend services. The TUI keeps model hydration pending until catalog
+resolution succeeds and avoids stamping the session as synced before valid model
+state is applied.
 
 #### 10.4 Prompt source/file references
 
-- [ ] Make `@file`, paste, image/SVG, upload, and prompt-history source payloads
+- [x] Make `@file`, paste, image/SVG, upload, and prompt-history source payloads
       explicit end-to-end.
-- [ ] Backend and TUI should agree on whether content is embedded, referenced by
+- [x] Backend and TUI should agree on whether content is embedded, referenced by
       path, summarized, or omitted.
-- [ ] Validate prompt history/source schemas before editor/extmark restoration.
-- [ ] Add tests for root-relative files, scoped session directories, duplicate
+- [x] Validate prompt history/source schemas before editor/extmark restoration.
+- [x] Add tests for root-relative files, scoped session directories, duplicate
       filenames, malformed sources, paste thresholds, image/SVG plus surrounding
       text, and exact file URL/path construction.
+
+Completed in Phase 10: prompt source payloads are normalized before editor
+restoration, scoped file URLs use the same directory as search, malformed
+history rows are rejected before extmark/editor paths, SVG paste preserves
+surrounding text, paste thresholds normalize line endings internally, and short
+paste handling avoids duplicate insertion.
 
 #### 10.5 Diffs/modified files
 
@@ -1823,19 +1842,37 @@ event shapes are covered in service-level tests.
 
 #### 10.10 Verification/docs/PR readiness
 
-- [ ] Run focused tests after each section.
-- [ ] Periodically run:
+- [x] Run focused tests after each section.
+- [x] Periodically run:
   - `uv run --group dev pytest tests -q`
   - touched Bun TUI test packs
   - `bun run typecheck`
   - Prettier/format checks for touched TypeScript/TSX/Markdown files
   - Ruff/compileall for touched Python files
   - `git diff --check`
-- [ ] Run one local smoke path before review:
+- [x] Run one local smoke path before review:
   - `HOST=127.0.0.1 PORT=8080 uv run penguin-web`
   - `uv run penguin --url http://127.0.0.1:8080 --no-web-autostart`
-- [ ] Update this plan with completed Phase 10 work and deferred follow-ups.
-- [ ] Leave the branch ready for user review; do not open the PR automatically.
+- [x] Update this plan with completed Phase 10 work and deferred follow-ups.
+- [x] Leave the branch ready for user review; do not open the PR automatically.
+
+Final Phase 10 verification:
+
+- `bun test test/cli/tui test/tui`: 222 passed.
+- `bun run typecheck`: passed.
+- `uv run --group dev pytest tests -q`: 1599 passed, 3 skipped, 103 deselected.
+- Focused Python default-gate repair cluster: passed, with live provider checks
+  deselected by the default marker boundary.
+- `git diff --check`: passed after whitespace cleanup.
+
+Deferred follow-ups:
+
+- Multi-agent execution fixes remain in `context/tasks/resolve-multi-agents.md`
+  and are intentionally outside the Penguin TUI upstream track.
+- The full Link-style unified runtime event envelope remains deferred until
+  after this TUI/backend-contract work lands.
+- OS/terminal-specific notification adapters and a full interactive diff viewer
+  are future PRs now that backend contracts are stable enough to build on.
 
 ### 11. Evaluate OpenTUI, keymap, and plugin-runtime upgrades
 
