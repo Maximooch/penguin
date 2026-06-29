@@ -85,6 +85,49 @@ describe("prompt history", () => {
     expect(parsePromptHistoryLine(JSON.stringify({ input: "missing parts" }))).toBeNull()
     expect(parsePromptHistoryLine(JSON.stringify({ input: "bad part", parts: [{ type: "unknown" }] }))).toBeNull()
     expect(parsePromptHistoryLine(JSON.stringify({ input: "bad agent", parts: [{ type: "agent" }] }))).toBeNull()
+    expect(
+      parsePromptHistoryLine(
+        JSON.stringify({
+          input: "bad text source",
+          parts: [{ type: "text", text: "full paste", source: {} }],
+        }),
+      ),
+    ).toBeNull()
+    expect(
+      parsePromptHistoryLine(
+        JSON.stringify({
+          input: "[Pasted]",
+          parts: [
+            {
+              type: "text",
+              text: "full paste",
+              source: {
+                text: {
+                  start: 0,
+                  end: 8,
+                  value: "[Pasted]",
+                },
+              },
+            },
+          ],
+        }),
+      ),
+    ).toEqual({
+      input: "[Pasted]",
+      parts: [
+        {
+          type: "text",
+          text: "full paste",
+          source: {
+            text: {
+              start: 0,
+              end: 8,
+              value: "[Pasted]",
+            },
+          },
+        },
+      ],
+    })
     expect(parsePromptHistoryLine("{not-json")).toBeNull()
   })
 })

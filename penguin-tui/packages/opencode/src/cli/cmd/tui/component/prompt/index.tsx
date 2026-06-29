@@ -55,6 +55,7 @@ import { createPenguinPromptSubmitGate, tryStartPenguinPromptSubmit } from "./pe
 import {
   createPasteDuplicateGuard,
   normalizePastedText,
+  removePastedPathReferences,
   shouldOwnPasteEvent,
   shouldSummarizePaste,
 } from "./paste-policy"
@@ -282,7 +283,9 @@ export function Prompt(props: PromptProps) {
   })
 
   // Initialize agent/model/variant from session info first, then last user message fallback.
-  let syncedSessionID: string | undefined
+  let syncedAgentSessionID: string | undefined
+  let syncedModelKey: string | undefined
+  let syncedVariantSessionID: string | undefined
   createEffect(() => {
     const sessionID = props.sessionID
     const msg = lastUserMessage()
@@ -297,11 +300,14 @@ export function Prompt(props: PromptProps) {
           | undefined)
       : undefined
 
-    if (sessionID !== syncedSessionID) {
-      if (!sessionID) return
+    if (!sessionID) {
+      syncedAgentSessionID = undefined
+      syncedModelKey = undefined
+      syncedVariantSessionID = undefined
+      return
+    }
 
-      syncedSessionID = sessionID
-
+    if (sessionID !== syncedAgentSessionID) {
       const sessionAgent = session?.agent_id
       const messageAgent = msg?.agent
       const nextAgent = typeof sessionAgent === "string" && sessionAgent ? sessionAgent : messageAgent
@@ -311,23 +317,31 @@ export function Prompt(props: PromptProps) {
       if (nextAgent && isPrimaryAgent) {
         local.agent.set(nextAgent)
       }
+      syncedAgentSessionID = sessionID
+    }
 
-      const sessionModel =
-        session?.providerID && session?.modelID
-          ? { providerID: session.providerID, modelID: session.modelID }
-          : undefined
-      const messageModel = msg?.model
-      const nextModel = sessionModel ?? messageModel
-      if (nextModel) {
-        local.model.set(nextModel, { silentInvalid: true })
+    const sessionModel =
+      session?.providerID && session?.modelID ? { providerID: session.providerID, modelID: session.modelID } : undefined
+    const messageModel = msg?.model
+    const nextModel = sessionModel ?? messageModel
+    const nextModelKey = nextModel ? `${sessionID}:${nextModel.providerID}/${nextModel.modelID}` : `${sessionID}:none`
+    if (nextModel && syncedModelKey !== nextModelKey) {
+      const applied = local.model.set(nextModel, { silentInvalid: true })
+      if (applied) {
+        syncedModelKey = nextModelKey
+      } else {
+        return
       }
+    }
 
+    if (sessionID !== syncedVariantSessionID) {
       const nextVariant = session?.variant ?? msg?.variant
       if (typeof nextVariant === "string") {
         local.model.variant.set(nextVariant)
       } else if (nextModel) {
         local.model.variant.set(undefined)
       }
+      syncedVariantSessionID = sessionID
     }
   })
 
@@ -1684,6 +1698,10 @@ export function Prompt(props: PromptProps) {
                   filepath.startsWith("file://") ||
                   /^[A-Za-z]:[\\/]/.test(filepath)
 
+                const cleanedTextAroundPath = (entry: string, local: string) => {
+                  return removePastedPathReferences(normalizedText, [entry, local, filepath, ...rawPaths, ...paths])
+                }
+
                 for (const entry of candidates) {
                   const local = entry.startsWith("file://")
                     ? iife(() => {
@@ -1705,6 +1723,10 @@ export function Prompt(props: PromptProps) {
                     if (file.type === "image/svg+xml") {
                       const content = await file.text().catch(() => {})
                       if (content) {
+                        const cleaned = cleanedTextAroundPath(entry, local)
+                        if (cleaned) {
+                          input.insertText(`${cleaned} `)
+                        }
                         pasteText(content, `[SVG: ${file.name ?? "image"}]`)
                         return
                       }
@@ -1715,14 +1737,7 @@ export function Prompt(props: PromptProps) {
                         .then((buffer) => Buffer.from(buffer).toString("base64"))
                         .catch(() => {})
                       if (content) {
-                        const remove = [entry, local, filepath, ...rawPaths, ...paths]
-                          .filter((item, index, all) => !!item && all.indexOf(item) === index)
-                          .flatMap((item) => [item, item.replace(/\\ /g, " "), item.replace(/ /g, "\\ ")])
-                          .filter((item, index, all) => !!item && all.indexOf(item) === index)
-                        const cleaned = remove
-                          .reduce((text, item) => text.split(item).join(" "), normalizedText)
-                          .replace(/\s+/g, " ")
-                          .trim()
+                        const cleaned = cleanedTextAroundPath(entry, local)
                         if (cleaned) {
                           input.insertText(`${cleaned} `)
                         }

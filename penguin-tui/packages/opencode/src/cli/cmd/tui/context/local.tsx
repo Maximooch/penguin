@@ -339,7 +339,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           save()
         },
         set(model: { providerID: string; modelID: string }, options?: { recent?: boolean; silentInvalid?: boolean }) {
-          batch(() => {
+          return batch(() => {
             const resolved = resolveModel(model)
             if (!resolved) {
               if (!options?.silentInvalid) {
@@ -349,7 +349,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
                   duration: 3000,
                 })
               }
-              return
+              return false
             }
             setModelStore("model", agent.current().name, resolved)
             if (options?.recent) {
@@ -358,6 +358,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
               setModelStore("recent", uniq)
               save()
             }
+            return true
           })
         },
         toggleFavorite(model: { providerID: string; modelID: string }) {

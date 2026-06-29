@@ -162,11 +162,12 @@ export function DialogModel(props: { providerID?: string }) {
               providerID: provider.id,
               modelID: model,
             }
+            const valueKey = resolvedSelectionKey(value)
             return {
               value,
               title: info.name ?? model,
               releaseDate: info.release_date,
-              description: favoriteKeys.has(selectionKey(value)) ? "(Favorite)" : undefined,
+              description: favoriteKeys.has(valueKey) ? "(Favorite)" : undefined,
               category: connected() ? provider.name : undefined,
               disabled: provider.id === "opencode" && model.includes("-nano"),
               footer: info.cost?.input === 0 && provider.id === "opencode" ? "Free" : undefined,
@@ -185,8 +186,9 @@ export function DialogModel(props: { providerID?: string }) {
           filter((x) => {
             if (!showSections) return true
             const value = x.value
-            if (favoriteKeys.has(selectionKey(value))) return false
-            if (recentKeys.has(selectionKey(value))) return false
+            const valueKey = resolvedSelectionKey(value)
+            if (favoriteKeys.has(valueKey)) return false
+            if (recentKeys.has(valueKey)) return false
             return true
           }),
           (options) => sortModelOptions(options, props.providerID !== undefined),

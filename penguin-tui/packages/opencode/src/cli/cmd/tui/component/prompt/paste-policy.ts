@@ -7,12 +7,25 @@ export function normalizePastedText(text: string) {
 export function shouldSummarizePaste(text: string, disablePasteSummary?: boolean) {
   if (disablePasteSummary) return false
 
-  const lineCount = (text.match(/\n/g)?.length ?? 0) + 1
-  return lineCount >= 3 || text.length > 150
+  const normalizedText = normalizePastedText(text)
+  const lineCount = (normalizedText.match(/\n/g)?.length ?? 0) + 1
+  return lineCount >= 3 || normalizedText.length > 150
 }
 
 export function shouldOwnPasteEvent(text: string) {
   return normalizePastedText(text).length > 0
+}
+
+export function removePastedPathReferences(text: string, references: string[]) {
+  const variants = references
+    .filter((item, index, all) => !!item && all.indexOf(item) === index)
+    .flatMap((item) => [item, item.replace(/\\ /g, " "), item.replace(/ /g, "\\ ")])
+    .filter((item, index, all) => !!item && all.indexOf(item) === index)
+
+  return variants
+    .reduce((next, item) => next.split(item).join(" "), text)
+    .replace(/\s+/g, " ")
+    .trim()
 }
 
 export function createPasteDuplicateGuard(options?: { now?: () => number; windowMs?: number }) {

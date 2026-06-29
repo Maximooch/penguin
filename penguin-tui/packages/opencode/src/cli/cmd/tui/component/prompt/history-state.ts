@@ -33,15 +33,31 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
+function hasSourceText(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  return typeof value.start === "number" && typeof value.end === "number" && typeof value.value === "string"
+}
+
+function hasTextSource(value: unknown): boolean {
+  if (value === undefined) return true
+  if (!isRecord(value)) return false
+  return hasSourceText(value.text)
+}
+
+function hasAgentSource(value: unknown): boolean {
+  if (value === undefined) return true
+  return hasSourceText(value)
+}
+
 const promptPartSchema = z.custom<PromptInfo["parts"][number]>((value) => {
   if (!isRecord(value)) return false
   switch (value.type) {
     case "text":
-      return typeof value.text === "string"
+      return typeof value.text === "string" && hasTextSource(value.source)
     case "file":
-      return typeof value.mime === "string" && typeof value.url === "string"
+      return typeof value.mime === "string" && typeof value.url === "string" && hasTextSource(value.source)
     case "agent":
-      return typeof value.name === "string"
+      return typeof value.name === "string" && hasAgentSource(value.source)
     default:
       return false
   }
