@@ -62,6 +62,7 @@ from penguin.web.services.configuration import (
 )
 from penguin.web.services.command_registry import list_opencode_commands
 from penguin.web.services.notification_settings import notification_settings_payload
+from penguin.web.services.opencode_events import schedule_opencode_event
 from penguin.web.services.conversations import (
     create_conversation_payload,
     get_conversation_payload,
@@ -1904,46 +1905,13 @@ class ApprovalWebSocketManager:
         await self.broadcast("approval_resolved", request_dict)
 
 
-async def _emit_opencode_event(
-    event_type: str,
-    properties: dict[str, Any],
-) -> None:
-    core = getattr(router, "core", None)
-    event_bus = getattr(core, "event_bus", None)
-    emit = getattr(event_bus, "emit", None)
-    if not callable(emit):
-        return
-    await emit(
-        "opencode_event",
-        {
-            "type": event_type,
-            "properties": properties,
-        },
-    )
-
-
 def _schedule_opencode_event(event_type: str, properties: dict[str, Any]) -> None:
-    async def _runner() -> None:
-        try:
-            await _emit_opencode_event(event_type, properties)
-        except Exception:
-            logger.debug("Failed to emit opencode event %s", event_type, exc_info=True)
-
-    try:
-        loop = asyncio.get_running_loop()
-        loop.create_task(_runner())
-        return
-    except RuntimeError:
-        pass
-
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            loop.create_task(_runner())
-        else:
-            loop.run_until_complete(_runner())
-    except Exception:
-        logger.debug("Failed to schedule opencode event %s", event_type, exc_info=True)
+    schedule_opencode_event(
+        lambda: getattr(router, "core", None),
+        event_type,
+        properties,
+        logger=logger,
+    )
 
 
 def _permission_name_for_request(request_dict: dict[str, Any]) -> str:

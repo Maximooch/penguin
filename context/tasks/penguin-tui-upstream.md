@@ -1809,11 +1809,17 @@ future observability/backend-contract work.
 
 #### 10.9 Route/service cleanup
 
-- [ ] Keep routes thin while Phase 10 adds backend truth.
-- [ ] Move payload shaping and business logic into `penguin/web/services/*`.
-- [ ] Put TUI compatibility in services/adapters rather than route handlers or
+- [x] Keep routes thin while Phase 10 adds backend truth.
+- [x] Move payload shaping and business logic into `penguin/web/services/*`.
+- [x] Put TUI compatibility in services/adapters rather than route handlers or
       `PenguinCore`.
-- [ ] Add service-level tests for every extracted backend behavior.
+- [x] Add service-level tests for every extracted backend behavior.
+
+Completed in Phase 10: provider/model catalog shaping, session view hydration,
+diff summaries, command registry, notification settings, and OpenCode event
+normalization/scheduling now live in backend services. Routes still expose the
+HTTP endpoints and compatibility callbacks, but payload contracts and emitted
+event shapes are covered in service-level tests.
 
 #### 10.10 Verification/docs/PR readiness
 

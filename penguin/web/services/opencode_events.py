@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import asyncio
+import logging
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 GLOBAL_STATUS_EVENTS = {
     "vcs.branch.updated",
@@ -159,3 +161,64 @@ def sse_event_frame(event: dict[str, Any]) -> str:
     event_id = event.get("id")
     prefix = f"id: {event_id}\n" if isinstance(event_id, str) and event_id else ""
     return f"{prefix}data: {json.dumps(event)}\n\n"
+
+
+async def emit_opencode_event(
+    core: Any,
+    event_type: str,
+    properties: dict[str, Any],
+) -> None:
+    """Emit an OpenCode-compatible event through the runtime EventBus."""
+    event_bus = getattr(core, "event_bus", None)
+    emit = getattr(event_bus, "emit", None)
+    if not callable(emit):
+        return
+    await emit(
+        "opencode_event",
+        {
+            "type": event_type,
+            "properties": properties,
+        },
+    )
+
+
+def schedule_opencode_event(
+    core_getter: Callable[[], Any],
+    event_type: str,
+    properties: dict[str, Any],
+    *,
+    logger: logging.Logger | None = None,
+) -> None:
+    """Schedule OpenCode event emission from sync or async route contexts."""
+
+    async def _runner() -> None:
+        try:
+            await emit_opencode_event(core_getter(), event_type, properties)
+        except Exception:
+            if logger:
+                logger.debug(
+                    "Failed to emit opencode event %s",
+                    event_type,
+                    exc_info=True,
+                )
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_runner())
+        return
+    except RuntimeError:
+        pass
+
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(_runner())
+        else:
+            loop.run_until_complete(_runner())
+    except Exception:
+        if logger:
+            logger.debug(
+                "Failed to schedule opencode event %s",
+                event_type,
+                exc_info=True,
+            )
