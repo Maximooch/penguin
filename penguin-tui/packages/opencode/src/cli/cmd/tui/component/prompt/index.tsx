@@ -60,6 +60,7 @@ import {
   shouldSummarizePaste,
 } from "./paste-policy"
 import { hydratedSessionModel, hydratedSessionVariant, type SessionModelHydration } from "../../util/session-model"
+import { inlineFileReferenceParts } from "./inline-file-references"
 
 export type PromptProps = {
   sessionID?: string
@@ -1177,8 +1178,16 @@ export function Prompt(props: PromptProps) {
         }
       }
 
-      // Filter out text parts (pasted content) since they're now expanded inline
-      const nonTextParts = store.prompt.parts.filter((part) => part.type !== "text")
+      // Filter out text parts (pasted content) since they're now expanded inline.
+      // Add structured file parts for manually typed @file references so the
+      // backend sees the same attachment shape as autocomplete-selected files.
+      const selectedParts = store.prompt.parts.filter((part) => part.type !== "text")
+      const inlineFileParts = inlineFileReferenceParts({
+        text: inputText,
+        directory,
+        existingParts: selectedParts,
+      })
+      const nonTextParts = [...selectedParts, ...inlineFileParts]
 
       if (sdk.penguin) {
         emitPenguinOptimisticPrompt({
