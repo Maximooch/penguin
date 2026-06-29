@@ -51,7 +51,7 @@ import {
   isPenguinHttpLocalCommand,
   penguinHttpLocalCommandNeedsSession,
 } from "./penguin-local-command-runtime"
-import { createPenguinPromptSubmitGate } from "./penguin-submit-gate"
+import { createPenguinPromptSubmitGate, tryStartPenguinPromptSubmit } from "./penguin-submit-gate"
 
 export type PromptProps = {
   sessionID?: string
@@ -1005,8 +1005,23 @@ export function Prompt(props: PromptProps) {
       return true
     }
     if (sdk.penguin && handleFastCommand()) return
-    const releaseSubmit = sdk.penguin ? submitGate.tryStart() : undefined
-    if (sdk.penguin && !releaseSubmit) return
+    const submitStart = sdk.penguin
+      ? tryStartPenguinPromptSubmit({
+          busy: busy(),
+          gate: submitGate,
+        })
+      : undefined
+    if (sdk.penguin && submitStart?.ok === false) {
+      if (submitStart.reason === "busy") {
+        toast.show({
+          variant: "warning",
+          message: "Penguin is still running in this session. Wait or press Esc to interrupt.",
+          duration: 3000,
+        })
+      }
+      return
+    }
+    const releaseSubmit = submitStart?.ok ? submitStart.release : undefined
     let releaseInFinally = true
     const localCommand = sdk.penguin ? parsePenguinLocalCommand(store.prompt.input) : null
     const initialDirectory = getActiveDirectory(props.sessionID ?? sdk.sessionID)

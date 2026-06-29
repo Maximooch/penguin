@@ -1,5 +1,20 @@
 export type PenguinPromptSubmitRelease = () => void
 
+export type PenguinPromptSubmitGate = {
+  readonly active: boolean
+  tryStart(): PenguinPromptSubmitRelease | undefined
+}
+
+export type PenguinPromptSubmitStart =
+  | {
+      ok: true
+      release: PenguinPromptSubmitRelease
+    }
+  | {
+      ok: false
+      reason: "busy" | "submitting"
+    }
+
 export function createPenguinPromptSubmitGate() {
   const state = {
     active: 0,
@@ -18,5 +33,30 @@ export function createPenguinPromptSubmitGate() {
         if (state.active === token) state.active = 0
       }
     },
+  }
+}
+
+export function tryStartPenguinPromptSubmit(input: {
+  busy: boolean
+  gate: PenguinPromptSubmitGate
+}): PenguinPromptSubmitStart {
+  if (input.busy) {
+    return {
+      ok: false,
+      reason: "busy",
+    }
+  }
+
+  const release = input.gate.tryStart()
+  if (!release) {
+    return {
+      ok: false,
+      reason: "submitting",
+    }
+  }
+
+  return {
+    ok: true,
+    release,
   }
 }
