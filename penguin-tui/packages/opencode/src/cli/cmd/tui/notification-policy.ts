@@ -45,10 +45,20 @@ export type NotificationPayload = {
 
 export const DEFAULT_NOTIFICATION_POLICY: NotificationPolicy = {
   mode: "off",
+  includeDetails: true,
 }
 
-const NOTIFICATION_MODES: NotificationMode[] = ["off", "visual", "bell", "osc", "os", "terminal", "sound", "combined"]
-const SOUND_PACKS: SoundPack[] = ["generic", "train_station", "penguin"]
+export const NOTIFICATION_MODES: NotificationMode[] = [
+  "off",
+  "visual",
+  "bell",
+  "osc",
+  "os",
+  "terminal",
+  "sound",
+  "combined",
+]
+export const SOUND_PACKS: SoundPack[] = ["generic", "train_station", "penguin"]
 
 const DEFAULT_TITLES: Record<AttentionCategory, string> = {
   run_complete: "Penguin run complete",
@@ -107,7 +117,7 @@ const SOUND_NAMES: Record<SoundPack, Record<AttentionCategory, string>> = {
 
 export function notificationChannels(mode: NotificationMode): NotificationChannel[] {
   if (mode === "off") return []
-  if (mode === "combined") return ["visual", "bell"]
+  if (mode === "combined") return ["os", "sound"]
   return [mode]
 }
 
@@ -138,7 +148,7 @@ export function normalizeNotificationPolicy(value: unknown): NotificationPolicy 
     mode,
     soundPack,
     quietHours: normalizeQuietHours(source.quietHours),
-    includeDetails: source.includeDetails === true,
+    includeDetails: source.includeDetails !== false,
   }
 }
 

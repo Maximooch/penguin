@@ -26,6 +26,7 @@ import type { Snapshot } from "@/snapshot"
 import { useExit } from "./exit"
 import { useArgs } from "./args"
 import { useRoute } from "./route"
+import { useTerminalFocus } from "./terminal-focus"
 import { batch, onCleanup, onMount } from "solid-js"
 import { Log } from "@/util/log"
 import { iife } from "@/util/iife"
@@ -52,13 +53,18 @@ import { normalizeSessionDiff } from "./session-diff"
 import { upsertSessionRecord } from "../util/session-family"
 import { profileStartup } from "../util/startup-profile"
 import { DEFAULT_NOTIFICATION_POLICY, type NotificationPolicy } from "../notification-policy"
-import { notificationEventKey, notifyForSyncEvent } from "../notification-runtime"
+import {
+  notificationEventKey,
+  notifyForSyncEvent,
+  shouldSuppressNotificationForActiveSession,
+} from "../notification-runtime"
 
 export const { use: useSync, provider: SyncProvider } = createSimpleContext({
   name: "Sync",
   init: () => {
     const sdk = useSDK()
     const route = useRoute()
+    const terminalFocus = useTerminalFocus()
     const initialPenguinState = sdk.penguin
       ? createPenguinBootstrapFallback({
           baseUrl: sdk.url,
@@ -307,18 +313,33 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           })
         )
           return
-        const key = notificationEventKey(event)
-        if (!key || !notifiedEventKeys.has(key)) {
-          if (key) notifiedEventKeys.add(key)
-          notifyForSyncEvent(event, store.notification_policy, {
-            write: (text) => process.stdout.write(text),
-            log: (payload) =>
-              Log.Default.info("penguin notification", {
-                category: payload.category,
-                channel: payload.channel,
-                sessionID: payload.sessionID,
-              }),
+        if (
+          shouldSuppressNotificationForActiveSession(event, {
+            activeSessionID,
+            terminalFocused: terminalFocus.focused,
           })
+        ) {
+          Log.Default.info("penguin notification suppressed", {
+            event: event.type,
+            reason: "active_session",
+            sessionID: activeSessionID,
+            terminalFocused: terminalFocus.focused,
+            terminalFocusSupported: terminalFocus.supported,
+          })
+        } else {
+          const key = notificationEventKey(event)
+          if (!key || !notifiedEventKeys.has(key)) {
+            if (key) notifiedEventKeys.add(key)
+            notifyForSyncEvent(event, store.notification_policy, {
+              write: (text) => process.stdout.write(text),
+              log: (payload) =>
+                Log.Default.info("penguin notification", {
+                  category: payload.category,
+                  channel: payload.channel,
+                  sessionID: payload.sessionID,
+                }),
+            })
+          }
         }
       }
       switch (event.type) {

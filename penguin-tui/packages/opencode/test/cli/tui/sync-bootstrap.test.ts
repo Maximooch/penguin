@@ -324,7 +324,7 @@ describe("sync bootstrap", () => {
     expect(result.agent[0]?.name).toBe("penguin")
     expect(result.command.map((item) => item.name)).toEqual(["config", "tool_details", "thinking"])
     expect(result.config).toEqual({ share: "disabled" })
-    expect(result.notification_policy).toEqual({ mode: "off" })
+    expect(result.notification_policy).toEqual({ mode: "off", includeDetails: true })
     expect(result.path.directory).toBe("/tmp/project")
   })
 

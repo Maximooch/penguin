@@ -12,14 +12,21 @@ describe("terminal notification policy", () => {
     expect(notificationPayloads({ category: "run_complete" }, { mode: "off" })).toEqual([])
   })
 
-  test("maps combined mode to visual and terminal bell payloads", () => {
-    const payloads = notificationPayloads({ category: "approval_waiting", sessionID: "ses_123" }, { mode: "combined" })
+  test("maps combined mode to desktop and sound payloads", () => {
+    const payloads = notificationPayloads(
+      {
+        category: "approval_waiting",
+        message: "Approve shell command with OPENAI_API_KEY=sk-live",
+        sessionID: "ses_123",
+      },
+      { mode: "combined", includeDetails: true },
+    )
 
-    expect(payloads.map((payload) => payload.channel)).toEqual(["visual", "bell"])
+    expect(payloads.map((payload) => payload.channel)).toEqual(["os", "sound"])
     expect(payloads[0]).toMatchObject({
       category: "approval_waiting",
       title: "Penguin needs approval",
-      body: "An approval prompt is waiting in the terminal.",
+      body: "Approve shell command with OPENAI_API_KEY=[redacted]",
       sessionID: "ses_123",
     })
   })
@@ -89,10 +96,16 @@ describe("terminal notification policy", () => {
   })
 
   test("normalizes backend policy payloads defensively", () => {
-    expect(normalizeNotificationPolicy(undefined)).toEqual({ mode: "off" })
+    expect(normalizeNotificationPolicy(undefined)).toEqual({ mode: "off", includeDetails: true })
     expect(normalizeNotificationPolicy({ mode: "bogus", soundPack: "penguin" })).toEqual({
       mode: "off",
       soundPack: "penguin",
+      includeDetails: true,
+      quietHours: undefined,
+    })
+    expect(normalizeNotificationPolicy({ mode: "combined", includeDetails: false })).toEqual({
+      mode: "combined",
+      soundPack: "generic",
       includeDetails: false,
       quietHours: undefined,
     })

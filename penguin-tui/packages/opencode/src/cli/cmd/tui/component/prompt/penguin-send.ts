@@ -1,6 +1,7 @@
 type Idle = {
   type: "session.status"
   properties: {
+    messageID?: string
     sessionID: string
     status: {
       type: "idle"
@@ -53,6 +54,24 @@ export function recoverPenguinPromptFailure(input: {
   input.emit(event.type, event)
 }
 
+export function completePenguinPromptSuccess(input: {
+  messageID: string
+  sessionID: string
+  clear: () => void
+  emit: (type: Idle["type"], event: Idle) => void
+}) {
+  input.clear()
+  const event = {
+    type: "session.status",
+    properties: {
+      messageID: input.messageID,
+      sessionID: input.sessionID,
+      status: { type: "idle" },
+    },
+  } satisfies Idle
+  input.emit(event.type, event)
+}
+
 export function resolveSessionID(value: unknown): string | undefined {
   if (typeof value === "string" && value.trim()) return value.trim()
   if (!value || typeof value !== "object") return undefined
@@ -89,9 +108,7 @@ export async function createPenguinSession(input: {
       if (!res.ok) {
         const details = await res.text().catch(() => "")
         throw new Error(
-          details
-            ? `Session create failed (${res.status}): ${details}`
-            : `Session create failed (${res.status})`,
+          details ? `Session create failed (${res.status}): ${details}` : `Session create failed (${res.status})`,
         )
       }
       return res.json().catch(() => undefined)
@@ -232,11 +249,7 @@ export async function sendPenguinPrompt(input: {
   }
 }
 
-export function formatPenguinPromptFailure(input: {
-  status?: number
-  details?: string
-  error?: unknown
-}) {
+export function formatPenguinPromptFailure(input: { status?: number; details?: string; error?: unknown }) {
   const details = input.details?.trim()
   if (details) return `Failed to send message: ${details}`
 

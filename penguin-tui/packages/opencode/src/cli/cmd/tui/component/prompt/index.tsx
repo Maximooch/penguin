@@ -36,6 +36,7 @@ import { exitSession } from "../../util/exit"
 import { DEFAULT_PENGUIN_STALE_MS, derivePenguinRunState } from "./penguin-run-state"
 import { applyPenguinFastCommand } from "./penguin-fast-command"
 import {
+  completePenguinPromptSuccess,
   createPenguinSession,
   emitPenguinOptimisticPrompt,
   formatPenguinPromptFailure,
@@ -1260,7 +1261,19 @@ export function Prompt(props: PromptProps) {
           parts: nonTextParts,
         })
           .then((result) => {
-            if (result.ok) return
+            if (result.ok) {
+              completePenguinPromptSuccess({
+                messageID,
+                sessionID,
+                clear: () => {
+                  setStore("pending", false)
+                  setStore("pendingSeenBusy", false)
+                  setStore("runStartedAt", undefined)
+                },
+                emit: sdk.event.emit,
+              })
+              return
+            }
             recover()
             toast.show({
               variant: "error",
