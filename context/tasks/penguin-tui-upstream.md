@@ -1743,13 +1743,23 @@ Out of scope for Phase 10:
 
 #### 10.5 Diffs/modified files
 
-- [ ] Make backend services authoritative for modified files, file stats, diff
+- [x] Make backend services authoritative for modified files, file stats, diff
       summaries, per-file diff payloads, and session-scoped changed-file state.
-- [ ] Keep local git probing as an explicit fallback only when backend state is
+- [x] Keep local git probing as an explicit fallback only when backend state is
       unavailable, not as the primary TUI truth.
-- [ ] Add fake-git backend tests and TUI schema/render tests for empty diffs,
-      changed files, renamed files, binary files, deleted files, large diffs,
-      and session/project scoping.
+- [x] Normalize and merge TUI `session.diff` payloads from hydration and live
+      events before they reach sidebar state.
+- [x] Add fake-git backend tests and TUI schema tests for empty/malformed diffs,
+      duplicate file rows, changed files, and untracked files.
+- [x] Defer the full upstream diff viewer UI until after the backend contract is
+      stable; keep the current sidebar list as the Phase 10 baseline.
+
+Follow-up before enabling the full interactive diff viewer:
+
+- Add broader coverage for renamed files, binary files, deleted files, large
+  diffs, and per-file diff drilldown.
+- Add TUI render tests for empty diffs, changed files, renamed files, binary
+  files, deleted files, large diffs, and session/project scoping.
 
 #### 10.6 Commands
 

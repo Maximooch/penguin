@@ -30,11 +30,7 @@ import { batch, onCleanup, onMount } from "solid-js"
 import { Log } from "@/util/log"
 import { iife } from "@/util/iife"
 import type { Path } from "@opencode-ai/sdk"
-import {
-  hydrateSessionSnapshot,
-  mergeHydratedMessages,
-  upsertPenguinMessage,
-} from "./session-hydration"
+import { hydrateSessionSnapshot, mergeHydratedMessages, upsertPenguinMessage } from "./session-hydration"
 import {
   createPenguinBootstrapFallback,
   fetchBootstrapJson,
@@ -52,6 +48,7 @@ import {
 } from "./sync-scope"
 import { applySessionListEvent } from "./sync-session-events"
 import { createPenguinSessionUsageUrl } from "./sync-session-usage"
+import { normalizeSessionDiff } from "./session-diff"
 import { upsertSessionRecord } from "../util/session-family"
 import { profileStartup } from "../util/startup-profile"
 
@@ -175,7 +172,8 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       usageRefreshInFlight.add(sessionID)
       usageRefreshAt.set(sessionID, now)
       const url = createPenguinSessionUsageUrl(sdk.url, sessionID)
-      sdk.fetch(url)
+      sdk
+        .fetch(url)
         .then((res) => (res.ok ? res.json() : undefined))
         .then((data) => {
           const usage = parsePenguinUsage(data)
@@ -233,10 +231,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           duration_ms: Date.now() - start,
           reason,
           providers: state.provider.length,
-          models: state.provider.reduce(
-            (total, provider) => total + Object.keys(provider.models ?? {}).length,
-            0,
-          ),
+          models: state.provider.reduce((total, provider) => total + Object.keys(provider.models ?? {}).length, 0),
         })
       } catch (error) {
         profileStartup("sync.bootstrap.provider_catalog_refresh.error", {
@@ -393,7 +388,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           break
 
         case "session.diff":
-          setStore("session_diff", event.properties.sessionID, event.properties.diff)
+          setStore("session_diff", event.properties.sessionID, normalizeSessionDiff(event.properties.diff))
           break
 
         case "session.deleted": {
@@ -581,7 +576,8 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             if (normalizedScoped && normalizedBase && normalizedScoped !== normalizedBase) break
             const url = new URL("/lsp", sdk.url)
             url.searchParams.set("directory", scopedDirectory)
-            sdk.fetch(url)
+            sdk
+              .fetch(url)
               .then((res) => (res.ok ? res.json() : []))
               .then((data) => setStore("lsp", reconcile(Array.isArray(data) ? data : [])))
               .catch(() => undefined)
@@ -633,7 +629,8 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         })
         const sessionsPromise = timed(
           "sessions",
-          sdk.fetch(sessionsUrl)
+          sdk
+            .fetch(sessionsUrl)
             .then((res) => (res.ok ? res.json() : undefined))
             .then((data) => (Array.isArray(data) ? data : []))
             .catch(() => []),
@@ -677,7 +674,8 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           ),
           timed(
             "agents",
-            sdk.fetch(new URL("/api/v1/agents", sdk.url))
+            sdk
+              .fetch(new URL("/api/v1/agents", sdk.url))
               .then((res) => (res.ok ? res.json() : undefined))
               .then((data) => (Array.isArray(data) ? data : []))
               .catch(() => []),

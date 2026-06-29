@@ -1751,3 +1751,116 @@ def test_get_session_diff_prefers_transcript_tool_parts():
     assert diffs[0]["file"] == "src/main.py"
     assert diffs[0]["additions"] == 1
     assert diffs[0]["deletions"] == 1
+
+
+def test_get_session_diff_merges_duplicate_transcript_file_diffs():
+    session = _session("session_diff_merge", "Diff Session", "2026-02-03T00:00:00")
+    session.metadata[TRANSCRIPT_KEY] = {
+        "order": ["msg_1", "msg_2"],
+        "messages": {
+            "msg_1": {
+                "info": {"id": "msg_1", "role": "assistant"},
+                "part_order": ["part_tool_1"],
+                "parts": {
+                    "part_tool_1": {
+                        "id": "part_tool_1",
+                        "type": "tool",
+                        "tool": "edit",
+                        "state": {
+                            "status": "completed",
+                            "input": {"filePath": "src/main.py"},
+                            "metadata": {
+                                "diff": (
+                                    "--- a/src/main.py\n"
+                                    "+++ b/src/main.py\n"
+                                    "@@\n"
+                                    "-print('old')\n"
+                                    "+print('new')\n"
+                                )
+                            },
+                        },
+                    }
+                },
+            },
+            "msg_2": {
+                "info": {"id": "msg_2", "role": "assistant"},
+                "part_order": ["part_tool_2"],
+                "parts": {
+                    "part_tool_2": {
+                        "id": "part_tool_2",
+                        "type": "tool",
+                        "tool": "edit",
+                        "state": {
+                            "status": "completed",
+                            "input": {"filePath": "src/main.py"},
+                            "metadata": {
+                                "diff": (
+                                    "--- a/src/main.py\n"
+                                    "+++ b/src/main.py\n"
+                                    "@@\n"
+                                    "+print('again')\n"
+                                )
+                            },
+                        },
+                    }
+                },
+            },
+        },
+    }
+    core = _core([session])
+
+    diffs = get_session_diff(core, session.id)
+
+    assert diffs == [
+        {
+            "file": "src/main.py",
+            "before": "",
+            "after": "--- a/src/main.py\n+++ b/src/main.py\n@@\n+print('again')\n",
+            "additions": 2,
+            "deletions": 1,
+        }
+    ]
+
+
+def test_get_session_diff_git_fallback_includes_untracked_files(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "penguin@example.com"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Penguin"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    source = repo / "src"
+    source.mkdir()
+    tracked = source / "main.py"
+    tracked.write_text("print('old')\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "base"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+    tracked.write_text("print('new')\nprint('again')\n", encoding="utf-8")
+    (repo / "notes.md").write_text("one\ntwo\n", encoding="utf-8")
+    session = _session("session_git_diff", "Git Diff", "2026-02-03T00:00:00")
+    session.metadata["directory"] = str(repo)
+    core = _core([session])
+
+    diffs = get_session_diff(core, session.id)
+
+    assert diffs is not None
+    by_file = {diff["file"]: diff for diff in diffs}
+    assert by_file["src/main.py"]["additions"] == 2
+    assert by_file["src/main.py"]["deletions"] == 1
+    assert by_file["notes.md"]["after"] == "one\ntwo\n"
+    assert by_file["notes.md"]["additions"] == 2

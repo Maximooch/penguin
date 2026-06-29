@@ -1196,6 +1196,47 @@ def _build_file_diff(
     }
 
 
+def _normalize_file_diff(diff: dict[str, Any]) -> dict[str, Any] | None:
+    file_path = _normalize_non_empty_string(diff.get("file"))
+    if not file_path:
+        return None
+
+    before = diff.get("before")
+    after = diff.get("after")
+    additions = diff.get("additions")
+    deletions = diff.get("deletions")
+
+    return _build_file_diff(
+        file_path=file_path,
+        before=before if isinstance(before, str) else "",
+        after=after if isinstance(after, str) else "",
+        additions=additions if isinstance(additions, int) else 0,
+        deletions=deletions if isinstance(deletions, int) else 0,
+    )
+
+
+def _merge_file_diffs(diffs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_file: dict[str, dict[str, Any]] = {}
+    for diff in diffs:
+        normalized = _normalize_file_diff(diff)
+        if normalized is None:
+            continue
+        file_path = normalized["file"]
+        existing = by_file.get(file_path)
+        if existing is None:
+            by_file[file_path] = normalized
+            continue
+        by_file[file_path] = {
+            "file": file_path,
+            "before": existing["before"] or normalized["before"],
+            "after": normalized["after"] or existing["after"],
+            "additions": existing["additions"] + normalized["additions"],
+            "deletions": existing["deletions"] + normalized["deletions"],
+        }
+
+    return [by_file[file_path] for file_path in sorted(by_file)]
+
+
 def _diffs_from_tool_part(part: dict[str, Any]) -> list[dict[str, Any]]:
     state = part.get("state")
     if not isinstance(state, dict):
@@ -1342,7 +1383,30 @@ def _git_fallback_diffs(directory: str) -> list[dict[str, Any]]:
                 deletions=deletions,
             )
         )
-    return diffs
+
+    untracked = _run_git(["ls-files", "--others", "--exclude-standard"], worktree)
+    for relative_path in (
+        line.strip() for line in untracked.splitlines() if line.strip()
+    ):
+        file_path = Path(worktree) / relative_path
+        if not file_path.is_file():
+            continue
+        try:
+            content = file_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            content = ""
+        additions = len(content.splitlines()) if content else 0
+        diffs.append(
+            _build_file_diff(
+                file_path=relative_path,
+                before="",
+                after=content,
+                additions=additions,
+                deletions=0,
+            )
+        )
+
+    return _merge_file_diffs(diffs)
 
 
 def get_session_diff(
@@ -1369,7 +1433,7 @@ def get_session_diff(
     else:
         selected_rows = [row for row in rows if isinstance(row, dict)]
 
-    by_file: dict[str, dict[str, Any]] = {}
+    diffs: list[dict[str, Any]] = []
     for row in selected_rows:
         parts = row.get("parts")
         if not isinstance(parts, list):
@@ -1377,12 +1441,11 @@ def get_session_diff(
         for part in parts:
             if not isinstance(part, dict) or part.get("type") != "tool":
                 continue
-            for diff in _diffs_from_tool_part(part):
-                file_key = str(diff.get("file") or "unknown")
-                by_file[file_key] = diff
+            diffs.extend(_diffs_from_tool_part(part))
 
-    if by_file:
-        return list(by_file.values())
+    merged_diffs = _merge_file_diffs(diffs)
+    if merged_diffs:
+        return merged_diffs
 
     fallback_diffs = _git_fallback_diffs(_session_directory(core, session))
     logger.warning(
