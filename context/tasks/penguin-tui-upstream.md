@@ -1642,19 +1642,171 @@ Final Phase 9 verification targets:
 
 ### 10. Move backend-first upstream contracts into Penguin
 
-- [ ] Support or translate incremental `message.part.delta` events before
-      relying on TUI-side smoothing.
-- [ ] Move toward OpenCode-compatible v2 session API shapes and structured
-      public errors where they reduce TUI drift.
-- [ ] Recreate upstream's stronger event replay/projector behavior in Penguin's
-      backend or adapter layer.
-- [ ] Make busy/idle status truth durable enough that the TUI can stop
-      inferring active runs from local state.
-- [ ] Provide backend-owned provider/model/reasoning capability metadata.
-- [ ] Align permission/question IDs, validation, and route responses with the
-      upstream-compatible surface where feasible.
-- [ ] Ensure message/part persistence and replay can reconstruct active and
-      completed tool/reasoning/assistant state after reload or reconnect.
+Phase 10 is the backend-contract and real-wiring phase for the Phase 9 TUI
+work. Phase 9 imported or adapted frontend/runtime UX where Penguin's current
+backend could support it. Phase 10 should remove the remaining TUI-side guesses
+by making Penguin's backend authoritative for the data the TUI renders.
+
+Implementation rule: every section should follow
+Audit -> define contract -> add/repair tests -> implement backend
+service/route -> implement TUI schema/state/render wiring -> run focused tests
+-> commit. Live provider or live terminal checks are smoke validation only; the
+correctness proof should be deterministic backend contract tests and Bun tests.
+
+Out of scope for Phase 10:
+
+- Multi-agent execution fixes from `context/tasks/resolve-multi-agents.md`.
+  That is a follow-up PR outside the Penguin TUI upstream track.
+- The full Link-style unified runtime event envelope. Phase 10 stabilizes the
+  current TUI/SSE contracts and keeps enough correlation fields to make a later
+  envelope migration straightforward.
+- Route bloat or new `PenguinCore` business logic. Backend payload shaping
+  belongs in `penguin/web/services/*` or smaller runtime/domain modules.
+
+#### 10.1 Baseline contract audit
+
+- [x] Map Phase 9 UI surfaces to backend truth sources:
+  - provider/model catalog -> `penguin.web.services.provider_catalog`,
+    `opencode_provider`, provider auth/credential services,
+    `component/dialog-model.tsx`, `util/model-*`.
+  - session hydration -> `session_view`, token-usage routes,
+    `context/sync.tsx`, `context/session-hydration.ts`,
+    `context/sync-session-usage.ts`.
+  - prompt source/file references -> file/find/upload routes,
+    `component/prompt/autocomplete.tsx`, `history-state.ts`,
+    `paste-policy.ts`, `file-url.ts`, `prompt/index.tsx`.
+  - diffs/modified files -> `session_view.get_session_diff`,
+    VCS/path routes, sidebar modified-file rendering, upstream diff-viewer
+    reference code.
+  - commands -> `component/dialog-command.tsx`,
+    `penguin-local-command.ts`, `penguin-local-command-runtime.ts`,
+    backend project/task/skills/settings routes.
+  - notifications -> `notification-policy.ts`, current TUI event/status hooks,
+    future backend notification settings service.
+  - events/SSE -> `context/penguin-event-stream.ts`, `sync-scope.ts`,
+    `sync-session-events.ts`, web SSE event projection helpers.
+- [x] Identify remaining local guesses:
+  - sparse provider refresh and alias canonicalization still need backend-owned
+    capability metadata and stable connected/disconnected provider truth.
+  - session hydration still retries around catalog warmup and partial snapshots.
+  - prompt source restoration still depends on TUI-side guards for malformed or
+    ambiguous source payloads.
+  - modified-file summaries exist in TUI/sidebar form before a complete
+    backend diff contract and file-tree diff viewer are wired together.
+  - commands are still split between local prompt helpers and backend routes
+    rather than one backend-declared command registry.
+  - notifications are currently local policy/render helpers, not a backend-owned
+    configurable policy.
+  - SSE events are practical OpenCode-shaped projections, not a single canonical
+    runtime envelope.
+
+#### 10.2 Provider/model catalog
+
+- [ ] Make backend catalog payloads authoritative for provider IDs, connected
+      status, sparse catalogs, canonical provider/model IDs, aliases, display
+      names, recents, favorites, reasoning options, and provider capability
+      flags.
+- [ ] Fix OpenRouter/OpenAI/user-config catalog regressions at the backend
+      compatibility boundary instead of adding display-name workarounds in the
+      TUI.
+- [ ] Ensure the TUI refreshes sparse active providers and resolves session
+      models after catalog warmup.
+- [ ] Add backend tests for provider connection state, sparse/full catalog
+      metadata, alias canonicalization, favorites/recents shapes, disconnected
+      providers, and user-configured model entries.
+- [ ] Add Bun tests for canonical selection keys, favorites/recents de-duping,
+      sparse refresh, aliases, disconnected providers, and active-session model
+      hydration.
+
+#### 10.3 Session hydration
+
+- [ ] Make session hydration reliable for model/provider, title, cwd/workspace,
+      token/context stats, active run state, selected agent/session, and
+      session-scoped usage.
+- [ ] Retry hydration only while data is legitimately pending. Do not overwrite
+      good local state with stale, partial, or wrong-directory payloads.
+- [ ] Add backend tests for cold start, session switch, catalog-late hydration,
+      explicit directory scoping, and stale-session protection.
+- [ ] Add Bun tests for TUI hydration retry, status preservation, model
+      restoration after catalog warmup, and session-scoped usage refresh.
+
+#### 10.4 Prompt source/file references
+
+- [ ] Make `@file`, paste, image/SVG, upload, and prompt-history source payloads
+      explicit end-to-end.
+- [ ] Backend and TUI should agree on whether content is embedded, referenced by
+      path, summarized, or omitted.
+- [ ] Validate prompt history/source schemas before editor/extmark restoration.
+- [ ] Add tests for root-relative files, scoped session directories, duplicate
+      filenames, malformed sources, paste thresholds, image/SVG plus surrounding
+      text, and exact file URL/path construction.
+
+#### 10.5 Diffs/modified files
+
+- [ ] Make backend services authoritative for modified files, file stats, diff
+      summaries, per-file diff payloads, and session-scoped changed-file state.
+- [ ] Keep local git probing as an explicit fallback only when backend state is
+      unavailable, not as the primary TUI truth.
+- [ ] Add fake-git backend tests and TUI schema/render tests for empty diffs,
+      changed files, renamed files, binary files, deleted files, large diffs,
+      and session/project scoping.
+
+#### 10.6 Commands
+
+- [ ] Wire a backend command registry contract.
+- [ ] Backend declares available commands, labels, descriptions, shortcuts,
+      enablement, required context, and execution route/payload metadata.
+- [ ] TUI command palette consumes that contract and handles disabled or
+      unavailable commands cleanly.
+- [ ] Add backend registry tests and TUI command-list/selection/execution tests.
+
+#### 10.7 Notifications
+
+- [ ] Implement real notification policy wiring across backend settings and TUI
+      delivery hooks.
+- [ ] Support configurable notification modes without overcommitting to every
+      OS or terminal adapter in this PR.
+- [ ] Include config-ready options for generic sounds, OS/terminal hooks, train
+      station sounds, and future Penguin/NOOT NOOT sounds.
+- [ ] Sanitize notification text consistently.
+- [ ] Add tests for policy selection, redaction, disabled mode, needs-input
+      events, task-complete events, terminal capability fallbacks, and
+      unsupported adapter behavior.
+
+#### 10.8 Event/SSE stabilization
+
+- [ ] Stabilize current TUI-facing event payloads without introducing the full
+      unified runtime envelope.
+- [ ] Ensure SSE/OpenCode-projected events have schemas, stable ordering, stable
+      IDs where available, session/project correlation, and replay/reconnect
+      behavior that does not duplicate or reorder messages.
+- [ ] Add tests for stream chunks, tool results, action results, token/context
+      updates, session lifecycle events, errors, reconnect/replay, and
+      wrong-session filtering.
+
+#### 10.9 Route/service cleanup
+
+- [ ] Keep routes thin while Phase 10 adds backend truth.
+- [ ] Move payload shaping and business logic into `penguin/web/services/*`.
+- [ ] Put TUI compatibility in services/adapters rather than route handlers or
+      `PenguinCore`.
+- [ ] Add service-level tests for every extracted backend behavior.
+
+#### 10.10 Verification/docs/PR readiness
+
+- [ ] Run focused tests after each section.
+- [ ] Periodically run:
+  - `uv run --group dev pytest tests -q`
+  - touched Bun TUI test packs
+  - `bun run typecheck`
+  - Prettier/format checks for touched TypeScript/TSX/Markdown files
+  - Ruff/compileall for touched Python files
+  - `git diff --check`
+- [ ] Run one local smoke path before review:
+  - `HOST=127.0.0.1 PORT=8080 uv run penguin-web`
+  - `uv run penguin --url http://127.0.0.1:8080 --no-web-autostart`
+- [ ] Update this plan with completed Phase 10 work and deferred follow-ups.
+- [ ] Leave the branch ready for user review; do not open the PR automatically.
 
 ### 11. Evaluate OpenTUI, keymap, and plugin-runtime upgrades
 
