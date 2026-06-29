@@ -1203,6 +1203,9 @@ shape and leave implementation to Phase 10.
       - [x] Added a Penguin prompt submit gate so rapid repeated submits cannot
             create duplicate sessions or duplicate optimistic sends while the
             first send/local-command path is still settling.
+      - [x] Hardened the gate against active Penguin runs: submits are now
+            blocked while the current session is busy or still streaming, so a
+            later prompt cannot be posted into an in-flight assistant turn.
       - [x] Continue reviewing upstream prompt submit state for shortcut gating,
             restore-on-failure behavior, and prompt draft preservation that does
             not require backend-owned draft contracts.
@@ -1402,6 +1405,11 @@ shape and leave implementation to Phase 10.
       - [x] Adapted release-date model ordering for provider-scoped model
             dialogs while preserving Penguin's existing free-first alphabetical
             ordering in the regular picker.
+      - [x] Merged warmed provider catalogs into sparse configured provider
+            catalogs for Penguin's model picker and local model validation.
+            This keeps configured aliases available while allowing OpenRouter
+            and other discovered provider models to appear once backend catalog
+            discovery has warmed.
 - [x] Inventory provider/model capability changes for Phase 10: OpenAI
       WebSocket transport, custom WebSocket base URLs, sticky `X-Session-Id`
       proxy headers, stored provider credentials, connector-based auth,
@@ -1615,7 +1623,7 @@ Phase 9 adoption matrix:
 | Classification | Upstream items | Penguin decision |
 | --- | --- | --- |
 | Direct import | Duplicate-submit prevention, local prompt history behavior, slash-command ranking, auth-header preservation for run-command fetches | Imported as focused helpers/tests where current Penguin state already supports the behavior. |
-| Penguin adaptation | Session directory labels, blank-title fallback, malformed tool-input guards, inline tool failure expansion, duplicate renderable IDs, subagent task labels, reasoning spinner/title display, provider-scoped release-date model sorting, MCP autocomplete labels, notification policy | Adapted to Penguin route shapes, OpenTUI rendering, current session records, and terminal constraints instead of copying OpenCode code directly. |
+| Penguin adaptation | Session directory labels, blank-title fallback, malformed tool-input guards, inline tool failure expansion, duplicate renderable IDs, subagent task labels, reasoning spinner/title display, provider-scoped release-date model sorting, warmed provider/model catalog merging, MCP autocomplete labels, notification policy | Adapted to Penguin route shapes, OpenTUI rendering, current session records, and terminal constraints instead of copying OpenCode code directly. |
 | Deferred to Phase 10 | Backend-owned drafts, generated request parts, server-aware sessions/tabs, missing-session cleanup, managed workspaces, session moves, workspace isolation, richer diff/review/file-tree/search, permission directory replies, retry dialogs, provider/auth capability truth, MCP protocol/catalog/OAuth, replay/history/snapshots, canonical `RuntimeEvent`/`SessionEvent` | Requires backend/service/protocol truth. Do not infer these in the TUI. |
 | Desktop/reference only | Home tabs, draggable tab bars, status popovers, mobile controls, WSL/server management UI, update UI, settings v2, Link Agentboard references | Keep as product/design inputs for Link/Penguin adapter work after backend contracts stabilize. |
 | Intentionally skipped | Direct copy of OpenCode app/Electron/mobile code, direct adoption of OpenCode provider naming/capability metadata, TUI-side compaction semantics, OS/terminal notification delivery by default | Skipped to preserve Penguin backend truth, terminal portability, opt-in notification behavior, and CWM terminology. |
