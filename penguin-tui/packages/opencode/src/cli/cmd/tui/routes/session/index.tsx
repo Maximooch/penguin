@@ -62,7 +62,6 @@ import { DialogSessionRename } from "../../component/dialog-session-rename"
 import { exitSession } from "../../util/exit"
 import { getSessionFamily } from "../../util/session-family"
 import { Sidebar } from "./sidebar"
-import { Flag } from "@/flag/flag"
 import { LANGUAGE_EXTENSIONS } from "@/lsp/language"
 import parsers from "../../../../../../parsers-config.ts"
 import { Clipboard } from "../../util/clipboard"
@@ -84,6 +83,7 @@ import { coerceToolInputRecord, formatPrimitiveToolInput } from "../../util/tool
 import { assistantDurationMs, isAssistantSettled } from "./message-duration"
 import { deriveInlineToolState } from "./inline-tool-row"
 import { formatSubagentTaskDescription, formatSubagentTaskLabel, isBackgroundSubagentTask } from "./subagent-task"
+import { shouldUseOpenCodeMarkdownRenderer } from "../../util/markdown-renderer"
 
 addDefaultParsers(parsers.parsers)
 
@@ -1432,7 +1432,7 @@ function TextPart(props: { last: boolean; part: TextPart; message: AssistantMess
     <Show when={props.part.text.trim()}>
       <box id={`text-${props.part.messageID}-${props.part.id}`} paddingLeft={3} marginTop={1} flexShrink={0}>
         <Switch>
-          <Match when={Flag.OPENCODE_EXPERIMENTAL_MARKDOWN}>
+          <Match when={shouldUseOpenCodeMarkdownRenderer()}>
             <markdown
               syntaxStyle={syntax()}
               streaming={true}
@@ -1440,7 +1440,7 @@ function TextPart(props: { last: boolean; part: TextPart; message: AssistantMess
               conceal={ctx.conceal()}
             />
           </Match>
-          <Match when={!Flag.OPENCODE_EXPERIMENTAL_MARKDOWN}>
+          <Match when={!shouldUseOpenCodeMarkdownRenderer()}>
             <code
               filetype="markdown"
               drawUnstyledText={false}
