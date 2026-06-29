@@ -29,8 +29,25 @@ export function emptyPrompt(): PromptInfo {
   }
 }
 
-const promptPartSchema = z.object({ type: z.string() }).passthrough()
-const promptHistoryRowSchema = z
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+const promptPartSchema = z.custom<PromptInfo["parts"][number]>((value) => {
+  if (!isRecord(value)) return false
+  switch (value.type) {
+    case "text":
+      return typeof value.text === "string"
+    case "file":
+      return typeof value.mime === "string" && typeof value.url === "string"
+    case "agent":
+      return typeof value.name === "string"
+    default:
+      return false
+  }
+})
+
+const promptHistoryRowSchema: z.ZodType<PromptInfo> = z
   .object({
     input: z.string(),
     mode: z.enum(["normal", "shell"]).optional(),
@@ -42,7 +59,7 @@ export function parsePromptHistoryLine(line: string): PromptInfo | null {
   try {
     const parsed = JSON.parse(line)
     const result = promptHistoryRowSchema.safeParse(parsed)
-    return result.success ? (result.data as PromptInfo) : null
+    return result.success ? result.data : null
   } catch {
     return null
   }

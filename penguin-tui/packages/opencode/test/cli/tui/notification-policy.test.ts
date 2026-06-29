@@ -62,6 +62,9 @@ describe("terminal notification policy", () => {
     expect(sanitizeNotificationText('failed {"token":"abc123"} Authorization: Bearer sk-live')).toBe(
       'failed {"token":"[redacted]"} Authorization: Bearer [redacted]',
     )
+    expect(sanitizeNotificationText('OPENAI_API_KEY=sk-client {"client_secret":"abc"} access_token=tok')).toBe(
+      'OPENAI_API_KEY=[redacted] {"client_secret":"[redacted]"} access_token=[redacted]',
+    )
 
     const payloads = notificationPayloads(
       {

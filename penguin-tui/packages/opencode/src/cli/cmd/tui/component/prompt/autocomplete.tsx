@@ -14,6 +14,7 @@ import type { PromptInfo } from "./history"
 import { useFrecency } from "./frecency"
 import { rankSlashAutocompleteOptions } from "./slash-autocomplete"
 import { formatMcpResourceAutocomplete } from "./mcp-autocomplete"
+import { fileAutocompleteURL } from "./file-url"
 
 function removeLineRange(input: string) {
   const hashIndex = input.lastIndexOf("#")
@@ -224,6 +225,7 @@ export function Autocomplete(props: {
       } as Parameters<typeof sdk.client.find.files>[0] & {
         session_id?: string
       }
+      const searchDirectory = params.directory ?? sdk.directory ?? process.cwd()
 
       // Get files from SDK
       const result = await sdk.client.find.files(params)
@@ -245,16 +247,18 @@ export function Autocomplete(props: {
         const width = props.anchor().width - 4
         options.push(
           ...sortedFiles.map((item): AutocompleteOption => {
-            let url = `file://${process.cwd()}/${item}`
+            let url = fileAutocompleteURL({
+              baseDirectory: searchDirectory,
+              item,
+            })
             let filename = item
             if (lineRange && !item.endsWith("/")) {
               filename = `${item}#${lineRange.startLine}${lineRange.endLine ? `-${lineRange.endLine}` : ""}`
-              const urlObj = new URL(url)
-              urlObj.searchParams.set("start", String(lineRange.startLine))
-              if (lineRange.endLine !== undefined) {
-                urlObj.searchParams.set("end", String(lineRange.endLine))
-              }
-              url = urlObj.toString()
+              url = fileAutocompleteURL({
+                baseDirectory: searchDirectory,
+                item,
+                lineRange,
+              })
             }
 
             const isDir = item.endsWith("/")

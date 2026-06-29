@@ -32,7 +32,14 @@ export function DialogModel(props: { providerID?: string }) {
 
   onMount(() => {
     const refreshIfSparse = (reason: string) => {
-      if (!hasSparseModelCatalog(modelProviders())) return
+      const providers = modelProviders()
+      const scopedProvider = props.providerID
+        ? providers.find((provider) => provider.id.toLowerCase() === props.providerID?.toLowerCase())
+        : undefined
+      const sparse = scopedProvider
+        ? hasSparseModelCatalog([scopedProvider])
+        : providers.some((provider) => hasSparseModelCatalog([provider]))
+      if (!sparse) return
       void sync.provider.refresh(reason)
     }
 

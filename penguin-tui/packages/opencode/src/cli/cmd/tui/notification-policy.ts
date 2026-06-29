@@ -129,11 +129,13 @@ export function notificationPayloads(
 }
 
 export function sanitizeNotificationText(input: string): string {
+  const credentialName =
+    "[A-Za-z0-9_]*(?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|token|password|secret)"
   return input
     .replace(/\b(authorization\s*:\s*)bearer\s+[\w.+/~=-]+/gi, "$1Bearer [redacted]")
     .replace(/\bbearer\s+[\w.+/~=-]+/gi, "Bearer [redacted]")
-    .replace(/(["']?(?:api[_-]?key|token|password|secret)["']?\s*:\s*["']?)[^"',}\s]+(["']?)/gi, "$1[redacted]$2")
-    .replace(/\b(api[_-]?key|token|password|secret)\s*=\s*["']?[^"',\s]+["']?/gi, "$1=[redacted]")
+    .replace(new RegExp(`(["']?${credentialName}["']?\\s*:\\s*["']?)[^"',}\\s]+(["']?)`, "gi"), "$1[redacted]$2")
+    .replace(new RegExp(`\\b(${credentialName})\\s*=\\s*["']?[^"',\\s]+["']?`, "gi"), "$1=[redacted]")
     .trim()
 }
 

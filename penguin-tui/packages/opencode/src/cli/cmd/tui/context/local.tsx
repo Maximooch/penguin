@@ -35,6 +35,22 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       return resolveCatalogModel(modelProviders(), model)
     }
 
+    function canonicalModel(model: { providerID: string; modelID: string }) {
+      return resolveModel(model) ?? model
+    }
+
+    function modelKey(model: { providerID: string; modelID: string }) {
+      const resolved = canonicalModel(model)
+      return `${resolved.providerID.toLowerCase()}/${resolved.modelID.toLowerCase()}`
+    }
+
+    function canonicalModelList(items: { providerID: string; modelID: string }[]) {
+      return uniqueBy(items.map(canonicalModel), modelKey).map((item) => ({
+        providerID: item.providerID,
+        modelID: item.modelID,
+      }))
+    }
+
     function isModelValid(model: { providerID: string; modelID: string }) {
       return resolveModel(model) !== undefined
     }
@@ -257,10 +273,10 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           return modelStore.ready
         },
         recent() {
-          return modelStore.recent
+          return canonicalModelList(modelStore.recent)
         },
         favorite() {
-          return modelStore.favorite
+          return canonicalModelList(modelStore.favorite)
         },
         parsed: createMemo(() => {
           const value = currentModel()
@@ -317,12 +333,9 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           const next = favorites[index]
           if (!next) return
           setModelStore("model", agent.current().name, { ...next })
-          const uniq = uniqueBy([next, ...modelStore.recent], (x) => `${x.providerID}/${x.modelID}`)
+          const uniq = canonicalModelList([next, ...modelStore.recent])
           if (uniq.length > 10) uniq.pop()
-          setModelStore(
-            "recent",
-            uniq.map((x) => ({ providerID: x.providerID, modelID: x.modelID })),
-          )
+          setModelStore("recent", uniq)
           save()
         },
         set(model: { providerID: string; modelID: string }, options?: { recent?: boolean; silentInvalid?: boolean }) {
@@ -340,12 +353,9 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             }
             setModelStore("model", agent.current().name, resolved)
             if (options?.recent) {
-              const uniq = uniqueBy([resolved, ...modelStore.recent], (x) => `${x.providerID}/${x.modelID}`)
+              const uniq = canonicalModelList([resolved, ...modelStore.recent])
               if (uniq.length > 10) uniq.pop()
-              setModelStore(
-                "recent",
-                uniq.map((x) => ({ providerID: x.providerID, modelID: x.modelID })),
-              )
+              setModelStore("recent", uniq)
               save()
             }
           })
@@ -361,18 +371,13 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
               })
               return
             }
-            const exists = modelStore.favorite.some(
-              (x) => x.providerID === resolved.providerID && x.modelID === resolved.modelID,
-            )
+            const favorite = canonicalModelList(modelStore.favorite)
+            const resolvedKey = modelKey(resolved)
+            const exists = favorite.some((x) => modelKey(x) === resolvedKey)
             const next = exists
-              ? modelStore.favorite.filter(
-                  (x) => x.providerID !== resolved.providerID || x.modelID !== resolved.modelID,
-                )
-              : [resolved, ...modelStore.favorite]
-            setModelStore(
-              "favorite",
-              next.map((x) => ({ providerID: x.providerID, modelID: x.modelID })),
-            )
+              ? favorite.filter((x) => modelKey(x) !== resolvedKey)
+              : canonicalModelList([resolved, ...favorite])
+            setModelStore("favorite", next)
             save()
           })
         },

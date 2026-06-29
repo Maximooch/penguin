@@ -83,6 +83,8 @@ describe("prompt history", () => {
     expect(parsePromptHistoryLine(JSON.stringify({ input: "valid", parts: [] }))).toEqual(prompt("valid"))
     expect(parsePromptHistoryLine(JSON.stringify({ input: 123, parts: [] }))).toBeNull()
     expect(parsePromptHistoryLine(JSON.stringify({ input: "missing parts" }))).toBeNull()
+    expect(parsePromptHistoryLine(JSON.stringify({ input: "bad part", parts: [{ type: "unknown" }] }))).toBeNull()
+    expect(parsePromptHistoryLine(JSON.stringify({ input: "bad agent", parts: [{ type: "agent" }] }))).toBeNull()
     expect(parsePromptHistoryLine("{not-json")).toBeNull()
   })
 })

@@ -1,4 +1,5 @@
 import glob
+import html
 import json
 import logging
 import os
@@ -477,7 +478,10 @@ class ConversationSystem:
         # Context information next
         messages.extend(
             [
-                {"role": msg.role, "content": msg.content}
+                {
+                    "role": msg.role,
+                    "content": self._format_context_content_for_model(msg),
+                }
                 for msg in categorized[MessageCategory.CONTEXT]
             ]
         )
@@ -569,6 +573,23 @@ class ConversationSystem:
         # --- End logging ---
 
         return messages
+
+    def _format_context_content_for_model(self, message: Message) -> Any:
+        """Format context messages with source metadata visible to the model."""
+        if not isinstance(message.content, str):
+            return message.content
+
+        metadata = message.metadata if isinstance(message.metadata, dict) else {}
+        source = metadata.get("source")
+        if not isinstance(source, str) or not source.strip():
+            return message.content
+
+        escaped_source = html.escape(source.strip(), quote=True)
+        return (
+            f'<context source="{escaped_source}">\n'
+            f"{message.content}\n"
+            "</context>"
+        )
 
     def save(self) -> bool:
         """
