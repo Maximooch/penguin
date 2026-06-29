@@ -48,6 +48,9 @@ describe("Penguin event stream", () => {
 
   test("parses data lines from an SSE frame", () => {
     const payload = {
+      id: "session.status:ses_1:1",
+      order: 1,
+      time: 100,
       type: "session.status",
       properties: {
         sessionID: "ses_1",
@@ -55,7 +58,9 @@ describe("Penguin event stream", () => {
       },
     }
 
-    expect(parsePenguinSSEEvent(`event: message\ndata: ${JSON.stringify(payload)}\n\n`)).toEqual(payload)
+    expect(parsePenguinSSEEvent(`id: ${payload.id}\nevent: message\ndata: ${JSON.stringify(payload)}\n\n`)).toEqual(
+      payload,
+    )
     expect(parsePenguinSSEEvent("event: ping\n\n")).toBeUndefined()
     expect(parsePenguinSSEEvent("data: not-json\n\n")).toBeUndefined()
   })

@@ -5,12 +5,20 @@ message/part events to the TUI client.
 """
 
 import asyncio
-import json
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator, Optional
 
 from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
+
+from penguin.web.services.opencode_events import (
+    GLOBAL_STATUS_EVENTS,
+    directory_matches,
+    extract_event_directory,
+    extract_event_session,
+    normalize_directory,
+    normalize_opencode_event,
+    sse_event_frame,
+)
 
 if TYPE_CHECKING:
     from penguin.core import PenguinCore
@@ -19,90 +27,6 @@ router = APIRouter()
 
 # Global reference to core instance (set by app.py)
 _core_instance: Optional["PenguinCore"] = None
-
-
-def _normalize_directory(directory: Optional[str]) -> Optional[str]:
-    if not isinstance(directory, str) or not directory.strip():
-        return None
-    try:
-        resolved = Path(directory).expanduser().resolve()
-    except Exception:
-        return None
-    return str(resolved)
-
-
-def _directory_matches(left: Optional[str], right: Optional[str]) -> bool:
-    left_norm = _normalize_directory(left)
-    right_norm = _normalize_directory(right)
-    if not left_norm or not right_norm:
-        return False
-    if left_norm == right_norm:
-        return True
-    try:
-        return Path(left_norm).samefile(right_norm)
-    except Exception:
-        return False
-
-
-def _extract_event_session(properties: dict[str, Any]) -> Optional[str]:
-    event_session = (
-        properties.get("sessionID")
-        or properties.get("conversation_id")
-        or properties.get("session_id")
-    )
-    if isinstance(event_session, str) and event_session:
-        return event_session
-
-    part = properties.get("part")
-    if isinstance(part, dict):
-        part_session = (
-            part.get("sessionID")
-            or part.get("conversation_id")
-            or part.get("session_id")
-        )
-        if isinstance(part_session, str) and part_session:
-            return part_session
-
-    info = properties.get("info")
-    if isinstance(info, dict):
-        info_session = (
-            info.get("sessionID")
-            or info.get("conversation_id")
-            or info.get("session_id")
-        )
-        if isinstance(info_session, str) and info_session:
-            return info_session
-    return None
-
-
-def _extract_event_directory(properties: dict[str, Any]) -> Optional[str]:
-    direct = properties.get("directory")
-    if isinstance(direct, str) and direct:
-        return direct
-
-    info = properties.get("info")
-    if isinstance(info, dict):
-        info_directory = info.get("directory")
-        if isinstance(info_directory, str) and info_directory:
-            return info_directory
-        info_path = info.get("path")
-        if isinstance(info_path, dict):
-            info_cwd = info_path.get("cwd")
-            if isinstance(info_cwd, str) and info_cwd:
-                return info_cwd
-
-    path_info = properties.get("path")
-    if isinstance(path_info, dict):
-        path_cwd = path_info.get("cwd")
-        if isinstance(path_cwd, str) and path_cwd:
-            return path_cwd
-
-    part = properties.get("part")
-    if isinstance(part, dict):
-        part_directory = part.get("directory")
-        if isinstance(part_directory, str) and part_directory:
-            return part_directory
-    return None
 
 
 def set_core_instance(core: "PenguinCore"):
@@ -140,7 +64,7 @@ async def events_sse(
     # Use conversation_id if session_id not provided (API compatibility)
     effective_session_id = session_id or conversation_id
     effective_agent_id = agent_id
-    effective_directory = _normalize_directory(directory)
+    effective_directory = normalize_directory(directory)
 
     if effective_session_id and directory:
         session_dirs = getattr(core, "_opencode_session_directories", None)
@@ -154,6 +78,18 @@ async def events_sse(
 
     async def event_generator() -> AsyncIterator[str]:
         queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=1000)
+        event_order = 0
+
+        def next_event(data: dict[str, Any]) -> dict[str, Any] | None:
+            nonlocal event_order
+            event_order += 1
+            return normalize_opencode_event(
+                data,
+                order=event_order,
+                default_agent_id=effective_agent_id,
+                default_directory=effective_directory or directory,
+                default_session_id=effective_session_id,
+            )
 
         def event_handler(event_type: str, data: Any):
             """Handler for EventBus events."""
@@ -165,24 +101,23 @@ async def events_sse(
             if not isinstance(data, dict):
                 return
 
-            props = data.get("properties", {})
+            normalized = next_event(data)
+            if not normalized:
+                return
+
+            props = normalized.get("properties", {})
             if not isinstance(props, dict):
                 props = {}
 
-            event_name = data.get("type")
-            event_session = _extract_event_session(props)
-            event_directory = _normalize_directory(_extract_event_directory(props))
+            event_name = normalized.get("type")
+            event_session = extract_event_session(props)
+            event_directory = normalize_directory(extract_event_directory(props))
 
             # Filter by session_id if provided
             if effective_session_id:
-                global_events = {
-                    "vcs.branch.updated",
-                    "lsp.updated",
-                    "lsp.client.diagnostics",
-                }
                 if event_session == effective_session_id:
                     pass
-                elif event_name in global_events and not event_session:
+                elif event_name in GLOBAL_STATUS_EVENTS and not event_session:
                     # Global status event without a session association
                     pass
                 else:
@@ -216,37 +151,28 @@ async def events_sse(
                         except Exception:
                             session_directory = None
 
-                    if session_directory and not _directory_matches(
+                    if session_directory and not directory_matches(
                         session_directory, effective_directory
                     ):
                         return
                     if (
                         not session_directory
                         and event_directory
-                        and not _directory_matches(event_directory, effective_directory)
+                        and not directory_matches(event_directory, effective_directory)
                     ):
                         return
                     if (
                         not session_directory
                         and not event_directory
-                        and event_name
-                        in {
-                            "lsp.updated",
-                            "lsp.client.diagnostics",
-                            "vcs.branch.updated",
-                        }
+                        and event_name in GLOBAL_STATUS_EVENTS
                     ):
                         return
                 else:
-                    if event_directory and not _directory_matches(
+                    if event_directory and not directory_matches(
                         event_directory, effective_directory
                     ):
                         return
-                    if not event_directory and event_name in {
-                        "lsp.updated",
-                        "lsp.client.diagnostics",
-                        "vcs.branch.updated",
-                    }:
+                    if not event_directory and event_name in GLOBAL_STATUS_EVENTS:
                         # These are intentionally global status events. Dropping them when a directory
                         # filter is present makes SSE look dead even though the runtime emitted a valid event.
                         pass
@@ -264,7 +190,7 @@ async def events_sse(
                     return
 
             try:
-                queue.put_nowait(data)
+                queue.put_nowait(normalized)
             except asyncio.QueueFull:
                 # Drop event if queue is full (client is slow)
                 pass
@@ -282,14 +208,16 @@ async def events_sse(
                     "directory": directory,
                 },
             }
-            yield f"data: {json.dumps(connected_event)}\n\n"
+            normalized_connected = next_event(connected_event)
+            if normalized_connected:
+                yield sse_event_frame(normalized_connected)
 
             # Stream events
             while True:
                 try:
                     # Wait for event with timeout for keepalive
                     event = await asyncio.wait_for(queue.get(), timeout=300.0)
-                    yield f"data: {json.dumps(event)}\n\n"
+                    yield sse_event_frame(event)
                 except asyncio.TimeoutError:
                     # Send keepalive comment
                     yield ": keepalive\n\n"

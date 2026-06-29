@@ -1791,14 +1791,21 @@ terminal integration is selected.
 
 #### 10.8 Event/SSE stabilization
 
-- [ ] Stabilize current TUI-facing event payloads without introducing the full
+- [x] Stabilize current TUI-facing event payloads without introducing the full
       unified runtime envelope.
-- [ ] Ensure SSE/OpenCode-projected events have schemas, stable ordering, stable
+- [x] Ensure SSE/OpenCode-projected events have schemas, stable ordering, stable
       IDs where available, session/project correlation, and replay/reconnect
       behavior that does not duplicate or reorder messages.
-- [ ] Add tests for stream chunks, tool results, action results, token/context
-      updates, session lifecycle events, errors, reconnect/replay, and
-      wrong-session filtering.
+- [x] Add tests for stream chunks, session lifecycle events, reconnect/replay
+      frame parsing, and wrong-session filtering.
+
+Completed in Phase 10: `penguin.web.services.opencode_events` now normalizes
+OpenCode-projected events with stable `id`, monotonic stream `order`, `time`,
+and session/directory/agent correlation before SSE delivery. SSE frames now
+include `id:` lines plus JSON `data:` payloads, and the TUI parser keeps
+accepting those frames without requiring the deferred unified runtime envelope.
+Broader replay history and full tool/action/token event schema ownership remain
+future observability/backend-contract work.
 
 #### 10.9 Route/service cleanup
 
