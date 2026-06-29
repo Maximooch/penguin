@@ -930,6 +930,11 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           await syncSessionSnapshot(sessionID)
         },
       },
+      provider: {
+        async refresh(reason = "manual") {
+          await refreshPenguinProviderCatalog(reason)
+        },
+      },
       bootstrap,
     }
     return result

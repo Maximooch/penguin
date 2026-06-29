@@ -1,5 +1,7 @@
 import type { AssistantMessage, Part, UserMessage } from "@opencode-ai/sdk/v2"
 import { Locale } from "@/util/locale"
+import { stringifyToolInput } from "./tool-input"
+import { formatReasoningHeader, parseReasoningSummary } from "./reasoning-summary"
 
 export type TranscriptOptions = {
   thinking: boolean
@@ -74,7 +76,8 @@ export function formatPart(part: Part, options: TranscriptOptions): string {
 
   if (part.type === "reasoning") {
     if (options.thinking) {
-      return `_Thinking:_\n\n${part.text}\n\n`
+      const summary = parseReasoningSummary(part.text)
+      return `${formatReasoningHeader(summary.title)}\n\n${summary.body}\n\n`
     }
     return ""
   }
@@ -82,7 +85,7 @@ export function formatPart(part: Part, options: TranscriptOptions): string {
   if (part.type === "tool") {
     let result = `\`\`\`\nTool: ${part.tool}\n`
     if (options.toolDetails && part.state.input) {
-      result += `\n**Input:**\n\`\`\`json\n${JSON.stringify(part.state.input, null, 2)}\n\`\`\``
+      result += `\n**Input:**\n\`\`\`json\n${stringifyToolInput(part.state.input)}\n\`\`\``
     }
     if (options.toolDetails && part.state.status === "completed" && part.state.output) {
       result += `\n**Output:**\n\`\`\`\n${part.state.output}\n\`\`\``

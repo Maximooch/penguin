@@ -1,4 +1,4 @@
-import { createMemo, createSignal } from "solid-js"
+import { createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import { useLocal } from "@tui/context/local"
 import { useSync } from "@tui/context/sync"
 import { map, pipe, flatMap, entries, filter, sortBy, take } from "remeda"
@@ -6,6 +6,9 @@ import { DialogSelect, type DialogSelectRef } from "@tui/ui/dialog-select"
 import { useDialog } from "@tui/ui/dialog"
 import { createDialogProviderOptions, DialogProvider } from "./dialog-provider"
 import { useKeybind } from "../context/keybind"
+import { sortModelOptions } from "../util/model-options"
+import { resolveCatalogModel } from "../util/model-selection"
+import { createModelCatalogProviders, hasSparseModelCatalog } from "../util/model-catalog"
 import * as fuzzysort from "fuzzysort"
 
 export function useConnected() {
@@ -25,6 +28,29 @@ export function DialogModel(props: { providerID?: string }) {
 
   const connected = useConnected()
   const providers = createDialogProviderOptions()
+  const modelProviders = createMemo(() => createModelCatalogProviders(sync.data.provider, sync.data.provider_next.all))
+
+  onMount(() => {
+    const refreshIfSparse = (reason: string) => {
+      const providers = modelProviders()
+      const scopedProvider = props.providerID
+        ? providers.find((provider) => provider.id.toLowerCase() === props.providerID?.toLowerCase())
+        : undefined
+      const sparse = scopedProvider
+        ? hasSparseModelCatalog([scopedProvider])
+        : providers.some((provider) => hasSparseModelCatalog([provider]))
+      if (!sparse) return
+      void sync.provider.refresh(reason)
+    }
+
+    refreshIfSparse("model-dialog-open")
+    const timers = [1000, 3000, 7000].map((delay) =>
+      setTimeout(() => refreshIfSparse(`model-dialog-open:${delay}`), delay),
+    )
+    onCleanup(() => {
+      for (const timer of timers) clearTimeout(timer)
+    })
+  })
 
   const showExtra = createMemo(() => {
     if (!connected()) return false
@@ -38,25 +64,31 @@ export function DialogModel(props: { providerID?: string }) {
     const showSections = showExtra() && needle.length === 0
     const favorites = connected() ? local.model.favorite() : []
     const recents = local.model.recent()
+    const selectionKey = (item: { providerID: string; modelID: string }) =>
+      `${item.providerID.toLowerCase()}/${item.modelID.toLowerCase()}`
+    const resolvedSelectionKey = (item: { providerID: string; modelID: string }) => {
+      const resolved = resolveCatalogModel(modelProviders(), item)
+      return selectionKey(resolved ?? item)
+    }
+    const favoriteKeys = new Set(favorites.map(resolvedSelectionKey))
+    const recentKeys = new Set(recents.map(resolvedSelectionKey))
 
-    const recentList = showSections
-      ? recents.filter(
-          (item) => !favorites.some((fav) => fav.providerID === item.providerID && fav.modelID === item.modelID),
-        )
-      : []
+    const recentList = showSections ? recents.filter((item) => !favoriteKeys.has(resolvedSelectionKey(item))) : []
 
     const favoriteOptions = showSections
       ? favorites.flatMap((item) => {
-          const provider = sync.data.provider.find((x) => x.id === item.providerID)
+          const resolved = resolveCatalogModel(modelProviders(), item)
+          if (!resolved) return []
+          const provider = modelProviders().find((x) => x.id === resolved.providerID)
           if (!provider) return []
-          const model = provider.models[item.modelID]
+          const model = provider.models[resolved.modelID]
           if (!model) return []
           return [
             {
               key: item,
               value: {
                 providerID: provider.id,
-                modelID: model.id,
+                modelID: resolved.modelID,
               },
               title: model.name ?? item.modelID,
               description: provider.name,
@@ -68,7 +100,7 @@ export function DialogModel(props: { providerID?: string }) {
                 local.model.set(
                   {
                     providerID: provider.id,
-                    modelID: model.id,
+                    modelID: resolved.modelID,
                   },
                   { recent: true },
                 )
@@ -80,16 +112,18 @@ export function DialogModel(props: { providerID?: string }) {
 
     const recentOptions = showSections
       ? recentList.flatMap((item) => {
-          const provider = sync.data.provider.find((x) => x.id === item.providerID)
+          const resolved = resolveCatalogModel(modelProviders(), item)
+          if (!resolved) return []
+          const provider = modelProviders().find((x) => x.id === resolved.providerID)
           if (!provider) return []
-          const model = provider.models[item.modelID]
+          const model = provider.models[resolved.modelID]
           if (!model) return []
           return [
             {
               key: item,
               value: {
                 providerID: provider.id,
-                modelID: model.id,
+                modelID: resolved.modelID,
               },
               title: model.name ?? item.modelID,
               description: provider.name,
@@ -101,7 +135,7 @@ export function DialogModel(props: { providerID?: string }) {
                 local.model.set(
                   {
                     providerID: provider.id,
-                    modelID: model.id,
+                    modelID: resolved.modelID,
                   },
                   { recent: true },
                 )
@@ -112,7 +146,7 @@ export function DialogModel(props: { providerID?: string }) {
       : []
 
     const providerOptions = pipe(
-      sync.data.provider,
+      modelProviders(),
       sortBy(
         (provider) => provider.id !== "opencode",
         (provider) => provider.name,
@@ -128,14 +162,12 @@ export function DialogModel(props: { providerID?: string }) {
               providerID: provider.id,
               modelID: model,
             }
+            const valueKey = resolvedSelectionKey(value)
             return {
               value,
               title: info.name ?? model,
-              description: favorites.some(
-                (item) => item.providerID === value.providerID && item.modelID === value.modelID,
-              )
-                ? "(Favorite)"
-                : undefined,
+              releaseDate: info.release_date,
+              description: favoriteKeys.has(valueKey) ? "(Favorite)" : undefined,
               category: connected() ? provider.name : undefined,
               disabled: provider.id === "opencode" && model.includes("-nano"),
               footer: info.cost?.input === 0 && provider.id === "opencode" ? "Free" : undefined,
@@ -154,20 +186,12 @@ export function DialogModel(props: { providerID?: string }) {
           filter((x) => {
             if (!showSections) return true
             const value = x.value
-            const inFavorites = favorites.some(
-              (item) => item.providerID === value.providerID && item.modelID === value.modelID,
-            )
-            if (inFavorites) return false
-            const inRecents = recents.some(
-              (item) => item.providerID === value.providerID && item.modelID === value.modelID,
-            )
-            if (inRecents) return false
+            const valueKey = resolvedSelectionKey(value)
+            if (favoriteKeys.has(valueKey)) return false
+            if (recentKeys.has(valueKey)) return false
             return true
           }),
-          sortBy(
-            (x) => x.footer !== "Free",
-            (x) => x.title,
-          ),
+          (options) => sortModelOptions(options, props.providerID !== undefined),
         ),
       ),
     )
@@ -195,9 +219,7 @@ export function DialogModel(props: { providerID?: string }) {
     return [...favoriteOptions, ...recentOptions, ...providerOptions, ...popularProviders]
   })
 
-  const provider = createMemo(() =>
-    props.providerID ? sync.data.provider.find((x) => x.id === props.providerID) : null,
-  )
+  const provider = createMemo(() => (props.providerID ? modelProviders().find((x) => x.id === props.providerID) : null))
 
   const title = createMemo(() => {
     if (provider()) return provider()!.name

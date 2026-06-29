@@ -168,6 +168,32 @@ describe("transcript", () => {
       expect(result).toContain("**Error:**")
       expect(result).toContain("Command failed")
     })
+
+    test("formats malformed tool input without throwing", () => {
+      const input: Record<string, unknown> = { command: "inspect" }
+      input.self = input
+      const part: Part = {
+        id: "part_1",
+        sessionID: "ses_123",
+        messageID: "msg_123",
+        type: "tool",
+        callID: "call_1",
+        tool: "bash",
+        state: {
+          status: "completed",
+          input,
+          output: "done",
+          title: "Inspect",
+          metadata: {},
+          time: { start: 1000, end: 1100 },
+        },
+      }
+
+      const result = formatPart(part, options)
+
+      expect(result).toContain("**Input:**")
+      expect(result).toContain('"self": "[Circular]"')
+    })
   })
 
   describe("formatMessage", () => {

@@ -87,4 +87,9 @@ describe("session list children", () => {
     expect(entries[0]?.depth).toBe(1)
     expect(formatSessionListTitle(entries[0]!.session.title, entries[0]!.depth)).toBe("  > Child")
   })
+
+  test("falls back to the session id for blank titles", () => {
+    expect(formatSessionListTitle("   ", 0, "ses_blank")).toBe("ses_blank")
+    expect(formatSessionListTitle("", 1, "ses_child")).toBe("  > ses_child")
+  })
 })

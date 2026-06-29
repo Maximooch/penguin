@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from penguin.system.context_window import ContextWindowManager
 from penguin.system.conversation import ConversationSystem
 from penguin.system.state import Message, MessageCategory, Session
@@ -16,6 +14,24 @@ def test_skill_context_message_uses_context_category() -> None:
 
     assert message.category == MessageCategory.CONTEXT
     assert message.metadata["skill_name"] == "demo"
+
+
+def test_context_source_is_visible_in_model_messages() -> None:
+    conversation = ConversationSystem()
+
+    message = conversation.add_context("Fast Reference for Agents", source="AGENTS.md")
+
+    assert message.content == "Fast Reference for Agents"
+    assert conversation.get_formatted_messages() == [
+        {
+            "role": "system",
+            "content": (
+                '<context source="AGENTS.md">\n'
+                "Fast Reference for Agents\n"
+                "</context>"
+            ),
+        }
+    ]
 
 
 def test_context_truncation_can_trim_old_skill_context_messages() -> None:

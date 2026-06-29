@@ -99,7 +99,8 @@ export function getSessionListEntries<T extends SessionLike>(sessions: T[]): Ses
     .flat()
 }
 
-export function formatSessionListTitle(title: string, depth: number) {
-  if (depth <= 0) return title
-  return `  > ${title}`
+export function formatSessionListTitle(title: string, depth: number, fallback?: string) {
+  const label = title.trim() || fallback || "Untitled session"
+  if (depth <= 0) return label
+  return `  > ${label}`
 }

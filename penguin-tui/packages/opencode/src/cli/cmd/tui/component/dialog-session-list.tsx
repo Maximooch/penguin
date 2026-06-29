@@ -11,7 +11,7 @@ import { parsePenguinSessionArray, type PenguinSession } from "../context/sync-b
 import { DialogSessionRename } from "./dialog-session-rename"
 import { useKV } from "../context/kv"
 import { createDebouncedSignal } from "../util/signal"
-import { getDialogSessions } from "../util/session-dialog-list"
+import { formatSessionDirectoryLabel, getDialogSessions } from "../util/session-dialog-list"
 import { formatSessionListTitle, getSessionListEntries, upsertSessionRecord } from "../util/session-family"
 import type { Session } from "@opencode-ai/sdk/v2"
 import "opentui-spinner/solid"
@@ -82,15 +82,19 @@ export function DialogSessionList() {
       const isDeleting = toDelete() === x.id
       const status = sync.data.session_status?.[x.id]
       const isWorking = status?.type === "busy"
+      const directoryLabel = formatSessionDirectoryLabel({
+        currentDirectory: sessionListQuery().directory,
+        sessionDirectory: x.directory,
+      })
       return {
         title: isDeleting
           ? `Press ${keybind.print("session_delete")} again to confirm`
-          : formatSessionListTitle(x.title, entry.depth),
+          : formatSessionListTitle(x.title, entry.depth, x.id),
         bg: isDeleting ? theme.error : undefined,
         value: x.id,
         category,
         description: entry.depth > 0 ? entry.parent?.title : undefined,
-        footer: Locale.time(x.time.updated),
+        footer: directoryLabel ?? Locale.time(x.time.updated),
         gutter: isWorking ? (
           <Show when={kv.get("animations_enabled", true)} fallback={<text fg={theme.textMuted}>[⋯]</text>}>
             <spinner frames={spinnerFrames} interval={80} color={theme.primary} />

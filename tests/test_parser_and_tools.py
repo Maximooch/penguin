@@ -78,6 +78,8 @@ def test_tool_manager_get_responses_tools_curated():
     assert "patch_files" not in names
     assert "execute_command" in names
     assert "finish_response" in names
+    assert "delegate" in names
+    assert "delegate_explore_task" not in names
     assert "finish_task" in names
 
     # Built-in web_search should be included as a non-function tool descriptor
