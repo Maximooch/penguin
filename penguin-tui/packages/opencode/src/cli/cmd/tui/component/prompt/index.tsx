@@ -52,6 +52,7 @@ import {
   penguinHttpLocalCommandNeedsSession,
 } from "./penguin-local-command-runtime"
 import { createPenguinPromptSubmitGate, tryStartPenguinPromptSubmit } from "./penguin-submit-gate"
+import { createPasteDuplicateGuard, normalizePastedText, shouldSummarizePaste } from "./paste-policy"
 
 export type PromptProps = {
   sessionID?: string
@@ -93,6 +94,7 @@ export function Prompt(props: PromptProps) {
   const renderer = useRenderer()
   const { theme, syntax } = useTheme()
   const kv = useKV()
+  const pasteDuplicateGuard = createPasteDuplicateGuard()
   const activeSessionID = createMemo(() => props.sessionID ?? sdk.sessionID ?? "")
   const status = createMemo(() => sync.data.session_status?.[activeSessionID()] ?? { type: "idle" })
   const model = createMemo(() => {
@@ -1625,10 +1627,12 @@ export function Prompt(props: PromptProps) {
                   return
                 }
 
-                // Normalize line endings at the boundary
-                // Windows ConPTY/Terminal often sends CR-only newlines in bracketed paste
-                // Replace CRLF first, then any remaining CR
-                const normalizedText = event.text.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+                const normalizedText = normalizePastedText(event.text)
+                if (pasteDuplicateGuard.shouldDrop(normalizedText)) {
+                  event.preventDefault()
+                  return
+                }
+
                 const pastedContent = normalizedText.trim()
                 if (!pastedContent) {
                   command.trigger("prompt.paste")
@@ -1736,17 +1740,16 @@ export function Prompt(props: PromptProps) {
                   return
                 }
 
-                const lineCount = (pastedContent.match(/\n/g)?.length ?? 0) + 1
-                if (
-                  (lineCount >= 3 || pastedContent.length > 150) &&
-                  !sync.data.config.experimental?.disable_paste_summary
-                ) {
+                if (shouldSummarizePaste(pastedContent, sync.data.config.experimental?.disable_paste_summary)) {
+                  const lineCount = (pastedContent.match(/\n/g)?.length ?? 0) + 1
                   event.preventDefault()
                   pasteText(pastedContent, `[Pasted ~${lineCount} lines]`)
                   return
                 }
 
-                // Force layout update and render for the pasted content
+                event.preventDefault()
+                input.insertText(normalizedText)
+
                 setTimeout(() => {
                   // setTimeout is a workaround and needs to be addressed properly
                   if (!input || input.isDestroyed) return
