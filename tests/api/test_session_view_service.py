@@ -1525,6 +1525,16 @@ def test_get_session_info_canonicalizes_openai_model_metadata():
     assert info is not None
     assert info["providerID"] == "openai"
     assert info["modelID"] == "gpt-5.5"
+    assert info["modelSelection"] == {
+        "ready": True,
+        "sessionScoped": True,
+        "source": "session",
+        "providerID": "openai",
+        "modelID": "gpt-5.5",
+        "qualifiedID": "openai/gpt-5.5",
+        "providerSource": "session",
+        "modelSource": "session",
+    }
 
 
 def test_get_session_info_canonicalizes_global_model_fallback():
@@ -1537,6 +1547,40 @@ def test_get_session_info_canonicalizes_global_model_fallback():
     assert info is not None
     assert info["providerID"] == "openai"
     assert info["modelID"] == "gpt-5.5"
+    assert info["modelSelection"] == {
+        "ready": True,
+        "sessionScoped": False,
+        "source": "global",
+        "providerID": "openai",
+        "modelID": "gpt-5.5",
+        "qualifiedID": "openai/gpt-5.5",
+        "providerSource": "global",
+        "modelSource": "global",
+    }
+
+
+def test_list_session_infos_exposes_index_model_selection_metadata() -> None:
+    session = _session("session_index_model", "Index Model", "2026-02-03T00:00:00")
+    core = _core([session])
+    manager = core.conversation_manager.session_manager
+    manager.session_index[session.id][PROVIDER_ID_KEY] = "OpenRouter"
+    manager.session_index[session.id][MODEL_ID_KEY] = "Z-AI/GLM-5.2"
+
+    infos = list_session_infos(core, limit=10)
+
+    info = next(item for item in infos if item["id"] == session.id)
+    assert info["providerID"] == "openrouter"
+    assert info["modelID"] == "z-ai/glm-5.2"
+    assert info["modelSelection"] == {
+        "ready": True,
+        "sessionScoped": True,
+        "source": "session",
+        "providerID": "openrouter",
+        "modelID": "z-ai/glm-5.2",
+        "qualifiedID": "openrouter/z-ai/glm-5.2",
+        "providerSource": "session",
+        "modelSource": "session",
+    }
 
 
 def test_create_update_remove_session_info_round_trip():
@@ -1685,7 +1729,13 @@ def test_get_session_diff_prefers_transcript_tool_parts():
                             "status": "completed",
                             "input": {"filePath": "src/main.py"},
                             "metadata": {
-                                "diff": "--- a/src/main.py\n+++ b/src/main.py\n@@\n-print('x')\n+print('y')\n"
+                                "diff": (
+                                    "--- a/src/main.py\n"
+                                    "+++ b/src/main.py\n"
+                                    "@@\n"
+                                    "-print('x')\n"
+                                    "+print('y')\n"
+                                )
                             },
                         },
                     }

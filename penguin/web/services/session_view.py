@@ -99,12 +99,97 @@ def _normalize_title_source(value: Any) -> Optional[str]:
     return None
 
 
+def _first_non_empty_with_source(
+    *candidates: tuple[Any, str],
+) -> tuple[Optional[str], Optional[str]]:
+    """Return the first non-empty string and its origin label."""
+    for value, source in candidates:
+        normalized = _normalize_non_empty_string(value)
+        if normalized:
+            return normalized, source
+    return None, None
+
+
+def _model_selection_source(
+    *,
+    provider_id: Optional[str],
+    provider_source: Optional[str],
+    model_id: Optional[str],
+    model_source: Optional[str],
+) -> str:
+    """Resolve a compact source label for a provider/model selection."""
+    sources: set[str] = set()
+    if provider_id and provider_source:
+        sources.add(provider_source)
+    if model_id and model_source:
+        sources.add(model_source)
+    if not sources:
+        return "missing"
+    if len(sources) == 1:
+        return next(iter(sources))
+    if "message" in sources:
+        return "message"
+    if "session" in sources:
+        return "session"
+    return "mixed"
+
+
+def _build_model_selection_payload(
+    model_state: dict[str, Optional[str] | bool],
+) -> dict[str, Any]:
+    """Build explicit model hydration metadata for OpenCode-shaped sessions."""
+    provider_id = model_state.get("providerID")
+    model_id = model_state.get("modelID")
+    variant = model_state.get("variant")
+    payload: dict[str, Any] = {
+        "ready": bool(provider_id and model_id),
+        "sessionScoped": bool(model_state.get("sessionScoped")),
+        "source": model_state.get("source") or "missing",
+    }
+    if isinstance(provider_id, str) and provider_id:
+        payload["providerID"] = provider_id
+    if isinstance(model_id, str) and model_id:
+        payload["modelID"] = model_id
+    if (
+        isinstance(provider_id, str)
+        and provider_id
+        and isinstance(model_id, str)
+        and model_id
+    ):
+        payload["qualifiedID"] = f"{provider_id}/{model_id}"
+    if isinstance(variant, str) and variant:
+        payload["variant"] = variant
+
+    for key in ("providerSource", "modelSource", "variantSource"):
+        value = model_state.get(key)
+        if isinstance(value, str) and value:
+            payload[key] = value
+    return payload
+
+
+def _apply_model_selection(
+    payload: dict[str, Any],
+    model_state: dict[str, Optional[str] | bool],
+) -> None:
+    """Attach compatibility model fields and explicit hydration metadata."""
+    provider_id = model_state.get("providerID")
+    model_id = model_state.get("modelID")
+    variant = model_state.get("variant")
+    if isinstance(provider_id, str) and provider_id:
+        payload["providerID"] = provider_id
+    if isinstance(model_id, str) and model_id:
+        payload["modelID"] = model_id
+    if isinstance(variant, str) and variant:
+        payload["variant"] = variant
+    payload["modelSelection"] = _build_model_selection_payload(model_state)
+
+
 def _resolve_session_model_state(
     core: Any,
     session: Any,
     message: Any | None = None,
-) -> dict[str, Optional[str]]:
-    """Resolve model/provider/variant from message, then session, then global fallback."""
+) -> dict[str, Optional[str] | bool]:
+    """Resolve model/provider/variant from message, session, then global fallback."""
     session_meta_raw = getattr(session, "metadata", None)
     session_meta = session_meta_raw if isinstance(session_meta_raw, dict) else {}
     message_meta_raw = (
@@ -114,38 +199,49 @@ def _resolve_session_model_state(
     message_model = message_meta.get("model")
     message_model_dict = message_model if isinstance(message_model, dict) else {}
 
-    provider_id = _normalize_provider_id(
-        _normalize_non_empty_string(message_meta.get("providerID"))
-        or _normalize_non_empty_string(message_meta.get("provider_id"))
-        or _normalize_non_empty_string(message_model_dict.get("providerID"))
-        or _normalize_non_empty_string(session_meta.get(PROVIDER_ID_KEY))
-        or _normalize_non_empty_string(session_meta.get("providerID"))
-        or _normalize_non_empty_string(session_meta.get("provider_id"))
-        or _normalize_non_empty_string(
-            getattr(getattr(core, "model_config", None), "provider", None)
-        )
+    provider_raw, provider_source = _first_non_empty_with_source(
+        (message_meta.get("providerID"), "message"),
+        (message_meta.get("provider_id"), "message"),
+        (message_model_dict.get("providerID"), "message"),
+        (session_meta.get(PROVIDER_ID_KEY), "session"),
+        (session_meta.get("providerID"), "session"),
+        (session_meta.get("provider_id"), "session"),
+        (getattr(getattr(core, "model_config", None), "provider", None), "global"),
     )
-    model_id = _normalize_model_id(
-        provider_id,
-        _normalize_non_empty_string(message_meta.get("modelID"))
-        or _normalize_non_empty_string(message_meta.get("model_id"))
-        or _normalize_non_empty_string(message_model_dict.get("modelID"))
-        or _normalize_non_empty_string(session_meta.get(MODEL_ID_KEY))
-        or _normalize_non_empty_string(session_meta.get("modelID"))
-        or _normalize_non_empty_string(session_meta.get("model_id"))
-        or _normalize_non_empty_string(
-            getattr(getattr(core, "model_config", None), "model", None)
-        )
+    provider_id = _normalize_provider_id(provider_raw)
+    model_raw, model_source = _first_non_empty_with_source(
+        (message_meta.get("modelID"), "message"),
+        (message_meta.get("model_id"), "message"),
+        (message_model_dict.get("modelID"), "message"),
+        (session_meta.get(MODEL_ID_KEY), "session"),
+        (session_meta.get("modelID"), "session"),
+        (session_meta.get("model_id"), "session"),
+        (getattr(getattr(core, "model_config", None), "model", None), "global"),
     )
-    variant = (
-        _normalize_non_empty_string(message_meta.get("variant"))
-        or _normalize_non_empty_string(session_meta.get(VARIANT_KEY))
-        or _normalize_non_empty_string(session_meta.get("variant"))
+    model_id = _normalize_model_id(provider_id, model_raw)
+    variant, variant_source = _first_non_empty_with_source(
+        (message_meta.get("variant"), "message"),
+        (session_meta.get(VARIANT_KEY), "session"),
+        (session_meta.get("variant"), "session"),
     )
+    session_scoped = provider_source in {"message", "session"} or model_source in {
+        "message",
+        "session",
+    }
     return {
         "providerID": provider_id,
         "modelID": model_id,
         "variant": variant,
+        "providerSource": provider_source,
+        "modelSource": model_source,
+        "variantSource": variant_source,
+        "source": _model_selection_source(
+            provider_id=provider_id,
+            provider_source=provider_source,
+            model_id=model_id,
+            model_source=model_source,
+        ),
+        "sessionScoped": session_scoped,
     }
 
 
@@ -537,12 +633,24 @@ def _build_index_session_info(
     variant = _normalize_non_empty_string(
         _metadata_string(metadata, VARIANT_KEY, "variant")
     )
-    if provider_id:
-        payload["providerID"] = provider_id
-    if model_id:
-        payload["modelID"] = model_id
-    if variant:
-        payload["variant"] = variant
+    _apply_model_selection(
+        payload,
+        {
+            "providerID": provider_id,
+            "modelID": model_id,
+            "variant": variant,
+            "providerSource": "session" if provider_id else None,
+            "modelSource": "session" if model_id else None,
+            "variantSource": "session" if variant else None,
+            "source": _model_selection_source(
+                provider_id=provider_id,
+                provider_source="session" if provider_id else None,
+                model_id=model_id,
+                model_source="session" if model_id else None,
+            ),
+            "sessionScoped": bool(provider_id or model_id),
+        },
+    )
 
     archived_ms = _metadata_int(metadata, "archived_at_ms")
     if archived_ms > 0:
@@ -704,7 +812,8 @@ def _build_session_info(core: Any, session: Any, manager: Any) -> dict[str, Any]
 
     if directory_source in {"runtime", "cwd"}:
         logger.debug(
-            "session.view.directory_fallback session=%s source=%s resolved=%s manager=%s",
+            "session.view.directory_fallback "
+            "session=%s source=%s resolved=%s manager=%s",
             getattr(session, "id", "unknown"),
             directory_source,
             directory,
@@ -739,12 +848,7 @@ def _build_session_info(core: Any, session: Any, manager: Any) -> dict[str, Any]
     }
 
     model_state = _resolve_session_model_state(core, session)
-    if model_state["providerID"]:
-        payload["providerID"] = model_state["providerID"]
-    if model_state["modelID"]:
-        payload["modelID"] = model_state["modelID"]
-    if model_state["variant"]:
-        payload["variant"] = model_state["variant"]
+    _apply_model_selection(payload, model_state)
 
     if isinstance(metadata, dict):
         metadata_agent_mode = _normalize_agent_mode(
@@ -1766,7 +1870,8 @@ def get_session_messages(
         if isinstance(last_info, dict):
             last_id = str(last_info.get("id") or "")
         logger.warning(
-            "session.view.messages_legacy_fallback session=%s count=%s first=%s last=%s",
+            "session.view.messages_legacy_fallback "
+            "session=%s count=%s first=%s last=%s",
             session_id,
             len(rows),
             first_id,

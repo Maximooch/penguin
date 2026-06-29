@@ -59,6 +59,7 @@ import {
   shouldOwnPasteEvent,
   shouldSummarizePaste,
 } from "./paste-policy"
+import { hydratedSessionModel, hydratedSessionVariant, type SessionModelHydration } from "../../util/session-model"
 
 export type PromptProps = {
   sessionID?: string
@@ -291,12 +292,9 @@ export function Prompt(props: PromptProps) {
     const msg = lastUserMessage()
     const session = sessionID
       ? (sync.session.get(sessionID) as
-          | {
+          | (SessionModelHydration & {
               agent_id?: string
-              providerID?: string
-              modelID?: string
-              variant?: string
-            }
+            })
           | undefined)
       : undefined
 
@@ -320,8 +318,7 @@ export function Prompt(props: PromptProps) {
       syncedAgentSessionID = sessionID
     }
 
-    const sessionModel =
-      session?.providerID && session?.modelID ? { providerID: session.providerID, modelID: session.modelID } : undefined
+    const sessionModel = hydratedSessionModel(session)
     const messageModel = msg?.model
     const nextModel = sessionModel ?? messageModel
     const nextModelKey = nextModel ? `${sessionID}:${nextModel.providerID}/${nextModel.modelID}` : `${sessionID}:none`
@@ -335,7 +332,7 @@ export function Prompt(props: PromptProps) {
     }
 
     if (sessionID !== syncedVariantSessionID) {
-      const nextVariant = session?.variant ?? msg?.variant
+      const nextVariant = hydratedSessionVariant(session) ?? msg?.variant
       if (typeof nextVariant === "string") {
         local.model.variant.set(nextVariant)
       } else if (nextModel) {
