@@ -211,6 +211,15 @@ describe("sync bootstrap", () => {
       },
       providerListData: undefined,
       configData: { data: { share: "disabled", service_tier: "priority" } },
+      notificationData: {
+        mode: "combined",
+        soundPack: "penguin",
+        includeDetails: true,
+        quietHours: {
+          start: "22:00",
+          end: "07:00",
+        },
+      },
       providerAuthData: { data: { openai: [{ type: "oauth", label: "OpenAI OAuth" }] } },
       sessions: [
         {
@@ -247,6 +256,15 @@ describe("sync bootstrap", () => {
     expect(result.provider_next.connected).toEqual(["openai"])
     expect(result.provider_auth).toEqual({ openai: [{ type: "oauth", label: "OpenAI OAuth" }] })
     expect(result.config).toMatchObject({ share: "disabled", service_tier: "priority" })
+    expect(result.notification_policy).toEqual({
+      mode: "combined",
+      soundPack: "penguin",
+      includeDetails: true,
+      quietHours: {
+        start: "22:00",
+        end: "07:00",
+      },
+    })
     expect(result.session[0]).toMatchObject({
       id: "ses_1",
       title: "Mapped Session",
@@ -306,6 +324,7 @@ describe("sync bootstrap", () => {
     expect(result.agent[0]?.name).toBe("penguin")
     expect(result.command.map((item) => item.name)).toEqual(["config", "tool_details", "thinking"])
     expect(result.config).toEqual({ share: "disabled" })
+    expect(result.notification_policy).toEqual({ mode: "off" })
     expect(result.path.directory).toBe("/tmp/project")
   })
 

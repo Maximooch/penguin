@@ -43,6 +43,13 @@ export type NotificationPayload = {
   sessionID?: string
 }
 
+export const DEFAULT_NOTIFICATION_POLICY: NotificationPolicy = {
+  mode: "off",
+}
+
+const NOTIFICATION_MODES: NotificationMode[] = ["off", "visual", "bell", "osc", "os", "terminal", "sound", "combined"]
+const SOUND_PACKS: SoundPack[] = ["generic", "train_station", "penguin"]
+
 const DEFAULT_TITLES: Record<AttentionCategory, string> = {
   run_complete: "Penguin run complete",
   run_failed: "Penguin run failed",
@@ -102,6 +109,37 @@ export function notificationChannels(mode: NotificationMode): NotificationChanne
   if (mode === "off") return []
   if (mode === "combined") return ["visual", "bell"]
   return [mode]
+}
+
+function isNotificationMode(value: unknown): value is NotificationMode {
+  return typeof value === "string" && NOTIFICATION_MODES.includes(value as NotificationMode)
+}
+
+function isSoundPack(value: unknown): value is SoundPack {
+  return typeof value === "string" && SOUND_PACKS.includes(value as SoundPack)
+}
+
+function normalizeQuietHours(value: unknown): QuietHours | undefined {
+  if (!value || typeof value !== "object") return
+  const source = value as Record<string, unknown>
+  if (typeof source.start !== "string" || typeof source.end !== "string") return
+  return {
+    start: source.start,
+    end: source.end,
+  }
+}
+
+export function normalizeNotificationPolicy(value: unknown): NotificationPolicy {
+  if (!value || typeof value !== "object") return DEFAULT_NOTIFICATION_POLICY
+  const source = value as Record<string, unknown>
+  const mode = isNotificationMode(source.mode) ? source.mode : "off"
+  const soundPack = isSoundPack(source.soundPack) ? source.soundPack : "generic"
+  return {
+    mode,
+    soundPack,
+    quietHours: normalizeQuietHours(source.quietHours),
+    includeDetails: source.includeDetails === true,
+  }
 }
 
 export function notificationPayloads(

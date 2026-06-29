@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test"
 import {
   notificationChannels,
   notificationPayloads,
+  normalizeNotificationPolicy,
   sanitizeNotificationText,
 } from "../../../src/cli/cmd/tui/notification-policy"
 
@@ -85,5 +86,28 @@ describe("terminal notification policy", () => {
     expect(notificationChannels("osc")).toEqual(["osc"])
     expect(notificationChannels("os")).toEqual(["os"])
     expect(notificationChannels("terminal")).toEqual(["terminal"])
+  })
+
+  test("normalizes backend policy payloads defensively", () => {
+    expect(normalizeNotificationPolicy(undefined)).toEqual({ mode: "off" })
+    expect(normalizeNotificationPolicy({ mode: "bogus", soundPack: "penguin" })).toEqual({
+      mode: "off",
+      soundPack: "penguin",
+      includeDetails: false,
+      quietHours: undefined,
+    })
+    expect(
+      normalizeNotificationPolicy({
+        mode: "combined",
+        soundPack: "train_station",
+        includeDetails: true,
+        quietHours: { start: "22:00", end: "07:00" },
+      }),
+    ).toEqual({
+      mode: "combined",
+      soundPack: "train_station",
+      includeDetails: true,
+      quietHours: { start: "22:00", end: "07:00" },
+    })
   })
 })

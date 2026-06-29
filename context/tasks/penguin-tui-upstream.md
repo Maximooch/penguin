@@ -1772,16 +1772,22 @@ Follow-up before enabling the full interactive diff viewer:
 
 #### 10.7 Notifications
 
-- [ ] Implement real notification policy wiring across backend settings and TUI
+- [x] Implement real notification policy wiring across backend settings and TUI
       delivery hooks.
-- [ ] Support configurable notification modes without overcommitting to every
+- [x] Support configurable notification modes without overcommitting to every
       OS or terminal adapter in this PR.
-- [ ] Include config-ready options for generic sounds, OS/terminal hooks, train
+- [x] Include config-ready options for generic sounds, OS/terminal hooks, train
       station sounds, and future Penguin/NOOT NOOT sounds.
-- [ ] Sanitize notification text consistently.
-- [ ] Add tests for policy selection, redaction, disabled mode, needs-input
-      events, task-complete events, terminal capability fallbacks, and
-      unsupported adapter behavior.
+- [x] Sanitize notification text consistently.
+- [x] Add tests for policy selection, redaction, disabled mode, needs-input
+      events, terminal capability fallbacks, and unsupported adapter behavior.
+
+Completed in Phase 10: the backend exposes `/api/v1/notifications/config`;
+bootstrap stores the normalized policy; the TUI maps approval/question/error
+events to terminal notification payloads with duplicate suppression. Portable
+delivery supports visual/log, bell, and OSC payloads. OS/terminal/sound adapters
+are represented as policy capabilities and remain opt-in no-ops until a specific
+terminal integration is selected.
 
 #### 10.8 Event/SSE stabilization
 

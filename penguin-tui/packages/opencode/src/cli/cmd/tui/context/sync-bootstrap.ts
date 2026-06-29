@@ -11,6 +11,7 @@ import type {
 import type { Path } from "@opencode-ai/sdk"
 import { Log } from "@/util/log"
 import z from "zod"
+import { normalizeNotificationPolicy, type NotificationPolicy } from "../notification-policy"
 
 type BootstrapFetch = (input: string | URL, init?: RequestInit) => Promise<Response>
 
@@ -91,6 +92,7 @@ export type PenguinBootstrapState = {
   session: PenguinSession[]
   session_status: Record<string, SessionStatus>
   session_usage: Record<string, SessionUsage>
+  notification_policy: NotificationPolicy
 }
 
 const SPARSE_PROVIDER_CATALOG_MODEL_LIMIT = 20
@@ -337,6 +339,7 @@ export function mapPenguinBootstrap(input: {
   commandsData?: unknown
   configData: unknown
   directory: string
+  notificationData?: unknown
   now?: number
   providerAuthData: unknown
   providerListData: unknown
@@ -407,6 +410,7 @@ export function mapPenguinBootstrap(input: {
     agent: agent.length ? agent : [baseAgent],
     command,
     config,
+    notification_policy: normalizeNotificationPolicy(input.notificationData),
     session,
     session_usage: sessionUsage,
     session_status: sessionStatus,
@@ -423,6 +427,7 @@ export function createPenguinBootstrapFallback(input: {
     baseUrl: input.baseUrl,
     configData: undefined,
     directory: input.directory,
+    notificationData: undefined,
     now: input.now,
     providerAuthData: undefined,
     providerListData: undefined,

@@ -61,6 +61,7 @@ from penguin.web.services.configuration import (
     settings_locations_payload,
 )
 from penguin.web.services.command_registry import list_opencode_commands
+from penguin.web.services.notification_settings import notification_settings_payload
 from penguin.web.services.conversations import (
     create_conversation_payload,
     get_conversation_payload,
@@ -3419,6 +3420,14 @@ async def opencode_config_update(
 async def api_command_list() -> list[dict[str, Any]]:
     """Return Penguin command metadata for OpenCode-derived TUI clients."""
     return list_opencode_commands()
+
+
+@router.get("/api/v1/notifications/config")
+async def api_notification_config(
+    core: PenguinCore = Depends(get_core),
+) -> dict[str, Any]:
+    """Return terminal notification policy metadata for Penguin TUI clients."""
+    return notification_settings_payload(core)
 
 
 @router.get("/config/providers")

@@ -51,6 +51,8 @@ import { createPenguinSessionUsageUrl } from "./sync-session-usage"
 import { normalizeSessionDiff } from "./session-diff"
 import { upsertSessionRecord } from "../util/session-family"
 import { profileStartup } from "../util/startup-profile"
+import { DEFAULT_NOTIFICATION_POLICY, type NotificationPolicy } from "../notification-policy"
+import { notificationEventKey, notifyForSyncEvent } from "../notification-runtime"
 
 export const { use: useSync, provider: SyncProvider } = createSimpleContext({
   name: "Sync",
@@ -107,6 +109,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       formatter: FormatterStatus[]
       vcs: VcsInfo | undefined
       path: Path
+      notification_policy: NotificationPolicy
     }>({
       provider_next: {
         all: initialPenguinState?.provider_next.all ?? [],
@@ -135,9 +138,11 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       formatter: [],
       vcs: undefined,
       path: initialPenguinState?.path ?? { state: "", config: "", worktree: "", directory: "" },
+      notification_policy: initialPenguinState?.notification_policy ?? DEFAULT_NOTIFICATION_POLICY,
     })
     const fullSyncedSessions = new Set<string>()
     const providerCatalogRefreshTimers = new Set<ReturnType<typeof setTimeout>>()
+    const notifiedEventKeys = new Set<string>()
 
     const resolveDirectory = (sessionID?: string) => {
       if (sessionID) {
@@ -302,6 +307,19 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           })
         )
           return
+        const key = notificationEventKey(event)
+        if (!key || !notifiedEventKeys.has(key)) {
+          if (key) notifiedEventKeys.add(key)
+          notifyForSyncEvent(event, store.notification_policy, {
+            write: (text) => process.stdout.write(text),
+            log: (payload) =>
+              Log.Default.info("penguin notification", {
+                category: payload.category,
+                channel: payload.channel,
+                sessionID: payload.sessionID,
+              }),
+          })
+        }
       }
       switch (event.type) {
         case "server.instance.disposed":
@@ -635,8 +653,8 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             .then((data) => (Array.isArray(data) ? data : []))
             .catch(() => []),
         )
-        const [providersData, providerListData, configData, providerAuthData, roster, commandsData] = await Promise.all(
-          [
+        const [providersData, providerListData, configData, providerAuthData, roster, commandsData, notificationData] =
+          await Promise.all([
             timed(
               "config_providers",
               fetchBootstrapJson({
@@ -690,14 +708,23 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
                 fallback: undefined,
               }),
             ),
-          ],
-        )
+            timed(
+              "notification_config",
+              fetchBootstrapJson({
+                fetch: sdk.fetch,
+                path: new URL("/api/v1/notifications/config", sdk.url),
+                endpoint: "/api/v1/notifications/config",
+                fallback: undefined,
+              }),
+            ),
+          ])
         const mapStart = Date.now()
         const bootstrapState = mapPenguinBootstrap({
           baseUrl: sdk.url,
           commandsData,
           configData,
           directory,
+          notificationData,
           providerAuthData,
           providerListData,
           providersData,
@@ -715,6 +742,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           setStore("agent", reconcile(bootstrapState.agent))
           setStore("command", reconcile(bootstrapState.command))
           setStore("config", reconcile(bootstrapState.config))
+          setStore("notification_policy", reconcile(bootstrapState.notification_policy))
           setStore("path", reconcile(bootstrapState.path))
           setStore("status", "partial")
         })
@@ -728,6 +756,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             commandsData,
             configData,
             directory,
+            notificationData,
             providerAuthData,
             providerListData,
             providersData,
