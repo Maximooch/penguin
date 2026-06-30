@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from penguin.config import WORKSPACE_PATH
-from penguin.web.services.runtime_events import wrap_opencode_event
+from penguin.system.runtime_events import wrap_opencode_event
 
 logger = logging.getLogger(__name__)
 _LAST_BRANCH_KEYS: dict[str, str] = {}

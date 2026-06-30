@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, Literal, Optional, Tuple
 
-from penguin.web.services.runtime_events import wrap_opencode_event
+from penguin.system.runtime_events import wrap_opencode_event
 
 
 class PartType(Enum):

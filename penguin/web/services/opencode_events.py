@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from penguin.web.services.runtime_events import (
+from penguin.system.runtime_events import (
     opencode_payload_from_runtime_event,
     runtime_event_from_opencode,
     wrap_opencode_event,

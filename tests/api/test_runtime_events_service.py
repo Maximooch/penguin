@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from penguin.web.services.runtime_events import (
+from penguin.system.runtime_events import (
     RUNTIME_EVENT_CATEGORIES,
     RUNTIME_EVENT_SCHEMA_VERSION,
     build_runtime_event,
@@ -83,6 +83,49 @@ def test_runtime_event_redacts_public_payload_secrets() -> None:
     assert event["payload"]["nested"]["client_secret"] == "[redacted]"
     assert event["payload"]["nested"]["private_key"] == "[redacted]"
     assert event["payload"]["nested"]["secret_key"] == "[redacted]"
+
+
+def test_runtime_event_redacts_suffix_style_credentials() -> None:
+    # Regression: password/secret/authorization credential names whose sensitive
+    # word is a non-trailing or prefixed segment must still be redacted, without
+    # touching token telemetry whose keys never contain those words.
+    reset_runtime_event_sequences()
+
+    event = build_runtime_event(
+        event_type="provider.auth.updated",
+        payload={
+            "sessionID": "ses_1",
+            "db_password": "hunter2",
+            "webhook_secret": "whsec_live",
+            "proxy_authorization": "Bearer xyz",
+            "oauth_client_secret": "cs_live",
+            "nested": {"admin_password": "root"},
+            # Telemetry that must remain visible.
+            "tokens": 12,
+            "token_usage": {"input_tokens": 3, "output_tokens": 9},
+            "input_tokens": 3,
+        },
+    )
+
+    payload = event["payload"]
+    assert payload["db_password"] == "[redacted]"
+    assert payload["webhook_secret"] == "[redacted]"
+    assert payload["proxy_authorization"] == "[redacted]"
+    assert payload["oauth_client_secret"] == "[redacted]"
+    assert payload["nested"]["admin_password"] == "[redacted]"
+
+    assert payload["tokens"] == 12
+    assert payload["token_usage"] == {"input_tokens": 3, "output_tokens": 9}
+    assert payload["input_tokens"] == 3
+
+    assert event["privacy"]["classification"] == "sensitive"
+    assert set(event["privacy"]["redacted_fields"]) == {
+        "db_password",
+        "webhook_secret",
+        "proxy_authorization",
+        "oauth_client_secret",
+        "nested.admin_password",
+    }
 
 
 def test_runtime_event_preserves_token_usage_telemetry() -> None:

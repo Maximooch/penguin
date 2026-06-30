@@ -60,7 +60,7 @@ from penguin.web.services.configuration import (
 from penguin.web.services.command_registry import list_opencode_commands
 from penguin.web.services.notification_settings import notification_settings_payload
 from penguin.web.services.opencode_events import schedule_opencode_event
-from penguin.web.services.runtime_events import wrap_opencode_event
+from penguin.system.runtime_events import wrap_opencode_event
 from penguin.web.services.conversations import (
     create_conversation_payload,
     get_conversation_payload,

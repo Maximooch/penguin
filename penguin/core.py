@@ -208,7 +208,7 @@ from penguin.utils.profiling import (
     profile_startup_phase,
     profiler,
 )
-from penguin.web.services.runtime_events import wrap_opencode_event
+from penguin.system.runtime_events import redact_runtime_payload, wrap_opencode_event
 
 try:
     from penguin.system.message_bus import MessageBus, ProtocolMessage
@@ -6515,8 +6515,7 @@ class PenguinCore:
         if not session_id or session_id == "unknown":
             return
 
-        public_event = wrap_opencode_event(event_type, properties)
-        public_properties = public_event.get("properties")
+        public_properties, _redacted_fields = redact_runtime_payload(properties)
         if isinstance(public_properties, dict):
             properties = dict(public_properties)
 

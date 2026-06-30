@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from penguin.web.services.runtime_events import reset_runtime_event_sequences
+from penguin.system.runtime_events import reset_runtime_event_sequences
 from penguin.web.services.system_status import get_path_info
 from penguin.web.sse_events import events_sse, set_core_instance
 
@@ -174,6 +174,172 @@ async def test_sse_replays_buffered_events_after_last_event_id(tmp_path: Path):
     )
     assert replayed["id"] == second_event["id"]
     assert replayed["properties"]["id"] == "msg_2"
+
+    await replay_stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sse_reports_replay_gap_for_evicted_last_event_id(tmp_path: Path):
+    reset_runtime_event_sequences()
+    event_bus = _EventBus()
+    runtime = SimpleNamespace(
+        workspace_root=str(tmp_path),
+        project_root=str(tmp_path),
+        active_root=str(tmp_path),
+    )
+    core = SimpleNamespace(
+        event_bus=event_bus,
+        runtime_config=runtime,
+        _opencode_session_directories={},
+    )
+    set_core_instance(core)
+
+    response = await events_sse(
+        session_id="session_one",
+        conversation_id=None,
+        agent_id=None,
+        directory=str(tmp_path),
+    )
+    stream = response.body_iterator
+    _ = _parse_sse(await stream.__anext__())
+
+    await event_bus.emit(
+        "opencode_event",
+        {
+            "type": "message.updated",
+            "properties": {
+                "id": "msg_1",
+                "sessionID": "session_one",
+                "role": "assistant",
+            },
+        },
+    )
+    await event_bus.emit(
+        "opencode_event",
+        {
+            "type": "message.updated",
+            "properties": {
+                "id": "msg_2",
+                "sessionID": "session_one",
+                "role": "assistant",
+            },
+        },
+    )
+
+    first_event = _parse_sse(await asyncio.wait_for(stream.__anext__(), timeout=0.25))
+    second_event = _parse_sse(await asyncio.wait_for(stream.__anext__(), timeout=0.25))
+    await stream.aclose()
+
+    core._opencode_sse_replay_v1 = [second_event]
+    response = await events_sse(
+        session_id="session_one",
+        conversation_id=None,
+        agent_id=None,
+        directory=str(tmp_path),
+        last_event_id=first_event["id"],
+    )
+    replay_stream = response.body_iterator
+
+    _ = _parse_sse(await replay_stream.__anext__())
+    gap = _parse_sse(await asyncio.wait_for(replay_stream.__anext__(), timeout=0.25))
+    assert gap["type"] == "server.replay_gap"
+    assert gap["properties"]["lastEventID"] == first_event["id"]
+    assert gap["properties"]["oldestEventID"] == second_event["id"]
+    assert gap["properties"]["newestEventID"] == second_event["id"]
+    assert gap["properties"]["reason"] == "last_event_id_not_available"
+
+    await replay_stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sse_reconnect_does_not_duplicate_live_event_already_in_replay(
+    tmp_path: Path,
+):
+    reset_runtime_event_sequences()
+    event_bus = _EventBus()
+    runtime = SimpleNamespace(
+        workspace_root=str(tmp_path),
+        project_root=str(tmp_path),
+        active_root=str(tmp_path),
+    )
+    core = SimpleNamespace(
+        event_bus=event_bus,
+        runtime_config=runtime,
+        _opencode_session_directories={},
+    )
+    set_core_instance(core)
+
+    response = await events_sse(
+        session_id="session_one",
+        conversation_id=None,
+        agent_id=None,
+        directory=str(tmp_path),
+    )
+    stream = response.body_iterator
+    _ = _parse_sse(await stream.__anext__())
+
+    await event_bus.emit(
+        "opencode_event",
+        {
+            "type": "message.updated",
+            "properties": {
+                "id": "msg_1",
+                "sessionID": "session_one",
+                "role": "assistant",
+            },
+        },
+    )
+    await event_bus.emit(
+        "opencode_event",
+        {
+            "type": "message.updated",
+            "properties": {
+                "id": "msg_2",
+                "sessionID": "session_one",
+                "role": "assistant",
+            },
+        },
+    )
+
+    first_event = _parse_sse(await asyncio.wait_for(stream.__anext__(), timeout=0.25))
+    second_event = _parse_sse(await asyncio.wait_for(stream.__anext__(), timeout=0.25))
+    await stream.aclose()
+
+    response = await events_sse(
+        session_id="session_one",
+        conversation_id=None,
+        agent_id=None,
+        directory=str(tmp_path),
+        last_event_id=first_event["id"],
+    )
+    replay_stream = response.body_iterator
+    _ = _parse_sse(await replay_stream.__anext__())
+
+    await event_bus.emit(
+        "opencode_event",
+        {
+            "runtime_event": {
+                "id": second_event["id"],
+                "type": second_event["type"],
+                "payload": second_event["properties"],
+                "sequence": second_event["order"],
+                "time": second_event["time"],
+            },
+            "type": second_event["type"],
+            "properties": second_event["properties"],
+        },
+    )
+
+    delivered = _parse_sse(
+        await asyncio.wait_for(replay_stream.__anext__(), timeout=0.25)
+    )
+    assert delivered["id"] == second_event["id"]
+    try:
+        duplicate = await asyncio.wait_for(replay_stream.__anext__(), timeout=0.05)
+    except (asyncio.TimeoutError, StopAsyncIteration):
+        duplicate = None
+    if duplicate is not None:
+        assert _parse_sse(duplicate)["id"] != second_event["id"]
 
     await replay_stream.aclose()
 
