@@ -1912,7 +1912,8 @@ Phase 11 goals:
 Phase 11 implementation notes:
 
 - Backend-owned event envelope lives in
-  `penguin/web/services/runtime_events.py`.
+  `penguin/system/runtime_events.py` so runtime/core imports stay independent of
+  the web/ASGI stack.
 - Runtime events use schema version `penguin.runtime_event.v1` and contain:
   `id`, `schema_version`, `type`, `category`, `source`, `subject`, `time`,
   `stream_id`, `sequence`, `scope`, `correlation`, `actor`, `privacy`,
@@ -1943,6 +1944,10 @@ Phase 11 implementation notes:
 - SSE keeps a bounded in-memory compatibility replay window for current
   reconnect/dedupe behavior. A durable emit-time event ledger is Phase 11.5; do
   not build Phase 12 consumers on the bounded SSE buffer.
+- The current `server.replay_gap` frame is a temporary compatibility signal for
+  bounded-buffer misses. It is intentionally not a durable runtime-event cursor;
+  future TUI/Link consumers should treat it as a full-resync trigger unless the
+  Phase 11.5 ledger replaces it with a real replay cursor.
 - Current CWM events should be modeled as token/context-window telemetry. Do
   not describe current CWM behavior as compaction; it trims by category priority
   and recency.
@@ -2007,12 +2012,22 @@ Phase 11.5 test requirements:
 
 Implementation notes:
 
-- Prefer a small service module under `penguin/web/services` or a runtime event
-  storage package instead of adding ledger behavior to routes.
+- Prefer a small runtime event storage package or service module that consumes
+  `penguin/system/runtime_events.py` instead of adding ledger behavior to routes.
 - SSE should remain a projection/subscription layer. It should not own durable
   event truth.
 - The first ledger can be local/deterministic and modest. The important contract
   is append-only, ordered, replayable, redacted `RuntimeEvent` records.
+- Move the current bounded SSE replay helpers, queued-live-event dedupe bridge,
+  replay-gap payload shaping, and queue/backpressure policy out of
+  `penguin/web/sse_events.py` as part of the ledger work. The route module should
+  subscribe, filter/project, and frame events only.
+- Decide whether replay-gap notifications should omit synthetic SSE ids, carry a
+  newest ledger cursor, or be replaced by ledger-backed replay responses before
+  any client consumes `server.replay_gap` as more than a resync signal.
+- Keep `server.connected` / `server.replay_gap` classified as transport signals
+  in the ledger design instead of relying on the current default
+  `session_lifecycle` fallback.
 
 ### 12. Post-envelope TUI and runtime feature follow-ups
 

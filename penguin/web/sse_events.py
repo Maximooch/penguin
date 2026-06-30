@@ -27,8 +27,12 @@ router = APIRouter()
 _REPLAY_BUFFER_ATTR = "_opencode_sse_replay_v1"
 # Bounded compatibility buffer until Phase 11.5 lands the durable runtime event
 # ledger. It covers short reconnects only; gaps are surfaced to clients instead
-# of being silently ignored.
+# of being silently ignored. Do not treat this route-local memory as durable
+# event truth; the ledger should own replay, retention, drop logging, and policy.
 _MAX_REPLAY_EVENTS = 1000
+# Temporary per-connection delivery limits for the compatibility SSE projection.
+# Phase 11.5 should promote these to named policy/config values with metrics for
+# slow-client drops once the ledger can remain the source of replay truth.
 _SSE_QUEUE_MAX_EVENTS = 1000
 _SSE_KEEPALIVE_TIMEOUT_SECONDS = 300.0
 
@@ -97,6 +101,9 @@ async def events_sse(
 
     async def event_generator() -> AsyncIterator[str]:
         queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=_SSE_QUEUE_MAX_EVENTS)
+        # Reconnect-only dedupe bridge: events can arrive after subscription but
+        # before replay drains. The set is intentionally per connection and
+        # should disappear when Phase 11.5 moves replay/dedupe to the ledger.
         queued_live_event_ids: set[str] = set()
         event_order = 0
 
@@ -222,7 +229,8 @@ async def events_sse(
                 if isinstance(event_id, str):
                     queued_live_event_ids.add(event_id)
             except asyncio.QueueFull:
-                # Drop event if queue is full (client is slow)
+                # Drop event if queue is full (client is slow). Phase 11.5 should
+                # add ledger-backed recovery plus logging/metrics for this path.
                 pass
 
         # Subscribe to events
@@ -298,6 +306,9 @@ async def events_sse(
 
 
 def _replay_buffer(core: Any) -> list[dict[str, Any]]:
+    # Phase 11 bridge only: keep the compatibility buffer attached to the shared
+    # core so reconnects can replay across SSE connections. Move this behind a
+    # ledger/service boundary when durable runtime events land in Phase 11.5.
     existing = getattr(core, _REPLAY_BUFFER_ATTR, None)
     if isinstance(existing, list):
         return existing
@@ -330,6 +341,10 @@ def _replay_events_after(
 
 
 def _replay_gap_event(core: Any, last_event_id: str) -> dict[str, Any]:
+    # Temporary transport signal, not durable runtime truth. Current EventSource
+    # clients may resume from this synthetic frame's SSE id and receive another
+    # gap; the eventual TUI/Link consumer should treat it as a full-resync signal
+    # unless Phase 11.5 changes the frame to carry a real ledger resume cursor.
     buffer = _replay_buffer(core)
     oldest_id = buffer[0].get("id") if buffer else None
     newest_id = buffer[-1].get("id") if buffer else None
