@@ -274,6 +274,38 @@ async def test_provider_payloads_expose_backend_catalog_state(
 
 
 @pytest.mark.asyncio
+async def test_provider_payloads_report_refresh_in_flight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        provider_service,
+        "_schedule_provider_catalog_refresh",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        provider_service,
+        "_PROVIDER_CATALOG_REFRESH_IN_FLIGHT",
+        True,
+    )
+
+    core = _Core(tmp_path)
+    typed_core = cast(Any, core)
+
+    config_payload = await opencode_config_providers(core=typed_core)
+    provider_payload = await opencode_provider_list(core=typed_core)
+
+    openrouter_config = next(
+        item for item in config_payload["providers"] if item["id"] == "openrouter"
+    )
+    openrouter_provider = next(
+        item for item in provider_payload["all"] if item["id"] == "openrouter"
+    )
+    assert openrouter_config["catalog"]["refresh_scheduled"] is True
+    assert openrouter_provider["catalog"]["refresh_scheduled"] is True
+
+
+@pytest.mark.asyncio
 async def test_config_get_includes_runtime_and_reasoning_metadata(
     tmp_path: Path,
 ) -> None:

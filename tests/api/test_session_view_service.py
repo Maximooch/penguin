@@ -1559,6 +1559,33 @@ def test_get_session_info_canonicalizes_global_model_fallback():
     }
 
 
+def test_get_session_info_treats_variant_only_override_as_session_scoped():
+    session = _session(
+        "session_variant_only",
+        "Variant Only",
+        "2026-02-03T00:00:00",
+    )
+    session.metadata[VARIANT_KEY] = "xhigh"
+    core = _core([session])
+    core.model_config = SimpleNamespace(provider="OpenAI", model="openai/GPT-5.5")
+
+    info = get_session_info(core, session.id)
+
+    assert info is not None
+    assert info["modelSelection"] == {
+        "ready": True,
+        "sessionScoped": True,
+        "source": "session",
+        "providerID": "openai",
+        "modelID": "gpt-5.5",
+        "qualifiedID": "openai/gpt-5.5",
+        "variant": "xhigh",
+        "providerSource": "global",
+        "modelSource": "global",
+        "variantSource": "session",
+    }
+
+
 def test_list_session_infos_exposes_index_model_selection_metadata() -> None:
     session = _session("session_index_model", "Index Model", "2026-02-03T00:00:00")
     core = _core([session])
@@ -1864,3 +1891,35 @@ def test_get_session_diff_git_fallback_includes_untracked_files(tmp_path: Path):
     assert by_file["src/main.py"]["deletions"] == 1
     assert by_file["notes.md"]["after"] == "one\ntwo\n"
     assert by_file["notes.md"]["additions"] == 2
+
+
+def test_get_session_diff_git_fallback_skips_unreadable_untracked_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    missing = repo / "missing.md"
+    missing.write_text("temporary\n", encoding="utf-8")
+    visible = repo / "visible.md"
+    visible.write_text("visible\n", encoding="utf-8")
+    session = _session("session_git_unreadable", "Git Diff", "2026-02-03T00:00:00")
+    session.metadata["directory"] = str(repo)
+    core = _core([session])
+
+    original_read_text = Path.read_text
+
+    def _read_text(path: Path, *args: Any, **kwargs: Any) -> str:
+        if path == missing:
+            raise FileNotFoundError(path)
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _read_text)
+
+    diffs = get_session_diff(core, session.id)
+
+    assert diffs is not None
+    by_file = {diff["file"]: diff for diff in diffs}
+    assert "missing.md" not in by_file
+    assert by_file["visible.md"]["after"] == "visible\n"

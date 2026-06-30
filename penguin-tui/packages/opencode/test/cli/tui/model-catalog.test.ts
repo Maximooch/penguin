@@ -127,6 +127,46 @@ describe("model catalog", () => {
     expect(hasSparseModelCatalog(catalog)).toBe(false)
   })
 
+  test("preserves live sparse provider metadata when model counts match", () => {
+    const catalog = createModelCatalogProviders(
+      [
+        {
+          catalog: {
+            model_count: 1,
+            sparse: false,
+            state: "ready",
+          },
+          id: "openrouter",
+          name: "OpenRouter",
+          models: {
+            "haiku-4.5": { id: "haiku-4.5", name: "haiku-4.5" },
+          },
+        },
+      ],
+      [
+        {
+          catalog: {
+            model_count: 1,
+            sparse: true,
+            state: "sparse",
+          },
+          id: "openrouter",
+          name: "OpenRouter",
+          models: {
+            "haiku-4.5": { id: "haiku-4.5", name: "haiku-4.5" },
+          },
+        },
+      ],
+    )
+
+    expect(catalog[0]?.catalog).toEqual({
+      model_count: 1,
+      sparse: true,
+      state: "sparse",
+    })
+    expect(hasSparseModelCatalog(catalog)).toBe(true)
+  })
+
   test("deep-merges overlapping warmed and configured model metadata", () => {
     const catalog = createModelCatalogProviders(
       [

@@ -334,9 +334,11 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
               write: (text) => process.stdout.write(text),
               log: (payload) =>
                 Log.Default.info("penguin notification", {
+                  body: payload.body,
                   category: payload.category,
                   channel: payload.channel,
                   sessionID: payload.sessionID,
+                  title: payload.title,
                 }),
             })
           }

@@ -462,6 +462,11 @@ def _provider_catalog_background_enabled() -> bool:
     return raw_value.strip().lower() not in {"0", "false", "no", "off"}
 
 
+def _provider_catalog_refresh_active() -> bool:
+    with _PROVIDER_CATALOG_REFRESH_LOCK:
+        return _PROVIDER_CATALOG_REFRESH_IN_FLIGHT
+
+
 def _refresh_provider_catalogs(auth_records: dict[str, dict[str, Any]]) -> None:
     global _PROVIDER_CATALOG_REFRESH_IN_FLIGHT
 
@@ -802,7 +807,9 @@ def build_config_providers_payload(core: Any) -> dict[str, Any]:
     providers: list[dict[str, Any]] = []
     default: dict[str, str] = {}
     auth_records = get_provider_credentials()
-    refresh_scheduled = _schedule_provider_catalog_refresh(auth_records)
+    refresh_scheduled = _schedule_provider_catalog_refresh(
+        auth_records
+    ) or _provider_catalog_refresh_active()
     provider_models = _merge_cached_provider_catalog_models(
         config_provider_models,
         auth_records,
@@ -887,7 +894,9 @@ def build_provider_list_payload(core: Any) -> dict[str, Any]:
     """Build OpenCode-compatible ``provider.list`` payload."""
     config_provider_models = collect_provider_models(core)
     auth_records = get_provider_credentials()
-    refresh_scheduled = _schedule_provider_catalog_refresh(auth_records)
+    refresh_scheduled = _schedule_provider_catalog_refresh(
+        auth_records
+    ) or _provider_catalog_refresh_active()
     provider_models = _merge_cached_provider_catalog_models(
         config_provider_models,
         auth_records,

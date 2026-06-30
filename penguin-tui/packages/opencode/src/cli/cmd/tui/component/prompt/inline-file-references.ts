@@ -1,4 +1,6 @@
 import { fileAutocompleteURL } from "./file-url"
+import { existsSync } from "node:fs"
+import { basename, extname, isAbsolute, join, normalize } from "node:path"
 
 type PromptFilePart = {
   type: "file"
@@ -23,6 +25,48 @@ type ExistingPromptPart = {
 }
 
 const INLINE_FILE_REFERENCE_PATTERN = /(?<![\w`])@(\.?[^\s`,.]*(?:\.[^\s`,.]+)*)/g
+const FILE_REFERENCE_EXTENSIONS = new Set([
+  ".c",
+  ".cpp",
+  ".cs",
+  ".css",
+  ".csv",
+  ".env",
+  ".fish",
+  ".gif",
+  ".go",
+  ".h",
+  ".hpp",
+  ".html",
+  ".java",
+  ".jpeg",
+  ".jpg",
+  ".js",
+  ".json",
+  ".jsx",
+  ".kt",
+  ".lock",
+  ".md",
+  ".php",
+  ".png",
+  ".py",
+  ".rb",
+  ".rs",
+  ".scss",
+  ".sh",
+  ".sql",
+  ".svg",
+  ".swift",
+  ".toml",
+  ".ts",
+  ".tsx",
+  ".txt",
+  ".webp",
+  ".xml",
+  ".yaml",
+  ".yml",
+  ".zsh",
+])
 
 function sourcePath(part: ExistingPromptPart): string | undefined {
   if (part.type !== "file") return undefined
@@ -42,10 +86,28 @@ function existingFileKeys(parts: ExistingPromptPart[]) {
   return keys
 }
 
-function isFileLikeReference(value: string) {
+function pathWithoutFragment(value: string) {
+  return value.split("#", 1)[0].split("?", 1)[0]
+}
+
+function hasKnownFileExtension(value: string) {
+  const fileName = basename(value)
+  if (FILE_REFERENCE_EXTENSIONS.has(fileName.toLowerCase())) return true
+  return FILE_REFERENCE_EXTENSIONS.has(extname(fileName).toLowerCase())
+}
+
+function resolvablePath(value: string, directory: string) {
+  if (!directory) return false
+  const path = pathWithoutFragment(value).replace(/^~(?=\/)/, process.env.HOME ?? "~")
+  const candidate = isAbsolute(path) ? path : join(directory, path)
+  return existsSync(normalize(candidate))
+}
+
+function isFileLikeReference(value: string, directory: string) {
   const path = value.split("#", 1)[0].split("?", 1)[0]
+  if (resolvablePath(path, directory)) return true
   return (
-    path.includes(".") ||
+    hasKnownFileExtension(path) ||
     path.startsWith("/") ||
     path.startsWith("./") ||
     path.startsWith("../") ||
@@ -65,7 +127,7 @@ export function inlineFileReferenceParts(input: {
   for (const match of input.text.matchAll(INLINE_FILE_REFERENCE_PATTERN)) {
     const reference = match[1]?.trim()
     if (!reference) continue
-    if (!isFileLikeReference(reference)) continue
+    if (!isFileLikeReference(reference, input.directory)) continue
     const start = match.index ?? 0
     const value = `@${reference}`
     const url = fileAutocompleteURL({
@@ -74,7 +136,7 @@ export function inlineFileReferenceParts(input: {
     })
     const pathKey = `path:${reference}`
     const urlKey = `url:${url}`
-    if (seen.has(pathKey) || existing.has(pathKey) || existing.has(urlKey)) continue
+    if (seen.has(pathKey) || seen.has(urlKey) || existing.has(pathKey) || existing.has(urlKey)) continue
     seen.add(pathKey)
     seen.add(urlKey)
     parts.push({

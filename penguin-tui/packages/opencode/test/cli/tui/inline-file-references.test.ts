@@ -67,4 +67,22 @@ describe("inline file references", () => {
       }).map((part) => part.filename),
     ).toEqual(["README.md"])
   })
+
+  test("ignores dotted decorator-style prompt text", () => {
+    expect(
+      inlineFileReferenceParts({
+        text: "add @pytest.fixture and @app.route('/health') decorators near @README.md",
+        directory: "/workspace/project",
+      }).map((part) => part.filename),
+    ).toEqual(["README.md"])
+  })
+
+  test("deduplicates references that resolve to the same file URL", () => {
+    expect(
+      inlineFileReferenceParts({
+        text: "compare @README.md with @./README.md",
+        directory: "/workspace/project",
+      }).map((part) => part.filename),
+    ).toEqual(["README.md"])
+  })
 })

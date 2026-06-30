@@ -81,6 +81,16 @@ describe("terminal notification runtime", () => {
         },
       }),
     ).toBeUndefined()
+
+    expect(
+      notificationEventKey({
+        type: "session.error",
+        properties: {
+          sessionID: "ses_1",
+          message: "Provider failed",
+        },
+      }),
+    ).toBe("session.error:ses_1")
   })
 
   test("suppresses attention notifications for the active session", () => {
@@ -207,10 +217,10 @@ describe("terminal notification runtime", () => {
       notificationEscape({
         channel: "osc",
         category: "run_failed",
-        title: "Bad;title\u0007",
-        body: "Bad;body\u0007",
+        title: "Bad;title\u0007\u001b]2;owned",
+        body: "Bad;body\r\nnext\u001b\\",
       }),
-    ).toBe("\u001b]9;Bad title ;Bad body \u0007")
+    ).toBe("\u001b]9;Bad title 2 owned;Bad body next\u0007")
   })
 
   test("builds terminal notification escape payloads", () => {
@@ -221,7 +231,7 @@ describe("terminal notification runtime", () => {
         title: "Bad;title\u0007",
         body: "Bad;body\u0007",
       }),
-    ).toBe("\u001b]9;Bad title ;Bad body \u0007")
+    ).toBe("\u001b]9;Bad title;Bad body\u0007")
   })
 
   test("builds macOS desktop and audio commands without shell interpolation", () => {

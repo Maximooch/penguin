@@ -116,13 +116,17 @@ def _model_selection_source(
     provider_source: Optional[str],
     model_id: Optional[str],
     model_source: Optional[str],
+    variant: Optional[str] = None,
+    variant_source: Optional[str] = None,
 ) -> str:
-    """Resolve a compact source label for a provider/model selection."""
+    """Resolve a compact source label for a provider/model/variant selection."""
     sources: set[str] = set()
     if provider_id and provider_source:
         sources.add(provider_source)
     if model_id and model_source:
         sources.add(model_source)
+    if variant and variant_source:
+        sources.add(variant_source)
     if not sources:
         return "missing"
     if len(sources) == 1:
@@ -224,10 +228,11 @@ def _resolve_session_model_state(
         (session_meta.get(VARIANT_KEY), "session"),
         (session_meta.get("variant"), "session"),
     )
-    session_scoped = provider_source in {"message", "session"} or model_source in {
-        "message",
-        "session",
-    }
+    session_scoped = (
+        provider_source in {"message", "session"}
+        or model_source in {"message", "session"}
+        or variant_source in {"message", "session"}
+    )
     return {
         "providerID": provider_id,
         "modelID": model_id,
@@ -240,6 +245,8 @@ def _resolve_session_model_state(
             provider_source=provider_source,
             model_id=model_id,
             model_source=model_source,
+            variant=variant,
+            variant_source=variant_source,
         ),
         "sessionScoped": session_scoped,
     }
@@ -647,8 +654,10 @@ def _build_index_session_info(
                 provider_source="session" if provider_id else None,
                 model_id=model_id,
                 model_source="session" if model_id else None,
+                variant=variant,
+                variant_source="session" if variant else None,
             ),
-            "sessionScoped": bool(provider_id or model_id),
+            "sessionScoped": bool(provider_id or model_id or variant),
         },
     )
 
@@ -1393,6 +1402,8 @@ def _git_fallback_diffs(directory: str) -> list[dict[str, Any]]:
             continue
         try:
             content = file_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
         except UnicodeDecodeError:
             content = ""
         additions = len(content.splitlines()) if content else 0

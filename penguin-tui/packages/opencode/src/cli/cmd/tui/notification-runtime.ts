@@ -151,6 +151,7 @@ export function notificationEventKey(event: SyncEvent): string | undefined {
     stringValue(properties.requestID) ??
     stringValue(properties.messageID) ??
     stringValue(properties.partID)
+  if (!id && event.type === "session.error" && sessionID) return `${event.type}:${sessionID}`
   if (!id) return
   return `${event.type}:${sessionID}:${id}`
 }
@@ -171,16 +172,23 @@ export function shouldSuppressNotificationForActiveSession(
 export function notificationEscape(payload: NotificationPayload): string | undefined {
   if (payload.channel === "bell") return "\u0007"
   if (payload.channel === "osc") {
-    const title = payload.title.replace(/[;\u0007]/g, " ")
-    const body = payload.body.replace(/[;\u0007]/g, " ")
+    const title = notificationOscField(payload.title)
+    const body = notificationOscField(payload.body)
     return `\u001b]9;${title};${body}\u0007`
   }
   if (payload.channel === "terminal") {
-    const title = payload.title.replace(/[;\u0007]/g, " ")
-    const body = payload.body.replace(/[;\u0007]/g, " ")
+    const title = notificationOscField(payload.title)
+    const body = notificationOscField(payload.body)
     return `\u001b]9;${title};${body}\u0007`
   }
   return
+}
+
+function notificationOscField(value: string): string {
+  return value
+    .replace(/[\u0000-\u001f\u007f-\u009f;\\\]]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
 }
 
 export function notificationCommand(

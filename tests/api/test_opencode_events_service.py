@@ -45,6 +45,28 @@ def test_normalize_opencode_event_adds_id_time_order_and_correlation(tmp_path):
     assert event["properties"]["directory"] == str(tmp_path)
 
 
+def test_normalize_opencode_event_canonicalizes_existing_directory(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+
+    event = normalize_opencode_event(
+        {
+            "type": "session.status",
+            "properties": {
+                "directory": ".",
+                "sessionID": "ses_1",
+            },
+        },
+        order=1,
+        now_ms=100,
+    )
+
+    assert event is not None
+    assert event["properties"]["directory"] == str(tmp_path.resolve())
+
+
 def test_normalize_opencode_event_rejects_malformed_payloads():
     assert normalize_opencode_event({}, order=1) is None
     assert normalize_opencode_event({"type": ""}, order=1) is None
@@ -101,6 +123,30 @@ async def test_emit_opencode_event_uses_runtime_event_bus():
             "opencode_event",
             {
                 "type": "question.asked",
+                "properties": {"sessionID": "ses_1"},
+            },
+        )
+    ]
+
+
+def test_schedule_opencode_event_works_from_sync_context():
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class FakeEventBus:
+        async def emit(self, event_type: str, payload: dict[str, object]) -> None:
+            calls.append((event_type, payload))
+
+    schedule_opencode_event(
+        lambda: SimpleNamespace(event_bus=FakeEventBus()),
+        "session.error",
+        {"sessionID": "ses_1"},
+    )
+
+    assert calls == [
+        (
+            "opencode_event",
+            {
+                "type": "session.error",
                 "properties": {"sessionID": "ses_1"},
             },
         )

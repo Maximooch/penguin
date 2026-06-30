@@ -53,10 +53,61 @@ describe("session diff contract", () => {
       },
       {
         file: "src/b.ts",
-        before: "older",
+        before: "",
         after: "second",
         additions: 4,
         deletions: 2,
+      },
+    ])
+  })
+
+  test("preserves explicit empty before and after fields while merging", () => {
+    expect(
+      normalizeSessionDiff([
+        {
+          file: "src/app.ts",
+          before: "old",
+          after: "",
+          additions: 1,
+        },
+        {
+          file: "src/app.ts",
+          additions: 2,
+          deletions: 1,
+        },
+      ]),
+    ).toEqual([
+      {
+        file: "src/app.ts",
+        before: "old",
+        after: "",
+        additions: 3,
+        deletions: 1,
+      },
+    ])
+  })
+
+  test("fills missing before and after fields from later duplicate rows", () => {
+    expect(
+      normalizeSessionDiff([
+        {
+          file: "src/app.ts",
+          additions: 1,
+        },
+        {
+          file: "src/app.ts",
+          before: "old",
+          after: "new",
+          deletions: 1,
+        },
+      ]),
+    ).toEqual([
+      {
+        file: "src/app.ts",
+        before: "old",
+        after: "new",
+        additions: 1,
+        deletions: 1,
       },
     ])
   })

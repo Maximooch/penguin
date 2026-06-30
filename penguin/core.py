@@ -110,7 +110,7 @@ import re
 import time
 import traceback
 import os
-from dataclasses import asdict, fields
+from dataclasses import fields
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -1143,7 +1143,7 @@ class PenguinCore:
                 if getattr(model_settings, "temperature", None) is not None:
                     model_config.temperature = model_settings.temperature
                 if isinstance(metadata, dict):
-                    metadata["model"] = asdict(model_config)
+                    metadata["model"] = model_config.get_config()
 
         self._agent_model_overrides.setdefault(agent_id, model_config)
         self._agent_tool_defaults[agent_id] = default_tools

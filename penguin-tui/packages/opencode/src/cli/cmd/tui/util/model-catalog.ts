@@ -125,6 +125,7 @@ function mergeCatalogState(
 ): CatalogState | undefined {
   if (!configured) return available
   if (!available) return configured
+  if (available.sparse === true || available.state === "sparse") return available
   if (configured.sparse === true && available.sparse === false) return available
   if (catalogModelCount(available) > catalogModelCount(configured)) return available
   return configured

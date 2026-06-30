@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import asyncio
+import json
 import logging
 import time
 from pathlib import Path
@@ -14,6 +14,7 @@ GLOBAL_STATUS_EVENTS = {
     "lsp.updated",
     "lsp.client.diagnostics",
 }
+_BACKGROUND_TASKS: set[asyncio.Task[None]] = set()
 
 
 def normalize_directory(directory: Optional[str]) -> Optional[str]:
@@ -133,8 +134,10 @@ def normalize_opencode_event(
     if session_id and not isinstance(properties.get("sessionID"), str):
         properties["sessionID"] = session_id
 
-    directory = extract_event_directory(properties) or default_directory
-    if directory and not isinstance(properties.get("directory"), str):
+    directory = normalize_directory(extract_event_directory(properties)) or normalize_directory(
+        default_directory
+    )
+    if directory:
         properties["directory"] = directory
 
     agent_id = _extract_event_agent(properties) or default_agent_id
@@ -202,9 +205,13 @@ def schedule_opencode_event(
                     exc_info=True,
                 )
 
+    def _track_task(task: asyncio.Task[None]) -> None:
+        _BACKGROUND_TASKS.add(task)
+        task.add_done_callback(_BACKGROUND_TASKS.discard)
+
     try:
         loop = asyncio.get_running_loop()
-        loop.create_task(_runner())
+        _track_task(loop.create_task(_runner()))
         return
     except RuntimeError:
         pass
@@ -212,9 +219,19 @@ def schedule_opencode_event(
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():
-            loop.create_task(_runner())
+            _track_task(loop.create_task(_runner()))
         else:
             loop.run_until_complete(_runner())
+    except RuntimeError:
+        try:
+            asyncio.run(_runner())
+        except Exception:
+            if logger:
+                logger.debug(
+                    "Failed to schedule opencode event %s",
+                    event_type,
+                    exc_info=True,
+                )
     except Exception:
         if logger:
             logger.debug(
