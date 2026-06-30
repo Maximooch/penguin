@@ -5,18 +5,16 @@ Handles automatic discovery of plugins from directories, Python packages,
 and entry points.
 """
 
-import os
-import sys
 import yaml
 import json
 import importlib
 import importlib.util
+from importlib import metadata as importlib_metadata
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Union, Any
+from typing import Any, Dict, List, Optional, Union
 import logging
-import pkg_resources
 
-from .base_plugin import BasePlugin, PluginMetadata, ToolDefinition, ActionDefinition
+from .base_plugin import BasePlugin, PluginMetadata
 from .decorators import get_tools_from_module, get_actions_from_module
 
 logger = logging.getLogger(__name__)
@@ -174,14 +172,16 @@ class PluginDiscovery:
     def _discover_from_entry_points(self) -> None:
         """Discover plugins from setuptools entry points"""
         try:
-            for entry_point in pkg_resources.iter_entry_points(self.entry_point_group):
+            for entry_point in self._iter_entry_points():
                 try:
+                    attrs = getattr(entry_point, "attrs", None)
+                    attr = getattr(entry_point, "attr", None)
                     plugin_info = {
                         'name': entry_point.name,
                         'source_type': 'entry_point',
                         'entry_point': entry_point,
                         'module_name': entry_point.module_name,
-                        'class_name': getattr(entry_point, 'attrs', [None])[0] if hasattr(entry_point, 'attrs') else None
+                        'class_name': attrs[0] if attrs else attr,
                     }
                     
                     self.discovered_plugins[entry_point.name] = plugin_info
@@ -192,6 +192,13 @@ class PluginDiscovery:
                     
         except Exception as e:
             logger.error(f"Error discovering entry point plugins: {e}")
+
+    def _iter_entry_points(self):
+        """Iterate entry points without depending on pkg_resources."""
+        entry_points = importlib_metadata.entry_points()
+        if hasattr(entry_points, "select"):
+            return entry_points.select(group=self.entry_point_group)
+        return entry_points.get(self.entry_point_group, [])
     
     def _discover_from_python_path(self) -> None:
         """Discover plugins from modules in Python path with penguin_plugin attribute"""

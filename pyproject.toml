@@ -205,6 +205,15 @@ penguin-web = "penguin.web.server:main"
 penguin-tui = "penguin.cli.entrypoint:main_tui"
 penguin-tui-proto = "penguin.penguin.cli.tui_prototype_mock:main"
 
+[tool.pytest.ini_options]
+addopts = ["-m", "not e2e and not live and not slow"]
+asyncio_mode = "auto"
+markers = [
+    "e2e: tests that require an external server, browser, container, or end-to-end workflow",
+    "live: tests that require live provider, GitHub, or network credentials",
+    "slow: tests that are too slow for the default deterministic suite",
+]
+
 [tool.setuptools.packages.find]
 include = ["penguin", "penguin.*"]
 exclude = [

@@ -1,0 +1,180 @@
+"""Tests for OpenCode event normalization helpers."""
+
+from __future__ import annotations
+
+import json
+import asyncio
+from types import SimpleNamespace
+
+import pytest
+
+from penguin.web.services.opencode_events import (
+    directory_matches,
+    emit_opencode_event,
+    extract_event_directory,
+    extract_event_session,
+    normalize_opencode_event,
+    schedule_opencode_event,
+    sse_event_frame,
+)
+
+
+def test_normalize_opencode_event_adds_id_time_order_and_correlation(tmp_path):
+    event = normalize_opencode_event(
+        {
+            "type": "message.part.updated",
+            "properties": {
+                "part": {
+                    "id": "part_1",
+                    "messageID": "msg_1",
+                    "sessionID": "ses_1",
+                    "type": "text",
+                }
+            },
+        },
+        order=12,
+        default_directory=str(tmp_path),
+        now_ms=123456,
+    )
+
+    assert event is not None
+    assert event["id"] == "message.part.updated:ses_1:part_1"
+    assert event["order"] == 12
+    assert event["time"] == 123456
+    assert event["properties"]["sessionID"] == "ses_1"
+    assert event["properties"]["directory"] == str(tmp_path)
+
+
+def test_normalize_opencode_event_canonicalizes_existing_directory(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+
+    event = normalize_opencode_event(
+        {
+            "type": "session.status",
+            "properties": {
+                "directory": ".",
+                "sessionID": "ses_1",
+            },
+        },
+        order=1,
+        now_ms=100,
+    )
+
+    assert event is not None
+    assert event["properties"]["directory"] == str(tmp_path.resolve())
+
+
+def test_normalize_opencode_event_rejects_malformed_payloads():
+    assert normalize_opencode_event({}, order=1) is None
+    assert normalize_opencode_event({"type": ""}, order=1) is None
+
+
+def test_event_extraction_helpers_read_nested_payloads(tmp_path):
+    payload = {
+        "info": {
+            "session_id": "ses_info",
+            "path": {
+                "cwd": str(tmp_path),
+            },
+        }
+    }
+
+    assert extract_event_session(payload) == "ses_info"
+    assert extract_event_directory(payload) == str(tmp_path)
+    assert directory_matches(str(tmp_path), str(tmp_path.resolve()))
+
+
+def test_sse_event_frame_includes_sse_id_and_json_data():
+    event = {
+        "id": "session.status:ses_1:1",
+        "order": 1,
+        "time": 100,
+        "type": "session.status",
+        "properties": {"sessionID": "ses_1"},
+    }
+
+    frame = sse_event_frame(event)
+
+    assert frame.startswith("id: session.status:ses_1:1\n")
+    assert frame.endswith("\n\n")
+    data_line = [line for line in frame.splitlines() if line.startswith("data: ")][0]
+    assert json.loads(data_line.removeprefix("data: ")) == event
+
+
+@pytest.mark.asyncio
+async def test_emit_opencode_event_uses_runtime_event_bus():
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class FakeEventBus:
+        async def emit(self, event_type: str, payload: dict[str, object]) -> None:
+            calls.append((event_type, payload))
+
+    await emit_opencode_event(
+        SimpleNamespace(event_bus=FakeEventBus()),
+        "question.asked",
+        {"sessionID": "ses_1"},
+    )
+
+    assert calls == [
+        (
+            "opencode_event",
+            {
+                "type": "question.asked",
+                "properties": {"sessionID": "ses_1"},
+            },
+        )
+    ]
+
+
+def test_schedule_opencode_event_works_from_sync_context():
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class FakeEventBus:
+        async def emit(self, event_type: str, payload: dict[str, object]) -> None:
+            calls.append((event_type, payload))
+
+    schedule_opencode_event(
+        lambda: SimpleNamespace(event_bus=FakeEventBus()),
+        "session.error",
+        {"sessionID": "ses_1"},
+    )
+
+    assert calls == [
+        (
+            "opencode_event",
+            {
+                "type": "session.error",
+                "properties": {"sessionID": "ses_1"},
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_schedule_opencode_event_works_from_async_context():
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class FakeEventBus:
+        async def emit(self, event_type: str, payload: dict[str, object]) -> None:
+            calls.append((event_type, payload))
+
+    schedule_opencode_event(
+        lambda: SimpleNamespace(event_bus=FakeEventBus()),
+        "permission.asked",
+        {"sessionID": "ses_1"},
+    )
+
+    await asyncio.sleep(0)
+
+    assert calls == [
+        (
+            "opencode_event",
+            {
+                "type": "permission.asked",
+                "properties": {"sessionID": "ses_1"},
+            },
+        )
+    ]

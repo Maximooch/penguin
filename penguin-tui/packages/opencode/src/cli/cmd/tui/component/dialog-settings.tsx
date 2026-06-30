@@ -102,14 +102,12 @@ export function DialogSettings(props: { directory?: string; sessionID?: string }
         <text fg={theme.textMuted}>read-only | esc</text>
       </box>
       <text fg={theme.textMuted} wrapMode="word">
-        Use Ctrl+P for interactive controls: Switch model, Switch theme, View status, Connect provider.
+        Use Ctrl+P for interactive controls: Switch model, Notifications, Switch theme, View status, Connect provider.
       </text>
       <Show when={loading()}>
         <text fg={theme.textMuted}>Loading configuration...</text>
       </Show>
-      <Show when={error()}>
-        {(value) => <text fg={theme.error}>{value()}</text>}
-      </Show>
+      <Show when={error()}>{(value) => <text fg={theme.error}>{value()}</text>}</Show>
       <Show when={!loading() && !error()}>
         <Show when={rows().length > 0} fallback={<text fg={theme.textMuted}>No configuration data available</text>}>
           <For each={rows()}>

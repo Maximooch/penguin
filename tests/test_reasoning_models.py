@@ -17,12 +17,15 @@ import sys
 import os
 import asyncio
 from pathlib import Path
+import pytest
 
 # Add the penguin directory to Python path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from penguin.llm.openrouter_gateway import OpenRouterGateway
 from penguin.llm.model_config import ModelConfig
+
+pytestmark = pytest.mark.live
 
 # Test models with reasoning capabilities
 REASONING_MODELS = [

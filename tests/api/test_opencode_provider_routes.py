@@ -230,6 +230,82 @@ async def test_config_providers_use_provider_local_model_ids(
 
 
 @pytest.mark.asyncio
+async def test_provider_payloads_expose_backend_catalog_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        provider_service,
+        "_schedule_provider_catalog_refresh",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        provider_service,
+        "get_provider_credentials",
+        lambda: {"openrouter": {"type": "api", "key": "sk-or-v1-fixture"}},
+    )
+
+    core = _Core(tmp_path)
+    typed_core = cast(Any, core)
+
+    config_payload = await opencode_config_providers(core=typed_core)
+    openrouter = next(
+        item for item in config_payload["providers"] if item["id"] == "openrouter"
+    )
+    assert openrouter["connected"] is True
+    assert openrouter["catalog"] == {
+        "connected": True,
+        "model_count": 1,
+        "refresh_scheduled": True,
+        "source": "config",
+        "sparse": True,
+        "state": "sparse",
+    }
+
+    provider_payload = await opencode_provider_list(core=typed_core)
+    openrouter_provider = next(
+        item for item in provider_payload["all"] if item["id"] == "openrouter"
+    )
+    assert openrouter_provider["connected"] is True
+    assert openrouter_provider["source"] == "config"
+    assert openrouter_provider["catalog"]["state"] == "sparse"
+    assert openrouter_provider["catalog"]["model_count"] == 1
+    assert openrouter_provider["catalog"]["refresh_scheduled"] is True
+
+
+@pytest.mark.asyncio
+async def test_provider_payloads_report_refresh_in_flight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        provider_service,
+        "_schedule_provider_catalog_refresh",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        provider_service,
+        "_PROVIDER_CATALOG_REFRESH_IN_FLIGHT",
+        True,
+    )
+
+    core = _Core(tmp_path)
+    typed_core = cast(Any, core)
+
+    config_payload = await opencode_config_providers(core=typed_core)
+    provider_payload = await opencode_provider_list(core=typed_core)
+
+    openrouter_config = next(
+        item for item in config_payload["providers"] if item["id"] == "openrouter"
+    )
+    openrouter_provider = next(
+        item for item in provider_payload["all"] if item["id"] == "openrouter"
+    )
+    assert openrouter_config["catalog"]["refresh_scheduled"] is True
+    assert openrouter_provider["catalog"]["refresh_scheduled"] is True
+
+
+@pytest.mark.asyncio
 async def test_config_get_includes_runtime_and_reasoning_metadata(
     tmp_path: Path,
 ) -> None:
@@ -820,7 +896,7 @@ async def test_provider_filters_hide_disabled_models_dev_providers(
 
 
 @pytest.mark.asyncio
-async def test_native_openai_config_model_exposes_reasoning_variants_without_enable_flag(
+async def test_native_openai_config_exposes_reasoning_variants(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -11,10 +11,8 @@ This module tests the high-level PenguinClient API including:
 - File and context management
 """
 
-import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from typing import AsyncGenerator
 
 from penguin import __version__ as PENGUIN_VERSION
 from penguin.api_client import (
@@ -489,7 +487,7 @@ class TestPenguinClientTaskMethods:
         assert result["status"] == "completed"
         client._core.engine.run_task.assert_called_once_with(
             task_prompt="Create a web server",
-            max_iterations=10,
+            max_iterations=5000,
             task_name="Web Server Task",
             task_context={"framework": "fastapi"},
             enable_events=True
@@ -510,7 +508,7 @@ class TestPenguinClientTaskMethods:
         client._core.process.assert_called_once_with(
             input_data={"text": "Create a function"},
             context=None,
-            max_iterations=10
+            max_iterations=5000
         )
     
     @pytest.mark.asyncio
@@ -756,15 +754,11 @@ class TestPenguinClientAgents:
             share_session_with="default",
             shared_cw_max_tokens=512,
         )
-        mock_core.register_agent.assert_called_once_with(
+        mock_core.ensure_agent_conversation.assert_called_once_with(
             "planner",
             system_prompt="You are a planner",
-            activate=False,
-            share_session_with="default",
-            share_context_window_with=None,
-            shared_cw_max_tokens=512,
-            model_max_tokens=None,
         )
+        mock_core.set_active_agent.assert_not_called()
 
     def test_create_sub_agent(self, mock_core):
         client = self._make_client(mock_core)
@@ -781,9 +775,7 @@ class TestPenguinClientAgents:
             system_prompt=None,
             share_session=False,
             share_context_window=False,
-            shared_cw_max_tokens=256,
-            model_max_tokens=None,
-            activate=False,
+            shared_context_window_max_tokens=256,
         )
 
     def test_list_agents(self, mock_core):

@@ -7,19 +7,28 @@ Requires GITHUB_APP_* env vars to be set.
 import os
 import sys
 
+import pytest
+
 # Add this early check
 required_env = ["GITHUB_APP_ID", "GITHUB_APP_INSTALLATION_ID", "GITHUB_APP_PRIVATE_KEY_PATH"]
 missing = [e for e in required_env if not os.getenv(e)]
 if missing:
-    print(f"Skipping GitHub App tests - missing env vars: {missing}")
-    print("Set these in your .env or via -e flags")
-    sys.exit(0)
+    if __name__ == "__main__":
+        print(f"Skipping GitHub App tests - missing env vars: {missing}")
+        print("Set these in your .env or via -e flags")
+        sys.exit(0)
+    pytest.skip(
+        f"Skipping GitHub App tests - missing env vars: {missing}",
+        allow_module_level=True,
+    )
 
 try:
     from github import Github, Auth
 except ImportError:
-    print("PyGithub not installed. Run: pip install PyGithub")
-    sys.exit(1)
+    if __name__ == "__main__":
+        print("PyGithub not installed. Run: pip install PyGithub")
+        sys.exit(1)
+    pytest.skip("PyGithub not installed", allow_module_level=True)
 
 
 def test_github_app_authentication():

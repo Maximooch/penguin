@@ -1,5 +1,6 @@
 import type { Message, Part, Session, Todo } from "@opencode-ai/sdk/v2"
 import type { Snapshot } from "@/snapshot"
+import { normalizeSessionDiff } from "./session-diff"
 
 type MessageWithParts = {
   info: Message
@@ -217,6 +218,6 @@ export async function hydrateSessionSnapshot(
     session,
     messages,
     todo,
-    diff,
+    diff: normalizeSessionDiff(diff),
   }
 }

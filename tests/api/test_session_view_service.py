@@ -1525,6 +1525,16 @@ def test_get_session_info_canonicalizes_openai_model_metadata():
     assert info is not None
     assert info["providerID"] == "openai"
     assert info["modelID"] == "gpt-5.5"
+    assert info["modelSelection"] == {
+        "ready": True,
+        "sessionScoped": True,
+        "source": "session",
+        "providerID": "openai",
+        "modelID": "gpt-5.5",
+        "qualifiedID": "openai/gpt-5.5",
+        "providerSource": "session",
+        "modelSource": "session",
+    }
 
 
 def test_get_session_info_canonicalizes_global_model_fallback():
@@ -1537,6 +1547,67 @@ def test_get_session_info_canonicalizes_global_model_fallback():
     assert info is not None
     assert info["providerID"] == "openai"
     assert info["modelID"] == "gpt-5.5"
+    assert info["modelSelection"] == {
+        "ready": True,
+        "sessionScoped": False,
+        "source": "global",
+        "providerID": "openai",
+        "modelID": "gpt-5.5",
+        "qualifiedID": "openai/gpt-5.5",
+        "providerSource": "global",
+        "modelSource": "global",
+    }
+
+
+def test_get_session_info_treats_variant_only_override_as_session_scoped():
+    session = _session(
+        "session_variant_only",
+        "Variant Only",
+        "2026-02-03T00:00:00",
+    )
+    session.metadata[VARIANT_KEY] = "xhigh"
+    core = _core([session])
+    core.model_config = SimpleNamespace(provider="OpenAI", model="openai/GPT-5.5")
+
+    info = get_session_info(core, session.id)
+
+    assert info is not None
+    assert info["modelSelection"] == {
+        "ready": True,
+        "sessionScoped": True,
+        "source": "session",
+        "providerID": "openai",
+        "modelID": "gpt-5.5",
+        "qualifiedID": "openai/gpt-5.5",
+        "variant": "xhigh",
+        "providerSource": "global",
+        "modelSource": "global",
+        "variantSource": "session",
+    }
+
+
+def test_list_session_infos_exposes_index_model_selection_metadata() -> None:
+    session = _session("session_index_model", "Index Model", "2026-02-03T00:00:00")
+    core = _core([session])
+    manager = core.conversation_manager.session_manager
+    manager.session_index[session.id][PROVIDER_ID_KEY] = "OpenRouter"
+    manager.session_index[session.id][MODEL_ID_KEY] = "Z-AI/GLM-5.2"
+
+    infos = list_session_infos(core, limit=10)
+
+    info = next(item for item in infos if item["id"] == session.id)
+    assert info["providerID"] == "openrouter"
+    assert info["modelID"] == "z-ai/glm-5.2"
+    assert info["modelSelection"] == {
+        "ready": True,
+        "sessionScoped": True,
+        "source": "session",
+        "providerID": "openrouter",
+        "modelID": "z-ai/glm-5.2",
+        "qualifiedID": "openrouter/z-ai/glm-5.2",
+        "providerSource": "session",
+        "modelSource": "session",
+    }
 
 
 def test_create_update_remove_session_info_round_trip():
@@ -1685,7 +1756,13 @@ def test_get_session_diff_prefers_transcript_tool_parts():
                             "status": "completed",
                             "input": {"filePath": "src/main.py"},
                             "metadata": {
-                                "diff": "--- a/src/main.py\n+++ b/src/main.py\n@@\n-print('x')\n+print('y')\n"
+                                "diff": (
+                                    "--- a/src/main.py\n"
+                                    "+++ b/src/main.py\n"
+                                    "@@\n"
+                                    "-print('x')\n"
+                                    "+print('y')\n"
+                                )
                             },
                         },
                     }
@@ -1701,3 +1778,148 @@ def test_get_session_diff_prefers_transcript_tool_parts():
     assert diffs[0]["file"] == "src/main.py"
     assert diffs[0]["additions"] == 1
     assert diffs[0]["deletions"] == 1
+
+
+def test_get_session_diff_merges_duplicate_transcript_file_diffs():
+    session = _session("session_diff_merge", "Diff Session", "2026-02-03T00:00:00")
+    session.metadata[TRANSCRIPT_KEY] = {
+        "order": ["msg_1", "msg_2"],
+        "messages": {
+            "msg_1": {
+                "info": {"id": "msg_1", "role": "assistant"},
+                "part_order": ["part_tool_1"],
+                "parts": {
+                    "part_tool_1": {
+                        "id": "part_tool_1",
+                        "type": "tool",
+                        "tool": "edit",
+                        "state": {
+                            "status": "completed",
+                            "input": {"filePath": "src/main.py"},
+                            "metadata": {
+                                "diff": (
+                                    "--- a/src/main.py\n"
+                                    "+++ b/src/main.py\n"
+                                    "@@\n"
+                                    "-print('old')\n"
+                                    "+print('new')\n"
+                                )
+                            },
+                        },
+                    }
+                },
+            },
+            "msg_2": {
+                "info": {"id": "msg_2", "role": "assistant"},
+                "part_order": ["part_tool_2"],
+                "parts": {
+                    "part_tool_2": {
+                        "id": "part_tool_2",
+                        "type": "tool",
+                        "tool": "edit",
+                        "state": {
+                            "status": "completed",
+                            "input": {"filePath": "src/main.py"},
+                            "metadata": {
+                                "diff": (
+                                    "--- a/src/main.py\n"
+                                    "+++ b/src/main.py\n"
+                                    "@@\n"
+                                    "+print('again')\n"
+                                )
+                            },
+                        },
+                    }
+                },
+            },
+        },
+    }
+    core = _core([session])
+
+    diffs = get_session_diff(core, session.id)
+
+    assert diffs == [
+        {
+            "file": "src/main.py",
+            "before": "",
+            "after": "--- a/src/main.py\n+++ b/src/main.py\n@@\n+print('again')\n",
+            "additions": 2,
+            "deletions": 1,
+        }
+    ]
+
+
+def test_get_session_diff_git_fallback_includes_untracked_files(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "penguin@example.com"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Penguin"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    source = repo / "src"
+    source.mkdir()
+    tracked = source / "main.py"
+    tracked.write_text("print('old')\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "base"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+    tracked.write_text("print('new')\nprint('again')\n", encoding="utf-8")
+    (repo / "notes.md").write_text("one\ntwo\n", encoding="utf-8")
+    session = _session("session_git_diff", "Git Diff", "2026-02-03T00:00:00")
+    session.metadata["directory"] = str(repo)
+    core = _core([session])
+
+    diffs = get_session_diff(core, session.id)
+
+    assert diffs is not None
+    by_file = {diff["file"]: diff for diff in diffs}
+    assert by_file["src/main.py"]["additions"] == 2
+    assert by_file["src/main.py"]["deletions"] == 1
+    assert by_file["notes.md"]["after"] == "one\ntwo\n"
+    assert by_file["notes.md"]["additions"] == 2
+
+
+def test_get_session_diff_git_fallback_skips_unreadable_untracked_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    missing = repo / "missing.md"
+    missing.write_text("temporary\n", encoding="utf-8")
+    visible = repo / "visible.md"
+    visible.write_text("visible\n", encoding="utf-8")
+    session = _session("session_git_unreadable", "Git Diff", "2026-02-03T00:00:00")
+    session.metadata["directory"] = str(repo)
+    core = _core([session])
+
+    original_read_text = Path.read_text
+
+    def _read_text(path: Path, *args: Any, **kwargs: Any) -> str:
+        if path == missing:
+            raise FileNotFoundError(path)
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _read_text)
+
+    diffs = get_session_diff(core, session.id)
+
+    assert diffs is not None
+    by_file = {diff["file"]: diff for diff in diffs}
+    assert "missing.md" not in by_file
+    assert by_file["visible.md"]["after"] == "visible\n"

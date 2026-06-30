@@ -10,6 +10,7 @@ import urllib.request
 import json
 import asyncio
 from typing import Any, Dict
+import pytest
 
 try:
     import websockets  # type: ignore
@@ -21,6 +22,7 @@ except ImportError:
 
 BASE_URL = os.environ.get("PENGUIN_API_URL", "http://127.0.0.1:8000")
 WS_URL = BASE_URL.replace("http://", "ws://").replace("https://", "wss://")
+pytestmark = pytest.mark.e2e
 
 
 def _wait_for_server(timeout: int = 30) -> None:

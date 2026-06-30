@@ -10,12 +10,10 @@ from fastapi import (
     Response,
     UploadFile,
     File,
-    Form,
     Query,
 )  # type: ignore
 from pydantic import BaseModel  # type: ignore
 from fastapi.responses import PlainTextResponse
-from dataclasses import asdict  # type: ignore
 from datetime import datetime  # type: ignore
 from collections import OrderedDict
 import asyncio
@@ -28,7 +26,6 @@ import os
 from pathlib import Path
 import re
 from contextlib import suppress
-import shutil
 import tempfile
 import time
 from threading import Lock
@@ -60,6 +57,9 @@ from penguin.web.services.configuration import (
     runtime_config_payload,
     settings_locations_payload,
 )
+from penguin.web.services.command_registry import list_opencode_commands
+from penguin.web.services.notification_settings import notification_settings_payload
+from penguin.web.services.opencode_events import schedule_opencode_event
 from penguin.web.services.conversations import (
     create_conversation_payload,
     get_conversation_payload,
@@ -1007,7 +1007,7 @@ class MessageRequest(BaseModel):
     streaming: Optional[bool] = True
     max_iterations: Optional[int] = None  # Uses MAX_TASK_ITERATIONS if not specified
     image_paths: Optional[List[str]] = None  # Multiple images supported (max 10)
-    include_reasoning: Optional[bool] = True
+    include_reasoning: Optional[bool] = False
     agent_id: Optional[str] = None
     agent_mode: Optional[str] = None
     directory: Optional[str] = None
@@ -1902,46 +1902,13 @@ class ApprovalWebSocketManager:
         await self.broadcast("approval_resolved", request_dict)
 
 
-async def _emit_opencode_event(
-    event_type: str,
-    properties: dict[str, Any],
-) -> None:
-    core = getattr(router, "core", None)
-    event_bus = getattr(core, "event_bus", None)
-    emit = getattr(event_bus, "emit", None)
-    if not callable(emit):
-        return
-    await emit(
-        "opencode_event",
-        {
-            "type": event_type,
-            "properties": properties,
-        },
-    )
-
-
 def _schedule_opencode_event(event_type: str, properties: dict[str, Any]) -> None:
-    async def _runner() -> None:
-        try:
-            await _emit_opencode_event(event_type, properties)
-        except Exception:
-            logger.debug("Failed to emit opencode event %s", event_type, exc_info=True)
-
-    try:
-        loop = asyncio.get_running_loop()
-        loop.create_task(_runner())
-        return
-    except RuntimeError:
-        pass
-
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            loop.create_task(_runner())
-        else:
-            loop.run_until_complete(_runner())
-    except Exception:
-        logger.debug("Failed to schedule opencode event %s", event_type, exc_info=True)
+    schedule_opencode_event(
+        lambda: getattr(router, "core", None),
+        event_type,
+        properties,
+        logger=logger,
+    )
 
 
 def _permission_name_for_request(request_dict: dict[str, Any]) -> str:
@@ -3412,6 +3379,20 @@ async def opencode_config_update(
     except Exception as e:
         logger.error(f"config.update error: {e}")
         raise HTTPException(status_code=500, detail="Failed to update config")
+
+
+@router.get("/api/v1/commands")
+async def api_command_list() -> list[dict[str, Any]]:
+    """Return Penguin command metadata for OpenCode-derived TUI clients."""
+    return list_opencode_commands()
+
+
+@router.get("/api/v1/notifications/config")
+async def api_notification_config(
+    core: PenguinCore = Depends(get_core),
+) -> dict[str, Any]:
+    """Return terminal notification policy metadata for Penguin TUI clients."""
+    return notification_settings_payload(core)
 
 
 @router.get("/config/providers")

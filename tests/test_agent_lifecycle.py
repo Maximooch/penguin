@@ -3,7 +3,6 @@ import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 
 from penguin.agent import PenguinAgent, PenguinAgentAsync, BasicPenguinAgent
-from penguin.agent.base import BaseAgent
 from penguin.agent.schema import AgentConfig, SecurityConfig
 from penguin.agent.launcher import AgentLauncher
 
@@ -264,8 +263,8 @@ class TestAgentLauncher:
         with pytest.raises(ValueError, match="Agent configuration 'nonexistent' not found"):
             await launcher.invoke("nonexistent", "Test prompt")
 
-    def test_sandbox_warning(self, mock_core_with_components):
-        """Test that sandbox execution logs a warning for now."""
+    def test_sandbox_execution_delegates_to_container_executor(self, mock_core_with_components):
+        """Test sandbox execution without requiring Docker in the default suite."""
         sandbox_config = AgentConfig(
             name="sandbox_agent", 
             type="penguin.agent.basic_agent.BasicPenguinAgent",
@@ -276,9 +275,14 @@ class TestAgentLauncher:
         launcher = AgentLauncher(core=mock_core_with_components)
         launcher.add_agent(sandbox_config)
         
-        with patch('penguin.agent.launcher.logger') as mock_logger:
-            asyncio.run(launcher.invoke("sandbox_agent", "Test"))
-            mock_logger.warning.assert_called()
+        with patch("penguin.agent.container_executor.ContainerExecutor") as executor_cls:
+            executor = executor_cls.return_value
+            executor.execute_agent = AsyncMock(return_value={"status": "sandboxed"})
+
+            result = asyncio.run(launcher.invoke("sandbox_agent", "Test"))
+
+        executor.execute_agent.assert_awaited_once()
+        assert result == {"status": "sandboxed"}
 
 
 class TestResourceSnapshots:

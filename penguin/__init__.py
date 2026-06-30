@@ -44,6 +44,7 @@ Example Usage:
     ```
 """
 
+import importlib
 import os
 import sys
 
@@ -72,6 +73,7 @@ _system_exports = ["ConversationManager", "Session", "Message", "MessageCategory
 
 # API client exports - lazy load
 _api_client_exports = ["PenguinClient", "ChatOptions", "TaskOptions", "CheckpointInfo", "ModelInfo", "create_client"]
+_submodule_exports = {"core", "web", "llm", "multi"}
 
 # Public API surface - this is the contract we'll maintain
 __all__ = [
@@ -138,6 +140,11 @@ def __getattr__(name):
     """Lazy loading for optional exports to avoid import overhead."""
     if name in _optional_exports:
         return _optional_exports[name]
+
+    if name in _submodule_exports:
+        module = importlib.import_module(f"{__name__}.{name}")
+        _optional_exports[name] = module
+        return module
 
     if name == "PenguinCore":
         from .core import PenguinCore

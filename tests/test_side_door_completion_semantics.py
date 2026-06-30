@@ -45,7 +45,7 @@ async def test_api_complete_task_rejects_non_review_ready_task():
 
 
 @pytest.mark.asyncio
-async def test_execute_task_from_project_moves_success_to_pending_review():
+async def test_execute_task_from_project_reports_runmode_result_without_terminal_transition():
     task = MagicMock()
     task.id = "task-1"
     task.title = "Execute Me"
@@ -55,6 +55,7 @@ async def test_execute_task_from_project_moves_success_to_pending_review():
 
     project_manager = MagicMock()
     project_manager.get_task_async = AsyncMock(return_value=task)
+    project_manager.get_project_async = AsyncMock(return_value=None)
     project_manager.update_task_status = MagicMock(return_value=True)
     project_manager.storage.update_task = MagicMock()
 
@@ -63,14 +64,13 @@ async def test_execute_task_from_project_moves_success_to_pending_review():
 
     core = SimpleNamespace(project_manager=project_manager, engine=engine)
 
-    result = await execute_task_from_project("task-1", core)
+    result = await execute_task_from_project("task-1", core=core)
 
-    task.mark_pending_review.assert_called_once_with(
-        "Engine execution completed", reviewer="engine"
-    )
-    project_manager.storage.update_task.assert_called_once_with(task)
     assert result["task_id"] == "task-1"
-    assert result["status"] == "completed"
+    assert result["result"]["status"] == "completed"
+    assert result["task"]["id"] == "task-1"
+    task.mark_pending_review.assert_not_called()
+    project_manager.storage.update_task.assert_not_called()
 
 
 @pytest.mark.asyncio

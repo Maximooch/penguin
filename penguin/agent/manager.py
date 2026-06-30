@@ -138,6 +138,8 @@ class AgentManager:
                     "is_sub_agent": parent is not None,
                     "system_prompt_preview": preview,
                     "permission": permission_rules,
+                    "model": metadata.get("model"),
+                    "default_tools": metadata.get("default_tools", []),
                     "agent_mode": agent_mode,
                     "options": {
                         "agent_mode": agent_mode,

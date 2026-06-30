@@ -36,6 +36,7 @@ import { exitSession } from "../../util/exit"
 import { DEFAULT_PENGUIN_STALE_MS, derivePenguinRunState } from "./penguin-run-state"
 import { applyPenguinFastCommand } from "./penguin-fast-command"
 import {
+  completePenguinPromptSuccess,
   createPenguinSession,
   emitPenguinOptimisticPrompt,
   formatPenguinPromptFailure,
@@ -59,6 +60,8 @@ import {
   shouldOwnPasteEvent,
   shouldSummarizePaste,
 } from "./paste-policy"
+import { hydratedSessionModel, hydratedSessionVariant, type SessionModelHydration } from "../../util/session-model"
+import { inlineFileReferenceParts } from "./inline-file-references"
 
 export type PromptProps = {
   sessionID?: string
@@ -291,12 +294,9 @@ export function Prompt(props: PromptProps) {
     const msg = lastUserMessage()
     const session = sessionID
       ? (sync.session.get(sessionID) as
-          | {
+          | (SessionModelHydration & {
               agent_id?: string
-              providerID?: string
-              modelID?: string
-              variant?: string
-            }
+            })
           | undefined)
       : undefined
 
@@ -320,8 +320,7 @@ export function Prompt(props: PromptProps) {
       syncedAgentSessionID = sessionID
     }
 
-    const sessionModel =
-      session?.providerID && session?.modelID ? { providerID: session.providerID, modelID: session.modelID } : undefined
+    const sessionModel = hydratedSessionModel(session)
     const messageModel = msg?.model
     const nextModel = sessionModel ?? messageModel
     const nextModelKey = nextModel ? `${sessionID}:${nextModel.providerID}/${nextModel.modelID}` : `${sessionID}:none`
@@ -335,7 +334,7 @@ export function Prompt(props: PromptProps) {
     }
 
     if (sessionID !== syncedVariantSessionID) {
-      const nextVariant = session?.variant ?? msg?.variant
+      const nextVariant = hydratedSessionVariant(session) ?? msg?.variant
       if (typeof nextVariant === "string") {
         local.model.variant.set(nextVariant)
       } else if (nextModel) {
@@ -1180,8 +1179,16 @@ export function Prompt(props: PromptProps) {
         }
       }
 
-      // Filter out text parts (pasted content) since they're now expanded inline
-      const nonTextParts = store.prompt.parts.filter((part) => part.type !== "text")
+      // Filter out text parts (pasted content) since they're now expanded inline.
+      // Add structured file parts for manually typed @file references so the
+      // backend sees the same attachment shape as autocomplete-selected files.
+      const selectedParts = store.prompt.parts.filter((part) => part.type !== "text")
+      const inlineFileParts = inlineFileReferenceParts({
+        text: inputText,
+        directory,
+        existingParts: selectedParts,
+      })
+      const nonTextParts = [...selectedParts, ...inlineFileParts]
 
       if (sdk.penguin) {
         emitPenguinOptimisticPrompt({
@@ -1254,7 +1261,19 @@ export function Prompt(props: PromptProps) {
           parts: nonTextParts,
         })
           .then((result) => {
-            if (result.ok) return
+            if (result.ok) {
+              completePenguinPromptSuccess({
+                messageID,
+                sessionID,
+                clear: () => {
+                  setStore("pending", false)
+                  setStore("pendingSeenBusy", false)
+                  setStore("runStartedAt", undefined)
+                },
+                emit: sdk.event.emit,
+              })
+              return
+            }
             recover()
             toast.show({
               variant: "error",

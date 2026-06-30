@@ -23,7 +23,7 @@ from penguin.run_mode import RunMode
 from penguin.project.models import TaskStatus
 
 logger = logging.getLogger(__name__)
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.live]
 
 # --- Fixtures ---
 
@@ -141,4 +141,4 @@ async def test_end_to_end_pr_creation(test_repo_path: Path):
         subprocess.run(["git", "branch", "-D", branch_name], cwd=test_repo_path)
         print(f"🧹 Cleaned up local branch: {branch_name}")
     except Exception as e:
-        print(f"⚠️  Could not clean up local branch: {e}") 
+        print(f"⚠️  Could not clean up local branch: {e}")

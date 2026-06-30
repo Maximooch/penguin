@@ -26,15 +26,12 @@ import type { Snapshot } from "@/snapshot"
 import { useExit } from "./exit"
 import { useArgs } from "./args"
 import { useRoute } from "./route"
+import { useTerminalFocus } from "./terminal-focus"
 import { batch, onCleanup, onMount } from "solid-js"
 import { Log } from "@/util/log"
 import { iife } from "@/util/iife"
 import type { Path } from "@opencode-ai/sdk"
-import {
-  hydrateSessionSnapshot,
-  mergeHydratedMessages,
-  upsertPenguinMessage,
-} from "./session-hydration"
+import { hydrateSessionSnapshot, mergeHydratedMessages, upsertPenguinMessage } from "./session-hydration"
 import {
   createPenguinBootstrapFallback,
   fetchBootstrapJson,
@@ -52,14 +49,22 @@ import {
 } from "./sync-scope"
 import { applySessionListEvent } from "./sync-session-events"
 import { createPenguinSessionUsageUrl } from "./sync-session-usage"
+import { normalizeSessionDiff } from "./session-diff"
 import { upsertSessionRecord } from "../util/session-family"
 import { profileStartup } from "../util/startup-profile"
+import { DEFAULT_NOTIFICATION_POLICY, type NotificationPolicy } from "../notification-policy"
+import {
+  notificationEventKey,
+  notifyForSyncEvent,
+  shouldSuppressNotificationForActiveSession,
+} from "../notification-runtime"
 
 export const { use: useSync, provider: SyncProvider } = createSimpleContext({
   name: "Sync",
   init: () => {
     const sdk = useSDK()
     const route = useRoute()
+    const terminalFocus = useTerminalFocus()
     const initialPenguinState = sdk.penguin
       ? createPenguinBootstrapFallback({
           baseUrl: sdk.url,
@@ -110,6 +115,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       formatter: FormatterStatus[]
       vcs: VcsInfo | undefined
       path: Path
+      notification_policy: NotificationPolicy
     }>({
       provider_next: {
         all: initialPenguinState?.provider_next.all ?? [],
@@ -138,9 +144,11 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       formatter: [],
       vcs: undefined,
       path: initialPenguinState?.path ?? { state: "", config: "", worktree: "", directory: "" },
+      notification_policy: initialPenguinState?.notification_policy ?? DEFAULT_NOTIFICATION_POLICY,
     })
     const fullSyncedSessions = new Set<string>()
     const providerCatalogRefreshTimers = new Set<ReturnType<typeof setTimeout>>()
+    const notifiedEventKeys = new Set<string>()
 
     const resolveDirectory = (sessionID?: string) => {
       if (sessionID) {
@@ -175,7 +183,8 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       usageRefreshInFlight.add(sessionID)
       usageRefreshAt.set(sessionID, now)
       const url = createPenguinSessionUsageUrl(sdk.url, sessionID)
-      sdk.fetch(url)
+      sdk
+        .fetch(url)
         .then((res) => (res.ok ? res.json() : undefined))
         .then((data) => {
           const usage = parsePenguinUsage(data)
@@ -233,10 +242,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           duration_ms: Date.now() - start,
           reason,
           providers: state.provider.length,
-          models: state.provider.reduce(
-            (total, provider) => total + Object.keys(provider.models ?? {}).length,
-            0,
-          ),
+          models: state.provider.reduce((total, provider) => total + Object.keys(provider.models ?? {}).length, 0),
         })
       } catch (error) {
         profileStartup("sync.bootstrap.provider_catalog_refresh.error", {
@@ -307,6 +313,36 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           })
         )
           return
+        if (
+          shouldSuppressNotificationForActiveSession(event, {
+            activeSessionID,
+            terminalFocused: terminalFocus.focused,
+          })
+        ) {
+          Log.Default.info("penguin notification suppressed", {
+            event: event.type,
+            reason: "active_session",
+            sessionID: activeSessionID,
+            terminalFocused: terminalFocus.focused,
+            terminalFocusSupported: terminalFocus.supported,
+          })
+        } else {
+          const key = notificationEventKey(event)
+          if (!key || !notifiedEventKeys.has(key)) {
+            if (key) notifiedEventKeys.add(key)
+            notifyForSyncEvent(event, store.notification_policy, {
+              write: (text) => process.stdout.write(text),
+              log: (payload) =>
+                Log.Default.info("penguin notification", {
+                  body: payload.body,
+                  category: payload.category,
+                  channel: payload.channel,
+                  sessionID: payload.sessionID,
+                  title: payload.title,
+                }),
+            })
+          }
+        }
       }
       switch (event.type) {
         case "server.instance.disposed":
@@ -393,7 +429,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           break
 
         case "session.diff":
-          setStore("session_diff", event.properties.sessionID, event.properties.diff)
+          setStore("session_diff", event.properties.sessionID, normalizeSessionDiff(event.properties.diff))
           break
 
         case "session.deleted": {
@@ -581,7 +617,8 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             if (normalizedScoped && normalizedBase && normalizedScoped !== normalizedBase) break
             const url = new URL("/lsp", sdk.url)
             url.searchParams.set("directory", scopedDirectory)
-            sdk.fetch(url)
+            sdk
+              .fetch(url)
               .then((res) => (res.ok ? res.json() : []))
               .then((data) => setStore("lsp", reconcile(Array.isArray(data) ? data : [])))
               .catch(() => undefined)
@@ -633,61 +670,84 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         })
         const sessionsPromise = timed(
           "sessions",
-          sdk.fetch(sessionsUrl)
+          sdk
+            .fetch(sessionsUrl)
             .then((res) => (res.ok ? res.json() : undefined))
             .then((data) => (Array.isArray(data) ? data : []))
             .catch(() => []),
         )
-        const [providersData, providerListData, configData, providerAuthData, roster] = await Promise.all([
-          timed(
-            "config_providers",
-            fetchBootstrapJson({
-              fetch: sdk.fetch,
-              path: new URL("/config/providers", sdk.url),
-              endpoint: "/config/providers",
-              fallback: undefined,
-            }),
-          ),
-          timed(
-            "provider",
-            fetchBootstrapJson({
-              fetch: sdk.fetch,
-              path: new URL("/provider", sdk.url),
-              endpoint: "/provider",
-              fallback: undefined,
-            }),
-          ),
-          timed(
-            "config",
-            fetchBootstrapJson({
-              fetch: sdk.fetch,
-              path: new URL("/config", sdk.url),
-              endpoint: "/config",
-              fallback: undefined,
-            }),
-          ),
-          timed(
-            "provider_auth",
-            fetchBootstrapJson({
-              fetch: sdk.fetch,
-              path: new URL("/provider/auth", sdk.url),
-              endpoint: "/provider/auth",
-              fallback: undefined,
-            }),
-          ),
-          timed(
-            "agents",
-            sdk.fetch(new URL("/api/v1/agents", sdk.url))
-              .then((res) => (res.ok ? res.json() : undefined))
-              .then((data) => (Array.isArray(data) ? data : []))
-              .catch(() => []),
-          ),
-        ])
+        const [providersData, providerListData, configData, providerAuthData, roster, commandsData, notificationData] =
+          await Promise.all([
+            timed(
+              "config_providers",
+              fetchBootstrapJson({
+                fetch: sdk.fetch,
+                path: new URL("/config/providers", sdk.url),
+                endpoint: "/config/providers",
+                fallback: undefined,
+              }),
+            ),
+            timed(
+              "provider",
+              fetchBootstrapJson({
+                fetch: sdk.fetch,
+                path: new URL("/provider", sdk.url),
+                endpoint: "/provider",
+                fallback: undefined,
+              }),
+            ),
+            timed(
+              "config",
+              fetchBootstrapJson({
+                fetch: sdk.fetch,
+                path: new URL("/config", sdk.url),
+                endpoint: "/config",
+                fallback: undefined,
+              }),
+            ),
+            timed(
+              "provider_auth",
+              fetchBootstrapJson({
+                fetch: sdk.fetch,
+                path: new URL("/provider/auth", sdk.url),
+                endpoint: "/provider/auth",
+                fallback: undefined,
+              }),
+            ),
+            timed(
+              "agents",
+              sdk
+                .fetch(new URL("/api/v1/agents", sdk.url))
+                .then((res) => (res.ok ? res.json() : undefined))
+                .then((data) => (Array.isArray(data) ? data : []))
+                .catch(() => []),
+            ),
+            timed(
+              "commands",
+              fetchBootstrapJson({
+                fetch: sdk.fetch,
+                path: new URL("/api/v1/commands", sdk.url),
+                endpoint: "/api/v1/commands",
+                fallback: undefined,
+              }),
+            ),
+            timed(
+              "notification_config",
+              fetchBootstrapJson({
+                fetch: sdk.fetch,
+                path: new URL("/api/v1/notifications/config", sdk.url),
+                endpoint: "/api/v1/notifications/config",
+                fallback: undefined,
+              }),
+            ),
+          ])
         const mapStart = Date.now()
         const bootstrapState = mapPenguinBootstrap({
           baseUrl: sdk.url,
+          commandsData,
           configData,
           directory,
+          notificationData,
           providerAuthData,
           providerListData,
           providersData,
@@ -705,6 +765,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           setStore("agent", reconcile(bootstrapState.agent))
           setStore("command", reconcile(bootstrapState.command))
           setStore("config", reconcile(bootstrapState.config))
+          setStore("notification_policy", reconcile(bootstrapState.notification_policy))
           setStore("path", reconcile(bootstrapState.path))
           setStore("status", "partial")
         })
@@ -715,8 +776,10 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           const sessionsMapStart = Date.now()
           const sessionsState = mapPenguinBootstrap({
             baseUrl: sdk.url,
+            commandsData,
             configData,
             directory,
+            notificationData,
             providerAuthData,
             providerListData,
             providersData,

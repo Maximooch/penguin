@@ -18,10 +18,12 @@ import json
 from pathlib import Path
 import sys
 from typing import Dict, Any
+import pytest
 
 
 BASE_URL = "http://localhost:8000"
 CONFIG_ENDPOINT = f"{BASE_URL}/api/v1/system/config"
+pytestmark = pytest.mark.e2e
 
 
 def print_section(title: str):
@@ -313,4 +315,3 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
         sys.exit(1)
-

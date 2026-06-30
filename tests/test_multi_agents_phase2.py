@@ -1,11 +1,16 @@
 import asyncio
-import os
 from pathlib import Path
 
 import pytest
 
 from penguin.core import PenguinCore
 from penguin.system.state import MessageCategory
+
+
+@pytest.fixture(autouse=True)
+def _offline_provider_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
 
 
 @pytest.mark.asyncio
@@ -71,4 +76,3 @@ async def test_checkpoints_and_autosave(tmp_path: Path):
     sm = cm.session_manager
     assert hasattr(sm, "_auto_save_thread"), "Autosave thread not initialized"
     assert getattr(sm, "_auto_save_thread").is_alive(), "Autosave thread is not running"
-

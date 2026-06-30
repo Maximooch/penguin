@@ -39,14 +39,10 @@ Example Usage:
 
 import asyncio
 import logging
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Union, Callable, AsyncGenerator
+from typing import Any, Dict, List, Optional, Callable, AsyncGenerator
 from dataclasses import dataclass
 
 from .core import PenguinCore
-from .config import config
-from .llm.model_config import ModelConfig
-from .system.checkpoint_manager import CheckpointType
 from penguin.constants import get_engine_max_iterations_default
 
 logger = logging.getLogger(__name__)
@@ -519,6 +515,9 @@ class PenguinClient:
         **kwargs,  # Legacy params
     ) -> None:
         """Register a sub-agent bound to a parent agent."""
+        if shared_context_window_max_tokens is None:
+            shared_context_window_max_tokens = kwargs.get("shared_cw_max_tokens")
+
         self.core.create_sub_agent(
             agent_id,
             parent_agent_id=parent_agent_id,

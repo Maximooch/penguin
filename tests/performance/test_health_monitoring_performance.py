@@ -14,9 +14,11 @@ import threading
 import statistics
 from typing import Any, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import pytest
 
 
 BASE_URL = os.environ.get("PENGUIN_API_URL", "http://127.0.0.1:8000")
+pytestmark = pytest.mark.slow
 
 # Test configuration
 CONCURRENT_REQUESTS = 10

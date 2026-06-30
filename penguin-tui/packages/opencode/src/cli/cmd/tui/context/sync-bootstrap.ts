@@ -11,6 +11,7 @@ import type {
 import type { Path } from "@opencode-ai/sdk"
 import { Log } from "@/util/log"
 import z from "zod"
+import { normalizeNotificationPolicy, type NotificationPolicy } from "../notification-policy"
 
 type BootstrapFetch = (input: string | URL, init?: RequestInit) => Promise<Response>
 
@@ -91,6 +92,7 @@ export type PenguinBootstrapState = {
   session: PenguinSession[]
   session_status: Record<string, SessionStatus>
   session_usage: Record<string, SessionUsage>
+  notification_policy: NotificationPolicy
 }
 
 const SPARSE_PROVIDER_CATALOG_MODEL_LIMIT = 20
@@ -98,10 +100,7 @@ const SPARSE_PROVIDER_CATALOG_MODEL_LIMIT = 20
 export function hasSparsePenguinProviderCatalog(
   providers: ReadonlyArray<{ models?: Record<string, unknown> | null }>,
 ): boolean {
-  const modelCount = providers.reduce(
-    (total, provider) => total + Object.keys(provider.models ?? {}).length,
-    0,
-  )
+  const modelCount = providers.reduce((total, provider) => total + Object.keys(provider.models ?? {}).length, 0)
   return modelCount > 0 && modelCount < SPARSE_PROVIDER_CATALOG_MODEL_LIMIT
 }
 
@@ -139,6 +138,56 @@ export function unwrapBootstrapData(value: unknown): unknown {
   const keys = Object.keys(record)
   const wrapper = keys.every((key) => key === "data" || key === "meta")
   return wrapper ? record.data : value
+}
+
+function defaultPenguinCommands(): Command[] {
+  return [
+    {
+      name: "config",
+      description: "Show configuration sources",
+      template: "/config",
+      hints: [],
+    },
+    {
+      name: "tool_details",
+      description: "Toggle tool detail visibility",
+      template: "/tool_details",
+      hints: [],
+    },
+    {
+      name: "thinking",
+      description: "Toggle reasoning visibility",
+      template: "/thinking",
+      hints: [],
+    },
+  ]
+}
+
+function parsePenguinCommands(raw: unknown): Command[] | undefined {
+  const data = unwrapBootstrapData(raw)
+  if (!Array.isArray(data)) return
+
+  const commands: Command[] = []
+  for (const item of data) {
+    if (!item || typeof item !== "object") continue
+    const source = item as Record<string, unknown>
+    const name = typeof source.name === "string" ? source.name.trim() : ""
+    const template = typeof source.template === "string" ? source.template : `/${name}`
+    if (!name || !template) continue
+    if (source.enabled === false) continue
+    const hints = Array.isArray(source.hints)
+      ? source.hints.filter((hint): hint is string => typeof hint === "string")
+      : []
+    commands.push({
+      name,
+      description: typeof source.description === "string" ? source.description : undefined,
+      source: source.source === "skill" || source.source === "mcp" ? source.source : "command",
+      template,
+      hints,
+    })
+  }
+
+  return commands.length ? commands : undefined
 }
 
 function stamp(value: unknown, now: number): number {
@@ -180,11 +229,7 @@ function providerListFromProviders(
   }
 }
 
-function mapPenguinSession(input: {
-  directory: string
-  item: Record<string, unknown>
-  now: number
-}): PenguinSession {
+function mapPenguinSession(input: { directory: string; item: Record<string, unknown>; now: number }): PenguinSession {
   const sid = typeof input.item.id === "string" ? input.item.id : crypto.randomUUID()
   const title = typeof input.item.title === "string" ? input.item.title : `Session ${sid.slice(-8)}`
   const time = input.item.time
@@ -291,8 +336,10 @@ function mapPenguinAgent(item: Record<string, unknown>): Agent | undefined {
 
 export function mapPenguinBootstrap(input: {
   baseUrl: string | URL
+  commandsData?: unknown
   configData: unknown
   directory: string
+  notificationData?: unknown
   now?: number
   providerAuthData: unknown
   providerListData: unknown
@@ -352,26 +399,7 @@ export function mapPenguinBootstrap(input: {
     options: {},
   }
   const agent = input.roster.map(mapPenguinAgent).filter((item): item is Agent => !!item)
-  const command: Command[] = [
-    {
-      name: "config",
-      description: "Show configuration sources",
-      template: "/config",
-      hints: [],
-    },
-    {
-      name: "tool_details",
-      description: "Toggle tool detail visibility",
-      template: "/tool_details",
-      hints: [],
-    },
-    {
-      name: "thinking",
-      description: "Toggle reasoning visibility",
-      template: "/thinking",
-      hints: [],
-    },
-  ]
+  const command = parsePenguinCommands(input.commandsData) ?? defaultPenguinCommands()
   const sessionStatus = Object.fromEntries(session.map((item) => [item.id, { type: "idle" as const }]))
 
   return {
@@ -382,6 +410,7 @@ export function mapPenguinBootstrap(input: {
     agent: agent.length ? agent : [baseAgent],
     command,
     config,
+    notification_policy: normalizeNotificationPolicy(input.notificationData),
     session,
     session_usage: sessionUsage,
     session_status: sessionStatus,
@@ -398,6 +427,7 @@ export function createPenguinBootstrapFallback(input: {
     baseUrl: input.baseUrl,
     configData: undefined,
     directory: input.directory,
+    notificationData: undefined,
     now: input.now,
     providerAuthData: undefined,
     providerListData: undefined,
@@ -422,9 +452,7 @@ export async function fetchBootstrapJson<T>(input: {
 
     const details = await res.text().catch(() => "")
     const error = new Error(
-      details
-        ? `Bootstrap request failed (${res.status}): ${details}`
-        : `Bootstrap request failed (${res.status})`,
+      details ? `Bootstrap request failed (${res.status}): ${details}` : `Bootstrap request failed (${res.status})`,
     )
     if (input.required) throw error
     Log.Default.warn("penguin bootstrap degraded", {

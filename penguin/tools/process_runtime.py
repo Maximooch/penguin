@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import os
-import select
 import signal
 import subprocess
 import time
@@ -97,7 +96,7 @@ class ProcessRuntime:
             return self._error(resolved_id, "process_id_already_exists")
         try:
             process = subprocess.Popen(
-                ["bash", "-lc", command],
+                ["bash", "-c", command],
                 cwd=resolved_cwd,
                 env=effective_env,
                 stdin=subprocess.PIPE,
@@ -204,23 +203,16 @@ class ProcessRuntime:
             pipe = getattr(record.process, stream)
             if pipe is None:
                 continue
-            fd = pipe.fileno()
             while True:
                 try:
-                    ready, _, _ = select.select([fd], [], [], 0)
-                    if not ready:
-                        break
-                    chunk = os.read(fd, 4096)
+                    chunk = pipe.read(4096)
                 except BlockingIOError:
                     break
                 except (OSError, ValueError):
                     break
                 if not chunk:
                     break
-                record.append_output(
-                    stream,
-                    chunk.decode(errors="replace"),
-                )
+                record.append_output(stream, str(chunk))
                 while len(record.events) > self._max_events_per_process:
                     record.events.popleft()
 
