@@ -751,6 +751,9 @@ async def test_opencode_status_heartbeat_refreshes_busy_status() -> None:
         item["properties"]["sessionID"] == "session_busy" for item in status_events
     )
     assert all(item["properties"]["status"]["type"] == "busy" for item in status_events)
+    assert all(
+        item["runtime_event"]["type"] == "session.status" for item in status_events
+    )
 
 
 @pytest.mark.asyncio
@@ -1110,6 +1113,44 @@ async def test_todo_updated_event_persists_and_emits_opencode_event() -> None:
     assert payload["type"] == "todo.updated"
     assert payload["properties"]["sessionID"] == session.id
     assert payload["properties"]["todos"][0]["status"] == "in_progress"
+    assert payload["runtime_event"]["type"] == "todo.updated"
+
+
+@pytest.mark.asyncio
+async def test_lsp_bridge_events_are_wrapped_as_runtime_events() -> None:
+    emitted: list[tuple[str, dict[str, Any]]] = []
+
+    class _EventBus:
+        async def emit(self, event_type: str, data: dict[str, Any]) -> None:
+            emitted.append((event_type, data))
+
+    core = PenguinCore.__new__(PenguinCore)
+    setattr(core, "event_bus", _EventBus())
+    setattr(core, "_opencode_session_directories", {"session_lsp": "/tmp/project"})
+
+    await core._on_tui_lsp_updated(
+        "lsp.updated",
+        {"sessionID": "session_lsp", "servers": [{"id": "pyright"}]},
+    )
+    await core._on_tui_lsp_diagnostics(
+        "lsp.client.diagnostics",
+        {"sessionID": "session_lsp", "path": "src/app.py", "diagnostics": []},
+    )
+
+    payloads = [
+        payload for event_type, payload in emitted if event_type == "opencode_event"
+    ]
+    assert [payload["type"] for payload in payloads] == [
+        "lsp.updated",
+        "lsp.client.diagnostics",
+    ]
+    assert all(
+        payload["runtime_event"]["category"] == "file_diff" for payload in payloads
+    )
+    assert all(
+        payload["runtime_event"]["scope"]["session_id"] == "session_lsp"
+        for payload in payloads
+    )
 
 
 @pytest.mark.asyncio
@@ -1202,6 +1243,65 @@ async def test_persist_opencode_events_replays_tool_parts_in_order() -> None:
     assert rows is not None
     assert len(rows) == 1
     assert [part["id"] for part in rows[0]["parts"]] == ["part_text", "part_tool"]
+
+
+@pytest.mark.asyncio
+async def test_persist_opencode_event_redacts_transcript_tool_payloads() -> None:
+    session = Session(id="session_track_redaction")
+    manager = _SessionManager(session)
+    conversation_manager = SimpleNamespace(
+        session_manager=manager,
+        agent_session_managers={"default": manager},
+    )
+
+    core = PenguinCore.__new__(PenguinCore)
+    setattr(core, "conversation_manager", conversation_manager)
+    setattr(
+        core,
+        "model_config",
+        SimpleNamespace(model="openai/gpt-5", provider="openai"),
+    )
+    setattr(
+        core,
+        "runtime_config",
+        SimpleNamespace(active_root="/tmp/project", project_root="/tmp/project"),
+    )
+    setattr(core, "_opencode_session_directories", {session.id: "/tmp/project"})
+
+    await core._persist_opencode_event(
+        "message.part.updated",
+        {
+            "part": {
+                "id": "part_tool_secret",
+                "sessionID": session.id,
+                "messageID": "msg_secret",
+                "type": "tool",
+                "tool": "bash",
+                "callID": "call_secret",
+                "state": {
+                    "status": "completed",
+                    "input": {
+                        "aws_secret_access_key": "aws-secret",
+                        "token_usage": {"input_tokens": 4, "output_tokens": 2},
+                        "tokens": 6,
+                    },
+                    "metadata": {"private_key": "private-value"},
+                    "time": {"start": 1, "end": 2},
+                },
+            },
+        },
+    )
+
+    transcript = session.metadata.get(TRANSCRIPT_KEY)
+    assert isinstance(transcript, dict)
+    message_entry = transcript.get("messages", {}).get("msg_secret")
+    assert isinstance(message_entry, dict)
+    stored_part = message_entry["parts"]["part_tool_secret"]
+    state = stored_part["state"]
+    assert state["input"]["aws_secret_access_key"] == "[redacted]"
+    assert state["input"]["tokens"] == 6
+    assert state["input"]["token_usage"] == {"input_tokens": 4, "output_tokens": 2}
+    assert state["metadata"]["private_key"] == "[redacted]"
 
 
 @pytest.mark.asyncio

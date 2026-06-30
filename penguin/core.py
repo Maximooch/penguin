@@ -208,6 +208,7 @@ from penguin.utils.profiling import (
     profile_startup_phase,
     profiler,
 )
+from penguin.web.services.runtime_events import wrap_opencode_event
 
 try:
     from penguin.system.message_bus import MessageBus, ProtocolMessage
@@ -1498,13 +1499,13 @@ class PenguinCore:
         if callable(emit):
             await emit(
                 "opencode_event",
-                {
-                    "type": "session.created",
-                    "properties": {
+                wrap_opencode_event(
+                    "session.created",
+                    {
                         "sessionID": session_id,
                         "info": info,
                     },
-                },
+                ),
             )
         return info
 
@@ -1915,10 +1916,7 @@ class PenguinCore:
 
         await self.event_bus.emit(
             "opencode_event",
-            {
-                "type": "session.status",
-                "properties": properties,
-            },
+            wrap_opencode_event("session.status", properties),
         )
 
     async def _opencode_session_status_heartbeat(
@@ -6334,10 +6332,7 @@ class PenguinCore:
 
         await self.event_bus.emit(
             "opencode_event",
-            {
-                "type": "todo.updated",
-                "properties": properties,
-            },
+            wrap_opencode_event("todo.updated", properties),
         )
 
     async def _on_tui_lsp_updated(self, event_type: str, data: Dict[str, Any]) -> None:
@@ -6369,10 +6364,7 @@ class PenguinCore:
 
         await self.event_bus.emit(
             "opencode_event",
-            {
-                "type": "lsp.updated",
-                "properties": properties,
-            },
+            wrap_opencode_event("lsp.updated", properties),
         )
 
     async def _on_tui_lsp_diagnostics(
@@ -6406,10 +6398,7 @@ class PenguinCore:
 
         await self.event_bus.emit(
             "opencode_event",
-            {
-                "type": "lsp.client.diagnostics",
-                "properties": properties,
-            },
+            wrap_opencode_event("lsp.client.diagnostics", properties),
         )
 
     def _find_session_store(
@@ -6525,6 +6514,11 @@ class PenguinCore:
             session_id = properties["part"].get("sessionID")
         if not session_id or session_id == "unknown":
             return
+
+        public_event = wrap_opencode_event(event_type, properties)
+        public_properties = public_event.get("properties")
+        if isinstance(public_properties, dict):
+            properties = dict(public_properties)
 
         session, manager = self._find_session_store(session_id)
         if session is None or manager is None:

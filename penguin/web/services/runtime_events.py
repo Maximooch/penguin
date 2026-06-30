@@ -32,28 +32,18 @@ RUNTIME_EVENT_CATEGORIES = {
     "user_input_approval",
 }
 
-_SECRET_KEY_PATTERN = re.compile(
-    r"(?i)(api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|"
-    r"client[_-]?secret)"
-)
 _SECRET_KEY_NAMES = {
     "authorization",
+    "bearer_token",
     "client_secret",
+    "id_token",
     "password",
+    "private_key",
+    "refresh_token",
     "secret",
+    "secret_key",
     "token",
 }
-_SECRET_KEY_SUFFIXES = (
-    "_api_key",
-    "_access_token",
-    "_authorization",
-    "_client_secret",
-    "_id_token",
-    "_password",
-    "_refresh_token",
-    "_secret",
-    "_token",
-)
 _SEQUENCE_LOCK = threading.Lock()
 _SEQUENCE_COUNTERS: dict[str, itertools.count[int]] = {}
 
@@ -451,6 +441,9 @@ def wrap_opencode_event(
         data["id"] = projected.get("id")
         data["time"] = projected.get("time")
         data["order"] = projected.get("order")
+        projected_properties = projected.get("properties")
+        if isinstance(projected_properties, Mapping):
+            data["properties"] = dict(projected_properties)
     return data
 
 
@@ -489,9 +482,32 @@ def _is_secret_key(key: str) -> bool:
         return False
     if normalized in _SECRET_KEY_NAMES:
         return True
-    if _SECRET_KEY_PATTERN.fullmatch(normalized):
+
+    segments = [item for item in normalized.split("_") if item]
+    if not segments:
+        return False
+
+    key_tokens = {"key", "keys"}
+    if "api" in segments and key_tokens.intersection(segments):
         return True
-    return any(normalized.endswith(suffix) for suffix in _SECRET_KEY_SUFFIXES)
+    if "secret" in segments and key_tokens.intersection(segments):
+        return True
+    if "private" in segments and key_tokens.intersection(segments):
+        return True
+
+    credential_pairs = {
+        ("access", "token"),
+        ("auth", "token"),
+        ("bearer", "token"),
+        ("client", "secret"),
+        ("id", "token"),
+        ("refresh", "token"),
+        ("session", "token"),
+    }
+    return any(
+        (segments[index], segments[index + 1]) in credential_pairs
+        for index in range(len(segments) - 1)
+    )
 
 
 def _first_string(payload: Mapping[str, Any], keys: tuple[str, ...]) -> str | None:

@@ -57,7 +57,13 @@ def test_runtime_event_redacts_public_payload_secrets() -> None:
         payload={
             "sessionID": "ses_1",
             "OPENAI_API_KEY": "sk-real",
-            "nested": {"client_secret": "secret-value"},
+            "api_keys": ["sk-other"],
+            "nested": {
+                "aws_secret_access_key": "aws-secret",
+                "client_secret": "secret-value",
+                "private_key": "private-value",
+                "secret_key": "secret-key-value",
+            },
         },
     )
 
@@ -65,10 +71,18 @@ def test_runtime_event_redacts_public_payload_secrets() -> None:
     assert event["privacy"]["classification"] == "sensitive"
     assert event["privacy"]["redacted_fields"] == [
         "OPENAI_API_KEY",
+        "api_keys",
+        "nested.aws_secret_access_key",
         "nested.client_secret",
+        "nested.private_key",
+        "nested.secret_key",
     ]
     assert event["payload"]["OPENAI_API_KEY"] == "[redacted]"
+    assert event["payload"]["api_keys"] == "[redacted]"
+    assert event["payload"]["nested"]["aws_secret_access_key"] == "[redacted]"
     assert event["payload"]["nested"]["client_secret"] == "[redacted]"
+    assert event["payload"]["nested"]["private_key"] == "[redacted]"
+    assert event["payload"]["nested"]["secret_key"] == "[redacted]"
 
 
 def test_runtime_event_preserves_token_usage_telemetry() -> None:
@@ -166,6 +180,23 @@ def test_wrap_opencode_event_assigns_runtime_event_before_sse_projection() -> No
     assert payload["id"] == "evt:session:ses_1:00000001"
     assert payload["order"] == 1
     assert payload["time"] == 789
+
+
+def test_wrap_opencode_event_projects_redacted_properties() -> None:
+    reset_runtime_event_sequences()
+
+    payload = wrap_opencode_event(
+        "provider.auth.updated",
+        {
+            "sessionID": "ses_1",
+            "aws_secret_access_key": "aws-secret",
+            "tokens": 12,
+        },
+    )
+
+    assert payload["properties"]["aws_secret_access_key"] == "[redacted]"
+    assert payload["properties"]["tokens"] == 12
+    assert payload["runtime_event"]["payload"]["aws_secret_access_key"] == "[redacted]"
 
 
 def test_runtime_event_fixtures_project_to_opencode_shape() -> None:

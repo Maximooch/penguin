@@ -134,6 +134,7 @@ async def test_spawn_sub_agent_emits_session_created(
     event_type, payload = core.event_bus.events[-1]
     assert event_type == "opencode_event"
     assert payload["type"] == "session.created"
+    assert payload["runtime_event"]["type"] == "session.created"
     assert payload["properties"]["sessionID"] == "session_child_1"
     assert payload["properties"]["info"]["id"] == "session_child_1"
     assert payload["properties"]["info"]["parentID"] == "session_parent"
