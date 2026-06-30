@@ -1,0 +1,62 @@
+{
+  "runtime_event": {
+    "id": "evt:session:ses_fixture:00000009",
+    "schema_version": "penguin.runtime_event.v1",
+    "type": "question.asked",
+    "category": "user_input_approval",
+    "source": "penguin.backend",
+    "subject": "session_id:ses_fixture",
+    "time": 1800000000200,
+    "stream_id": "session:ses_fixture",
+    "sequence": 9,
+    "scope": {
+      "session_id": "ses_fixture",
+      "conversation_id": "ses_fixture",
+      "agent_id": "default",
+      "directory": "/tmp/penguin-fixture",
+      "workspace": "/tmp/penguin-fixture"
+    },
+    "correlation": {
+      "request_id": "req_question_fixture"
+    },
+    "actor": {
+      "type": "runtime",
+      "id": "question"
+    },
+    "privacy": {
+      "classification": "public",
+      "redacted": false,
+      "redacted_fields": []
+    },
+    "payload": {
+      "id": "question_fixture",
+      "sessionID": "ses_fixture",
+      "agentID": "default",
+      "question": "Continue with the requested action?",
+      "choices": ["yes", "no"],
+      "directory": "/tmp/penguin-fixture",
+      "requestID": "req_question_fixture"
+    },
+    "projections": {
+      "opencode": {
+        "id": "question.asked:ses_fixture:question_fixture",
+        "type": "question.asked"
+      }
+    }
+  },
+  "opencode": {
+    "id": "evt:session:ses_fixture:00000009",
+    "order": 9,
+    "time": 1800000000200,
+    "type": "question.asked",
+    "properties": {
+      "id": "question_fixture",
+      "sessionID": "ses_fixture",
+      "agentID": "default",
+      "question": "Continue with the requested action?",
+      "choices": ["yes", "no"],
+      "directory": "/tmp/penguin-fixture",
+      "requestID": "req_question_fixture"
+    }
+  }
+}

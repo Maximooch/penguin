@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from penguin.web.services.runtime_events import reset_runtime_event_sequences
 from penguin.web.services.system_status import get_path_info
 from penguin.web.sse_events import events_sse, set_core_instance
 
@@ -41,6 +42,7 @@ def _parse_sse(chunk: str) -> dict:
 async def test_sse_scopes_session_events_and_allows_global_status_events(
     tmp_path: Path,
 ):
+    reset_runtime_event_sequences()
     event_bus = _EventBus()
     runtime = SimpleNamespace(
         workspace_root=str(tmp_path),
@@ -102,6 +104,78 @@ async def test_sse_scopes_session_events_and_allows_global_status_events(
     assert scoped_event["properties"]["id"] == "msg_one"
 
     await stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sse_replays_buffered_events_after_last_event_id(tmp_path: Path):
+    reset_runtime_event_sequences()
+    event_bus = _EventBus()
+    runtime = SimpleNamespace(
+        workspace_root=str(tmp_path),
+        project_root=str(tmp_path),
+        active_root=str(tmp_path),
+    )
+    core = SimpleNamespace(
+        event_bus=event_bus,
+        runtime_config=runtime,
+        _opencode_session_directories={},
+    )
+    set_core_instance(core)
+
+    response = await events_sse(
+        session_id="session_one",
+        conversation_id=None,
+        agent_id=None,
+        directory=str(tmp_path),
+    )
+    stream = response.body_iterator
+
+    _ = _parse_sse(await stream.__anext__())
+
+    await event_bus.emit(
+        "opencode_event",
+        {
+            "type": "message.updated",
+            "properties": {
+                "id": "msg_1",
+                "sessionID": "session_one",
+                "role": "assistant",
+            },
+        },
+    )
+    await event_bus.emit(
+        "opencode_event",
+        {
+            "type": "message.updated",
+            "properties": {
+                "id": "msg_2",
+                "sessionID": "session_one",
+                "role": "assistant",
+            },
+        },
+    )
+
+    first_event = _parse_sse(await asyncio.wait_for(stream.__anext__(), timeout=0.25))
+    second_event = _parse_sse(await asyncio.wait_for(stream.__anext__(), timeout=0.25))
+    await stream.aclose()
+
+    response = await events_sse(
+        session_id="session_one",
+        conversation_id=None,
+        agent_id=None,
+        directory=str(tmp_path),
+        last_event_id=first_event["id"],
+    )
+    replay_stream = response.body_iterator
+
+    _ = _parse_sse(await replay_stream.__anext__())
+    replayed = _parse_sse(
+        await asyncio.wait_for(replay_stream.__anext__(), timeout=0.25)
+    )
+    assert replayed["id"] == second_event["id"]
+    assert replayed["properties"]["id"] == "msg_2"
+
+    await replay_stream.aclose()
 
 
 def test_path_info_prefers_valid_directory_then_session_mapping(tmp_path: Path):
@@ -174,15 +248,15 @@ async def test_sse_streams_clarification_session_status_events(tmp_path: Path):
         },
     )
 
-    clarification_event = _parse_sse(await asyncio.wait_for(stream.__anext__(), timeout=0.25))
+    clarification_event = _parse_sse(
+        await asyncio.wait_for(stream.__anext__(), timeout=0.25)
+    )
     assert clarification_event["type"] == "session.status"
     assert clarification_event["properties"]["sessionID"] == "session_one"
     assert clarification_event["properties"]["status"]["type"] == "clarification_needed"
     assert clarification_event["properties"]["info"]["task_id"] == "task-1"
 
     await stream.aclose()
-
-
 
 
 @pytest.mark.asyncio
@@ -219,12 +293,16 @@ async def test_sse_streams_time_limit_session_status_events(tmp_path: Path):
         {
             "status_type": "time_limit_reached",
             "data": {
-                "summary": "RunMode stopped because the explicit time limit was reached.",
+                "summary": (
+                    "RunMode stopped because the explicit time limit was reached."
+                ),
             },
         },
     )
 
-    time_limit_event = _parse_sse(await asyncio.wait_for(stream.__anext__(), timeout=0.25))
+    time_limit_event = _parse_sse(
+        await asyncio.wait_for(stream.__anext__(), timeout=0.25)
+    )
     assert time_limit_event["type"] == "session.status"
     assert time_limit_event["properties"]["sessionID"] == "session_one"
     assert time_limit_event["properties"]["status"]["type"] == "time_limit_reached"

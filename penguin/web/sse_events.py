@@ -7,7 +7,7 @@ message/part events to the TUI client.
 import asyncio
 from typing import TYPE_CHECKING, Any, AsyncIterator, Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Header, Query
 from fastapi.responses import StreamingResponse
 
 from penguin.web.services.opencode_events import (
@@ -24,6 +24,8 @@ if TYPE_CHECKING:
     from penguin.core import PenguinCore
 
 router = APIRouter()
+_REPLAY_BUFFER_ATTR = "_opencode_sse_replay_v1"
+_MAX_REPLAY_EVENTS = 1000
 
 # Global reference to core instance (set by app.py)
 _core_instance: Optional["PenguinCore"] = None
@@ -50,6 +52,11 @@ async def events_sse(
     ),
     agent_id: Optional[str] = Query(None, description="Filter to specific agent"),
     directory: Optional[str] = Query(None, description="Workspace directory"),
+    last_event_id: Optional[str] = Query(
+        None,
+        description="Replay buffered events after this SSE id",
+    ),
+    last_event_id_header: Optional[str] = Header(None, alias="Last-Event-ID"),
 ):
     """
     SSE stream of OpenCode-compatible events.
@@ -65,6 +72,7 @@ async def events_sse(
     effective_session_id = session_id or conversation_id
     effective_agent_id = agent_id
     effective_directory = normalize_directory(directory)
+    effective_last_event_id = last_event_id or last_event_id_header
 
     if effective_session_id and directory:
         session_dirs = getattr(core, "_opencode_session_directories", None)
@@ -91,20 +99,7 @@ async def events_sse(
                 default_session_id=effective_session_id,
             )
 
-        def event_handler(event_type: str, data: Any):
-            """Handler for EventBus events."""
-            # Only handle opencode_event type
-            if event_type != "opencode_event":
-                return
-
-            # Data should already be in OpenCode format
-            if not isinstance(data, dict):
-                return
-
-            normalized = next_event(data)
-            if not normalized:
-                return
-
+        def event_allowed(normalized: dict[str, Any]) -> bool:
             props = normalized.get("properties", {})
             if not isinstance(props, dict):
                 props = {}
@@ -121,7 +116,7 @@ async def events_sse(
                     # Global status event without a session association
                     pass
                 else:
-                    return
+                    return False
 
             if effective_directory:
                 if event_session:
@@ -154,27 +149,27 @@ async def events_sse(
                     if session_directory and not directory_matches(
                         session_directory, effective_directory
                     ):
-                        return
+                        return False
                     if (
                         not session_directory
                         and event_directory
                         and not directory_matches(event_directory, effective_directory)
                     ):
-                        return
+                        return False
                     if (
                         not session_directory
                         and not event_directory
                         and event_name in GLOBAL_STATUS_EVENTS
                     ):
-                        return
+                        return False
                 else:
                     if event_directory and not directory_matches(
                         event_directory, effective_directory
                     ):
-                        return
+                        return False
                     if not event_directory and event_name in GLOBAL_STATUS_EVENTS:
-                        # These are intentionally global status events. Dropping them when a directory
-                        # filter is present makes SSE look dead even though the runtime emitted a valid event.
+                        # These global status events are intentionally unscoped.
+                        # Dropping them under a directory filter makes SSE look dead.
                         pass
 
             # Filter by agent_id if provided (check multiple possible fields)
@@ -187,9 +182,29 @@ async def events_sse(
                         "agent_id"
                     )
                 if event_agent and event_agent != effective_agent_id:
-                    return
+                    return False
+
+            return True
+
+        def event_handler(event_type: str, data: Any):
+            """Handler for EventBus events."""
+            # Only handle opencode_event type
+            if event_type != "opencode_event":
+                return
+
+            # Data should already be in OpenCode format
+            if not isinstance(data, dict):
+                return
+
+            normalized = next_event(data)
+            if not normalized:
+                return
+
+            if not event_allowed(normalized):
+                return
 
             try:
+                _remember_replay_event(core, normalized)
                 queue.put_nowait(normalized)
             except asyncio.QueueFull:
                 # Drop event if queue is full (client is slow)
@@ -211,6 +226,11 @@ async def events_sse(
             normalized_connected = next_event(connected_event)
             if normalized_connected:
                 yield sse_event_frame(normalized_connected)
+
+            if effective_last_event_id:
+                for event in _replay_events_after(core, effective_last_event_id):
+                    if event_allowed(event):
+                        yield sse_event_frame(event)
 
             # Stream events
             while True:
@@ -241,6 +261,35 @@ async def events_sse(
             "X-Accel-Buffering": "no",  # Disable nginx buffering
         },
     )
+
+
+def _replay_buffer(core: Any) -> list[dict[str, Any]]:
+    existing = getattr(core, _REPLAY_BUFFER_ATTR, None)
+    if isinstance(existing, list):
+        return existing
+    buffer: list[dict[str, Any]] = []
+    setattr(core, _REPLAY_BUFFER_ATTR, buffer)
+    return buffer
+
+
+def _remember_replay_event(core: Any, event: dict[str, Any]) -> None:
+    event_id = event.get("id")
+    if not isinstance(event_id, str) or not event_id:
+        return
+    buffer = _replay_buffer(core)
+    if any(item.get("id") == event_id for item in buffer):
+        return
+    buffer.append(event)
+    if len(buffer) > _MAX_REPLAY_EVENTS:
+        del buffer[: len(buffer) - _MAX_REPLAY_EVENTS]
+
+
+def _replay_events_after(core: Any, last_event_id: str) -> list[dict[str, Any]]:
+    buffer = _replay_buffer(core)
+    for index, event in enumerate(buffer):
+        if event.get("id") == last_event_id:
+            return buffer[index + 1 :]
+    return []
 
 
 @router.get("/api/v1/health")

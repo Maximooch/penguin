@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from penguin.config import WORKSPACE_PATH
+from penguin.web.services.runtime_events import wrap_opencode_event
 
 logger = logging.getLogger(__name__)
 _LAST_BRANCH_KEYS: dict[str, str] = {}
@@ -215,9 +216,9 @@ def get_vcs_info(
             _VCS_EMIT_TASK = loop.create_task(
                 core.event_bus.emit(
                     "opencode_event",
-                    {
-                        "type": "vcs.branch.updated",
-                        "properties": {
+                    wrap_opencode_event(
+                        "vcs.branch.updated",
+                        {
                             "branch": branch,
                             "detached": detached,
                             "head": head,
@@ -225,7 +226,7 @@ def get_vcs_info(
                             "directory": directory,
                             "sessionID": session_id,
                         },
-                    },
+                    ),
                 )
             )
         except Exception:

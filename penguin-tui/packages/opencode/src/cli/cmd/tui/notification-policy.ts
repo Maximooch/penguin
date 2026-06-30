@@ -144,12 +144,26 @@ export function normalizeNotificationPolicy(value: unknown): NotificationPolicy 
   const source = value as Record<string, unknown>
   const mode = isNotificationMode(source.mode) ? source.mode : "off"
   const soundPack = isSoundPack(source.soundPack) ? source.soundPack : "generic"
+  const enabledCategories = normalizeEnabledCategories(source.enabledCategories)
   return {
     mode,
     soundPack,
     quietHours: normalizeQuietHours(source.quietHours),
+    ...(enabledCategories ? { enabledCategories } : {}),
     includeDetails: source.includeDetails !== false,
   }
+}
+
+function normalizeEnabledCategories(
+  value: unknown,
+): Partial<Record<AttentionCategory, boolean>> | undefined {
+  if (!value || typeof value !== "object") return
+  const source = value as Record<string, unknown>
+  const result: Partial<Record<AttentionCategory, boolean>> = {}
+  for (const key of Object.keys(DEFAULT_TITLES) as AttentionCategory[]) {
+    if (typeof source[key] === "boolean") result[key] = source[key]
+  }
+  return Object.keys(result).length ? result : undefined
 }
 
 export function notificationPayloads(

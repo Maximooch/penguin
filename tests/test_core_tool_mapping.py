@@ -348,6 +348,18 @@ async def test_emit_opencode_user_message_uses_client_message_id_and_model_state
     setattr(core, "_get_tui_adapter", lambda _session_id: adapter)
     setattr(
         core,
+        "_opencode_stream_states",
+        {
+            "session_user_emit": {
+                "active": False,
+                "stream_id": "stream_old",
+                "message_id": "msg_previous_assistant",
+                "part_id": "part_previous_text",
+            }
+        },
+    )
+    setattr(
+        core,
         "_resolve_opencode_model_state",
         lambda session_id: {
             "modelID": "gpt-5.4",
@@ -380,6 +392,12 @@ async def test_emit_opencode_user_message_uses_client_message_id_and_model_state
             "variant": "high",
         }
     ]
+    assert core._opencode_stream_states["session_user_emit"] == {
+        "active": False,
+        "stream_id": None,
+        "message_id": None,
+        "part_id": None,
+    }
 
 
 def test_map_action_result_metadata_extracts_diff_for_edit_with_pattern() -> None:

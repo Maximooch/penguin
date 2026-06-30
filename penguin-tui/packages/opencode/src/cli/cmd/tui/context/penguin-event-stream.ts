@@ -1,4 +1,7 @@
 export type PenguinStreamEvent = {
+  id?: string
+  order?: number
+  time?: number
   type: string
   properties: Record<string, unknown>
 }
@@ -41,6 +44,11 @@ export function cleanPenguinText(value: string): string {
 }
 
 export function parsePenguinSSEEvent<T extends PenguinStreamEvent = PenguinStreamEvent>(input: string): T | undefined {
+  const id = input
+    .split("\n")
+    .find((line) => line.startsWith("id:"))
+    ?.slice(3)
+    .trim()
   const data = input
     .split("\n")
     .filter((line) => line.startsWith("data:"))
@@ -49,7 +57,11 @@ export function parsePenguinSSEEvent<T extends PenguinStreamEvent = PenguinStrea
   if (!data) return undefined
 
   try {
-    return JSON.parse(data) as T
+    const event = JSON.parse(data) as T
+    if (id && event && typeof event === "object" && typeof event.id !== "string") {
+      event.id = id
+    }
+    return event
   } catch {
     return undefined
   }

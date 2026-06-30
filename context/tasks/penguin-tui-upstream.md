@@ -1803,10 +1803,11 @@ Follow-up before enabling the full interactive diff viewer:
 
 Completed in Phase 10: the backend exposes `/api/v1/notifications/config`;
 bootstrap stores the normalized policy; the TUI maps approval/question/error
-events to terminal notification payloads with duplicate suppression. Portable
-delivery supports visual/log, bell, and OSC payloads. OS/terminal/sound adapters
-are represented as policy capabilities and remain opt-in no-ops until a specific
-terminal integration is selected.
+events to terminal notification payloads with duplicate suppression and
+active-session suppression. Portable delivery supports visual/log, bell, OSC
+payloads, desktop notifications, and native sound playback. Terminal-app
+specific adapters, richer message-content notifications, and sound-pack polish
+are Phase 12 follow-ups.
 
 #### 10.8 Event/SSE stabilization
 
@@ -1867,22 +1868,232 @@ Final Phase 10 verification:
 
 Deferred follow-ups:
 
-- Multi-agent execution fixes remain in `context/tasks/resolve-multi-agents.md`
-  and are intentionally outside the Penguin TUI upstream track.
-- The full Link-style unified runtime event envelope remains deferred until
-  after this TUI/backend-contract work lands.
-- OS/terminal-specific notification adapters and a full interactive diff viewer
-  are future PRs now that backend contracts are stable enough to build on.
+- The full Link-style unified runtime event envelope is Phase 11 and should be
+  treated as the next major backend/runtime contract.
+- Durable runtime event history is Phase 11.5 and should land before UI/runtime
+  consumers depend on replay, analytics, or observability behavior.
+- Full interactive diff viewer, terminal-specific notification adapters,
+  OpenTUI/keymap/plugin-runtime upgrades, and multi-agent execution fixes are
+  Phase 12 follow-ups after the event envelope and ledger are stable.
 
-### 11. Evaluate OpenTUI, keymap, and plugin-runtime upgrades
+### 11. Define the unified runtime event envelope
 
+Phase 11 is the highest-priority follow-up after Phase 10. Phase 10 stabilized
+Penguin's current OpenCode-projected SSE and TUI contracts; Phase 11 should make
+the event model explicit enough that TUI, web, future Link Agentboard, logging,
+analytics, replay, notifications, and observability all consume the same
+backend-owned event contract.
+
+Phase 11 goals:
+
+- [x] Define a canonical `RuntimeEvent` envelope with stable event IDs,
+      timestamps, source, event kind, session/project/workspace correlation,
+      agent/task/run identifiers, provider/model identifiers where relevant,
+      ordering fields, privacy classification, and typed payloads.
+- [x] Define event categories for at least session lifecycle, message lifecycle,
+      stream chunks, tool/action lifecycle, file/diff changes, task/run state,
+      provider/model state, context-window/token usage, notifications, errors,
+      and user-input/approval requests.
+- [x] Keep Penguin's current CWM terminology accurate: CWM trims by category
+      priority and recency; do not model current behavior as compaction.
+- [x] Add backend serializers/adapters that project existing Penguin events into
+      `RuntimeEvent` without breaking the Phase 10 OpenCode-compatible SSE
+      surface.
+- [x] Add replay and ordering tests for reconnects, duplicate suppression,
+      wrong-session filtering, partial streams, stream completion, tool results,
+      and notification-worthy attention events.
+- [x] Add deterministic fixtures for TUI/web/Link consumers so frontend code can
+      render from the envelope without inferring backend state.
+- [x] Preserve current OpenCode-shaped compatibility routes/events as adapters;
+      do not make Link-specific semantics leak into the Penguin TUI boundary.
+- [x] Document migration rules for Phase 10 event shapes and which fields are
+      required, optional, private, or redacted by default.
+
+Phase 11 implementation notes:
+
+- Backend-owned event envelope lives in
+  `penguin/web/services/runtime_events.py`.
+- Runtime events use schema version `penguin.runtime_event.v1` and contain:
+  `id`, `schema_version`, `type`, `category`, `source`, `subject`, `time`,
+  `stream_id`, `sequence`, `scope`, `correlation`, `actor`, `privacy`,
+  `payload`, and `projections`.
+- Runtime event categories are:
+  `session_lifecycle`, `message_lifecycle`, `stream_chunk`,
+  `tool_action_lifecycle`, `file_diff`, `task_run_state`,
+  `provider_model_state`, `cwm_token_usage`, `notification`, `error`, and
+  `user_input_approval`.
+- Phase 10 OpenCode-compatible events remain the public TUI SSE stream shape:
+  `{ id, order, time, type, properties }`. The backend constructs and carries
+  `RuntimeEvent` internally, then projects it to this OpenCode-compatible shape
+  for current TUI clients.
+- In the OpenCode-compatible SSE projection, `id` is the unique
+  `RuntimeEvent.id` used for reconnect/replay identity. Message, part,
+  question, tool, token-usage, and other domain IDs remain entity IDs inside
+  `properties` and internal projection metadata.
+- `RuntimeEvent -> OpenCode` projection is an adapter. Direct runtime-envelope
+  delivery to public SSE/Link/web clients is intentionally deferred until a
+  dedicated endpoint or opt-in projection can land without breaking existing
+  TUI consumers.
+- Public payloads are redacted at envelope construction. Credential-specific
+  keys such as API keys, access tokens, client secrets, passwords, and
+  authorization values are replaced with `[redacted]`; token telemetry fields
+  such as `tokens`, `token_usage`, and `input_tokens` remain visible for
+  `cwm_token_usage` events. The `privacy` block records whether anything was
+  redacted and which field paths were affected.
+- SSE keeps a bounded in-memory compatibility replay window for current
+  reconnect/dedupe behavior. A durable emit-time event ledger is Phase 11.5; do
+  not build Phase 12 consumers on the bounded SSE buffer.
+- Current CWM events should be modeled as token/context-window telemetry. Do
+  not describe current CWM behavior as compaction; it trims by category priority
+  and recency.
+
+Verification expectations:
+
+- [x] Backend unit/service tests for envelope construction and redaction.
+- [x] SSE/replay tests for stable IDs, order, reconnect, and dedupe behavior.
+- [x] TUI tests proving existing Phase 10 rendering still works through the
+      compatibility projection.
+- [x] Focused notification tests proving attention events can drive notifications
+      without notifying for already-visible active-session messages.
+- [x] Default Python and touched Bun TUI tests before opening the Phase 11 PR.
+      Verified with `uv run --group dev pytest tests -q` and
+      `bun test test/tui test/cli/tui` from
+      `penguin-tui/packages/opencode`.
+
+### 11.5. Add the durable runtime event ledger
+
+Phase 11.5 should land after the canonical `RuntimeEvent` envelope and before
+Phase 12 UI/runtime feature work. The point is infrastructure, not dashboards:
+make event history durable, replayable, and privacy-safe so diff review,
+multi-agent progress, richer notifications, observability, analytics, and Link
+projection all consume the same source of truth.
+
+Phase 11.5 goals:
+
+- [ ] Add an append-only event store for redacted public `RuntimeEvent` records.
+- [ ] Persist stable ordering by `stream_id`, `sequence`, and insertion order.
+- [ ] Move replay recording to event emission time instead of per-SSE-connection
+      handlers, then filter/project at subscription time.
+- [ ] Support SSE resume/replay from `Last-Event-ID` and `last_event_id` using
+      the ledger, not only the bounded in-memory SSE buffer.
+- [ ] Preserve `RuntimeEvent.id` as replay identity and keep message, part,
+      question, tool, token-usage, and other domain IDs as entity IDs.
+- [ ] Add retention controls: max events, max age, max storage size, and a clear
+      cleanup policy.
+- [ ] Define slow-client/backpressure behavior: if an SSE queue drops an event,
+      the ledger still remains the truth for reconnect/replay.
+- [ ] Promote SSE replay/queue/keepalive constants into named policy/config
+      values with comments about memory limits, reconnect horizon, slow-client
+      behavior, and eventual logging/metrics for dropped events.
+- [ ] Move runtime sequence assignment out of process-global hidden counters and
+      into the durable ledger/buffer once that storage layer exists.
+- [ ] Keep the privacy boundary strict: the default ledger stores only redacted
+      public envelopes. Raw/private payload capture is out of scope unless a
+      separate, explicitly protected diagnostic store is designed.
+- [ ] Keep analytics dashboards, metrics UIs, and observability products out of
+      this phase. Phase 11.5 only makes the ledger reliable.
+
+Phase 11.5 test requirements:
+
+- [ ] Restart/reconnect replay from persisted events.
+- [ ] Duplicate suppression by `RuntimeEvent.id` without dropping repeated
+      deltas for the same message part.
+- [ ] Wrong-session, wrong-agent, and wrong-directory filtering at replay time.
+- [ ] Partial stream replay and stream completion ordering.
+- [ ] Tool call/result adjacency, including native tool-call replay boundaries.
+- [ ] Token/CWM telemetry survives redaction and replay.
+- [ ] Queue backpressure does not lose ledger truth.
+- [ ] Retention cleanup preserves ordering and never exposes raw secrets.
+
+Implementation notes:
+
+- Prefer a small service module under `penguin/web/services` or a runtime event
+  storage package instead of adding ledger behavior to routes.
+- SSE should remain a projection/subscription layer. It should not own durable
+  event truth.
+- The first ledger can be local/deterministic and modest. The important contract
+  is append-only, ordered, replayable, redacted `RuntimeEvent` records.
+
+### 12. Post-envelope TUI and runtime feature follow-ups
+
+Phase 12 should wait until the Phase 11 event envelope and Phase 11.5 durable
+ledger are stable. These items are valuable, but they are safer once runtime
+events, replay, attention state, and session/file identity are backend-owned
+rather than inferred in the TUI.
+
+#### 12.1 Post-merge review cleanup
+
+The Phase 10 PR has merged. Do not reopen that PR or keep chasing review nits in
+the merged branch. After Phase 11 lands the unified runtime event envelope, do a
+small follow-up cleanup PR for the still-valid Phase 10 review leftovers.
+
+Focus areas:
+
+- [ ] Notification settings reset safety:
+      `dialog-notifications.tsx` should only clear the local notification policy
+      override after `/api/v1/notifications/config` returns a successful,
+      parseable payload. Failed fetches, non-OK responses, and malformed JSON
+      should leave the existing override intact.
+- [ ] Active-session notification suppression:
+      gate `terminalFocus.focused` with `terminalFocus.supported` before passing
+      it into notification suppression. Unsupported focus reporting should not
+      suppress desktop notifications for the active session.
+- [ ] Terminal focus parsing:
+      handle multiple focus transitions in one stdin chunk, and consider a
+      stateful parser if split escape sequences remain observable in real
+      terminals.
+- [ ] Notification asset merging:
+      merge `deliverNotificationPayloads(..., { assets })` overrides into
+      bundled defaults instead of replacing the whole asset set.
+- [ ] macOS `terminal-notifier` sound:
+      pass `-sound` when a notification payload has `sound`, matching the
+      AppleScript fallback and native sound path.
+- [ ] Notification summary and category policy:
+      include the selected sound pack in `combined` mode summaries, and preserve
+      `enabledCategories` through `normalizeNotificationPolicy`.
+- [ ] Session variant hydration:
+      avoid marking variant hydration complete before a real session variant is
+      applied or explicitly reset.
+- [ ] Persona model secret regression test:
+      keep persisted persona/session metadata redacted, but add an assertion
+      that the runtime API client still receives persona-scoped `api_key` values
+      when configured.
+- [ ] Optional non-Penguin copy cleanup:
+      gate the settings dialog's Notifications hint on `sdk.penguin` only if the
+      TUI package is still intended to run as non-Penguin OpenCode.
+
+Validation expectations:
+
+- Focused Bun tests for notification policy/runtime/settings, terminal focus,
+  prompt hydration, and settings copy if touched.
+- Focused Python persona test for runtime key preservation and metadata
+  redaction.
+- `bun run typecheck`, targeted format checks, targeted Ruff/compileall for
+  touched Python files, and `git diff --check`.
+
+- [ ] Adopt the full interactive diff viewer after the backend diff contract can
+      provide per-file drilldown, renamed/deleted/binary/large diff metadata,
+      session/project scoping, and review-state hooks.
+- [ ] Add broader diff viewer tests for empty diffs, renamed files, binary files,
+      deleted files, large diffs, and file-tree review behavior.
+- [ ] Revisit multi-agent execution fixes from
+      `context/tasks/resolve-multi-agents.md` as a follow-up PR outside the
+      Phase 10 TUI upstream merge. Use the Phase 11 event envelope for sub-agent
+      lifecycle, parent/child session identity, and user-visible progress.
+- [ ] Add terminal-app-specific notification adapters where practical, including
+      CMUX/Ghostty behavior, and keep desktop notifications as the reliable
+      default path.
+- [ ] Add richer message-content notifications behind the default secret filter
+      and event-envelope privacy classification.
+- [ ] Decide sound-pack packaging, licensing, and third-party plugin shape before
+      keeping non-project-owned sounds in a mergeable branch.
 - [ ] Evaluate the OpenTUI dependency jump from Penguin's embedded `0.1.75`
       baseline toward upstream's `0.2.15` track separately from protocol work.
 - [ ] Review upstream flat keybind config and `@opentui/keymap` extraction.
 - [ ] Decide whether Penguin's local command/settings/skills surfaces should map
       to upstream command palette, keymap, or plugin-runtime concepts.
-- [ ] Keep plugin/runtime adoption out of the first upstreaming pass unless a
-      specific direct feature depends on it.
+- [ ] Keep plugin/runtime adoption out of the next pass unless a specific direct
+      feature depends on it.
 
 ## Open Questions
 

@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, Literal, Optional, Tuple
 
+from penguin.web.services.runtime_events import wrap_opencode_event
+
 
 class PartType(Enum):
     """OpenCode-compatible part types."""
@@ -101,6 +103,7 @@ class PartEventAdapter:
         self._stream_active: bool = False
         self._active_tool_parts: set[str] = set()
         self._active_tool_counts_by_message: Dict[str, int] = {}
+        self._messages_with_content_parts: set[str] = set()
         self._session_status: str = "idle"
         self._default_directory: Optional[str] = None
         self._last_id_ts = 0
@@ -341,6 +344,8 @@ class PartEventAdapter:
         """Return whether a message already has text or reasoning parts."""
         if not message_id:
             return False
+        if message_id in self._messages_with_content_parts:
+            return True
         for part in self._active_parts.values():
             if part.message_id != message_id:
                 continue
@@ -428,6 +433,7 @@ class PartEventAdapter:
         self._active_parts[part_id] = text_part
 
         self._stream_active = True
+        self._messages_with_content_parts.add(message_id)
         await self._sync_session_status()
         # Emit message.updated
         await self._emit("message.updated", self._message_to_dict(message))
@@ -848,7 +854,8 @@ class PartEventAdapter:
             except Exception:
                 pass
         await self.event_bus.emit(
-            "opencode_event", {"type": event_type, "properties": properties}
+            "opencode_event",
+            wrap_opencode_event(event_type, properties),
         )
 
 

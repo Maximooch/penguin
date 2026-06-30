@@ -4,10 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
-import time
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable
+
+from penguin.web.services.runtime_events import (
+    opencode_payload_from_runtime_event,
+    runtime_event_from_opencode,
+    wrap_opencode_event,
+)
+
+if TYPE_CHECKING:
+    import logging
 
 GLOBAL_STATUS_EVENTS = {
     "vcs.branch.updated",
@@ -17,7 +24,7 @@ GLOBAL_STATUS_EVENTS = {
 _BACKGROUND_TASKS: set[asyncio.Task[None]] = set()
 
 
-def normalize_directory(directory: Optional[str]) -> Optional[str]:
+def normalize_directory(directory: str | None) -> str | None:
     """Return a resolved directory string when one can be trusted."""
     if not isinstance(directory, str) or not directory.strip():
         return None
@@ -27,7 +34,7 @@ def normalize_directory(directory: Optional[str]) -> Optional[str]:
         return None
 
 
-def directory_matches(left: Optional[str], right: Optional[str]) -> bool:
+def directory_matches(left: str | None, right: str | None) -> bool:
     """Return whether two directory strings point at the same filesystem path."""
     left_norm = normalize_directory(left)
     right_norm = normalize_directory(right)
@@ -41,7 +48,7 @@ def directory_matches(left: Optional[str], right: Optional[str]) -> bool:
         return False
 
 
-def extract_event_session(properties: dict[str, Any]) -> Optional[str]:
+def extract_event_session(properties: dict[str, Any]) -> str | None:
     """Extract the best session id from a projected OpenCode event payload."""
     for key in ("sessionID", "conversation_id", "session_id"):
         value = properties.get(key)
@@ -59,7 +66,7 @@ def extract_event_session(properties: dict[str, Any]) -> Optional[str]:
     return None
 
 
-def extract_event_directory(properties: dict[str, Any]) -> Optional[str]:
+def extract_event_directory(properties: dict[str, Any]) -> str | None:
     """Extract the best workspace directory from a projected event payload."""
     direct = properties.get("directory")
     if isinstance(direct, str) and direct:
@@ -83,7 +90,7 @@ def extract_event_directory(properties: dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _extract_event_agent(properties: dict[str, Any]) -> Optional[str]:
+def _extract_event_agent(properties: dict[str, Any]) -> str | None:
     for key in ("agentID", "agent_id"):
         value = properties.get(key)
         if isinstance(value, str) and value:
@@ -97,7 +104,7 @@ def _extract_event_agent(properties: dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _extract_source_id(properties: dict[str, Any]) -> Optional[str]:
+def _extract_source_id(properties: dict[str, Any]) -> str | None:
     for key in ("id", "requestID", "messageID", "partID"):
         value = properties.get(key)
         if isinstance(value, str) and value:
@@ -117,10 +124,10 @@ def normalize_opencode_event(
     data: dict[str, Any],
     *,
     order: int,
-    default_agent_id: Optional[str] = None,
-    default_directory: Optional[str] = None,
-    default_session_id: Optional[str] = None,
-    now_ms: Optional[int] = None,
+    default_agent_id: str | None = None,
+    default_directory: str | None = None,
+    default_session_id: str | None = None,
+    now_ms: int | None = None,
 ) -> dict[str, Any] | None:
     """Return a stable TUI-facing event payload or None for malformed data."""
     event_type = data.get("type")
@@ -134,9 +141,9 @@ def normalize_opencode_event(
     if session_id and not isinstance(properties.get("sessionID"), str):
         properties["sessionID"] = session_id
 
-    directory = normalize_directory(extract_event_directory(properties)) or normalize_directory(
-        default_directory
-    )
+    directory = normalize_directory(
+        extract_event_directory(properties)
+    ) or normalize_directory(default_directory)
     if directory:
         properties["directory"] = directory
 
@@ -144,19 +151,22 @@ def normalize_opencode_event(
     if agent_id and not isinstance(properties.get("agentID"), str):
         properties["agentID"] = agent_id
 
-    source_id = _extract_source_id(properties)
-    event_id = data.get("id")
-    if not isinstance(event_id, str) or not event_id:
-        id_suffix = source_id or str(order)
-        event_id = f"{event_type}:{session_id or '-'}:{id_suffix}"
-
-    return {
-        "id": event_id,
-        "order": order,
-        "time": now_ms if now_ms is not None else int(time.time() * 1000),
-        "type": event_type,
-        "properties": properties,
-    }
+    runtime_event = runtime_event_from_opencode(
+        {
+            "id": data.get("id"),
+            "runtime_event": data.get("runtime_event"),
+            "type": event_type,
+            "properties": properties,
+        },
+        default_agent_id=default_agent_id,
+        default_directory=default_directory,
+        default_session_id=default_session_id,
+        now_ms=now_ms,
+        sequence=order,
+    )
+    if runtime_event is None:
+        return None
+    return opencode_payload_from_runtime_event(runtime_event)
 
 
 def sse_event_frame(event: dict[str, Any]) -> str:
@@ -178,10 +188,7 @@ async def emit_opencode_event(
         return
     await emit(
         "opencode_event",
-        {
-            "type": event_type,
-            "properties": properties,
-        },
+        wrap_opencode_event(event_type, properties),
     )
 
 

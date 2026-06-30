@@ -65,6 +65,27 @@ describe("Penguin event stream", () => {
     expect(parsePenguinSSEEvent("data: not-json\n\n")).toBeUndefined()
   })
 
+  test("preserves the SSE id when the event body omits it", () => {
+    expect(
+      parsePenguinSSEEvent(
+        `id: runtime-event-1\ndata: ${JSON.stringify({
+          type: "session.status",
+          properties: {
+            sessionID: "ses_1",
+            status: { type: "idle" },
+          },
+        })}\n\n`,
+      ),
+    ).toEqual({
+      id: "runtime-event-1",
+      type: "session.status",
+      properties: {
+        sessionID: "ses_1",
+        status: { type: "idle" },
+      },
+    })
+  })
+
   test("streams parsed events with scoped query parameters", async () => {
     const payload = {
       type: "session.status",

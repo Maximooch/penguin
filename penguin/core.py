@@ -6842,6 +6842,21 @@ class PenguinCore:
         """Emit user message in OpenCode format."""
         return await self._emit_opencode_user_message_with_metadata(content)
 
+    def _reset_opencode_stream_turn_state(self, session_id: Optional[str]) -> None:
+        """Clear stale assistant stream targets when a new user turn begins."""
+        if not isinstance(session_id, str) or not session_id:
+            return
+        states = getattr(self, "_opencode_stream_states", None)
+        if not isinstance(states, dict):
+            return
+        state = states.get(session_id)
+        if not isinstance(state, dict):
+            return
+        state["active"] = False
+        state["stream_id"] = None
+        state["message_id"] = None
+        state["part_id"] = None
+
     async def _emit_opencode_user_message_with_metadata(
         self,
         content: str,
@@ -6861,7 +6876,7 @@ class PenguinCore:
             session_id = current_session.id if current_session else "unknown"
         adapter = self._get_tui_adapter(session_id)
         model_state = self._resolve_opencode_model_state(session_id=session_id)
-        return await adapter.on_user_message_with_metadata(
+        emitted_message_id = await adapter.on_user_message_with_metadata(
             content,
             message_id=message_id,
             agent_id=agent_id or "default",
@@ -6869,3 +6884,5 @@ class PenguinCore:
             provider_id=model_state.get("providerID"),
             variant=model_state.get("variant"),
         )
+        self._reset_opencode_stream_turn_state(session_id)
+        return emitted_message_id

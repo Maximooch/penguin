@@ -280,6 +280,49 @@ async def test_tool_only_turn_followed_by_stream_reuses_same_message() -> None:
 
 
 @pytest.mark.asyncio
+async def test_new_user_turn_does_not_reuse_completed_content_message() -> None:
+    bus = _EventBus()
+    adapter = PartEventAdapter(bus)
+    adapter.set_session("session_no_reuse")
+
+    first_message_id, first_part_id = await adapter.on_stream_start(agent_id="default")
+    await adapter.on_stream_chunk(
+        first_message_id,
+        first_part_id,
+        "first answer",
+        "assistant",
+    )
+    await adapter.on_stream_end(first_message_id, first_part_id)
+
+    await adapter.on_user_message_with_metadata(
+        "next user turn",
+        message_id="msg_user_2",
+    )
+    second_message_id, second_part_id = await adapter.on_stream_start(
+        agent_id="default",
+        model_id="gpt-5.5",
+        provider_id="openai",
+    )
+    await adapter.on_stream_chunk(
+        second_message_id,
+        second_part_id,
+        "second answer",
+        "assistant",
+    )
+
+    assert second_message_id != first_message_id
+
+    assistant_updates = [
+        item
+        for item in _opencode_events(bus, "message.updated")
+        if item.get("role") == "assistant"
+    ]
+    assistant_ids = [item["id"] for item in assistant_updates]
+    assert first_message_id in assistant_ids
+    assert second_message_id in assistant_ids
+
+
+@pytest.mark.asyncio
 async def test_user_message_resets_tool_only_message_target() -> None:
     bus = _EventBus()
     adapter = PartEventAdapter(bus)

@@ -60,6 +60,7 @@ from penguin.web.services.configuration import (
 from penguin.web.services.command_registry import list_opencode_commands
 from penguin.web.services.notification_settings import notification_settings_payload
 from penguin.web.services.opencode_events import schedule_opencode_event
+from penguin.web.services.runtime_events import wrap_opencode_event
 from penguin.web.services.conversations import (
     create_conversation_payload,
     get_conversation_payload,
@@ -683,10 +684,7 @@ async def _emit_session_event(
     try:
         await emit(
             "opencode_event",
-            {
-                "type": event_type,
-                "properties": properties,
-            },
+            wrap_opencode_event(event_type, properties),
         )
     except Exception:
         logger.debug("Failed to emit %s event", event_type, exc_info=True)
@@ -716,13 +714,13 @@ async def _emit_session_diff_event(
     try:
         await emit(
             "opencode_event",
-            {
-                "type": "session.diff",
-                "properties": {
+            wrap_opencode_event(
+                "session.diff",
+                {
                     "sessionID": session_id,
                     "diff": diff,
                 },
-            },
+            ),
         )
     except Exception:
         logger.debug("Failed to emit session.diff event", exc_info=True)
@@ -2212,10 +2210,7 @@ async def _emit_skill_event(
     try:
         await emit(
             "opencode_event",
-            {
-                "type": event_type,
-                "properties": properties,
-            },
+            wrap_opencode_event(event_type, properties),
         )
     except Exception:
         logger.debug("Failed to emit %s event", event_type, exc_info=True)

@@ -1,0 +1,74 @@
+{
+  "runtime_event": {
+    "id": "evt:session:ses_fixture:00000007",
+    "schema_version": "penguin.runtime_event.v1",
+    "type": "message.part.updated",
+    "category": "stream_chunk",
+    "source": "penguin.backend",
+    "subject": "session_id:ses_fixture",
+    "time": 1800000000000,
+    "stream_id": "session:ses_fixture",
+    "sequence": 7,
+    "scope": {
+      "session_id": "ses_fixture",
+      "conversation_id": "ses_fixture",
+      "agent_id": "default",
+      "directory": "/tmp/penguin-fixture",
+      "workspace": "/tmp/penguin-fixture"
+    },
+    "correlation": {
+      "request_id": "req_fixture"
+    },
+    "actor": {
+      "type": "assistant",
+      "id": "default"
+    },
+    "privacy": {
+      "classification": "public",
+      "redacted": false,
+      "redacted_fields": []
+    },
+    "payload": {
+      "part": {
+        "id": "part_fixture",
+        "messageID": "msg_fixture",
+        "sessionID": "ses_fixture",
+        "agentID": "default",
+        "type": "text",
+        "text": "Hello from the runtime envelope."
+      },
+      "delta": "Hello from the runtime envelope.",
+      "sessionID": "ses_fixture",
+      "agentID": "default",
+      "directory": "/tmp/penguin-fixture",
+      "requestID": "req_fixture"
+    },
+    "projections": {
+      "opencode": {
+        "id": "message.part.updated:ses_fixture:part_fixture",
+        "type": "message.part.updated"
+      }
+    }
+  },
+  "opencode": {
+    "id": "evt:session:ses_fixture:00000007",
+    "order": 7,
+    "time": 1800000000000,
+    "type": "message.part.updated",
+    "properties": {
+      "part": {
+        "id": "part_fixture",
+        "messageID": "msg_fixture",
+        "sessionID": "ses_fixture",
+        "agentID": "default",
+        "type": "text",
+        "text": "Hello from the runtime envelope."
+      },
+      "delta": "Hello from the runtime envelope.",
+      "sessionID": "ses_fixture",
+      "agentID": "default",
+      "directory": "/tmp/penguin-fixture",
+      "requestID": "req_fixture"
+    }
+  }
+}

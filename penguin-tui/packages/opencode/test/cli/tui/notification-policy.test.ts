@@ -113,12 +113,19 @@ describe("terminal notification policy", () => {
       normalizeNotificationPolicy({
         mode: "combined",
         soundPack: "train_station",
+        enabledCategories: {
+          question_waiting: false,
+          bogus: false,
+        },
         includeDetails: true,
         quietHours: { start: "22:00", end: "07:00" },
       }),
     ).toEqual({
       mode: "combined",
       soundPack: "train_station",
+      enabledCategories: {
+        question_waiting: false,
+      },
       includeDetails: true,
       quietHours: { start: "22:00", end: "07:00" },
     })
