@@ -25,7 +25,12 @@ if TYPE_CHECKING:
 
 router = APIRouter()
 _REPLAY_BUFFER_ATTR = "_opencode_sse_replay_v1"
+# Bounded compatibility buffer until Phase 11.5 lands the durable runtime event
+# ledger. It covers short reconnects only; gaps are surfaced to clients instead
+# of being silently ignored.
 _MAX_REPLAY_EVENTS = 1000
+_SSE_QUEUE_MAX_EVENTS = 1000
+_SSE_KEEPALIVE_TIMEOUT_SECONDS = 300.0
 
 # Global reference to core instance (set by app.py)
 _core_instance: Optional["PenguinCore"] = None
@@ -72,7 +77,13 @@ async def events_sse(
     effective_session_id = session_id or conversation_id
     effective_agent_id = agent_id
     effective_directory = normalize_directory(directory)
-    effective_last_event_id = last_event_id or last_event_id_header
+    effective_last_event_id = (
+        last_event_id
+        if isinstance(last_event_id, str) and last_event_id
+        else last_event_id_header
+        if isinstance(last_event_id_header, str) and last_event_id_header
+        else None
+    )
 
     if effective_session_id and directory:
         session_dirs = getattr(core, "_opencode_session_directories", None)
@@ -85,7 +96,8 @@ async def events_sse(
             session_dirs[effective_session_id] = resolved
 
     async def event_generator() -> AsyncIterator[str]:
-        queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=1000)
+        queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=_SSE_QUEUE_MAX_EVENTS)
+        queued_live_event_ids: set[str] = set()
         event_order = 0
 
         def next_event(data: dict[str, Any]) -> dict[str, Any] | None:
@@ -206,6 +218,9 @@ async def events_sse(
             try:
                 _remember_replay_event(core, normalized)
                 queue.put_nowait(normalized)
+                event_id = normalized.get("id")
+                if isinstance(event_id, str):
+                    queued_live_event_ids.add(event_id)
             except asyncio.QueueFull:
                 # Drop event if queue is full (client is slow)
                 pass
@@ -228,7 +243,20 @@ async def events_sse(
                 yield sse_event_frame(normalized_connected)
 
             if effective_last_event_id:
-                for event in _replay_events_after(core, effective_last_event_id):
+                replay_found, replay_events = _replay_events_after(
+                    core,
+                    effective_last_event_id,
+                )
+                if not replay_found:
+                    gap_event = next_event(
+                        _replay_gap_event(core, effective_last_event_id)
+                    )
+                    if gap_event and event_allowed(gap_event):
+                        yield sse_event_frame(gap_event)
+                for event in replay_events:
+                    event_id = event.get("id")
+                    if isinstance(event_id, str) and event_id in queued_live_event_ids:
+                        continue
                     if event_allowed(event):
                         yield sse_event_frame(event)
 
@@ -236,7 +264,13 @@ async def events_sse(
             while True:
                 try:
                     # Wait for event with timeout for keepalive
-                    event = await asyncio.wait_for(queue.get(), timeout=300.0)
+                    event = await asyncio.wait_for(
+                        queue.get(),
+                        timeout=_SSE_KEEPALIVE_TIMEOUT_SECONDS,
+                    )
+                    event_id = event.get("id")
+                    if isinstance(event_id, str):
+                        queued_live_event_ids.discard(event_id)
                     yield sse_event_frame(event)
                 except asyncio.TimeoutError:
                     # Send keepalive comment
@@ -284,12 +318,30 @@ def _remember_replay_event(core: Any, event: dict[str, Any]) -> None:
         del buffer[: len(buffer) - _MAX_REPLAY_EVENTS]
 
 
-def _replay_events_after(core: Any, last_event_id: str) -> list[dict[str, Any]]:
+def _replay_events_after(
+    core: Any,
+    last_event_id: str,
+) -> tuple[bool, list[dict[str, Any]]]:
     buffer = _replay_buffer(core)
     for index, event in enumerate(buffer):
         if event.get("id") == last_event_id:
-            return buffer[index + 1 :]
-    return []
+            return True, buffer[index + 1 :]
+    return False, []
+
+
+def _replay_gap_event(core: Any, last_event_id: str) -> dict[str, Any]:
+    buffer = _replay_buffer(core)
+    oldest_id = buffer[0].get("id") if buffer else None
+    newest_id = buffer[-1].get("id") if buffer else None
+    return {
+        "type": "server.replay_gap",
+        "properties": {
+            "lastEventID": last_event_id,
+            "oldestEventID": oldest_id if isinstance(oldest_id, str) else None,
+            "newestEventID": newest_id if isinstance(newest_id, str) else None,
+            "reason": "last_event_id_not_available",
+        },
+    }
 
 
 @router.get("/api/v1/health")

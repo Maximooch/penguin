@@ -44,6 +44,15 @@ _SECRET_KEY_NAMES = {
     "secret_key",
     "token",
 }
+# Standalone credential markers: a key is a secret wherever one of these appears
+# as a segment (db_password, webhook_secret, proxy_authorization). Safe against
+# token telemetry, whose keys never contain these words (unlike "token", which
+# must stay pair-matched so token_usage / input_tokens stay visible).
+_SECRET_KEY_SEGMENTS = {
+    "authorization",
+    "password",
+    "secret",
+}
 _SEQUENCE_LOCK = threading.Lock()
 _SEQUENCE_COUNTERS: dict[str, itertools.count[int]] = {}
 
@@ -487,19 +496,23 @@ def _is_secret_key(key: str) -> bool:
     if not segments:
         return False
 
-    key_tokens = {"key", "keys"}
-    if "api" in segments and key_tokens.intersection(segments):
-        return True
-    if "secret" in segments and key_tokens.intersection(segments):
-        return True
-    if "private" in segments and key_tokens.intersection(segments):
+    # Standalone markers (password/secret/authorization) redact wherever present.
+    if any(segment in _SECRET_KEY_SEGMENTS for segment in segments):
         return True
 
+    # "<x> key(s)" style names (api_key, openai_api_key, private_keys).
+    key_tokens = {"key", "keys"}
+    if key_tokens.intersection(segments) and (
+        "api" in segments or "private" in segments
+    ):
+        return True
+
+    # "<x> token" credential pairs. Pair-matched (not a bare "token" marker) so
+    # token telemetry like token_usage / input_tokens stays visible.
     credential_pairs = {
         ("access", "token"),
         ("auth", "token"),
         ("bearer", "token"),
-        ("client", "secret"),
         ("id", "token"),
         ("refresh", "token"),
         ("session", "token"),

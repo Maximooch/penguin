@@ -17,7 +17,7 @@ from penguin.web.services.opencode_events import (
     schedule_opencode_event,
     sse_event_frame,
 )
-from penguin.web.services.runtime_events import reset_runtime_event_sequences
+from penguin.system.runtime_events import reset_runtime_event_sequences
 
 
 def test_normalize_opencode_event_adds_id_time_order_and_correlation(tmp_path):
