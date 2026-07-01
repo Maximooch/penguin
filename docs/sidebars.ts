@@ -20,6 +20,8 @@ const sidebars: SidebarsConfig = {
       type: 'category',
       label: 'System',
       items: [
+        'system/core-runtime',
+        'system/runtime-events',
         'system/context-window',
         'system/conversation-manager',
         'system/memory-system',

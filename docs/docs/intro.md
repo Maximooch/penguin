@@ -97,6 +97,7 @@ response = agent.chat("Help me debug this function")
 
 ### System Architecture
 - [Core Runtime Boundary](system/core-runtime.md) - `PenguinCore` and extracted runtime ownership
+- [Runtime Events and Durable Replay](system/runtime-events.md) - canonical event envelopes, SSE replay, and ledger retention
 - [Blueprints](system/blueprints.md) - Spec-driven task creation
 - [Orchestration](system/orchestration.md) - ITUV workflow execution
 - [Run Mode](system/run-mode.md) - Autonomous task execution
@@ -126,7 +127,7 @@ response = agent.chat("Help me debug this function")
 
 ## Architecture Overview
 
-Penguin uses a modular runtime architecture with event-driven communication, durable state, and explicit ownership boundaries. `PenguinCore` wires collaborators and preserves compatibility methods; runtime behavior lives in focused modules such as `penguin.core_runtime`, `penguin.engine`, `penguin.run_mode`, `penguin.web.services`, and the relevant domain packages.
+Penguin uses a modular runtime architecture with event-driven communication, durable state, and explicit ownership boundaries. `PenguinCore` wires collaborators and preserves compatibility methods; runtime behavior lives in focused modules such as `penguin.core_runtime`, `penguin.engine`, `penguin.run_mode`, `penguin.web.services`, and the relevant domain packages. Live UI/SSE/TUI events are normalized through Penguin's `RuntimeEvent` envelope before being projected into client-specific payloads.
 
 ## Multi-Agent and Sub-Agent Workflows
 
@@ -143,7 +144,7 @@ Penguin's orchestration layer now speaks to both primary agents and scoped sub-a
 - **`penguin.core`** - `PenguinCore` construction, delegation, and compatibility methods
 - **`penguin.core_runtime`** - Extracted runtime helpers for processing, model/provider behavior, checkpoints, token usage, action mapping, OpenCode/TUI bridging, diagnostics, and compatibility shims
 - **`penguin.engine`** - High-level reasoning loop with multi-step task execution and stop conditions
-- **`penguin.system`** - Advanced conversation management with per-agent sessions and checkpoints
+- **`penguin.system`** - Advanced conversation management with per-agent sessions, checkpoints, runtime event envelopes, and durable event replay
 - **`penguin.llm`** - Enhanced API client with streaming, reasoning models, and provider abstraction
 - **`penguin.cli`** - Command-line interface with TUI, EventBus integration, and performance monitoring
 - **`penguin.web`** - FastAPI server with REST API, WebSocket streaming, and GitHub webhooks

@@ -146,6 +146,9 @@ Key current behaviors:
   - clarification-needed outcomes are no longer flattened into fake terminal states
 - `POST /api/v1/tasks/{task_id}/clarification/resume` is available for answering the latest open clarification request and resuming execution
 - `GET /api/v1/events/sse` now carries clarification-related session status visibility for OpenCode-compatible web clients
+- `GET /api/v1/events/sse` also supports durable replay using
+  `Last-Event-ID` or `last_event_id`; replay identity comes from
+  `RuntimeEvent.id`
 
 This part of the API is still under active audit, but the intended contract is clear: the web surface should expose the same task and clarification truth that the runtime uses internally.
 
@@ -1632,6 +1635,9 @@ This integration ensures:
 4. **ConversationManager**: Manages per-agent sessions with checkpointing.
 5. **Engine**: Owns reasoning, tool execution, MessageBus routing, and task loops.
 6. **Web services**: Keep HTTP payload shaping and provider/auth service behavior out of routes and out of `core.py`.
+7. **Runtime events**: Normalize public live-event payloads through
+   `penguin.system.runtime_events`; durable SSE replay is handled by
+   `penguin.system.runtime_event_ledger` and `penguin.web.sse_events`.
 
 ## Concurrency Isolation Audit (Recommended)
 

@@ -15,8 +15,12 @@ The current boundary is intentionally thin:
 - **`penguin.core_runtime.checkpoint_runtime`**: checkpoint, branch, rollback, and retention operations.
 - **`penguin.core_runtime.action_mapping`**: tool/action result metadata, diff/todo/task-card payload shaping, TUI bridge payloads.
 - **`penguin.core_runtime.opencode_bridge`**: OpenCode/TUI event and transcript translation.
+- **`penguin.core_runtime.stream_events` / `action_events`**: streaming,
+  status, todo, LSP, and user-message event bridge helpers.
 - **`penguin.core_runtime.session_lookup`**: session store lookup and ownership helpers.
 - **`penguin.core_runtime.system_diagnostics`**: status, diagnostics, and startup payloads.
+- **`penguin.system.runtime_events` / `runtime_event_ledger`**: canonical
+  runtime event envelopes, redaction, durable replay, and retention policy.
 - **`Engine`**: reasoning loops, tool execution, native tool-call replay, task execution, MessageBus routing.
 - **`RunMode`**: autonomous task/project lifecycle on top of Engine.
 - **`ConversationManager`**: message history, session state, checkpoints, and context-window trimming by category priority and recency.
@@ -32,7 +36,8 @@ The compatibility mixins in `penguin.core_runtime` preserve historical `PenguinC
 | Provider/model normalization | `penguin.core_runtime.model_runtime`, `penguin.llm` |
 | Token usage and context-window telemetry | `penguin.core_runtime.token_usage_runtime` |
 | Checkpoints, forks, rollback | `penguin.core_runtime.checkpoint_runtime`, `ConversationManager` |
-| OpenCode/TUI action and event translation | `penguin.core_runtime.action_mapping`, `opencode_bridge` |
+| OpenCode/TUI action and event translation | `penguin.core_runtime.action_mapping`, `opencode_bridge`, `stream_events`, `action_events` |
+| Runtime event envelope and durable SSE replay | `penguin.system.runtime_events`, `penguin.system.runtime_event_ledger`, `penguin.web.sse_events` |
 | Web/API payload and credential services | `penguin.web.services.*` |
 | Project/run transition rules | `penguin.project`, `penguin.orchestration`, `RunMode` |
 | Multi-agent coordination | `penguin.multi`, `Engine`, `ConversationManager` |
@@ -181,7 +186,18 @@ PenguinCore exposes UI events through the shared `EventBus`. Translation and pay
 - **`status`**: Status updates for UI components
 - **`error`**: Error events with source and details
 
-Events are emitted throughout the processing pipeline to enable live UI updates in CLI, web interface, and other clients.
+Events are emitted throughout the processing pipeline to enable live UI updates
+in CLI, web interface, and other clients. OpenCode/SSE-compatible events should
+derive from Penguin's canonical `RuntimeEvent` envelope:
+
+- envelope construction and redaction live in `penguin.system.runtime_events`
+- durable append/replay/retention lives in `penguin.system.runtime_event_ledger`
+- SSE replay and the EventBus recording hook live in `penguin.web.sse_events`
+- OpenCode public payloads use the runtime event `id` as replay identity
+
+`PenguinCore` keeps the shared `EventBus` reference and compatibility methods;
+it should not own runtime event schema decisions or replay policy. See
+[Runtime Events and Durable Replay](../system/runtime-events.md).
 
 ## Factory Method
 

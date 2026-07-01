@@ -15,7 +15,7 @@
 
 ## Overview
 
-Penguin is a coding agent built on a modular, event-driven architecture for long-running software engineering workflows. `PenguinCore` handles construction, delegation, and compatibility methods; runtime behavior lives in owned modules such as `penguin.core_runtime`, `penguin.engine`, `penguin.run_mode`, `penguin.web.services`, and the relevant domain packages.
+Penguin is a coding agent built on a modular, event-driven architecture for long-running software engineering workflows. `PenguinCore` handles construction, delegation, and compatibility methods; runtime behavior lives in owned modules such as `penguin.core_runtime`, `penguin.engine`, `penguin.run_mode`, `penguin.web.services`, and the relevant domain packages. Public live-event and replay semantics are built around the canonical `RuntimeEvent` envelope in `penguin.system.runtime_events`.
 
 ### Design Philosophy
 
@@ -117,6 +117,8 @@ class PenguinCore:
 - Explicit compatibility mixins in `penguin.core_runtime`
 - MessageBus and EventBus integration references
 - Telemetry and diagnostics payloads delegated to runtime helpers
+- Runtime event envelope and replay behavior delegated to `penguin.system`
+  and `penguin.web` helpers
 
 ### 2. Engine (`engine.py`)
 
@@ -574,8 +576,21 @@ EventTypes:
   - action_executed (tool results)
   - progress (task/iteration)
   - stream_chunk (real-time output)
-  - agent_state (pause/resume/switch)
-```
+	  - agent_state (pause/resume/switch)
+	```
+
+OpenCode/TUI-compatible events on the `opencode_event` channel should carry or
+derive from Penguin's canonical `RuntimeEvent` envelope. That envelope includes
+stable replay identity, event category, stream sequence, normalized scope,
+redacted payload, and privacy metadata. The durable ledger stores only redacted
+public `RuntimeEvent` envelopes; it is not the conversation transcript or a
+private diagnostics store.
+
+Durable replay for `/api/v1/events/sse` comes from
+`penguin.system.runtime_event_ledger`. The connection-local SSE queue only
+buffers live delivery for connected clients. Reconnecting clients should send
+`Last-Event-ID` or `last_event_id`; if the cursor has fallen out of retention,
+Penguin emits `server.replay_gap` with the available oldest/newest event ids.
 
 ### 2. MessageBus
 
