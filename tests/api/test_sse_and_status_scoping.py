@@ -266,6 +266,12 @@ async def test_sse_reports_replay_gap_for_evicted_last_event_id(tmp_path: Path):
     assert gap["properties"]["newestEventID"] == second_event["id"]
     assert gap["properties"]["reason"] == "last_event_id_not_available"
 
+    try:
+        extra = await asyncio.wait_for(replay_stream.__anext__(), timeout=0.05)
+    except (asyncio.TimeoutError, StopAsyncIteration):
+        extra = None
+    assert extra is None
+
     await replay_stream.aclose()
 
 

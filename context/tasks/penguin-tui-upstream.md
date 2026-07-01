@@ -2004,10 +2004,12 @@ Phase 11.5 implementation notes:
   ledger for redacted public `RuntimeEvent` envelopes. The default path is
   `${WORKSPACE_PATH}/runtime_events/runtime_events.db`, overrideable with
   `PENGUIN_RUNTIME_EVENT_LEDGER_PATH`.
-- Persisted rows include the full redacted public envelope plus indexed columns
+- Persisted rows include the full redacted public envelope plus stored columns
   for event id, stream id, sequence, type, category, event time, insertion time,
   session/conversation/agent/task/run/project ids, directory, privacy
-  classification, redaction flag, payload JSON, and projection JSON.
+  classification, redaction flag, payload JSON, and projection JSON. The SQLite
+  schema adds secondary indexes only for `(stream_id, sequence)`,
+  `(session_id, agent_id, directory)`, and `event_time`.
 - The stored envelope includes `id`, `schema_version`, `type`, `category`,
   `source`, `subject`, `time`, `stream_id`, `sequence`, `scope`, `correlation`,
   `actor`, `privacy`, `payload`, and `projections`. Credential-like fields are

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import copy
 import sqlite3
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Mapping
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -19,13 +20,19 @@ from penguin.system.runtime_events import (
 )
 
 
-def _ledger(tmp_path: Path, **policy_kwargs) -> RuntimeEventLedger:
+def _ledger(
+    tmp_path: Path,
+    *,
+    max_events: int = 100,
+    max_age_seconds: int | None = None,
+    max_bytes: int | None = None,
+    cleanup_interval_seconds: float = 0,
+) -> RuntimeEventLedger:
     policy = RuntimeEventLedgerPolicy(
-        max_events=policy_kwargs.pop("max_events", 100),
-        max_age_seconds=policy_kwargs.pop("max_age_seconds", None),
-        max_bytes=policy_kwargs.pop("max_bytes", None),
-        cleanup_interval_seconds=policy_kwargs.pop("cleanup_interval_seconds", 0),
-        **policy_kwargs,
+        max_events=max_events,
+        max_age_seconds=max_age_seconds,
+        max_bytes=max_bytes,
+        cleanup_interval_seconds=cleanup_interval_seconds,
     )
     return RuntimeEventLedger(tmp_path / "runtime_events.db", policy=policy)
 
@@ -35,10 +42,10 @@ def _event(
     index: int,
     *,
     event_type: str = "message.updated",
-    payload_extra: dict | None = None,
+    payload_extra: Mapping[str, Any] | None = None,
     time_ms: int | None = None,
-) -> dict:
-    payload = {
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "id": f"msg_{index}",
         "sessionID": session_id,
         "role": "assistant",
@@ -147,6 +154,59 @@ def test_ledger_max_age_cleanup_removes_old_events(tmp_path: Path) -> None:
     assert [event["id"] for event in retained] == [fresh_event["id"]]
 
 
+def test_ledger_max_bytes_cleanup_removes_oldest_rows(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    reset_runtime_event_sequences()
+    ledger = _ledger(tmp_path, max_bytes=2_500)
+
+    def fake_size(
+        self: RuntimeEventLedger,
+        conn: sqlite3.Connection,
+    ) -> int:
+        count = conn.execute("SELECT COUNT(*) AS count FROM runtime_events").fetchone()[
+            "count"
+        ]
+        return int(count) * 1_000
+
+    monkeypatch.setattr(RuntimeEventLedger, "_database_size_bytes", fake_size)
+    events = [_event("ses_1", index) for index in range(1, 5)]
+
+    assert ledger.extend(events) == 4
+
+    retained = ledger.newest(limit=10)
+    assert [event["id"] for event in retained] == [events[2]["id"], events[3]["id"]]
+    replay = ledger.replay_after(events[2]["id"])
+    assert replay.found is True
+    assert [event["id"] for event in replay.events] == [events[3]["id"]]
+
+
+def test_ledger_database_size_includes_wal_sidecar(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    reset_runtime_event_sequences()
+    ledger = _ledger(tmp_path)
+    assert ledger.append(_event("ses_1", 1)) is True
+
+    def fake_path_size(path: Path) -> int:
+        return 1_234 if path.name.endswith("-wal") else 0
+
+    monkeypatch.setattr(
+        "penguin.system.runtime_event_ledger._path_size",
+        fake_path_size,
+    )
+    conn = ledger._connect()
+    try:
+        page_count = conn.execute("PRAGMA page_count").fetchone()[0]
+        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+        logical_size = int(page_count) * int(page_size)
+        assert ledger._database_size_bytes(conn) >= logical_size + 1_234
+    finally:
+        conn.close()
+
+
 def test_ledger_persists_only_redacted_public_payload(tmp_path: Path) -> None:
     reset_runtime_event_sequences()
     ledger = _ledger(tmp_path)
@@ -167,9 +227,38 @@ def test_ledger_persists_only_redacted_public_payload(tmp_path: Path) -> None:
     assert stored["privacy"]["redacted"] is True
 
     conn = sqlite3.connect(str(tmp_path / "runtime_events.db"))
+    conn.row_factory = sqlite3.Row
     try:
-        raw = conn.execute("SELECT event_json FROM runtime_events").fetchone()[0]
+        row = conn.execute(
+            "SELECT payload_json, projection_json, event_json FROM runtime_events"
+        ).fetchone()
     finally:
         conn.close()
-    assert "sk-secret" not in raw
-    assert "[redacted]" in raw
+
+    assert row is not None
+    for column in ("payload_json", "projection_json", "event_json"):
+        assert "sk-secret" not in row[column]
+    assert "[redacted]" in row["payload_json"]
+    assert "[redacted]" in row["event_json"]
+
+
+def test_ledger_rejects_unredacted_runtime_event_fields(tmp_path: Path) -> None:
+    reset_runtime_event_sequences()
+    ledger = _ledger(tmp_path)
+    event = build_runtime_event(
+        event_type="provider.auth.updated",
+        payload={"sessionID": "ses_1", "api_key": "sk-secret"},
+    )
+    unsafe_payload = copy.deepcopy(event)
+    unsafe_payload["payload"]["api_key"] = "sk-secret"
+    unsafe_payload["privacy"] = {
+        "classification": "public",
+        "redacted": False,
+        "redacted_fields": [],
+    }
+    unsafe_projection = copy.deepcopy(event)
+    unsafe_projection["projections"] = {"opencode": {"api_key": "sk-secret"}}
+
+    assert ledger.append(unsafe_payload) is False
+    assert ledger.append(unsafe_projection) is False
+    assert ledger.newest(limit=10) == []

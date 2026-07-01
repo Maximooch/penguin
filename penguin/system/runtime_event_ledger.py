@@ -17,7 +17,10 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from penguin.config import WORKSPACE_PATH
-from penguin.system.runtime_events import RUNTIME_EVENT_SCHEMA_VERSION
+from penguin.system.runtime_events import (
+    RUNTIME_EVENT_SCHEMA_VERSION,
+    redact_runtime_payload,
+)
 
 DEFAULT_LEDGER_MAX_EVENTS = 100_000
 DEFAULT_LEDGER_MAX_AGE_DAYS = 14
@@ -28,7 +31,15 @@ _RUNTIME_EVENT_LEDGER_ATTR = "_runtime_event_ledger_v1"
 
 @dataclass(frozen=True)
 class RuntimeEventLedgerPolicy:
-    """Retention and cleanup policy for the runtime event ledger."""
+    """Retention and cleanup policy for the runtime event ledger.
+
+    Attributes:
+        max_events: Maximum retained event rows before oldest-row cleanup.
+        max_age_seconds: Optional event-age retention window in seconds.
+        max_bytes: Optional soft on-disk size limit for the SQLite database and
+            WAL sidecar.
+        cleanup_interval_seconds: Minimum seconds between automatic cleanups.
+    """
 
     max_events: int = DEFAULT_LEDGER_MAX_EVENTS
     max_age_seconds: int | None = DEFAULT_LEDGER_MAX_AGE_DAYS * 24 * 60 * 60
@@ -38,7 +49,14 @@ class RuntimeEventLedgerPolicy:
 
 @dataclass(frozen=True)
 class ReplayResult:
-    """Ledger replay lookup result."""
+    """Ledger replay lookup result.
+
+    Attributes:
+        found: Whether the replay cursor was present in retained ledger rows.
+        events: RuntimeEvent envelopes retained after the replay cursor.
+        oldest_event_id: Oldest currently retained RuntimeEvent id, if any.
+        newest_event_id: Newest currently retained RuntimeEvent id, if any.
+    """
 
     found: bool
     events: list[dict[str, Any]]
@@ -47,7 +65,12 @@ class ReplayResult:
 
 
 def default_ledger_path() -> Path:
-    """Return the default on-disk SQLite path for runtime events."""
+    """Return the default on-disk SQLite path for runtime events.
+
+    Returns:
+        Configured ledger path from ``PENGUIN_RUNTIME_EVENT_LEDGER_PATH`` or
+        the default path under ``WORKSPACE_PATH/runtime_events``.
+    """
     override = os.getenv("PENGUIN_RUNTIME_EVENT_LEDGER_PATH")
     if override:
         return Path(override).expanduser()
@@ -55,7 +78,12 @@ def default_ledger_path() -> Path:
 
 
 def policy_from_env() -> RuntimeEventLedgerPolicy:
-    """Build a ledger policy from environment variables."""
+    """Build a ledger policy from environment variables.
+
+    Returns:
+        RuntimeEventLedgerPolicy populated from ``PENGUIN_RUNTIME_EVENT_*``
+        settings, with defaults for missing or malformed values.
+    """
     return RuntimeEventLedgerPolicy(
         max_events=_env_int(
             "PENGUIN_RUNTIME_EVENT_LEDGER_MAX_EVENTS",
@@ -80,7 +108,16 @@ def policy_from_env() -> RuntimeEventLedgerPolicy:
 
 
 def get_runtime_event_ledger(core: Any | None = None) -> RuntimeEventLedger:
-    """Return the shared runtime event ledger for a core object or process."""
+    """Return the shared runtime event ledger.
+
+    Args:
+        core: Optional Penguin core object that should own an isolated ledger
+            instance for this process.
+
+    Returns:
+        RuntimeEventLedger attached to ``core`` when provided, otherwise the
+        process-level ledger.
+    """
     if core is not None:
         existing = getattr(core, _RUNTIME_EVENT_LEDGER_ATTR, None)
         if isinstance(existing, RuntimeEventLedger):
@@ -99,7 +136,12 @@ def get_runtime_event_ledger(core: Any | None = None) -> RuntimeEventLedger:
 
 
 class RuntimeEventLedger:
-    """SQLite-backed append-only ledger for public runtime events."""
+    """SQLite-backed append-only ledger for public runtime events.
+
+    The ledger stores only already-redacted public RuntimeEvent envelopes. It
+    provides durable replay and bounded retention for SSE/client reconnects; it
+    is not the private transcript or diagnostics store.
+    """
 
     def __init__(
         self,
@@ -114,7 +156,15 @@ class RuntimeEventLedger:
         self._initialized = False
 
     def append(self, event: Mapping[str, Any]) -> bool:
-        """Persist an event envelope if it has not already been stored."""
+        """Persist a redacted public RuntimeEvent envelope.
+
+        Args:
+            event: Candidate RuntimeEvent envelope.
+
+        Returns:
+            True when a new row was inserted. False when the event is invalid,
+            unsafe to persist, or already present.
+        """
         event_id = event.get("id")
         if not isinstance(event_id, str) or not event_id:
             return False
@@ -191,7 +241,14 @@ class RuntimeEventLedger:
                 conn.close()
 
     def extend(self, events: Iterable[Mapping[str, Any]]) -> int:
-        """Persist multiple events and return the number of accepted rows."""
+        """Persist multiple redacted public RuntimeEvent envelopes.
+
+        Args:
+            events: Iterable of candidate RuntimeEvent envelopes.
+
+        Returns:
+            Number of rows inserted into the ledger.
+        """
         accepted = 0
         for event in events:
             if self.append(event):
@@ -199,7 +256,14 @@ class RuntimeEventLedger:
         return accepted
 
     def contains(self, event_id: str) -> bool:
-        """Return whether an event id exists in the ledger."""
+        """Return whether an event id exists in the ledger.
+
+        Args:
+            event_id: RuntimeEvent id to look up.
+
+        Returns:
+            True when the event id is currently retained.
+        """
         with self._lock:
             conn = self._connect()
             try:
@@ -218,7 +282,16 @@ class RuntimeEventLedger:
         *,
         limit: int | None = None,
     ) -> ReplayResult:
-        """Return events after ``last_event_id`` in durable insertion order."""
+        """Return events after ``last_event_id`` in durable insertion order.
+
+        Args:
+            last_event_id: RuntimeEvent id supplied by a reconnecting client.
+            limit: Optional maximum number of events to return.
+
+        Returns:
+            ReplayResult with retained events after the cursor, or a gap result
+            when the cursor is no longer retained.
+        """
         if not isinstance(last_event_id, str) or not last_event_id:
             return ReplayResult(found=False, events=[], **self.bounds())
 
@@ -255,7 +328,15 @@ class RuntimeEventLedger:
                 conn.close()
 
     def newest(self, *, limit: int = 100) -> list[dict[str, Any]]:
-        """Return the newest events in insertion order."""
+        """Return newest retained events in insertion order.
+
+        Args:
+            limit: Maximum number of events to return.
+
+        Returns:
+            Retained RuntimeEvent envelopes ordered oldest-to-newest within the
+            selected newest slice.
+        """
         with self._lock:
             conn = self._connect()
             try:
@@ -278,7 +359,14 @@ class RuntimeEventLedger:
         *,
         conn: sqlite3.Connection | None = None,
     ) -> dict[str, str | None]:
-        """Return oldest/newest event ids currently retained."""
+        """Return oldest and newest retained event ids.
+
+        Args:
+            conn: Optional existing SQLite connection to reuse.
+
+        Returns:
+            Mapping with ``oldest_event_id`` and ``newest_event_id`` values.
+        """
         owns_connection = conn is None
         if conn is None:
             conn = self._connect()
@@ -299,7 +387,11 @@ class RuntimeEventLedger:
                 conn.close()
 
     def cleanup_if_due(self, *, conn: sqlite3.Connection | None = None) -> None:
-        """Run throttled retention cleanup."""
+        """Run throttled retention cleanup when the policy interval has elapsed.
+
+        Args:
+            conn: Optional existing SQLite connection to reuse.
+        """
         now = time.monotonic()
         if (
             self.policy.cleanup_interval_seconds > 0
@@ -310,7 +402,11 @@ class RuntimeEventLedger:
         self._last_cleanup = now
 
     def cleanup(self, *, conn: sqlite3.Connection | None = None) -> None:
-        """Apply max-events, max-age, and soft max-size retention rules."""
+        """Apply max-events, max-age, and soft max-size retention rules.
+
+        Args:
+            conn: Optional existing SQLite connection to reuse.
+        """
         owns_connection = conn is None
         if conn is None:
             conn = self._connect()
@@ -387,7 +483,10 @@ class RuntimeEventLedger:
     def _database_size_bytes(self, conn: sqlite3.Connection) -> int:
         page_count = conn.execute("PRAGMA page_count").fetchone()[0]
         page_size = conn.execute("PRAGMA page_size").fetchone()[0]
-        return int(page_count) * int(page_size)
+        logical_size = int(page_count) * int(page_size)
+        file_size = self.path.stat().st_size if self.path.exists() else 0
+        wal_size = _path_size(self.path.with_name(f"{self.path.name}-wal"))
+        return max(logical_size, file_size) + wal_size
 
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -459,13 +558,42 @@ def _looks_like_public_runtime_event(event: Mapping[str, Any]) -> bool:
     event_type = event.get("type")
     event_id = event.get("id")
     payload = event.get("payload")
-    return (
+    privacy = event.get("privacy")
+    if not (
         isinstance(event_type, str)
         and bool(event_type)
         and isinstance(event_id, str)
         and bool(event_id)
         and isinstance(payload, Mapping)
-    )
+        and isinstance(privacy, Mapping)
+    ):
+        return False
+
+    classification = privacy.get("classification")
+    redacted = privacy.get("redacted")
+    redacted_fields = privacy.get("redacted_fields")
+    event_is_safely_redacted = _value_is_already_redacted(event)
+    if classification == "public" and redacted is False:
+        return event_is_safely_redacted
+    if (
+        classification == "sensitive"
+        and redacted is True
+        and isinstance(redacted_fields, list)
+    ):
+        return event_is_safely_redacted
+    return False
+
+
+def _value_is_already_redacted(value: Mapping[str, Any]) -> bool:
+    redacted_value, _redacted_fields = redact_runtime_payload(dict(value))
+    return _json_dump(redacted_value) == _json_dump(value)
+
+
+def _path_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
 
 
 def _json_dump(value: Any) -> str:

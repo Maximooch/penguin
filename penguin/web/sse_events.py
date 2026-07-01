@@ -7,6 +7,7 @@ message/part events to the TUI client.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from fastapi import APIRouter, Header, Query
@@ -27,6 +28,7 @@ from penguin.web.services.opencode_events import (
 if TYPE_CHECKING:
     from penguin.core import PenguinCore
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 _LEDGER_RECORDER_ATTR = "_runtime_event_ledger_recorder_v1"
 # Per-connection delivery limits for the compatibility SSE projection. The
@@ -34,6 +36,7 @@ _LEDGER_RECORDER_ATTR = "_runtime_event_ledger_recorder_v1"
 # delivery for a connected client. Slow-client drops are recoverable by
 # reconnecting with Last-Event-ID.
 _SSE_QUEUE_MAX_EVENTS = 1000
+_SSE_REPLAY_PAGE_SIZE = 1000
 _SSE_KEEPALIVE_TIMEOUT_SECONDS = 300.0
 
 # Global reference to core instance (set by app.py)
@@ -257,26 +260,45 @@ async def events_sse(
                 yield sse_event_frame(normalized_connected)
 
             if effective_last_event_id:
-                replay = _replay_events_after(core, effective_last_event_id)
-                if not replay.found:
-                    gap_event = next_event(
-                        _replay_gap_event(
-                            effective_last_event_id,
-                            oldest_event_id=replay.oldest_event_id,
-                            newest_event_id=replay.newest_event_id,
-                        )
+                replay_cursor = effective_last_event_id
+                while True:
+                    replay = _replay_events_after(
+                        core,
+                        replay_cursor,
+                        limit=_SSE_REPLAY_PAGE_SIZE,
                     )
-                    if gap_event and event_allowed(gap_event):
-                        yield sse_event_frame(gap_event)
-                for runtime_event in replay.events:
-                    event = opencode_payload_from_runtime_event(runtime_event)
-                    event_id = event.get("id")
-                    if isinstance(event_id, str) and event_id in queued_live_event_ids:
-                        continue
-                    if event_allowed(event):
-                        if isinstance(event_id, str):
-                            delivered_event_ids.add(event_id)
-                        yield sse_event_frame(event)
+                    if not replay.found:
+                        gap_event = next_event(
+                            _replay_gap_event(
+                                effective_last_event_id,
+                                oldest_event_id=replay.oldest_event_id,
+                                newest_event_id=replay.newest_event_id,
+                            )
+                        )
+                        if gap_event and event_allowed(gap_event):
+                            yield sse_event_frame(gap_event)
+                        break
+                    if not replay.events:
+                        break
+                    for runtime_event in replay.events:
+                        event = opencode_payload_from_runtime_event(runtime_event)
+                        event_id = event.get("id")
+                        if (
+                            isinstance(event_id, str)
+                            and event_id in queued_live_event_ids
+                        ):
+                            continue
+                        if event_allowed(event):
+                            if isinstance(event_id, str):
+                                delivered_event_ids.add(event_id)
+                            yield sse_event_frame(event)
+                    next_cursor = replay.events[-1].get("id")
+                    if (
+                        len(replay.events) < _SSE_REPLAY_PAGE_SIZE
+                        or not isinstance(next_cursor, str)
+                    ):
+                        break
+                    replay_cursor = next_cursor
 
             # Stream events
             while True:
@@ -333,16 +355,19 @@ def _install_runtime_event_ledger_recorder(core: Any) -> None:
         except Exception:
             # Ledger failures must not interrupt live TUI streaming. The client can
             # still receive the live frame; replay will surface a gap if needed.
-            pass
+            logger.debug(
+                "Failed to record OpenCode event in runtime ledger",
+                exc_info=True,
+            )
 
     subscribe("opencode_event", ledger_handler)
     setattr(core, _LEDGER_RECORDER_ATTR, ledger_handler)
 
 
-def _replay_events_after(core: Any, last_event_id: str):
+def _replay_events_after(core: Any, last_event_id: str, *, limit: int):
     from penguin.system.runtime_event_ledger import get_runtime_event_ledger
 
-    return get_runtime_event_ledger(core).replay_after(last_event_id)
+    return get_runtime_event_ledger(core).replay_after(last_event_id, limit=limit)
 
 
 def _replay_gap_event(

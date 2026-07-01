@@ -191,6 +191,9 @@ def record_opencode_event(core: Any, data: dict[str, Any]) -> dict[str, Any] | N
     data["runtime_event"] = runtime_event
     projected = opencode_payload_from_runtime_event(runtime_event)
     data["id"] = projected.get("id")
+    projected_type = projected.get("type")
+    if isinstance(projected_type, str) and projected_type:
+        data["type"] = projected_type
     data["time"] = projected.get("time")
     data["order"] = projected.get("order")
     projected_properties = projected.get("properties")
