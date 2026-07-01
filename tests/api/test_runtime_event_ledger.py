@@ -127,6 +127,65 @@ def test_ledger_keeps_repeated_part_deltas_as_distinct_events(tmp_path: Path) ->
     assert newest[0]["id"] != newest[1]["id"]
 
 
+def test_ledger_replay_filters_session_agent_and_directory(tmp_path: Path) -> None:
+    reset_runtime_event_sequences()
+    ledger = _ledger(tmp_path)
+    directory_one = str(tmp_path / "one")
+    directory_two = str(tmp_path / "two")
+    first = build_runtime_event(
+        event_type="message.updated",
+        payload={"id": "msg_1", "role": "assistant"},
+        scope={
+            "session_id": "ses_1",
+            "agent_id": "agent_a",
+            "directory": directory_one,
+        },
+        sequence=1,
+    )
+    wrong_agent = build_runtime_event(
+        event_type="message.updated",
+        payload={"id": "msg_2", "role": "assistant"},
+        scope={
+            "session_id": "ses_1",
+            "agent_id": "agent_b",
+            "directory": directory_one,
+        },
+        sequence=2,
+    )
+    wrong_directory = build_runtime_event(
+        event_type="message.updated",
+        payload={"id": "msg_3", "role": "assistant"},
+        scope={
+            "session_id": "ses_1",
+            "agent_id": "agent_a",
+            "directory": directory_two,
+        },
+        sequence=3,
+    )
+    retained = build_runtime_event(
+        event_type="message.updated",
+        payload={"id": "msg_4", "role": "assistant"},
+        scope={
+            "session_id": "ses_1",
+            "agent_id": "agent_a",
+            "directory": directory_one,
+        },
+        sequence=4,
+    )
+
+    assert ledger.extend([first, wrong_agent, wrong_directory, retained]) == 4
+
+    replay = ledger.replay_after(
+        first["id"],
+        session_id="ses_1",
+        agent_id="agent_a",
+        directory=directory_one,
+    )
+
+    assert replay.found is True
+    assert [event["id"] for event in replay.events] == [retained["id"]]
+
+
 def test_ledger_max_events_cleanup_removes_oldest_rows(tmp_path: Path) -> None:
     reset_runtime_event_sequences()
     ledger = _ledger(tmp_path, max_events=2)
@@ -180,6 +239,19 @@ def test_ledger_max_bytes_cleanup_removes_oldest_rows(
     replay = ledger.replay_after(events[2]["id"])
     assert replay.found is True
     assert [event["id"] for event in replay.events] == [events[3]["id"]]
+
+
+def test_ledger_connect_enables_incremental_auto_vacuum(tmp_path: Path) -> None:
+    reset_runtime_event_sequences()
+    ledger = _ledger(tmp_path)
+
+    assert ledger.append(_event("ses_1", 1)) is True
+
+    conn = sqlite3.connect(str(tmp_path / "runtime_events.db"))
+    try:
+        assert conn.execute("PRAGMA auto_vacuum").fetchone()[0] == 2
+    finally:
+        conn.close()
 
 
 def test_ledger_database_size_includes_wal_sidecar(

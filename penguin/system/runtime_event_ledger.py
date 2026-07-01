@@ -281,12 +281,18 @@ class RuntimeEventLedger:
         last_event_id: str,
         *,
         limit: int | None = None,
+        session_id: str | None = None,
+        agent_id: str | None = None,
+        directory: str | None = None,
     ) -> ReplayResult:
         """Return events after ``last_event_id`` in durable insertion order.
 
         Args:
             last_event_id: RuntimeEvent id supplied by a reconnecting client.
             limit: Optional maximum number of events to return.
+            session_id: Optional session scope for replay filtering.
+            agent_id: Optional agent scope for replay filtering.
+            directory: Optional directory scope for replay filtering.
 
         Returns:
             ReplayResult with retained events after the cursor, or a gap result
@@ -307,17 +313,27 @@ class RuntimeEventLedger:
                 if cursor_row is None:
                     return ReplayResult(found=False, events=[], **bounds)
 
+                clauses = ["rowid > ?"]
+                params: list[Any] = [cursor_row["rowid"]]
+                if session_id:
+                    clauses.append("(session_id = ? OR session_id IS NULL)")
+                    params.append(session_id)
+                if agent_id:
+                    clauses.append("(agent_id = ? OR agent_id IS NULL)")
+                    params.append(agent_id)
+                if directory:
+                    clauses.append("(directory = ? OR directory IS NULL)")
+                    params.append(directory)
+
                 sql = """
                     SELECT event_json
                     FROM runtime_events
-                    WHERE rowid > ?
+                    WHERE {where_clause}
                     ORDER BY rowid ASC
-                """
+                """.format(where_clause=" AND ".join(clauses))
                 if limit is not None and limit > 0:
                     sql += " LIMIT ?"
-                    params = (cursor_row["rowid"], limit)
-                else:
-                    params = (cursor_row["rowid"],)
+                    params.append(limit)
                 rows = conn.execute(sql, params).fetchall()
                 return ReplayResult(
                     found=True,
@@ -454,27 +470,34 @@ class RuntimeEventLedger:
         if current_size <= max_bytes:
             return
 
-        low_water = int(max_bytes * 0.9)
-        while current_size > low_water:
-            count = conn.execute(
-                "SELECT COUNT(*) AS count FROM runtime_events"
-            ).fetchone()["count"]
-            if int(count) <= 0:
-                break
-            batch = max(1, min(1000, int(count) // 10 or 1))
-            conn.execute(
-                """
-                DELETE FROM runtime_events
-                WHERE rowid IN (
-                    SELECT rowid FROM runtime_events ORDER BY rowid ASC LIMIT ?
-                )
-                """,
-                (batch,),
+        count = conn.execute(
+            "SELECT COUNT(*) AS count FROM runtime_events"
+        ).fetchone()["count"]
+        retained_count = int(count)
+        if retained_count <= 1:
+            self._incremental_vacuum(conn)
+            return
+
+        low_water = max(1, int(max_bytes * 0.9))
+        estimated_bytes_per_row = max(1, current_size // retained_count)
+        target_count = max(1, low_water // estimated_bytes_per_row)
+        if target_count >= retained_count:
+            target_count = retained_count - 1
+        delete_count = max(1, retained_count - target_count)
+        delete_count = min(delete_count, retained_count - 1)
+        conn.execute(
+            """
+            DELETE FROM runtime_events
+            WHERE rowid IN (
+                SELECT rowid FROM runtime_events ORDER BY rowid ASC LIMIT ?
             )
-            conn.commit()
-            current_size = self._database_size_bytes(conn)
-            if int(count) <= batch:
-                break
+            """,
+            (delete_count,),
+        )
+        conn.commit()
+        self._incremental_vacuum(conn)
+
+    def _incremental_vacuum(self, conn: sqlite3.Connection) -> None:
         try:
             conn.execute("PRAGMA incremental_vacuum")
         except sqlite3.DatabaseError:
@@ -492,10 +515,13 @@ class RuntimeEventLedger:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(self.path), timeout=30.0)
         conn.row_factory = sqlite3.Row
+        auto_vacuum = conn.execute("PRAGMA auto_vacuum").fetchone()[0]
+        if int(auto_vacuum) != 2:
+            conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
+            conn.execute("VACUUM")
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=30000")
         conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
         return conn
 
     def _ensure_schema(self, conn: sqlite3.Connection) -> None:

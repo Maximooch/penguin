@@ -262,10 +262,14 @@ async def events_sse(
             if effective_last_event_id:
                 replay_cursor = effective_last_event_id
                 while True:
-                    replay = _replay_events_after(
+                    replay = await asyncio.to_thread(
+                        _replay_events_after,
                         core,
                         replay_cursor,
                         limit=_SSE_REPLAY_PAGE_SIZE,
+                        session_id=effective_session_id,
+                        agent_id=effective_agent_id,
+                        directory=effective_directory,
                     )
                     if not replay.found:
                         gap_event = next_event(
@@ -364,10 +368,24 @@ def _install_runtime_event_ledger_recorder(core: Any) -> None:
     setattr(core, _LEDGER_RECORDER_ATTR, ledger_handler)
 
 
-def _replay_events_after(core: Any, last_event_id: str, *, limit: int):
+def _replay_events_after(
+    core: Any,
+    last_event_id: str,
+    *,
+    limit: int,
+    session_id: str | None = None,
+    agent_id: str | None = None,
+    directory: str | None = None,
+):
     from penguin.system.runtime_event_ledger import get_runtime_event_ledger
 
-    return get_runtime_event_ledger(core).replay_after(last_event_id, limit=limit)
+    return get_runtime_event_ledger(core).replay_after(
+        last_event_id,
+        limit=limit,
+        session_id=session_id,
+        agent_id=agent_id,
+        directory=directory,
+    )
 
 
 def _replay_gap_event(
