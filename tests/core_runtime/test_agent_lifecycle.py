@@ -24,6 +24,7 @@ from penguin.core_runtime.agent_lifecycle import (
     list_sub_agents,
     load_agent_conversation,
     publish_sub_agent_session_created,
+    register_agent_compat,
     resolve_agent_execution_scope,
     run_agent_prompt_in_session,
     set_active_agent,
@@ -597,6 +598,99 @@ def test_ensure_agent_conversation_registers_engine_agent(
             "action_executor": action_executor,
         }
     ]
+
+
+def test_register_agent_compat_preserves_legacy_kwargs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model_config = SimpleNamespace(
+        max_context_window_tokens=4096,
+        max_output_tokens=1024,
+        model="test-model",
+        provider="openrouter",
+        client_preference="openrouter",
+        temperature=0.2,
+    )
+    api_clients: list[Any] = []
+
+    class _APIClient:
+        def __init__(self, *, model_config: Any) -> None:
+            self.model_config = model_config
+            self.system_prompts: list[str] = []
+            api_clients.append(self)
+
+        def set_system_prompt(self, system_prompt: str) -> None:
+            self.system_prompts.append(system_prompt)
+
+    monkeypatch.setattr(
+        "penguin.agent.persona_runtime.model_config_for_agent_settings",
+        lambda *_args, **_kwargs: model_config,
+    )
+    monkeypatch.setattr(
+        "penguin.agent.persona_runtime.model_config_metadata",
+        lambda _model_config: {"model": "test-model"},
+    )
+    monkeypatch.setattr("penguin.core_runtime.agent_lifecycle.APIClient", _APIClient)
+    monkeypatch.setattr(
+        "penguin.core_runtime.agent_lifecycle.ActionExecutor",
+        lambda *args, **kwargs: {"args": args, "kwargs": kwargs},
+    )
+
+    conversation = SimpleNamespace(
+        session=SimpleNamespace(metadata={}),
+        system_prompts=[],
+    )
+    conversation.set_system_prompt = conversation.system_prompts.append
+    create_calls: list[dict[str, Any]] = []
+    engine_calls: list[tuple[str, Any]] = []
+    context_window = SimpleNamespace(model_config=None, max_context_window_tokens=100)
+    conversation_manager = SimpleNamespace(
+        create_sub_agent=lambda agent_id, **kwargs: create_calls.append(
+            {"agent_id": agent_id, **kwargs}
+        ),
+        get_agent_conversation=lambda agent_id, create_if_missing=False: conversation,
+        agent_context_windows={"worker": context_window},
+    )
+    core = SimpleNamespace(
+        config=SimpleNamespace(agent_personas={}, model_configs={}),
+        model_config=model_config,
+        system_prompt="global system",
+        conversation_manager=conversation_manager,
+        engine=SimpleNamespace(
+            register_agent=lambda **kwargs: engine_calls.append(("register", kwargs)),
+            set_default_agent=lambda agent_id: engine_calls.append(
+                ("default", agent_id)
+            ),
+        ),
+        tool_manager="tools",
+        project_manager="project",
+        emit_ui_event="emit",
+    )
+
+    register_agent_compat(
+        core,
+        "worker",
+        share_session_with="default",
+        shared_context_window_max_tokens=2048,
+        activate=True,
+    )
+
+    assert create_calls == [
+        {
+            "agent_id": "worker",
+            "parent_agent_id": "default",
+            "share_session": False,
+            "share_context_window": False,
+            "shared_context_window_max_tokens": 2048,
+        }
+    ]
+    assert conversation.system_prompts == []
+    assert api_clients[0].system_prompts == ["global system"]
+    assert context_window.model_config is model_config
+    assert context_window.max_context_window_tokens == 4096
+    assert engine_calls[0][0] == "register"
+    assert engine_calls[0][1]["agent_id"] == "worker"
+    assert engine_calls[-1] == ("default", "worker")
 
 
 def test_create_sub_agent_creates_child_and_ensures_conversation() -> None:

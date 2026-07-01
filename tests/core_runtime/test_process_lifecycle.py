@@ -15,6 +15,7 @@ class _Owner:
         self.status_events: list[tuple[str, str]] = []
         self.ui_events: list[tuple[str, dict[str, object]]] = []
         self.user_metadata_events: list[dict[str, object]] = []
+        self.heartbeat_events: list[tuple[str, str]] = []
         self.fail_user_metadata = False
 
     async def _emit_opencode_session_status(
@@ -48,6 +49,12 @@ class _Owner:
             }
         )
 
+    def _ensure_opencode_session_status_heartbeat(self, session_id: str) -> None:
+        self.heartbeat_events.append(("ensure", session_id))
+
+    def _cancel_opencode_session_status_heartbeat(self, session_id: str) -> None:
+        self.heartbeat_events.append(("cancel", session_id))
+
 
 async def _sleeping_task() -> None:
     await asyncio.sleep(60)
@@ -69,6 +76,7 @@ async def test_register_initializes_state_tracks_task_and_emits_busy() -> None:
         assert owner._opencode_process_tasks == {"session_1": {task}}
         assert owner._opencode_active_requests == {"session_1": 1}
         assert owner.status_events == [("session_1", "busy")]
+        assert owner.heartbeat_events == [("ensure", "session_1")]
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -100,6 +108,7 @@ async def test_register_second_request_does_not_emit_duplicate_busy() -> None:
         assert owner._opencode_process_tasks == {"session_1": {first, second}}
         assert owner._opencode_active_requests == {"session_1": 2}
         assert owner.status_events == [("session_1", "busy")]
+        assert owner.heartbeat_events == [("ensure", "session_1")]
     finally:
         for task in (first, second):
             task.cancel()
@@ -135,6 +144,7 @@ async def test_finalize_only_emits_idle_after_last_active_request() -> None:
         assert owner._opencode_active_requests == {"session_1": 1}
         assert owner._opencode_abort_sessions == {"session_1"}
         assert owner.status_events == [("session_1", "busy")]
+        assert owner.heartbeat_events == [("ensure", "session_1")]
 
         await process_lifecycle.finalize_opencode_process_request(
             owner,
@@ -149,6 +159,10 @@ async def test_finalize_only_emits_idle_after_last_active_request() -> None:
         assert owner.status_events == [
             ("session_1", "busy"),
             ("session_1", "idle"),
+        ]
+        assert owner.heartbeat_events == [
+            ("ensure", "session_1"),
+            ("cancel", "session_1"),
         ]
     finally:
         for task in (first, second):
@@ -182,6 +196,7 @@ async def test_blank_session_or_missing_task_does_not_track_request() -> None:
     assert owner._opencode_process_tasks == {}
     assert owner._opencode_active_requests == {}
     assert owner.status_events == []
+    assert owner.heartbeat_events == []
 
 
 def test_discard_abort_session_ignores_blank_session_and_repairs_state() -> None:

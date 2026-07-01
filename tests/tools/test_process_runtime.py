@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import shlex
 import subprocess
+import sys
 import time
 from typing import TYPE_CHECKING, Any, cast
 
@@ -174,6 +176,29 @@ def test_process_runtime_captures_large_stdout_and_stderr() -> None:
     assert polled["output"].count("E") == 5000
     assert "[stdout]" in polled["output"]
     assert "[stderr]" in polled["output"]
+
+
+def test_process_runtime_preserves_multibyte_utf8_across_read_boundaries() -> None:
+    runtime = ProcessRuntime()
+    command = " ".join(
+        [
+            shlex.quote(sys.executable),
+            "-c",
+            shlex.quote(
+                "import sys; "
+                "sys.stdout.buffer.write("
+                "b'A' * 4095 + bytes([0xc3, 0xa9]) + b'Z\\n'"
+                "); "
+                "sys.stdout.flush()"
+            ),
+        ]
+    )
+
+    process_id = runtime.start(command)["process_id"]
+    polled = _poll_until_status(runtime, process_id, "exited")
+
+    assert "\u00e9Z" in polled["output"]
+    assert "\ufffd" not in polled["output"]
 
 
 def test_process_runtime_captures_interleaved_streams() -> None:

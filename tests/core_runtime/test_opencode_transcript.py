@@ -89,6 +89,29 @@ def test_apply_message_updated_persists_message_info_and_save_flag() -> None:
     assert transcript["messages"]["msg_1"]["part_order"] == []
 
 
+def test_apply_message_updated_redacts_secret_metadata() -> None:
+    metadata: dict[str, Any] = {}
+
+    opencode_transcript.apply_transcript_event(
+        metadata=metadata,
+        event_type="message.updated",
+        properties={
+            "id": "msg_1",
+            "sessionID": "session_1",
+            "role": "assistant",
+            "apiKey": "sk-secret",
+            "nested": {"authorization": "Bearer token"},
+        },
+        session_id="session_1",
+        assistant_info_factory=_assistant_info,
+    )
+
+    info = metadata[opencode_transcript.TRANSCRIPT_KEY]["messages"]["msg_1"]["info"]
+    assert info["apiKey"] == "[redacted]"
+    assert info["nested"]["authorization"] == "[redacted]"
+    assert info["role"] == "assistant"
+
+
 def test_apply_part_updated_synthesizes_part_first_message_info() -> None:
     metadata: dict[str, Any] = {}
 

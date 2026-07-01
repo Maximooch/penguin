@@ -46,7 +46,7 @@ Architecture Boundaries
 - Public API: define __all__ in every public module. If it's not in __all__, it's internal.
 
 Anti-Patterns (DO NOT do these)
-- God files: no file should exceed ~2000 lines. If it does, extract. Current targets for decomposition: routes.py, core.py, tool_manager.py, parser.py.
+- God files: no file should exceed ~2000 lines. If it does, extract. Current targets for decomposition: routes.py, tool_manager.py, parser.py.
 - .bak files: NEVER commit .bak files. Git is your backup. Delete existing ones.
 - old_* files: delete dead code, don't rename it. Git history preserves it.
 - # type: ignore on valid imports: remove them. If mypy complains, fix the config, don't suppress.

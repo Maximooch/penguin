@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -398,6 +399,101 @@ async def test_process_legacy_path_prepares_conversation_and_finalizes(
         ("finalize_response", None),
         ("finalize_request", None),
     ]
+
+
+@pytest.mark.asyncio
+async def test_process_tracks_current_session_without_explicit_conversation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def get_response(**_kwargs: Any) -> tuple[dict[str, Any], bool]:
+        return {"assistant_response": "legacy", "action_results": []}, True
+
+    owner = SimpleNamespace(
+        engine=None,
+        get_response=get_response,
+        _handle_stream_chunk="internal-stream-callback",
+    )
+    conversation_manager = SimpleNamespace(
+        conversation=SimpleNamespace(
+            session=SimpleNamespace(id="active-session"),
+            prepare_conversation=lambda *_args, **_kwargs: None,
+        ),
+        save=lambda: None,
+    )
+    registered: list[str | None] = []
+    finalized: list[tuple[str | None, bool]] = []
+
+    monkeypatch.setattr(process_runtime, "get_current_execution_context", lambda: None)
+    monkeypatch.setattr(
+        process_runtime.core_conversations,
+        "resolve_conversation_manager",
+        lambda *_args, **_kwargs: conversation_manager,
+    )
+    monkeypatch.setattr(
+        process_runtime.core_conversations,
+        "load_process_context_files",
+        lambda *_args, **_kwargs: 0,
+    )
+
+    async def register_request(
+        _owner: Any,
+        session_id: str | None,
+        _task: asyncio.Task[Any],
+    ) -> bool:
+        registered.append(session_id)
+        return True
+
+    async def finalize_request(
+        _owner: Any,
+        session_id: str | None,
+        _task: asyncio.Task[Any],
+        *,
+        request_tracked: bool,
+    ) -> None:
+        finalized.append((session_id, request_tracked))
+
+    monkeypatch.setattr(
+        process_runtime.core_process_lifecycle,
+        "register_opencode_process_request",
+        register_request,
+    )
+    monkeypatch.setattr(
+        process_runtime.core_process_lifecycle,
+        "finalize_opencode_process_request",
+        finalize_request,
+    )
+    monkeypatch.setattr(
+        process_runtime.core_process_lifecycle,
+        "emit_process_user_message",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        process_runtime.core_process_lifecycle,
+        "finalize_process_response",
+        AsyncMock(return_value=None),
+    )
+
+    result = await process_runtime.process(
+        owner,
+        input_data="hello",
+        context=None,
+        conversation_id=None,
+        agent_id=None,
+        max_iterations=1,
+        context_files=None,
+        streaming=False,
+        stream_callback=None,
+        multi_step=True,
+        api_client_override=None,
+        model_config_override=None,
+        log=_log(),
+        trace_log_info=_trace([]),
+        log_error_fn=lambda *_args, **_kwargs: None,
+    )
+
+    assert result == {"assistant_response": "legacy", "action_results": []}
+    assert registered == ["active-session"]
+    assert finalized == [("active-session", True)]
 
 
 @pytest.mark.asyncio

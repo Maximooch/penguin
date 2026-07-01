@@ -145,6 +145,20 @@ def register_agent_compat(core: Any, *args: Any, **kwargs: Any) -> None:
     if system_prompt is None and persona_config is not None:
         system_prompt = getattr(persona_config, "system_prompt", None)
 
+    share_session_with = kwargs.get("share_session_with")
+    if share_session_with:
+        core.conversation_manager.create_sub_agent(
+            agent_id,
+            parent_agent_id=share_session_with,
+            share_session=False,
+            share_context_window=False,
+            shared_context_window_max_tokens=(
+                kwargs.get("shared_context_window_max_tokens")
+                or kwargs.get("shared_cw_max_tokens")
+                or kwargs.get("model_max_tokens")
+            ),
+        )
+
     agent_model_config = model_config_for_agent_settings(
         getattr(persona_config, "model", None) if persona_config else None,
         model_configs=getattr(core.config, "model_configs", None),
@@ -172,7 +186,15 @@ def register_agent_compat(core: Any, *args: Any, **kwargs: Any) -> None:
         core.conversation_manager, "agent_context_windows", {}
     )
     if isinstance(agent_context_windows, dict) and agent_id in agent_context_windows:
-        agent_context_windows[agent_id].model_config = agent_model_config
+        context_window = agent_context_windows[agent_id]
+        context_window.model_config = agent_model_config
+        max_context_tokens = getattr(
+            agent_model_config,
+            "max_context_window_tokens",
+            None,
+        )
+        if max_context_tokens is not None:
+            context_window.max_context_window_tokens = max_context_tokens
 
     if not hasattr(core, "_agent_api_clients"):
         core._agent_api_clients = {}
@@ -182,8 +204,7 @@ def register_agent_compat(core: Any, *args: Any, **kwargs: Any) -> None:
         core._agent_tool_defaults = {}
 
     api_client = APIClient(model_config=agent_model_config)
-    if system_prompt:
-        api_client.set_system_prompt(system_prompt)
+    api_client.set_system_prompt(system_prompt or getattr(core, "system_prompt", ""))
     core._agent_api_clients[agent_id] = api_client
     core._agent_model_overrides[agent_id] = agent_model_config
     core._agent_tool_defaults[agent_id] = tuple(
@@ -204,7 +225,10 @@ def register_agent_compat(core: Any, *args: Any, **kwargs: Any) -> None:
             tool_manager=core.tool_manager,
             action_executor=action_executor,
         )
-        if getattr(persona_config, "activate_by_default", False):
+        activate = bool(kwargs.get("activate", False)) or bool(
+            getattr(persona_config, "activate_by_default", False)
+        )
+        if activate:
             core.engine.set_default_agent(agent_id)
 
 

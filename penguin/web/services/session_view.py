@@ -271,27 +271,7 @@ def _iter_session_managers(core: Any) -> list[Any]:
 
 def _session_file_ids(manager: Any) -> list[str]:
     """Return session ids found on disk for a manager."""
-    base_path = getattr(manager, "base_path", None)
-    if not base_path:
-        return []
-
-    try:
-        root = Path(base_path)
-    except TypeError:
-        return []
-    if not root.exists() or not root.is_dir():
-        return []
-
-    session_format = getattr(manager, "format", "json")
-    if not isinstance(session_format, str) or not session_format.strip():
-        session_format = "json"
-
-    ids: list[str] = []
-    for path in root.glob(f"*.{session_format}"):
-        if path.name == f"session_index.{session_format}":
-            continue
-        ids.append(path.stem)
-    return ids
+    return session_lookup.file_session_ids(manager)
 
 
 def _manager_session_ids(manager: Any) -> list[str]:

@@ -131,15 +131,15 @@ async def process(
         log=log,
     )
 
+    scoped_conversation = getattr(conversation_manager, "conversation", None)
+    scoped_session_before = getattr(
+        getattr(scoped_conversation, "session", None), "id", None
+    )
     execution_context = get_current_execution_context()
     request_session_id = (
         execution_context.session_id
         if execution_context and execution_context.session_id
-        else conversation_id
-    )
-    scoped_conversation = getattr(conversation_manager, "conversation", None)
-    scoped_session_before = getattr(
-        getattr(scoped_conversation, "session", None), "id", None
+        else conversation_id or scoped_session_before
     )
     trace_log_info(
         "core.process.trace.start request=%s session=%s conversation=%s agent=%s "

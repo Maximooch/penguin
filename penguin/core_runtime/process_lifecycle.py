@@ -195,6 +195,7 @@ async def register_opencode_process_request(
     owner._opencode_active_requests[sid] = next_count
     if next_count == 1:
         await owner._emit_opencode_session_status(sid, "busy")
+        owner._ensure_opencode_session_status_heartbeat(sid)
     return True
 
 
@@ -225,4 +226,5 @@ async def finalize_opencode_process_request(
 
     owner._opencode_active_requests.pop(sid, None)
     owner._opencode_abort_sessions.discard(sid)
+    owner._cancel_opencode_session_status_heartbeat(sid)
     await owner._emit_opencode_session_status(sid, "idle")

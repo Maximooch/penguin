@@ -310,6 +310,40 @@ def test_get_session_token_usage_does_not_let_metadata_owner_override_messages()
     }
 
 
+def test_get_session_token_usage_agent_scope_does_not_overlay_session_truncations() -> (
+    None
+):
+    session = _session(
+        "session_a",
+        messages=[
+            _message(5, agent_id="agent-a"),
+            _message(7, agent_id="agent-b"),
+        ],
+        metadata={
+            "_opencode_usage_v1": {
+                "truncations": {
+                    "total_truncations": 3,
+                    "messages_removed": 9,
+                    "tokens_freed": 120,
+                }
+            }
+        },
+    )
+
+    usage = token_usage_runtime.get_session_token_usage(
+        _Core(session=session),
+        "session_a",
+        agent_id="agent-a",
+    )
+
+    assert usage is not None
+    assert usage["current_total_tokens"] == 5
+    assert usage["agent_id"] == "agent-a"
+    assert usage["truncations"]["total_truncations"] == 0
+    assert usage["truncations"]["messages_removed"] == 0
+    assert usage["truncations"]["tokens_freed"] == 0
+
+
 def test_get_token_usage_returns_empty_runtime_payload_for_corrupt_runtime_usage() -> (
     None
 ):

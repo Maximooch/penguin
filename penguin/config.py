@@ -1597,8 +1597,40 @@ def _workspace_path_from_config_data(config_data: Dict[str, Any]) -> Path:
         if isinstance(configured_path, str) and configured_path.strip():
             workspace_value = configured_path
     if workspace_value:
-        return Path(workspace_value).expanduser()
+        return _validated_workspace_path(Path(workspace_value).expanduser())
     return Path(WORKSPACE_PATH)
+
+
+def _validated_workspace_path(candidate: Path) -> Path:
+    """Return a usable workspace path, falling back to the module default."""
+
+    try:
+        candidate.mkdir(parents=True, exist_ok=True)
+        if not os.access(candidate, os.W_OK | os.X_OK):
+            raise PermissionError(f"Workspace is not writable: {candidate}")
+        return candidate
+    except (PermissionError, FileNotFoundError) as exc:
+        fallback_path = Path(WORKSPACE_PATH)
+        logger.warning(
+            "Cannot use configured workspace at %s. Using fallback: %s",
+            candidate,
+            fallback_path,
+        )
+        try:
+            fallback_path.mkdir(parents=True, exist_ok=True)
+        except Exception as fallback_exc:
+            raise RuntimeError(
+                f"Cannot create workspace at {candidate} or fallback {fallback_path}. "
+                "Try setting PENGUIN_WORKSPACE environment variable to a writable "
+                "location."
+            ) from fallback_exc
+        if not os.access(fallback_path, os.W_OK | os.X_OK):
+            raise RuntimeError(
+                f"Workspace fallback {fallback_path} is not writable. "
+                "Try setting PENGUIN_WORKSPACE environment variable to a writable "
+                "location."
+            ) from exc
+        return fallback_path
 
 
 def _configure_diagnostics_logging(

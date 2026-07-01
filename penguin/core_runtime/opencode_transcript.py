@@ -132,7 +132,11 @@ def _apply_message_updated(
     if not isinstance(part_order, list):
         part_order = []
 
-    entry["info"] = dict(properties)
+    redacted_properties, _ = redact_runtime_payload(dict(properties))
+    if isinstance(redacted_properties, dict):
+        entry["info"] = redacted_properties
+    else:
+        entry["info"] = dict(properties)
     entry["parts"] = parts
     entry["part_order"] = part_order
     messages[message_id] = entry

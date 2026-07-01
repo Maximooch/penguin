@@ -8,6 +8,7 @@ import signal
 import subprocess
 import time
 import uuid
+from codecs import getincrementaldecoder
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,6 +38,7 @@ class ManagedProcess:
     env_overrides: dict[str, str] = field(default_factory=dict)
     started_at: float = field(default_factory=time.time)
     events: deque[ProcessOutputEvent] = field(default_factory=deque)
+    output_decoders: dict[str, Any] = field(default_factory=dict)
     next_sequence: int = 1
 
     def append_output(self, stream: str, text: str) -> None:
@@ -257,6 +259,10 @@ class ProcessRuntime:
             if pipe is None:
                 continue
             fd = pipe.fileno()
+            decoder = record.output_decoders.get(stream)
+            if decoder is None:
+                decoder = getincrementaldecoder("utf-8")("replace")
+                record.output_decoders[stream] = decoder
             while True:
                 try:
                     chunk = os.read(fd, 4096)
@@ -265,11 +271,13 @@ class ProcessRuntime:
                 except (OSError, ValueError):
                     break
                 if not chunk:
+                    final_text = decoder.decode(b"", final=True)
+                    if final_text:
+                        record.append_output(stream, final_text)
                     break
-                record.append_output(
-                    stream,
-                    chunk.decode(errors="replace"),
-                )
+                text = decoder.decode(chunk, final=False)
+                if text:
+                    record.append_output(stream, text)
                 while len(record.events) > self._max_events_per_process:
                     record.events.popleft()
 

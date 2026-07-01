@@ -77,6 +77,32 @@ def test_find_session_store_loads_indexed_agent_session() -> None:
     assert agent.loaded == ["session_agent"]
 
 
+def test_find_session_store_loads_file_backed_session_when_index_is_stale(
+    tmp_path,
+) -> None:
+    session = SimpleNamespace(id="session_disk")
+    manager = _Manager()
+    manager.base_path = tmp_path
+    manager.format = "json"
+    (tmp_path / "session_disk.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "session_index.json").write_text("{}", encoding="utf-8")
+    loaded: list[str] = []
+
+    def load_session(_manager: Any, session_id: str) -> Any | None:
+        loaded.append(session_id)
+        return session if session_id == "session_disk" else None
+
+    found, owner = session_lookup.find_session_store(
+        _core(manager),
+        "session_disk",
+        load_session=load_session,
+    )
+
+    assert found is session
+    assert owner is manager
+    assert loaded == ["session_disk"]
+
+
 def test_find_session_store_prefers_default_manager_when_ids_overlap() -> None:
     default_session = SimpleNamespace(id="session_shared", owner="default")
     agent_session = SimpleNamespace(id="session_shared", owner="agent")

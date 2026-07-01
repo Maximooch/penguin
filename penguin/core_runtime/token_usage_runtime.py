@@ -131,12 +131,11 @@ def get_session_token_usage(
             and message_agent_id.strip()
         }
         if agent_id in message_agent_ids:
-            usage = _usage_from_session_messages_with_snapshot(
+            usage = usage_from_session_messages(
                 core,
                 session,
                 agent_id=agent_id,
                 manager=manager,
-                metadata=metadata,
             )
         elif metadata_agent_id == agent_id and not message_agent_ids:
             usage_snapshot = metadata.get("_opencode_usage_v1")
