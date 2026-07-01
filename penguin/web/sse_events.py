@@ -69,7 +69,7 @@ async def events_sse(
     directory: str | None = Query(None, description="Workspace directory"),
     last_event_id: str | None = Query(
         None,
-        description="Replay buffered events after this SSE id",
+        description="Replay durable ledger events after this SSE id",
     ),
     last_event_id_header: str | None = Header(None, alias="Last-Event-ID"),
 ):
@@ -115,7 +115,7 @@ async def events_sse(
         delivered_event_order: deque[str] = deque()
         event_order = 0
 
-        def mark_delivered(event_id: Any) -> None:
+        def mark_delivered(event_id: object) -> None:
             if not isinstance(event_id, str) or not event_id:
                 return
             if event_id in delivered_event_ids:
@@ -287,7 +287,7 @@ async def events_sse(
                     if not replay.found:
                         gap_event = next_event(
                             _replay_gap_event(
-                                effective_last_event_id,
+                                replay_cursor,
                                 oldest_event_id=replay.oldest_event_id,
                                 newest_event_id=replay.newest_event_id,
                             )

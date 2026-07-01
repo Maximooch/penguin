@@ -8,10 +8,10 @@ import sqlite3
 import time
 from typing import TYPE_CHECKING, Any, Mapping
 
+import pytest
+
 if TYPE_CHECKING:
     from pathlib import Path
-
-    import pytest
 
 from penguin.system.runtime_event_ledger import (
     RuntimeEventLedger,
@@ -205,7 +205,6 @@ def test_ledger_max_events_cleanup_removes_oldest_rows(tmp_path: Path) -> None:
 
 
 
-
 def test_policy_from_env_disables_auto_cleanup_for_off_values(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -257,6 +256,81 @@ def test_ledger_max_bytes_cleanup_removes_oldest_rows(
     assert replay.found is True
     assert [event["id"] for event in replay.events] == [events[3]["id"]]
 
+
+
+def test_append_rolls_back_thread_connection_after_cleanup_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reset_runtime_event_sequences()
+    ledger = _ledger(tmp_path)
+    first = _event("ses_1", 1)
+    second = _event("ses_1", 2)
+
+    def fail_cleanup(*, conn: sqlite3.Connection | None = None) -> None:
+        raise RuntimeError("cleanup failed")
+
+    monkeypatch.setattr(ledger, "cleanup_if_due", fail_cleanup)
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        ledger.append(first)
+
+    monkeypatch.setattr(ledger, "cleanup_if_due", lambda *, conn=None: None)
+    assert ledger.append(second) is True
+    assert [event["id"] for event in ledger.newest(limit=10)] == [second["id"]]
+
+
+def test_ledger_checkpoint_below_size_cap_does_not_prune_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reset_runtime_event_sequences()
+    ledger = _ledger(tmp_path, max_bytes=2_500)
+    checkpointed = False
+
+    def fake_size(
+        self: RuntimeEventLedger,
+        conn: sqlite3.Connection,
+    ) -> int:
+        return 1_000 if checkpointed else 4_000
+
+    def fake_checkpoint(
+        self: RuntimeEventLedger,
+        conn: sqlite3.Connection,
+    ) -> bool:
+        nonlocal checkpointed
+        checkpointed = True
+        return True
+
+    monkeypatch.setattr(RuntimeEventLedger, "_database_size_bytes", fake_size)
+    monkeypatch.setattr(RuntimeEventLedger, "_checkpoint_wal", fake_checkpoint)
+    events = [_event("ses_1", index) for index in range(1, 4)]
+
+    assert ledger.extend(events) == 3
+    assert checkpointed is True
+    assert [event["id"] for event in ledger.newest(limit=10)] == [
+        event["id"] for event in events
+    ]
+
+
+def test_ledger_failed_checkpoint_skips_size_pruning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reset_runtime_event_sequences()
+    ledger = _ledger(tmp_path, max_bytes=2_500)
+
+    monkeypatch.setattr(
+        RuntimeEventLedger,
+        "_database_size_bytes",
+        lambda self, conn: 4_000,
+    )
+    monkeypatch.setattr(RuntimeEventLedger, "_checkpoint_wal", lambda self, conn: False)
+    events = [_event("ses_1", index) for index in range(1, 4)]
+
+    assert ledger.extend(events) == 3
+    assert [event["id"] for event in ledger.newest(limit=10)] == [
+        event["id"] for event in events
+    ]
 
 def test_ledger_connect_enables_incremental_auto_vacuum(tmp_path: Path) -> None:
     reset_runtime_event_sequences()

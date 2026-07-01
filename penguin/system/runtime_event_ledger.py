@@ -181,58 +181,64 @@ class RuntimeEventLedger:
 
         with self._lock:
             conn = self._thread_connection()
-            self._ensure_schema(conn)
-            before_changes = conn.total_changes
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO runtime_events (
-                    event_id,
-                    stream_id,
-                    sequence,
-                    event_type,
-                    category,
-                    event_time,
-                    inserted_at,
-                    session_id,
-                    conversation_id,
-                    agent_id,
-                    task_id,
-                    run_id,
-                    project_id,
-                    directory,
-                    privacy_classification,
-                    redacted,
-                    payload_json,
-                    projection_json,
-                    event_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    event_id,
-                    _string_or_none(event.get("stream_id")) or "global",
-                    _positive_int_or_zero(event.get("sequence")),
-                    _string_or_none(event.get("type")) or "unknown",
-                    _string_or_none(event.get("category")) or "session_lifecycle",
-                    _positive_int_or_zero(event.get("time")),
-                    int(time.time() * 1000),
-                    _string_or_none(scope.get("session_id")),
-                    _string_or_none(scope.get("conversation_id")),
-                    _string_or_none(scope.get("agent_id")),
-                    _string_or_none(scope.get("task_id")),
-                    _string_or_none(scope.get("run_id")),
-                    _string_or_none(scope.get("project_id")),
-                    _string_or_none(scope.get("directory")),
-                    _string_or_none(privacy.get("classification")) or "public",
-                    1 if privacy.get("redacted") else 0,
-                    _json_dump(payload if isinstance(payload, Mapping) else {}),
-                    _json_dump(projections if isinstance(projections, Mapping) else {}),
-                    _json_dump(dict(event)),
-                ),
-            )
-            conn.commit()
-            inserted = conn.total_changes > before_changes
-            self.cleanup_if_due(conn=conn)
-            return inserted
+            try:
+                self._ensure_schema(conn)
+                before_changes = conn.total_changes
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO runtime_events (
+                        event_id,
+                        stream_id,
+                        sequence,
+                        event_type,
+                        category,
+                        event_time,
+                        inserted_at,
+                        session_id,
+                        conversation_id,
+                        agent_id,
+                        task_id,
+                        run_id,
+                        project_id,
+                        directory,
+                        privacy_classification,
+                        redacted,
+                        payload_json,
+                        projection_json,
+                        event_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        event_id,
+                        _string_or_none(event.get("stream_id")) or "global",
+                        _positive_int_or_zero(event.get("sequence")),
+                        _string_or_none(event.get("type")) or "unknown",
+                        _string_or_none(event.get("category")) or "session_lifecycle",
+                        _positive_int_or_zero(event.get("time")),
+                        int(time.time() * 1000),
+                        _string_or_none(scope.get("session_id")),
+                        _string_or_none(scope.get("conversation_id")),
+                        _string_or_none(scope.get("agent_id")),
+                        _string_or_none(scope.get("task_id")),
+                        _string_or_none(scope.get("run_id")),
+                        _string_or_none(scope.get("project_id")),
+                        _string_or_none(scope.get("directory")),
+                        _string_or_none(privacy.get("classification")) or "public",
+                        1 if privacy.get("redacted") else 0,
+                        _json_dump(payload if isinstance(payload, Mapping) else {}),
+                        _json_dump(
+                            projections if isinstance(projections, Mapping) else {}
+                        ),
+                        _json_dump(dict(event)),
+                    ),
+                )
+                inserted = conn.total_changes > before_changes
+                self.cleanup_if_due(conn=conn)
+                conn.commit()
+                return inserted
+            except Exception:
+                conn.rollback()
+                raise
 
     def extend(self, events: Iterable[Mapping[str, Any]]) -> int:
         """Persist multiple redacted public RuntimeEvent envelopes.
@@ -465,7 +471,8 @@ class RuntimeEventLedger:
         # sidecar does not make the row-pruning estimate over-delete retained
         # replay history when truncating the WAL would be enough.
         conn.commit()
-        self._checkpoint_wal(conn)
+        if not self._checkpoint_wal(conn):
+            return
         current_size = self._database_size_bytes(conn)
         if current_size <= max_bytes:
             return
@@ -495,16 +502,20 @@ class RuntimeEventLedger:
             (delete_count,),
         )
         conn.commit()
-        self._checkpoint_wal(conn)
+        if not self._checkpoint_wal(conn):
+            return
         self._incremental_vacuum(conn)
         conn.commit()
         self._checkpoint_wal(conn)
 
-    def _checkpoint_wal(self, conn: sqlite3.Connection) -> None:
+    def _checkpoint_wal(self, conn: sqlite3.Connection) -> bool:
         try:
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
         except sqlite3.DatabaseError:
-            pass
+            return False
+        if row is None:
+            return False
+        return int(row[0]) == 0
 
     def _incremental_vacuum(self, conn: sqlite3.Connection) -> None:
         try:
