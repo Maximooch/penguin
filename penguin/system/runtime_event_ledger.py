@@ -460,6 +460,12 @@ class RuntimeEventLedger:
         max_bytes = self.policy.max_bytes
         if max_bytes is None or max_bytes <= 0:
             return
+
+        # WAL bytes are included in the soft cap. Checkpoint first so a large
+        # sidecar does not make the row-pruning estimate over-delete retained
+        # replay history when truncating the WAL would be enough.
+        conn.commit()
+        self._checkpoint_wal(conn)
         current_size = self._database_size_bytes(conn)
         if current_size <= max_bytes:
             return
@@ -489,7 +495,16 @@ class RuntimeEventLedger:
             (delete_count,),
         )
         conn.commit()
+        self._checkpoint_wal(conn)
         self._incremental_vacuum(conn)
+        conn.commit()
+        self._checkpoint_wal(conn)
+
+    def _checkpoint_wal(self, conn: sqlite3.Connection) -> None:
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.DatabaseError:
+            pass
 
     def _incremental_vacuum(self, conn: sqlite3.Connection) -> None:
         try:
