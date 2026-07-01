@@ -7,7 +7,7 @@ message/part events to the TUI client.
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any, AsyncIterator, Optional
+from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from fastapi import APIRouter, Header, Query
 from fastapi.responses import StreamingResponse
@@ -37,17 +37,17 @@ _SSE_QUEUE_MAX_EVENTS = 1000
 _SSE_KEEPALIVE_TIMEOUT_SECONDS = 300.0
 
 # Global reference to core instance (set by app.py)
-_core_instance: Optional["PenguinCore"] = None
+_core_instance: PenguinCore | None = None
 
 
-def set_core_instance(core: "PenguinCore"):
+def set_core_instance(core: PenguinCore):
     """Set the core instance for dependency injection."""
     global _core_instance
     _core_instance = core
     _install_runtime_event_ledger_recorder(core)
 
 
-def get_core_instance() -> "PenguinCore":
+def get_core_instance() -> PenguinCore:
     """Get the core instance."""
     if _core_instance is None:
         raise RuntimeError("Core instance not set - call set_core_instance() first")
@@ -56,17 +56,17 @@ def get_core_instance() -> "PenguinCore":
 
 @router.get("/api/v1/events/sse")
 async def events_sse(
-    session_id: Optional[str] = Query(None, description="Filter to specific session"),
-    conversation_id: Optional[str] = Query(
+    session_id: str | None = Query(None, description="Filter to specific session"),
+    conversation_id: str | None = Query(
         None, description="Alias for session_id (API compatibility)"
     ),
-    agent_id: Optional[str] = Query(None, description="Filter to specific agent"),
-    directory: Optional[str] = Query(None, description="Workspace directory"),
-    last_event_id: Optional[str] = Query(
+    agent_id: str | None = Query(None, description="Filter to specific agent"),
+    directory: str | None = Query(None, description="Workspace directory"),
+    last_event_id: str | None = Query(
         None,
         description="Replay buffered events after this SSE id",
     ),
-    last_event_id_header: Optional[str] = Header(None, alias="Last-Event-ID"),
+    last_event_id_header: str | None = Header(None, alias="Last-Event-ID"),
 ):
     """
     SSE stream of OpenCode-compatible events.

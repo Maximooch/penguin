@@ -14,7 +14,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Optional
+from typing import Any, Iterable, Mapping
 
 from penguin.config import WORKSPACE_PATH
 from penguin.system.runtime_events import RUNTIME_EVENT_SCHEMA_VERSION
@@ -31,8 +31,8 @@ class RuntimeEventLedgerPolicy:
     """Retention and cleanup policy for the runtime event ledger."""
 
     max_events: int = DEFAULT_LEDGER_MAX_EVENTS
-    max_age_seconds: Optional[int] = DEFAULT_LEDGER_MAX_AGE_DAYS * 24 * 60 * 60
-    max_bytes: Optional[int] = DEFAULT_LEDGER_MAX_BYTES
+    max_age_seconds: int | None = DEFAULT_LEDGER_MAX_AGE_DAYS * 24 * 60 * 60
+    max_bytes: int | None = DEFAULT_LEDGER_MAX_BYTES
     cleanup_interval_seconds: float = DEFAULT_LEDGER_CLEANUP_INTERVAL_SECONDS
 
 
@@ -42,8 +42,8 @@ class ReplayResult:
 
     found: bool
     events: list[dict[str, Any]]
-    oldest_event_id: Optional[str] = None
-    newest_event_id: Optional[str] = None
+    oldest_event_id: str | None = None
+    newest_event_id: str | None = None
 
 
 def default_ledger_path() -> Path:
@@ -79,7 +79,7 @@ def policy_from_env() -> RuntimeEventLedgerPolicy:
     )
 
 
-def get_runtime_event_ledger(core: Optional[Any] = None) -> "RuntimeEventLedger":
+def get_runtime_event_ledger(core: Any | None = None) -> RuntimeEventLedger:
     """Return the shared runtime event ledger for a core object or process."""
     if core is not None:
         existing = getattr(core, _RUNTIME_EVENT_LEDGER_ATTR, None)
@@ -91,7 +91,10 @@ def get_runtime_event_ledger(core: Optional[Any] = None) -> "RuntimeEventLedger"
 
     global _PROCESS_LEDGER
     if _PROCESS_LEDGER is None:
-        _PROCESS_LEDGER = RuntimeEventLedger(default_ledger_path(), policy=policy_from_env())
+        _PROCESS_LEDGER = RuntimeEventLedger(
+            default_ledger_path(),
+            policy=policy_from_env(),
+        )
     return _PROCESS_LEDGER
 
 
@@ -102,7 +105,7 @@ class RuntimeEventLedger:
         self,
         path: str | Path,
         *,
-        policy: Optional[RuntimeEventLedgerPolicy] = None,
+        policy: RuntimeEventLedgerPolicy | None = None,
     ) -> None:
         self.path = Path(path).expanduser()
         self.policy = policy or RuntimeEventLedgerPolicy()
@@ -213,7 +216,7 @@ class RuntimeEventLedger:
         self,
         last_event_id: str,
         *,
-        limit: Optional[int] = None,
+        limit: int | None = None,
     ) -> ReplayResult:
         """Return events after ``last_event_id`` in durable insertion order."""
         if not isinstance(last_event_id, str) or not last_event_id:
@@ -270,7 +273,11 @@ class RuntimeEventLedger:
             finally:
                 conn.close()
 
-    def bounds(self, *, conn: Optional[sqlite3.Connection] = None) -> dict[str, Optional[str]]:
+    def bounds(
+        self,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> dict[str, str | None]:
         """Return oldest/newest event ids currently retained."""
         owns_connection = conn is None
         if conn is None:
@@ -291,7 +298,7 @@ class RuntimeEventLedger:
             if owns_connection:
                 conn.close()
 
-    def cleanup_if_due(self, *, conn: Optional[sqlite3.Connection] = None) -> None:
+    def cleanup_if_due(self, *, conn: sqlite3.Connection | None = None) -> None:
         """Run throttled retention cleanup."""
         now = time.monotonic()
         if (
@@ -302,7 +309,7 @@ class RuntimeEventLedger:
         self.cleanup(conn=conn)
         self._last_cleanup = now
 
-    def cleanup(self, *, conn: Optional[sqlite3.Connection] = None) -> None:
+    def cleanup(self, *, conn: sqlite3.Connection | None = None) -> None:
         """Apply max-events, max-age, and soft max-size retention rules."""
         owns_connection = conn is None
         if conn is None:
@@ -442,7 +449,7 @@ class RuntimeEventLedger:
         self._initialized = True
 
 
-_PROCESS_LEDGER: Optional[RuntimeEventLedger] = None
+_PROCESS_LEDGER: RuntimeEventLedger | None = None
 
 
 def _looks_like_public_runtime_event(event: Mapping[str, Any]) -> bool:
@@ -470,7 +477,7 @@ def _json_load(value: str) -> dict[str, Any]:
     return loaded if isinstance(loaded, dict) else {}
 
 
-def _string_or_none(value: Any) -> Optional[str]:
+def _string_or_none(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
@@ -488,7 +495,7 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-def _env_optional_int(name: str, default: Optional[int]) -> Optional[int]:
+def _env_optional_int(name: str, default: int | None) -> int | None:
     raw = os.getenv(name)
     if raw is None or raw == "":
         return default
@@ -500,7 +507,7 @@ def _env_optional_int(name: str, default: Optional[int]) -> Optional[int]:
         return default
 
 
-def _env_age_seconds(name: str, default_days: int) -> Optional[int]:
+def _env_age_seconds(name: str, default_days: int) -> int | None:
     raw = os.getenv(name)
     if raw is None or raw == "":
         return default_days * 24 * 60 * 60

@@ -503,9 +503,11 @@ async def test_sse_live_queue_drop_does_not_lose_ledger_truth(
     assert first_event["properties"]["id"] == "msg_1"
     await stream.aclose()
 
-    assert [
-        event["payload"]["id"] for event in core._runtime_event_ledger_v1.newest(limit=10)
-    ] == ["msg_1", "msg_2"]
+    retained_payload_ids = [
+        event["payload"]["id"]
+        for event in core._runtime_event_ledger_v1.newest(limit=10)
+    ]
+    assert retained_payload_ids == ["msg_1", "msg_2"]
 
     response = await events_sse(
         session_id="session_one",
