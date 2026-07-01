@@ -8,6 +8,7 @@ private diagnostics store.
 from __future__ import annotations
 
 import json
+import math
 import os
 import sqlite3
 import threading
@@ -97,12 +98,9 @@ def policy_from_env() -> RuntimeEventLedgerPolicy:
             "PENGUIN_RUNTIME_EVENT_LEDGER_MAX_BYTES",
             DEFAULT_LEDGER_MAX_BYTES,
         ),
-        cleanup_interval_seconds=float(
-            _env_optional_int(
-                "PENGUIN_RUNTIME_EVENT_LEDGER_CLEANUP_INTERVAL_SECONDS",
-                int(DEFAULT_LEDGER_CLEANUP_INTERVAL_SECONDS),
-            )
-            or 0
+        cleanup_interval_seconds=_env_cleanup_interval_seconds(
+            "PENGUIN_RUNTIME_EVENT_LEDGER_CLEANUP_INTERVAL_SECONDS",
+            DEFAULT_LEDGER_CLEANUP_INTERVAL_SECONDS,
         ),
     )
 
@@ -152,6 +150,7 @@ class RuntimeEventLedger:
         self.path = Path(path).expanduser()
         self.policy = policy or RuntimeEventLedgerPolicy()
         self._lock = threading.RLock()
+        self._local = threading.local()
         self._last_cleanup = 0.0
         self._initialized = False
 
@@ -181,64 +180,59 @@ class RuntimeEventLedger:
         projections = event.get("projections")
 
         with self._lock:
-            conn = self._connect()
-            try:
-                self._ensure_schema(conn)
-                before_changes = conn.total_changes
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO runtime_events (
-                        event_id,
-                        stream_id,
-                        sequence,
-                        event_type,
-                        category,
-                        event_time,
-                        inserted_at,
-                        session_id,
-                        conversation_id,
-                        agent_id,
-                        task_id,
-                        run_id,
-                        project_id,
-                        directory,
-                        privacy_classification,
-                        redacted,
-                        payload_json,
-                        projection_json,
-                        event_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        event_id,
-                        _string_or_none(event.get("stream_id")) or "global",
-                        _positive_int_or_zero(event.get("sequence")),
-                        _string_or_none(event.get("type")) or "unknown",
-                        _string_or_none(event.get("category")) or "session_lifecycle",
-                        _positive_int_or_zero(event.get("time")),
-                        int(time.time() * 1000),
-                        _string_or_none(scope.get("session_id")),
-                        _string_or_none(scope.get("conversation_id")),
-                        _string_or_none(scope.get("agent_id")),
-                        _string_or_none(scope.get("task_id")),
-                        _string_or_none(scope.get("run_id")),
-                        _string_or_none(scope.get("project_id")),
-                        _string_or_none(scope.get("directory")),
-                        _string_or_none(privacy.get("classification")) or "public",
-                        1 if privacy.get("redacted") else 0,
-                        _json_dump(payload if isinstance(payload, Mapping) else {}),
-                        _json_dump(
-                            projections if isinstance(projections, Mapping) else {}
-                        ),
-                        _json_dump(dict(event)),
-                    ),
-                )
-                conn.commit()
-                inserted = conn.total_changes > before_changes
-                self.cleanup_if_due(conn=conn)
-                return inserted
-            finally:
-                conn.close()
+            conn = self._thread_connection()
+            self._ensure_schema(conn)
+            before_changes = conn.total_changes
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO runtime_events (
+                    event_id,
+                    stream_id,
+                    sequence,
+                    event_type,
+                    category,
+                    event_time,
+                    inserted_at,
+                    session_id,
+                    conversation_id,
+                    agent_id,
+                    task_id,
+                    run_id,
+                    project_id,
+                    directory,
+                    privacy_classification,
+                    redacted,
+                    payload_json,
+                    projection_json,
+                    event_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_id,
+                    _string_or_none(event.get("stream_id")) or "global",
+                    _positive_int_or_zero(event.get("sequence")),
+                    _string_or_none(event.get("type")) or "unknown",
+                    _string_or_none(event.get("category")) or "session_lifecycle",
+                    _positive_int_or_zero(event.get("time")),
+                    int(time.time() * 1000),
+                    _string_or_none(scope.get("session_id")),
+                    _string_or_none(scope.get("conversation_id")),
+                    _string_or_none(scope.get("agent_id")),
+                    _string_or_none(scope.get("task_id")),
+                    _string_or_none(scope.get("run_id")),
+                    _string_or_none(scope.get("project_id")),
+                    _string_or_none(scope.get("directory")),
+                    _string_or_none(privacy.get("classification")) or "public",
+                    1 if privacy.get("redacted") else 0,
+                    _json_dump(payload if isinstance(payload, Mapping) else {}),
+                    _json_dump(projections if isinstance(projections, Mapping) else {}),
+                    _json_dump(dict(event)),
+                ),
+            )
+            conn.commit()
+            inserted = conn.total_changes > before_changes
+            self.cleanup_if_due(conn=conn)
+            return inserted
 
     def extend(self, events: Iterable[Mapping[str, Any]]) -> int:
         """Persist multiple redacted public RuntimeEvent envelopes.
@@ -511,6 +505,18 @@ class RuntimeEventLedger:
         wal_size = _path_size(self.path.with_name(f"{self.path.name}-wal"))
         return max(logical_size, file_size) + wal_size
 
+    def _thread_connection(self) -> sqlite3.Connection:
+        conn = getattr(self._local, "connection", None)
+        if isinstance(conn, sqlite3.Connection):
+            try:
+                conn.execute("SELECT 1")
+                return conn
+            except sqlite3.Error:
+                pass
+        conn = self._connect()
+        self._local.connection = conn
+        return conn
+
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(self.path), timeout=30.0)
@@ -659,6 +665,19 @@ def _env_optional_int(name: str, default: int | None) -> int | None:
         return int(raw)
     except ValueError:
         return default
+
+
+def _env_cleanup_interval_seconds(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    if raw.lower() in {"none", "off", "disabled", "0"}:
+        return math.inf
+    try:
+        parsed = float(raw)
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else math.inf
 
 
 def _env_age_seconds(name: str, default_days: int) -> int | None:

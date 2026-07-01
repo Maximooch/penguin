@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from fastapi import APIRouter, Header, Query
@@ -38,6 +39,7 @@ _LEDGER_RECORDER_ATTR = "_runtime_event_ledger_recorder_v1"
 _SSE_QUEUE_MAX_EVENTS = 1000
 _SSE_REPLAY_PAGE_SIZE = 1000
 _SSE_KEEPALIVE_TIMEOUT_SECONDS = 300.0
+_SSE_DEDUPE_MAX_EVENTS = 1000
 
 # Global reference to core instance (set by app.py)
 _core_instance: PenguinCore | None = None
@@ -110,7 +112,18 @@ async def events_sse(
         # replay identity comes from the runtime event ledger.
         queued_live_event_ids: set[str] = set()
         delivered_event_ids: set[str] = set()
+        delivered_event_order: deque[str] = deque()
         event_order = 0
+
+        def mark_delivered(event_id: Any) -> None:
+            if not isinstance(event_id, str) or not event_id:
+                return
+            if event_id in delivered_event_ids:
+                return
+            delivered_event_ids.add(event_id)
+            delivered_event_order.append(event_id)
+            while len(delivered_event_order) > _SSE_DEDUPE_MAX_EVENTS:
+                delivered_event_ids.discard(delivered_event_order.popleft())
 
         def next_event(data: dict[str, Any]) -> dict[str, Any] | None:
             nonlocal event_order
@@ -294,7 +307,7 @@ async def events_sse(
                             continue
                         if event_allowed(event):
                             if isinstance(event_id, str):
-                                delivered_event_ids.add(event_id)
+                                mark_delivered(event_id)
                             yield sse_event_frame(event)
                     next_cursor = replay.events[-1].get("id")
                     if (
@@ -315,7 +328,7 @@ async def events_sse(
                     event_id = event.get("id")
                     if isinstance(event_id, str):
                         queued_live_event_ids.discard(event_id)
-                        delivered_event_ids.add(event_id)
+                        mark_delivered(event_id)
                     yield sse_event_frame(event)
                 except asyncio.TimeoutError:
                     # Send keepalive comment

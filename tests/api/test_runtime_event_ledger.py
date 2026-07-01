@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import copy
+import math
 import sqlite3
 import time
 from typing import TYPE_CHECKING, Any, Mapping
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    import pytest
 
 from penguin.system.runtime_event_ledger import (
     RuntimeEventLedger,
@@ -199,6 +202,20 @@ def test_ledger_max_events_cleanup_removes_oldest_rows(tmp_path: Path) -> None:
     assert replay.found is False
     assert replay.oldest_event_id == events[1]["id"]
     assert replay.newest_event_id == events[2]["id"]
+
+
+
+
+def test_policy_from_env_disables_auto_cleanup_for_off_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from penguin.system.runtime_event_ledger import policy_from_env
+
+    monkeypatch.setenv("PENGUIN_RUNTIME_EVENT_LEDGER_CLEANUP_INTERVAL_SECONDS", "0")
+    assert math.isinf(policy_from_env().cleanup_interval_seconds)
+
+    monkeypatch.setenv("PENGUIN_RUNTIME_EVENT_LEDGER_CLEANUP_INTERVAL_SECONDS", "off")
+    assert math.isinf(policy_from_env().cleanup_interval_seconds)
 
 
 def test_ledger_max_age_cleanup_removes_old_events(tmp_path: Path) -> None:
