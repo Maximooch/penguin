@@ -4,12 +4,17 @@ Provides Server-Sent Events endpoint that streams OpenCode-compatible
 message/part events to the TUI client.
 """
 
+from __future__ import annotations
+
 import asyncio
-from typing import TYPE_CHECKING, Any, AsyncIterator, Optional
+import logging
+from collections import deque
+from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from fastapi import APIRouter, Header, Query
 from fastapi.responses import StreamingResponse
 
+from penguin.system.runtime_events import opencode_payload_from_runtime_event
 from penguin.web.services.opencode_events import (
     GLOBAL_STATUS_EVENTS,
     directory_matches,
@@ -17,36 +22,37 @@ from penguin.web.services.opencode_events import (
     extract_event_session,
     normalize_directory,
     normalize_opencode_event,
+    record_opencode_event,
     sse_event_frame,
 )
 
 if TYPE_CHECKING:
     from penguin.core import PenguinCore
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
-_REPLAY_BUFFER_ATTR = "_opencode_sse_replay_v1"
-# Bounded compatibility buffer until Phase 11.5 lands the durable runtime event
-# ledger. It covers short reconnects only; gaps are surfaced to clients instead
-# of being silently ignored. Do not treat this route-local memory as durable
-# event truth; the ledger should own replay, retention, drop logging, and policy.
-_MAX_REPLAY_EVENTS = 1000
-# Temporary per-connection delivery limits for the compatibility SSE projection.
-# Phase 11.5 should promote these to named policy/config values with metrics for
-# slow-client drops once the ledger can remain the source of replay truth.
+_LEDGER_RECORDER_ATTR = "_runtime_event_ledger_recorder_v1"
+# Per-connection delivery limits for the compatibility SSE projection. The
+# durable runtime event ledger owns replay truth; this queue only buffers live
+# delivery for a connected client. Slow-client drops are recoverable by
+# reconnecting with Last-Event-ID.
 _SSE_QUEUE_MAX_EVENTS = 1000
+_SSE_REPLAY_PAGE_SIZE = 1000
 _SSE_KEEPALIVE_TIMEOUT_SECONDS = 300.0
+_SSE_DEDUPE_MAX_EVENTS = 1000
 
 # Global reference to core instance (set by app.py)
-_core_instance: Optional["PenguinCore"] = None
+_core_instance: PenguinCore | None = None
 
 
-def set_core_instance(core: "PenguinCore"):
+def set_core_instance(core: PenguinCore):
     """Set the core instance for dependency injection."""
     global _core_instance
     _core_instance = core
+    _install_runtime_event_ledger_recorder(core)
 
 
-def get_core_instance() -> "PenguinCore":
+def get_core_instance() -> PenguinCore:
     """Get the core instance."""
     if _core_instance is None:
         raise RuntimeError("Core instance not set - call set_core_instance() first")
@@ -55,17 +61,17 @@ def get_core_instance() -> "PenguinCore":
 
 @router.get("/api/v1/events/sse")
 async def events_sse(
-    session_id: Optional[str] = Query(None, description="Filter to specific session"),
-    conversation_id: Optional[str] = Query(
+    session_id: str | None = Query(None, description="Filter to specific session"),
+    conversation_id: str | None = Query(
         None, description="Alias for session_id (API compatibility)"
     ),
-    agent_id: Optional[str] = Query(None, description="Filter to specific agent"),
-    directory: Optional[str] = Query(None, description="Workspace directory"),
-    last_event_id: Optional[str] = Query(
+    agent_id: str | None = Query(None, description="Filter to specific agent"),
+    directory: str | None = Query(None, description="Workspace directory"),
+    last_event_id: str | None = Query(
         None,
-        description="Replay buffered events after this SSE id",
+        description="Replay durable ledger events after this SSE id",
     ),
-    last_event_id_header: Optional[str] = Header(None, alias="Last-Event-ID"),
+    last_event_id_header: str | None = Header(None, alias="Last-Event-ID"),
 ):
     """
     SSE stream of OpenCode-compatible events.
@@ -102,10 +108,22 @@ async def events_sse(
     async def event_generator() -> AsyncIterator[str]:
         queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=_SSE_QUEUE_MAX_EVENTS)
         # Reconnect-only dedupe bridge: events can arrive after subscription but
-        # before replay drains. The set is intentionally per connection and
-        # should disappear when Phase 11.5 moves replay/dedupe to the ledger.
+        # before replay drains. The set is intentionally per connection; durable
+        # replay identity comes from the runtime event ledger.
         queued_live_event_ids: set[str] = set()
+        delivered_event_ids: set[str] = set()
+        delivered_event_order: deque[str] = deque()
         event_order = 0
+
+        def mark_delivered(event_id: object) -> None:
+            if not isinstance(event_id, str) or not event_id:
+                return
+            if event_id in delivered_event_ids:
+                return
+            delivered_event_ids.add(event_id)
+            delivered_event_order.append(event_id)
+            while len(delivered_event_order) > _SSE_DEDUPE_MAX_EVENTS:
+                delivered_event_ids.discard(delivered_event_order.popleft())
 
         def next_event(data: dict[str, Any]) -> dict[str, Any] | None:
             nonlocal event_order
@@ -222,15 +240,19 @@ async def events_sse(
             if not event_allowed(normalized):
                 return
 
+            normalized_id = normalized.get("id")
+            if isinstance(normalized_id, str) and normalized_id in delivered_event_ids:
+                return
+
             try:
-                _remember_replay_event(core, normalized)
                 queue.put_nowait(normalized)
                 event_id = normalized.get("id")
                 if isinstance(event_id, str):
                     queued_live_event_ids.add(event_id)
             except asyncio.QueueFull:
-                # Drop event if queue is full (client is slow). Phase 11.5 should
-                # add ledger-backed recovery plus logging/metrics for this path.
+                # Drop only this live delivery. The runtime event ledger already
+                # recorded the event at emission time, so reconnect/replay remains
+                # authoritative for slow clients.
                 pass
 
         # Subscribe to events
@@ -251,22 +273,49 @@ async def events_sse(
                 yield sse_event_frame(normalized_connected)
 
             if effective_last_event_id:
-                replay_found, replay_events = _replay_events_after(
-                    core,
-                    effective_last_event_id,
-                )
-                if not replay_found:
-                    gap_event = next_event(
-                        _replay_gap_event(core, effective_last_event_id)
+                replay_cursor = effective_last_event_id
+                while True:
+                    replay = await asyncio.to_thread(
+                        _replay_events_after,
+                        core,
+                        replay_cursor,
+                        limit=_SSE_REPLAY_PAGE_SIZE,
+                        session_id=effective_session_id,
+                        agent_id=effective_agent_id,
+                        directory=effective_directory,
                     )
-                    if gap_event and event_allowed(gap_event):
-                        yield sse_event_frame(gap_event)
-                for event in replay_events:
-                    event_id = event.get("id")
-                    if isinstance(event_id, str) and event_id in queued_live_event_ids:
-                        continue
-                    if event_allowed(event):
-                        yield sse_event_frame(event)
+                    if not replay.found:
+                        gap_event = next_event(
+                            _replay_gap_event(
+                                replay_cursor,
+                                oldest_event_id=replay.oldest_event_id,
+                                newest_event_id=replay.newest_event_id,
+                            )
+                        )
+                        if gap_event and event_allowed(gap_event):
+                            yield sse_event_frame(gap_event)
+                        break
+                    if not replay.events:
+                        break
+                    for runtime_event in replay.events:
+                        event = opencode_payload_from_runtime_event(runtime_event)
+                        event_id = event.get("id")
+                        if (
+                            isinstance(event_id, str)
+                            and event_id in queued_live_event_ids
+                        ):
+                            continue
+                        if event_allowed(event):
+                            if isinstance(event_id, str):
+                                mark_delivered(event_id)
+                            yield sse_event_frame(event)
+                    next_cursor = replay.events[-1].get("id")
+                    if (
+                        len(replay.events) < _SSE_REPLAY_PAGE_SIZE
+                        or not isinstance(next_cursor, str)
+                    ):
+                        break
+                    replay_cursor = next_cursor
 
             # Stream events
             while True:
@@ -279,6 +328,7 @@ async def events_sse(
                     event_id = event.get("id")
                     if isinstance(event_id, str):
                         queued_live_event_ids.discard(event_id)
+                        mark_delivered(event_id)
                     yield sse_event_frame(event)
                 except asyncio.TimeoutError:
                     # Send keepalive comment
@@ -305,55 +355,64 @@ async def events_sse(
     )
 
 
-def _replay_buffer(core: Any) -> list[dict[str, Any]]:
-    # Phase 11 bridge only: keep the compatibility buffer attached to the shared
-    # core so reconnects can replay across SSE connections. Move this behind a
-    # ledger/service boundary when durable runtime events land in Phase 11.5.
-    existing = getattr(core, _REPLAY_BUFFER_ATTR, None)
-    if isinstance(existing, list):
-        return existing
-    buffer: list[dict[str, Any]] = []
-    setattr(core, _REPLAY_BUFFER_ATTR, buffer)
-    return buffer
-
-
-def _remember_replay_event(core: Any, event: dict[str, Any]) -> None:
-    event_id = event.get("id")
-    if not isinstance(event_id, str) or not event_id:
+def _install_runtime_event_ledger_recorder(core: Any) -> None:
+    """Install one emission-time ledger recorder on the core EventBus."""
+    if getattr(core, _LEDGER_RECORDER_ATTR, None) is not None:
         return
-    buffer = _replay_buffer(core)
-    if any(item.get("id") == event_id for item in buffer):
+    event_bus = getattr(core, "event_bus", None)
+    subscribe = getattr(event_bus, "subscribe", None)
+    if not callable(subscribe):
         return
-    buffer.append(event)
-    if len(buffer) > _MAX_REPLAY_EVENTS:
-        del buffer[: len(buffer) - _MAX_REPLAY_EVENTS]
+
+    def ledger_handler(event_type: str, data: Any) -> None:
+        if event_type != "opencode_event" or not isinstance(data, dict):
+            return
+        try:
+            record_opencode_event(core, data)
+        except Exception:
+            # Ledger failures must not interrupt live TUI streaming. The client can
+            # still receive the live frame; replay will surface a gap if needed.
+            logger.debug(
+                "Failed to record OpenCode event in runtime ledger",
+                exc_info=True,
+            )
+
+    subscribe("opencode_event", ledger_handler)
+    setattr(core, _LEDGER_RECORDER_ATTR, ledger_handler)
 
 
 def _replay_events_after(
     core: Any,
     last_event_id: str,
-) -> tuple[bool, list[dict[str, Any]]]:
-    buffer = _replay_buffer(core)
-    for index, event in enumerate(buffer):
-        if event.get("id") == last_event_id:
-            return True, buffer[index + 1 :]
-    return False, []
+    *,
+    limit: int,
+    session_id: str | None = None,
+    agent_id: str | None = None,
+    directory: str | None = None,
+):
+    from penguin.system.runtime_event_ledger import get_runtime_event_ledger
+
+    return get_runtime_event_ledger(core).replay_after(
+        last_event_id,
+        limit=limit,
+        session_id=session_id,
+        agent_id=agent_id,
+        directory=directory,
+    )
 
 
-def _replay_gap_event(core: Any, last_event_id: str) -> dict[str, Any]:
-    # Temporary transport signal, not durable runtime truth. Current EventSource
-    # clients may resume from this synthetic frame's SSE id and receive another
-    # gap; the eventual TUI/Link consumer should treat it as a full-resync signal
-    # unless Phase 11.5 changes the frame to carry a real ledger resume cursor.
-    buffer = _replay_buffer(core)
-    oldest_id = buffer[0].get("id") if buffer else None
-    newest_id = buffer[-1].get("id") if buffer else None
+def _replay_gap_event(
+    last_event_id: str,
+    *,
+    oldest_event_id: str | None = None,
+    newest_event_id: str | None = None,
+) -> dict[str, Any]:
     return {
         "type": "server.replay_gap",
         "properties": {
             "lastEventID": last_event_id,
-            "oldestEventID": oldest_id if isinstance(oldest_id, str) else None,
-            "newestEventID": newest_id if isinstance(newest_id, str) else None,
+            "oldestEventID": oldest_event_id,
+            "newestEventID": newest_event_id,
             "reason": "last_event_id_not_available",
         },
     }

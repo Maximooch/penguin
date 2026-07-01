@@ -9,9 +9,25 @@ from types import SimpleNamespace
 
 import pytest
 
+from penguin.system.runtime_event_ledger import (
+    RuntimeEventLedger,
+    RuntimeEventLedgerPolicy,
+)
 from penguin.system.runtime_events import reset_runtime_event_sequences
 from penguin.web.services.system_status import get_path_info
 from penguin.web.sse_events import events_sse, set_core_instance
+
+
+def _install_test_ledger(core, tmp_path: Path, *, max_events: int = 100) -> None:
+    core._runtime_event_ledger_v1 = RuntimeEventLedger(
+        tmp_path / f"runtime-events-{id(core)}.db",
+        policy=RuntimeEventLedgerPolicy(
+            max_events=max_events,
+            max_age_seconds=None,
+            max_bytes=None,
+            cleanup_interval_seconds=0,
+        ),
+    )
 
 
 class _EventBus:
@@ -54,6 +70,7 @@ async def test_sse_scopes_session_events_and_allows_global_status_events(
         runtime_config=runtime,
         _opencode_session_directories={},
     )
+    _install_test_ledger(core, tmp_path)
     set_core_instance(core)
 
     response = await events_sse(
@@ -120,6 +137,7 @@ async def test_sse_replays_buffered_events_after_last_event_id(tmp_path: Path):
         runtime_config=runtime,
         _opencode_session_directories={},
     )
+    _install_test_ledger(core, tmp_path)
     set_core_instance(core)
 
     response = await events_sse(
@@ -192,6 +210,7 @@ async def test_sse_reports_replay_gap_for_evicted_last_event_id(tmp_path: Path):
         runtime_config=runtime,
         _opencode_session_directories={},
     )
+    _install_test_ledger(core, tmp_path, max_events=1)
     set_core_instance(core)
 
     response = await events_sse(
@@ -230,7 +249,6 @@ async def test_sse_reports_replay_gap_for_evicted_last_event_id(tmp_path: Path):
     second_event = _parse_sse(await asyncio.wait_for(stream.__anext__(), timeout=0.25))
     await stream.aclose()
 
-    core._opencode_sse_replay_v1 = [second_event]
     response = await events_sse(
         session_id="session_one",
         conversation_id=None,
@@ -247,6 +265,12 @@ async def test_sse_reports_replay_gap_for_evicted_last_event_id(tmp_path: Path):
     assert gap["properties"]["oldestEventID"] == second_event["id"]
     assert gap["properties"]["newestEventID"] == second_event["id"]
     assert gap["properties"]["reason"] == "last_event_id_not_available"
+
+    try:
+        extra = await asyncio.wait_for(replay_stream.__anext__(), timeout=0.05)
+    except (asyncio.TimeoutError, StopAsyncIteration):
+        extra = None
+    assert extra is None
 
     await replay_stream.aclose()
 
@@ -267,6 +291,7 @@ async def test_sse_reconnect_does_not_duplicate_live_event_already_in_replay(
         runtime_config=runtime,
         _opencode_session_directories={},
     )
+    _install_test_ledger(core, tmp_path)
     set_core_instance(core)
 
     response = await events_sse(
@@ -314,6 +339,10 @@ async def test_sse_reconnect_does_not_duplicate_live_event_already_in_replay(
     )
     replay_stream = response.body_iterator
     _ = _parse_sse(await replay_stream.__anext__())
+    replayed = _parse_sse(
+        await asyncio.wait_for(replay_stream.__anext__(), timeout=0.25)
+    )
+    assert replayed["id"] == second_event["id"]
 
     await event_bus.emit(
         "opencode_event",
@@ -330,10 +359,6 @@ async def test_sse_reconnect_does_not_duplicate_live_event_already_in_replay(
         },
     )
 
-    delivered = _parse_sse(
-        await asyncio.wait_for(replay_stream.__anext__(), timeout=0.25)
-    )
-    assert delivered["id"] == second_event["id"]
     try:
         duplicate = await asyncio.wait_for(replay_stream.__anext__(), timeout=0.05)
     except (asyncio.TimeoutError, StopAsyncIteration):
@@ -341,6 +366,169 @@ async def test_sse_reconnect_does_not_duplicate_live_event_already_in_replay(
     if duplicate is not None:
         assert _parse_sse(duplicate)["id"] != second_event["id"]
 
+    await replay_stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sse_replay_filters_wrong_session_events(tmp_path: Path):
+    reset_runtime_event_sequences()
+    event_bus = _EventBus()
+    runtime = SimpleNamespace(
+        workspace_root=str(tmp_path),
+        project_root=str(tmp_path),
+        active_root=str(tmp_path),
+    )
+    core = SimpleNamespace(
+        event_bus=event_bus,
+        runtime_config=runtime,
+        _opencode_session_directories={},
+    )
+    _install_test_ledger(core, tmp_path)
+    set_core_instance(core)
+
+    response = await events_sse(
+        session_id="session_one",
+        conversation_id=None,
+        agent_id=None,
+        directory=str(tmp_path),
+    )
+    stream = response.body_iterator
+    _ = _parse_sse(await stream.__anext__())
+
+    await event_bus.emit(
+        "opencode_event",
+        {
+            "type": "message.updated",
+            "properties": {
+                "id": "msg_1",
+                "sessionID": "session_one",
+                "role": "assistant",
+            },
+        },
+    )
+    first_event = _parse_sse(await asyncio.wait_for(stream.__anext__(), timeout=0.25))
+    await event_bus.emit(
+        "opencode_event",
+        {
+            "type": "message.updated",
+            "properties": {
+                "id": "msg_other",
+                "sessionID": "session_other",
+                "role": "assistant",
+            },
+        },
+    )
+    await event_bus.emit(
+        "opencode_event",
+        {
+            "type": "message.updated",
+            "properties": {
+                "id": "msg_2",
+                "sessionID": "session_one",
+                "role": "assistant",
+            },
+        },
+    )
+    second_event = _parse_sse(await asyncio.wait_for(stream.__anext__(), timeout=0.25))
+    await stream.aclose()
+
+    response = await events_sse(
+        session_id="session_one",
+        conversation_id=None,
+        agent_id=None,
+        directory=str(tmp_path),
+        last_event_id=first_event["id"],
+    )
+    replay_stream = response.body_iterator
+    _ = _parse_sse(await replay_stream.__anext__())
+    replayed = _parse_sse(
+        await asyncio.wait_for(replay_stream.__anext__(), timeout=0.25)
+    )
+
+    assert replayed["id"] == second_event["id"]
+    assert replayed["properties"]["id"] == "msg_2"
+    await replay_stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sse_live_queue_drop_does_not_lose_ledger_truth(
+    tmp_path: Path,
+    monkeypatch,
+):
+    reset_runtime_event_sequences()
+    event_bus = _EventBus()
+    runtime = SimpleNamespace(
+        workspace_root=str(tmp_path),
+        project_root=str(tmp_path),
+        active_root=str(tmp_path),
+    )
+    core = SimpleNamespace(
+        event_bus=event_bus,
+        runtime_config=runtime,
+        _opencode_session_directories={},
+    )
+    _install_test_ledger(core, tmp_path)
+    set_core_instance(core)
+
+    import penguin.web.sse_events as sse_events
+
+    monkeypatch.setattr(sse_events, "_SSE_QUEUE_MAX_EVENTS", 1)
+    response = await events_sse(
+        session_id="session_one",
+        conversation_id=None,
+        agent_id=None,
+        directory=str(tmp_path),
+    )
+    stream = response.body_iterator
+    _ = _parse_sse(await stream.__anext__())
+
+    await event_bus.emit(
+        "opencode_event",
+        {
+            "type": "message.updated",
+            "properties": {
+                "id": "msg_1",
+                "sessionID": "session_one",
+                "role": "assistant",
+            },
+        },
+    )
+    await event_bus.emit(
+        "opencode_event",
+        {
+            "type": "message.updated",
+            "properties": {
+                "id": "msg_2",
+                "sessionID": "session_one",
+                "role": "assistant",
+            },
+        },
+    )
+
+    first_event = _parse_sse(await asyncio.wait_for(stream.__anext__(), timeout=0.25))
+    assert first_event["properties"]["id"] == "msg_1"
+    await stream.aclose()
+
+    retained_payload_ids = [
+        event["payload"]["id"]
+        for event in core._runtime_event_ledger_v1.newest(limit=10)
+    ]
+    assert retained_payload_ids == ["msg_1", "msg_2"]
+
+    response = await events_sse(
+        session_id="session_one",
+        conversation_id=None,
+        agent_id=None,
+        directory=str(tmp_path),
+        last_event_id=first_event["id"],
+    )
+    replay_stream = response.body_iterator
+    _ = _parse_sse(await replay_stream.__anext__())
+    replayed = _parse_sse(
+        await asyncio.wait_for(replay_stream.__anext__(), timeout=0.25)
+    )
+
+    assert replayed["properties"]["id"] == "msg_2"
     await replay_stream.aclose()
 
 
@@ -389,6 +577,7 @@ async def test_sse_streams_clarification_session_status_events(tmp_path: Path):
     core._opencode_session_directories = {}
     core._current_conversation_id = "session_one"
     core.conversation_manager = SimpleNamespace(current_agent_id="default")
+    _install_test_ledger(core, tmp_path)
     set_core_instance(core)
 
     response = await events_sse(
@@ -441,6 +630,7 @@ async def test_sse_streams_time_limit_session_status_events(tmp_path: Path):
     core._opencode_session_directories = {}
     core._current_conversation_id = "session_one"
     core.conversation_manager = SimpleNamespace(current_agent_id="default")
+    _install_test_ledger(core, tmp_path)
     set_core_instance(core)
 
     response = await events_sse(
@@ -492,6 +682,7 @@ async def test_sse_streams_idle_no_ready_task_status_events(tmp_path: Path):
     core._opencode_session_directories = {}
     core._current_conversation_id = "session_one"
     core.conversation_manager = SimpleNamespace(current_agent_id="default")
+    _install_test_ledger(core, tmp_path)
     set_core_instance(core)
 
     response = await events_sse(

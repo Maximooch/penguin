@@ -1967,67 +1967,111 @@ Verification expectations:
 
 ### 11.5. Add the durable runtime event ledger
 
-Phase 11.5 should land after the canonical `RuntimeEvent` envelope and before
-Phase 12 UI/runtime feature work. The point is infrastructure, not dashboards:
-make event history durable, replayable, and privacy-safe so diff review,
-multi-agent progress, richer notifications, observability, analytics, and Link
-projection all consume the same source of truth.
+Phase 11.5 lands after the canonical `RuntimeEvent` envelope and before Phase 12
+UI/runtime feature work. The point is infrastructure, not dashboards: make event
+history durable, replayable, and privacy-safe so diff review, multi-agent
+progress, richer notifications, observability, analytics, and Link projection can
+later consume one source of truth.
 
 Phase 11.5 goals:
 
-- [ ] Add an append-only event store for redacted public `RuntimeEvent` records.
-- [ ] Persist stable ordering by `stream_id`, `sequence`, and insertion order.
-- [ ] Move replay recording to event emission time instead of per-SSE-connection
+- [x] Add an append-only event store for redacted public `RuntimeEvent` records.
+- [x] Persist stable ordering by `stream_id`, `sequence`, and insertion order.
+- [x] Move replay recording to event emission time instead of per-SSE-connection
       handlers, then filter/project at subscription time.
-- [ ] Support SSE resume/replay from `Last-Event-ID` and `last_event_id` using
+- [x] Support SSE resume/replay from `Last-Event-ID` and `last_event_id` using
       the ledger, not only the bounded in-memory SSE buffer.
-- [ ] Preserve `RuntimeEvent.id` as replay identity and keep message, part,
+- [x] Preserve `RuntimeEvent.id` as replay identity and keep message, part,
       question, tool, token-usage, and other domain IDs as entity IDs.
-- [ ] Add retention controls: max events, max age, max storage size, and a clear
+- [x] Add retention controls: max events, max age, max storage size, and a clear
       cleanup policy.
-- [ ] Define slow-client/backpressure behavior: if an SSE queue drops an event,
+- [x] Define slow-client/backpressure behavior: if an SSE queue drops an event,
       the ledger still remains the truth for reconnect/replay.
-- [ ] Promote SSE replay/queue/keepalive constants into named policy/config
+- [x] Promote SSE replay/queue/keepalive constants into named policy/config
       values with comments about memory limits, reconnect horizon, slow-client
       behavior, and eventual logging/metrics for dropped events.
 - [ ] Move runtime sequence assignment out of process-global hidden counters and
       into the durable ledger/buffer once that storage layer exists.
-- [ ] Keep the privacy boundary strict: the default ledger stores only redacted
+- [x] Keep the privacy boundary strict: the default ledger stores only redacted
       public envelopes. Raw/private payload capture is out of scope unless a
       separate, explicitly protected diagnostic store is designed.
-- [ ] Keep analytics dashboards, metrics UIs, and observability products out of
+- [x] Keep analytics dashboards, metrics UIs, and observability products out of
       this phase. Phase 11.5 only makes the ledger reliable.
+
+Phase 11.5 implementation notes:
+
+- Added `penguin/system/runtime_event_ledger.py`, a SQLite-backed append-only
+  ledger for redacted public `RuntimeEvent` envelopes. The default path is
+  `${WORKSPACE_PATH}/runtime_events/runtime_events.db`, overrideable with
+  `PENGUIN_RUNTIME_EVENT_LEDGER_PATH`.
+- Persisted rows include the full redacted public envelope plus stored columns
+  for event id, stream id, sequence, type, category, event time, insertion time,
+  session/conversation/agent/task/run/project ids, directory, privacy
+  classification, redaction flag, payload JSON, and projection JSON. The SQLite
+  schema adds secondary indexes only for `(stream_id, sequence)`,
+  `(session_id, agent_id, directory)`, and `event_time`.
+- The stored envelope includes `id`, `schema_version`, `type`, `category`,
+  `source`, `subject`, `time`, `stream_id`, `sequence`, `scope`, `correlation`,
+  `actor`, `privacy`, `payload`, and `projections`. Credential-like fields are
+  redacted before persistence; token/context-window telemetry remains visible.
+- `RuntimeEvent.id` is the replay identity. Message, part, question, tool,
+  token-usage, and other domain ids remain entity ids inside `payload`, `scope`,
+  or `projections`.
+- `penguin/web/sse_events.py` no longer owns a route-local replay buffer. It
+  installs one core-level EventBus recorder that persists `opencode_event`
+  payloads at emission time, then replays from the ledger and projects back to
+  the current OpenCode-compatible SSE shape at subscription time.
+- The SSE live queue is delivery-only. If the queue fills for a slow client, the
+  live frame may be dropped for that connection, but the event remains in the
+  ledger and can be recovered on reconnect with `Last-Event-ID`.
+- `server.connected` and `server.replay_gap` remain transport signals and are
+  not treated as durable runtime truth. `server.replay_gap` carries
+  `lastEventID`, `oldestEventID`, `newestEventID`, and
+  `reason="last_event_id_not_available"`; clients should still treat it as a
+  full-resync/hydration signal, not as a domain event.
+
+Retention behavior:
+
+- Defaults: `PENGUIN_RUNTIME_EVENT_LEDGER_MAX_EVENTS=100000`,
+  `PENGUIN_RUNTIME_EVENT_LEDGER_MAX_AGE_DAYS=14`,
+  `PENGUIN_RUNTIME_EVENT_LEDGER_MAX_BYTES=268435456`, and
+  `PENGUIN_RUNTIME_EVENT_LEDGER_CLEANUP_INTERVAL_SECONDS=60`.
+- Max-events cleanup deletes the oldest rows beyond the configured event count.
+- Max-age cleanup deletes rows whose event timestamp is older than the cutoff.
+- Max-size cleanup is a soft cap: it deletes oldest rows toward a low-water mark
+  and asks SQLite for incremental vacuum. SQLite may reuse freed pages instead
+  of immediately shrinking the file, so this is an operational cap, not a hard
+  write failure.
+- If a client resumes from an event id that retention has deleted, the SSE layer
+  emits `server.replay_gap` and the client should do a full session resync.
+- Retention only prunes replay/observability event history. It does not delete
+  sessions, messages, checkpoints, task records, conversation metadata, or tool
+  artifacts.
 
 Phase 11.5 test requirements:
 
-- [ ] Restart/reconnect replay from persisted events.
-- [ ] Duplicate suppression by `RuntimeEvent.id` without dropping repeated
+- [x] Restart/reconnect replay from persisted events.
+- [x] Duplicate suppression by `RuntimeEvent.id` without dropping repeated
       deltas for the same message part.
-- [ ] Wrong-session, wrong-agent, and wrong-directory filtering at replay time.
-- [ ] Partial stream replay and stream completion ordering.
+- [x] Wrong-session, wrong-agent, and wrong-directory filtering at replay time.
+- [x] Partial stream replay and stream completion ordering.
 - [ ] Tool call/result adjacency, including native tool-call replay boundaries.
-- [ ] Token/CWM telemetry survives redaction and replay.
-- [ ] Queue backpressure does not lose ledger truth.
-- [ ] Retention cleanup preserves ordering and never exposes raw secrets.
+- [x] Token/CWM telemetry survives redaction and replay.
+- [x] Queue backpressure does not lose ledger truth.
+- [x] Retention cleanup preserves ordering and never exposes raw secrets.
 
-Implementation notes:
+Deferred follow-ups:
 
-- Prefer a small runtime event storage package or service module that consumes
-  `penguin/system/runtime_events.py` instead of adding ledger behavior to routes.
-- SSE should remain a projection/subscription layer. It should not own durable
-  event truth.
-- The first ledger can be local/deterministic and modest. The important contract
-  is append-only, ordered, replayable, redacted `RuntimeEvent` records.
-- Move the current bounded SSE replay helpers, queued-live-event dedupe bridge,
-  replay-gap payload shaping, and queue/backpressure policy out of
-  `penguin/web/sse_events.py` as part of the ledger work. The route module should
-  subscribe, filter/project, and frame events only.
-- Decide whether replay-gap notifications should omit synthetic SSE ids, carry a
-  newest ledger cursor, or be replaced by ledger-backed replay responses before
-  any client consumes `server.replay_gap` as more than a resync signal.
-- Keep `server.connected` / `server.replay_gap` classified as transport signals
-  in the ledger design instead of relying on the current default
-  `session_lifecycle` fallback.
+- Move runtime sequence assignment out of process-global hidden counters and into
+  the durable ledger or a ledger-backed sequence allocator. Phase 11.5 preserves
+  the Phase 11 sequence behavior while making emission-time persistence durable.
+- Add focused native tool-call/tool-result adjacency replay fixtures before UI
+  consumers rely on ledger replay for full tool timelines.
+- Add logging/metrics for slow-client queue drops, retention cleanup volume,
+  replay gaps, and ledger write failures.
+- Keep analytics dashboards, metrics UIs, Link projection endpoints, and
+  observability products out of this phase. The ledger is now reliable enough to
+  support them later, but they should be separate product/API work.
 
 ### 12. Post-envelope TUI and runtime feature follow-ups
 
