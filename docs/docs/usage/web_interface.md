@@ -131,6 +131,26 @@ Current behavior:
 - if native provider tools already executed an intent, the runtime does not
   re-parse the assistant text for duplicate ActionXML execution
 
+### Runtime Event and SSE Replay Truth
+
+The `/api/v1/events/sse` stream emits OpenCode-compatible projections of
+Penguin runtime events. The public event id is the canonical `RuntimeEvent.id`,
+not a message id, part id, token id, or question id. Entity-specific ids remain
+inside `properties`.
+
+Current behavior:
+
+- runtime event envelopes are built and redacted before projection
+- durable replay is backed by the SQLite runtime event ledger
+- reconnecting clients should send `Last-Event-ID` or `last_event_id`
+- `session_id`, `conversation_id`, `agent_id`, and `directory` filters apply to
+  replayed and live events
+- if the requested replay cursor is no longer retained, the stream emits
+  `server.replay_gap`
+
+See [Runtime Events and Durable Replay](../system/runtime-events.md) for the
+envelope fields, retention settings, and testing expectations.
+
 ---
 
 ## Startup Hardening

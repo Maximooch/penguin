@@ -3,17 +3,18 @@
 Tests conversation history endpoints with pagination and filtering support.
 """
 
+import json
 import os
 import time
-import urllib.request
 import urllib.error
-import json
+import urllib.request
 from typing import Any, Dict
+
 import pytest
 
+pytestmark = [pytest.mark.e2e, pytest.mark.live]
 
 BASE_URL = os.environ.get("PENGUIN_API_URL", "http://127.0.0.1:8000")
-pytestmark = pytest.mark.e2e
 
 
 def _wait_for_server(timeout: int = 30) -> None:

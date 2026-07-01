@@ -4,8 +4,8 @@ This module provides agent roster and profile functionality,
 extracted from core.py for better separation of concerns.
 """
 
-from typing import Any, Callable, Dict, List, Optional
 import logging
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +97,16 @@ class AgentManager:
             persona_description = metadata.get("persona_description")
             if not persona_description and persona_config:
                 persona_description = getattr(persona_config, "description", None)
+            default_tools = metadata.get("default_tools")
+            if default_tools is None and persona_config:
+                default_tools = getattr(persona_config, "default_tools", None)
+            if isinstance(default_tools, tuple):
+                default_tools = list(default_tools)
+            if not isinstance(default_tools, list):
+                default_tools = []
+            model = metadata.get("model")
+            if not isinstance(model, dict):
+                model = None
 
             permission = metadata.get("permission")
             permission_rules = permission if isinstance(permission, list) else []
@@ -131,6 +141,8 @@ class AgentManager:
                     "persona": persona_name,
                     "persona_description": persona_description,
                     "persona_defined": bool(persona_config),
+                    "model": model,
+                    "default_tools": default_tools,
                     "parent": parent,
                     "children": children,
                     "active": agent_id == active_agent,
@@ -222,8 +234,28 @@ def get_agent_profile(
     ).get_profile(agent_id)
 
 
+def get_persona_catalog(config: Any) -> List[Dict[str, Any]]:
+    """Return configured personas as serializable dictionaries."""
+
+    personas = getattr(config, "agent_personas", {}) or {}
+    catalog: List[Dict[str, Any]] = []
+    for name, persona in personas.items():
+        try:
+            data = persona.to_dict()
+        except Exception:
+            data = {
+                "name": name,
+                "description": getattr(persona, "description", None),
+            }
+        data.setdefault("name", name)
+        catalog.append(data)
+    catalog.sort(key=lambda item: item.get("name", ""))
+    return catalog
+
+
 __all__ = [
     "AgentManager",
-    "get_agent_roster",
     "get_agent_profile",
+    "get_agent_roster",
+    "get_persona_catalog",
 ]

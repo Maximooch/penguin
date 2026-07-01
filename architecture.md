@@ -15,7 +15,7 @@
 
 ## Overview
 
-Penguin is a sophisticated AI coding assistant built on a modular, event-driven architecture that orchestrates multiple subsystems to provide intelligent software engineering capabilities. The system operates as a distributed nervous system where PenguinCore acts as the central coordinator, managing interactions between specialized components while maintaining loose coupling and high cohesion.
+Penguin is a coding agent built on a modular, event-driven architecture for long-running software engineering workflows. `PenguinCore` handles construction, delegation, and compatibility methods; runtime behavior lives in owned modules such as `penguin.core_runtime`, `penguin.engine`, `penguin.run_mode`, `penguin.web.services`, and the relevant domain packages. Public live-event and replay semantics are built around the canonical `RuntimeEvent` envelope in `penguin.system.runtime_events`.
 
 ### Design Philosophy
 
@@ -39,10 +39,10 @@ Penguin is a sophisticated AI coding assistant built on a modular, event-driven 
 ┌─────────────────────────────────────────────────────────────────────┐
 │                          PenguinCore                                │
 │  ┌──────────────────────────────────────────────────────────────┐   │
-│  │ • Event Bus & MessageBus                                     │   │
-│  │ • UI Event Emission                                          │   │
-│  │ • Progress Callbacks                                         │   │
-│  │ • Runtime Configuration                                      │   │
+│  │ • Construction & dependency wiring                           │   │
+│  │ • Public compatibility methods                               │   │
+│  │ • EventBus / MessageBus references                           │   │
+│  │ • Runtime configuration references                           │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────┘
                                 │
@@ -104,20 +104,21 @@ The central nervous system that coordinates all subsystems:
 class PenguinCore:
     # Key Responsibilities:
     - Initialize and wire subsystems
-    - Route messages between components
-    - Manage agent lifecycle
-    - Handle UI event emission
-    - Coordinate multi-step processing
-    - Manage runtime configuration
+    - Hold long-lived collaborator references
+    - Expose compatibility methods for CLI, web/API, TUI, and Python callers
+    - Delegate runtime behavior to core_runtime, Engine, RunMode, and services
+    - Manage runtime configuration references
 ```
 
 **Key Features:**
 - Factory pattern creation with `PenguinCore.create()`
 - Progressive initialization with startup profiling
 - Fast startup mode for deferred heavy operations
-- Agent registration and management
-- MessageBus integration for inter-agent communication
-- Telemetry and diagnostics collection
+- Explicit compatibility mixins in `penguin.core_runtime`
+- MessageBus and EventBus integration references
+- Telemetry and diagnostics payloads delegated to runtime helpers
+- Runtime event envelope and replay behavior delegated to `penguin.system`
+  and `penguin.web` helpers
 
 ### 2. Engine (`engine.py`)
 
@@ -575,8 +576,21 @@ EventTypes:
   - action_executed (tool results)
   - progress (task/iteration)
   - stream_chunk (real-time output)
-  - agent_state (pause/resume/switch)
-```
+	  - agent_state (pause/resume/switch)
+	```
+
+OpenCode/TUI-compatible events on the `opencode_event` channel should carry or
+derive from Penguin's canonical `RuntimeEvent` envelope. That envelope includes
+stable replay identity, event category, stream sequence, normalized scope,
+redacted payload, and privacy metadata. The durable ledger stores only redacted
+public `RuntimeEvent` envelopes; it is not the conversation transcript or a
+private diagnostics store.
+
+Durable replay for `/api/v1/events/sse` comes from
+`penguin.system.runtime_event_ledger`. The connection-local SSE queue only
+buffers live delivery for connected clients. Reconnecting clients should send
+`Last-Event-ID` or `last_event_id`; if the cursor has fallen out of retention,
+Penguin emits `server.replay_gap` with the available oldest/newest event ids.
 
 ### 2. MessageBus
 
@@ -855,7 +869,7 @@ Penguin's architecture represents a sophisticated orchestration of specialized s
 - **Performance**: Optimized startup and execution paths
 - **Flexibility**: Multiple interfaces and deployment modes
 
-The system's strength lies not in any single component but in the seamless integration of its parts, creating an AI assistant that can handle complex, multi-step software development tasks while maintaining context, learning from interactions, and adapting to different workflows and requirements.
+The system's strength lies not in any single component but in the integration of its parts, creating a runtime that can handle complex, multi-step software development tasks while maintaining context, learning from interactions, and adapting to different workflows and requirements.
 
 
 ### 3. Prompt System (`prompt/`)

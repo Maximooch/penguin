@@ -3,14 +3,17 @@
 Verifies that task execution endpoints work via RunMode and Engine.
 """
 
+import json
 import os
 import time
-import urllib.request
 import urllib.error
-import json
+import urllib.request
 from typing import Any, Dict
 import pytest
 
+import pytest
+
+pytestmark = [pytest.mark.e2e, pytest.mark.live]
 
 BASE_URL = os.environ.get("PENGUIN_API_URL", "http://127.0.0.1:8000")
 pytestmark = pytest.mark.e2e
@@ -59,10 +62,10 @@ def test_task_execute_background():
             "time_limit": 60,
         },
     )
-    
+
     # Should return task status
     assert "status" in resp or "task_id" in resp, f"Missing status/task_id: {resp}"
-    
+
     status = resp.get("status", "unknown")
     print(f"✓ /api/v1/tasks/execute: task started with status '{status}'")
 
@@ -79,15 +82,15 @@ def test_task_execute_sync():
         },
         timeout=90,
     )
-    
+
     # Should return response
     assert "response" in resp or "status" in resp, f"Missing response/status: {resp.keys()}"
-    
+
     response_text = resp.get("response", "")
     iterations = resp.get("iterations", 0)
-    
+
     assert len(response_text) > 0 or resp.get("status") == "completed", "No response or completion status"
-    
+
     print(f"✓ /api/v1/tasks/execute-sync: completed in {iterations} iteration(s)")
     if response_text:
         print(f"  Response preview: {response_text[:100]}...")
@@ -97,20 +100,20 @@ if __name__ == "__main__":
     import sys
 
     print(f"\nRunning Phase 1.5 run mode tests against {BASE_URL}\n")
-    
+
     # Wait for server
     try:
         _wait_for_server()
     except RuntimeError as e:
         print(f"✗ {e}")
         sys.exit(1)
-    
+
     print()
     tests = [
         test_task_execute_background,
         test_task_execute_sync,
     ]
-    
+
     failed = 0
     for test_fn in tests:
         try:
@@ -118,6 +121,6 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"✗ {test_fn.__name__}: {e}")
             failed += 1
-    
+
     print(f"\n{len(tests) - failed}/{len(tests)} tests passed")
     sys.exit(0 if failed == 0 else 1)

@@ -1,11 +1,8 @@
-import asyncio
 import pytest
 import subprocess
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, PropertyMock
+from unittest.mock import AsyncMock, MagicMock
 import logging
-
-from github import GithubException
 
 logger = logging.getLogger(__name__)
 
@@ -51,20 +48,15 @@ async def test_full_mvp_workflow_updated(temp_workspace: Path, monkeypatch):
 
     mock_run_mode.start = AsyncMock(side_effect=mock_agent_run)
 
-    # Mock the PyGithub interaction
-    mock_github_instance = MagicMock()
-    mock_repo = MagicMock()
-    mock_pull_request = MagicMock()
-    mock_pull_request.html_url = "https://github.com/Maximooch/penguin-test-repo/pull/1"
+    async def mock_create_pr_with_api(*args, **kwargs):
+        return {
+            "status": "created",
+            "pr_url": "https://github.com/Maximooch/penguin-test-repo/pull/1",
+        }
 
-    mock_repo.create_pull.return_value = mock_pull_request
-    mock_github_instance.get_repo.return_value = mock_repo
-
-    # Patch the Github class in the git_manager module.
-    # When GitManager calls `Github(GITHUB_TOKEN)`, it will now return our mock instance.
     monkeypatch.setattr(
-        "penguin.project.git_manager.Github",
-        lambda token: mock_github_instance
+        "penguin.project.git_manager.GitManager._create_pr_with_api",
+        mock_create_pr_with_api,
     )
 
     def mock_git_push(*args, **kwargs):
@@ -112,13 +104,13 @@ async def test_full_mvp_workflow_updated(temp_workspace: Path, monkeypatch):
 
     # 3. --- ASSERT ---
     assert workflow_result is not None, "Orchestrator should have found and run a task."
-    assert workflow_result["final_status"] == "COMPLETED"
+    assert workflow_result["final_status"] == TaskStatus.PENDING_REVIEW.value
     assert "pr_result" in workflow_result
     assert workflow_result["pr_result"]["status"] == "created"
     assert "https://github.com" in workflow_result["pr_result"]["pr_url"]
 
     final_task = await project_manager.get_task_async(original_task_id)
-    assert final_task.status == TaskStatus.COMPLETED
+    assert final_task.status == TaskStatus.PENDING_REVIEW
 
     assert (temp_workspace / "new_feature.py").exists()
     assert (temp_workspace / "test_new_feature.py").exists()

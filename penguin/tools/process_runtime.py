@@ -8,10 +8,11 @@ import signal
 import subprocess
 import time
 import uuid
+from codecs import getincrementaldecoder
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Deque, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,8 @@ class ManagedProcess:
     process: subprocess.Popen[str]
     env_overrides: dict[str, str] = field(default_factory=dict)
     started_at: float = field(default_factory=time.time)
-    events: Deque[ProcessOutputEvent] = field(default_factory=deque)
+    events: deque[ProcessOutputEvent] = field(default_factory=deque)
+    output_decoders: dict[str, Any] = field(default_factory=dict)
     next_sequence: int = 1
 
     def append_output(self, stream: str, text: str) -> None:
@@ -68,9 +70,9 @@ class ProcessRuntime:
         self,
         command: str,
         *,
-        cwd: Optional[str] = None,
-        env: Optional[dict[str, str]] = None,
-        process_id: Optional[str] = None,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        process_id: str | None = None,
     ) -> dict[str, Any]:
         """Start a persistent shell process.
 
@@ -156,8 +158,11 @@ class ProcessRuntime:
             return self._error(process_id, "process_not_running")
         if record.process.stdin is None:
             return self._error(process_id, "stdin_unavailable")
-        record.process.stdin.write(text)
-        record.process.stdin.flush()
+        try:
+            record.process.stdin.write(text)
+            record.process.stdin.flush()
+        except (BrokenPipeError, OSError, ValueError) as exc:
+            return self._error(process_id, f"stdin_write_failed: {exc}")
         return self._snapshot(record, output="", since_sequence=0)
 
     def stop(
@@ -183,9 +188,59 @@ class ProcessRuntime:
                 record.process.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 record.process.kill()
-                record.process.wait(timeout=timeout)
+                try:
+                    record.process.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    logger.warning(
+                        "Process %s did not exit after kill timeout",
+                        process_id,
+                    )
         self._drain_pipes(record)
         return self.poll(process_id)
+
+    def cleanup(
+        self,
+        *,
+        mode: str = "terminate",
+        timeout: float = 2.0,
+    ) -> dict[str, Any]:
+        """Stop managed processes, close pipes, and clear runtime records."""
+
+        stopped: list[str] = []
+        errors: dict[str, str] = {}
+        process_ids = list(self._processes)
+
+        for process_id in process_ids:
+            record = self._processes.get(process_id)
+            if record is None:
+                continue
+            try:
+                if record.process.poll() is None:
+                    result = self.stop(process_id, mode=mode, timeout=timeout)
+                    if result.get("status") == "error":
+                        errors[process_id] = str(result.get("error") or "stop_failed")
+                    else:
+                        stopped.append(process_id)
+                else:
+                    self._drain_pipes(record)
+            except Exception as exc:
+                errors[process_id] = str(exc)
+            finally:
+                self._close_pipes(record)
+
+        removed = list(self._processes)
+        self._processes.clear()
+        status = "completed" if not errors else "error"
+        return {
+            "action": "process_cleanup",
+            "status": status,
+            "result": (
+                f"stopped={len(stopped)} removed={len(removed)} errors={len(errors)}"
+            ),
+            "stopped": stopped,
+            "removed": removed,
+            "errors": errors,
+        }
 
     def _set_nonblocking(self, pipe: Any) -> None:
         if pipe is None:
@@ -203,18 +258,38 @@ class ProcessRuntime:
             pipe = getattr(record.process, stream)
             if pipe is None:
                 continue
+            fd = pipe.fileno()
+            decoder = record.output_decoders.get(stream)
+            if decoder is None:
+                decoder = getincrementaldecoder("utf-8")("replace")
+                record.output_decoders[stream] = decoder
             while True:
                 try:
-                    chunk = pipe.read(4096)
+                    chunk = os.read(fd, 4096)
                 except BlockingIOError:
                     break
                 except (OSError, ValueError):
                     break
                 if not chunk:
+                    final_text = decoder.decode(b"", final=True)
+                    if final_text:
+                        record.append_output(stream, final_text)
                     break
-                record.append_output(stream, str(chunk))
+                text = decoder.decode(chunk, final=False)
+                if text:
+                    record.append_output(stream, text)
                 while len(record.events) > self._max_events_per_process:
                     record.events.popleft()
+
+    def _close_pipes(self, record: ManagedProcess) -> None:
+        for stream in ("stdin", "stdout", "stderr"):
+            pipe = getattr(record.process, stream)
+            if pipe is None:
+                continue
+            try:
+                pipe.close()
+            except Exception as exc:
+                logger.debug("Unable to close process %s pipe: %s", stream, exc)
 
     def _collect_output(
         self,
@@ -241,14 +316,15 @@ class ProcessRuntime:
         *,
         output: str,
         since_sequence: int,
-        next_sequence: Optional[int] = None,
+        next_sequence: int | None = None,
     ) -> dict[str, Any]:
         returncode = record.process.poll()
         status = "running" if returncode is None else "exited"
-        next_value = next_sequence if next_sequence is not None else record.next_sequence
+        next_value = (
+            next_sequence if next_sequence is not None else record.next_sequence
+        )
         result = (
-            f"process_id={record.process_id} status={status} "
-            f"returncode={returncode}"
+            f"process_id={record.process_id} status={status} returncode={returncode}"
         )
         if output:
             result = f"{result}\n{output}"

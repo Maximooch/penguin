@@ -176,7 +176,8 @@ class TestNativeBackend:
         )
         
         assert workflow_id is not None
-        assert UUID(workflow_id)
+        assert workflow_id.startswith("ituv-task-123-")
+        assert UUID(hex=workflow_id.rsplit("-", 1)[-1])
     
     @pytest.mark.asyncio
     async def test_get_workflow_status(self, backend):

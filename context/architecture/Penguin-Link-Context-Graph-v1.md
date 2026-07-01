@@ -113,12 +113,12 @@ class Node:
     name: str
     properties: dict
     provenance: Provenance             # Glass layer
-    
+
 class Peer(Node):                      # any entity (human, agent, group, idea)
     type = "peer"
     representations: PeerCard          # Honcho-style aggregated representation
     observation_scope: list[NodeId]
-    
+
 class Market(Node):                    # example domain-specific
     type = "market"
     venue: str
@@ -132,7 +132,7 @@ class Concept(Node):
 class Artifact(Node):                  # file, document, message, code
     type = "artifact"
     content_ref: ContentRef            # content-addressed pointer
-    
+
 class Event(Node):                    # something that happened
     type = "event"
     occurred_at: DateTime
@@ -147,13 +147,13 @@ class Edge:
     type: RelationType                 # "knows" | "owns" | "implies" | "contradicts" | ...
     epistemic_status: Status           # see below
     confidence: float                  # [0, 1]
-    
+
     # Bi-temporal (Graphiti)
     t_valid: DateTime
     t_invalid: DateTime | None         # superseded? when?
     t_created: DateTime
     t_expired: DateTime | None         # marked stale? when?
-    
+
     # Provenance (Glass)
     provenance: Provenance
 
@@ -174,7 +174,7 @@ class Provenance:
     prompt_hash: bytes
     cost: Money                        # how much this fact cost to derive (C$)
     verified_by: list[VerificationRecord]  # cross-model checks
-    
+
     # Optional Glass extensions (v2+)
     features: list[Feature] | None     # SAE features active at derivation
     attention: AttentionTrace | None
@@ -260,20 +260,20 @@ Per-agent, per-workspace state:
 class CoherenceState:
     workspace_id: WorkspaceId
     agent_id: AgentId
-    
+
     # Three rings (memory hierarchy by access cost)
     active_attention: TokenWindow            # ~16-32K tokens, current focus
     warm_cache: list[CompressedEpisode]      # last N hours, semi-compressed
     cold_summaries: list[SchemaSummary]      # older, deeply compressed, graph-referenced
-    
+
     # Extracted patterns
     schemata: list[Schema]                   # "how this team works"
                                              # examples: review style, channel purposes,
                                              # collaborator working hours, decision norms
-    
+
     # Salience state
     salience_map: dict[Topic, SalienceScore] # what's "warm" and likely to matter soon
-    
+
     # Reflective metadata
     last_refresh: DateTime
     decay_curve: DecayPolicy

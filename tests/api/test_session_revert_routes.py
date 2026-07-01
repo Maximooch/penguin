@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from fastapi import HTTPException
@@ -17,7 +16,16 @@ from penguin.web.routes import (
     session_revert,
     session_unrevert,
 )
-from penguin.web.services.session_view import REVERT_KEY, SUMMARY_KEY, TRANSCRIPT_KEY
+from penguin.web.services.session_revert import unrevert_session
+from penguin.web.services.session_view import (
+    REVERT_KEY,
+    REVERT_SNAPSHOT_KEY,
+    SUMMARY_KEY,
+    TRANSCRIPT_KEY,
+)
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class _Manager:
@@ -232,3 +240,34 @@ async def test_session_revert_alias_and_validation(tmp_path: Path) -> None:
             core=cast(Any, core),
         )
     assert busy_exc.value.status_code == 409
+
+
+def test_unrevert_tolerates_corrupt_snapshot_metadata(tmp_path: Path) -> None:
+    core = _Core(tmp_path)
+    session = _seed_session(core, tmp_path)
+    session.metadata[REVERT_KEY] = {
+        "messageID": "msg_user_1",
+        "snapshot": "revert_corrupt",
+        "hiddenMessageIDs": ["msg_user_1"],
+    }
+    session.metadata[REVERT_SNAPSHOT_KEY] = {
+        "id": "revert_corrupt",
+        "files": {
+            "src/app.py": {"exists": True, "content": "not-valid-base64!!!"},
+            "src/ignored.py": ["not", "a", "snapshot"],
+        },
+    }
+    manager = core.conversation_manager.session_manager
+    manager.save_session(session)
+
+    result = unrevert_session(cast(Any, core), session.id)
+
+    assert result is not None
+    info, diffs = result
+    assert info["id"] == session.id
+    assert diffs == []
+    assert (tmp_path / "src" / "app.py").read_text(encoding="utf-8") == "new\n"
+    stored = manager.load_session(session.id)
+    assert stored is not None
+    assert REVERT_KEY not in stored.metadata
+    assert REVERT_SNAPSHOT_KEY not in stored.metadata

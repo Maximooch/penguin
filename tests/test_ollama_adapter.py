@@ -34,9 +34,7 @@ async def test_ollama_adapter_get_response_non_stream():
         "chat",
         AsyncMock(return_value=fake_response),
     ) as mock_chat:
-        result = await adapter.get_response([
-            {"role": "user", "content": "hi"}
-        ])
+        result = await adapter.get_response([{"role": "user", "content": "hi"}])
         assert result == "hello"
         mock_chat.assert_awaited_once()
 

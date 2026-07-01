@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import base64
-import copy
-from pathlib import Path
 import re
 import uuid
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any
 
 from penguin.tools.core.support import _apply_unified_diff
 from penguin.web.services.session_view import (
@@ -33,7 +32,8 @@ def _reverse_unified_diff(diff_text: str) -> str:
     lines = diff_text.splitlines()
     reversed_lines: list[str] = []
     hunk_pattern = re.compile(
-        r"@@ -(?P<o_start>\d+)(?:,(?P<o_cnt>\d+))? \+(?P<n_start>\d+)(?:,(?P<n_cnt>\d+))? @@(?P<tail>.*)"
+        r"@@ -(?P<o_start>\d+)(?:,(?P<o_cnt>\d+))? "
+        r"\+(?P<n_start>\d+)(?:,(?P<n_cnt>\d+))? @@(?P<tail>.*)"
     )
 
     for line in lines:
@@ -159,11 +159,19 @@ def _capture_files(base: Path, files: list[str]) -> dict[str, dict[str, Any]]:
 
 def _restore_files(base: Path, snapshot: dict[str, dict[str, Any]]) -> None:
     for relative, entry in snapshot.items():
+        if not isinstance(entry, dict):
+            continue
         full = (base / relative).resolve()
         if entry.get("exists") is True:
             full.parent.mkdir(parents=True, exist_ok=True)
-            content = str(entry.get("content") or "")
-            full.write_bytes(base64.b64decode(content.encode("ascii")))
+            content = entry.get("content")
+            if not isinstance(content, str):
+                continue
+            try:
+                decoded = base64.b64decode(content.encode("ascii"))
+            except Exception:
+                continue
+            full.write_bytes(decoded)
             continue
         if full.exists():
             full.unlink()
@@ -238,8 +246,8 @@ def revert_session(
     *,
     message_id: str,
     part_id: str | None = None,
-) -> Optional[tuple[dict[str, Any], list[dict[str, Any]]]]:
-    """Mark a session reverted and restore workspace state to before the selected range."""
+) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+    """Mark a session reverted and restore workspace state before the selected range."""
     session, manager = _find_session(core, session_id)
     if session is None or manager is None:
         return None
@@ -280,7 +288,7 @@ def revert_session(
 
 def unrevert_session(
     core: Any, session_id: str
-) -> Optional[tuple[dict[str, Any], list[dict[str, Any]]]]:
+) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
     """Restore files and clear revert metadata for a session."""
     session, manager = _find_session(core, session_id)
     if session is None or manager is None:

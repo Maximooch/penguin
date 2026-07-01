@@ -1,29 +1,27 @@
 import asyncio
-import pytest
+import logging
 import subprocess
+import sys
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
-import logging
-import os
-import shutil
-import time
-import sys
+
+import pytest
 
 # Add the project root to the path to allow imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from penguin.config import GITHUB_REPOSITORY, GITHUB_TOKEN, WORKSPACE_PATH
+from penguin.config import GITHUB_REPOSITORY, GITHUB_TOKEN
+from penguin.project.git_manager import GitManager
 from penguin.project.manager import ProjectManager
 from penguin.project.spec_parser import parse_project_specification_from_markdown
-from penguin.project.workflow_orchestrator import WorkflowOrchestrator
 from penguin.project.task_executor import ProjectTaskExecutor
 from penguin.project.validation_manager import ValidationManager
-from penguin.project.git_manager import GitManager
+from penguin.project.workflow_orchestrator import WorkflowOrchestrator
 from penguin.run_mode import RunMode
-from penguin.project.models import TaskStatus
 
 logger = logging.getLogger(__name__)
-pytestmark = [pytest.mark.asyncio, pytest.mark.live]
+pytestmark = [pytest.mark.asyncio, pytest.mark.e2e, pytest.mark.live]
 
 # --- Fixtures ---
 
@@ -42,7 +40,7 @@ def test_repo_path(tmp_path_factory):
 
     repo_url = f"https://{GITHUB_TOKEN}@github.com/{GITHUB_REPOSITORY}.git"
     temp_dir = tmp_path_factory.mktemp("real_git_test")
-    
+
     try:
         subprocess.run(
             ["git", "clone", repo_url, str(temp_dir)],
@@ -59,7 +57,7 @@ def test_repo_path(tmp_path_factory):
         subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=temp_dir, check=True)
     except subprocess.CalledProcessError as e:
         pytest.fail(f"Failed to clone test repository. Ensure token has repo access. Error: {e.stderr}")
-        
+
     return temp_dir
 
 # --- Test ---
@@ -82,7 +80,7 @@ async def test_end_to_end_pr_creation(test_repo_path: Path):
 ## Tasks
 - Create the file `{unique_filename}`.
 """
-    
+
     # Mock the agent's execution to create a specific file
     mock_run_mode = MagicMock(spec=RunMode)
     async def mock_agent_run(*args, **kwargs):
@@ -99,7 +97,7 @@ async def test_end_to_end_pr_creation(test_repo_path: Path):
     )
     validation_manager = ValidationManager(workspace_path=test_repo_path)
     task_executor = ProjectTaskExecutor(
-        run_mode=mock_run_mode, 
+        run_mode=mock_run_mode,
         project_manager=project_manager,
         git_integration=git_manager.git_integration # Use the same GitIntegration instance
     )
@@ -124,7 +122,7 @@ async def test_end_to_end_pr_creation(test_repo_path: Path):
     # 3. --- ASSERT ---
     assert workflow_result is not None, "Orchestrator should have returned a result"
     assert workflow_result.get("final_status") == "COMPLETED"
-    
+
     pr_result = workflow_result.get("pr_result", {})
     assert pr_result.get("status") == "created"
     pr_url = pr_result.get("pr_url")

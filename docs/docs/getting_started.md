@@ -83,7 +83,7 @@ Model subcommands are not yet exposed via CLI. Use defaults in config for now.
 ### Advanced Project & Task Management
 ```bash
 # Create a project
-penguin-cli project create "AI Assistant Demo" -d "Demonstrating new features"
+penguin-cli project create "Runtime Demo" -d "Demonstrating new features"
 
 # List projects (note the ID from the table)
 penguin-cli project list
@@ -259,5 +259,4 @@ penguin profile               # Profile startup and save a report
 penguin perf-test             # Benchmark startup performance
 penguin config debug          # Extended config + environment diagnostics
 ```
-
 

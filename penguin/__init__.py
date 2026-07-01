@@ -47,6 +47,7 @@ Example Usage:
 import importlib
 import os
 import sys
+from importlib import import_module
 
 # Add package directory to Python path
 package_dir = os.path.dirname(os.path.abspath(__file__))
@@ -73,7 +74,27 @@ _system_exports = ["ConversationManager", "Session", "Message", "MessageCategory
 
 # API client exports - lazy load
 _api_client_exports = ["PenguinClient", "ChatOptions", "TaskOptions", "CheckpointInfo", "ModelInfo", "create_client"]
-_submodule_exports = {"core", "web", "llm", "multi"}
+_submodule_exports = {
+    "agent",
+    "api",
+    "api_client",
+    "cli",
+    "core",
+    "core_runtime",
+    "engine",
+    "local_task",
+    "llm",
+    "memory",
+    "multi",
+    "orchestration",
+    "project",
+    "run_mode",
+    "security",
+    "system",
+    "tools",
+    "utils",
+    "web",
+}
 
 # Public API surface - this is the contract we'll maintain
 __all__ = [

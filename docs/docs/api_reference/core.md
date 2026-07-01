@@ -1,43 +1,57 @@
 # Core API Reference
 
-The `PenguinCore` class serves as the central coordinator for the entire Penguin AI assistant, orchestrating interactions between various subsystems with event-driven architecture and advanced conversation management.
+`PenguinCore` is Penguin's low-level public runtime object. It wires the core collaborators, exposes compatibility methods that existing CLI/web/API/Python callers depend on, and delegates runtime behavior to owned modules.
 
 ## Overview
 
-PenguinCore acts as an integration point between:
-- **Engine (Optional)**: A high-level coordinator for reasoning/action loops (used when available).
-- **ConversationManager**: Handles messages, context, conversation state, and checkpointing.
-- **ToolManager**: Provides access to available tools and actions with lazy initialization.
-- **ActionExecutor**: Executes actions and processes results with UI event callbacks.
-- **ProjectManager**: Manages projects and tasks with SQLite persistence.
-- **APIClient**: Handles direct communication with LLMs with streaming support.
-- **EventBus**: Centralized event system for UI updates and real-time streaming.
-- **StreamingStateManager**: Manages streaming state with coalescing and buffering.
+The current boundary is intentionally thin:
 
-Rather than implementing functionality directly, PenguinCore focuses on coordination. It initializes and holds references to these components. **Crucially, if the `Engine` is successfully initialized, `PenguinCore` delegates the primary reasoning and execution loops to it.** Otherwise, it falls back to managing the loop internally using `get_response`.
+- **`penguin.core.PenguinCore`**: construction, collaborator references, public compatibility methods.
+- **`penguin.core_runtime.startup`**: initialization and dependency wiring.
+- **`penguin.core_runtime.process_runtime`**: public `process(...)` flow, retry behavior, scoped runtime overrides.
+- **`penguin.core_runtime.message_processing` / `response_generation`**: single-message and direct response helpers.
+- **`penguin.core_runtime.model_runtime`**: model/provider selection, canonical runtime IDs, OpenAI/OpenRouter-compatible payloads.
+- **`penguin.core_runtime.token_usage_runtime`**: runtime/session/agent token and context-window telemetry.
+- **`penguin.core_runtime.checkpoint_runtime`**: checkpoint, branch, rollback, and retention operations.
+- **`penguin.core_runtime.action_mapping`**: tool/action result metadata, diff/todo/task-card payload shaping, TUI bridge payloads.
+- **`penguin.core_runtime.opencode_bridge`**: OpenCode/TUI event and transcript translation.
+- **`penguin.core_runtime.stream_events` / `action_events`**: streaming,
+  status, todo, LSP, and user-message event bridge helpers.
+- **`penguin.core_runtime.session_lookup`**: session store lookup and ownership helpers.
+- **`penguin.core_runtime.system_diagnostics`**: status, diagnostics, and startup payloads.
+- **`penguin.system.runtime_events` / `runtime_event_ledger`**: canonical
+  runtime event envelopes, redaction, durable replay, and retention policy.
+- **`Engine`**: reasoning loops, tool execution, native tool-call replay, task execution, MessageBus routing.
+- **`RunMode`**: autonomous task/project lifecycle on top of Engine.
+- **`ConversationManager`**: message history, session state, checkpoints, and context-window trimming by category priority and recency.
 
-<!-- ## Key Features
+The compatibility mixins in `penguin.core_runtime` preserve historical `PenguinCore` method names. New domain behavior should be implemented in the owning runtime/service module and exposed through a narrow `PenguinCore` method only when public compatibility requires it.
 
-- **Event-Driven Architecture**: Real-time streaming and UI updates via event system
-- **Project Management**: 
-- **Checkpoint Management**: Save, restore, and branch conversation states
-- **Enhanced Token Management**: Context window optimization with category-based budgets
-- **Fast Startup**: Optional deferred initialization for improved performance
-- **Model Switching**: Runtime model switching with automatic configuration updates
-- **Comprehensive Diagnostics**: Performance monitoring and startup reporting -->
+## Ownership Boundary
+
+| Concern | Owner |
+|---------|-------|
+| Core construction and collaborator wiring | `penguin.core_runtime.startup` |
+| Chat/task processing entrypoint | `penguin.core_runtime.process_runtime` + `Engine` |
+| Provider/model normalization | `penguin.core_runtime.model_runtime`, `penguin.llm` |
+| Token usage and context-window telemetry | `penguin.core_runtime.token_usage_runtime` |
+| Checkpoints, forks, rollback | `penguin.core_runtime.checkpoint_runtime`, `ConversationManager` |
+| OpenCode/TUI action and event translation | `penguin.core_runtime.action_mapping`, `opencode_bridge`, `stream_events`, `action_events` |
+| Runtime event envelope and durable SSE replay | `penguin.system.runtime_events`, `penguin.system.runtime_event_ledger`, `penguin.web.sse_events` |
+| Web/API payload and credential services | `penguin.web.services.*` |
+| Project/run transition rules | `penguin.project`, `penguin.orchestration`, `RunMode` |
+| Multi-agent coordination | `penguin.multi`, `Engine`, `ConversationManager` |
 
 ```mermaid
 classDiagram
     class PenguinCore {
-        +engine? : Engine
+        +engine : Engine
         +conversation_manager
         +tool_manager
         +action_executor
         +project_manager
         +api_client
         +event_bus
-        +streaming_active : bool
-        +streaming_content : str
         +create()
         +process_message()
         +process()
@@ -47,6 +61,17 @@ classDiagram
         +rollback_to_checkpoint()
         +load_model()
         +emit_ui_event()
+    }
+
+    class CoreRuntime {
+        +startup
+        +process_runtime
+        +model_runtime
+        +checkpoint_runtime
+        +token_usage_runtime
+        +action_mapping
+        +opencode_bridge
+        +system_diagnostics
     }
 
     class Engine {
@@ -107,14 +132,15 @@ classDiagram
         +stream_id
     }
 
-    PenguinCore --> Engine : delegates to (optional)
-    PenguinCore --> ConversationManager : manages
-    PenguinCore --> ToolManager : manages
-    PenguinCore --> ActionExecutor : manages
-    PenguinCore --> ProjectManager : manages
-    PenguinCore --> APIClient : manages
+    PenguinCore --> CoreRuntime : compatibility methods
+    PenguinCore --> Engine : delegates loops
+    PenguinCore --> ConversationManager : references
+    PenguinCore --> ToolManager : references
+    PenguinCore --> ActionExecutor : references
+    PenguinCore --> ProjectManager : references
+    PenguinCore --> APIClient : references
     PenguinCore --> EventBus : emits events
-    PenguinCore --> StreamingStateManager : manages streaming
+    PenguinCore --> StreamingStateManager : exposes state
     Engine --> APIClient : uses
     Engine --> ActionExecutor : uses
     Engine --> ConversationManager : uses
@@ -124,16 +150,14 @@ classDiagram
 
 ## Processing Flow
 
-The primary processing flow depends on whether the `Engine` is available, with enhanced event-driven streaming and real-time UI updates.
-
-**With Engine (Preferred):**
+The public `PenguinCore.process(...)` method is now a compatibility entrypoint backed by `penguin.core_runtime.process_runtime`. That runtime layer normalizes input, applies scoped overrides, and delegates the reasoning/action loop to `Engine`.
 
 ```mermaid
 flowchart TD
     Start([Input])-->CoreProcess[Core.process]
-    CoreProcess-->CheckEngine{Engine Available?}
-    CheckEngine--Yes-->DelegateToEngine[Delegate to Engine]
-    DelegateToEngine-->EngineHandlesLoop[Engine Manages Loop with Streaming]
+    CoreProcess-->Runtime[core_runtime.process_runtime]
+    Runtime-->Normalize[Normalize input, context, agent, overrides]
+    Normalize-->EngineHandlesLoop[Engine manages reasoning and tool loop]
 
     subgraph Streaming[Real-time Streaming]
         EngineHandlesLoop-->EmitStreamEvents[Emit stream_chunk Events]
@@ -142,44 +166,19 @@ flowchart TD
     end
 
     Streaming-->EngineResult{Engine Result}
-    EngineResult-->SaveState[Save Conversation State]
-    SaveState-->EmitTokenEvent[Emit token_update Event]
-    EmitTokenEvent-->End([Output])
+    EngineResult-->RuntimeFinalize[Apply runtime result shaping]
+    RuntimeFinalize-->EmitTokenEvent[Emit token_update Event]
+    EmitTokenEvent-->End([Structured result])
 
     style EngineHandlesLoop fill:#e0f7fa,stroke:#00acc1
     style Streaming fill:#f0f7fa,stroke:#00acc1,stroke-width:2px
 ```
 
-**Without Engine (Legacy Fallback):**
-
-```mermaid
-flowchart TD
-    Start([Input])-->CoreProcess[Core.process]
-    CoreProcess-->CheckEngine{Engine Available?}
-    CheckEngine--No-->StartLegacyLoop[Start Legacy Loop]
-
-    subgraph LegacyLoop[Core Multi-Step Loop with Events]
-        StartLegacyLoop-->FormatMessages[Format Messages]
-        FormatMessages-->CallGetResponse[Call get_response with Streaming]
-        CallGetResponse-->ParseActions[Parse Actions]
-        ParseActions-->ExecuteActions[Execute Actions with Event Emission]
-        ExecuteActions-->EmitActionResults[Emit Action Result Events]
-        EmitActionResults-->CheckCompletion{Complete?}
-        CheckCompletion--No-->NextIteration[Next Iteration]
-        NextIteration-.->FormatMessages
-        CheckCompletion--Yes-->ExitLegacyLoop[Exit Loop]
-    end
-
-    ExitLegacyLoop-->SaveState[Save State]
-    SaveState-->EmitTokenEvent[Emit token_update Event]
-    EmitTokenEvent-->End([Output])
-
-    style LegacyLoop fill:#f0f0ff,stroke:#333,stroke-width:1px
-```
+`get_response(...)` remains available as a compatibility helper for direct single-response/action paths, but new processing behavior should not be added to `PenguinCore`.
 
 ## Event System
 
-PenguinCore includes a comprehensive event system for real-time UI updates and streaming coordination:
+PenguinCore exposes UI events through the shared `EventBus`. Translation and payload shaping live in runtime helpers where possible, especially for OpenCode/TUI compatibility:
 
 - **`stream_chunk`**: Real-time streaming content with message type and role information
 - **`token_update`**: Token usage updates for UI display
@@ -187,7 +186,18 @@ PenguinCore includes a comprehensive event system for real-time UI updates and s
 - **`status`**: Status updates for UI components
 - **`error`**: Error events with source and details
 
-Events are emitted throughout the processing pipeline to enable live UI updates in CLI, web interface, and other clients.
+Events are emitted throughout the processing pipeline to enable live UI updates
+in CLI, web interface, and other clients. OpenCode/SSE-compatible events should
+derive from Penguin's canonical `RuntimeEvent` envelope:
+
+- envelope construction and redaction live in `penguin.system.runtime_events`
+- durable append/replay/retention lives in `penguin.system.runtime_event_ledger`
+- SSE replay and the EventBus recording hook live in `penguin.web.sse_events`
+- OpenCode public payloads use the runtime event `id` as replay identity
+
+`PenguinCore` keeps the shared `EventBus` reference and compatibility methods;
+it should not own runtime event schema decisions or replay policy. See
+[Runtime Events and Durable Replay](../system/runtime-events.md).
 
 ## Factory Method
 
@@ -203,7 +213,7 @@ async def create(
 ) -> Union["PenguinCore", Tuple["PenguinCore", "PenguinCLI"]]
 ```
 
-Creates a new PenguinCore instance with optional CLI. This method handles the initialization of all subsystems, **including attempting to initialize the `Engine`**.
+Creates a new PenguinCore instance with optional CLI. This method delegates startup to `penguin.core_runtime.startup`, which loads config, wires collaborators, initializes Engine, creates managers, and applies fast-startup behavior.
 
 `create` reads standard environment variables to load API keys and defaults. Common variables include `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and optional overrides such as `PENGUIN_MODEL`, `PENGUIN_PROVIDER`, `PENGUIN_CLIENT_PREFERENCE`, and `PENGUIN_API_BASE`.
 
@@ -238,7 +248,7 @@ def __init__(
 )
 ```
 
-Initializes the core with configuration and required components. **This constructor is also responsible for attempting to create and store the `Engine` instance (`self.engine`).**
+Initializes the core with configuration and required components by delegating to `penguin.core_runtime.startup.initialize_core_instance_state`. The constructor should remain wiring-only; domain/runtime behavior belongs in the owning runtime or service module.
 
 ### `process_message`
 
@@ -253,7 +263,7 @@ async def process_message(
 ) -> str
 ```
 
-Processes a user message primarily through the `ConversationManager`. This is a simplified interface, potentially bypassing the `Engine` for basic exchanges, focusing on conversation history management and direct LLM calls via `ConversationManager`.
+Processes a single user message through the message-processing runtime. The implementation lives in `penguin.core_runtime.message_processing` and resolves the correct conversation/session scope before delegating to the underlying runtime components.
 
 ### `process`
 
@@ -263,14 +273,14 @@ async def process(
     input_data: Union[Dict[str, Any], str],
     context: Optional[Dict[str, Any]] = None,
     conversation_id: Optional[str] = None,
-    max_iterations: int = 5, # Note: max_iterations primarily relevant for legacy fallback
+    max_iterations: int = 5,
     context_files: Optional[List[str]] = None,
     streaming: Optional[bool] = None,
     stream_callback: Optional[Callable[[str], None]] = None # Note: Used by Engine/APIClient
 ) -> Dict[str, Any]
 ```
 
-**Primary interface for processing input.** If `self.engine` is available, this method **delegates the execution** to `Engine.run_single_turn` or potentially `Engine.run_task` based on internal logic or future configuration. If the `Engine` is not available, it falls back to the legacy multi-step loop managed within `PenguinCore` itself, using `get_response` iteratively. Returns a dictionary containing the assistant's final response and any accumulated action results.
+**Primary low-level processing interface.** This compatibility method delegates to `penguin.core_runtime.process_runtime.process_with_retry`, which normalizes input, applies scoped runtime overrides, and routes execution through Engine-backed runtime flows. Returns a dictionary containing the assistant response and any accumulated action/tool results.
 
 ### `get_response`
 
@@ -284,7 +294,7 @@ async def get_response(
 ) -> Tuple[Dict[str, Any], bool]
 ```
 
-**Legacy Fallback Method.** Generates one turn of response using the current conversation context and executes actions found within that response. This method is primarily used **internally by the legacy processing loop** when the `Engine` is not available. It directly calls the `APIClient` and `ActionExecutor`. Returns the response data for the *single turn* and a continuation flag (e.g., if `TASK_COMPLETION_PHRASE` is found).
+Generates one response using the current conversation context and executes actions found within that response. This method is retained as a compatibility helper around `penguin.core_runtime.response_generation`; it is not the preferred place to add new processing behavior. Returns response data for the turn and a continuation flag.
 
 ### `start_run_mode`
 
@@ -302,7 +312,7 @@ async def start_run_mode(
 ) -> None
 ```
 
-Starts autonomous run mode by creating and running a `RunMode` instance. The `RunMode` instance will internally use `self.engine` if available.
+Starts autonomous run mode by delegating to `penguin.core_runtime.runmode_lifecycle`, which creates and runs a `RunMode` instance. RunMode uses the Engine-backed task execution path.
 
 **Parameters**
 
@@ -398,7 +408,7 @@ Lists available checkpoints with optional filtering.
 async def load_model(self, model_id: str) -> bool
 ```
 
-Switches to a different model at runtime with automatic configuration updates.
+Switches to a different model at runtime through PenguinCore's model methods. Provider inference, provider-local model IDs, OpenRouter/OpenAI-compatible normalization, and payload shaping live in `penguin.core_runtime.model_runtime` and `penguin.llm`.
 
 **Parameters**
 
@@ -408,10 +418,10 @@ Switches to a different model at runtime with automatic configuration updates.
 
 **Features**:
 
-- Fetches model specifications from OpenRouter API
-- Updates context window settings automatically
-- Supports both explicit config models and provider/model format
-- Updates config.yml with new model settings
+- Resolves provider/model selectors without leaking provider-local IDs across adapters
+- Preserves OpenAI/OpenRouter/OAuth prepared-request contracts
+- Updates runtime model configuration and context-window metadata
+- Keeps live provider checks opt-in; deterministic contract tests use fake providers
 
 ## Event System Methods
 
@@ -591,7 +601,7 @@ print(session_stats["current_total_tokens"])
 async def execute_action(self, action) -> Dict[str, Any]
 ```
 
-Executes a single action via the `ActionExecutor`. **Note:** In the preferred flow (with Engine), action execution is handled within the `Engine`'s loop. This method might be used by the legacy fallback loop or potentially for direct action calls outside the main loops.
+Executes a single action via the `ActionExecutor`. Normal chat/task flows execute actions inside Engine; this method remains a direct compatibility hook for callers that explicitly need one-off action execution.
 
 ## Diagnostics and Performance
 

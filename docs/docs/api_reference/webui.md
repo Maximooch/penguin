@@ -1,6 +1,6 @@
 # Web Interface
 
-Penguin includes a browser-based chat interface for interacting with the AI assistant without additional tools or code.
+Penguin includes a browser-based chat interface for interacting with Penguin without additional tools or code.
 
 ## Overview
 
@@ -81,7 +81,7 @@ const startNewConversation = async () => {
         // Initialize with welcome message
         messages.value = [{
             role: 'system',
-            content: 'Welcome to Penguin AI! How can I help you today?',
+            content: 'Welcome to Penguin. How can I help you today?',
             timestamp: new Date()
         }];
         await refreshConversations();
@@ -232,4 +232,4 @@ Planned improvements to the web interface:
 3. Project and task management interface
 4. Theme customization options
 5. Persistent user preferences
-6. Offline capability with local storage 
+6. Offline capability with local storage

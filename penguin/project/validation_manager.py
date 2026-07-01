@@ -6,6 +6,7 @@ For the MVP, this module implements a validation step centered on pytest.
 import asyncio
 import logging
 from pathlib import Path
+import sys
 from typing import Any, Dict, List, Union
 
 from penguin.project.models import Task
@@ -60,13 +61,13 @@ class ValidationManager:
         ]
 
         if test_files_to_run:
-            command = ["pytest"] + test_files_to_run
+            command = [sys.executable, "-m", "pytest"] + test_files_to_run
             logger.info(
                 "Found %s changed test files. Running targeted tests.",
                 len(test_files_to_run),
             )
         else:
-            command = ["pytest"]
+            command = [sys.executable, "-m", "pytest"]
             logger.info("No test files were modified. Running full test suite as a fallback.")
 
         evidence: Dict[str, Any] = {

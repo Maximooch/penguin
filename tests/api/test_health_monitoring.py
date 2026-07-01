@@ -4,14 +4,17 @@ Tests the enhanced /api/v1/health endpoint that returns detailed metrics
 for container monitoring and Link integration.
 """
 
+import json
 import os
 import time
-import urllib.request
 import urllib.error
-import json
+import urllib.request
 from typing import Any, Dict
 import pytest
 
+import pytest
+
+pytestmark = pytest.mark.e2e
 
 BASE_URL = os.environ.get("PENGUIN_API_URL", "http://127.0.0.1:8000")
 pytestmark = pytest.mark.e2e
@@ -84,7 +87,7 @@ def test_health_timestamp_format():
     try:
         parsed = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
         print(f"✓ Timestamp is valid ISO format: {timestamp}")
-    except (ValueError, AttributeError) as e:
+    except (ValueError, AttributeError):
         raise AssertionError(f"Timestamp not in valid ISO format: {timestamp}")
 
 
@@ -132,7 +135,7 @@ def test_resource_usage_structure():
     assert resource_usage["threads"] >= 0, "threads should be non-negative"
     assert resource_usage["active_tasks"] >= 0, "active_tasks should be non-negative"
 
-    print(f"✓ Resource usage structure valid:")
+    print("✓ Resource usage structure valid:")
     print(f"  - Memory: {resource_usage['memory_mb']} MB ({resource_usage['memory_percent']}%)")
     print(f"  - CPU: {resource_usage['cpu_percent']}%")
     print(f"  - Threads: {resource_usage['threads']}")
@@ -171,7 +174,7 @@ def test_agent_capacity_structure():
         assert abs(capacity["utilization"] - expected_utilization) < 0.01, \
             "utilization calculation incorrect"
 
-    print(f"✓ Agent capacity structure valid:")
+    print("✓ Agent capacity structure valid:")
     print(f"  - Max: {capacity['max']}")
     print(f"  - Active: {capacity['active']}")
     print(f"  - Available: {capacity['available']}")
@@ -223,7 +226,7 @@ def test_performance_metrics_structure():
         assert metrics["p99_latency_ms"] <= metrics["max_latency_ms"], \
             "p99_latency should be <= max_latency"
 
-    print(f"✓ Performance metrics structure valid:")
+    print("✓ Performance metrics structure valid:")
     print(f"  - Requests: {metrics['request_count']} (success rate: {metrics['success_rate'] * 100}%)")
     print(f"  - Latency: avg={metrics['avg_latency_ms']}ms, p95={metrics['p95_latency_ms']}ms, p99={metrics['p99_latency_ms']}ms")
     print(f"  - Tasks: {metrics['task_count']} (avg duration: {metrics['avg_task_duration_sec']}s)")
@@ -252,7 +255,7 @@ def test_components_health():
                 assert isinstance(components[component], bool), \
                     f"{component} should be boolean"
 
-        print(f"✓ Component health available:")
+        print("✓ Component health available:")
         for component, status in components.items():
             print(f"  - {component}: {status}")
     else:
@@ -325,7 +328,7 @@ def test_health_endpoint_performance():
     # Health endpoint should be fast (under 1 second)
     assert max_latency < 1000, f"Health endpoint too slow: max {max_latency}ms"
 
-    print(f"✓ Health endpoint performance acceptable:")
+    print("✓ Health endpoint performance acceptable:")
     print(f"  - Average latency: {avg_latency:.2f}ms")
     print(f"  - Max latency: {max_latency:.2f}ms")
 

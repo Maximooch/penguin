@@ -20,7 +20,7 @@ from .backend import (
     WorkflowStatus,
 )
 from .config import OrchestrationConfig
-from .state import ContextSnapshot, WorkflowState, WorkflowStateStorage
+from .state import WorkflowState, WorkflowStateStorage
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +77,7 @@ class NativeBackend(OrchestrationBackend):
         config: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Start an ITUV workflow for a task."""
-        workflow_id = str(uuid.uuid4())
+        workflow_id = f"ituv-{task_id}-{uuid.uuid4().hex}"
         now = datetime.utcnow()
         
         # Get project_id from task if available
@@ -544,4 +544,3 @@ class NativeBackend(OrchestrationBackend):
             artifacts["verification"] = "Some gates failed"
         
         return all_passed, artifacts
-

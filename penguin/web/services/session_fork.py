@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import copy
-from datetime import datetime
 import uuid
-from typing import Any, Optional
+from datetime import datetime
+from typing import Any
 
 from penguin.system.state import Message, MessageCategory
 from penguin.web.services.session_view import (
@@ -89,7 +89,7 @@ def fork_session(
     *,
     message_id: str | None = None,
     directory: str | None = None,
-) -> Optional[dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Clone one session into a new session up to an optional message boundary."""
     source, manager = _find_session(core, session_id)
     if source is None or manager is None:
@@ -158,6 +158,8 @@ def fork_session(
         parent_id = new_info.get("parentID")
         if isinstance(parent_id, str) and parent_id in id_map:
             new_info["parentID"] = id_map[parent_id]
+        elif isinstance(parent_id, str) and parent_id != "root":
+            new_info.pop("parentID", None)
 
         parts = row.get("parts") if isinstance(row, dict) else None
         part_order: list[str] = []
@@ -202,6 +204,16 @@ def fork_session(
         if source_message is not None:
             cloned = copy.deepcopy(source_message)
             cloned.id = new_id
+            cloned_metadata = (
+                cloned.metadata if isinstance(cloned.metadata, dict) else {}
+            )
+            cloned.metadata = cloned_metadata
+            new_transcript = transcript_messages.get(new_id)
+            new_info = (
+                new_transcript.get("info") if isinstance(new_transcript, dict) else None
+            )
+            if isinstance(new_info, dict):
+                cloned_metadata["opencode_info"] = copy.deepcopy(new_info)
             cloned_messages.append(cloned)
             continue
         cloned_messages.append(_row_message(row, new_id))

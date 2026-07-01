@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from penguin.core import PenguinCore
+from penguin.core_runtime import action_mapping
 from penguin.system.execution_context import (
     ExecutionContext,
     execution_context_scope,
@@ -246,6 +247,99 @@ def test_map_action_result_metadata_sets_output_for_code_execution() -> None:
 
     assert metadata["source"] == "test"
     assert metadata["output"] == "13\nRESULT=13"
+
+
+def test_core_action_mapping_shims_match_runtime_helpers() -> None:
+    core = PenguinCore.__new__(PenguinCore)
+    patch = "*** Begin Patch\n*** Update File: a.py\n@@\n-old\n+new\n*** End Patch\n"
+    todos = [
+        {"id": "1", "content": "Ship", "status": "done", "priority": "urgent"},
+        {"id": "1", "content": "Verify", "status": "completed", "priority": "high"},
+    ]
+
+    assert core._strip_diff_fences("```diff\n@@\n-a\n+b\n```") == (
+        action_mapping.strip_diff_fences("```diff\n@@\n-a\n+b\n```")
+    )
+    assert core._ensure_unified_diff("a.py", "@@\n-old\n+new\n") == (
+        action_mapping.ensure_unified_diff("a.py", "@@\n-old\n+new\n")
+    )
+    assert core._extract_unified_diff_from_result("ok\n--- a/a.py\n+++ b/a.py\n@@") == (
+        action_mapping.extract_unified_diff_from_result(
+            "ok\n--- a/a.py\n+++ b/a.py\n@@"
+        )
+    )
+    assert core._extract_tool_file_path({"filePath": "a.py"}) == (
+        action_mapping.extract_tool_file_path({"filePath": "a.py"})
+    )
+    assert core._normalize_todo_items(todos) == action_mapping.normalize_todo_items(
+        todos
+    )
+    assert core._extract_todos_from_result(json.dumps(todos)) == (
+        action_mapping.extract_todos_from_result(json.dumps(todos))
+    )
+    assert core._parse_action_payload('{"file": "a.py"}') == (
+        action_mapping.parse_action_payload('{"file": "a.py"}')
+    )
+    assert core._extract_result_file_paths('{"file": "a.py", "files": ["b.py"]}') == (
+        action_mapping.extract_result_file_paths('{"file": "a.py", "files": ["b.py"]}')
+    )
+    assert core._humanize_subagent_name("build_agent") == (
+        action_mapping.humanize_subagent_name("build_agent")
+    )
+    assert core._summarize_subagent_description("x" * 130, "fallback") == (
+        action_mapping.summarize_subagent_description("x" * 130, "fallback")
+    )
+    assert core._build_task_card_summary("subagent", "running") == (
+        action_mapping.build_task_card_summary("subagent", "running")
+    )
+    assert core._summary_status({"summary": [{"state": {"status": "done"}}]}, "x") == (
+        action_mapping.summary_status(
+            {"summary": [{"state": {"status": "done"}}]},
+            "x",
+        )
+    )
+    assert core._build_spawn_subagent_task_card({"id": "build"}) == (
+        action_mapping.build_spawn_subagent_task_card({"id": "build"})
+    )
+    assert core._map_action_to_tool("apply_patch", {"patch": patch}) == (
+        action_mapping.map_action_to_tool("apply_patch", {"patch": patch})
+    )
+    assert core._map_action_result_metadata(
+        "apply_patch",
+        "failed",
+        existing={"diff": patch},
+        status="error",
+    ) == action_mapping.map_action_result_metadata(
+        "apply_patch",
+        "failed",
+        existing={"diff": patch},
+        status="error",
+    )
+
+
+@pytest.mark.asyncio
+async def test_execute_action_shim_returns_structured_payload() -> None:
+    class _Executor:
+        def __init__(self) -> None:
+            self.calls: list[Any] = []
+
+        async def execute_action(self, action: Any) -> str:
+            self.calls.append(action)
+            return "done"
+
+    action = SimpleNamespace(action_type=SimpleNamespace(value="custom_action"))
+    executor = _Executor()
+    core = PenguinCore.__new__(PenguinCore)
+    core.action_executor = executor
+
+    result = await core.execute_action(action)
+
+    assert result == {
+        "action": "custom_action",
+        "result": "done",
+        "status": "completed",
+    }
+    assert executor.calls == [action]
 
 
 @pytest.mark.asyncio
@@ -506,12 +600,7 @@ def test_map_action_to_tool_supports_apply_patch_payload() -> None:
     core = PenguinCore.__new__(PenguinCore)
 
     patch = (
-        "*** Begin Patch\n"
-        "*** Update File: src/main.py\n"
-        "@@\n"
-        "-old\n"
-        "+new\n"
-        "*** End Patch\n"
+        "*** Begin Patch\n*** Update File: src/main.py\n@@\n-old\n+new\n*** End Patch\n"
     )
     mapped_tool, tool_input, metadata = core._map_action_to_tool(
         "apply_patch",
@@ -523,26 +612,16 @@ def test_map_action_to_tool_supports_apply_patch_payload() -> None:
     assert metadata == {"files": ["src/main.py"]}
 
 
-def test_map_action_to_tool_preserves_apply_patch_files_on_parse_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    core = PenguinCore.__new__(PenguinCore)
+def test_action_mapping_preserves_apply_patch_files_on_parse_error() -> None:
+    patch = "*** Begin Patch\n*** Update File: src/main.py\n@@\n-old\n+new\n"
 
-    patch = (
-        "*** Begin Patch\n"
-        "*** Update File: src/main.py\n"
-        "@@\n"
-        "-old\n"
-        "+new\n"
-    )
-    monkeypatch.setattr(
-        "penguin.core.parse_apply_patch_payload",
-        lambda _params: {"patch": patch, "error": "malformed patch"},
-    )
-
-    mapped_tool, tool_input, metadata = core._map_action_to_tool(
+    mapped_tool, tool_input, metadata = action_mapping.map_action_to_tool(
         "apply_patch",
         {"patch": patch},
+        parse_apply_patch=lambda _params: {
+            "patch": patch,
+            "error": "malformed patch",
+        },
     )
 
     assert mapped_tool == "edit"
@@ -584,6 +663,25 @@ def test_map_action_to_tool_supports_canonical_patch_files_payload() -> None:
     assert metadata["files"] == ["src/a.py", "src/b.py"]
 
 
+def test_core_map_action_to_tool_unknown_action_does_not_return_caller_dict() -> None:
+    core = PenguinCore.__new__(PenguinCore)
+    params = {"path": "src/app.py"}
+
+    mapped_tool, tool_input, metadata = core._map_action_to_tool(
+        "custom_tool",
+        params,
+    )
+
+    assert mapped_tool == "custom_tool"
+    assert tool_input == {"path": "src/app.py"}
+    assert tool_input is not params
+    assert metadata == {}
+
+    tool_input["path"] = "changed.py"
+
+    assert params == {"path": "src/app.py"}
+
+
 def test_map_action_result_metadata_extracts_todos_for_todowrite() -> None:
     core = PenguinCore.__new__(PenguinCore)
     result = (
@@ -608,9 +706,7 @@ def test_map_action_result_metadata_extracts_todos_for_todowrite() -> None:
     assert metadata["todos"][0]["content"] == "Implement todo endpoint"
 
 
-def test_map_action_result_metadata_promotes_spawn_sub_agent_to_clickable_task_card() -> (
-    None
-):
+def test_map_action_result_metadata_promotes_spawn_sub_agent_to_clickable_task_card():
     core = PenguinCore.__new__(PenguinCore)
 
     metadata = core._map_action_result_metadata(

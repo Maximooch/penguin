@@ -205,15 +205,6 @@ penguin-web = "penguin.web.server:main"
 penguin-tui = "penguin.cli.entrypoint:main_tui"
 penguin-tui-proto = "penguin.penguin.cli.tui_prototype_mock:main"
 
-[tool.pytest.ini_options]
-addopts = ["-m", "not e2e and not live and not slow"]
-asyncio_mode = "auto"
-markers = [
-    "e2e: tests that require an external server, browser, container, or end-to-end workflow",
-    "live: tests that require live provider, GitHub, or network credentials",
-    "slow: tests that are too slow for the default deterministic suite",
-]
-
 [tool.setuptools.packages.find]
 include = ["penguin", "penguin.*"]
 exclude = [
@@ -274,6 +265,24 @@ exclude-newer = "7 days"
 
 
 # Development tools configuration
+[tool.pytest.ini_options]
+addopts = [
+    "-m",
+    "not live and not e2e and not slow",
+]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+asyncio_default_test_loop_scope = "function"
+markers = [
+    "unit: deterministic isolated tests for small units",
+    "property: Hypothesis/property tests over input classes",
+    "contract: deterministic cross-module or public API contract tests",
+    "integration: hermetic integration tests that do not require external services",
+    "e2e: opt-in end-to-end tests that require a running app/server or browser surface",
+    "live: opt-in tests that touch live providers or third-party services",
+    "slow: opt-in tests too slow for the default local loop",
+]
+
 [tool.black]
 line-length = 88
 target-version = ['py39']

@@ -267,20 +267,24 @@ class WorkflowOrchestrator:
                 pr_result = await self.git_manager.create_pr_for_task(task, validation_result)
                 self._debug(f"PR creation result: {pr_result}")
 
-                await self.project_manager.update_task_phase_async(
-                    task.id,
-                    TaskPhase.DONE,
-                    "Validation succeeded; task is ready for review.",
+                # 7. Move the task into the canonical review-owned state. The
+                # ProjectManager helper owns the coupled DONE/PENDING_REVIEW
+                # transition so phase/status invariants stay synchronized.
+                await self.project_manager.mark_task_execution_ready_for_review_async(
+                    task_id=task.id,
+                    executor_id="workflow_orchestrator",
+                    response=(
+                        exec_result.get("response")
+                        or exec_result.get("assistant_response")
+                        or exec_result.get("message")
+                        or ""
+                    ),
+                    task_prompt=f"Workflow execution: {task.title}",
+                    context={
+                        "source": "workflow_orchestrator",
+                        "changed_files": changed_files,
+                    },
                 )
-
-                # 7. Move the task into review-owned state.
-                success = self.project_manager.update_task_status(
-                    task.id,
-                    TaskStatus.PENDING_REVIEW,
-                    "Validation passed; awaiting review or trusted automatic completion.",
-                )
-                if not success:
-                    raise Exception(f"Failed to update task status to PENDING_REVIEW")
                 logger.info(
                     "Task '%s' marked as PENDING_REVIEW after validation. PR: %s",
                     task.title,
@@ -322,4 +326,4 @@ class WorkflowOrchestrator:
             workflow_result['final_status'] = 'FAILED'
             return workflow_result
 
-        return workflow_result 
+        return workflow_result

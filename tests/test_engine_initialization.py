@@ -291,7 +291,7 @@ async def test_call_llm_with_retry_replays_retryable_provider_failure_once() -> 
 
 
 @pytest.mark.asyncio
-async def test_call_llm_with_retry_replays_uncommitted_partial_provider_failure() -> (
+async def test_call_llm_with_retry_rejects_partial_assistant_provider_failure() -> (
     None
 ):
     engine = Engine(

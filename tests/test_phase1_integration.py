@@ -13,7 +13,6 @@ functionality of Phase 1 updates, including:
 import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from typing import Dict, Any, List
 
 from penguin import __version__ as PENGUIN_VERSION
 from penguin.api_client import PenguinClient, ChatOptions, TaskOptions, create_client
@@ -168,7 +167,16 @@ def integrated_core(mock_checkpoint_manager, mock_model_manager):
     # Chat functionality
     conversation_history = []
     
-    async def process_message(message, context=None, conversation_id=None, context_files=None, streaming=False):
+    async def process_message(
+        message,
+        context=None,
+        conversation_id=None,
+        agent_id=None,
+        context_files=None,
+        streaming=False,
+        **kwargs,
+    ):
+        del streaming, kwargs
         # Simulate token usage with proper increment tracking
         system_state["call_count"] += 1
         message_tokens = len(message.split())
@@ -182,6 +190,7 @@ def integrated_core(mock_checkpoint_manager, mock_model_manager):
             "role": "user",
             "content": message,
             "conversation_id": conversation_id,
+            "agent_id": agent_id,
             "context": context,
             "context_files": context_files
         })
@@ -190,7 +199,8 @@ def integrated_core(mock_checkpoint_manager, mock_model_manager):
         conversation_history.append({
             "role": "assistant", 
             "content": response,
-            "conversation_id": conversation_id
+            "conversation_id": conversation_id,
+            "agent_id": agent_id,
         })
         
         return response

@@ -39,11 +39,12 @@ Example Usage:
 
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional, Callable, AsyncGenerator
 from dataclasses import dataclass
+from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
+
+from penguin.constants import get_engine_max_iterations_default
 
 from .core import PenguinCore
-from penguin.constants import get_engine_max_iterations_default
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ class ChatOptions:
     agent_id: Optional[str] = None
 
 
-@dataclass  
+@dataclass
 class TaskOptions:
     """Options for task execution."""
     name: Optional[str] = None
@@ -92,10 +93,15 @@ class ModelInfo:
     max_output_tokens: Optional[int]
     current: bool
 
+    @property
+    def max_tokens(self) -> Optional[int]:
+        """Backward-compatible alias for max output tokens."""
+        return self.max_output_tokens
+
 
 class PenguinClient:
     """High-level Python client for Penguin functionality."""
-    
+
     def __init__(
         self,
         config_path: Optional[str] = None,
@@ -117,12 +123,12 @@ class PenguinClient:
         self.workspace_path = workspace_path
         self._core: Optional[PenguinCore] = None
         self._initialized = False
-    
+
     async def initialize(self) -> None:
         """Initialize the Penguin core and all subsystems."""
         if self._initialized:
             return
-            
+
         try:
             # Use the factory method to create core with proper initialization
             self._core = await PenguinCore.create(
@@ -134,21 +140,21 @@ class PenguinClient:
             )
             self._initialized = True
             logger.info("Penguin client initialized successfully")
-            
+
         except Exception as e:
             logger.error(f"Failed to initialize Penguin client: {e}")
             raise RuntimeError(f"Penguin client initialization failed: {e}") from e
-    
+
     @property
     def core(self) -> PenguinCore:
         """Get the core instance, ensuring it's initialized."""
         if not self._initialized or not self._core:
             raise RuntimeError("Client not initialized. Call await client.initialize() first.")
         return self._core
-    
+
     # Chat and Conversation Methods
     # ------------------------------------------------------------------
-    
+
     async def chat(
         self,
         message: str,
@@ -164,7 +170,7 @@ class PenguinClient:
             The assistant's response
         """
         opts = options or ChatOptions()
-        
+
         response = await self.core.process_message(
             message=message,
             context=opts.context,
@@ -173,9 +179,9 @@ class PenguinClient:
             context_files=opts.context_files,
             streaming=opts.streaming
         )
-        
+
         return response
-    
+
     async def stream_chat(
         self,
         message: str,
@@ -191,13 +197,13 @@ class PenguinClient:
             Individual response tokens
         """
         opts = options or ChatOptions()
-        
+
         # Create a queue to collect streaming tokens
         token_queue = asyncio.Queue()
-        
+
         async def stream_callback(token: str):
             await token_queue.put(token)
-        
+
         # Start the process task
         process_task = asyncio.create_task(
             self.core.process(
@@ -211,7 +217,7 @@ class PenguinClient:
                 stream_callback=stream_callback
             )
         )
-        
+
         # Yield tokens as they arrive
         try:
             while not process_task.done():
@@ -220,30 +226,30 @@ class PenguinClient:
                     yield token
                 except asyncio.TimeoutError:
                     continue
-            
+
             # Get any remaining tokens
             while not token_queue.empty():
                 yield token_queue.get_nowait()
-                
+
         finally:
             if not process_task.done():
                 process_task.cancel()
-            
+
     async def list_conversations(self) -> List[Dict[str, Any]]:
         """List all conversations."""
         return self.core.list_conversations()
-    
+
     async def get_conversation(self, conversation_id: str) -> Optional[Dict[str, Any]]:
         """Get a specific conversation."""
         return self.core.get_conversation(conversation_id)
-    
+
     async def create_conversation(self) -> str:
         """Create a new conversation."""
         return self.core.create_conversation()
-    
+
     # Checkpoint Management Methods
     # ------------------------------------------------------------------
-    
+
     async def create_checkpoint(
         self,
         name: Optional[str] = None,
@@ -259,7 +265,7 @@ class PenguinClient:
             Checkpoint ID
         """
         return await self.core.create_checkpoint(name=name, description=description)
-    
+
     async def rollback_to_checkpoint(self, checkpoint_id: str) -> bool:
         """Rollback conversation to a checkpoint.
         
@@ -270,7 +276,7 @@ class PenguinClient:
             True if successful, False otherwise
         """
         return await self.core.rollback_to_checkpoint(checkpoint_id)
-    
+
     async def branch_from_checkpoint(
         self,
         checkpoint_id: str,
@@ -290,7 +296,7 @@ class PenguinClient:
         return await self.core.branch_from_checkpoint(
             checkpoint_id, name=name, description=description
         )
-    
+
     async def list_checkpoints(
         self,
         session_id: Optional[str] = None,
@@ -306,7 +312,7 @@ class PenguinClient:
             List of checkpoint information
         """
         checkpoints = self.core.list_checkpoints(session_id=session_id, limit=limit)
-        
+
         return [
             CheckpointInfo(
                 id=cp["id"],
@@ -318,7 +324,7 @@ class PenguinClient:
             )
             for cp in checkpoints
         ]
-    
+
     async def cleanup_checkpoints(self) -> int:
         """Clean up old checkpoints according to retention policy.
         
@@ -326,10 +332,10 @@ class PenguinClient:
             Number of checkpoints cleaned up
         """
         return await self.core.cleanup_old_checkpoints()
-    
+
     # Model Management Methods
     # ------------------------------------------------------------------
-    
+
     async def list_models(self) -> List[ModelInfo]:
         """List available models.
         
@@ -337,7 +343,7 @@ class PenguinClient:
             List of model information
         """
         models = self.core.list_available_models()
-        
+
         return [
             ModelInfo(
                 id=model["id"],
@@ -349,7 +355,7 @@ class PenguinClient:
             )
             for model in models
         ]
-    
+
     async def switch_model(self, model_id: str) -> bool:
         """Switch to a different model.
         
@@ -360,7 +366,7 @@ class PenguinClient:
             True if successful, False otherwise
         """
         return await self.core.load_model(model_id)
-    
+
     async def get_current_model(self) -> Optional[ModelInfo]:
         """Get current model information.
         
@@ -370,7 +376,7 @@ class PenguinClient:
         model_data = self.core.get_current_model()
         if not model_data:
             return None
-            
+
         return ModelInfo(
             id=model_data["model"],
             name=model_data["model"],
@@ -379,10 +385,10 @@ class PenguinClient:
             max_output_tokens=model_data.get("max_output_tokens", model_data.get("max_tokens")),
             current=True
         )
-    
+
     # Task Execution Methods
     # ------------------------------------------------------------------
-    
+
     async def execute_task(
         self,
         prompt: str,
@@ -398,7 +404,7 @@ class PenguinClient:
             Task execution results
         """
         opts = options or TaskOptions()
-        
+
         # Use Engine if available, fallback to process
         if hasattr(self.core, 'engine') and self.core.engine:
             return await self.core.engine.run_task(
@@ -415,7 +421,7 @@ class PenguinClient:
                 context=opts.context,
                 max_iterations=opts.max_iterations or get_engine_max_iterations_default()
             )
-    
+
     async def start_run_mode(
         self,
         options: Optional[TaskOptions] = None,
@@ -428,7 +434,7 @@ class PenguinClient:
             event_callback: Optional callback for run mode events
         """
         opts = options or TaskOptions()
-        
+
         await self.core.start_run_mode(
             name=opts.name,
             description=opts.description,
@@ -437,29 +443,29 @@ class PenguinClient:
             time_limit=opts.time_limit,
             stream_event_callback=event_callback
         )
-    
+
     # System and Diagnostics Methods
     # ------------------------------------------------------------------
-    
+
     async def get_system_info(self) -> Dict[str, Any]:
         """Get comprehensive system information."""
         return self.core.get_system_info()
-    
+
     async def get_system_status(self) -> Dict[str, Any]:
         """Get current system status."""
         return self.core.get_system_status()
-    
+
     async def get_token_usage(self) -> Dict[str, Any]:
         """Get token usage statistics."""
         return self.core.get_token_usage()
-    
+
     async def get_checkpoint_stats(self) -> Dict[str, Any]:
         """Get checkpoint system statistics."""
         return self.core.get_checkpoint_stats()
-    
+
     # File and Context Methods
     # ------------------------------------------------------------------
-    
+
     async def load_context_files(self, file_paths: List[str]) -> bool:
         """Load context files into the current conversation.
         
@@ -477,7 +483,7 @@ class PenguinClient:
         except Exception as e:
             logger.error(f"Failed to load context files: {e}")
             return False
-    
+
     async def list_context_files(self) -> List[str]:
         """List available context files."""
         return self.core.list_context_files()
@@ -600,7 +606,7 @@ class PenguinClient:
             channel=channel,
         )
 
-    # What if there's multiple humans? @penguin_todo_multi_humans.md 
+    # What if there's multiple humans? @penguin_todo_multi_humans.md
     # I suppose we could just have a human_id and then we can have multiple humans that way for now.
     async def human_reply(
         self,
@@ -637,22 +643,22 @@ class PenguinClient:
             include_system=include_system,
             limit=limit,
         )
-    
+
     # Utility Methods
     # ------------------------------------------------------------------
-    
+
     async def close(self) -> None:
         """Clean up resources and close the client."""
         if self._core and hasattr(self._core, 'cleanup'):
             await self._core.cleanup()
         self._initialized = False
         self._core = None
-    
+
     async def __aenter__(self):
         """Async context manager entry."""
         await self.initialize()
         return self
-    
+
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit."""
         await self.close()

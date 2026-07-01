@@ -1,0 +1,982 @@
+"""Tests for agent lifecycle runtime helpers."""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock
+
+import pytest
+
+from penguin.core_runtime.agent_lifecycle import (
+    create_agent_conversation,
+    create_sub_agent,
+    delete_agent_conversation,
+    delete_agent_conversation_compat,
+    delete_agent_conversation_guarded,
+    ensure_agent_conversation,
+    get_agent_profile,
+    get_agent_roster,
+    get_persona_catalog,
+    is_agent_paused,
+    list_agent_conversations,
+    list_agents,
+    list_sub_agents,
+    load_agent_conversation,
+    publish_sub_agent_session_created,
+    register_agent_compat,
+    resolve_agent_execution_scope,
+    run_agent_prompt_in_session,
+    set_active_agent,
+    set_agent_paused,
+    smoke_check_agents,
+    unregister_agent,
+)
+from penguin.system.execution_context import (
+    ExecutionContext,
+    execution_context_scope,
+    get_current_execution_context,
+)
+
+
+class _EventBus:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, Any]]] = []
+
+    async def emit(self, event_type: str, payload: dict[str, Any]) -> None:
+        self.events.append((event_type, payload))
+
+
+class _Conversation:
+    def __init__(self, session: SimpleNamespace) -> None:
+        self.session = session
+        self._modified = False
+        self.save_calls = 0
+
+    def save(self) -> None:
+        self.save_calls += 1
+
+
+class _ContextWindow:
+    def __init__(self, usage: dict[str, Any]) -> None:
+        self.usage = usage
+
+    def get_token_usage(self) -> dict[str, Any]:
+        return self.usage
+
+
+def test_resolve_agent_execution_scope_uses_session_metadata_and_inherited_roots(
+    tmp_path,
+) -> None:
+    parent_dir = tmp_path / "parent"
+    child_dir = tmp_path / "child"
+    parent_dir.mkdir()
+    child_dir.mkdir()
+    session = SimpleNamespace(
+        id="session_child",
+        metadata={"directory": str(child_dir), "_opencode_agent_mode_v1": "PLAN"},
+    )
+    core = SimpleNamespace(
+        conversation_manager=SimpleNamespace(
+            get_agent_conversation=lambda _agent_id: SimpleNamespace(session=session)
+        ),
+        _opencode_session_directories={},
+    )
+
+    with execution_context_scope(
+        ExecutionContext(
+            session_id="session_parent",
+            conversation_id="session_parent",
+            agent_id="default",
+            directory=str(parent_dir),
+            project_root=str(parent_dir),
+            workspace_root=str(parent_dir),
+        )
+    ):
+        scope = resolve_agent_execution_scope(core, "child-agent")
+
+    assert scope == {
+        "session_id": "session_child",
+        "conversation_id": "session_child",
+        "directory": str(child_dir),
+        "project_root": str(parent_dir),
+        "workspace_root": str(parent_dir),
+        "agent_mode": "plan",
+    }
+
+
+def test_resolve_agent_execution_scope_uses_session_directory_map(tmp_path) -> None:
+    child_dir = tmp_path / "child"
+    child_dir.mkdir()
+    session = SimpleNamespace(id="session_child", metadata={})
+    core = SimpleNamespace(
+        conversation_manager=SimpleNamespace(
+            get_agent_conversation=lambda _agent_id: SimpleNamespace(session=session)
+        ),
+        _opencode_session_directories={"session_child": str(child_dir)},
+    )
+
+    scope = resolve_agent_execution_scope(core, "child-agent")
+
+    assert scope["session_id"] == "session_child"
+    assert scope["directory"] == str(child_dir)
+    assert scope["project_root"] == str(child_dir)
+    assert scope["workspace_root"] == str(child_dir)
+
+
+def test_resolve_agent_execution_scope_tolerates_conversation_lookup_failure(
+    tmp_path,
+) -> None:
+    parent_dir = tmp_path / "parent"
+    parent_dir.mkdir()
+
+    class _BrokenConversationManager:
+        def get_agent_conversation(self, _agent_id: str) -> Any:
+            raise RuntimeError("conversation store unavailable")
+
+    core = SimpleNamespace(
+        conversation_manager=_BrokenConversationManager(),
+        _opencode_session_directories={},
+    )
+
+    with execution_context_scope(
+        ExecutionContext(
+            session_id="session_parent",
+            conversation_id="session_parent",
+            agent_id="default",
+            agent_mode="build",
+            directory=str(parent_dir),
+            project_root=str(parent_dir),
+            workspace_root=str(parent_dir),
+        )
+    ):
+        scope = resolve_agent_execution_scope(core, "child-agent")
+
+    assert scope == {
+        "session_id": None,
+        "conversation_id": None,
+        "directory": str(parent_dir),
+        "project_root": str(parent_dir),
+        "workspace_root": str(parent_dir),
+        "agent_mode": "build",
+    }
+
+
+@pytest.mark.asyncio
+async def test_run_agent_prompt_in_session_sets_execution_context(tmp_path) -> None:
+    child_dir = tmp_path / "child"
+    child_dir.mkdir()
+    session = SimpleNamespace(
+        id="session_child",
+        metadata={"directory": str(child_dir), "agent_mode": "build"},
+    )
+    conversation_manager = SimpleNamespace(
+        get_agent_conversation=lambda _agent_id: SimpleNamespace(session=session)
+    )
+    captured: dict[str, Any] = {}
+
+    async def _process(**kwargs: Any) -> dict[str, str]:
+        captured["kwargs"] = kwargs
+        captured["context"] = get_current_execution_context()
+        return {"assistant_response": "done"}
+
+    core = SimpleNamespace(
+        conversation_manager=conversation_manager,
+        _opencode_session_directories={},
+        process=AsyncMock(side_effect=_process),
+    )
+
+    result = await run_agent_prompt_in_session(
+        core,
+        "child-agent",
+        "Child prompt",
+        streaming=False,
+    )
+
+    assert result == {"assistant_response": "done"}
+    assert captured["kwargs"] == {
+        "input_data": {"text": "Child prompt"},
+        "conversation_id": "session_child",
+        "agent_id": "child-agent",
+        "streaming": False,
+    }
+    context = captured["context"]
+    assert context is not None
+    assert context.session_id == "session_child"
+    assert context.conversation_id == "session_child"
+    assert context.agent_id == "child-agent"
+    assert context.directory == str(child_dir)
+    assert context.request_id == "subagent:child-agent:session_child"
+
+
+@pytest.mark.asyncio
+async def test_publish_sub_agent_session_created_inherits_parent_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    parent_dir = tmp_path / "parent"
+    parent_dir.mkdir()
+    parent = _Conversation(
+        SimpleNamespace(id="session_parent", metadata={"directory": str(parent_dir)})
+    )
+    child = _Conversation(SimpleNamespace(id="session_child", metadata={}))
+
+    def _get_agent_conversation(agent_id: str) -> _Conversation:
+        return parent if agent_id == "default" else child
+
+    event_bus = _EventBus()
+    core = SimpleNamespace(
+        conversation_manager=SimpleNamespace(
+            get_agent_conversation=_get_agent_conversation
+        ),
+        runtime_config=SimpleNamespace(active_root=str(tmp_path)),
+        _opencode_session_directories={},
+        event_bus=event_bus,
+    )
+    info = {
+        "id": "session_child",
+        "directory": str(parent_dir),
+        "parentID": "session_parent",
+        "agent_id": "child-agent",
+        "parent_agent_id": "default",
+    }
+    monkeypatch.setattr(
+        "penguin.web.services.session_view.get_session_info",
+        lambda _core, session_id: info if session_id == "session_child" else None,
+    )
+
+    result = await publish_sub_agent_session_created(
+        core,
+        "child-agent",
+        parent_agent_id="default",
+    )
+
+    assert result == info
+    assert child.session.metadata["directory"] == str(parent_dir)
+    assert child._modified is True
+    assert child.save_calls == 1
+    assert core._opencode_session_directories["session_child"] == str(parent_dir)
+    assert len(event_bus.events) == 1
+    event_type, payload = event_bus.events[0]
+    assert event_type == "opencode_event"
+    assert payload["type"] == "session.created"
+    assert payload["properties"] == {
+        "sessionID": "session_child",
+        "info": info,
+        "directory": str(parent_dir),
+        "agentID": "child-agent",
+    }
+    assert payload["runtime_event"]["type"] == "session.created"
+    assert payload["runtime_event"]["scope"]["session_id"] == "session_child"
+    assert payload["runtime_event"]["scope"]["directory"] == str(parent_dir)
+    assert payload["runtime_event"]["scope"]["agent_id"] == "child-agent"
+
+
+@pytest.mark.asyncio
+async def test_publish_sub_agent_session_created_uses_parent_directory_map(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    parent_dir = tmp_path / "mapped-parent"
+    parent_dir.mkdir()
+    parent = _Conversation(SimpleNamespace(id="session_parent", metadata={}))
+    child = _Conversation(SimpleNamespace(id="session_child", metadata={}))
+
+    def _get_agent_conversation(agent_id: str) -> _Conversation:
+        return parent if agent_id == "default" else child
+
+    core = SimpleNamespace(
+        conversation_manager=SimpleNamespace(
+            get_agent_conversation=_get_agent_conversation
+        ),
+        runtime_config=SimpleNamespace(active_root=str(tmp_path)),
+        _opencode_session_directories={"session_parent": str(parent_dir)},
+        event_bus=_EventBus(),
+    )
+    monkeypatch.setattr(
+        "penguin.web.services.session_view.get_session_info",
+        lambda _core, session_id: {"id": session_id},
+    )
+
+    await publish_sub_agent_session_created(
+        core,
+        "child-agent",
+        parent_agent_id="default",
+    )
+
+    assert child.session.metadata["directory"] == str(parent_dir)
+    assert core._opencode_session_directories["session_parent"] == str(parent_dir)
+    assert core._opencode_session_directories["session_child"] == str(parent_dir)
+
+
+@pytest.mark.asyncio
+async def test_publish_sub_agent_session_created_skips_shared_session() -> None:
+    class _ConversationManager:
+        def get_agent_conversation(self, _agent_id: str) -> Any:
+            raise AssertionError("shared sessions should not resolve conversations")
+
+    core = SimpleNamespace(
+        conversation_manager=_ConversationManager(),
+        event_bus=_EventBus(),
+    )
+
+    result = await publish_sub_agent_session_created(
+        core,
+        "child-agent",
+        share_session=True,
+    )
+
+    assert result is None
+    assert core.event_bus.events == []
+
+
+def test_smoke_check_agents_reports_shared_conversations_and_engine_registry() -> None:
+    shared = SimpleNamespace(session=SimpleNamespace(id="session_shared"))
+    isolated = SimpleNamespace(session=SimpleNamespace(id="session_isolated"))
+    conversation_manager = SimpleNamespace(
+        current_agent_id="default",
+        agent_sessions={
+            "default": shared,
+            "assistant": shared,
+            "worker": isolated,
+        },
+        agent_context_windows={
+            "default": _ContextWindow(
+                {
+                    "current_total_tokens": 12,
+                    "available_tokens": 88,
+                    "max_context_window_tokens": 100,
+                }
+            ),
+            "assistant": _ContextWindow(
+                {
+                    "total": 7,
+                    "available": 93,
+                    "max": 100,
+                }
+            ),
+            "worker": _ContextWindow(
+                {
+                    "current_total_tokens": 3,
+                    "available_tokens": 97,
+                    "max_tokens": 100,
+                }
+            ),
+        },
+    )
+    core = SimpleNamespace(
+        conversation_manager=conversation_manager,
+        engine=SimpleNamespace(list_agents=lambda: ["default", "worker"]),
+    )
+
+    summary = smoke_check_agents(core)
+
+    assert summary["active_agent"] == "default"
+    assert [agent["agent_id"] for agent in summary["agents"]] == [
+        "default",
+        "assistant",
+        "worker",
+    ]
+    assert summary["agents"][0]["context_window_usage"] == {
+        "total": 12,
+        "available": 88,
+    }
+    assert summary["agents"][0]["context_window_max"] == 100
+    assert summary["shared_conversations"] == [
+        {
+            "conversation_obj": id(shared),
+            "agents": ["default", "assistant"],
+        }
+    ]
+    assert summary["engine_registry"] == {
+        "default": True,
+        "assistant": False,
+        "worker": True,
+    }
+
+
+def test_smoke_check_agents_skips_bad_agent_and_tolerates_engine_failure() -> None:
+    class _BrokenConversation:
+        @property
+        def session(self) -> Any:
+            raise RuntimeError("session unavailable")
+
+    class _BrokenEngine:
+        def list_agents(self) -> list[str]:
+            raise RuntimeError("engine unavailable")
+
+    good = SimpleNamespace(session=SimpleNamespace(id="session_good"))
+    conversation_manager = SimpleNamespace(
+        current_agent_id="good",
+        agent_sessions={
+            "good": good,
+            "bad": _BrokenConversation(),
+        },
+        context_window=_ContextWindow(
+            {
+                "current_total_tokens": 5,
+                "available_tokens": 95,
+                "max_context_window_tokens": 100,
+            }
+        ),
+    )
+    core = SimpleNamespace(
+        conversation_manager=conversation_manager,
+        engine=_BrokenEngine(),
+    )
+
+    summary = smoke_check_agents(core)
+
+    assert summary["agents"] == [
+        {
+            "agent_id": "good",
+            "session_id": "session_good",
+            "conversation_obj": id(good),
+            "context_window_max": 100,
+            "context_window_usage": {"total": 5, "available": 95},
+        }
+    ]
+    assert summary["shared_conversations"] == []
+    assert summary["engine_registry"] == {"good": False}
+
+
+def test_set_agent_paused_updates_metadata_and_emits_system_note() -> None:
+    conversation = _Conversation(SimpleNamespace(metadata={}))
+    notes: list[tuple[str, str, dict[str, Any]]] = []
+    core = SimpleNamespace(
+        conversation_manager=SimpleNamespace(
+            get_agent_conversation=lambda _agent_id: conversation,
+            add_system_note=lambda agent_id, content, metadata: notes.append(
+                (agent_id, content, metadata)
+            ),
+        )
+    )
+
+    set_agent_paused(core, "worker", True)
+
+    assert conversation.session.metadata["paused"] is True
+    assert is_agent_paused(core, "worker") is True
+    assert notes == [
+        (
+            "worker",
+            "Agent state: Paused",
+            {"type": "agent_state", "paused": True},
+        )
+    ]
+
+
+def test_set_agent_paused_still_updates_metadata_when_note_fails() -> None:
+    conversation = _Conversation(SimpleNamespace(metadata={}))
+
+    def _add_system_note(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("note store unavailable")
+
+    core = SimpleNamespace(
+        conversation_manager=SimpleNamespace(
+            get_agent_conversation=lambda _agent_id: conversation,
+            add_system_note=_add_system_note,
+        )
+    )
+
+    set_agent_paused(core, "worker", False)
+
+    assert conversation.session.metadata["paused"] is False
+    assert is_agent_paused(core, "worker") is False
+
+
+def test_is_agent_paused_returns_false_without_session_metadata() -> None:
+    core = SimpleNamespace(
+        conversation_manager=SimpleNamespace(
+            get_agent_conversation=lambda _agent_id: SimpleNamespace(session=None)
+        )
+    )
+
+    assert is_agent_paused(core, "worker") is False
+
+
+def test_set_active_agent_switches_conversation_manager_and_engine() -> None:
+    calls: list[tuple[str, str]] = []
+    core = SimpleNamespace(
+        conversation_manager=SimpleNamespace(
+            set_current_agent=lambda agent_id: calls.append(("cm", agent_id))
+        ),
+        engine=SimpleNamespace(
+            set_default_agent=lambda agent_id: calls.append(("engine", agent_id))
+        ),
+    )
+
+    set_active_agent(core, "worker")
+
+    assert calls == [("cm", "worker"), ("engine", "worker")]
+
+
+def test_set_active_agent_reraises_conversation_manager_failure() -> None:
+    def _set_current_agent(_agent_id: str) -> None:
+        raise RuntimeError("missing agent")
+
+    core = SimpleNamespace(
+        conversation_manager=SimpleNamespace(set_current_agent=_set_current_agent),
+        engine=SimpleNamespace(
+            set_default_agent=lambda _agent_id: pytest.fail(
+                "engine should not switch after CM failure"
+            )
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="missing agent"):
+        set_active_agent(core, "worker")
+
+
+def test_set_active_agent_reraises_engine_failure_after_cm_switch() -> None:
+    calls: list[tuple[str, str]] = []
+
+    def _set_default_agent(agent_id: str) -> None:
+        calls.append(("engine", agent_id))
+        raise RuntimeError("engine registry unavailable")
+
+    core = SimpleNamespace(
+        conversation_manager=SimpleNamespace(
+            set_current_agent=lambda agent_id: calls.append(("cm", agent_id))
+        ),
+        engine=SimpleNamespace(set_default_agent=_set_default_agent),
+    )
+
+    with pytest.raises(RuntimeError, match="engine registry unavailable"):
+        set_active_agent(core, "worker")
+
+    assert calls == [("cm", "worker"), ("engine", "worker")]
+
+
+def test_ensure_agent_conversation_registers_engine_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    action_executor = object()
+    action_executor_calls: list[dict[str, Any]] = []
+
+    def _action_executor(*args: Any, **kwargs: Any) -> object:
+        action_executor_calls.append({"args": args, "kwargs": kwargs})
+        return action_executor
+
+    monkeypatch.setattr(
+        "penguin.core_runtime.agent_lifecycle.ActionExecutor",
+        _action_executor,
+    )
+
+    conversation = SimpleNamespace(system_prompts=[])
+    conversation.set_system_prompt = conversation.system_prompts.append
+    conversation_calls: list[tuple[str, bool]] = []
+    engine_calls: list[dict[str, Any]] = []
+    conversation_manager = SimpleNamespace(
+        get_agent_conversation=lambda agent_id, create_if_missing=False: (
+            conversation_calls.append((agent_id, create_if_missing)) or conversation
+        )
+    )
+    core = SimpleNamespace(
+        conversation_manager=conversation_manager,
+        engine=SimpleNamespace(
+            register_agent=lambda **kwargs: engine_calls.append(kwargs)
+        ),
+        tool_manager="tools",
+        project_manager="project",
+        emit_ui_event="emit",
+    )
+
+    ensure_agent_conversation(core, "worker", system_prompt="system")
+
+    assert conversation_calls == [("worker", True)]
+    assert conversation.system_prompts == ["system"]
+    assert action_executor_calls == [
+        {
+            "args": ("tools", "project", conversation),
+            "kwargs": {"ui_event_callback": "emit"},
+        }
+    ]
+    assert engine_calls == [
+        {
+            "agent_id": "worker",
+            "conversation_manager": conversation_manager,
+            "action_executor": action_executor,
+        }
+    ]
+
+
+def test_register_agent_compat_preserves_legacy_kwargs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model_config = SimpleNamespace(
+        max_context_window_tokens=4096,
+        max_output_tokens=1024,
+        model="test-model",
+        provider="openrouter",
+        client_preference="openrouter",
+        temperature=0.2,
+    )
+    api_clients: list[Any] = []
+
+    class _APIClient:
+        def __init__(self, *, model_config: Any) -> None:
+            self.model_config = model_config
+            self.system_prompts: list[str] = []
+            api_clients.append(self)
+
+        def set_system_prompt(self, system_prompt: str) -> None:
+            self.system_prompts.append(system_prompt)
+
+    monkeypatch.setattr(
+        "penguin.agent.persona_runtime.model_config_for_agent_settings",
+        lambda *_args, **_kwargs: model_config,
+    )
+    monkeypatch.setattr(
+        "penguin.agent.persona_runtime.model_config_metadata",
+        lambda _model_config: {"model": "test-model"},
+    )
+    monkeypatch.setattr("penguin.core_runtime.agent_lifecycle.APIClient", _APIClient)
+    monkeypatch.setattr(
+        "penguin.core_runtime.agent_lifecycle.ActionExecutor",
+        lambda *args, **kwargs: {"args": args, "kwargs": kwargs},
+    )
+
+    conversation = SimpleNamespace(
+        session=SimpleNamespace(metadata={}),
+        system_prompts=[],
+    )
+    conversation.set_system_prompt = conversation.system_prompts.append
+    create_calls: list[dict[str, Any]] = []
+    engine_calls: list[tuple[str, Any]] = []
+    context_window = SimpleNamespace(model_config=None, max_context_window_tokens=100)
+    conversation_manager = SimpleNamespace(
+        create_sub_agent=lambda agent_id, **kwargs: create_calls.append(
+            {"agent_id": agent_id, **kwargs}
+        ),
+        get_agent_conversation=lambda agent_id, create_if_missing=False: conversation,
+        agent_context_windows={"worker": context_window},
+    )
+    core = SimpleNamespace(
+        config=SimpleNamespace(agent_personas={}, model_configs={}),
+        model_config=model_config,
+        system_prompt="global system",
+        conversation_manager=conversation_manager,
+        engine=SimpleNamespace(
+            register_agent=lambda **kwargs: engine_calls.append(("register", kwargs)),
+            set_default_agent=lambda agent_id: engine_calls.append(
+                ("default", agent_id)
+            ),
+        ),
+        tool_manager="tools",
+        project_manager="project",
+        emit_ui_event="emit",
+    )
+
+    register_agent_compat(
+        core,
+        "worker",
+        share_session_with="default",
+        shared_context_window_max_tokens=2048,
+        activate=True,
+    )
+
+    assert create_calls == [
+        {
+            "agent_id": "worker",
+            "parent_agent_id": "default",
+            "share_session": False,
+            "share_context_window": False,
+            "shared_context_window_max_tokens": 2048,
+        }
+    ]
+    assert conversation.system_prompts == []
+    assert api_clients[0].system_prompts == ["global system"]
+    assert context_window.model_config is model_config
+    assert context_window.max_context_window_tokens == 4096
+    assert engine_calls[0][0] == "register"
+    assert engine_calls[0][1]["agent_id"] == "worker"
+    assert engine_calls[-1] == ("default", "worker")
+
+
+def test_create_sub_agent_creates_child_and_ensures_conversation() -> None:
+    conversation = SimpleNamespace(system_prompts=[])
+    conversation.set_system_prompt = conversation.system_prompts.append
+    create_calls: list[dict[str, Any]] = []
+    ensure_calls: list[tuple[str, bool]] = []
+    conversation_manager = SimpleNamespace(
+        create_sub_agent=lambda agent_id, **kwargs: create_calls.append(
+            {"agent_id": agent_id, **kwargs}
+        ),
+        get_agent_conversation=lambda agent_id, create_if_missing=False: (
+            ensure_calls.append((agent_id, create_if_missing)) or conversation
+        ),
+    )
+    core = SimpleNamespace(conversation_manager=conversation_manager, engine=None)
+
+    create_sub_agent(
+        core,
+        "child",
+        parent_agent_id="parent",
+        system_prompt="child-system",
+        share_session=False,
+        share_context_window=False,
+        shared_context_window_max_tokens=2048,
+    )
+
+    assert create_calls == [
+        {
+            "agent_id": "child",
+            "parent_agent_id": "parent",
+            "share_session": False,
+            "share_context_window": False,
+            "shared_context_window_max_tokens": 2048,
+        }
+    ]
+    assert ensure_calls == [("child", True)]
+    assert conversation.system_prompts == ["child-system"]
+
+
+def test_delete_agent_conversation_removes_engine_agent_and_resets_active() -> None:
+    calls: list[tuple[str, str]] = []
+    conversation_manager = SimpleNamespace(
+        current_agent_id="worker",
+        remove_agent=lambda agent_id: calls.append(("remove", agent_id)) or True,
+    )
+    core = SimpleNamespace(
+        conversation_manager=conversation_manager,
+        engine=SimpleNamespace(
+            unregister_agent=lambda agent_id: calls.append(("engine", agent_id))
+        ),
+        set_active_agent=lambda agent_id: calls.append(("active", agent_id)),
+    )
+
+    assert delete_agent_conversation(core, "worker") is True
+    assert calls == [
+        ("remove", "worker"),
+        ("engine", "worker"),
+        ("active", "default"),
+    ]
+
+
+def test_delete_agent_conversation_compat_deletes_specific_conversation() -> None:
+    calls: list[tuple[str, str]] = []
+    conversation_manager = SimpleNamespace(
+        delete_agent_conversation=lambda agent_id, conversation_id: calls.append(
+            (agent_id, conversation_id)
+        )
+        or True,
+    )
+    core = SimpleNamespace(conversation_manager=conversation_manager)
+
+    assert delete_agent_conversation_compat(core, "worker", "session_1") is True
+    assert calls == [("worker", "session_1")]
+
+
+def test_delete_agent_conversation_rejects_default_agent() -> None:
+    core = SimpleNamespace()
+
+    with pytest.raises(ValueError, match="default agent"):
+        delete_agent_conversation(core, "default")
+
+
+def test_delete_agent_conversation_guarded_blocks_shared_session_delete() -> None:
+    delete_calls: list[tuple[str, str]] = []
+    conversation_manager = SimpleNamespace(
+        agents_sharing_session=lambda agent_id: ["default", agent_id],
+        get_agent_conversation=lambda _agent_id: SimpleNamespace(
+            session=SimpleNamespace(id="conv_shared")
+        ),
+        delete_agent_conversation=lambda agent_id, conversation_id: delete_calls.append(
+            (agent_id, conversation_id)
+        )
+        or True,
+    )
+    core = SimpleNamespace(conversation_manager=conversation_manager)
+
+    result = delete_agent_conversation_guarded(core, "worker", "conv_shared")
+
+    assert result["success"] is False
+    assert "worker" in (result["warning"] or "")
+    assert delete_calls == []
+
+
+def test_delete_agent_conversation_guarded_allows_force_delete() -> None:
+    delete_calls: list[tuple[str, str]] = []
+    conversation_manager = SimpleNamespace(
+        agents_sharing_session=lambda agent_id: ["default", agent_id],
+        get_agent_conversation=lambda _agent_id: SimpleNamespace(
+            session=SimpleNamespace(id="conv_shared")
+        ),
+        delete_agent_conversation=lambda agent_id, conversation_id: delete_calls.append(
+            (agent_id, conversation_id)
+        )
+        or True,
+    )
+    core = SimpleNamespace(conversation_manager=conversation_manager)
+
+    result = delete_agent_conversation_guarded(
+        core,
+        "worker",
+        "conv_shared",
+        force=True,
+    )
+
+    assert result == {"success": True, "warning": None}
+    assert delete_calls == [("worker", "conv_shared")]
+
+
+def test_delete_agent_conversation_guarded_continues_when_guard_fails() -> None:
+    delete_calls: list[tuple[str, str]] = []
+
+    def _raise_guard(_agent_id: str) -> list[str]:
+        raise RuntimeError("metadata unavailable")
+
+    conversation_manager = SimpleNamespace(
+        agents_sharing_session=_raise_guard,
+        delete_agent_conversation=lambda agent_id, conversation_id: delete_calls.append(
+            (agent_id, conversation_id)
+        )
+        or False,
+    )
+    core = SimpleNamespace(conversation_manager=conversation_manager)
+
+    result = delete_agent_conversation_guarded(core, "worker", "conv_missing")
+
+    assert result == {"success": False, "warning": None}
+    assert delete_calls == [("worker", "conv_missing")]
+
+
+def test_agent_catalog_and_roster_helpers_delegate(monkeypatch: pytest.MonkeyPatch):
+    calls: list[tuple[str, tuple[Any, ...]]] = []
+
+    def _catalog(config: Any) -> list[dict[str, Any]]:
+        calls.append(("catalog", (config,)))
+        return [{"id": "persona"}]
+
+    class _AgentManager:
+        def __init__(
+            self,
+            *,
+            conversation_manager: Any,
+            config: Any,
+            runtime_config: Any,
+            is_paused_fn: Any,
+        ) -> None:
+            calls.append(
+                (
+                    "manager",
+                    (conversation_manager, config, runtime_config, is_paused_fn),
+                )
+            )
+
+        def get_roster(self) -> list[dict[str, Any]]:
+            calls.append(("roster", ()))
+            return [{"id": "worker"}]
+
+        def get_profile(self, agent_id: str) -> dict[str, Any] | None:
+            calls.append(("profile", (agent_id,)))
+            return {"id": agent_id}
+
+    monkeypatch.setattr("penguin.agent.manager.get_persona_catalog", _catalog)
+    monkeypatch.setattr("penguin.agent.manager.AgentManager", _AgentManager)
+
+    core = SimpleNamespace(
+        config=SimpleNamespace(name="config"),
+        conversation_manager=SimpleNamespace(name="cm"),
+        runtime_config=SimpleNamespace(name="runtime"),
+        is_agent_paused=lambda _agent_id: False,
+    )
+
+    assert get_persona_catalog(core) == [{"id": "persona"}]
+    assert get_agent_roster(core) == [{"id": "worker"}]
+    assert get_agent_profile(core, "worker") == {"id": "worker"}
+    assert [call[0] for call in calls] == [
+        "catalog",
+        "manager",
+        "roster",
+        "manager",
+        "profile",
+    ]
+
+
+def test_agent_conversation_facade_helpers_delegate_to_conversation_manager() -> None:
+    calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+
+    class _ConversationManager:
+        def create_agent_conversation(self, agent_id: str) -> str:
+            calls.append(("create", (agent_id,), {}))
+            return f"conversation:{agent_id}"
+
+        def list_all_conversations(
+            self,
+            *,
+            limit_per_agent: int,
+            offset: int,
+        ) -> list[dict[str, Any]]:
+            calls.append(
+                (
+                    "list_all",
+                    (),
+                    {"limit_per_agent": limit_per_agent, "offset": offset},
+                )
+            )
+            return [{"id": "conversation:worker"}]
+
+        def load_agent_conversation(
+            self,
+            agent_id: str,
+            conversation_id: str,
+            *,
+            activate: bool,
+        ) -> bool:
+            calls.append(
+                (
+                    "load",
+                    (agent_id, conversation_id),
+                    {"activate": activate},
+                )
+            )
+            return activate
+
+        def list_agents(self) -> list[str]:
+            calls.append(("list_agents", (), {}))
+            return ["default", "worker"]
+
+        def list_sub_agents(
+            self,
+            parent_agent_id: str | None = None,
+        ) -> dict[str, list[str]]:
+            calls.append(("list_sub_agents", (parent_agent_id,), {}))
+            return {"default": ["worker"]}
+
+    core = SimpleNamespace(conversation_manager=_ConversationManager())
+
+    assert create_agent_conversation(core, "worker") == "conversation:worker"
+    assert list_agent_conversations(
+        core,
+        limit_per_agent=5,
+        offset=2,
+    ) == [{"id": "conversation:worker"}]
+    assert (
+        load_agent_conversation(
+            core,
+            "worker",
+            "conversation:worker",
+            activate=False,
+        )
+        is False
+    )
+    assert list_agents(core) == ["default", "worker"]
+    assert list_sub_agents(core, "default") == {"default": ["worker"]}
+    assert calls == [
+        ("create", ("worker",), {}),
+        ("list_all", (), {"limit_per_agent": 5, "offset": 2}),
+        ("load", ("worker", "conversation:worker"), {"activate": False}),
+        ("list_agents", (), {}),
+        ("list_sub_agents", ("default",), {}),
+    ]
+
+
+def test_unregister_agent_can_preserve_conversation() -> None:
+    calls: list[str] = []
+    core = SimpleNamespace(
+        engine=SimpleNamespace(unregister_agent=lambda agent_id: calls.append(agent_id))
+    )
+
+    assert unregister_agent(core, "worker", preserve_conversation=True) is True
+    assert calls == ["worker"]

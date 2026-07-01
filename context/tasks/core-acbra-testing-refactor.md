@@ -53,12 +53,38 @@ This campaign depends on:
 - `context/tasks/tool-call-runtime-architecture.md`
 - `context/tasks/forking-checkpoints-testing.md`
 - `context/tasks/penguin_tla.md`
+- `context/tasks/core-refactor-phase-5.md`
+- `context/tasks/core-refactor-phase-6.md`
+- `context/tasks/core-refactor-phase-7.md`
+- `context/tasks/core-refactor-phase-8.md`
+- `context/tasks/core-refactor-future-overkill-reliability.md`
 - `context/process/blueprint.template.md` for the ITUV lifecycle
 
 The campaign should not resurrect `context/archive/plans/core-refactor-plan.md`
 verbatim. That plan is historically useful, but `core.py` has since changed
 substantially and Penguin already has streaming primitives in
 `penguin/llm/stream_handler.py`.
+
+Reference upstream OpenCode at
+`/Users/maximusputnam/Code/Penguin/penguin/reference/opencode` when planning
+future `penguin-tui` work and when auditing OpenAI auth or related provider
+handling. Treat it as a reference implementation for event, auth, provider, and
+session-flow shape, not as code to copy blindly.
+
+## Phase Sequencing Update
+
+Phases 7 and 8 stay on the already planned path:
+
+- **Phase 7**: continue bounded `PenguinCore` extraction slices behind
+  characterized contracts.
+- **Phase 8**: assault the extracted boundaries with deterministic
+  random-order, property, state-machine, replay, fault-injection, and small
+  mutation-test candidates.
+
+The broader safety-critical reliability effort is deferred to future phases.
+Those future phases can add overkill testing, formal models, observability,
+metrics, replay pipelines, and production-grade assurance after the current
+refactor has made subsystem ownership clear.
 
 ## ITUV Gate
 

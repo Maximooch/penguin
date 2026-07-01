@@ -3,21 +3,19 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from penguin.core import PenguinCore
-from penguin.llm.model_config import ModelConfig
-from penguin.llm.model_config import safe_context_window
+from penguin.llm.model_config import ModelConfig, safe_context_window
 
 
 def _attach_core_helpers(core_like: SimpleNamespace) -> None:
     core_like._canonicalize_runtime_model_id = (
         lambda model_id,
         provider,
-        client_preference: PenguinCore._canonicalize_runtime_model_id(  # noqa: E501
+        client_preference: PenguinCore._canonicalize_runtime_model_id(
             core_like,
             model_id,
             provider,
@@ -25,11 +23,15 @@ def _attach_core_helpers(core_like: SimpleNamespace) -> None:
         )
     )
     core_like._build_model_config_for_model = (
-        lambda model_id: PenguinCore._build_model_config_for_model(  # noqa: E501
+        lambda model_id: PenguinCore._build_model_config_for_model(
             core_like,
             model_id,
         )
     )
+
+
+def _model_facade_globals() -> dict[str, object]:
+    return PenguinCore._build_model_config_for_model.__globals__
 
 
 def test_resolve_model_provider_prefers_config_entry() -> None:
@@ -143,7 +145,10 @@ async def test_load_model_resolves_provider_before_fetch() -> None:
     core_like._resolve_model_provider = _resolve
     core_like._apply_new_model_config = _apply
 
-    with patch("penguin.core.fetch_model_specs", new=AsyncMock(side_effect=_fetch)):
+    with patch.dict(
+        _model_facade_globals(),
+        {"fetch_model_specs": AsyncMock(side_effect=_fetch)},
+    ):
         ok = await PenguinCore.load_model(core_like, "openrouter/openai/gpt-5")
 
     assert ok is True
@@ -177,9 +182,8 @@ async def test_load_model_allows_native_anthropic_without_openrouter_specs() -> 
     core_like._resolve_model_provider = _resolve
     core_like._apply_new_model_config = _apply
 
-    with patch(
-        "penguin.core.fetch_model_specs", new=AsyncMock(return_value={})
-    ) as fetch:
+    fetch = AsyncMock(return_value={})
+    with patch.dict(_model_facade_globals(), {"fetch_model_specs": fetch}):
         ok = await PenguinCore.load_model(
             core_like,
             "anthropic/claude-3-7-sonnet-latest",
@@ -211,7 +215,10 @@ async def test_load_model_surfaces_reason_when_openrouter_specs_missing() -> Non
     core_like._resolve_model_provider = _resolve
     core_like._apply_new_model_config = _apply
 
-    with patch("penguin.core.fetch_model_specs", new=AsyncMock(return_value={})):
+    with patch.dict(
+        _model_facade_globals(),
+        {"fetch_model_specs": AsyncMock(return_value={})},
+    ):
         ok = await PenguinCore.load_model(core_like, "openrouter/openai/gpt-5")
 
     assert ok is False
@@ -241,14 +248,16 @@ async def test_load_model_does_not_use_context_window_as_output_cap() -> None:
     core_like._resolve_model_provider = _resolve
     core_like._apply_new_model_config = _apply
 
-    with patch(
-        "penguin.core.fetch_model_specs",
-        new=AsyncMock(
-            return_value={
-                "context_length": 204800,
-                "max_output_tokens": None,
-            }
-        ),
+    with patch.dict(
+        _model_facade_globals(),
+        {
+            "fetch_model_specs": AsyncMock(
+                return_value={
+                    "context_length": 204800,
+                    "max_output_tokens": None,
+                }
+            )
+        },
     ):
         ok = await PenguinCore.load_model(core_like, "openrouter/z-ai/glm-5.1")
 
@@ -282,14 +291,16 @@ async def test_load_model_clamps_explicit_max_output_tokens_to_safe_window() -> 
     core_like._resolve_model_provider = _resolve
     core_like._apply_new_model_config = _apply
 
-    with patch(
-        "penguin.core.fetch_model_specs",
-        new=AsyncMock(
-            return_value={
-                "context_length": 204800,
-                "max_output_tokens": 202752,
-            }
-        ),
+    with patch.dict(
+        _model_facade_globals(),
+        {
+            "fetch_model_specs": AsyncMock(
+                return_value={
+                    "context_length": 204800,
+                    "max_output_tokens": 202752,
+                }
+            )
+        },
     ):
         ok = await PenguinCore.load_model(core_like, "openrouter/z-ai/glm-5.1")
 
@@ -327,14 +338,16 @@ async def test_load_model_clamps_for_model_max_output_tokens_to_safe_window() ->
     core_like._resolve_model_provider = _resolve
     core_like._apply_new_model_config = _apply
 
-    with patch(
-        "penguin.core.fetch_model_specs",
-        new=AsyncMock(
-            return_value={
-                "context_length": 204800,
-                "max_output_tokens": None,
-            }
-        ),
+    with patch.dict(
+        _model_facade_globals(),
+        {
+            "fetch_model_specs": AsyncMock(
+                return_value={
+                    "context_length": 204800,
+                    "max_output_tokens": None,
+                }
+            )
+        },
     ):
         ok = await PenguinCore.load_model(core_like, "openrouter/z-ai/glm-5.1")
 

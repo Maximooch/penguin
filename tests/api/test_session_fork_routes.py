@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+import copy
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from fastapi import HTTPException
@@ -12,7 +12,14 @@ from fastapi import HTTPException
 from penguin.system.state import Message, MessageCategory, Session
 from penguin.web.routes import SessionForkRequest, api_session_fork, session_fork
 from penguin.web.services.session_fork import fork_session
-from penguin.web.services.session_view import TRANSCRIPT_KEY, get_session_messages
+from penguin.web.services.session_view import (
+    AGENT_MODE_KEY,
+    TRANSCRIPT_KEY,
+    get_session_messages,
+)
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class _Manager:
@@ -92,12 +99,27 @@ def _seed_session(core: _Core, directory: Path) -> Session:
         role="user",
         content="first prompt",
         category=MessageCategory.DIALOG,
+        metadata={
+            "opencode_info": {
+                "id": "msg_user_1",
+                "sessionID": session.id,
+                "role": "user",
+            }
+        },
     )
     assistant_1 = Message(
         id="msg_assistant_1",
         role="assistant",
         content="first answer",
         category=MessageCategory.DIALOG,
+        metadata={
+            "opencode_info": {
+                "id": "msg_assistant_1",
+                "sessionID": session.id,
+                "role": "assistant",
+                "parentID": "msg_user_1",
+            }
+        },
     )
     user_2 = Message(
         id="msg_user_2",
@@ -194,6 +216,129 @@ def test_fork_session_clones_history_before_requested_message(tmp_path: Path) ->
     assert rows[0]["info"]["id"] != "msg_user_1"
     assert rows[1]["info"]["id"] != "msg_assistant_1"
     assert rows[1]["info"]["parentID"] == rows[0]["info"]["id"]
+
+
+def test_fork_session_preserves_source_and_rewrites_legacy_message_lineage(
+    tmp_path: Path,
+) -> None:
+    core = _Core(tmp_path)
+    source = _seed_session(core, tmp_path)
+    before_metadata = copy.deepcopy(source.metadata)
+    before_messages = copy.deepcopy(source.messages)
+
+    info = fork_session(cast(Any, core), source.id, message_id="msg_user_2")
+
+    assert info is not None
+    assert source.metadata == before_metadata
+    assert source.messages == before_messages
+
+    forked = core.conversation_manager.session_manager.load_session(info["id"])
+    assert forked is not None
+    assert [message.id for message in forked.messages] != [
+        "msg_user_1",
+        "msg_assistant_1",
+    ]
+
+    first_info = forked.messages[0].metadata["opencode_info"]
+    second_info = forked.messages[1].metadata["opencode_info"]
+    assert first_info["sessionID"] == forked.id
+    assert second_info["sessionID"] == forked.id
+    assert first_info["id"] == forked.messages[0].id
+    assert second_info["id"] == forked.messages[1].id
+    assert second_info["parentID"] == first_info["id"]
+    assert source.id not in {first_info["sessionID"], second_info["sessionID"]}
+
+
+def test_fork_session_rewrites_corrupt_transcript_without_source_id_bleed(
+    tmp_path: Path,
+) -> None:
+    core = _Core(tmp_path)
+    source = _seed_session(core, tmp_path)
+    transcript = source.metadata[TRANSCRIPT_KEY]
+    assistant_entry = transcript["messages"]["msg_assistant_1"]
+    assistant_entry.pop("info")
+    assistant_entry["part_order"] = ["missing_part", "part_assistant_1"]
+    before_metadata = copy.deepcopy(source.metadata)
+
+    info = fork_session(cast(Any, core), source.id, message_id="msg_user_2")
+
+    assert info is not None
+    assert source.metadata == before_metadata
+    forked = core.conversation_manager.session_manager.load_session(info["id"])
+    assert forked is not None
+    rows = get_session_messages(cast(Any, core), forked.id)
+    assert rows is not None
+    assert len(rows) == 2
+
+    source_message_ids = {"msg_user_1", "msg_assistant_1", "msg_user_2"}
+    for row in rows:
+        row_info = row["info"]
+        assert row_info["sessionID"] == forked.id
+        assert row_info["id"] not in source_message_ids
+        for part in row["parts"]:
+            assert part["sessionID"] == forked.id
+            assert part["messageID"] == row_info["id"]
+            assert part["id"] not in {"part_user_1", "part_assistant_1"}
+
+
+def test_fork_session_drops_parent_outside_fork_boundary(tmp_path: Path) -> None:
+    core = _Core(tmp_path)
+    source = _seed_session(core, tmp_path)
+    transcript = source.metadata[TRANSCRIPT_KEY]
+    assistant_info = transcript["messages"]["msg_assistant_1"]["info"]
+    assistant_info["parentID"] = "msg_user_2"
+    before_metadata = copy.deepcopy(source.metadata)
+
+    info = fork_session(cast(Any, core), source.id, message_id="msg_user_2")
+
+    assert info is not None
+    assert source.metadata == before_metadata
+    forked = core.conversation_manager.session_manager.load_session(info["id"])
+    assert forked is not None
+
+    rows = get_session_messages(cast(Any, core), forked.id)
+    assert rows is not None
+    assert len(rows) == 2
+    assert "parentID" not in rows[1]["info"]
+    assert rows[1]["info"]["sessionID"] == forked.id
+
+    cloned_info = forked.messages[1].metadata["opencode_info"]
+    assert "parentID" not in cloned_info
+    assert source.id not in {
+        rows[0]["info"]["sessionID"],
+        rows[1]["info"]["sessionID"],
+    }
+
+
+def test_fork_session_copies_permission_and_agent_mode_without_mutable_bleed(
+    tmp_path: Path,
+) -> None:
+    core = _Core(tmp_path)
+    source = _seed_session(core, tmp_path)
+    source.metadata["permission"] = [
+        {"type": "edit", "scope": {"path": "src/app.py"}},
+    ]
+    source.metadata["agent_mode"] = "PLAN"
+    before_metadata = copy.deepcopy(source.metadata)
+
+    info = fork_session(cast(Any, core), source.id, message_id="msg_user_2")
+
+    assert info is not None
+    assert source.metadata == before_metadata
+
+    forked = core.conversation_manager.session_manager.load_session(info["id"])
+    assert forked is not None
+    assert forked.metadata["permission"] == source.metadata["permission"]
+    assert forked.metadata["permission"] is not source.metadata["permission"]
+    assert forked.metadata["permission"][0] is not source.metadata["permission"][0]
+    assert forked.metadata[AGENT_MODE_KEY] == "plan"
+
+    forked.metadata["permission"][0]["scope"]["path"] = "changed.py"
+
+    assert source.metadata["permission"][0]["scope"]["path"] == "src/app.py"
+    assert forked.metadata["forked_from_session_id"] == source.id
+    assert forked.metadata["forked_from_message_id"] == "msg_user_2"
+    assert core._opencode_session_directories[forked.id] == str(tmp_path)
 
 
 @pytest.mark.asyncio

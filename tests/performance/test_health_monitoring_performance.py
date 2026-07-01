@@ -5,20 +5,21 @@ to ensure it can handle concurrent requests and doesn't degrade
 system performance.
 """
 
-import os
-import time
-import urllib.request
-import urllib.error
 import json
-import threading
+import os
 import statistics
-from typing import Any, Dict, List
+import threading
+import time
+import urllib.error
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Dict
+
 import pytest
 
+pytestmark = [pytest.mark.e2e, pytest.mark.slow]
 
 BASE_URL = os.environ.get("PENGUIN_API_URL", "http://127.0.0.1:8000")
-pytestmark = pytest.mark.slow
 
 # Test configuration
 CONCURRENT_REQUESTS = 10
@@ -77,7 +78,7 @@ def test_health_endpoint_latency():
     # Health endpoint should be fast (under 500ms on average)
     assert avg_latency < 500, f"Average latency too high: {avg_latency:.2f}ms"
 
-    print(f"✓ Health endpoint latency acceptable:")
+    print("✓ Health endpoint latency acceptable:")
     print(f"  - Average: {avg_latency:.2f}ms")
     print(f"  - Median: {median_latency:.2f}ms")
     print(f"  - Min: {min_latency:.2f}ms")
@@ -149,7 +150,7 @@ def test_concurrent_health_requests():
     # Under concurrent load, latency should still be reasonable
     assert avg_latency < 1000, f"Average latency under load too high: {avg_latency:.2f}ms"
 
-    print(f"✓ Concurrent requests handled successfully:")
+    print("✓ Concurrent requests handled successfully:")
     print(f"  - Requests: {CONCURRENT_REQUESTS}")
     print(f"  - Total time: {total_time:.2f}s")
     print(f"  - Success rate: {success_count}/{CONCURRENT_REQUESTS}")
@@ -193,7 +194,7 @@ def test_sequential_load():
     latency_increase = last_10_avg - first_10_avg
     latency_increase_percent = (latency_increase / first_10_avg) * 100
 
-    print(f"✓ Sequential load handled successfully:")
+    print("✓ Sequential load handled successfully:")
     print(f"  - Requests: {SEQUENTIAL_REQUESTS}")
     print(f"  - Total time: {total_time:.2f}s")
     print(f"  - Average latency: {avg_latency:.2f}ms")
@@ -232,7 +233,7 @@ def test_resource_usage_tracking():
     else:
         memory_increase_percent = 0
 
-    print(f"✓ Resource usage tracking:")
+    print("✓ Resource usage tracking:")
     print(f"  - Initial memory: {initial_memory:.2f} MB")
     print(f"  - Final memory: {final_memory:.2f} MB")
     print(f"  - Memory increase: {memory_increase_percent:.1f}%")
@@ -266,7 +267,7 @@ def test_performance_metrics_collection():
     assert request_count >= 10, \
         f"Performance metrics should track requests (got {request_count})"
 
-    print(f"✓ Performance metrics collection working:")
+    print("✓ Performance metrics collection working:")
     print(f"  - Request count: {request_count}")
     print(f"  - Average latency: {avg_latency:.2f}ms")
     print(f"  - P95 latency: {p95_latency:.2f}ms")
@@ -330,7 +331,7 @@ def test_stress_test():
 
     assert error_rate < 0.05, f"Error rate too high under stress: {error_rate * 100:.1f}%"
 
-    print(f"✓ Stress test completed:")
+    print("✓ Stress test completed:")
     print(f"  - Duration: {total_time:.2f}s")
     print(f"  - Total requests: {request_count}")
     print(f"  - Successful: {success_count}")
@@ -375,7 +376,7 @@ def test_no_memory_leak():
         else:
             growth_percent = 0
 
-        print(f"✓ Memory leak test:")
+        print("✓ Memory leak test:")
         print(f"  - Initial memory (avg first third): {avg_first:.2f} MB")
         print(f"  - Final memory (avg last third): {avg_last:.2f} MB")
         print(f"  - Growth: {growth_percent:.1f}%")

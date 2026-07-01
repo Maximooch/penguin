@@ -6,11 +6,20 @@ import pytest
 from penguin.core import PenguinCore
 from penguin.system.state import MessageCategory
 
+class FakeAPIClient:
+    def __init__(self, model_config, **kwargs):
+        self.model_config = model_config
+        self.kwargs = kwargs
+        self.system_prompt = None
+        self.client_handler = None
+
+    def set_system_prompt(self, prompt):
+        self.system_prompt = prompt
+
 
 @pytest.fixture(autouse=True)
-def _offline_provider_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
+def _fake_api_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("penguin.core.APIClient", FakeAPIClient)
 
 
 @pytest.mark.asyncio
@@ -19,7 +28,16 @@ async def test_agent_isolation_and_partial_share(tmp_path: Path):
     workspace = tmp_path / "penguin_workspace"
     workspace.mkdir(parents=True, exist_ok=True)
 
-    core = await PenguinCore.create(workspace_path=str(workspace), enable_cli=False, fast_startup=True)
+    core = await PenguinCore.create(
+        workspace_path=str(workspace),
+        enable_cli=False,
+        fast_startup=True,
+    )
+    assert Path(core.config.workspace_path).resolve() == workspace.resolve()
+    assert (
+        Path(core.conversation_manager.workspace_path).resolve()
+        == workspace.resolve()
+    )
 
     # Parent agent: ensure some SYSTEM + CONTEXT content exists
     cm = core.conversation_manager
@@ -32,7 +50,13 @@ async def test_agent_isolation_and_partial_share(tmp_path: Path):
     # Register an isolated sub-agent with lower model limit
     child_id = "child_agent"
     await asyncio.sleep(0)  # ensure event loop ready
-    core.register_agent(child_id, share_session_with=parent_id, model_max_tokens=168_000)
+    core.create_sub_agent(
+        child_id,
+        parent_agent_id=parent_id,
+        share_session=False,
+        share_context_window=False,
+        shared_context_window_max_tokens=168_000,
+    )
 
     # Check smoke snapshot
     snap = core.smoke_check_agents()
@@ -57,7 +81,16 @@ async def test_checkpoints_and_autosave(tmp_path: Path):
     workspace = tmp_path / "penguin_workspace"
     workspace.mkdir(parents=True, exist_ok=True)
 
-    core = await PenguinCore.create(workspace_path=str(workspace), enable_cli=False, fast_startup=True)
+    core = await PenguinCore.create(
+        workspace_path=str(workspace),
+        enable_cli=False,
+        fast_startup=True,
+    )
+    assert Path(core.config.workspace_path).resolve() == workspace.resolve()
+    assert (
+        Path(core.conversation_manager.workspace_path).resolve()
+        == workspace.resolve()
+    )
     cm = core.conversation_manager
 
     # Add a message to trigger checkpoint logic (frequency=1 by default)

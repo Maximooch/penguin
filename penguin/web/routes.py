@@ -81,6 +81,12 @@ from penguin.web.services.session_view import (
     remove_session_info,
     update_session_info,
 )
+from penguin.web.services.session_events import (
+    emit_session_created_event as _emit_session_created_event,
+    emit_session_deleted_event as _emit_session_deleted_event,
+    emit_session_diff_event as _emit_session_diff_event,
+    emit_session_updated_event as _emit_session_updated_event,
+)
 from penguin.web.services.session_fork import fork_session
 from penguin.web.services.session_revert import revert_session, unrevert_session
 from penguin.web.services.session_summary import summarize_session_title
@@ -5376,8 +5382,14 @@ async def execute_task_from_project(
 
         payload = request or TaskExecutionRequest()
         project = None
-        if task.project_id and hasattr(core.project_manager, "get_project_async"):
-            project = await core.project_manager.get_project_async(task.project_id)
+        get_project_async = getattr(core.project_manager, "get_project_async", None)
+        if task.project_id and callable(get_project_async):
+            project_candidate = get_project_async(task.project_id)
+            project = (
+                await project_candidate
+                if asyncio.iscoroutine(project_candidate)
+                else project_candidate
+            )
         resolved_directory = normalize_directory(payload.directory) or normalize_directory(
             getattr(project, "workspace_path", None)
         )
@@ -6309,12 +6321,27 @@ async def upload_file(
                 detail="Unsupported file extension. Allowed extensions: .gif, .jpeg, .jpg, .png, .webp.",
             )
 
+        max_upload_bytes = _max_upload_bytes()
+        try:
+            original_position = file.file.tell()
+            file.file.seek(0, os.SEEK_END)
+            upload_size = file.file.tell()
+            file.file.seek(original_position)
+            if upload_size > max_upload_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File exceeds upload size limit of {max_upload_bytes} bytes",
+                )
+        except HTTPException:
+            raise
+        except (AttributeError, OSError):
+            pass
+
         uploads_dir = Path(WORKSPACE_PATH) / "uploads"
         uploads_dir.mkdir(exist_ok=True)
 
         unique_filename = f"{uuid.uuid4()}{extension}"
         file_path = uploads_dir / unique_filename
-        max_upload_bytes = _max_upload_bytes()
         bytes_written = 0
 
         with open(file_path, "wb") as buffer:

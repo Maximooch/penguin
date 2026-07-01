@@ -1,6 +1,6 @@
 # Run Mode
 
-The `RunMode` provides autonomous operation capabilities for the Penguin AI assistant, allowing it to switch from interactive conversation to task-driven execution mode.
+`RunMode` provides autonomous operation capabilities for Penguin, allowing it to switch from interactive conversation to task-driven execution mode.
 
 ## Overview
 
@@ -31,10 +31,9 @@ classDiagram
     }
 
     class PenguinCore {
-        +engine? : Engine
+        +engine : Engine
         +conversation_manager
         +project_manager
-        +get_response() // Legacy fallback
     }
 
     class ProjectManager {
@@ -43,7 +42,7 @@ classDiagram
     }
 
     RunMode --> PenguinCore : uses
-    PenguinCore --> Engine : delegates to (optional)
+    PenguinCore --> Engine : delegates to
     PenguinCore --> ProjectManager : uses
     RunMode ..> Engine : uses via core._execute_task
 ```
@@ -52,43 +51,27 @@ classDiagram
 
 The core logic for executing a task within `RunMode` resides in the `_execute_task` method.
 
-1.  **Check for Engine:** It first checks if the `PenguinCore` instance has an initialized `Engine`.
-2.  **Delegate to Engine (Preferred):** If the `Engine` exists, `_execute_task` delegates the entire multi-step reasoning and action loop to `Engine.run_task(task_prompt_full, max_iterations=self.max_iterations)`. The `Engine` handles the iterations, LLM calls, action execution, and stop conditions.
-3.  **Legacy Fallback:** If the `Engine` is *not* available (e.g., failed initialization), `_execute_task` falls back to its internal legacy loop:
-    *   It prepares the initial task prompt and adds it to the conversation.
-    *   It iterates up to `max_iterations`:
-        *   Calls `PenguinCore.get_response()` to get the next LLM response and potential actions based on the *current* conversation state.
-        *   Displays assistant output and action results.
-        *   Checks for completion or stop phrases in the response.
-        *   Continues the loop, building upon the conversation history.
-4.  **Handle Completion/Error:** Returns the final status (completed, interrupted, error) and message.
+1. **Prepare task prompt and context:** RunMode resolves the task name, description, metadata, optional `agent_id`, and optional `agent_role`.
+2. **Delegate to Engine:** `_execute_task` delegates the multi-step reasoning and action loop to `Engine.run_task(...)`. The Engine handles iterations, LLM calls, action execution, stop conditions, and MessageBus routing.
+3. **Bridge runtime events:** RunMode forwards assistant/reasoning chunks and tool events through PenguinCore's streaming/event methods so CLI, web, and TUI consumers see one coherent stream.
+4. **Handle completion/error:** Returns the final status, non-terminal clarification state, cancellation, or error payload.
+
+If Engine is unavailable, RunMode fails closed with an explicit error instead of silently running an alternate legacy loop.
 
 ```mermaid
 flowchart TD
-    StartExecute[Start _execute_task] --> CheckEngine{Engine Available?}
+    StartExecute[Start _execute_task] --> CheckEngine{Engine wired?}
 
     CheckEngine -- Yes --> DelegateToEngine[Delegate to Engine.run_task]
     DelegateToEngine --> EngineHandlesLoop[Engine Manages Iteration Loop]
     EngineHandlesLoop --> GetEngineResult[Get Final Result from Engine]
 
-    CheckEngine -- No --> StartLegacyLoop[Start Legacy Iteration Loop]
-    subgraph LegacyLoop[Legacy RunMode Loop (Fallback)]
-        direction TB
-        PrepPrompt[Prepare Initial Prompt] --> Iter[Iteration Check]
-        Iter -- Iter < Max --> CallCore[Call core.get_response]
-        CallCore --> DisplayResults[Display Results]
-        DisplayResults --> CheckComplete{Completion Phrase?}
-        CheckComplete -- No --> Iter
-        CheckComplete -- Yes --> ExitLegacyLoop[Exit Legacy Loop]
-        Iter -- Iter >= Max --> ExitLegacyLoop
-    end
-    StartLegacyLoop --> PrepPrompt
-    ExitLegacyLoop --> GetLegacyResult[Get Final Result from Loop]
+    CheckEngine -- No --> FailClosed[Return explicit Engine unavailable error]
 
     GetEngineResult --> EndExecute[Return Result]
-    GetLegacyResult --> EndExecute
+    FailClosed --> EndExecute
 
-    style LegacyLoop fill:#fff3e0,stroke:#ff9800
+    style FailClosed fill:#fff3e0,stroke:#ff9800
 ```
 
 ## Continuous Mode Operation
@@ -135,8 +118,8 @@ def __init__(
 ```
 
 Parameters:
-- `core`: `PenguinCore` instance to use for operations. `RunMode` will use `core.engine` if available.
-- `max_iterations`: Maximum iterations per task (used primarily in legacy fallback loop). Default from config.
+- `core`: `PenguinCore` instance to use for operations. `RunMode` delegates task execution to `core.engine`.
+- `max_iterations`: Maximum iterations per task. Default from config.
 - `time_limit`: Optional time limit in minutes for continuous mode.
 
 ## Key Methods
@@ -173,11 +156,11 @@ async def _execute_task(
 ) -> Dict[str, Any]
 ```
 
-Executes a task. **Crucially, this method now attempts to delegate the entire execution loop to `PenguinCore.engine.run_task` if the `Engine` is available.** If not, it falls back to its internal iterative loop using `PenguinCore.get_response`. Returns a dictionary with the task status and final message.
+Executes a task by delegating the reasoning/action loop to `PenguinCore.engine.run_task`. If Engine is unavailable, RunMode returns an explicit error. Returns a dictionary with the task status, final message, and any non-terminal state such as clarification requests.
 
 ## Task Completion & Control Phrases
 
-RunMode uses special phrases, typically checked within the `Engine` loop or the legacy fallback loop, to manage task flow:
+RunMode and Engine still recognize legacy control phrases for compatibility, but new task completion should prefer the structured task tools where available:
 
 -   `TASK_COMPLETION_PHRASE` (e.g., "TASK_COMPLETED"): Signals that a specific task's objective has been met.
 -   `CONTINUOUS_COMPLETION_PHRASE` (e.g., "CONTINUOUS_MODE_COMPLETE"): Signals the end of the entire continuous mode session (not just one task).
@@ -191,10 +174,9 @@ When running a task (`start` or within `start_continuous`), `RunMode` primarily:
 1.  Retrieves or prepares task details (name, description, context).
 2.  Calls `_execute_task`.
 3.  `_execute_task` checks for `core.engine`.
-4.  **If Engine exists:** Delegates to `Engine.run_task` to handle the multi-step process until completion, stop condition, or error.
-5.  **If Engine *doesn't* exist:** Initiates its own loop, calling `core.get_response` iteratively, checking for completion phrases itself.
-6.  Handles the result (success, error, interruption, clarification needed).
-7.  In continuous mode, loops to get the next task.
+4.  Delegates to `Engine.run_task` to handle the multi-step process until completion, stop condition, clarification, cancellation, or error.
+5.  Handles the result (success, error, interruption, clarification needed).
+6.  In continuous mode, loops to get the next task.
 
 ## Continuous Mode
 
@@ -368,4 +350,4 @@ See [Orchestration](./orchestration.md) for detailed workflow documentation.
 
 - [Blueprints](./blueprints.md) - Spec-driven task creation
 - [Orchestration](./orchestration.md) - ITUV workflow execution
-- [Project Management](../usage/project_management.md) - Task and project APIs 
+- [Project Management](../usage/project_management.md) - Task and project APIs

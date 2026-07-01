@@ -103,7 +103,7 @@ def test_sub_agent_clamp_and_partial_share_once(tmp_path):
         parent_agent_id=parent_id,
         share_session=False,
         share_context_window=False,
-        shared_cw_max_tokens=512,
+        shared_context_window_max_tokens=512,
     )
 
     child_cw = cm.agent_context_windows["child"]

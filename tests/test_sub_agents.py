@@ -10,9 +10,9 @@ Tests:
 6. OpenRouter API verification for haiku-4.5
 """
 
-import sys
 import asyncio
 import os
+import sys
 
 import pytest
 
@@ -20,6 +20,8 @@ sys.path.insert(0, ".")
 
 from penguin.config import Config
 from penguin.core import PenguinCore
+
+pytestmark = [pytest.mark.e2e, pytest.mark.live]
 
 
 class StubAPIClient:
@@ -250,7 +252,7 @@ def test_openrouter_haiku_api():
     model_used = data.get("model", "")
     content = data["choices"][0]["message"]["content"]
 
-    print(f"✓ API call successful")
+    print("✓ API call successful")
     print(f"  Model used: {model_used}")
     print(f"  Response: {content}")
 

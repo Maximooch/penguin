@@ -4,14 +4,17 @@ These tests verify basic endpoints that don't require complex setup or API keys.
 Run against a live container or local server.
 """
 
+import json
 import os
 import time
-import urllib.request
 import urllib.error
-import json
+import urllib.request
 from typing import Any, Dict
 import pytest
 
+import pytest
+
+pytestmark = pytest.mark.e2e
 
 BASE_URL = os.environ.get("PENGUIN_API_URL", "http://127.0.0.1:8000")
 pytestmark = pytest.mark.e2e
@@ -113,14 +116,14 @@ if __name__ == "__main__":
     import sys
 
     print(f"\nRunning Priority 1 API smoke tests against {BASE_URL}\n")
-    
+
     # Wait for server to be ready
     try:
         _wait_for_server()
     except RuntimeError as e:
         print(f"✗ {e}")
         sys.exit(1)
-    
+
     print()
     tests = [
         test_health,
