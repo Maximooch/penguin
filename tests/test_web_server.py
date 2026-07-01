@@ -1,8 +1,21 @@
+import logging
 import sys
 import types
-import logging
+
+import pytest
 
 from penguin.web import server
+
+
+@pytest.fixture(autouse=True)
+def disable_web_file_logging(monkeypatch):
+    monkeypatch.setenv("PENGUIN_WEB_LOG_ENABLED", "false")
+    yield
+    root_logger = logging.getLogger()
+    for handler in list(root_logger.handlers):
+        if getattr(handler, server.SERVER_LOG_HANDLER_FLAG, False):
+            root_logger.removeHandler(handler)
+            handler.close()
 
 
 def test_resolve_runtime_settings_prefers_cli_args(monkeypatch):
@@ -31,6 +44,59 @@ def test_resolve_runtime_settings_uses_env_fallback(monkeypatch):
     assert debug is True
 
 
+def test_resolve_server_log_path_defaults_to_workspace(monkeypatch, tmp_path):
+    monkeypatch.delenv("PENGUIN_WEB_LOG_FILE", raising=False)
+    monkeypatch.delenv("PENGUIN_WEB_LOG_DIR", raising=False)
+    monkeypatch.setenv("PENGUIN_WORKSPACE", str(tmp_path))
+
+    log_path = server._resolve_server_log_path()
+
+    assert log_path.parent == tmp_path / "server-logs"
+    assert log_path.name.startswith("penguin-web-")
+    assert log_path.suffix == ".txt"
+
+
+def test_resolve_server_log_path_uses_log_dir_override(monkeypatch, tmp_path):
+    monkeypatch.delenv("PENGUIN_WEB_LOG_FILE", raising=False)
+    monkeypatch.setenv("PENGUIN_WEB_LOG_DIR", str(tmp_path / "runs"))
+
+    log_path = server._resolve_server_log_path()
+
+    assert log_path.parent == tmp_path / "runs"
+    assert log_path.name.startswith("penguin-web-")
+    assert log_path.suffix == ".txt"
+
+
+def test_resolve_server_log_path_file_override_stays_exact(monkeypatch, tmp_path):
+    log_file = tmp_path / "custom" / "logs.txt"
+    monkeypatch.setenv("PENGUIN_WEB_LOG_FILE", str(log_file))
+    monkeypatch.setenv("PENGUIN_WEB_LOG_DIR", str(tmp_path / "ignored"))
+
+    assert server._resolve_server_log_path() == log_file.resolve()
+
+
+def test_configure_server_file_logging_can_be_disabled():
+    assert server._configure_server_file_logging("info") is None
+
+
+def test_configure_server_file_logging_creates_uvicorn_log_config(
+    monkeypatch, tmp_path
+):
+    log_dir = tmp_path / "server-logs"
+    monkeypatch.setenv("PENGUIN_WEB_LOG_ENABLED", "true")
+    monkeypatch.setenv("PENGUIN_WEB_LOG_DIR", str(log_dir))
+
+    log_config = server._configure_server_file_logging("info")
+
+    assert log_config is not None
+    log_file = next(log_dir.glob("penguin-web-*.txt"))
+    assert log_file.exists()
+    assert log_file.parent.exists()
+    assert "Penguin web server logs writing to" in log_file.read_text()
+    assert log_config["handlers"]["file"]["filename"] == str(log_file.resolve())
+    assert "file" in log_config["loggers"]["uvicorn.access"]["handlers"]
+
+
 def test_main_debug_uses_reload_safe_import_string(monkeypatch, capsys):
     calls = []
 
@@ -52,6 +118,7 @@ def test_main_debug_uses_reload_safe_import_string(monkeypatch, capsys):
     assert calls[0][1]["reload"] is True
     assert calls[0][1]["factory"] is True
     assert calls[0][1]["port"] == 8080
+    assert calls[0][1]["log_config"] is None
 
 
 def test_main_defaults_to_localhost_without_auth(monkeypatch, capsys):
@@ -76,16 +143,18 @@ def test_main_defaults_to_localhost_without_auth(monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "http://127.0.0.1:9000" in output
     assert "Penguin local web auth is enabled." in output
-    assert (
-        "Browser/dashboard only: open this local authorization URL once for this browser."
-        in output
+    local_auth_message = (
+        "Browser/dashboard only: open this local authorization URL once "
+        "for this browser."
     )
+    assert local_auth_message in output
     assert "TUI/CLI: local Penguin sessions authenticate automatically." in output
     assert "CI/headless: use PENGUIN_API_KEYS with X-API-Key header auth." in output
     assert "PENGUIN_AUTH_ENABLED=false uv run penguin-web" in output
     assert calls[0][0][0] is app
     assert calls[0][1]["host"] == "127.0.0.1"
     assert calls[0][1]["port"] == 9000
+    assert calls[0][1]["log_config"] is None
 
 
 def test_main_explicit_false_prints_unsecured_warning(monkeypatch, capsys):
@@ -135,10 +204,11 @@ def test_main_prints_startup_token_when_auth_bootstrap_enabled(monkeypatch, caps
 
     output = capsys.readouterr().out
     assert "Penguin local web auth is enabled." in output
-    assert (
-        "Browser/dashboard only: open this local authorization URL once for this browser."
-        in output
+    local_auth_message = (
+        "Browser/dashboard only: open this local authorization URL once "
+        "for this browser."
     )
+    assert local_auth_message in output
     assert "http://127.0.0.1:9000/authorize#local_token=" in output
     assert "Startup token (debug fallback):" in output
     assert "TUI/CLI: local Penguin sessions authenticate automatically." in output
@@ -232,6 +302,7 @@ def test_start_server_non_debug_uses_app_instance(monkeypatch):
     assert calls[0][1]["host"] == "127.0.0.1"
     assert calls[0][1]["port"] == 9000
     assert calls[0][1]["reload"] is False
+    assert calls[0][1]["log_config"] is None
 
 
 def test_start_server_defaults_to_localhost(monkeypatch):
