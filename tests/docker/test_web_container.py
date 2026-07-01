@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import time
 import urllib.request
+import pytest
 
 import pytest
 
@@ -16,6 +17,7 @@ pytestmark = [pytest.mark.e2e, pytest.mark.slow]
 
 IMAGE = os.environ.get("PENGUIN_TEST_IMAGE", "penguin:web")
 ENV_FILE = os.environ.get("PENGUIN_TEST_ENV_FILE", ".env")
+pytestmark = pytest.mark.e2e
 
 
 def _curl_health(port: int) -> bool:

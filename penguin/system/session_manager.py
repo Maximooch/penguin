@@ -144,6 +144,7 @@ class SessionManager:
                     "message_count": metadata.get("message_count", 0),
                     "title": metadata.get("title", f"Session {session_id[-8:]}")
                 }
+                self._copy_metadata_to_index_entry(metadata, index[session_id])
             except Exception as e:
                 logger.error(f"Error reading session metadata from {path}: {str(e)}")
         
@@ -163,6 +164,27 @@ class SessionManager:
             os.replace(temp_path, self.index_path)
         except Exception as e:
             logger.error(f"Error saving session index: {str(e)}")
+
+    def _copy_metadata_to_index_entry(
+        self,
+        metadata: Dict[str, Any],
+        entry: Dict[str, Any],
+    ) -> None:
+        """Copy lightweight session metadata needed by list views into the index."""
+        for key in (
+            "directory",
+            "title_source",
+            "agent_mode",
+            "parentID",
+            "parent_id",
+            "agent_id",
+            "providerID",
+            "modelID",
+            "variant",
+        ):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                entry[key] = value.strip()
     
     def _auto_save_loop(self) -> None:
         """Background thread that auto-saves modified sessions."""
@@ -236,6 +258,10 @@ class SessionManager:
             "message_count": 0,
             "title": f"Session {session.id[-8:]}"
         }
+        self._copy_metadata_to_index_entry(
+            session.metadata,
+            self.session_index[session.id],
+        )
         self._save_index(self.session_index)
         
         logger.debug(f"Created new session: {session.id}")
@@ -394,6 +420,10 @@ class SessionManager:
             "title": f"Recovery of {original_id[-8:]}",
             "recovered_from": original_id
         }
+        self._copy_metadata_to_index_entry(
+            session.metadata,
+            self.session_index[session.id],
+        )
         self._save_index(self.session_index)
         
         self.current_session = session
@@ -452,6 +482,10 @@ class SessionManager:
                 "token_count": token_count,  # Always include token count
                 "title": session.metadata.get("title", f"Session {session.id[-8:]}")
             }
+            self._copy_metadata_to_index_entry(
+                session.metadata,
+                self.session_index[session.id],
+            )
             
             # Add link fields and token information for continuation sessions
             if "continued_from" in session.metadata:
@@ -575,6 +609,10 @@ class SessionManager:
             "source_session_tokens": source_token_count,
             "total_chain_tokens": continuation_token_count + source_token_count
         }
+        self._copy_metadata_to_index_entry(
+            continuation.metadata,
+            self.session_index[continuation.id],
+        )
         
         # Update source session index entry
         if source_session.id in self.session_index:
@@ -774,4 +812,4 @@ class SessionManager:
         try:
             self._auto_save_sessions()
         except Exception as e:
-            logger.error(f"Error during cleanup: {str(e)}") 
+            logger.error(f"Error during cleanup: {str(e)}")

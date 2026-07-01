@@ -17,6 +17,7 @@ import asyncio
 import os
 import sys
 from pathlib import Path
+import pytest
 
 import pytest
 
@@ -27,6 +28,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from penguin.llm.model_config import ModelConfig
 from penguin.llm.openrouter_gateway import OpenRouterGateway
+
+pytestmark = pytest.mark.live
 
 # Test models with reasoning capabilities
 REASONING_MODELS = [

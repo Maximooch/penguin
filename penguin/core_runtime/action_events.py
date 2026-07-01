@@ -10,6 +10,8 @@ import json
 import time
 from typing import Any, Callable
 
+from penguin.system.runtime_events import wrap_opencode_event
+
 from . import (
     action_mapping as core_action_mapping,
     opencode_bridge as core_opencode_bridge,
@@ -198,10 +200,7 @@ async def handle_tui_todo_updated(
 
     await owner.event_bus.emit(
         "opencode_event",
-        {
-            "type": "todo.updated",
-            "properties": properties,
-        },
+        _wrap_scoped_event("todo.updated", properties, session_id),
     )
 
 
@@ -302,7 +301,7 @@ async def _emit_scoped_opencode_event(
 ) -> None:
     if event_type != expected_type:
         return
-    properties, _ = core_opencode_bridge.prepare_scoped_event_properties(
+    properties, session_id = core_opencode_bridge.prepare_scoped_event_properties(
         data,
         execution_context=execution_context,
         session_directories=session_directories,
@@ -310,10 +309,21 @@ async def _emit_scoped_opencode_event(
 
     await owner.event_bus.emit(
         "opencode_event",
-        {
-            "type": expected_type,
-            "properties": properties,
-        },
+        _wrap_scoped_event(expected_type, properties, session_id),
+    )
+
+
+def _wrap_scoped_event(
+    event_type: str,
+    properties: dict[str, Any],
+    session_id: str | None,
+) -> dict[str, Any]:
+    directory = properties.get("directory")
+    return wrap_opencode_event(
+        event_type,
+        properties,
+        default_directory=directory if isinstance(directory, str) else None,
+        default_session_id=session_id,
     )
 
 

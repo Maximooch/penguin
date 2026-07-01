@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
 from datetime import datetime
 from pathlib import Path
-import subprocess
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
+from penguin.system.session_manager import SessionManager
 from penguin.system.state import Message, MessageCategory, Session
 from penguin.web.services.session_summary import summarize_session_title
 from penguin.web.services.session_view import (
@@ -16,6 +19,9 @@ from penguin.web.services.session_view import (
     PROVIDER_ID_KEY,
     REVERT_KEY,
     SUMMARY_KEY,
+    TITLE_SOURCE_AUTO,
+    TITLE_SOURCE_KEY,
+    TITLE_SOURCE_MANUAL,
     TODO_KEY,
     TRANSCRIPT_KEY,
     USAGE_KEY,
@@ -24,12 +30,13 @@ from penguin.web.services.session_view import (
     get_session_diff,
     get_session_info,
     get_session_messages,
+    get_session_title_source,
     get_session_todo,
     list_session_infos,
     list_session_statuses,
     remove_session_info,
-    update_session_todo,
     update_session_info,
+    update_session_todo,
 )
 
 
@@ -124,6 +131,39 @@ def test_list_session_infos_sorted_and_filtered():
     assert [item["id"] for item in filtered] == ["session_a"]
 
 
+def test_session_info_marks_blank_fallback_title_sessions():
+    blank = _session("session_20260608_185439", "", "2026-02-01T00:00:00")
+    blank.metadata.pop("title", None)
+    active = _session("session_20260608_190001", "", "2026-02-02T00:00:00")
+    active.metadata.pop("title", None)
+    manual = _session("session_manual_suffix", "", "2026-02-03T00:00:00")
+    manual.metadata["title"] = f"Session {manual.id[-8:]}"
+    active.messages.append(
+        Message(
+            id="msg_user_active",
+            role="user",
+            content="Assess PM system gaps",
+            category=MessageCategory.DIALOG,
+            timestamp="2026-02-02T00:00:00",
+        )
+    )
+    core = _core([blank, active, manual])
+
+    result = {item["id"]: item for item in list_session_infos(core)}
+
+    assert result[blank.id]["title"] == f"Session {blank.id[-8:]}"
+    assert result[blank.id]["fallback_title"] is True
+    assert result[blank.id]["message_count"] == 0
+    assert result[blank.id]["display_message_count"] == 0
+    assert result[active.id]["title"] == "Assess PM system gaps"
+    assert result[active.id]["fallback_title"] is False
+    assert result[active.id]["message_count"] == 1
+    assert result[active.id]["display_message_count"] == 1
+    assert result[manual.id]["title"] == f"Session {manual.id[-8:]}"
+    assert result[manual.id]["fallback_title"] is False
+    assert result[manual.id]["display_message_count"] == 0
+
+
 def test_list_session_infos_directory_filter_matches_exact_directory_only(
     tmp_path: Path,
 ):
@@ -189,6 +229,316 @@ def test_list_session_infos_directory_filter_falls_back_to_exact_directory(
     result = list_session_infos(core, directory=str(alpha_dir))
 
     assert [item["id"] for item in result] == ["session_alpha"]
+
+
+def test_list_session_infos_directory_filter_excludes_unknown_directory(
+    tmp_path: Path,
+):
+    alpha_dir = tmp_path / "alpha"
+    alpha_dir.mkdir()
+
+    alpha = _session("session_alpha", "Alpha", "2026-02-01T00:00:00")
+    alpha.metadata["directory"] = str(alpha_dir)
+
+    unknown = _session("session_unknown", "Unknown", "2026-02-02T00:00:00")
+    unknown.metadata.pop("directory", None)
+
+    core = _core([alpha, unknown])
+    core.runtime_config.active_root = str(alpha_dir)
+    core.runtime_config.project_root = str(alpha_dir)
+
+    result = list_session_infos(core, directory=str(alpha_dir))
+
+    assert [item["id"] for item in result] == ["session_alpha"]
+
+
+def test_list_session_infos_uses_index_to_bound_directory_limit(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    other_dir = tmp_path / "other"
+    project_dir.mkdir()
+    other_dir.mkdir()
+
+    class _IndexedOnlyManager:
+        def __init__(self, sessions: list[Session]) -> None:
+            self.sessions: dict[str, tuple[Session, bool]] = {}
+            self._sessions = {session.id: session for session in sessions}
+            self.session_index = {
+                session.id: {
+                    "created_at": session.created_at,
+                    "last_active": session.last_active,
+                    "message_count": len(session.messages),
+                    "title": session.metadata.get("title", ""),
+                    "directory": session.metadata.get("directory", ""),
+                }
+                for session in sessions
+            }
+            self.current_session: Session | None = None
+            self.base_path = tmp_path / "missing-conversations"
+            self.format = "json"
+            self.load_calls: list[str] = []
+
+        def load_session(self, session_id: str) -> Session | None:
+            self.load_calls.append(session_id)
+            return self._sessions.get(session_id)
+
+    def make_indexed_session(
+        session_id: str,
+        title: str,
+        ts: str,
+        directory: Path,
+    ) -> Session:
+        session = _session(session_id, title, ts)
+        session.metadata["directory"] = str(directory)
+        return session
+
+    alpha_old = make_indexed_session(
+        "session_alpha_old",
+        "Alpha Old",
+        "2026-02-01T00:00:00",
+        project_dir,
+    )
+    beta_new = make_indexed_session(
+        "session_beta_new",
+        "Beta New",
+        "2026-02-04T00:00:00",
+        other_dir,
+    )
+    alpha_new = make_indexed_session(
+        "session_alpha_new",
+        "Alpha New",
+        "2026-02-03T00:00:00",
+        project_dir,
+    )
+    alpha_latest = make_indexed_session(
+        "session_alpha_latest",
+        "Alpha Latest",
+        "2026-02-05T00:00:00",
+        project_dir,
+    )
+    manager = _IndexedOnlyManager([alpha_old, beta_new, alpha_new, alpha_latest])
+    core = SimpleNamespace(
+        conversation_manager=SimpleNamespace(
+            session_manager=manager,
+            agent_session_managers={},
+        ),
+        runtime_config=SimpleNamespace(
+            active_root=str(project_dir),
+            project_root=str(project_dir),
+        ),
+        model_config=SimpleNamespace(model="test-model", provider="test-provider"),
+    )
+
+    result = list_session_infos(cast(Any, core), directory=str(project_dir), limit=2)
+
+    assert [item["id"] for item in result] == [
+        "session_alpha_latest",
+        "session_alpha_new",
+    ]
+    assert manager.load_calls == []
+
+
+def test_list_session_infos_bounds_missing_index_directory_loads(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    other_dir = tmp_path / "other"
+    project_dir.mkdir()
+    other_dir.mkdir()
+
+    class _LegacyIndexManager:
+        def __init__(self, sessions: list[Session]) -> None:
+            self.sessions: dict[str, tuple[Session, bool]] = {}
+            self._sessions = {session.id: session for session in sessions}
+            self.session_index = {
+                session.id: {
+                    "created_at": session.created_at,
+                    "last_active": session.last_active,
+                    "message_count": len(session.messages),
+                    "title": session.metadata.get("title", ""),
+                }
+                for session in sessions
+            }
+            self.current_session: Session | None = None
+            self.base_path = tmp_path / "missing-conversations"
+            self.format = "json"
+            self.load_calls: list[str] = []
+            self.saved_index: dict[str, dict[str, Any]] | None = None
+
+        def load_session(self, session_id: str) -> Session | None:
+            self.load_calls.append(session_id)
+            session = self._sessions.get(session_id)
+            if session is not None:
+                self.sessions[session_id] = (session, False)
+            return session
+
+        def _save_index(self, index: dict[str, dict[str, Any]]) -> None:
+            self.saved_index = {key: dict(value) for key, value in index.items()}
+
+    def make_session(
+        session_id: str,
+        title: str,
+        ts: str,
+        directory: Path,
+    ) -> Session:
+        session = _session(session_id, title, ts)
+        session.metadata["directory"] = str(directory)
+        return session
+
+    sessions = [
+        make_session(
+            "session_other_newest",
+            "Other Newest",
+            "2026-02-05T00:00:00",
+            other_dir,
+        ),
+        make_session(
+            "session_project_latest",
+            "Project Latest",
+            "2026-02-04T00:00:00",
+            project_dir,
+        ),
+        make_session(
+            "session_project_older",
+            "Project Older",
+            "2026-02-03T00:00:00",
+            project_dir,
+        ),
+        make_session(
+            "session_other_oldest",
+            "Other Oldest",
+            "2026-02-02T00:00:00",
+            other_dir,
+        ),
+    ]
+    manager = _LegacyIndexManager(sessions)
+    core = SimpleNamespace(
+        conversation_manager=SimpleNamespace(
+            session_manager=manager,
+            agent_session_managers={},
+        ),
+        runtime_config=SimpleNamespace(
+            active_root=str(project_dir),
+            project_root=str(project_dir),
+        ),
+        model_config=SimpleNamespace(model="test-model", provider="test-provider"),
+    )
+
+    result = list_session_infos(cast(Any, core), directory=str(project_dir), limit=1)
+
+    assert [item["id"] for item in result] == ["session_project_latest"]
+    assert manager.load_calls == ["session_other_newest", "session_project_latest"]
+    assert manager.saved_index is not None
+    assert manager.saved_index["session_project_latest"]["directory"] == str(
+        project_dir
+    )
+
+
+def test_list_session_infos_caches_missing_directory_index_rows(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    class _LegacyIndexManager:
+        def __init__(self, sessions: list[Session]) -> None:
+            self.sessions: dict[str, tuple[Session, bool]] = {}
+            self._sessions = {session.id: session for session in sessions}
+            self.session_index = {
+                session.id: {
+                    "created_at": session.created_at,
+                    "last_active": session.last_active,
+                    "message_count": len(session.messages),
+                    "title": session.metadata.get("title", ""),
+                }
+                for session in sessions
+            }
+            self.current_session: Session | None = None
+            self.base_path = tmp_path / "missing-conversations"
+            self.format = "json"
+            self.load_calls: list[str] = []
+
+        def load_session(self, session_id: str) -> Session | None:
+            self.load_calls.append(session_id)
+            session = self._sessions.get(session_id)
+            if session is not None:
+                self.sessions[session_id] = (session, False)
+            return session
+
+        def _save_index(self, _index: dict[str, dict[str, Any]]) -> None:
+            return None
+
+    no_directory = _session(
+        "session_no_directory",
+        "No Directory",
+        "2026-02-05T00:00:00",
+    )
+    project_session = _session(
+        "session_project_latest",
+        "Project Latest",
+        "2026-02-04T00:00:00",
+    )
+    project_session.metadata["directory"] = str(project_dir)
+    manager = _LegacyIndexManager([no_directory, project_session])
+    core = SimpleNamespace(
+        conversation_manager=SimpleNamespace(
+            session_manager=manager,
+            agent_session_managers={},
+        ),
+        runtime_config=SimpleNamespace(
+            active_root=str(project_dir),
+            project_root=str(project_dir),
+        ),
+        model_config=SimpleNamespace(model="test-model", provider="test-provider"),
+    )
+
+    first = list_session_infos(cast(Any, core), directory=str(project_dir), limit=2)
+    assert [item["id"] for item in first] == ["session_project_latest"]
+    assert manager.load_calls == ["session_no_directory", "session_project_latest"]
+
+    manager.load_calls.clear()
+    second = list_session_infos(cast(Any, core), directory=str(project_dir), limit=2)
+    assert [item["id"] for item in second] == ["session_project_latest"]
+    assert manager.load_calls == []
+
+
+def test_list_session_infos_loads_project_session_missing_from_index(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    manager = SessionManager(
+        base_path=str(tmp_path / "conversations"),
+        auto_save_interval=0,
+    )
+    session = _session(
+        "session_missing_index",
+        "PM System Roadmap",
+        "2026-06-08T19:47:18",
+    )
+    session.metadata["directory"] = str(project_dir)
+    session_path = manager.base_path / f"{session.id}.json"
+    session_path.write_text(json.dumps(session.to_dict()), encoding="utf-8")
+
+    conversation_manager = SimpleNamespace(
+        session_manager=manager,
+        agent_session_managers={},
+    )
+    core = SimpleNamespace(
+        conversation_manager=conversation_manager,
+        runtime_config=SimpleNamespace(
+            active_root=str(project_dir),
+            project_root=str(project_dir),
+        ),
+        model_config=SimpleNamespace(model="test-model", provider="test-provider"),
+    )
+
+    result = list_session_infos(core, directory=str(project_dir))
+    info = get_session_info(core, session.id)
+
+    assert [item["id"] for item in result] == [session.id]
+    assert info is not None
+    assert info["title"] == "PM System Roadmap"
 
 
 def test_session_info_includes_usage_snapshot():
@@ -719,6 +1069,86 @@ async def test_summarize_session_title_prefers_model_generation(
     info = get_session_info(core, session.id)
     assert info is not None
     assert info["title"] == "Session summarize parity"
+    assert session.metadata[TITLE_SOURCE_KEY] == TITLE_SOURCE_AUTO
+
+
+@pytest.mark.asyncio
+async def test_summarize_session_title_preserves_manual_title(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    session = _session("session_manual_title", "Manual Title", "2026-02-03T00:00:00")
+    session.metadata[TITLE_SOURCE_KEY] = TITLE_SOURCE_MANUAL
+    session.messages.append(
+        Message(
+            id="msg_user",
+            role="user",
+            content="Implement OpenCode session summarize endpoint parity",
+            category=MessageCategory.DIALOG,
+            timestamp="2026-02-03T00:00:00",
+        )
+    )
+    core = _core([session])
+
+    class _FakeAPIClient:
+        def __init__(self, model_config):
+            self.model_config = model_config
+
+        async def get_response(self, messages, **kwargs):
+            del messages, kwargs
+            return "Generated Title"
+
+    monkeypatch.setattr(
+        "penguin.web.services.session_summary.APIClient", _FakeAPIClient
+    )
+
+    result = await summarize_session_title(core, session.id)
+
+    assert result is not None
+    assert result["changed"] is False
+    assert result["source"] == "manual"
+    assert result["title"] == "Manual Title"
+    assert session.metadata["title"] == "Manual Title"
+    assert session.metadata[TITLE_SOURCE_KEY] == TITLE_SOURCE_MANUAL
+
+
+@pytest.mark.asyncio
+async def test_summarize_session_title_ignores_low_signal_greeting(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    session = _session("session_greeting", "Session greet", "2026-02-03T00:00:00")
+    session.metadata.pop("title", None)
+    session.messages.append(
+        Message(
+            id="msg_user",
+            role="user",
+            content="howdy",
+            category=MessageCategory.DIALOG,
+            timestamp="2026-02-03T00:00:00",
+        )
+    )
+    core = _core([session])
+
+    class _UnexpectedAPIClient:
+        def __init__(self, model_config):
+            del model_config
+            raise AssertionError("low-signal greeting should not title the session")
+
+    monkeypatch.setattr(
+        "penguin.web.services.session_summary.APIClient", _UnexpectedAPIClient
+    )
+
+    result = await summarize_session_title(
+        core,
+        session.id,
+        fallback_text="howdy",
+    )
+
+    assert result is not None
+    assert result["changed"] is False
+    assert result["source"] == "insufficient_context"
+    assert result["snippet_count"] == 0
+    assert "title" not in session.metadata
+    assert TITLE_SOURCE_KEY not in session.metadata
 
 
 @pytest.mark.asyncio
@@ -1043,9 +1473,141 @@ def test_list_session_infos_does_not_mutate_current_session() -> None:
     assert manager.current_session is current
 
 
+def test_session_view_skips_recovery_substitute_from_view_load() -> None:
+    corrupt = _session("session_corrupt", "Corrupt", "2026-02-01T00:00:00")
+    recovery = _session("recovery_20260608_185439", "Recovery", "2026-02-02T00:00:00")
+
+    class _RecoverySubstituteManager(_Manager):
+        def __init__(self) -> None:
+            super().__init__([corrupt])
+            self.sessions.clear()
+            self.current_session = None
+
+        def load_session(self, session_id: str) -> Session | None:
+            if session_id == corrupt.id:
+                self.current_session = recovery
+                return recovery
+            return None
+
+    manager = _RecoverySubstituteManager()
+    conversation_manager = SimpleNamespace(
+        session_manager=manager,
+        agent_session_managers={"default": manager},
+    )
+    runtime_config = SimpleNamespace(
+        active_root="/tmp/workspace", project_root="/tmp/workspace"
+    )
+    model_config = SimpleNamespace(model="test-model", provider="test-provider")
+    core = SimpleNamespace(
+        conversation_manager=conversation_manager,
+        runtime_config=runtime_config,
+        model_config=model_config,
+    )
+
+    assert list_session_infos(core) == []
+    assert get_session_info(core, corrupt.id) is None
+    assert manager.current_session is None
+
+
 def test_get_session_info_returns_none_for_missing_session():
     core = _core([])
     assert get_session_info(core, "session_missing") is None
+
+
+def test_get_session_info_canonicalizes_openai_model_metadata():
+    session = _session("session_model_case", "Model Case", "2026-02-03T00:00:00")
+    session.metadata[PROVIDER_ID_KEY] = "OpenAI"
+    session.metadata[MODEL_ID_KEY] = "openai/GPT-5.5"
+    core = _core([session])
+
+    info = get_session_info(core, session.id)
+
+    assert info is not None
+    assert info["providerID"] == "openai"
+    assert info["modelID"] == "gpt-5.5"
+    assert info["modelSelection"] == {
+        "ready": True,
+        "sessionScoped": True,
+        "source": "session",
+        "providerID": "openai",
+        "modelID": "gpt-5.5",
+        "qualifiedID": "openai/gpt-5.5",
+        "providerSource": "session",
+        "modelSource": "session",
+    }
+
+
+def test_get_session_info_canonicalizes_global_model_fallback():
+    session = _session("session_global_model", "Global Model", "2026-02-03T00:00:00")
+    core = _core([session])
+    core.model_config = SimpleNamespace(provider="OpenAI", model="openai/GPT-5.5")
+
+    info = get_session_info(core, session.id)
+
+    assert info is not None
+    assert info["providerID"] == "openai"
+    assert info["modelID"] == "gpt-5.5"
+    assert info["modelSelection"] == {
+        "ready": True,
+        "sessionScoped": False,
+        "source": "global",
+        "providerID": "openai",
+        "modelID": "gpt-5.5",
+        "qualifiedID": "openai/gpt-5.5",
+        "providerSource": "global",
+        "modelSource": "global",
+    }
+
+
+def test_get_session_info_treats_variant_only_override_as_session_scoped():
+    session = _session(
+        "session_variant_only",
+        "Variant Only",
+        "2026-02-03T00:00:00",
+    )
+    session.metadata[VARIANT_KEY] = "xhigh"
+    core = _core([session])
+    core.model_config = SimpleNamespace(provider="OpenAI", model="openai/GPT-5.5")
+
+    info = get_session_info(core, session.id)
+
+    assert info is not None
+    assert info["modelSelection"] == {
+        "ready": True,
+        "sessionScoped": True,
+        "source": "session",
+        "providerID": "openai",
+        "modelID": "gpt-5.5",
+        "qualifiedID": "openai/gpt-5.5",
+        "variant": "xhigh",
+        "providerSource": "global",
+        "modelSource": "global",
+        "variantSource": "session",
+    }
+
+
+def test_list_session_infos_exposes_index_model_selection_metadata() -> None:
+    session = _session("session_index_model", "Index Model", "2026-02-03T00:00:00")
+    core = _core([session])
+    manager = core.conversation_manager.session_manager
+    manager.session_index[session.id][PROVIDER_ID_KEY] = "OpenRouter"
+    manager.session_index[session.id][MODEL_ID_KEY] = "Z-AI/GLM-5.2"
+
+    infos = list_session_infos(core, limit=10)
+
+    info = next(item for item in infos if item["id"] == session.id)
+    assert info["providerID"] == "openrouter"
+    assert info["modelID"] == "z-ai/glm-5.2"
+    assert info["modelSelection"] == {
+        "ready": True,
+        "sessionScoped": True,
+        "source": "session",
+        "providerID": "openrouter",
+        "modelID": "z-ai/glm-5.2",
+        "qualifiedID": "openrouter/z-ai/glm-5.2",
+        "providerSource": "session",
+        "modelSource": "session",
+    }
 
 
 def test_create_update_remove_session_info_round_trip():
@@ -1070,6 +1632,7 @@ def test_create_update_remove_session_info_round_trip():
 
     session_id = created["id"]
     assert created["title"] == "Created Session"
+    assert get_session_title_source(core, session_id) == TITLE_SOURCE_MANUAL
     assert created["directory"] == "/tmp/workspace/project"
     assert created["parentID"] == "parent_1"
     assert created["providerID"] == "openrouter"
@@ -1088,6 +1651,7 @@ def test_create_update_remove_session_info_round_trip():
     )
     assert updated is not None
     assert updated["title"] == "Renamed Session"
+    assert get_session_title_source(core, session_id) == TITLE_SOURCE_MANUAL
     assert updated["time"]["archived"] == 123456789
     assert updated["providerID"] == "openrouter"
     assert updated["modelID"] == "qwen/qwen3.5-plus-02-15"
@@ -1192,7 +1756,13 @@ def test_get_session_diff_prefers_transcript_tool_parts():
                             "status": "completed",
                             "input": {"filePath": "src/main.py"},
                             "metadata": {
-                                "diff": "--- a/src/main.py\n+++ b/src/main.py\n@@\n-print('x')\n+print('y')\n"
+                                "diff": (
+                                    "--- a/src/main.py\n"
+                                    "+++ b/src/main.py\n"
+                                    "@@\n"
+                                    "-print('x')\n"
+                                    "+print('y')\n"
+                                )
                             },
                         },
                     }
@@ -1208,3 +1778,148 @@ def test_get_session_diff_prefers_transcript_tool_parts():
     assert diffs[0]["file"] == "src/main.py"
     assert diffs[0]["additions"] == 1
     assert diffs[0]["deletions"] == 1
+
+
+def test_get_session_diff_merges_duplicate_transcript_file_diffs():
+    session = _session("session_diff_merge", "Diff Session", "2026-02-03T00:00:00")
+    session.metadata[TRANSCRIPT_KEY] = {
+        "order": ["msg_1", "msg_2"],
+        "messages": {
+            "msg_1": {
+                "info": {"id": "msg_1", "role": "assistant"},
+                "part_order": ["part_tool_1"],
+                "parts": {
+                    "part_tool_1": {
+                        "id": "part_tool_1",
+                        "type": "tool",
+                        "tool": "edit",
+                        "state": {
+                            "status": "completed",
+                            "input": {"filePath": "src/main.py"},
+                            "metadata": {
+                                "diff": (
+                                    "--- a/src/main.py\n"
+                                    "+++ b/src/main.py\n"
+                                    "@@\n"
+                                    "-print('old')\n"
+                                    "+print('new')\n"
+                                )
+                            },
+                        },
+                    }
+                },
+            },
+            "msg_2": {
+                "info": {"id": "msg_2", "role": "assistant"},
+                "part_order": ["part_tool_2"],
+                "parts": {
+                    "part_tool_2": {
+                        "id": "part_tool_2",
+                        "type": "tool",
+                        "tool": "edit",
+                        "state": {
+                            "status": "completed",
+                            "input": {"filePath": "src/main.py"},
+                            "metadata": {
+                                "diff": (
+                                    "--- a/src/main.py\n"
+                                    "+++ b/src/main.py\n"
+                                    "@@\n"
+                                    "+print('again')\n"
+                                )
+                            },
+                        },
+                    }
+                },
+            },
+        },
+    }
+    core = _core([session])
+
+    diffs = get_session_diff(core, session.id)
+
+    assert diffs == [
+        {
+            "file": "src/main.py",
+            "before": "",
+            "after": "--- a/src/main.py\n+++ b/src/main.py\n@@\n+print('again')\n",
+            "additions": 2,
+            "deletions": 1,
+        }
+    ]
+
+
+def test_get_session_diff_git_fallback_includes_untracked_files(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "penguin@example.com"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Penguin"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    source = repo / "src"
+    source.mkdir()
+    tracked = source / "main.py"
+    tracked.write_text("print('old')\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "base"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+    tracked.write_text("print('new')\nprint('again')\n", encoding="utf-8")
+    (repo / "notes.md").write_text("one\ntwo\n", encoding="utf-8")
+    session = _session("session_git_diff", "Git Diff", "2026-02-03T00:00:00")
+    session.metadata["directory"] = str(repo)
+    core = _core([session])
+
+    diffs = get_session_diff(core, session.id)
+
+    assert diffs is not None
+    by_file = {diff["file"]: diff for diff in diffs}
+    assert by_file["src/main.py"]["additions"] == 2
+    assert by_file["src/main.py"]["deletions"] == 1
+    assert by_file["notes.md"]["after"] == "one\ntwo\n"
+    assert by_file["notes.md"]["additions"] == 2
+
+
+def test_get_session_diff_git_fallback_skips_unreadable_untracked_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    missing = repo / "missing.md"
+    missing.write_text("temporary\n", encoding="utf-8")
+    visible = repo / "visible.md"
+    visible.write_text("visible\n", encoding="utf-8")
+    session = _session("session_git_unreadable", "Git Diff", "2026-02-03T00:00:00")
+    session.metadata["directory"] = str(repo)
+    core = _core([session])
+
+    original_read_text = Path.read_text
+
+    def _read_text(path: Path, *args: Any, **kwargs: Any) -> str:
+        if path == missing:
+            raise FileNotFoundError(path)
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _read_text)
+
+    diffs = get_session_diff(core, session.id)
+
+    assert diffs is not None
+    by_file = {diff["file"]: diff for diff in diffs}
+    assert "missing.md" not in by_file
+    assert by_file["visible.md"]["after"] == "visible\n"

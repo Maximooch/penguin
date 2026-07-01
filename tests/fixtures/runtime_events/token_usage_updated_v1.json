@@ -1,0 +1,80 @@
+{
+  "runtime_event": {
+    "id": "evt:session:ses_fixture:00000008",
+    "schema_version": "penguin.runtime_event.v1",
+    "type": "token.usage.updated",
+    "category": "cwm_token_usage",
+    "source": "penguin.backend",
+    "subject": "session_id:ses_fixture",
+    "time": 1800000000100,
+    "stream_id": "session:ses_fixture",
+    "sequence": 8,
+    "scope": {
+      "session_id": "ses_fixture",
+      "conversation_id": "ses_fixture",
+      "agent_id": "default",
+      "provider_id": "openrouter",
+      "model_id": "z-ai/glm-5.2"
+    },
+    "correlation": {
+      "request_id": "req_usage_fixture"
+    },
+    "actor": {
+      "type": "runtime",
+      "id": "token_usage"
+    },
+    "privacy": {
+      "classification": "public",
+      "redacted": false,
+      "redacted_fields": []
+    },
+    "payload": {
+      "id": "usage_fixture",
+      "sessionID": "ses_fixture",
+      "agentID": "default",
+      "providerID": "openrouter",
+      "modelID": "z-ai/glm-5.2",
+      "tokens": 4200,
+      "token_usage": {
+        "input_tokens": 1200,
+        "output_tokens": 3000
+      },
+      "context_window": {
+        "used_tokens": 4200,
+        "max_tokens": 128000,
+        "percent_used": 3.28
+      },
+      "requestID": "req_usage_fixture"
+    },
+    "projections": {
+      "opencode": {
+        "id": "token.usage.updated:ses_fixture:usage_fixture",
+        "type": "token.usage.updated"
+      }
+    }
+  },
+  "opencode": {
+    "id": "evt:session:ses_fixture:00000008",
+    "order": 8,
+    "time": 1800000000100,
+    "type": "token.usage.updated",
+    "properties": {
+      "id": "usage_fixture",
+      "sessionID": "ses_fixture",
+      "agentID": "default",
+      "providerID": "openrouter",
+      "modelID": "z-ai/glm-5.2",
+      "tokens": 4200,
+      "token_usage": {
+        "input_tokens": 1200,
+        "output_tokens": 3000
+      },
+      "context_window": {
+        "used_tokens": 4200,
+        "max_tokens": 128000,
+        "percent_used": 3.28
+      },
+      "requestID": "req_usage_fixture"
+    }
+  }
+}

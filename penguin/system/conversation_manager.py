@@ -15,7 +15,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union, AsyncGenerator, Callable
 
-from penguin.config import CONVERSATIONS_PATH, WORKSPACE_PATH
+from penguin.config import WORKSPACE_PATH
 from penguin.config import config as global_config
 from penguin.system.context_loader import SimpleContextLoader
 from penguin.system.context_window import ContextWindowManager
@@ -445,9 +445,13 @@ class ConversationManager:
         share_session: bool = True,
         share_context_window: bool = True,
         shared_context_window_max_tokens: Optional[int] = None,
+        shared_cw_max_tokens: Optional[int] = None,
     ) -> None:
         """Create a sub-agent, honoring session/context-window sharing preferences."""
         self._ensure_agent(parent_agent_id)
+
+        if shared_context_window_max_tokens is None:
+            shared_context_window_max_tokens = shared_cw_max_tokens
 
         if share_session and not share_context_window:
             logger.warning(

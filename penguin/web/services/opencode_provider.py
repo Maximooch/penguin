@@ -9,7 +9,7 @@ import logging
 import os
 import time
 from datetime import datetime, timezone
-from threading import RLock
+from threading import RLock, Thread
 from typing import Any
 
 from penguin.config import load_config
@@ -23,11 +23,13 @@ from penguin.web.services.provider_auth import (
 )
 from penguin.web.services.provider_catalog import (
     canonical_model_id,
+    codex_oauth_cached_provider_models,
     codex_oauth_provider_models,
     collect_provider_models,
     current_model_string,
     env_connected_provider_ids,
     model_limit,
+    models_dev_cached_provider_models,
     models_dev_provider_models,
     provider_api,
     provider_env,
@@ -61,6 +63,11 @@ _OPENROUTER_CATALOG_CACHE: dict[str, Any] = {
     "models": {},
 }
 _MODELS_DEV_PROVIDER_IDS = {"openai", "anthropic"}
+_PROVIDER_CATALOG_REFRESH_LOCK = RLock()
+_PROVIDER_CATALOG_REFRESH_IN_FLIGHT = False
+_PROVIDER_CATALOG_REFRESH_LAST_STARTED_AT = 0.0
+_PROVIDER_CATALOG_REFRESH_MIN_INTERVAL_SECONDS = 30.0
+_SPARSE_PROVIDER_CATALOG_LIMIT = 20
 
 
 def _normalize_provider_filter_values(raw_value: Any) -> set[str]:
@@ -223,6 +230,34 @@ def _model_variants_payload(
     }
 
 
+def _provider_catalog_state(
+    *,
+    connected: bool,
+    model_count: int,
+    refresh_scheduled: bool,
+    source: str,
+) -> dict[str, Any]:
+    """Return backend-owned catalog metadata for TUI model-picker decisions."""
+    if model_count <= 0:
+        state = "empty"
+        sparse = connected
+    elif model_count < _SPARSE_PROVIDER_CATALOG_LIMIT:
+        state = "sparse"
+        sparse = True
+    else:
+        state = "ready"
+        sparse = False
+
+    return {
+        "connected": connected,
+        "model_count": max(model_count, 0),
+        "refresh_scheduled": bool(refresh_scheduled),
+        "source": source,
+        "sparse": sparse,
+        "state": state,
+    }
+
+
 def supported_native_reasoning_variants(
     provider_id: str,
     model_id: str,
@@ -336,23 +371,37 @@ def _openrouter_catalog_models(api_key: str | None = None) -> dict[str, dict[str
     return discovered
 
 
-def _merge_openrouter_catalog_models(
+def _openrouter_auth_key(auth_records: dict[str, dict[str, Any]]) -> str:
+    openrouter_record = auth_records.get("openrouter")
+    if (
+        isinstance(openrouter_record, dict)
+        and openrouter_record.get("type") == "api"
+        and isinstance(openrouter_record.get("key"), str)
+    ):
+        return openrouter_record["key"].strip()
+    return ""
+
+
+def _openrouter_cached_catalog_models() -> dict[str, dict[str, Any]]:
+    with _OPENROUTER_CATALOG_LOCK:
+        cached_models = _OPENROUTER_CATALOG_CACHE.get("models")
+        if not isinstance(cached_models, dict):
+            return {}
+        return {
+            str(key): value
+            for key, value in cached_models.items()
+            if isinstance(key, str) and isinstance(value, dict)
+        }
+
+
+def _merge_openrouter_cached_catalog_models(
     provider_models: dict[str, dict[str, dict[str, Any]]],
     auth_records: dict[str, dict[str, Any]],
 ) -> dict[str, dict[str, dict[str, Any]]]:
     if not provider_connected("openrouter", auth_records):
         return provider_models
 
-    openrouter_record = auth_records.get("openrouter")
-    record_key = ""
-    if (
-        isinstance(openrouter_record, dict)
-        and openrouter_record.get("type") == "api"
-        and isinstance(openrouter_record.get("key"), str)
-    ):
-        record_key = openrouter_record["key"].strip()
-
-    discovered = _openrouter_catalog_models(api_key=record_key)
+    discovered = _openrouter_cached_catalog_models()
     if not discovered:
         return provider_models
 
@@ -363,6 +412,110 @@ def _merge_openrouter_catalog_models(
     for model_id, conf in discovered.items():
         openrouter_models.setdefault(model_id, conf)
     return merged
+
+
+def _merge_openrouter_catalog_models(
+    provider_models: dict[str, dict[str, dict[str, Any]]],
+    auth_records: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    if not provider_connected("openrouter", auth_records):
+        return provider_models
+
+    discovered = _openrouter_catalog_models(api_key=_openrouter_auth_key(auth_records))
+    if not discovered:
+        return provider_models
+
+    merged: dict[str, dict[str, dict[str, Any]]] = {
+        provider_id: dict(models) for provider_id, models in provider_models.items()
+    }
+    openrouter_models = merged.setdefault("openrouter", {})
+    for model_id, conf in discovered.items():
+        openrouter_models.setdefault(model_id, conf)
+    return merged
+
+
+def _merge_cached_provider_catalog_models(
+    provider_models: dict[str, dict[str, dict[str, Any]]],
+    auth_records: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    merged = _merge_openrouter_cached_catalog_models(provider_models, auth_records)
+
+    models_dev_discovered = models_dev_cached_provider_models(_MODELS_DEV_PROVIDER_IDS)
+    if models_dev_discovered:
+        merged = {provider_id: dict(models) for provider_id, models in merged.items()}
+        for provider_id, models in models_dev_discovered.items():
+            mapped = merged.setdefault(provider_id, {})
+            for model_id, conf in models.items():
+                mapped.setdefault(model_id, conf)
+
+    codex_discovered = codex_oauth_cached_provider_models(auth_records.get("openai"))
+    openai_models = codex_discovered.get("openai")
+    if openai_models:
+        merged = {provider_id: dict(models) for provider_id, models in merged.items()}
+        merged["openai"] = dict(openai_models)
+
+    return merged
+
+
+def _provider_catalog_background_enabled() -> bool:
+    raw_value = os.getenv("PENGUIN_PROVIDER_CATALOG_BACKGROUND", "1")
+    return raw_value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _provider_catalog_refresh_active() -> bool:
+    with _PROVIDER_CATALOG_REFRESH_LOCK:
+        return _PROVIDER_CATALOG_REFRESH_IN_FLIGHT
+
+
+def _refresh_provider_catalogs(auth_records: dict[str, dict[str, Any]]) -> None:
+    global _PROVIDER_CATALOG_REFRESH_IN_FLIGHT
+
+    try:
+        if provider_connected("openrouter", auth_records):
+            _openrouter_catalog_models(api_key=_openrouter_auth_key(auth_records))
+        models_dev_provider_models(_MODELS_DEV_PROVIDER_IDS)
+        codex_oauth_provider_models(auth_records.get("openai"))
+    except Exception as exc:
+        logger.debug("Provider catalog background refresh failed: %s", exc)
+    finally:
+        with _PROVIDER_CATALOG_REFRESH_LOCK:
+            _PROVIDER_CATALOG_REFRESH_IN_FLIGHT = False
+
+
+def _schedule_provider_catalog_refresh(
+    auth_records: dict[str, dict[str, Any]],
+) -> bool:
+    global _PROVIDER_CATALOG_REFRESH_IN_FLIGHT
+    global _PROVIDER_CATALOG_REFRESH_LAST_STARTED_AT
+
+    if not _provider_catalog_background_enabled():
+        return False
+
+    now = time.time()
+    with _PROVIDER_CATALOG_REFRESH_LOCK:
+        if _PROVIDER_CATALOG_REFRESH_IN_FLIGHT:
+            return False
+        if (
+            now - _PROVIDER_CATALOG_REFRESH_LAST_STARTED_AT
+            < _PROVIDER_CATALOG_REFRESH_MIN_INTERVAL_SECONDS
+        ):
+            return False
+        _PROVIDER_CATALOG_REFRESH_IN_FLIGHT = True
+        _PROVIDER_CATALOG_REFRESH_LAST_STARTED_AT = now
+
+    auth_snapshot = {
+        provider_id: dict(record)
+        for provider_id, record in auth_records.items()
+        if isinstance(provider_id, str) and isinstance(record, dict)
+    }
+    thread = Thread(
+        target=_refresh_provider_catalogs,
+        args=(auth_snapshot,),
+        daemon=True,
+        name="penguin-provider-catalog-refresh",
+    )
+    thread.start()
+    return True
 
 
 def _merge_models_dev_catalog_models(
@@ -654,11 +807,13 @@ def build_config_providers_payload(core: Any) -> dict[str, Any]:
     providers: list[dict[str, Any]] = []
     default: dict[str, str] = {}
     auth_records = get_provider_credentials()
-    provider_models = _merge_openrouter_catalog_models(
+    refresh_scheduled = _schedule_provider_catalog_refresh(
+        auth_records
+    ) or _provider_catalog_refresh_active()
+    provider_models = _merge_cached_provider_catalog_models(
         config_provider_models,
         auth_records,
     )
-    provider_models = _merge_openai_codex_catalog_models(provider_models, auth_records)
 
     current_model = (
         core.get_current_model() if hasattr(core, "get_current_model") else None
@@ -680,8 +835,6 @@ def build_config_providers_payload(core: Any) -> dict[str, Any]:
     if current_provider:
         provider_set.add(current_provider)
 
-    provider_models = _merge_models_dev_catalog_models(provider_models)
-    provider_models = _merge_openai_codex_catalog_models(provider_models, auth_records)
     provider_set.update(provider_models.keys())
 
     for provider_id in sorted(provider_set):
@@ -706,11 +859,20 @@ def build_config_providers_payload(core: Any) -> dict[str, Any]:
                 if provider_connected(provider_id, auth_records)
                 else "custom"
             )
+        connected = provider_connected(provider_id, auth_records)
+        catalog = _provider_catalog_state(
+            connected=connected,
+            model_count=len(mapped_models),
+            refresh_scheduled=refresh_scheduled,
+            source=source,
+        )
         providers.append(
             {
                 "id": provider_id,
                 "name": provider_name(provider_id),
                 "source": source,
+                "connected": connected,
+                "catalog": catalog,
                 "env": provider_env(provider_id),
                 "options": {},
                 "models": mapped_models,
@@ -732,11 +894,13 @@ def build_provider_list_payload(core: Any) -> dict[str, Any]:
     """Build OpenCode-compatible ``provider.list`` payload."""
     config_provider_models = collect_provider_models(core)
     auth_records = get_provider_credentials()
-    provider_models = _merge_openrouter_catalog_models(
+    refresh_scheduled = _schedule_provider_catalog_refresh(
+        auth_records
+    ) or _provider_catalog_refresh_active()
+    provider_models = _merge_cached_provider_catalog_models(
         config_provider_models,
         auth_records,
     )
-    provider_models = _merge_openai_codex_catalog_models(provider_models, auth_records)
 
     all_providers: list[dict[str, Any]] = []
     default: dict[str, str] = {}
@@ -765,8 +929,6 @@ def build_provider_list_payload(core: Any) -> dict[str, Any]:
     if current_provider:
         provider_set.add(current_provider)
 
-    provider_models = _merge_models_dev_catalog_models(provider_models)
-    provider_models = _merge_openai_codex_catalog_models(provider_models, auth_records)
     provider_set.update(provider_models.keys())
 
     for provider_id in sorted(provider_set):
@@ -778,12 +940,31 @@ def build_provider_list_payload(core: Any) -> dict[str, Any]:
             for model_id, conf in _sorted_model_items(models)
         }
         api_url, api_npm = provider_api(provider_id)
+        connected_flag = provider_connected(provider_id, auth_records)
+        source = "config" if config_provider_models.get(provider_id) else "api"
+        if not mapped_models:
+            source = (
+                "env"
+                if any(os.getenv(name) for name in provider_env(provider_id))
+                else "api"
+                if connected_flag
+                else "custom"
+            )
+        catalog = _provider_catalog_state(
+            connected=connected_flag,
+            model_count=len(mapped_models),
+            refresh_scheduled=refresh_scheduled,
+            source=source,
+        )
         all_providers.append(
             {
                 "id": provider_id,
                 "name": provider_name(provider_id),
                 "api": api_url,
                 "npm": api_npm,
+                "source": source,
+                "connected": connected_flag,
+                "catalog": catalog,
                 "env": provider_env(provider_id),
                 "models": mapped_models,
             }
@@ -794,7 +975,7 @@ def build_provider_list_payload(core: Any) -> dict[str, Any]:
         elif mapped_models:
             default[provider_id] = next(iter(mapped_models.keys()))
 
-        if provider_connected(provider_id, auth_records):
+        if connected_flag:
             connected.append(provider_id)
 
     return {

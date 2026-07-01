@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from penguin.core_runtime.opencode_bridge import normalize_optional_string
+from penguin.system.runtime_events import redact_runtime_payload
 
 TRANSCRIPT_KEY = "_opencode_transcript_v1"
 TRANSCRIPT_EVENT_TYPES = frozenset(
@@ -181,7 +182,8 @@ def _apply_part_updated(
         part_order = []
         entry["part_order"] = part_order
 
-    parts[part_id] = dict(part)
+    redacted_part, _ = redact_runtime_payload(dict(part))
+    parts[part_id] = redacted_part if isinstance(redacted_part, dict) else dict(part)
     if part_id not in part_order:
         part_order.append(part_id)
 

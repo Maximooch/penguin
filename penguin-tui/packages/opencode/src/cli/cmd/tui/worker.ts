@@ -9,7 +9,7 @@ import { Config } from "@/config/config"
 import { GlobalBus } from "@/bus/global"
 import { createOpencodeClient, type Event } from "@opencode-ai/sdk/v2"
 import type { BunWebSocketData } from "hono/bun"
-import { Flag } from "@/flag/flag"
+import { createServerAuthorizationHeader } from "../../../server/auth-header"
 
 await Log.init({
   print: process.argv.includes("--print-logs"),
@@ -51,7 +51,7 @@ const startEventStream = (directory: string) => {
 
   const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = new Request(input, init)
-    const auth = getAuthorizationHeader()
+    const auth = createServerAuthorizationHeader()
     if (auth) request.headers.set("Authorization", auth)
     return Server.App().fetch(request)
   }) as typeof globalThis.fetch
@@ -99,7 +99,7 @@ startEventStream(process.cwd())
 export const rpc = {
   async fetch(input: { url: string; method: string; headers: Record<string, string>; body?: string }) {
     const headers = { ...input.headers }
-    const auth = getAuthorizationHeader()
+    const auth = createServerAuthorizationHeader()
     if (auth && !headers["authorization"] && !headers["Authorization"]) {
       headers["Authorization"] = auth
     }
@@ -143,10 +143,3 @@ export const rpc = {
 }
 
 Rpc.listen(rpc)
-
-function getAuthorizationHeader(): string | undefined {
-  const password = Flag.OPENCODE_SERVER_PASSWORD
-  if (!password) return undefined
-  const username = Flag.OPENCODE_SERVER_USERNAME ?? "opencode"
-  return `Basic ${btoa(`${username}:${password}`)}`
-}

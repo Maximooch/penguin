@@ -3,6 +3,8 @@
 
 import pytest
 
+pytestmark = pytest.mark.e2e
+
 
 def test_toggle():
     tui = pytest.importorskip("penguin.cli.tui")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import suppress
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -441,6 +442,18 @@ async def test_emit_opencode_user_message_uses_client_message_id_and_model_state
     setattr(core, "_get_tui_adapter", lambda _session_id: adapter)
     setattr(
         core,
+        "_opencode_stream_states",
+        {
+            "session_user_emit": {
+                "active": False,
+                "stream_id": "stream_old",
+                "message_id": "msg_previous_assistant",
+                "part_id": "part_previous_text",
+            }
+        },
+    )
+    setattr(
+        core,
         "_resolve_opencode_model_state",
         lambda session_id: {
             "modelID": "gpt-5.4",
@@ -473,6 +486,12 @@ async def test_emit_opencode_user_message_uses_client_message_id_and_model_state
             "variant": "high",
         }
     ]
+    assert core._opencode_stream_states["session_user_emit"] == {
+        "active": False,
+        "stream_id": None,
+        "message_id": None,
+        "part_id": None,
+    }
 
 
 def test_map_action_result_metadata_extracts_diff_for_edit_with_pattern() -> None:
@@ -797,6 +816,66 @@ async def test_core_created_tui_adapter_suppresses_live_session_status_events() 
         if event_type == "opencode_event" and payload.get("type") == "session.status"
     ]
     assert status_events == []
+
+
+@pytest.mark.asyncio
+async def test_opencode_status_heartbeat_refreshes_busy_status() -> None:
+    bus = _EventBus()
+    core = PenguinCore.__new__(PenguinCore)
+
+    setattr(core, "event_bus", bus)
+    setattr(core, "_opencode_active_requests", {"session_busy": 1})
+    setattr(core, "_opencode_status_heartbeats", {})
+
+    core._ensure_opencode_session_status_heartbeat("session_busy", interval=0.01)
+    task = core._opencode_status_heartbeats.get("session_busy")
+    await asyncio.sleep(0.035)
+
+    core._opencode_active_requests.pop("session_busy", None)
+    core._cancel_opencode_session_status_heartbeat("session_busy")
+    if task is not None:
+        with suppress(asyncio.CancelledError):
+            await task
+
+    status_events = [
+        payload
+        for event_type, payload in bus.events
+        if event_type == "opencode_event" and payload.get("type") == "session.status"
+    ]
+    assert status_events
+    assert all(
+        item["properties"]["sessionID"] == "session_busy" for item in status_events
+    )
+    assert all(item["properties"]["status"]["type"] == "busy" for item in status_events)
+    assert all(
+        item["runtime_event"]["type"] == "session.status" for item in status_events
+    )
+
+
+@pytest.mark.asyncio
+async def test_opencode_status_heartbeat_continues_after_emit_failure() -> None:
+    core = PenguinCore.__new__(PenguinCore)
+    calls = 0
+
+    setattr(core, "_opencode_active_requests", {"session_busy": 1})
+    setattr(core, "_opencode_status_heartbeats", {})
+
+    async def _flaky_emit(_session_id: str, _status: str) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("transient emit failure")
+
+    setattr(core, "_emit_opencode_session_status", _flaky_emit)
+
+    task = asyncio.create_task(
+        core._opencode_session_status_heartbeat("session_busy", interval=0.01)
+    )
+    await asyncio.sleep(0.035)
+    core._opencode_active_requests.pop("session_busy", None)
+    await task
+
+    assert calls >= 2
 
 
 def test_map_action_result_metadata_moves_diff_to_attempted_diff_on_error() -> None:
@@ -1130,6 +1209,44 @@ async def test_todo_updated_event_persists_and_emits_opencode_event() -> None:
     assert payload["type"] == "todo.updated"
     assert payload["properties"]["sessionID"] == session.id
     assert payload["properties"]["todos"][0]["status"] == "in_progress"
+    assert payload["runtime_event"]["type"] == "todo.updated"
+
+
+@pytest.mark.asyncio
+async def test_lsp_bridge_events_are_wrapped_as_runtime_events() -> None:
+    emitted: list[tuple[str, dict[str, Any]]] = []
+
+    class _EventBus:
+        async def emit(self, event_type: str, data: dict[str, Any]) -> None:
+            emitted.append((event_type, data))
+
+    core = PenguinCore.__new__(PenguinCore)
+    setattr(core, "event_bus", _EventBus())
+    setattr(core, "_opencode_session_directories", {"session_lsp": "/tmp/project"})
+
+    await core._on_tui_lsp_updated(
+        "lsp.updated",
+        {"sessionID": "session_lsp", "servers": [{"id": "pyright"}]},
+    )
+    await core._on_tui_lsp_diagnostics(
+        "lsp.client.diagnostics",
+        {"sessionID": "session_lsp", "path": "src/app.py", "diagnostics": []},
+    )
+
+    payloads = [
+        payload for event_type, payload in emitted if event_type == "opencode_event"
+    ]
+    assert [payload["type"] for payload in payloads] == [
+        "lsp.updated",
+        "lsp.client.diagnostics",
+    ]
+    assert all(
+        payload["runtime_event"]["category"] == "file_diff" for payload in payloads
+    )
+    assert all(
+        payload["runtime_event"]["scope"]["session_id"] == "session_lsp"
+        for payload in payloads
+    )
 
 
 @pytest.mark.asyncio
@@ -1222,6 +1339,65 @@ async def test_persist_opencode_events_replays_tool_parts_in_order() -> None:
     assert rows is not None
     assert len(rows) == 1
     assert [part["id"] for part in rows[0]["parts"]] == ["part_text", "part_tool"]
+
+
+@pytest.mark.asyncio
+async def test_persist_opencode_event_redacts_transcript_tool_payloads() -> None:
+    session = Session(id="session_track_redaction")
+    manager = _SessionManager(session)
+    conversation_manager = SimpleNamespace(
+        session_manager=manager,
+        agent_session_managers={"default": manager},
+    )
+
+    core = PenguinCore.__new__(PenguinCore)
+    setattr(core, "conversation_manager", conversation_manager)
+    setattr(
+        core,
+        "model_config",
+        SimpleNamespace(model="openai/gpt-5", provider="openai"),
+    )
+    setattr(
+        core,
+        "runtime_config",
+        SimpleNamespace(active_root="/tmp/project", project_root="/tmp/project"),
+    )
+    setattr(core, "_opencode_session_directories", {session.id: "/tmp/project"})
+
+    await core._persist_opencode_event(
+        "message.part.updated",
+        {
+            "part": {
+                "id": "part_tool_secret",
+                "sessionID": session.id,
+                "messageID": "msg_secret",
+                "type": "tool",
+                "tool": "bash",
+                "callID": "call_secret",
+                "state": {
+                    "status": "completed",
+                    "input": {
+                        "aws_secret_access_key": "aws-secret",
+                        "token_usage": {"input_tokens": 4, "output_tokens": 2},
+                        "tokens": 6,
+                    },
+                    "metadata": {"private_key": "private-value"},
+                    "time": {"start": 1, "end": 2},
+                },
+            },
+        },
+    )
+
+    transcript = session.metadata.get(TRANSCRIPT_KEY)
+    assert isinstance(transcript, dict)
+    message_entry = transcript.get("messages", {}).get("msg_secret")
+    assert isinstance(message_entry, dict)
+    stored_part = message_entry["parts"]["part_tool_secret"]
+    state = stored_part["state"]
+    assert state["input"]["aws_secret_access_key"] == "[redacted]"
+    assert state["input"]["tokens"] == 6
+    assert state["input"]["token_usage"] == {"input_tokens": 4, "output_tokens": 2}
+    assert state["metadata"]["private_key"] == "[redacted]"
 
 
 @pytest.mark.asyncio

@@ -17,6 +17,7 @@ class _Manager:
         self.session_index = {
             session.id: {"token_count": session.total_tokens} for session in sessions
         }
+        self.context_window = _ContextWindow()
 
     def load_session(self, session_id: str) -> Session | None:
         item = self.sessions.get(session_id)
@@ -124,6 +125,70 @@ async def test_token_usage_query_is_session_scoped_without_runtime_bleed() -> No
 
 
 @pytest.mark.asyncio
+async def test_session_token_usage_prefers_messages_over_stale_snapshot() -> None:
+    session = _session("session_stale_snapshot", 321)
+    session.metadata["_opencode_usage_v1"] = {
+        "current_total_tokens": 99_999,
+        "max_context_window_tokens": 200_000,
+        "available_tokens": 100_001,
+        "percentage": 49.9995,
+        "categories": {"DIALOG": 99_999},
+        "truncations": {
+            "total_truncations": 9,
+            "messages_removed": 99,
+            "tokens_freed": 88_888,
+            "by_category": {},
+            "recent_events": [],
+        },
+    }
+
+    response = await get_session_token_usage(
+        "session_stale_snapshot",
+        conversation_id=None,
+        agent_id=None,
+        core=_core([session]),
+    )
+
+    usage = response["usage"]
+    assert usage["scope"] == "session"
+    assert usage["current_total_tokens"] == 321
+    assert usage["categories"]["DIALOG"] == 321
+    assert usage["truncations"]["total_truncations"] == 9
+    assert usage["truncations"]["tokens_freed"] == 88_888
+
+
+@pytest.mark.asyncio
+async def test_session_token_usage_uses_snapshot_when_messages_are_missing() -> None:
+    session = Session(id="session_snapshot_only")
+    session.metadata["_opencode_usage_v1"] = {
+        "current_total_tokens": 44,
+        "max_context_window_tokens": 200_000,
+        "available_tokens": 199_956,
+        "percentage": 0.022,
+        "categories": {"DIALOG": 44},
+        "truncations": {
+            "total_truncations": 1,
+            "messages_removed": 2,
+            "tokens_freed": 333,
+            "by_category": {},
+            "recent_events": [],
+        },
+    }
+
+    response = await get_session_token_usage(
+        "session_snapshot_only",
+        conversation_id=None,
+        agent_id=None,
+        core=_core([session]),
+    )
+
+    usage = response["usage"]
+    assert usage["scope"] == "session"
+    assert usage["current_total_tokens"] == 44
+    assert usage["truncations"]["tokens_freed"] == 333
+
+
+@pytest.mark.asyncio
 async def test_token_usage_without_session_is_marked_runtime() -> None:
     response = await get_token_usage(
         session_id=None,
@@ -149,6 +214,63 @@ async def test_session_token_usage_path_returns_404_for_missing_session() -> Non
 
     assert exc.value.status_code == 404
     assert exc.value.detail["scope"] == "missing"
+
+
+@pytest.mark.asyncio
+async def test_session_token_usage_path_rejects_conflicting_conversation_id() -> None:
+    with pytest.raises(HTTPException) as exc:
+        await get_session_token_usage(
+            "session_a",
+            conversation_id="session_b",
+            agent_id=None,
+            core=_core([_session("session_a", 10)]),
+        )
+
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_session_token_usage_uses_session_manager_context_window() -> None:
+    core = _core([_session("session_scoped", 600)])
+    core.conversation_manager.context_window = SimpleNamespace(
+        max_context_window_tokens=200_000
+    )
+    core.conversation_manager.session_manager.context_window = SimpleNamespace(
+        max_context_window_tokens=1_000
+    )
+
+    response = await get_session_token_usage(
+        "session_scoped",
+        conversation_id=None,
+        agent_id=None,
+        core=core,
+    )
+
+    usage = response["usage"]
+    assert usage["max_context_window_tokens"] == 1_000
+    assert usage["available_tokens"] == 400
+    assert usage["percentage"] == 60.0
+
+
+@pytest.mark.asyncio
+async def test_session_token_usage_falls_back_to_conversation_context_window() -> None:
+    core = _core([_session("session_scoped", 600)])
+    core.conversation_manager.context_window = SimpleNamespace(
+        max_context_window_tokens=1_200
+    )
+    delattr(core.conversation_manager.session_manager, "context_window")
+
+    response = await get_session_token_usage(
+        "session_scoped",
+        conversation_id=None,
+        agent_id=None,
+        core=core,
+    )
+
+    usage = response["usage"]
+    assert usage["max_context_window_tokens"] == 1_200
+    assert usage["available_tokens"] == 600
+    assert usage["percentage"] == 50.0
 
 
 @pytest.mark.asyncio

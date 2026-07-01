@@ -39,6 +39,25 @@ DEFAULT_TUI_RELEASE_API_ROOT = "https://api.github.com/repos/Maximooch/penguin/r
 DEFAULT_TUI_RELEASE_URL = f"{DEFAULT_TUI_RELEASE_API_ROOT}/latest"
 DEFAULT_WEB_URL = f"http://127.0.0.1:{DEFAULT_WEB_PORT}"
 _URL_MODE_CAP_CACHE: dict[str, bool] = {}
+_STARTUP_PROFILE_START = time.perf_counter()
+
+
+def _profile_startup(label: str, **details: Any) -> None:
+    """Emit env-gated launcher startup timing for TUI profiling."""
+    if (
+        os.getenv("PENGUIN_TUI_PROFILE") != "1"
+        and os.getenv("OPENCODE_TUI_PROFILE") != "1"
+    ):
+        return
+    payload = {
+        "label": label,
+        "ms": round((time.perf_counter() - _STARTUP_PROFILE_START) * 1000),
+        **details,
+    }
+    print(
+        f"[penguin-tui launcher] {json.dumps(payload, sort_keys=True)}",
+        file=sys.stderr,
+    )
 
 
 def _normalize_base_url(raw_url: str) -> str:
@@ -771,6 +790,8 @@ def _build_opencode_command(
         project_dir: Target project directory for the TUI session.
         base_url: Penguin web base URL.
         extra_args: Additional args passed through to OpenCode CLI.
+        use_global_opencode: Prefer the global `opencode` binary over local
+            source checkout execution.
 
     Returns:
         Tuple of command argv and optional cwd for the child process.
@@ -780,10 +801,25 @@ def _build_opencode_command(
     """
     extra = list(extra_args)
     has_url_arg = "--url" in extra
+    global_error = ""
+
+    if use_global_opencode:
+        opencode_bin = shutil.which("opencode")
+        if opencode_bin:
+            cmd = _build_binary_tui_command(
+                binary=opencode_bin,
+                project_dir=project_dir,
+                base_url=base_url,
+                extra_args=extra,
+                has_url_arg=has_url_arg,
+                require_url_mode=False,
+            )
+            return cmd, None
+        global_error = " Global 'opencode' binary was not found."
 
     bun_bin = shutil.which("bun")
     local_dir = _find_local_opencode_dir()
-    if bun_bin and local_dir is not None:
+    if not use_global_opencode and bun_bin and local_dir is not None:
         cmd = [
             bun_bin,
             "run",
@@ -810,25 +846,12 @@ def _build_opencode_command(
     except RuntimeError as exc:
         sidecar_error = str(exc)
 
-    if use_global_opencode:
-        opencode_bin = shutil.which("opencode")
-        if opencode_bin:
-            cmd = _build_binary_tui_command(
-                binary=opencode_bin,
-                project_dir=project_dir,
-                base_url=base_url,
-                extra_args=extra,
-                has_url_arg=has_url_arg,
-                require_url_mode=False,
-            )
-            return cmd, None
-
     raise RuntimeError(
         "Penguin TUI runtime is not available. Install or upgrade with "
         "'pip install -U penguin-ai'. For development, set "
         "PENGUIN_OPENCODE_DIR to your local 'penguin-tui/packages/opencode' "
         "path, or use --use-global-opencode with an installed 'opencode' binary. "
-        f"Sidecar bootstrap error: {sidecar_error}"
+        f"{global_error} Sidecar bootstrap error: {sidecar_error}"
     )
 
 
@@ -906,7 +929,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     Returns:
         Process exit code.
     """
+    _profile_startup("launcher.start")
+    parse_start = time.perf_counter()
     args, extra_args = _parse_args(argv)
+    _profile_startup(
+        "launcher.args.done",
+        duration_ms=round((time.perf_counter() - parse_start) * 1000),
+        extra_args=len(extra_args),
+    )
 
     try:
         base_url = _normalize_base_url(args.url)
@@ -930,8 +960,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Force it to the requested target project when launched via uvx/tool shims.
     env["PWD"] = str(project_dir)
 
+    health_start = time.perf_counter()
     server_running = _is_server_running(base_url)
+    _profile_startup(
+        "launcher.health.done",
+        duration_ms=round((time.perf_counter() - health_start) * 1000),
+        server_running=server_running,
+    )
+    auth_start = time.perf_counter()
     _prepare_local_auth_env(base_url, env, server_running=server_running)
+    _profile_startup(
+        "launcher.auth_env.done",
+        duration_ms=round((time.perf_counter() - auth_start) * 1000),
+    )
 
     server_proc: subprocess.Popen[str] | None = None
     cleanup_registered = False
@@ -974,14 +1015,26 @@ def main(argv: Sequence[str] | None = None) -> int:
                 file=sys.stderr,
             )
 
+    cache_auth_start = time.perf_counter()
     _sync_local_auth_env_from_cache(base_url, env)
+    _profile_startup(
+        "launcher.auth_cache.done",
+        duration_ms=round((time.perf_counter() - cache_auth_start) * 1000),
+    )
 
     try:
+        command_start = time.perf_counter()
         opencode_cmd, opencode_cwd = _build_opencode_command(
             project_dir,
             base_url,
             extra_args,
             use_global_opencode=args.use_global_opencode,
+        )
+        _profile_startup(
+            "launcher.command.done",
+            duration_ms=round((time.perf_counter() - command_start) * 1000),
+            executable=Path(opencode_cmd[0]).name if opencode_cmd else "",
+            cwd=str(opencode_cwd) if opencode_cwd is not None else None,
         )
     except RuntimeError as exc:
         if cleanup_registered:
@@ -990,7 +1043,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     try:
+        _profile_startup("launcher.spawn.start")
         result = subprocess.run(opencode_cmd, cwd=opencode_cwd, env=env)
+        _profile_startup("launcher.spawn.done", returncode=result.returncode)
         return result.returncode
     except KeyboardInterrupt:
         return 130

@@ -15,8 +15,7 @@ from penguin.project.validation_manager import ValidationManager
 from penguin.project.git_manager import GitManager
 from penguin.project.models import TaskStatus
 
-# Marks all tests in this file as asyncio tests
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.e2e]
 
 @pytest.fixture
 def temp_workspace(tmp_path: Path) -> Path:

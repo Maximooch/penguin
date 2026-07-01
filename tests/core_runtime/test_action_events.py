@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -79,20 +80,22 @@ async def test_handle_tui_todo_updated_persists_and_emits_scoped_event() -> None
             ],
         )
     ]
-    assert owner.event_bus.events == [
-        (
-            "opencode_event",
-            {
-                "type": "todo.updated",
-                "properties": {
-                    "todos": persisted_todos,
-                    "sessionID": "session_1",
-                    "conversation_id": "session_1",
-                    "directory": "/tmp/project",
-                },
-            },
-        )
-    ]
+    assert len(owner.event_bus.events) == 1
+    event_type, payload = owner.event_bus.events[0]
+    assert event_type == "opencode_event"
+    assert payload["type"] == "todo.updated"
+    assert payload["properties"] == {
+        "todos": persisted_todos,
+        "sessionID": "session_1",
+        "conversation_id": "session_1",
+        "directory": str(Path("/tmp/project").resolve()),
+    }
+    assert payload["runtime_event"]["type"] == "todo.updated"
+    assert payload["runtime_event"]["scope"]["session_id"] == "session_1"
+    assert payload["runtime_event"]["scope"]["conversation_id"] == "session_1"
+    assert payload["runtime_event"]["scope"]["directory"] == str(
+        Path("/tmp/project").resolve()
+    )
 
 
 @pytest.mark.asyncio
@@ -130,32 +133,32 @@ async def test_handle_tui_lsp_events_emit_scoped_opencode_events() -> None:
         execution_context=context,
     )
 
-    assert owner.event_bus.events == [
-        (
-            "opencode_event",
-            {
-                "type": "lsp.updated",
-                "properties": {
-                    "files": ["src/a.py"],
-                    "sessionID": "session_1",
-                    "conversation_id": "session_1",
-                    "directory": "/tmp/project",
-                },
-            },
-        ),
-        (
-            "opencode_event",
-            {
-                "type": "lsp.client.diagnostics",
-                "properties": {
-                    "diagnostics": [{"path": "src/a.py", "severity": "error"}],
-                    "sessionID": "session_1",
-                    "conversation_id": "session_1",
-                    "directory": "/tmp/project",
-                },
-            },
-        ),
+    assert [event_type for event_type, _payload in owner.event_bus.events] == [
+        "opencode_event",
+        "opencode_event",
     ]
+
+    first_payload = owner.event_bus.events[0][1]
+    assert first_payload["type"] == "lsp.updated"
+    assert first_payload["properties"] == {
+        "files": ["src/a.py"],
+        "sessionID": "session_1",
+        "conversation_id": "session_1",
+        "directory": str(Path("/tmp/project").resolve()),
+    }
+    assert first_payload["runtime_event"]["type"] == "lsp.updated"
+    assert first_payload["runtime_event"]["scope"]["session_id"] == "session_1"
+
+    second_payload = owner.event_bus.events[1][1]
+    assert second_payload["type"] == "lsp.client.diagnostics"
+    assert second_payload["properties"] == {
+        "diagnostics": [{"path": "src/a.py", "severity": "error"}],
+        "sessionID": "session_1",
+        "conversation_id": "session_1",
+        "directory": str(Path("/tmp/project").resolve()),
+    }
+    assert second_payload["runtime_event"]["type"] == "lsp.client.diagnostics"
+    assert second_payload["runtime_event"]["scope"]["session_id"] == "session_1"
 
 
 @pytest.mark.asyncio

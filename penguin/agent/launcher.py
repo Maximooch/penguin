@@ -34,16 +34,17 @@ class AgentLauncher:
         self,
         core_instance: Optional[PenguinCore] = None,
         config_dir: Path = AGENT_CONFIG_DIR,
-        *,
         core: Optional[PenguinCore] = None,
     ) -> None:
-        if core is not None:
-            core_instance = core
-        self.core = core_instance
+        self.core = core if core is not None else core_instance
         self.config_dir = config_dir
         self._agent_configs: Dict[str, AgentConfig] = {}
         self._agent_classes: Dict[str, Type[BaseAgent]] = {}
         self.load_agent_configs()
+
+    def add_agent(self, agent_config: AgentConfig) -> None:
+        """Register an agent config explicitly for tests and dynamic callers."""
+        self._agent_configs[agent_config.name] = agent_config
 
     # ------------------------------------------------------------------
     # Config loading helpers

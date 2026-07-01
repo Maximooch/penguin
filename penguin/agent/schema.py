@@ -50,7 +50,7 @@ class AgentSecurity(BaseModel):
     # Future: filesystem_access: Literal["read_only", "workspace_write", "full_write"]
 
 
-# Backward-compatible name used by older tests and integrations.
+# Backward-compatible alias for older agent launcher/container tests and callers.
 SecurityConfig = AgentSecurity
 
 

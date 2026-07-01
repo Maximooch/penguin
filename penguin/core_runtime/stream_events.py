@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from penguin.system.execution_context import get_current_execution_context
+from penguin.system.runtime_events import wrap_opencode_event
 from penguin.system.state import Message, MessageCategory
 
 from . import opencode_bridge as core_opencode_bridge
@@ -16,17 +17,20 @@ __all__ = [
     "abort_session",
     "abort_streaming_message",
     "active_part_text",
+    "cancel_opencode_session_status_heartbeat",
     "emit_opencode_session_status",
     "emit_opencode_stream_chunk",
     "emit_opencode_stream_end",
     "emit_opencode_stream_start",
     "emit_opencode_user_message_with_metadata",
     "emit_ui_event",
+    "ensure_opencode_session_status_heartbeat",
     "filter_internal_markers_from_event",
     "finalize_streaming_message",
     "handle_stream_chunk",
     "handle_tui_stream_chunk",
     "invoke_runmode_stream_callback",
+    "opencode_session_status_heartbeat",
     "persist_finalized_message",
     "prepare_runmode_stream_callback",
     "resolve_stream_scope_id",
@@ -227,11 +231,92 @@ async def emit_opencode_session_status(
 
     await owner.event_bus.emit(
         "opencode_event",
-        {
-            "type": "session.status",
-            "properties": properties,
-        },
+        wrap_opencode_event("session.status", properties, default_session_id=sid),
     )
+
+
+async def opencode_session_status_heartbeat(
+    owner: Any,
+    session_id: str,
+    *,
+    interval: float = 5.0,
+    logger: Any | None = None,
+) -> None:
+    """Refresh busy status while a session has active OpenCode requests."""
+
+    current_task = asyncio.current_task()
+    try:
+        while True:
+            await asyncio.sleep(interval)
+            active_requests = getattr(owner, "_opencode_active_requests", None)
+            active_count = (
+                active_requests.get(session_id, 0)
+                if isinstance(active_requests, dict)
+                else 0
+            )
+            if active_count <= 0:
+                return
+            try:
+                await owner._emit_opencode_session_status(session_id, "busy")
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                if logger is not None:
+                    logger.debug(
+                        "OpenCode session status heartbeat emit failed for %s",
+                        session_id,
+                        exc_info=True,
+                    )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        if logger is not None:
+            logger.debug(
+                "OpenCode session status heartbeat failed for %s",
+                session_id,
+                exc_info=True,
+            )
+    finally:
+        heartbeats = getattr(owner, "_opencode_status_heartbeats", None)
+        if isinstance(heartbeats, dict) and heartbeats.get(session_id) is current_task:
+            heartbeats.pop(session_id, None)
+
+
+def ensure_opencode_session_status_heartbeat(
+    owner: Any,
+    session_id: str,
+    *,
+    interval: float = 5.0,
+) -> None:
+    """Start one busy-status heartbeat for an active session request."""
+
+    sid = session_id.strip() if isinstance(session_id, str) else ""
+    if not sid:
+        return
+
+    heartbeats = getattr(owner, "_opencode_status_heartbeats", None)
+    if not isinstance(heartbeats, dict):
+        heartbeats = {}
+        owner._opencode_status_heartbeats = heartbeats
+
+    existing = heartbeats.get(sid)
+    if existing is not None and not existing.done():
+        return
+
+    heartbeats[sid] = asyncio.create_task(
+        owner._opencode_session_status_heartbeat(sid, interval=interval)
+    )
+
+
+def cancel_opencode_session_status_heartbeat(owner: Any, session_id: str) -> None:
+    """Stop the busy-status heartbeat once a session request is fully idle."""
+
+    heartbeats = getattr(owner, "_opencode_status_heartbeats", None)
+    if not isinstance(heartbeats, dict):
+        return
+    task = heartbeats.pop(session_id, None)
+    if task is not None and not task.done():
+        task.cancel()
 
 
 async def emit_ui_event(
@@ -1036,7 +1121,7 @@ async def emit_opencode_user_message_with_metadata(
     )
     adapter = owner._get_tui_adapter(session_id)
     model_state = owner._resolve_opencode_model_state(session_id=session_id)
-    return await adapter.on_user_message_with_metadata(
+    emitted_message_id = await adapter.on_user_message_with_metadata(
         content,
         message_id=message_id,
         agent_id=agent_id or "default",
@@ -1044,6 +1129,12 @@ async def emit_opencode_user_message_with_metadata(
         provider_id=model_state.get("providerID"),
         variant=model_state.get("variant"),
     )
+    state = stream_state_for(owner, session_id)
+    state["active"] = False
+    state["stream_id"] = None
+    state["message_id"] = None
+    state["part_id"] = None
+    return emitted_message_id
 
 
 async def handle_tui_stream_chunk(

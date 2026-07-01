@@ -11,6 +11,7 @@ import {
   Switch,
   useContext,
 } from "solid-js"
+import "opentui-spinner/solid"
 import { Dynamic } from "solid-js/web"
 import path from "path"
 import { useRoute, useRouteData } from "@tui/context/route"
@@ -27,6 +28,7 @@ import {
   RGBA,
 } from "@opentui/core"
 import { Prompt, type PromptRef } from "@tui/component/prompt"
+import { isPenguinAssistantOpen } from "@tui/component/prompt/penguin-run-state"
 import type { AssistantMessage, Part, ToolPart, UserMessage, TextPart, ReasoningPart } from "@opencode-ai/sdk/v2"
 import { useLocal } from "@tui/context/local"
 import { Locale } from "@/util/locale"
@@ -60,7 +62,6 @@ import { DialogSessionRename } from "../../component/dialog-session-rename"
 import { exitSession } from "../../util/exit"
 import { getSessionFamily } from "../../util/session-family"
 import { Sidebar } from "./sidebar"
-import { Flag } from "@/flag/flag"
 import { LANGUAGE_EXTENSIONS } from "@/lsp/language"
 import parsers from "../../../../../../parsers-config.ts"
 import { Clipboard } from "../../util/clipboard"
@@ -77,6 +78,12 @@ import { PermissionPrompt } from "./permission"
 import { QuestionPrompt } from "./question"
 import { DialogExportOptions } from "../../ui/dialog-export-options"
 import { formatTranscript } from "../../util/transcript"
+import { formatReasoningLabel, isReasoningComplete, parseReasoningSummary } from "../../util/reasoning-summary"
+import { coerceToolInputRecord, formatPrimitiveToolInput } from "../../util/tool-input"
+import { assistantDurationMs, isAssistantSettled } from "./message-duration"
+import { deriveInlineToolState } from "./inline-tool-row"
+import { formatSubagentTaskDescription, formatSubagentTaskLabel, isBackgroundSubagentTask } from "./subagent-task"
+import { shouldUseOpenCodeMarkdownRenderer } from "../../util/markdown-renderer"
 
 addDefaultParsers(parsers.parsers)
 
@@ -136,6 +143,17 @@ export function Session() {
 
   const lastAssistant = createMemo(() => {
     return messages().findLast((x) => x.role === "assistant")
+  })
+  const penguinInterruptActive = createMemo(() => {
+    const state = sync.data.session_status?.[route.sessionID]
+    if (state?.type !== "idle" || !!pending()) return true
+
+    const assistant = lastAssistant()
+    if (!assistant) return false
+    return isPenguinAssistantOpen({
+      message: assistant,
+      parts: sync.data.part[assistant.id] ?? [],
+    })
   })
 
   const dimensions = useTerminalDimensions()
@@ -244,9 +262,7 @@ export function Session() {
   useKeyboard((evt) => {
     if (!sdk.penguin) return
     if (!(keybind.match("session_interrupt", evt) || evt.name === "escape")) return
-    const state = sync.data.session_status?.[route.sessionID]
-    const active = state?.type !== "idle" || !!pending()
-    if (!active) return
+    if (!penguinInterruptActive()) return
     sdk.client.session
       .abort({
         sessionID: route.sessionID,
@@ -904,8 +920,7 @@ export function Session() {
   const revertMessageID = createMemo(() => revertInfo()?.messageID)
   const hiddenMessageIDs = createMemo(() => {
     const info = revertInfo() as
-      | ({ hiddenMessageIDs?: string[] } & NonNullable<ReturnType<typeof revertInfo>>)
-      | undefined
+      ({ hiddenMessageIDs?: string[] } & NonNullable<ReturnType<typeof revertInfo>>) | undefined
     const hidden = info?.hiddenMessageIDs
     if (Array.isArray(hidden) && hidden.length > 0) return hidden
 
@@ -1288,15 +1303,11 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
   const messages = createMemo(() => sync.data.message[props.message.sessionID] ?? [])
 
   const final = createMemo(() => {
-    return props.message.finish && !["tool-calls", "unknown"].includes(props.message.finish)
+    return isAssistantSettled(props.message)
   })
 
   const duration = createMemo(() => {
-    if (!final()) return 0
-    if (!props.message.time.completed) return 0
-    const user = messages().find((x) => x.role === "user" && x.id === props.message.parentID)
-    if (!user || !user.time) return 0
-    return props.message.time.completed - user.time.created
+    return assistantDurationMs(props.message, messages())
   })
 
   return (
@@ -1366,18 +1377,24 @@ const PART_MAPPING = {
   reasoning: ReasoningPart,
 }
 
+const INLINE_TOOL_ICON_WIDTH = 2
+
 function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: AssistantMessage }) {
   const { theme, subtleSyntax } = useTheme()
   const ctx = use()
+  const kv = useKV()
   const content = createMemo(() => {
     // Filter out redacted reasoning chunks from OpenRouter
     // OpenRouter sends encrypted reasoning data that appears as [REDACTED]
-    return props.part.text.replace("[REDACTED]", "").trim()
+    return props.part.text.replaceAll("[REDACTED]", "").trim()
   })
+  const summary = createMemo(() => parseReasoningSummary(content()))
+  const done = createMemo(() => isReasoningComplete({ part: props.part, message: props.message }))
+  const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
   return (
     <Show when={content() && ctx.showThinking()}>
       <box
-        id={"text-" + props.part.id}
+        id={`text-${props.part.messageID}-${props.part.id}`}
         paddingLeft={2}
         marginTop={1}
         flexDirection="column"
@@ -1385,15 +1402,23 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
         customBorderChars={SplitBorder.customBorderChars}
         borderColor={theme.backgroundElement}
       >
-        <code
-          filetype="markdown"
-          drawUnstyledText={false}
-          streaming={true}
-          syntaxStyle={subtleSyntax()}
-          content={"_Thinking:_ " + content()}
-          conceal={ctx.conceal()}
-          fg={theme.textMuted}
-        />
+        <box flexDirection="row" gap={1}>
+          <Show when={!done() && kv.get("animations_enabled", true)}>
+            <spinner frames={spinnerFrames} interval={80} color={theme.warning} />
+          </Show>
+          <text fg={theme.warning}>{formatReasoningLabel(summary().title, done())}</text>
+        </box>
+        <Show when={summary().body}>
+          <code
+            filetype="markdown"
+            drawUnstyledText={false}
+            streaming={true}
+            syntaxStyle={subtleSyntax()}
+            content={summary().body}
+            conceal={ctx.conceal()}
+            fg={theme.textMuted}
+          />
+        </Show>
       </box>
     </Show>
   )
@@ -1404,9 +1429,9 @@ function TextPart(props: { last: boolean; part: TextPart; message: AssistantMess
   const { theme, syntax } = useTheme()
   return (
     <Show when={props.part.text.trim()}>
-      <box id={"text-" + props.part.id} paddingLeft={3} marginTop={1} flexShrink={0}>
+      <box id={`text-${props.part.messageID}-${props.part.id}`} paddingLeft={3} marginTop={1} flexShrink={0}>
         <Switch>
-          <Match when={Flag.OPENCODE_EXPERIMENTAL_MARKDOWN}>
+          <Match when={shouldUseOpenCodeMarkdownRenderer()}>
             <markdown
               syntaxStyle={syntax()}
               streaming={true}
@@ -1414,7 +1439,7 @@ function TextPart(props: { last: boolean; part: TextPart; message: AssistantMess
               conceal={ctx.conceal()}
             />
           </Match>
-          <Match when={!Flag.OPENCODE_EXPERIMENTAL_MARKDOWN}>
+          <Match when={!shouldUseOpenCodeMarkdownRenderer()}>
             <code
               filetype="markdown"
               drawUnstyledText={false}
@@ -1449,7 +1474,10 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
       return props.part.state.status === "pending" ? {} : (props.part.state.metadata ?? {})
     },
     get input() {
-      return props.part.state.input ?? {}
+      return coerceToolInputRecord(props.part.state.input)
+    },
+    get rawInput() {
+      return props.part.state.input
     },
     get output() {
       return props.part.state.status === "completed" ? props.part.state.output : undefined
@@ -1530,11 +1558,17 @@ type ToolProps<T extends Tool.Info> = {
   tool: string
   output?: string
   part: ToolPart
+  rawInput?: unknown
 }
 function GenericTool(props: ToolProps<any>) {
   return (
-    <InlineTool icon="⚙" pending="Writing command..." complete={true} part={props.part}>
-      {props.tool} {input(props.input)}
+    <InlineTool
+      icon="⚙"
+      pending="Writing command..."
+      complete={props.part.state.status !== "pending"}
+      part={props.part}
+    >
+      {props.tool} {input(props.rawInput ?? props.input)}
     </InlineTool>
   )
 }
@@ -1559,9 +1593,11 @@ function InlineTool(props: {
   part: ToolPart
 }) {
   const [margin, setMargin] = createSignal(0)
+  const [errorExpanded, setErrorExpanded] = createSignal(false)
   const { theme } = useTheme()
   const ctx = use()
   const sync = useSync()
+  const renderer = useRenderer()
 
   const permission = createMemo(() => {
     const callID = sync.data.permission[ctx.sessionID]?.at(0)?.tool?.callID
@@ -1569,25 +1605,25 @@ function InlineTool(props: {
     return callID === props.part.callID
   })
 
+  const error = createMemo(() => (props.part.state.status === "error" ? props.part.state.error : undefined))
+  const state = createMemo(() => deriveInlineToolState({ error: error() }))
+
   const fg = createMemo(() => {
     if (permission()) return theme.warning
+    if (state().failed) return theme.error
     if (props.complete) return theme.textMuted
     return theme.text
   })
-
-  const error = createMemo(() => (props.part.state.status === "error" ? props.part.state.error : undefined))
-
-  const denied = createMemo(
-    () =>
-      error()?.includes("rejected permission") ||
-      error()?.includes("specified a rule") ||
-      error()?.includes("user dismissed"),
-  )
 
   return (
     <box
       marginTop={margin()}
       paddingLeft={3}
+      onMouseUp={() => {
+        if (!state().failed) return
+        if (renderer.getSelection()?.getSelectedText()) return
+        setErrorExpanded((value) => !value)
+      }}
       renderBefore={function () {
         const el = this as BoxRenderable
         const parent = el.parent
@@ -1611,13 +1647,31 @@ function InlineTool(props: {
         }
       }}
     >
-      <text paddingLeft={3} fg={fg()} attributes={denied() ? TextAttributes.STRIKETHROUGH : undefined}>
-        <Show fallback={<>~ {props.pending}</>} when={props.complete}>
-          <span style={{ fg: props.iconColor }}>{props.icon}</span> {props.children}
-        </Show>
-      </text>
-      <Show when={error() && !denied()}>
-        <text fg={theme.error}>{error()}</text>
+      <Show
+        fallback={
+          <text paddingLeft={3} fg={fg()} attributes={state().denied ? TextAttributes.STRIKETHROUGH : undefined}>
+            ~ {props.pending}
+          </text>
+        }
+        when={props.complete}
+      >
+        <box flexDirection="row">
+          <text
+            width={INLINE_TOOL_ICON_WIDTH}
+            fg={state().failed ? theme.error : (props.iconColor ?? fg())}
+            attributes={state().denied ? TextAttributes.STRIKETHROUGH : undefined}
+          >
+            {props.icon}
+          </text>
+          <text flexGrow={1} fg={fg()} attributes={state().denied ? TextAttributes.STRIKETHROUGH : undefined}>
+            {props.children}
+          </text>
+        </box>
+      </Show>
+      <Show when={state().failed && errorExpanded()}>
+        <box paddingLeft={INLINE_TOOL_ICON_WIDTH}>
+          <text fg={theme.error}>{error()}</text>
+        </box>
       </Show>
     </box>
   )
@@ -1860,12 +1914,18 @@ function Task(props: ToolProps<typeof TaskTool>) {
 
   const current = createMemo(() => props.metadata.summary?.findLast((x) => x.state.status !== "pending"))
   const color = createMemo(() => local.agent.color(props.input.subagent_type ?? "unknown"))
+  const label = createMemo(() =>
+    formatSubagentTaskLabel({
+      background: isBackgroundSubagentTask(props.metadata),
+      subagentType: props.input.subagent_type,
+    }),
+  )
 
   return (
     <Switch>
       <Match when={props.metadata.summary?.length}>
         <BlockTool
-          title={"# " + Locale.titlecase(props.input.subagent_type ?? "unknown") + " Task"}
+          title={"# " + label()}
           onClick={
             props.metadata.sessionId
               ? () => navigate({ type: "session", sessionID: props.metadata.sessionId! })
@@ -1875,7 +1935,10 @@ function Task(props: ToolProps<typeof TaskTool>) {
         >
           <box>
             <text style={{ fg: theme.textMuted }}>
-              {props.input.description} ({props.metadata.summary?.length} toolcalls)
+              {formatSubagentTaskDescription({
+                description: props.input.description,
+                toolcalls: props.metadata.summary?.length,
+              })}
             </text>
             <Show when={current()}>
               <text style={{ fg: current()!.state.status === "error" ? theme.error : theme.textMuted }}>
@@ -1898,8 +1961,7 @@ function Task(props: ToolProps<typeof TaskTool>) {
           complete={props.input.subagent_type ?? props.input.description}
           part={props.part}
         >
-          <span style={{ fg: theme.text }}>{Locale.titlecase(props.input.subagent_type ?? "unknown")}</span> Task "
-          {props.input.description}"
+          <span style={{ fg: theme.text }}>{label()}</span> "{props.input.description}"
         </InlineTool>
       </Match>
     </Switch>
@@ -2133,13 +2195,8 @@ function normalizePath(input?: string) {
   return input
 }
 
-function input(input: Record<string, any>, omit?: string[]): string {
-  const primitives = Object.entries(input).filter(([key, value]) => {
-    if (omit?.includes(key)) return false
-    return typeof value === "string" || typeof value === "number" || typeof value === "boolean"
-  })
-  if (primitives.length === 0) return ""
-  return `[${primitives.map(([key, value]) => `${key}=${value}`).join(", ")}]`
+function input(input: unknown, omit?: string[]): string {
+  return formatPrimitiveToolInput(input, omit)
 }
 
 function filetype(input?: string) {

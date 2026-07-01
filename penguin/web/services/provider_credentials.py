@@ -196,20 +196,26 @@ def get_provider_credentials() -> dict[str, dict[str, Any]]:
     """Return provider credential records with env values taking precedence."""
     with _CREDENTIALS_LOCK:
         providers = _load_store().get("providers")
-        records = {
-            str(key): value
-            for key, value in providers.items()
-            if isinstance(key, str) and isinstance(value, dict)
-        } if isinstance(providers, dict) else {}
+        records = (
+            {
+                str(key): value
+                for key, value in providers.items()
+                if isinstance(key, str) and isinstance(value, dict)
+            }
+            if isinstance(providers, dict)
+            else {}
+        )
 
         merged = dict(records)
         provider_ids = set(records.keys())
-        provider_ids.update({
-            "openai",
-            "openrouter",
-            "anthropic",
-            "google",
-        })
+        provider_ids.update(
+            {
+                "openai",
+                "openrouter",
+                "anthropic",
+                "google",
+            }
+        )
 
         for provider_id in provider_ids:
             env_record = _credential_record_from_environment(provider_id)
@@ -298,12 +304,12 @@ def remove_provider_credential(provider_id: str) -> bool:
         providers = store.setdefault("providers", {})
         if pid not in providers:
             return False
-        existing_record = providers.get(pid)
+        removed_record = providers.get(pid)
         providers.pop(pid, None)
         store["version"] = _CREDENTIALS_STORE_VERSION
         _write_store(store)
-        if isinstance(existing_record, dict):
-            _clear_applied_environment_credentials(pid, existing_record)
+    if isinstance(removed_record, dict):
+        _clear_applied_environment_credentials(pid, removed_record)
     return True
 
 

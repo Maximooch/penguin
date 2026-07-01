@@ -209,6 +209,41 @@ def test_build_command_uses_global_attach_mode_when_requested(
     ]
 
 
+def test_build_command_uses_global_before_local_source_when_requested(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    local_source = tmp_path / "opencode"
+    global_bin = "/usr/local/bin/opencode"
+
+    monkeypatch.setattr(
+        opencode_launcher, "_find_local_opencode_dir", lambda: local_source
+    )
+    monkeypatch.setattr(
+        opencode_launcher.shutil,
+        "which",
+        lambda name: {
+            "bun": "/usr/local/bin/bun",
+            "opencode": global_bin,
+        }.get(name),
+    )
+    monkeypatch.setattr(
+        opencode_launcher, "_binary_supports_url_mode", lambda binary: True
+    )
+
+    cmd, cwd = opencode_launcher._build_opencode_command(
+        project_dir,
+        "http://127.0.0.1:9000",
+        [],
+        use_global_opencode=True,
+    )
+
+    assert cwd is None
+    assert cmd == [global_bin, str(project_dir), "--url", "http://127.0.0.1:9000"]
+
+
 def test_build_command_error_surfaces_sidecar_bootstrap_detail(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

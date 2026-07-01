@@ -497,17 +497,15 @@ async def publish_sub_agent_session_created(
     if not isinstance(info, dict):
         return None
 
-    emit = getattr(getattr(core, "event_bus", None), "emit", None)
-    if callable(emit):
-        await emit(
-            "opencode_event",
-            {
-                "type": "session.created",
-                "properties": {
-                    "sessionID": session_id,
-                    "info": info,
-                },
-            },
+    try:
+        from penguin.web.services.session_events import emit_session_created_event
+
+        await emit_session_created_event(core, info)
+    except Exception:
+        logger.debug(
+            "Failed to emit sub-agent session.created for '%s'",
+            agent_id,
+            exc_info=True,
         )
     return info
 

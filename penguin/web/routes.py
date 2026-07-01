@@ -10,12 +10,10 @@ from fastapi import (
     Response,
     UploadFile,
     File,
-    Form,
     Query,
 )  # type: ignore
 from pydantic import BaseModel  # type: ignore
 from fastapi.responses import PlainTextResponse
-from dataclasses import asdict  # type: ignore
 from datetime import datetime  # type: ignore
 from collections import OrderedDict
 import asyncio
@@ -28,7 +26,6 @@ import os
 from pathlib import Path
 import re
 from contextlib import suppress
-import shutil
 import tempfile
 import time
 from threading import Lock
@@ -60,17 +57,24 @@ from penguin.web.services.configuration import (
     runtime_config_payload,
     settings_locations_payload,
 )
+from penguin.web.services.command_registry import list_opencode_commands
+from penguin.web.services.notification_settings import notification_settings_payload
+from penguin.web.services.opencode_events import schedule_opencode_event
+from penguin.system.runtime_events import wrap_opencode_event
 from penguin.web.services.conversations import (
     create_conversation_payload,
     get_conversation_payload,
     list_conversations_payload,
 )
 from penguin.web.services.session_view import (
+    TITLE_SOURCE_AUTO,
+    TITLE_SOURCE_MANUAL,
     create_session_info,
     get_session_diff,
     get_session_info,
     get_session_metadata_title,
     get_session_messages,
+    get_session_title_source,
     get_session_todo,
     list_session_infos,
     list_session_statuses,
@@ -667,6 +671,67 @@ async def _persist_session_model_selection(
         await _emit_session_updated_event(core, updated)
 
 
+async def _emit_session_event(
+    core: PenguinCore,
+    event_type: str,
+    info: Dict[str, Any],
+) -> None:
+    """Emit an OpenCode-shaped session lifecycle event."""
+    event_bus = getattr(core, "event_bus", None)
+    emit = getattr(event_bus, "emit", None)
+    if not callable(emit):
+        return
+
+    session_id = info.get("id") if isinstance(info, dict) else None
+    properties: Dict[str, Any] = {"info": info}
+    if isinstance(session_id, str) and session_id:
+        properties["sessionID"] = session_id
+
+    try:
+        await emit(
+            "opencode_event",
+            wrap_opencode_event(event_type, properties),
+        )
+    except Exception:
+        logger.debug("Failed to emit %s event", event_type, exc_info=True)
+
+
+async def _emit_session_created_event(core: PenguinCore, info: Dict[str, Any]) -> None:
+    """Emit OpenCode-shaped session.created event."""
+    await _emit_session_event(core, "session.created", info)
+
+
+async def _emit_session_updated_event(core: PenguinCore, info: Dict[str, Any]) -> None:
+    """Emit OpenCode-shaped session.updated event."""
+    await _emit_session_event(core, "session.updated", info)
+
+
+async def _emit_session_deleted_event(core: PenguinCore, info: Dict[str, Any]) -> None:
+    """Emit OpenCode-shaped session.deleted event."""
+    await _emit_session_event(core, "session.deleted", info)
+
+
+async def _emit_session_diff_event(
+    core: PenguinCore, session_id: str, diff: List[Dict[str, Any]]
+) -> None:
+    emit = getattr(getattr(core, "event_bus", None), "emit", None)
+    if not callable(emit):
+        return
+    try:
+        await emit(
+            "opencode_event",
+            wrap_opencode_event(
+                "session.diff",
+                {
+                    "sessionID": session_id,
+                    "diff": diff,
+                },
+            ),
+        )
+    except Exception:
+        logger.debug("Failed to emit session.diff event", exc_info=True)
+
+
 def _title_log_info(message: str, *args: Any) -> None:
     """Log title/summarize events via app and uvicorn logger."""
     logger.info(message, *args)
@@ -697,6 +762,73 @@ def _preview_text(value: Any, limit: int = 120) -> str:
     return text[:limit] + ("..." if len(text) > limit else "")
 
 
+_AUTO_TITLE_MAX_USER_PROMPTS = 3
+_LOW_CONFIDENCE_LEGACY_TITLES = {
+    "friendly greeting",
+    "greeting session",
+    "hello greeting",
+    "howdy greeting",
+    "howdy greeting session",
+    "initial greeting",
+}
+
+
+def _count_title_user_prompts(core: PenguinCore, session_id: str) -> int:
+    rows = get_session_messages(core, session_id) or []
+    total = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        info = row.get("info")
+        if not isinstance(info, dict) or info.get("role") != "user":
+            continue
+        parts = row.get("parts")
+        if not isinstance(parts, list):
+            continue
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            if part.get("synthetic") is True:
+                continue
+            if str(part.get("type", "")).strip().lower() != "text":
+                continue
+            text = part.get("text")
+            if isinstance(text, str) and text.strip():
+                total += 1
+                break
+    return total
+
+
+def _is_low_confidence_legacy_title(title: str) -> bool:
+    normalized = " ".join(title.strip().lower().split())
+    return normalized in _LOW_CONFIDENCE_LEGACY_TITLES
+
+
+def _auto_title_refresh_block_reason(
+    core: PenguinCore,
+    session_id: str,
+    *,
+    explicit_title: str,
+    title_source: Optional[str],
+) -> Optional[str]:
+    """Return a reason to preserve the current title, or None if auto may run."""
+    if title_source == TITLE_SOURCE_MANUAL:
+        return "manual"
+
+    if title_source not in {"", TITLE_SOURCE_AUTO, None}:
+        return f"unknown_source:{title_source}"
+
+    if title_source in {"", None} and explicit_title:
+        if not _is_low_confidence_legacy_title(explicit_title):
+            return "legacy"
+
+    user_prompts = _count_title_user_prompts(core, session_id)
+    if user_prompts > _AUTO_TITLE_MAX_USER_PROMPTS:
+        return f"max_prompts:{user_prompts}"
+
+    return None
+
+
 async def _refresh_session_title_if_default(
     core: PenguinCore,
     session_id: str,
@@ -718,11 +850,42 @@ async def _refresh_session_title_if_default(
             return
 
         explicit_title = get_session_metadata_title(core, session_id)
+        title_source = get_session_title_source(core, session_id)
         if isinstance(explicit_title, str) and explicit_title:
+            block_reason = _auto_title_refresh_block_reason(
+                core,
+                session_id,
+                explicit_title=explicit_title,
+                title_source=title_source,
+            )
+            if block_reason is None:
+                _title_log_info(
+                    "session.title.auto_refresh session=%s attempt=%s "
+                    "status=retitle_allowed source=%s title=%r",
+                    session_id,
+                    attempt,
+                    title_source or "legacy",
+                    explicit_title,
+                )
+            else:
+                _title_log_info(
+                    "session.title.auto_refresh session=%s attempt=%s "
+                    "status=already_titled reason=%s source=%s title=%r",
+                    session_id,
+                    attempt,
+                    block_reason,
+                    title_source or "legacy",
+                    explicit_title,
+                )
+                return
+
+        if isinstance(title_source, str) and title_source == TITLE_SOURCE_MANUAL:
             _title_log_info(
-                "session.title.auto_refresh session=%s attempt=%s status=already_titled title=%r",
+                "session.title.auto_refresh session=%s attempt=%s "
+                "status=already_titled reason=manual source=%s title=%r",
                 session_id,
                 attempt,
+                title_source,
                 explicit_title,
             )
             return
@@ -1743,46 +1906,13 @@ class ApprovalWebSocketManager:
         await self.broadcast("approval_resolved", request_dict)
 
 
-async def _emit_opencode_event(
-    event_type: str,
-    properties: dict[str, Any],
-) -> None:
-    core = getattr(router, "core", None)
-    event_bus = getattr(core, "event_bus", None)
-    emit = getattr(event_bus, "emit", None)
-    if not callable(emit):
-        return
-    await emit(
-        "opencode_event",
-        {
-            "type": event_type,
-            "properties": properties,
-        },
-    )
-
-
 def _schedule_opencode_event(event_type: str, properties: dict[str, Any]) -> None:
-    async def _runner() -> None:
-        try:
-            await _emit_opencode_event(event_type, properties)
-        except Exception:
-            logger.debug("Failed to emit opencode event %s", event_type, exc_info=True)
-
-    try:
-        loop = asyncio.get_running_loop()
-        loop.create_task(_runner())
-        return
-    except RuntimeError:
-        pass
-
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            loop.create_task(_runner())
-        else:
-            loop.run_until_complete(_runner())
-    except Exception:
-        logger.debug("Failed to schedule opencode event %s", event_type, exc_info=True)
+    schedule_opencode_event(
+        lambda: getattr(router, "core", None),
+        event_type,
+        properties,
+        logger=logger,
+    )
 
 
 def _permission_name_for_request(request_dict: dict[str, Any]) -> str:
@@ -2086,10 +2216,7 @@ async def _emit_skill_event(
     try:
         await emit(
             "opencode_event",
-            {
-                "type": event_type,
-                "properties": properties,
-            },
+            wrap_opencode_event(event_type, properties),
         )
     except Exception:
         logger.debug("Failed to emit %s event", event_type, exc_info=True)
@@ -3253,6 +3380,20 @@ async def opencode_config_update(
     except Exception as e:
         logger.error(f"config.update error: {e}")
         raise HTTPException(status_code=500, detail="Failed to update config")
+
+
+@router.get("/api/v1/commands")
+async def api_command_list() -> list[dict[str, Any]]:
+    """Return Penguin command metadata for OpenCode-derived TUI clients."""
+    return list_opencode_commands()
+
+
+@router.get("/api/v1/notifications/config")
+async def api_notification_config(
+    core: PenguinCore = Depends(get_core),
+) -> dict[str, Any]:
+    """Return terminal notification policy metadata for Penguin TUI clients."""
+    return notification_settings_payload(core)
 
 
 @router.get("/config/providers")
@@ -5404,10 +5545,16 @@ async def get_session_token_usage(
 ) -> Dict[str, Any]:
     """Get token usage statistics for a specific session."""
 
+    if conversation_id is not None and conversation_id != session_id:
+        raise HTTPException(
+            status_code=400,
+            detail="conversation_id must match session_id for session token usage",
+        )
+
     return get_token_usage_payload(
         core,
         session_id=session_id,
-        conversation_id=conversation_id or session_id,
+        conversation_id=session_id,
         agent_id=agent_id,
     )
 
@@ -5635,10 +5782,21 @@ async def session_update(
         else:
             raise HTTPException(status_code=400, detail="time.archived must be an int")
 
+    title_update = None
+    title_source_update = None
+    if isinstance(title, str) and title.strip():
+        stripped_title = title.strip()
+        existing = get_session_info(core, session_id)
+        existing_title = existing.get("title") if isinstance(existing, dict) else None
+        if stripped_title != existing_title:
+            title_update = stripped_title
+            title_source_update = TITLE_SOURCE_MANUAL
+
     updated = update_session_info(
         core,
         session_id,
-        title=title if isinstance(title, str) else None,
+        title=title_update,
+        title_source=title_source_update,
         archived=archived,
         agent_mode=normalized_agent_mode,
         provider_id=provider_id if isinstance(provider_id, str) else None,

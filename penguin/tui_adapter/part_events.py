@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, Literal, Optional, Tuple
 
+from penguin.system.runtime_events import wrap_opencode_event
+
 
 class PartType(Enum):
     """OpenCode-compatible part types."""
@@ -45,6 +47,7 @@ class Message:
     role: Literal["user", "assistant", "system"]
     time_created: float
     time_completed: Optional[float] = None
+    finish: Optional[str] = None
     model_id: Optional[str] = None
     provider_id: Optional[str] = None
     variant: Optional[str] = None
@@ -100,6 +103,7 @@ class PartEventAdapter:
         self._stream_active: bool = False
         self._active_tool_parts: set[str] = set()
         self._active_tool_counts_by_message: Dict[str, int] = {}
+        self._messages_with_content_parts: set[str] = set()
         self._session_status: str = "idle"
         self._default_directory: Optional[str] = None
         self._last_id_ts = 0
@@ -340,6 +344,8 @@ class PartEventAdapter:
         """Return whether a message already has text or reasoning parts."""
         if not message_id:
             return False
+        if message_id in self._messages_with_content_parts:
+            return True
         for part in self._active_parts.values():
             if part.message_id != message_id:
                 continue
@@ -395,6 +401,7 @@ class PartEventAdapter:
             )
         else:
             message.time_completed = None
+            message.finish = None
             message.agent_id = agent_id or message.agent_id
             if model_id:
                 message.model_id = model_id
@@ -426,6 +433,7 @@ class PartEventAdapter:
         self._active_parts[part_id] = text_part
 
         self._stream_active = True
+        self._messages_with_content_parts.add(message_id)
         await self._sync_session_status()
         # Emit message.updated
         await self._emit("message.updated", self._message_to_dict(message))
@@ -527,6 +535,18 @@ class PartEventAdapter:
         )
         self._current_message_id = msg_id
         target_message_id = msg_id or "unknown"
+        message = self._active_messages.get(target_message_id)
+        if message:
+            message_updated = False
+            if message.finish != "tool-calls":
+                message.finish = "tool-calls"
+                message_updated = True
+            if message.time_completed is not None:
+                message.time_completed = None
+                message_updated = True
+            if message_updated:
+                await self._emit("message.updated", self._message_to_dict(message))
+
         part_id = self._next_id("part")
         call_id = tool_call_id or self._next_id("call")
 
@@ -786,7 +806,7 @@ class PartEventAdapter:
             },
         }
         if msg.role == "assistant":
-            return {
+            result = {
                 **base,
                 "parentID": msg.parent_id,
                 "modelID": msg.model_id,
@@ -798,6 +818,9 @@ class PartEventAdapter:
                 "cost": msg.cost,
                 "tokens": msg.tokens,
             }
+            if msg.finish:
+                result["finish"] = msg.finish
+            return result
         if msg.role == "user":
             return {
                 **base,
@@ -831,7 +854,8 @@ class PartEventAdapter:
             except Exception:
                 pass
         await self.event_bus.emit(
-            "opencode_event", {"type": event_type, "properties": properties}
+            "opencode_event",
+            wrap_opencode_event(event_type, properties),
         )
 
 

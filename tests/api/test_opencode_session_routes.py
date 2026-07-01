@@ -32,7 +32,11 @@ from penguin.web.routes import (
     session_status,
     session_update,
 )
-from penguin.web.services.session_view import TODO_KEY, TRANSCRIPT_KEY
+from penguin.web.services.session_view import (
+    TODO_KEY,
+    TRANSCRIPT_KEY,
+    get_session_title_source,
+)
 
 
 class _Manager:
@@ -309,6 +313,24 @@ async def test_session_messages_prefer_transcript_over_legacy_rows(
     assert len(messages) == 1
     assert messages[0]["info"]["id"] == "msg_transcript"
     assert messages[0]["parts"][0]["text"] == "authoritative transcript response"
+
+
+@pytest.mark.asyncio
+async def test_session_update_same_title_does_not_mark_manual(tmp_path: Path) -> None:
+    core = _Core(tmp_path)
+    typed_core = cast(Any, core)
+
+    created = await session_create(payload={}, core=typed_core)
+    session_id = created["id"]
+
+    updated = await session_update(
+        session_id,
+        payload={"title": created["title"]},
+        core=typed_core,
+    )
+
+    assert updated["title"] == created["title"]
+    assert get_session_title_source(core, session_id) == ""
 
 
 @pytest.mark.asyncio

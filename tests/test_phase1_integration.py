@@ -18,6 +18,8 @@ from penguin import __version__ as PENGUIN_VERSION
 from penguin.api_client import PenguinClient, ChatOptions, TaskOptions, create_client
 from penguin.core import PenguinCore
 
+pytestmark = pytest.mark.e2e
+
 
 @pytest.fixture
 def mock_checkpoint_manager():

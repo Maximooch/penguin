@@ -6,7 +6,6 @@ import pytest
 from penguin.core import PenguinCore
 from penguin.system.state import MessageCategory
 
-
 class FakeAPIClient:
     def __init__(self, model_config, **kwargs):
         self.model_config = model_config

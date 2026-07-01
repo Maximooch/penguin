@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test"
-import { formatPenguinPromptFailure, recoverPenguinPromptFailure } from "../../../src/cli/cmd/tui/component/prompt/penguin-send"
+import {
+  completePenguinPromptSuccess,
+  formatPenguinPromptFailure,
+  recoverPenguinPromptFailure,
+} from "../../../src/cli/cmd/tui/component/prompt/penguin-send"
 
 describe("prompt penguin send", () => {
   test("recovers failed sends by clearing pending state and emitting idle status", () => {
@@ -36,6 +40,59 @@ describe("prompt penguin send", () => {
       {
         type: "session.status",
         properties: {
+          sessionID: "ses_123",
+          status: {
+            type: "idle",
+          },
+        },
+      },
+    ])
+  })
+
+  test("completes successful sends by emitting keyed idle status", () => {
+    const state: {
+      pending: boolean
+      pendingSeenBusy: boolean
+      runStartedAt?: number
+    } = {
+      pending: true,
+      pendingSeenBusy: true,
+      runStartedAt: 100,
+    }
+    const events: Array<{
+      type: string
+      properties: {
+        messageID?: string
+        sessionID: string
+        status: {
+          type: string
+        }
+      }
+    }> = []
+
+    completePenguinPromptSuccess({
+      messageID: "msg_123",
+      sessionID: "ses_123",
+      clear: () => {
+        state.pending = false
+        state.pendingSeenBusy = false
+        state.runStartedAt = undefined
+      },
+      emit: (_type, event) => {
+        events.push(event)
+      },
+    })
+
+    expect(state).toEqual({
+      pending: false,
+      pendingSeenBusy: false,
+      runStartedAt: undefined,
+    })
+    expect(events).toEqual([
+      {
+        type: "session.status",
+        properties: {
+          messageID: "msg_123",
           sessionID: "ses_123",
           status: {
             type: "idle",

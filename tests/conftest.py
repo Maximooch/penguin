@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+pytest_plugins = ("pytest_asyncio",)
+
 _AMBIENT_PROVIDER_ENV_VARS = (
     "ANTHROPIC_API_KEY",
     "GEMINI_API_KEY",

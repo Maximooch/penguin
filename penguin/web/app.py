@@ -8,6 +8,7 @@ import logging
 import os
 from pathlib import Path
 import asyncio
+import time
 from contextlib import suppress
 from typing import Optional, Dict, Any, List, AsyncGenerator, Callable, Awaitable
 
@@ -43,6 +44,21 @@ DEFAULT_DEV_CORS_ORIGINS = [
     "http://127.0.0.1:9000",
     "http://localhost:9000",
 ]
+
+PROFILED_STARTUP_PATHS = {
+    "/api/v1/agents",
+    "/config",
+    "/config/providers",
+    "/provider",
+    "/provider/auth",
+    "/session",
+}
+
+
+def _web_profile_enabled() -> bool:
+    """Return whether opt-in web endpoint timing logs are enabled."""
+    value = os.getenv("PENGUIN_WEB_PROFILE", "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
 
 
 def get_or_create_core() -> PenguinCore:
@@ -188,6 +204,29 @@ def create_app() -> "FastAPI":
         docs_url="/api/docs",
         redoc_url="/api/redoc",
     )
+
+    if _web_profile_enabled():
+
+        @app.middleware("http")
+        async def profile_startup_endpoint(request, call_next):
+            """Log timing for TUI startup endpoints when profiling is enabled."""
+            start = time.perf_counter()
+            status_code = 500
+            try:
+                response = await call_next(request)
+                status_code = response.status_code
+                return response
+            finally:
+                path = request.url.path
+                if path in PROFILED_STARTUP_PATHS:
+                    duration_ms = (time.perf_counter() - start) * 1000
+                    logging.getLogger("uvicorn.error").info(
+                        "web.profile endpoint=%s method=%s status=%s duration_ms=%.2f",
+                        path,
+                        request.method,
+                        status_code,
+                        duration_ms,
+                    )
 
     # Configure CORS
     origins_env = os.getenv("PENGUIN_CORS_ORIGINS", "").strip()

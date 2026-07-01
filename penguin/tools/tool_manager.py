@@ -2785,6 +2785,23 @@ class ToolManager:
             "browser_js",
             "browser_list_tabs",
             "browser_switch_tab",
+            # Multi-agent orchestration
+            "spawn_sub_agent",
+            "stop_sub_agent",
+            "resume_sub_agent",
+            "get_agent_status",
+            "wait_for_agents",
+            "get_context_info",
+            "sync_context",
+            "delegate",
+            "send_message",
+            # Memory and notes
+            "add_summary_note",
+            "add_declarative_note",
+            "memory_search",
+            "reindex_workspace",
+            # Research
+            "perplexity_search",
         ]
         allowed = {
             self._canonical_tool_name(name)

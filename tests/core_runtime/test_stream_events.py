@@ -309,19 +309,18 @@ async def test_emit_opencode_session_status_shapes_and_scopes_event() -> None:
     )
     await stream_events.emit_opencode_session_status(owner, " ", "idle")
 
-    assert owner.event_bus.events == [
-        (
-            "opencode_event",
-            {
-                "type": "session.status",
-                "properties": {
-                    "sessionID": "session_1",
-                    "status": {"type": "busy"},
-                    "info": {"task_id": "task_1"},
-                },
-            },
-        )
-    ]
+    assert len(owner.event_bus.events) == 1
+    event_type, payload = owner.event_bus.events[0]
+    assert event_type == "opencode_event"
+    assert payload["type"] == "session.status"
+    assert payload["properties"] == {
+        "sessionID": "session_1",
+        "status": {"type": "busy"},
+        "info": {"task_id": "task_1"},
+    }
+    assert payload["runtime_event"]["type"] == "session.status"
+    assert payload["runtime_event"]["scope"]["session_id"] == "session_1"
+    assert payload["runtime_event"]["scope"]["task_id"] == "task_1"
 
 
 @pytest.mark.asyncio
@@ -385,17 +384,16 @@ async def test_emit_ui_event_bridges_runmode_status_to_opencode_status() -> None
             "session_id": "session_fallback",
         },
     )
-    assert owner.event_bus.events[1] == (
-        "opencode_event",
-        {
-            "type": "session.status",
-            "properties": {
-                "sessionID": "session_fallback",
-                "status": {"type": "time_limit_reached"},
-                "info": {"summary": "hit limit"},
-            },
-        },
-    )
+    event_type, payload = owner.event_bus.events[1]
+    assert event_type == "opencode_event"
+    assert payload["type"] == "session.status"
+    assert payload["properties"] == {
+        "sessionID": "session_fallback",
+        "status": {"type": "time_limit_reached"},
+        "info": {"summary": "hit limit"},
+    }
+    assert payload["runtime_event"]["type"] == "session.status"
+    assert payload["runtime_event"]["scope"]["session_id"] == "session_fallback"
 
 
 @pytest.mark.asyncio

@@ -33,13 +33,35 @@ import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
 import { useTextareaKeybindings } from "../textarea-keybindings"
 import { exitSession } from "../../util/exit"
-import { formatPenguinPromptFailure, recoverPenguinPromptFailure } from "./penguin-send"
+import { DEFAULT_PENGUIN_STALE_MS, derivePenguinRunState } from "./penguin-run-state"
+import { applyPenguinFastCommand } from "./penguin-fast-command"
+import {
+  completePenguinPromptSuccess,
+  createPenguinSession,
+  emitPenguinOptimisticPrompt,
+  formatPenguinPromptFailure,
+  isPenguinSyntheticModel,
+  recoverPenguinPromptFailure,
+  resolveSessionID,
+  sendPenguinPrompt,
+  shouldStripPenguinVirtualPart,
+} from "./penguin-send"
 import { parsePenguinLocalCommand } from "./penguin-local-command"
 import {
   executePenguinHttpLocalCommand,
   isPenguinHttpLocalCommand,
   penguinHttpLocalCommandNeedsSession,
 } from "./penguin-local-command-runtime"
+import { createPenguinPromptSubmitGate, tryStartPenguinPromptSubmit } from "./penguin-submit-gate"
+import {
+  createPasteDuplicateGuard,
+  normalizePastedText,
+  removePastedPathReferences,
+  shouldOwnPasteEvent,
+  shouldSummarizePaste,
+} from "./paste-policy"
+import { hydratedSessionModel, hydratedSessionVariant, type SessionModelHydration } from "../../util/session-model"
+import { inlineFileReferenceParts } from "./inline-file-references"
 
 export type PromptProps = {
   sessionID?: string
@@ -75,13 +97,15 @@ export function Prompt(props: PromptProps) {
   const sync = useSync()
   const dialog = useDialog()
   const toast = useToast()
-  const status = createMemo(() => sync.data.session_status?.[props.sessionID ?? ""] ?? { type: "idle" })
   const history = usePromptHistory()
   const stash = usePromptStash()
   const command = useCommandDialog()
   const renderer = useRenderer()
   const { theme, syntax } = useTheme()
   const kv = useKV()
+  const pasteDuplicateGuard = createPasteDuplicateGuard()
+  const activeSessionID = createMemo(() => props.sessionID ?? sdk.sessionID ?? "")
+  const status = createMemo(() => sync.data.session_status?.[activeSessionID()] ?? { type: "idle" })
   const model = createMemo(() => {
     const parsed = local.model.parsed()
     const current = local.model.current()
@@ -104,6 +128,7 @@ export function Prompt(props: PromptProps) {
       },
     }
   })
+  const submitGate = createPenguinPromptSubmitGate()
 
   function promptModelWarning() {
     toast.show({
@@ -141,10 +166,25 @@ export function Prompt(props: PromptProps) {
   })
 
   const lastUserMessage = createMemo(() => {
-    if (!props.sessionID) return undefined
-    const messages = sync.data.message[props.sessionID]
+    const sessionID = activeSessionID()
+    if (!sessionID) return undefined
+    const messages = sync.data.message[sessionID]
     if (!messages) return undefined
     return messages.findLast((m) => m.role === "user")
+  })
+
+  const latestAssistantMessage = createMemo(() => {
+    const sessionID = activeSessionID()
+    if (!sessionID) return undefined
+    const messages = sync.data.message[sessionID]
+    if (!messages) return undefined
+    return messages.findLast((m) => m.role === "assistant")
+  })
+
+  const latestAssistantParts = createMemo(() => {
+    const assistant = latestAssistantMessage()
+    if (!assistant) return []
+    return sync.data.part[assistant.id] ?? []
   })
 
   const [store, setStore] = createStore<{
@@ -155,6 +195,7 @@ export function Prompt(props: PromptProps) {
     pending: boolean
     pendingSeenBusy: boolean
     placeholder: number
+    runStartedAt?: number
   }>({
     placeholder: Math.floor(Math.random() * PLACEHOLDERS.length),
     prompt: {
@@ -178,13 +219,15 @@ export function Prompt(props: PromptProps) {
 
   function persistAgentMode(sessionID: string, nextMode: "build" | "plan") {
     const modeUrl = new URL(`/session/${encodeURIComponent(sessionID)}`, sdk.url)
-    sdk.fetch(modeUrl, {
-      method: "PATCH",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ agent_mode: nextMode }),
-    }).catch(() => undefined)
+    sdk
+      .fetch(modeUrl, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ agent_mode: nextMode }),
+      })
+      .catch(() => undefined)
   }
 
   function applyAgentMode(nextMode: "build" | "plan", options?: { notify?: boolean; sessionID?: string }) {
@@ -200,7 +243,28 @@ export function Prompt(props: PromptProps) {
     applyAgentMode(nextMode)
   }
 
-  const busy = createMemo(() => status().type !== "idle" || (sdk.penguin && store.pending))
+  const [clock, setClock] = createSignal(Date.now())
+
+  onMount(() => {
+    const timer = setInterval(() => setClock(Date.now()), 1000)
+    onCleanup(() => clearInterval(timer))
+  })
+
+  const runState = createMemo(() =>
+    derivePenguinRunState({
+      assistant: latestAssistantMessage(),
+      assistantParts: latestAssistantParts(),
+      localStartedAt: store.runStartedAt,
+      now: clock(),
+      pending: sdk.penguin && store.pending,
+      sessionStatus: status(),
+      staleAfterMs: DEFAULT_PENGUIN_STALE_MS,
+      stream: sdk.penguin ? sdk.stream : undefined,
+      user: lastUserMessage(),
+    }),
+  )
+
+  const busy = createMemo(() => (sdk.penguin ? runState().type !== "idle" : status().type !== "idle"))
 
   createEffect(() => {
     if (!sdk.penguin) return
@@ -214,25 +278,36 @@ export function Prompt(props: PromptProps) {
     setStore("pendingSeenBusy", false)
   })
 
+  createEffect(() => {
+    if (!sdk.penguin) return
+    if (runState().type === "idle" && store.runStartedAt !== undefined) {
+      setStore("runStartedAt", undefined)
+    }
+  })
+
   // Initialize agent/model/variant from session info first, then last user message fallback.
-  let syncedSessionID: string | undefined
+  let syncedAgentSessionID: string | undefined
+  let syncedModelKey: string | undefined
+  let syncedVariantSessionID: string | undefined
   createEffect(() => {
     const sessionID = props.sessionID
     const msg = lastUserMessage()
     const session = sessionID
-      ? (sync.session.get(sessionID) as {
-          agent_id?: string
-          providerID?: string
-          modelID?: string
-          variant?: string
-        } | undefined)
+      ? (sync.session.get(sessionID) as
+          | (SessionModelHydration & {
+              agent_id?: string
+            })
+          | undefined)
       : undefined
 
-    if (sessionID !== syncedSessionID) {
-      if (!sessionID) return
+    if (!sessionID) {
+      syncedAgentSessionID = undefined
+      syncedModelKey = undefined
+      syncedVariantSessionID = undefined
+      return
+    }
 
-      syncedSessionID = sessionID
-
+    if (sessionID !== syncedAgentSessionID) {
       const sessionAgent = session?.agent_id
       const messageAgent = msg?.agent
       const nextAgent = typeof sessionAgent === "string" && sessionAgent ? sessionAgent : messageAgent
@@ -242,23 +317,30 @@ export function Prompt(props: PromptProps) {
       if (nextAgent && isPrimaryAgent) {
         local.agent.set(nextAgent)
       }
+      syncedAgentSessionID = sessionID
+    }
 
-      const sessionModel =
-        session?.providerID && session?.modelID
-          ? { providerID: session.providerID, modelID: session.modelID }
-          : undefined
-      const messageModel = msg?.model
-      const nextModel = sessionModel ?? messageModel
-      if (nextModel) {
-        local.model.set(nextModel)
+    const sessionModel = hydratedSessionModel(session)
+    const messageModel = msg?.model
+    const nextModel = sessionModel ?? messageModel
+    const nextModelKey = nextModel ? `${sessionID}:${nextModel.providerID}/${nextModel.modelID}` : `${sessionID}:none`
+    if (nextModel && syncedModelKey !== nextModelKey) {
+      const applied = local.model.set(nextModel, { silentInvalid: true })
+      if (applied) {
+        syncedModelKey = nextModelKey
+      } else {
+        return
       }
+    }
 
-      const nextVariant = session?.variant ?? msg?.variant
+    if (sessionID !== syncedVariantSessionID) {
+      const nextVariant = hydratedSessionVariant(session) ?? msg?.variant
       if (typeof nextVariant === "string") {
         local.model.variant.set(nextVariant)
       } else if (nextModel) {
         local.model.variant.set(undefined)
       }
+      syncedVariantSessionID = sessionID
     }
   })
 
@@ -364,7 +446,7 @@ export function Prompt(props: PromptProps) {
           aliases: ["project list"],
         },
         onSelect: (dialog) => {
-          prefillPrompt('/project list')
+          prefillPrompt("/project list")
           dialog.clear()
         },
       },
@@ -444,7 +526,7 @@ export function Prompt(props: PromptProps) {
           aliases: ["task list"],
         },
         onSelect: (dialog) => {
-          prefillPrompt('/task list')
+          prefillPrompt("/task list")
           dialog.clear()
         },
       },
@@ -567,7 +649,7 @@ export function Prompt(props: PromptProps) {
         keybind: "session_interrupt",
         category: "Session",
         hidden: true,
-        enabled: sdk.penguin ? !!props.sessionID && (store.pending || status().type !== "idle") : status().type !== "idle",
+        enabled: sdk.penguin ? !!props.sessionID && busy() : status().type !== "idle",
         onSelect: (dialog) => {
           if (autocomplete.visible) return
           if (!input.focused && !sdk.penguin) return
@@ -584,6 +666,7 @@ export function Prompt(props: PromptProps) {
             })
             setStore("pending", false)
             setStore("pendingSeenBusy", false)
+            setStore("runStartedAt", undefined)
             setStore("interrupt", 0)
             dialog.clear()
             return
@@ -866,14 +949,6 @@ export function Prompt(props: PromptProps) {
   ])
 
   async function submit() {
-    const resolveSessionID = (value: unknown): string | undefined => {
-      if (typeof value === "string" && value.trim()) return value.trim()
-      if (!value || typeof value !== "object") return undefined
-      const record = value as Record<string, unknown>
-      if (typeof record.id === "string" && record.id.trim()) return record.id.trim()
-      return resolveSessionID(record.data)
-    }
-
     if (props.disabled) return
     if (autocomplete?.visible) return
     if (!store.prompt.input) return
@@ -885,6 +960,14 @@ export function Prompt(props: PromptProps) {
     const selectedModel = local.model.current()
     if (!selectedModel) {
       promptModelWarning()
+      return
+    }
+    if (sdk.penguin && isPenguinSyntheticModel(selectedModel)) {
+      toast.show({
+        variant: "warning",
+        message: "Provider configuration is still loading. Try again once the model list finishes loading.",
+        duration: 3000,
+      })
       return
     }
     const currentMode = store.mode
@@ -927,402 +1010,372 @@ export function Prompt(props: PromptProps) {
       })
     }
     const handleFastCommand = () => {
-      const [command, argument = ""] = trimmed.split(/\s+/, 2)
-      if (command !== "/fast") return false
-
-      const value = argument.toLowerCase()
-      if (!value) {
-        local.model.fast.toggle()
-      } else if (value === "on") {
-        local.model.fast.set(true)
-      } else if (value === "off") {
-        local.model.fast.set(false)
-      } else if (value !== "status") {
-        toast.show({
-          variant: "warning",
-          message: "Usage: /fast [on|off|status]",
-        })
-        return true
-      }
+      const result = applyPenguinFastCommand({
+        fast: local.model.fast,
+        text: trimmed,
+      })
+      if (!result.matched) return false
 
       toast.show({
-        variant: "info",
-        message: local.model.fast.enabled() ? "Fast mode on" : "Fast mode off",
+        variant: result.variant,
+        message: result.message,
       })
       clearPromptState()
       props.onSubmit?.()
       return true
     }
     if (sdk.penguin && handleFastCommand()) return
-    const localCommand = sdk.penguin ? parsePenguinLocalCommand(store.prompt.input) : null
-    const initialDirectory = getActiveDirectory(props.sessionID ?? sdk.sessionID)
-    const ensureSessionID = async () => {
-      return await iife(async () => {
-        if (props.sessionID) return props.sessionID
-        if (sdk.sessionID) return sdk.sessionID
-
-        if (sdk.penguin) {
-          const createUrl = new URL("/session", sdk.url)
-          createUrl.searchParams.set("directory", initialDirectory)
-          const created = await sdk.fetch(createUrl, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              agent_mode: agentMode(),
-              providerID: selectedModel.providerID,
-              modelID: selectedModel.modelID,
-              variant,
-            }),
-          }).then(async (res) => {
-            if (!res.ok) {
-              const details = await res.text().catch(() => "")
-              throw new Error(
-                details
-                  ? `Session create failed (${res.status}): ${details}`
-                  : `Session create failed (${res.status})`,
-              )
-            }
-            return res.json().catch(() => undefined)
-          })
-          const createdID = resolveSessionID(created)
-          if (createdID) return createdID
-          const details =
-            created && typeof created === "object"
-              ? `response keys: ${Object.keys(created as Record<string, unknown>).join(",") || "none"}`
-              : `response type: ${typeof created}`
-          throw new Error(`Session create returned empty id (${details})`)
-        }
-
-        return await sdk.client.session.create({}).then((result) => {
-          const id = resolveSessionID(result)
-          if (id) return id
-          throw new Error("Session create returned empty id")
+    const submitStart = sdk.penguin
+      ? tryStartPenguinPromptSubmit({
+          busy: busy(),
+          gate: submitGate,
         })
-      }).catch((e) => {
-        const msg = e instanceof Error ? e.message : String(e)
+      : undefined
+    if (sdk.penguin && submitStart?.ok === false) {
+      if (submitStart.reason === "busy") {
         toast.show({
-          variant: "error",
-          message: `Failed to start session: ${msg}`,
+          variant: "warning",
+          message: "Penguin is still running in this session. Wait or press Esc to interrupt.",
+          duration: 3000,
         })
-        return undefined
-      })
-    }
-
-    if (sdk.penguin && localCommand) {
-      const commandNeedsSession = isPenguinHttpLocalCommand(localCommand) && penguinHttpLocalCommandNeedsSession(localCommand)
-      const commandSessionID = commandNeedsSession ? await ensureSessionID() : props.sessionID ?? sdk.sessionID
-      const keepDialog = localCommand.kind === "config" || localCommand.kind === "settings"
-
-      if (commandNeedsSession && !commandSessionID) return
-
-      try {
-        if (localCommand.kind === "config" || localCommand.kind === "settings") {
-          dialog.replace(() => <DialogSettings directory={initialDirectory} sessionID={commandSessionID} />)
-        } else if (localCommand.kind === "tool_details") {
-          const next = !kv.get("tool_details_visibility", true)
-          kv.set("tool_details_visibility", next)
-          toast.show({ variant: "success", message: `Tool details ${next ? "shown" : "hidden"}` })
-        } else if (localCommand.kind === "thinking") {
-          const next = !kv.get("thinking_visibility", true)
-          kv.set("thinking_visibility", next)
-          toast.show({ variant: "success", message: `Thinking ${next ? "shown" : "hidden"}` })
-        } else if (isPenguinHttpLocalCommand(localCommand)) {
-          const runCommand = () => executePenguinHttpLocalCommand({
-            command: localCommand,
-            fetch: sdk.fetch,
-            baseUrl: sdk.url,
-            directory: initialDirectory,
-            sessionID: commandSessionID,
-          })
-
-          if (commandNeedsSession) {
-            clearPromptState({ keepDialog })
-            props.onSubmit?.()
-            setStore("pending", true)
-            setStore("pendingSeenBusy", false)
-            if (!props.sessionID && commandSessionID) {
-              setTimeout(() => {
-                route.navigate({ type: "session", sessionID: commandSessionID })
-              }, 0)
-            }
-            void runCommand()
-              .then((result) => toast.show(result))
-              .catch((error) => {
-                toast.show({ variant: "error", message: error instanceof Error ? error.message : String(error) })
-              })
-              .finally(() => {
-                setStore("pending", false)
-                setStore("pendingSeenBusy", false)
-              })
-            return
-          }
-
-          const result = await runCommand()
-          toast.show(result)
-        }
-      } catch (error) {
-        toast.show({ variant: "error", message: error instanceof Error ? error.message : String(error) })
       }
-
-      clearPromptState({ keepDialog })
-      props.onSubmit?.()
       return
     }
+    const releaseSubmit = submitStart?.ok ? submitStart.release : undefined
+    let releaseInFinally = true
+    const localCommand = sdk.penguin ? parsePenguinLocalCommand(store.prompt.input) : null
+    const initialDirectory = getActiveDirectory(props.sessionID ?? sdk.sessionID)
+    try {
+      const ensureSessionID = async () => {
+        return await iife(async () => {
+          if (props.sessionID) return props.sessionID
+          if (sdk.sessionID) return sdk.sessionID
 
-    const sessionID = await ensureSessionID()
-    if (!sessionID) return
-    const shouldNavigate = sdk.penguin && !props.sessionID
-    if (input.isDestroyed) return
-    const directory =
-      sync.session.get(sessionID)?.directory ||
-      sync.session.get(props.sessionID ?? "")?.directory ||
-      sync.data.path.directory ||
-      sdk.directory ||
-      process.cwd()
-    const messageID = sdk.penguin ? gen.next("msg") : Identifier.ascending("message")
-    let inputText = store.prompt.input
+          if (sdk.penguin) {
+            return await createPenguinSession({
+              agentMode: agentMode(),
+              baseUrl: sdk.url,
+              directory: initialDirectory,
+              fetch: sdk.fetch,
+              model: selectedModel,
+              variant,
+            })
+          }
 
-    // Expand pasted text inline before submitting
-    const allExtmarks = input.extmarks.getAllForTypeId(promptPartTypeId)
-    const sortedExtmarks = allExtmarks.sort((a: { start: number }, b: { start: number }) => b.start - a.start)
+          return await sdk.client.session.create({}).then((result) => {
+            const id = resolveSessionID(result)
+            if (id) return id
+            throw new Error("Session create returned empty id")
+          })
+        }).catch((e) => {
+          const msg = e instanceof Error ? e.message : String(e)
+          toast.show({
+            variant: "error",
+            message: `Failed to start session: ${msg}`,
+          })
+          return undefined
+        })
+      }
 
-    for (const extmark of sortedExtmarks) {
-      const partIndex = store.extmarkToPartIndex.get(extmark.id)
-      if (partIndex !== undefined) {
-        const part = store.prompt.parts[partIndex]
-        if (!part) continue
-        const before = inputText.slice(0, extmark.start)
-        const after = inputText.slice(extmark.end)
-        if (part.type === "text" && part.text) {
-          inputText = before + part.text + after
-          continue
+      if (sdk.penguin && localCommand) {
+        const commandNeedsSession =
+          isPenguinHttpLocalCommand(localCommand) && penguinHttpLocalCommandNeedsSession(localCommand)
+        const commandSessionID = commandNeedsSession ? await ensureSessionID() : (props.sessionID ?? sdk.sessionID)
+        const keepDialog = localCommand.kind === "config" || localCommand.kind === "settings"
+
+        if (commandNeedsSession && !commandSessionID) return
+
+        try {
+          if (localCommand.kind === "config" || localCommand.kind === "settings") {
+            dialog.replace(() => <DialogSettings directory={initialDirectory} sessionID={commandSessionID} />)
+          } else if (localCommand.kind === "tool_details") {
+            const next = !kv.get("tool_details_visibility", true)
+            kv.set("tool_details_visibility", next)
+            toast.show({ variant: "success", message: `Tool details ${next ? "shown" : "hidden"}` })
+          } else if (localCommand.kind === "thinking") {
+            const next = !kv.get("thinking_visibility", true)
+            kv.set("thinking_visibility", next)
+            toast.show({ variant: "success", message: `Thinking ${next ? "shown" : "hidden"}` })
+          } else if (isPenguinHttpLocalCommand(localCommand)) {
+            const runCommand = () =>
+              executePenguinHttpLocalCommand({
+                command: localCommand,
+                fetch: sdk.fetch,
+                baseUrl: sdk.url,
+                directory: initialDirectory,
+                sessionID: commandSessionID,
+              })
+
+            if (commandNeedsSession) {
+              clearPromptState({ keepDialog })
+              props.onSubmit?.()
+              setStore("pending", true)
+              setStore("pendingSeenBusy", false)
+              setStore("runStartedAt", Date.now())
+              if (!props.sessionID && commandSessionID) {
+                setTimeout(() => {
+                  route.navigate({ type: "session", sessionID: commandSessionID })
+                }, 0)
+              }
+              releaseInFinally = false
+              void runCommand()
+                .then((result) => toast.show(result))
+                .catch((error) => {
+                  toast.show({ variant: "error", message: error instanceof Error ? error.message : String(error) })
+                })
+                .finally(() => {
+                  setStore("pending", false)
+                  setStore("pendingSeenBusy", false)
+                  setStore("runStartedAt", undefined)
+                  releaseSubmit?.()
+                })
+              return
+            }
+
+            const result = await runCommand()
+            toast.show(result)
+          }
+        } catch (error) {
+          toast.show({ variant: "error", message: error instanceof Error ? error.message : String(error) })
         }
-        const stripVirtualPart =
-          sdk.penguin && part.type === "file" && typeof part.mime === "string" && part.mime.startsWith("image/")
-        if (stripVirtualPart) {
-          inputText = before + after
+
+        clearPromptState({ keepDialog })
+        props.onSubmit?.()
+        return
+      }
+
+      const sessionID = await ensureSessionID()
+      if (!sessionID) return
+      const shouldNavigate = sdk.penguin && !props.sessionID
+      if (input.isDestroyed) return
+      const directory =
+        sync.session.get(sessionID)?.directory ||
+        sync.session.get(props.sessionID ?? "")?.directory ||
+        sync.data.path.directory ||
+        sdk.directory ||
+        process.cwd()
+      const messageID = sdk.penguin ? gen.next("msg") : Identifier.ascending("message")
+      let inputText = store.prompt.input
+
+      // Expand pasted text inline before submitting
+      const allExtmarks = input.extmarks.getAllForTypeId(promptPartTypeId)
+      const sortedExtmarks = allExtmarks.sort((a: { start: number }, b: { start: number }) => b.start - a.start)
+
+      for (const extmark of sortedExtmarks) {
+        const partIndex = store.extmarkToPartIndex.get(extmark.id)
+        if (partIndex !== undefined) {
+          const part = store.prompt.parts[partIndex]
+          if (!part) continue
+          const before = inputText.slice(0, extmark.start)
+          const after = inputText.slice(extmark.end)
+          if (part.type === "text" && part.text) {
+            inputText = before + part.text + after
+            continue
+          }
+          const stripVirtualPart = sdk.penguin && shouldStripPenguinVirtualPart(part)
+          if (stripVirtualPart) {
+            inputText = before + after
+          }
         }
       }
-    }
 
-    // Filter out text parts (pasted content) since they're now expanded inline
-    const nonTextParts = store.prompt.parts.filter((part) => part.type !== "text")
-
-    if (sdk.penguin) {
-      const now = Date.now()
-      const user = {
-        id: messageID,
-        sessionID,
-        role: "user" as const,
-        time: {
-          created: now,
-        },
-        agent: agent.name,
-        model: {
-          providerID: selectedModel.providerID,
-          modelID: selectedModel.modelID,
-        },
-      }
-      const part = {
-        id: sdk.penguin ? gen.next("part") : Identifier.ascending("part"),
-        sessionID,
-        messageID,
-        type: "text" as const,
+      // Filter out text parts (pasted content) since they're now expanded inline.
+      // Add structured file parts for manually typed @file references so the
+      // backend sees the same attachment shape as autocomplete-selected files.
+      const selectedParts = store.prompt.parts.filter((part) => part.type !== "text")
+      const inlineFileParts = inlineFileReferenceParts({
         text: inputText,
-        time: {
-          start: now,
-          end: now,
-        },
-      }
-      sdk.event.emit("message.updated", {
-        type: "message.updated",
-        properties: { info: user },
+        directory,
+        existingParts: selectedParts,
       })
-      sdk.event.emit("message.part.updated", {
-        type: "message.part.updated",
-        properties: { part, delta: inputText },
-      })
-      sdk.event.emit("session.status", {
-        type: "session.status",
-        properties: {
+      const nonTextParts = [...selectedParts, ...inlineFileParts]
+
+      if (sdk.penguin) {
+        emitPenguinOptimisticPrompt({
+          agentName: agent.name,
+          emit: (type, event) => sdk.event.emit(type as any, event as any),
+          messageID,
+          model: selectedModel,
+          partID: gen.next("part"),
           sessionID,
-          status: { type: "busy" as const },
-        },
-      })
+          text: inputText,
+        })
+        history.append({
+          ...store.prompt,
+          mode: currentMode,
+        })
+        if (!input.isDestroyed) {
+          input.extmarks.clear()
+        }
+        setStore("prompt", {
+          input: "",
+          parts: [],
+        })
+        setStore("extmarkToPartIndex", new Map())
+        dialog.clear()
+        if (!input.isDestroyed) {
+          input.clear()
+          input.setText("")
+          input.getLayoutNode().markDirty()
+          renderer.requestRender()
+        }
+        queueMicrotask(() => {
+          setStore("prompt", "input", "")
+        })
+        props.onSubmit?.()
+        if (shouldNavigate) {
+          setTimeout(() => {
+            route.navigate({
+              type: "session",
+              sessionID,
+            })
+          }, 0)
+        }
+        setStore("pending", true)
+        setStore("pendingSeenBusy", false)
+        setStore("runStartedAt", Date.now())
+        const recover = () => {
+          recoverPenguinPromptFailure({
+            sessionID,
+            clear: () => {
+              setStore("pending", false)
+              setStore("pendingSeenBusy", false)
+              setStore("runStartedAt", undefined)
+            },
+            emit: sdk.event.emit,
+          })
+        }
+        releaseInFinally = false
+        void sendPenguinPrompt({
+          text: inputText,
+          model: selectedModel,
+          sessionID,
+          agentName: agent.name,
+          agentMode: agentMode(),
+          baseUrl: sdk.url,
+          directory,
+          fetch: sdk.fetch,
+          variant,
+          serviceTier,
+          messageID,
+          parts: nonTextParts,
+        })
+          .then((result) => {
+            if (result.ok) {
+              completePenguinPromptSuccess({
+                messageID,
+                sessionID,
+                clear: () => {
+                  setStore("pending", false)
+                  setStore("pendingSeenBusy", false)
+                  setStore("runStartedAt", undefined)
+                },
+                emit: sdk.event.emit,
+              })
+              return
+            }
+            recover()
+            toast.show({
+              variant: "error",
+              message: formatPenguinPromptFailure(result),
+            })
+          })
+          .finally(() => {
+            releaseSubmit?.()
+          })
+        return
+      }
+
+      if (store.mode === "shell") {
+        sdk.client.session.shell({
+          sessionID,
+          agent: agent.name,
+          model: {
+            providerID: selectedModel.providerID,
+            modelID: selectedModel.modelID,
+          },
+          command: inputText,
+        })
+        setStore("mode", "normal")
+      } else if (
+        inputText.startsWith("/") &&
+        iife(() => {
+          const firstLine = inputText.split("\n")[0]
+          const command = firstLine.split(" ")[0].slice(1)
+          return sync.data.command.some((x) => x.name === command)
+        })
+      ) {
+        // Parse command from first line, preserve multi-line content in arguments
+        const firstLineEnd = inputText.indexOf("\n")
+        const firstLine = firstLineEnd === -1 ? inputText : inputText.slice(0, firstLineEnd)
+        const [command, ...firstLineArgs] = firstLine.split(" ")
+        const restOfInput = firstLineEnd === -1 ? "" : inputText.slice(firstLineEnd + 1)
+        const args = firstLineArgs.join(" ") + (restOfInput ? "\n" + restOfInput : "")
+
+        sdk.client.session.command({
+          sessionID,
+          command: command.slice(1),
+          arguments: args,
+          agent: agent.name,
+          model: `${selectedModel.providerID}/${selectedModel.modelID}`,
+          messageID,
+          variant,
+          service_tier: serviceTier,
+          parts: nonTextParts
+            .filter((x) => x.type === "file")
+            .map((x) => ({
+              id: Identifier.ascending("part"),
+              ...x,
+            })),
+        })
+      } else {
+        sdk.client.session
+          .prompt({
+            sessionID,
+            ...selectedModel,
+            messageID,
+            agent: agent.name,
+            model: selectedModel,
+            variant,
+            service_tier: serviceTier,
+            parts: [
+              {
+                id: Identifier.ascending("part"),
+                type: "text",
+                text: inputText,
+              },
+              ...nonTextParts.map((x) => ({
+                id: Identifier.ascending("part"),
+                ...x,
+              })),
+            ],
+          })
+          .catch(() => {})
+      }
       history.append({
         ...store.prompt,
         mode: currentMode,
       })
-      if (!input.isDestroyed) {
-        input.extmarks.clear()
-      }
+      input.extmarks.clear()
       setStore("prompt", {
         input: "",
         parts: [],
       })
       setStore("extmarkToPartIndex", new Map())
-      dialog.clear()
-      if (!input.isDestroyed) {
-        input.clear()
-        input.setText("")
-        input.getLayoutNode().markDirty()
-        renderer.requestRender()
-      }
-      queueMicrotask(() => {
-        setStore("prompt", "input", "")
-      })
       props.onSubmit?.()
-      if (shouldNavigate) {
+
+      // temporary hack to make sure the message is sent
+      if (!props.sessionID)
         setTimeout(() => {
           route.navigate({
             type: "session",
             sessionID,
           })
-        }, 0)
-      }
-      setStore("pending", true)
-      setStore("pendingSeenBusy", false)
-      const recover = () => {
-        recoverPenguinPromptFailure({
-          sessionID,
-          clear: () => {
-            setStore("pending", false)
-            setStore("pendingSeenBusy", false)
-          },
-          emit: sdk.event.emit,
-        })
-      }
-      const url = new URL("/api/v1/chat/message", sdk.url)
-      sdk.fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          text: inputText,
-          model: `${selectedModel.providerID}/${selectedModel.modelID}`,
-          session_id: sessionID,
-          agent_id: agent.name,
-          agent_mode: agentMode(),
-          directory,
-          streaming: true,
-          variant,
-          service_tier: serviceTier,
-          client_message_id: messageID,
-          parts: nonTextParts,
-        }),
-      })
-        .then(async (res) => {
-          if (res.ok) return
-          const details = await res.text().catch(() => "")
-          recover()
-          toast.show({
-            variant: "error",
-            message: formatPenguinPromptFailure({
-              status: res.status,
-              details,
-            }),
-          })
-        })
-        .catch((err) => {
-          recover()
-          toast.show({
-            variant: "error",
-            message: formatPenguinPromptFailure({ error: err }),
-          })
-        })
-      return
+        }, 50)
+      input.clear()
+    } finally {
+      if (releaseInFinally) releaseSubmit?.()
     }
-
-    if (store.mode === "shell") {
-      sdk.client.session.shell({
-        sessionID,
-        agent: agent.name,
-        model: {
-          providerID: selectedModel.providerID,
-          modelID: selectedModel.modelID,
-        },
-        command: inputText,
-      })
-      setStore("mode", "normal")
-    } else if (
-      inputText.startsWith("/") &&
-      iife(() => {
-        const firstLine = inputText.split("\n")[0]
-        const command = firstLine.split(" ")[0].slice(1)
-        return sync.data.command.some((x) => x.name === command)
-      })
-    ) {
-      // Parse command from first line, preserve multi-line content in arguments
-      const firstLineEnd = inputText.indexOf("\n")
-      const firstLine = firstLineEnd === -1 ? inputText : inputText.slice(0, firstLineEnd)
-      const [command, ...firstLineArgs] = firstLine.split(" ")
-      const restOfInput = firstLineEnd === -1 ? "" : inputText.slice(firstLineEnd + 1)
-      const args = firstLineArgs.join(" ") + (restOfInput ? "\n" + restOfInput : "")
-
-      sdk.client.session.command({
-        sessionID,
-        command: command.slice(1),
-        arguments: args,
-        agent: agent.name,
-        model: `${selectedModel.providerID}/${selectedModel.modelID}`,
-        messageID,
-        variant,
-        service_tier: serviceTier,
-        parts: nonTextParts
-          .filter((x) => x.type === "file")
-          .map((x) => ({
-            id: Identifier.ascending("part"),
-            ...x,
-          })),
-      })
-    } else {
-      sdk.client.session
-        .prompt({
-          sessionID,
-          ...selectedModel,
-          messageID,
-          agent: agent.name,
-          model: selectedModel,
-          variant,
-          service_tier: serviceTier,
-          parts: [
-            {
-              id: Identifier.ascending("part"),
-              type: "text",
-              text: inputText,
-            },
-            ...nonTextParts.map((x) => ({
-              id: Identifier.ascending("part"),
-              ...x,
-            })),
-          ],
-        })
-        .catch(() => {})
-    }
-    history.append({
-      ...store.prompt,
-      mode: currentMode,
-    })
-    input.extmarks.clear()
-    setStore("prompt", {
-      input: "",
-      parts: [],
-    })
-    setStore("extmarkToPartIndex", new Map())
-    props.onSubmit?.()
-
-    // temporary hack to make sure the message is sent
-    if (!props.sessionID)
-      setTimeout(() => {
-        route.navigate({
-          type: "session",
-          sessionID,
-        })
-      }, 50)
-    input.clear()
   }
   const exit = useExit()
 
@@ -1436,6 +1489,21 @@ export function Prompt(props: PromptProps) {
     }
   })
 
+  const runStatusText = createMemo(() => {
+    if (!sdk.penguin || status().type === "retry") return ""
+    const state = runState()
+    if (state.type === "idle") return ""
+
+    const elapsed = formatDuration(Math.floor(state.elapsedMs / 1000)) || "0s"
+    if (state.type === "pending") return `starting · ${elapsed}`
+    if (state.type === "reconnecting") return `reconnecting · ${elapsed}`
+    if (state.type === "stale") {
+      const age = formatDuration(Math.floor((state.lastEventAgeMs ?? state.elapsedMs) / 1000))
+      return `still running · ${age ? `no events ${age}` : "no events"} · ${elapsed}`
+    }
+    return `running · ${elapsed}`
+  })
+
   return (
     <>
       <Autocomplete
@@ -1521,18 +1589,17 @@ export function Prompt(props: PromptProps) {
                   setStore("extmarkToPartIndex", new Map())
                   return
                 }
-                if (
-                  sdk.penguin &&
-                  props.sessionID &&
-                  (keybind.match("session_interrupt", e) || e.name === "escape")
-                ) {
-                  const active = store.pending || status().type !== "idle"
+                if (sdk.penguin && props.sessionID && (keybind.match("session_interrupt", e) || e.name === "escape")) {
+                  const active = busy()
                   if (active) {
-                    sdk.client.session.abort({
-                      sessionID: props.sessionID,
-                    }).catch(() => {})
+                    sdk.client.session
+                      .abort({
+                        sessionID: props.sessionID,
+                      })
+                      .catch(() => {})
                     setStore("pending", false)
                     setStore("pendingSeenBusy", false)
+                    setStore("runStartedAt", undefined)
                     setStore("interrupt", 0)
                     e.preventDefault()
                     return
@@ -1541,7 +1608,7 @@ export function Prompt(props: PromptProps) {
                 if (keybind.match("app_exit", e)) {
                   if (store.prompt.input === "") {
                     await exitSession({
-                      busy: store.pending || status().type !== "idle",
+                      busy: busy(),
                       sessionID: props.sessionID,
                       dialog,
                       sdk,
@@ -1572,7 +1639,7 @@ export function Prompt(props: PromptProps) {
                     (keybind.match("history_next", e) && input.cursorOffset === input.plainText.length)
                   ) {
                     const direction = keybind.match("history_previous", e) ? -1 : 1
-                    const item = history.move(direction, input.plainText)
+                    const item = history.move(direction, store.prompt)
 
                     if (item) {
                       input.setText(item.input)
@@ -1598,10 +1665,19 @@ export function Prompt(props: PromptProps) {
                   return
                 }
 
-                // Normalize line endings at the boundary
-                // Windows ConPTY/Terminal often sends CR-only newlines in bracketed paste
-                // Replace CRLF first, then any remaining CR
-                const normalizedText = event.text.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+                const normalizedText = normalizePastedText(event.text)
+                if (pasteDuplicateGuard.shouldDrop(normalizedText)) {
+                  event.preventDefault()
+                  return
+                }
+
+                if (shouldOwnPasteEvent(normalizedText)) {
+                  // OpenTUI does not await async onPaste handlers before applying
+                  // its default textarea paste. Claim the event before any file
+                  // probing awaits, then insert the intended text/content below.
+                  event.preventDefault()
+                }
+
                 const pastedContent = normalizedText.trim()
                 if (!pastedContent) {
                   command.trigger("prompt.paste")
@@ -1611,17 +1687,25 @@ export function Prompt(props: PromptProps) {
                 // trim ' from the beginning and end of the pasted content. just
                 // ' and nothing else
                 const filepath = pastedContent.replace(/^'+|'+$/g, "").replace(/\\ /g, " ")
-                const matches = normalizedText.match(
-                  /(?:\/|[A-Za-z]:\\)[^\n\r]*?\.(?:png|jpg|jpeg|gif|webp|bmp|svg)/gi,
-                )
+                const matches = normalizedText.match(/(?:\/|[A-Za-z]:\\)[^\n\r]*?\.(?:png|jpg|jpeg|gif|webp|bmp|svg)/gi)
                 const rawPaths = (matches ?? [])
                   .map((item) => item.replace(/^'+|'+$/g, "").trim())
                   .filter((item, index, all) => !!item && all.indexOf(item) === index)
                 const paths = (matches ?? [])
-                  .map((item) => item.replace(/^'+|'+$/g, "").replace(/\\ /g, " ").trim())
+                  .map((item) =>
+                    item
+                      .replace(/^'+|'+$/g, "")
+                      .replace(/\\ /g, " ")
+                      .trim(),
+                  )
                   .filter((item, index, all) => !!item && all.indexOf(item) === index)
                 const candidates = [filepath, ...rawPaths, ...paths]
-                  .map((item) => item.replace(/^'+|'+$/g, "").replace(/\\ /g, " ").trim())
+                  .map((item) =>
+                    item
+                      .replace(/^'+|'+$/g, "")
+                      .replace(/\\ /g, " ")
+                      .trim(),
+                  )
                   .filter((item, index, all) => !!item && all.indexOf(item) === index)
 
                 const pathLike =
@@ -1633,10 +1717,8 @@ export function Prompt(props: PromptProps) {
                   filepath.startsWith("file://") ||
                   /^[A-Za-z]:[\\/]/.test(filepath)
 
-                if (pathLike) {
-                  // Prevent default paste immediately so local path text does not
-                  // get inserted before we convert to [Image n].
-                  event.preventDefault()
+                const cleanedTextAroundPath = (entry: string, local: string) => {
+                  return removePastedPathReferences(normalizedText, [entry, local, filepath, ...rawPaths, ...paths])
                 }
 
                 for (const entry of candidates) {
@@ -1658,32 +1740,23 @@ export function Prompt(props: PromptProps) {
 
                     // Handle SVG as raw text content, not as base64 image
                     if (file.type === "image/svg+xml") {
-                      event.preventDefault()
                       const content = await file.text().catch(() => {})
                       if (content) {
+                        const cleaned = cleanedTextAroundPath(entry, local)
+                        if (cleaned) {
+                          input.insertText(`${cleaned} `)
+                        }
                         pasteText(content, `[SVG: ${file.name ?? "image"}]`)
                         return
                       }
                     }
                     if (file.type.startsWith("image/")) {
-                      event.preventDefault()
                       const content = await file
                         .arrayBuffer()
                         .then((buffer) => Buffer.from(buffer).toString("base64"))
                         .catch(() => {})
                       if (content) {
-                        const remove = [entry, local, filepath, ...rawPaths, ...paths]
-                          .filter((item, index, all) => !!item && all.indexOf(item) === index)
-                          .flatMap((item) => [
-                            item,
-                            item.replace(/\\ /g, " "),
-                            item.replace(/ /g, "\\ "),
-                          ])
-                          .filter((item, index, all) => !!item && all.indexOf(item) === index)
-                        const cleaned = remove
-                          .reduce((text, item) => text.split(item).join(" "), normalizedText)
-                          .replace(/\s+/g, " ")
-                          .trim()
+                        const cleaned = cleanedTextAroundPath(entry, local)
                         if (cleaned) {
                           input.insertText(`${cleaned} `)
                         }
@@ -1705,17 +1778,14 @@ export function Prompt(props: PromptProps) {
                   return
                 }
 
-                const lineCount = (pastedContent.match(/\n/g)?.length ?? 0) + 1
-                if (
-                  (lineCount >= 3 || pastedContent.length > 150) &&
-                  !sync.data.config.experimental?.disable_paste_summary
-                ) {
-                  event.preventDefault()
+                if (shouldSummarizePaste(pastedContent, sync.data.config.experimental?.disable_paste_summary)) {
+                  const lineCount = (pastedContent.match(/\n/g)?.length ?? 0) + 1
                   pasteText(pastedContent, `[Pasted ~${lineCount} lines]`)
                   return
                 }
 
-                // Force layout update and render for the pasted content
+                input.insertText(normalizedText)
+
                 setTimeout(() => {
                   // setTimeout is a workaround and needs to be addressed properly
                   if (!input || input.isDestroyed) return
@@ -1868,6 +1938,7 @@ export function Prompt(props: PromptProps) {
                       </Show>
                     )
                   })()}
+                  <Show when={runStatusText()}>{(text) => <text fg={theme.textMuted}>{text()}</text>}</Show>
                 </box>
               </box>
               <text fg={store.interrupt > 0 && !sdk.penguin ? theme.primary : theme.text}>
@@ -1888,7 +1959,8 @@ export function Prompt(props: PromptProps) {
                     </text>
                   </Show>
                   <text fg={theme.text}>
-                    {keybind.print("agent_cycle")} <span style={{ fg: theme.textMuted }}>{sdk.penguin ? "mode" : "agents"}</span>
+                    {keybind.print("agent_cycle")}{" "}
+                    <span style={{ fg: theme.textMuted }}>{sdk.penguin ? "mode" : "agents"}</span>
                   </text>
                   <text fg={theme.text}>
                     {keybind.print("command_list")} <span style={{ fg: theme.textMuted }}>commands</span>

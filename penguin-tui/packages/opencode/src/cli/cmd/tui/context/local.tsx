@@ -12,6 +12,10 @@ import { Provider } from "@/provider/provider"
 import { useArgs } from "./args"
 import { useSDK } from "./sdk"
 import { RGBA } from "@opentui/core"
+import type { Agent } from "@opencode-ai/sdk/v2"
+import { nextVariantSelection } from "./variant-cycle"
+import { resolveCatalogModel } from "../util/model-selection"
+import { createModelCatalogProviders, hasSparseModelCatalog, modelCatalogCount } from "../util/model-catalog"
 
 export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
   name: "Local",
@@ -19,17 +23,44 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const sync = useSync()
     const sdk = useSDK()
     const toast = useToast()
+    const modelProviders = createMemo(() =>
+      createModelCatalogProviders(sync.data.provider, sync.data.provider_next.all),
+    )
+    const modelCatalogReady = createMemo(() => {
+      const providers = modelProviders()
+      return modelCatalogCount(providers) > 0 && !hasSparseModelCatalog(providers)
+    })
+
+    function resolveModel(model: { providerID: string; modelID: string }) {
+      return resolveCatalogModel(modelProviders(), model)
+    }
+
+    function canonicalModel(model: { providerID: string; modelID: string }) {
+      return resolveModel(model) ?? model
+    }
+
+    function modelKey(model: { providerID: string; modelID: string }) {
+      const resolved = canonicalModel(model)
+      return `${resolved.providerID.toLowerCase()}/${resolved.modelID.toLowerCase()}`
+    }
+
+    function canonicalModelList(items: { providerID: string; modelID: string }[]) {
+      return uniqueBy(items.map(canonicalModel), modelKey).map((item) => ({
+        providerID: item.providerID,
+        modelID: item.modelID,
+      }))
+    }
 
     function isModelValid(model: { providerID: string; modelID: string }) {
-      const provider = sync.data.provider.find((x) => x.id === model.providerID)
-      return !!provider?.models[model.modelID]
+      return resolveModel(model) !== undefined
     }
 
     function getFirstValidModel(...modelFns: (() => { providerID: string; modelID: string } | undefined)[]) {
       for (const modelFn of modelFns) {
         const model = modelFn()
         if (!model) continue
-        if (isModelValid(model)) return model
+        const resolved = resolveModel(model)
+        if (resolved) return resolved
       }
     }
 
@@ -38,7 +69,13 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       const [agentStore, setAgentStore] = createStore<{
         current: string
       }>({
-        current: agents()[0].name,
+        current: "build",
+      })
+      createEffect(() => {
+        const current = agents().find((x) => x.name === agentStore.current)
+        if (current) return
+        const first = agents()[0]
+        if (first) setAgentStore("current", first.name)
       })
       const { theme } = useTheme()
       const colors = createMemo(() => [
@@ -54,7 +91,11 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           return agents()
         },
         current() {
-          return agents().find((x) => x.name === agentStore.current)!
+          return (
+            agents().find((x) => x.name === agentStore.current) ??
+            agents()[0] ??
+            ({ name: agentStore.current } as Agent)
+          )
         },
         set(name: string) {
           if (!agents().some((x) => x.name === name))
@@ -66,6 +107,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           setAgentStore("current", name)
         },
         move(direction: 1 | -1) {
+          if (!agents().length) return
           batch(() => {
             let next = agents().findIndex((x) => x.name === agentStore.current) + direction
             if (next < 0) next = agents().length - 1
@@ -165,15 +207,16 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           providerID: session.providerID,
           modelID: session.modelID,
         }
-        if (isModelValid(candidate)) return candidate
+        return resolveModel(candidate)
       })
       const fallbackModel = createMemo(() => {
         if (args.model) {
           const { providerID, modelID } = Provider.parseModel(args.model)
-          if (isModelValid({ providerID, modelID })) {
+          const resolved = resolveModel({ providerID, modelID })
+          if (resolved) {
             return {
               providerID,
-              modelID,
+              modelID: resolved.modelID,
             }
           }
         }
@@ -185,24 +228,26 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
 
         if (sync.data.config.model) {
           const { providerID, modelID } = Provider.parseModel(sync.data.config.model)
-          if (isModelValid({ providerID, modelID })) {
+          const resolved = resolveModel({ providerID, modelID })
+          if (resolved) {
             return {
               providerID,
-              modelID,
+              modelID: resolved.modelID,
             }
           }
         }
 
         for (const item of modelStore.recent) {
-          if (isModelValid(item)) {
-            return item
+          const resolved = resolveModel(item)
+          if (resolved) {
+            return resolved
           }
         }
 
-        const provider = sync.data.provider[0]
+        const provider = modelProviders()[0]
         if (!provider) return undefined
         const defaultModel = sync.data.provider_default[provider.id]
-        const firstModel = Object.values(provider.models)[0]
+        const firstModel = Object.values(provider.models ?? {})[0]
         const model = defaultModel ?? firstModel?.id
         if (!model) return undefined
         return {
@@ -228,10 +273,10 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           return modelStore.ready
         },
         recent() {
-          return modelStore.recent
+          return canonicalModelList(modelStore.recent)
         },
         favorite() {
-          return modelStore.favorite
+          return canonicalModelList(modelStore.favorite)
         },
         parsed: createMemo(() => {
           const value = currentModel()
@@ -242,8 +287,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
               reasoning: false,
             }
           }
-          const provider = sync.data.provider.find((x) => x.id === value.providerID)
-          const info = provider?.models[value.modelID]
+          const provider = modelProviders().find((x) => x.id === value.providerID)
+          const info = provider?.models?.[value.modelID]
           return {
             provider: provider?.name ?? value.providerID,
             model: info?.name ?? value.modelID,
@@ -264,7 +309,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           setModelStore("model", agent.current().name, { ...val })
         },
         cycleFavorite(direction: 1 | -1) {
-          const favorites = modelStore.favorite.filter((item) => isModelValid(item))
+          const favorites = modelStore.favorite.map(resolveModel).filter((item) => item !== undefined)
           if (!favorites.length) {
             toast.show({
               variant: "info",
@@ -288,39 +333,38 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           const next = favorites[index]
           if (!next) return
           setModelStore("model", agent.current().name, { ...next })
-          const uniq = uniqueBy([next, ...modelStore.recent], (x) => `${x.providerID}/${x.modelID}`)
+          const uniq = canonicalModelList([next, ...modelStore.recent])
           if (uniq.length > 10) uniq.pop()
-          setModelStore(
-            "recent",
-            uniq.map((x) => ({ providerID: x.providerID, modelID: x.modelID })),
-          )
+          setModelStore("recent", uniq)
           save()
         },
-        set(model: { providerID: string; modelID: string }, options?: { recent?: boolean }) {
-          batch(() => {
-            if (!isModelValid(model)) {
-              toast.show({
-                message: `Model ${model.providerID}/${model.modelID} is not valid`,
-                variant: "warning",
-                duration: 3000,
-              })
-              return
+        set(model: { providerID: string; modelID: string }, options?: { recent?: boolean; silentInvalid?: boolean }) {
+          return batch(() => {
+            const resolved = resolveModel(model)
+            if (!resolved) {
+              if (!options?.silentInvalid) {
+                toast.show({
+                  message: `Model ${model.providerID}/${model.modelID} is not valid`,
+                  variant: "warning",
+                  duration: 3000,
+                })
+              }
+              return false
             }
-            setModelStore("model", agent.current().name, model)
+            setModelStore("model", agent.current().name, resolved)
             if (options?.recent) {
-              const uniq = uniqueBy([model, ...modelStore.recent], (x) => `${x.providerID}/${x.modelID}`)
+              const uniq = canonicalModelList([resolved, ...modelStore.recent])
               if (uniq.length > 10) uniq.pop()
-              setModelStore(
-                "recent",
-                uniq.map((x) => ({ providerID: x.providerID, modelID: x.modelID })),
-              )
+              setModelStore("recent", uniq)
               save()
             }
+            return true
           })
         },
         toggleFavorite(model: { providerID: string; modelID: string }) {
           batch(() => {
-            if (!isModelValid(model)) {
+            const resolved = resolveModel(model)
+            if (!resolved) {
               toast.show({
                 message: `Model ${model.providerID}/${model.modelID} is not valid`,
                 variant: "warning",
@@ -328,16 +372,13 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
               })
               return
             }
-            const exists = modelStore.favorite.some(
-              (x) => x.providerID === model.providerID && x.modelID === model.modelID,
-            )
+            const favorite = canonicalModelList(modelStore.favorite)
+            const resolvedKey = modelKey(resolved)
+            const exists = favorite.some((x) => modelKey(x) === resolvedKey)
             const next = exists
-              ? modelStore.favorite.filter((x) => x.providerID !== model.providerID || x.modelID !== model.modelID)
-              : [model, ...modelStore.favorite]
-            setModelStore(
-              "favorite",
-              next.map((x) => ({ providerID: x.providerID, modelID: x.modelID })),
-            )
+              ? favorite.filter((x) => modelKey(x) !== resolvedKey)
+              : canonicalModelList([resolved, ...favorite])
+            setModelStore("favorite", next)
             save()
           })
         },
@@ -351,8 +392,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           list() {
             const m = currentModel()
             if (!m) return []
-            const provider = sync.data.provider.find((x) => x.id === m.providerID)
-            const info = provider?.models[m.modelID]
+            const provider = modelProviders().find((x) => x.id === m.providerID)
+            const info = provider?.models?.[m.modelID]
             if (!info?.variants) return []
             return Object.keys(info.variants)
           },
@@ -364,19 +405,16 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             save()
           },
           cycle() {
-            const variants = this.list()
-            if (variants.length === 0) return
-            const current = this.current()
-            if (!current) {
-              this.set(variants[0])
+            const result = nextVariantSelection(this.list(), this.current())
+            if (result.type === "unavailable") {
+              toast.show({
+                title: "No variants available",
+                message: "The current model does not support any variants.",
+                variant: "info",
+              })
               return
             }
-            const index = variants.indexOf(current)
-            if (index === -1 || index === variants.length - 1) {
-              this.set(undefined)
-              return
-            }
-            this.set(variants[index + 1])
+            this.set(result.variant)
           },
         },
         fast: {
@@ -385,7 +423,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           },
           enabled() {
             const config = sync.data.config as { service_tier?: string }
-            return modelStore.fast ?? (config.service_tier?.toLowerCase() === "priority")
+            return modelStore.fast ?? config.service_tier?.toLowerCase() === "priority"
           },
           set(value: boolean | undefined) {
             setModelStore("fast", value)
@@ -423,15 +461,20 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     createEffect(() => {
       const value = agent.current()
       if (value.model) {
-        if (isModelValid(value.model))
-          model.set({
-            providerID: value.model.providerID,
-            modelID: value.model.modelID,
-          })
-        else
+        const configuredModel = `${value.model.providerID}/${value.model.modelID}`
+        const resolved = resolveModel(value.model)
+        if (resolved)
+          model.set(
+            {
+              providerID: resolved.providerID,
+              modelID: resolved.modelID,
+            },
+            { silentInvalid: true },
+          )
+        else if (modelCatalogReady())
           toast.show({
             variant: "warning",
-            message: `Agent ${value.name}'s configured model ${value.model.providerID}/${value.model.modelID} is not valid`,
+            message: `Agent ${value.name}'s configured model ${configuredModel} is not valid`,
             duration: 3000,
           })
       }

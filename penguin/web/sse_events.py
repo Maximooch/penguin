@@ -4,114 +4,55 @@ Provides Server-Sent Events endpoint that streams OpenCode-compatible
 message/part events to the TUI client.
 """
 
-import asyncio
-import json
-from pathlib import Path
-from typing import TYPE_CHECKING, Any, AsyncIterator, Optional
+from __future__ import annotations
 
-from fastapi import APIRouter, Query
+import asyncio
+import logging
+from collections import deque
+from typing import TYPE_CHECKING, Any, AsyncIterator
+
+from fastapi import APIRouter, Header, Query
 from fastapi.responses import StreamingResponse
+
+from penguin.system.runtime_events import opencode_payload_from_runtime_event
+from penguin.web.services.opencode_events import (
+    GLOBAL_STATUS_EVENTS,
+    directory_matches,
+    extract_event_directory,
+    extract_event_session,
+    normalize_directory,
+    normalize_opencode_event,
+    record_opencode_event,
+    sse_event_frame,
+)
 
 if TYPE_CHECKING:
     from penguin.core import PenguinCore
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
+_LEDGER_RECORDER_ATTR = "_runtime_event_ledger_recorder_v1"
+# Per-connection delivery limits for the compatibility SSE projection. The
+# durable runtime event ledger owns replay truth; this queue only buffers live
+# delivery for a connected client. Slow-client drops are recoverable by
+# reconnecting with Last-Event-ID.
+_SSE_QUEUE_MAX_EVENTS = 1000
+_SSE_REPLAY_PAGE_SIZE = 1000
+_SSE_KEEPALIVE_TIMEOUT_SECONDS = 300.0
+_SSE_DEDUPE_MAX_EVENTS = 1000
 
 # Global reference to core instance (set by app.py)
-_core_instance: Optional["PenguinCore"] = None
+_core_instance: PenguinCore | None = None
 
 
-def _normalize_directory(directory: Optional[str]) -> Optional[str]:
-    if not isinstance(directory, str) or not directory.strip():
-        return None
-    try:
-        resolved = Path(directory).expanduser().resolve()
-    except Exception:
-        return None
-    return str(resolved)
-
-
-def _directory_matches(left: Optional[str], right: Optional[str]) -> bool:
-    left_norm = _normalize_directory(left)
-    right_norm = _normalize_directory(right)
-    if not left_norm or not right_norm:
-        return False
-    if left_norm == right_norm:
-        return True
-    try:
-        return Path(left_norm).samefile(right_norm)
-    except Exception:
-        return False
-
-
-def _extract_event_session(properties: dict[str, Any]) -> Optional[str]:
-    event_session = (
-        properties.get("sessionID")
-        or properties.get("conversation_id")
-        or properties.get("session_id")
-    )
-    if isinstance(event_session, str) and event_session:
-        return event_session
-
-    part = properties.get("part")
-    if isinstance(part, dict):
-        part_session = (
-            part.get("sessionID")
-            or part.get("conversation_id")
-            or part.get("session_id")
-        )
-        if isinstance(part_session, str) and part_session:
-            return part_session
-
-    info = properties.get("info")
-    if isinstance(info, dict):
-        info_session = (
-            info.get("sessionID")
-            or info.get("conversation_id")
-            or info.get("session_id")
-        )
-        if isinstance(info_session, str) and info_session:
-            return info_session
-    return None
-
-
-def _extract_event_directory(properties: dict[str, Any]) -> Optional[str]:
-    direct = properties.get("directory")
-    if isinstance(direct, str) and direct:
-        return direct
-
-    info = properties.get("info")
-    if isinstance(info, dict):
-        info_directory = info.get("directory")
-        if isinstance(info_directory, str) and info_directory:
-            return info_directory
-        info_path = info.get("path")
-        if isinstance(info_path, dict):
-            info_cwd = info_path.get("cwd")
-            if isinstance(info_cwd, str) and info_cwd:
-                return info_cwd
-
-    path_info = properties.get("path")
-    if isinstance(path_info, dict):
-        path_cwd = path_info.get("cwd")
-        if isinstance(path_cwd, str) and path_cwd:
-            return path_cwd
-
-    part = properties.get("part")
-    if isinstance(part, dict):
-        part_directory = part.get("directory")
-        if isinstance(part_directory, str) and part_directory:
-            return part_directory
-    return None
-
-
-def set_core_instance(core: "PenguinCore"):
+def set_core_instance(core: PenguinCore):
     """Set the core instance for dependency injection."""
     global _core_instance
     _core_instance = core
+    _install_runtime_event_ledger_recorder(core)
 
 
-def get_core_instance() -> "PenguinCore":
+def get_core_instance() -> PenguinCore:
     """Get the core instance."""
     if _core_instance is None:
         raise RuntimeError("Core instance not set - call set_core_instance() first")
@@ -120,12 +61,17 @@ def get_core_instance() -> "PenguinCore":
 
 @router.get("/api/v1/events/sse")
 async def events_sse(
-    session_id: Optional[str] = Query(None, description="Filter to specific session"),
-    conversation_id: Optional[str] = Query(
+    session_id: str | None = Query(None, description="Filter to specific session"),
+    conversation_id: str | None = Query(
         None, description="Alias for session_id (API compatibility)"
     ),
-    agent_id: Optional[str] = Query(None, description="Filter to specific agent"),
-    directory: Optional[str] = Query(None, description="Workspace directory"),
+    agent_id: str | None = Query(None, description="Filter to specific agent"),
+    directory: str | None = Query(None, description="Workspace directory"),
+    last_event_id: str | None = Query(
+        None,
+        description="Replay durable ledger events after this SSE id",
+    ),
+    last_event_id_header: str | None = Header(None, alias="Last-Event-ID"),
 ):
     """
     SSE stream of OpenCode-compatible events.
@@ -140,7 +86,14 @@ async def events_sse(
     # Use conversation_id if session_id not provided (API compatibility)
     effective_session_id = session_id or conversation_id
     effective_agent_id = agent_id
-    effective_directory = _normalize_directory(directory)
+    effective_directory = normalize_directory(directory)
+    effective_last_event_id = (
+        last_event_id
+        if isinstance(last_event_id, str) and last_event_id
+        else last_event_id_header
+        if isinstance(last_event_id_header, str) and last_event_id_header
+        else None
+    )
 
     if effective_session_id and directory:
         session_dirs = getattr(core, "_opencode_session_directories", None)
@@ -153,40 +106,54 @@ async def events_sse(
             session_dirs[effective_session_id] = resolved
 
     async def event_generator() -> AsyncIterator[str]:
-        queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=1000)
+        queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=_SSE_QUEUE_MAX_EVENTS)
+        # Reconnect-only dedupe bridge: events can arrive after subscription but
+        # before replay drains. The set is intentionally per connection; durable
+        # replay identity comes from the runtime event ledger.
+        queued_live_event_ids: set[str] = set()
+        delivered_event_ids: set[str] = set()
+        delivered_event_order: deque[str] = deque()
+        event_order = 0
 
-        def event_handler(event_type: str, data: Any):
-            """Handler for EventBus events."""
-            # Only handle opencode_event type
-            if event_type != "opencode_event":
+        def mark_delivered(event_id: object) -> None:
+            if not isinstance(event_id, str) or not event_id:
                 return
-
-            # Data should already be in OpenCode format
-            if not isinstance(data, dict):
+            if event_id in delivered_event_ids:
                 return
+            delivered_event_ids.add(event_id)
+            delivered_event_order.append(event_id)
+            while len(delivered_event_order) > _SSE_DEDUPE_MAX_EVENTS:
+                delivered_event_ids.discard(delivered_event_order.popleft())
 
-            props = data.get("properties", {})
+        def next_event(data: dict[str, Any]) -> dict[str, Any] | None:
+            nonlocal event_order
+            event_order += 1
+            return normalize_opencode_event(
+                data,
+                order=event_order,
+                default_agent_id=effective_agent_id,
+                default_directory=effective_directory or directory,
+                default_session_id=effective_session_id,
+            )
+
+        def event_allowed(normalized: dict[str, Any]) -> bool:
+            props = normalized.get("properties", {})
             if not isinstance(props, dict):
                 props = {}
 
-            event_name = data.get("type")
-            event_session = _extract_event_session(props)
-            event_directory = _normalize_directory(_extract_event_directory(props))
+            event_name = normalized.get("type")
+            event_session = extract_event_session(props)
+            event_directory = normalize_directory(extract_event_directory(props))
 
             # Filter by session_id if provided
             if effective_session_id:
-                global_events = {
-                    "vcs.branch.updated",
-                    "lsp.updated",
-                    "lsp.client.diagnostics",
-                }
                 if event_session == effective_session_id:
                     pass
-                elif event_name in global_events and not event_session:
+                elif event_name in GLOBAL_STATUS_EVENTS and not event_session:
                     # Global status event without a session association
                     pass
                 else:
-                    return
+                    return False
 
             if effective_directory:
                 if event_session:
@@ -216,39 +183,30 @@ async def events_sse(
                         except Exception:
                             session_directory = None
 
-                    if session_directory and not _directory_matches(
+                    if session_directory and not directory_matches(
                         session_directory, effective_directory
                     ):
-                        return
+                        return False
                     if (
                         not session_directory
                         and event_directory
-                        and not _directory_matches(event_directory, effective_directory)
+                        and not directory_matches(event_directory, effective_directory)
                     ):
-                        return
+                        return False
                     if (
                         not session_directory
                         and not event_directory
-                        and event_name
-                        in {
-                            "lsp.updated",
-                            "lsp.client.diagnostics",
-                            "vcs.branch.updated",
-                        }
+                        and event_name in GLOBAL_STATUS_EVENTS
                     ):
-                        return
+                        return False
                 else:
-                    if event_directory and not _directory_matches(
+                    if event_directory and not directory_matches(
                         event_directory, effective_directory
                     ):
-                        return
-                    if not event_directory and event_name in {
-                        "lsp.updated",
-                        "lsp.client.diagnostics",
-                        "vcs.branch.updated",
-                    }:
-                        # These are intentionally global status events. Dropping them when a directory
-                        # filter is present makes SSE look dead even though the runtime emitted a valid event.
+                        return False
+                    if not event_directory and event_name in GLOBAL_STATUS_EVENTS:
+                        # These global status events are intentionally unscoped.
+                        # Dropping them under a directory filter makes SSE look dead.
                         pass
 
             # Filter by agent_id if provided (check multiple possible fields)
@@ -261,12 +219,40 @@ async def events_sse(
                         "agent_id"
                     )
                 if event_agent and event_agent != effective_agent_id:
-                    return
+                    return False
+
+            return True
+
+        def event_handler(event_type: str, data: Any):
+            """Handler for EventBus events."""
+            # Only handle opencode_event type
+            if event_type != "opencode_event":
+                return
+
+            # Data should already be in OpenCode format
+            if not isinstance(data, dict):
+                return
+
+            normalized = next_event(data)
+            if not normalized:
+                return
+
+            if not event_allowed(normalized):
+                return
+
+            normalized_id = normalized.get("id")
+            if isinstance(normalized_id, str) and normalized_id in delivered_event_ids:
+                return
 
             try:
-                queue.put_nowait(data)
+                queue.put_nowait(normalized)
+                event_id = normalized.get("id")
+                if isinstance(event_id, str):
+                    queued_live_event_ids.add(event_id)
             except asyncio.QueueFull:
-                # Drop event if queue is full (client is slow)
+                # Drop only this live delivery. The runtime event ledger already
+                # recorded the event at emission time, so reconnect/replay remains
+                # authoritative for slow clients.
                 pass
 
         # Subscribe to events
@@ -282,14 +268,68 @@ async def events_sse(
                     "directory": directory,
                 },
             }
-            yield f"data: {json.dumps(connected_event)}\n\n"
+            normalized_connected = next_event(connected_event)
+            if normalized_connected:
+                yield sse_event_frame(normalized_connected)
+
+            if effective_last_event_id:
+                replay_cursor = effective_last_event_id
+                while True:
+                    replay = await asyncio.to_thread(
+                        _replay_events_after,
+                        core,
+                        replay_cursor,
+                        limit=_SSE_REPLAY_PAGE_SIZE,
+                        session_id=effective_session_id,
+                        agent_id=effective_agent_id,
+                        directory=effective_directory,
+                    )
+                    if not replay.found:
+                        gap_event = next_event(
+                            _replay_gap_event(
+                                replay_cursor,
+                                oldest_event_id=replay.oldest_event_id,
+                                newest_event_id=replay.newest_event_id,
+                            )
+                        )
+                        if gap_event and event_allowed(gap_event):
+                            yield sse_event_frame(gap_event)
+                        break
+                    if not replay.events:
+                        break
+                    for runtime_event in replay.events:
+                        event = opencode_payload_from_runtime_event(runtime_event)
+                        event_id = event.get("id")
+                        if (
+                            isinstance(event_id, str)
+                            and event_id in queued_live_event_ids
+                        ):
+                            continue
+                        if event_allowed(event):
+                            if isinstance(event_id, str):
+                                mark_delivered(event_id)
+                            yield sse_event_frame(event)
+                    next_cursor = replay.events[-1].get("id")
+                    if (
+                        len(replay.events) < _SSE_REPLAY_PAGE_SIZE
+                        or not isinstance(next_cursor, str)
+                    ):
+                        break
+                    replay_cursor = next_cursor
 
             # Stream events
             while True:
                 try:
                     # Wait for event with timeout for keepalive
-                    event = await asyncio.wait_for(queue.get(), timeout=300.0)
-                    yield f"data: {json.dumps(event)}\n\n"
+                    event = await asyncio.wait_for(
+                        queue.get(),
+                        timeout=_SSE_KEEPALIVE_TIMEOUT_SECONDS,
+                    )
+                    event_id = event.get("id")
+                    if isinstance(event_id, str):
+                        queued_live_event_ids.discard(event_id)
+                        mark_delivered(event_id)
+                    yield sse_event_frame(event)
                 except asyncio.TimeoutError:
                     # Send keepalive comment
                     yield ": keepalive\n\n"
@@ -313,6 +353,69 @@ async def events_sse(
             "X-Accel-Buffering": "no",  # Disable nginx buffering
         },
     )
+
+
+def _install_runtime_event_ledger_recorder(core: Any) -> None:
+    """Install one emission-time ledger recorder on the core EventBus."""
+    if getattr(core, _LEDGER_RECORDER_ATTR, None) is not None:
+        return
+    event_bus = getattr(core, "event_bus", None)
+    subscribe = getattr(event_bus, "subscribe", None)
+    if not callable(subscribe):
+        return
+
+    def ledger_handler(event_type: str, data: Any) -> None:
+        if event_type != "opencode_event" or not isinstance(data, dict):
+            return
+        try:
+            record_opencode_event(core, data)
+        except Exception:
+            # Ledger failures must not interrupt live TUI streaming. The client can
+            # still receive the live frame; replay will surface a gap if needed.
+            logger.debug(
+                "Failed to record OpenCode event in runtime ledger",
+                exc_info=True,
+            )
+
+    subscribe("opencode_event", ledger_handler)
+    setattr(core, _LEDGER_RECORDER_ATTR, ledger_handler)
+
+
+def _replay_events_after(
+    core: Any,
+    last_event_id: str,
+    *,
+    limit: int,
+    session_id: str | None = None,
+    agent_id: str | None = None,
+    directory: str | None = None,
+):
+    from penguin.system.runtime_event_ledger import get_runtime_event_ledger
+
+    return get_runtime_event_ledger(core).replay_after(
+        last_event_id,
+        limit=limit,
+        session_id=session_id,
+        agent_id=agent_id,
+        directory=directory,
+    )
+
+
+def _replay_gap_event(
+    last_event_id: str,
+    *,
+    oldest_event_id: str | None = None,
+    newest_event_id: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "type": "server.replay_gap",
+        "properties": {
+            "lastEventID": last_event_id,
+            "oldestEventID": oldest_event_id,
+            "newestEventID": newest_event_id,
+            "reason": "last_event_id_not_available",
+        },
+    }
 
 
 @router.get("/api/v1/health")

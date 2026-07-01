@@ -94,6 +94,35 @@ class StreamingCoreFacade:
             info=info,
         )
 
+    async def _opencode_session_status_heartbeat(
+        self,
+        session_id: str,
+        interval: float = 5.0,
+    ) -> None:
+        """Refresh busy status during long quiet provider/tool phases."""
+        await core_stream_events.opencode_session_status_heartbeat(
+            self,
+            session_id,
+            interval=interval,
+            logger=logger,
+        )
+
+    def _ensure_opencode_session_status_heartbeat(
+        self,
+        session_id: str,
+        interval: float = 5.0,
+    ) -> None:
+        """Start one busy-status heartbeat for an active session request."""
+        core_stream_events.ensure_opencode_session_status_heartbeat(
+            self,
+            session_id,
+            interval=interval,
+        )
+
+    def _cancel_opencode_session_status_heartbeat(self, session_id: str) -> None:
+        """Stop the busy-status heartbeat once a session request is fully idle."""
+        core_stream_events.cancel_opencode_session_status_heartbeat(self, session_id)
+
     async def abort_session(self, session_id: str) -> bool:
         """Abort active streaming/tool state for a session."""
         return await core_stream_events.abort_session(self, session_id, logger=logger)

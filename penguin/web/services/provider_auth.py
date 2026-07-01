@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 import httpx
 
 from penguin.web.services.provider_credentials import (
+    apply_credentials_to_environment,
     get_provider_credential,
     oauth_record_needs_refresh,
     set_provider_credential,
@@ -235,12 +236,18 @@ def _generate_pkce_pair() -> tuple[str, str]:
     return verifier, challenge
 
 
+def _persist_provider_credential(provider_id: str, record: dict[str, Any]) -> None:
+    """Persist provider credentials and refresh process env for this runtime."""
+    set_provider_credential(provider_id, record)
+    apply_credentials_to_environment(provider_id, record)
+
+
 def _parse_browser_callback_code(raw_code: str) -> tuple[str, str | None]:
     value = raw_code.strip()
     if not value:
         return "", None
 
-    if "://" in value:
+    if "://" in value or value.startswith("/"):
         parsed = urlparse(value)
         query = parse_qs(parsed.query)
         code = ""
@@ -377,8 +384,10 @@ async def _handle_openai_browser_callback_connection(
             method_index=method_index,
             code=target,
         )
-        set_provider_credential(provider_id, record)
+        _persist_provider_credential(provider_id, record)
         with _AUTH_LOCK:
+            # TODO: Follow-up PR should only clear the pending OAuth entry if it
+            # still matches this callback's state, so newer flows are preserved.
             _PENDING_OAUTH.pop(provider_id, None)
             _RECENT_OAUTH_COMPLETIONS[provider_id] = time.monotonic()
         if isinstance(future, asyncio.Future) and not future.done():
@@ -424,6 +433,8 @@ async def _ensure_openai_browser_callback_server(redirect_uri: str) -> bool:
             return True
 
     try:
+        # TODO: Follow-up PR should bind to the redirect URI hostname and track
+        # host+port, so localhost redirects cannot miss a 127.0.0.1 listener.
         server = await asyncio.start_server(
             _handle_openai_browser_callback_connection,
             host="127.0.0.1",
@@ -1074,6 +1085,8 @@ async def callback_provider_oauth(
             recent_completion_at = _RECENT_OAUTH_COMPLETIONS.get(pid)
 
         if not pending:
+            # TODO: Follow-up PR should make this recent-completion fast path
+            # auto-wait-only, so stale explicit callback codes still fail.
             if (
                 method_index == 0
                 and isinstance(recent_completion_at, (int, float))
@@ -1151,8 +1164,10 @@ async def callback_provider_oauth(
                 method_index=method_index,
             )
 
-        set_provider_credential(pid, record)
+        _persist_provider_credential(pid, record)
         with _AUTH_LOCK:
+            # TODO: Follow-up PR should only clear the pending OAuth entry if it
+            # still matches this callback's state, so newer flows are preserved.
             _PENDING_OAUTH.pop(pid, None)
             _RECENT_OAUTH_COMPLETIONS[pid] = time.monotonic()
         logger.info(
@@ -1233,7 +1248,7 @@ async def refresh_provider_oauth(
             if isinstance(account_id, str) and account_id.strip():
                 refreshed["accountId"] = account_id.strip()
 
-        set_provider_credential(pid, refreshed)
+        _persist_provider_credential(pid, refreshed)
         logger.info(
             "provider.oauth.refresh success provider=%s method=%s "
             "account_id_present=%s",

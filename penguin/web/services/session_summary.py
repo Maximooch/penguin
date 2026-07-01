@@ -9,9 +9,12 @@ from typing import Any, Optional
 from penguin.llm.api_client import APIClient
 from penguin.llm.model_config import ModelConfig
 from penguin.web.services.session_view import (
+    TITLE_SOURCE_AUTO,
+    TITLE_SOURCE_MANUAL,
     get_session_info,
     get_session_metadata_title,
     get_session_messages,
+    get_session_title_source,
     update_session_info,
 )
 
@@ -27,6 +30,17 @@ _REJECTED_TITLE_SUBSTRINGS = (
     "try rephrasing",
     "returned empty content",
 )
+_LOW_SIGNAL_TITLE_SNIPPETS = {
+    "hi",
+    "hello",
+    "hey",
+    "howdy",
+    "ping",
+    "test",
+    "thanks",
+    "thank you",
+    "yo",
+}
 
 
 def _normalize_model_name(*, model: str, provider: str, client_preference: str) -> str:
@@ -39,6 +53,15 @@ def _normalize_model_name(*, model: str, provider: str, client_preference: str) 
     if candidate.startswith(prefix):
         return candidate[len(prefix) :]
     return candidate
+
+
+def _low_signal_key(text: str) -> str:
+    normalized = re.sub(r"[^a-z0-9\s']+", " ", text.lower())
+    return " ".join(normalized.split())
+
+
+def _is_low_signal_title_snippet(text: str) -> bool:
+    return _low_signal_key(text) in _LOW_SIGNAL_TITLE_SNIPPETS
 
 
 def _resolve_title_model_config(
@@ -101,6 +124,34 @@ def _resolve_title_model_config(
     )
 
 
+def _count_user_prompts(rows: list[dict[str, Any]]) -> int:
+    """Count user rows that contain at least one non-synthetic text part."""
+    total = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        info = row.get("info")
+        if not isinstance(info, dict) or info.get("role") != "user":
+            continue
+
+        parts = row.get("parts")
+        if not isinstance(parts, list):
+            continue
+
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            if part.get("synthetic") is True:
+                continue
+            if str(part.get("type", "")).strip().lower() != "text":
+                continue
+            text = part.get("text")
+            if isinstance(text, str) and text.strip():
+                total += 1
+                break
+    return total
+
+
 def _extract_user_snippets(rows: list[dict[str, Any]]) -> list[str]:
     """Extract concise user text snippets from OpenCode-shaped session rows."""
     snippets: list[str] = []
@@ -118,13 +169,15 @@ def _extract_user_snippets(rows: list[dict[str, Any]]) -> list[str]:
         for part in parts:
             if not isinstance(part, dict):
                 continue
+            if part.get("synthetic") is True:
+                continue
             if str(part.get("type", "")).strip().lower() != "text":
                 continue
             text = part.get("text")
             if not isinstance(text, str):
                 continue
             cleaned = " ".join(text.split())
-            if cleaned:
+            if cleaned and not _is_low_signal_title_snippet(cleaned):
                 snippets.append(cleaned)
                 break
 
@@ -261,13 +314,25 @@ async def summarize_session_title(
         return None
 
     rows = get_session_messages(core, session_id) or []
+    user_prompt_count = _count_user_prompts(rows)
     snippets = _extract_user_snippets(rows)
     used_fallback_text = False
     if not snippets:
         fallback = _normalize_fallback_text(fallback_text)
-        if fallback:
+        if fallback and not _is_low_signal_title_snippet(fallback):
             snippets = [fallback]
             used_fallback_text = True
+
+    if not snippets:
+        return {
+            "changed": False,
+            "title": existing.get("title") if isinstance(existing, dict) else None,
+            "source": "insufficient_context",
+            "info": existing,
+            "snippet_count": 0,
+            "user_prompt_count": user_prompt_count,
+            "used_fallback_text": used_fallback_text,
+        }
 
     generated = await _generate_title_with_model(
         core,
@@ -282,8 +347,17 @@ async def summarize_session_title(
     changed = bool(title and title != current_title)
 
     info = existing
-    if changed:
-        updated = update_session_info(core, session_id, title=title)
+    if changed and get_session_title_source(core, session_id) == TITLE_SOURCE_MANUAL:
+        changed = False
+        source = "manual"
+        title = current_title
+    elif changed:
+        updated = update_session_info(
+            core,
+            session_id,
+            title=title,
+            title_source=TITLE_SOURCE_AUTO,
+        )
         if updated is not None:
             info = updated
         else:
@@ -296,5 +370,6 @@ async def summarize_session_title(
         "source": source,
         "info": info,
         "snippet_count": len(snippets),
+        "user_prompt_count": user_prompt_count,
         "used_fallback_text": used_fallback_text,
     }

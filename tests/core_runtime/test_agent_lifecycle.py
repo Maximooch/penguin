@@ -255,18 +255,20 @@ async def test_publish_sub_agent_session_created_inherits_parent_directory(
     assert child._modified is True
     assert child.save_calls == 1
     assert core._opencode_session_directories["session_child"] == str(parent_dir)
-    assert event_bus.events == [
-        (
-            "opencode_event",
-            {
-                "type": "session.created",
-                "properties": {
-                    "sessionID": "session_child",
-                    "info": info,
-                },
-            },
-        )
-    ]
+    assert len(event_bus.events) == 1
+    event_type, payload = event_bus.events[0]
+    assert event_type == "opencode_event"
+    assert payload["type"] == "session.created"
+    assert payload["properties"] == {
+        "sessionID": "session_child",
+        "info": info,
+        "directory": str(parent_dir),
+        "agentID": "child-agent",
+    }
+    assert payload["runtime_event"]["type"] == "session.created"
+    assert payload["runtime_event"]["scope"]["session_id"] == "session_child"
+    assert payload["runtime_event"]["scope"]["directory"] == str(parent_dir)
+    assert payload["runtime_event"]["scope"]["agent_id"] == "child-agent"
 
 
 @pytest.mark.asyncio

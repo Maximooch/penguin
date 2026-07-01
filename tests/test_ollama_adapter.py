@@ -2,6 +2,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from penguin.llm.adapters.ollama import OllamaAdapter
+from penguin.llm.model_config import ModelConfig
+
 
 @pytest.fixture(autouse=True)
 def mock_tiktoken(monkeypatch):
@@ -19,12 +22,8 @@ def mock_tiktoken(monkeypatch):
 
     importlib.reload(diagnostics_module)
 
-
 @pytest.mark.asyncio
 async def test_ollama_adapter_get_response_non_stream():
-    from penguin.llm.adapters.ollama import OllamaAdapter
-    from penguin.llm.model_config import ModelConfig
-
     model_config = ModelConfig(model="mistral", provider="ollama")
     adapter = OllamaAdapter(model_config)
 
@@ -42,9 +41,6 @@ async def test_ollama_adapter_get_response_non_stream():
 
 @pytest.mark.asyncio
 async def test_ollama_adapter_get_response_stream():
-    from penguin.llm.adapters.ollama import OllamaAdapter
-    from penguin.llm.model_config import ModelConfig
-
     model_config = ModelConfig(model="mistral", provider="ollama")
     adapter = OllamaAdapter(model_config)
 

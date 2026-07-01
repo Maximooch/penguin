@@ -45,7 +45,7 @@ async def test_api_complete_task_rejects_non_review_ready_task():
 
 
 @pytest.mark.asyncio
-async def test_execute_task_from_project_moves_success_to_pending_review():
+async def test_execute_task_from_project_reports_runmode_result_without_terminal_transition():
     task = MagicMock()
     task.id = "task-1"
     task.title = "Execute Me"

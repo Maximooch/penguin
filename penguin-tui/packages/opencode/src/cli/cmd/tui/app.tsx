@@ -15,6 +15,7 @@ import { DialogMcp } from "@tui/component/dialog-mcp"
 import { DialogSkills } from "@tui/component/dialog-skills"
 import { DialogStatus } from "@tui/component/dialog-status"
 import { DialogSettings } from "@tui/component/dialog-settings"
+import { DialogNotifications } from "@tui/component/dialog-notifications"
 import { DialogThemeList } from "@tui/component/dialog-theme-list"
 import { DialogHelp } from "./ui/dialog-help"
 import { CommandProvider, useCommandDialog } from "@tui/component/dialog-command"
@@ -33,17 +34,23 @@ import { ExitProvider, useExit } from "./context/exit"
 import { Session as SessionApi } from "@/session"
 import { TuiEvent } from "./event"
 import { KVProvider, useKV } from "./context/kv"
+import { TerminalFocusProvider } from "./context/terminal-focus"
 import { Provider } from "@/provider/provider"
 import { ArgsProvider, useArgs, type Args } from "./context/args"
 import open from "open"
 import { writeHeapSnapshot } from "v8"
 import { PromptRefProvider, usePromptRef } from "./context/prompt"
 import { exitSession } from "./util/exit"
+import { profileStartup } from "./util/startup-profile"
+import { normalizeNotificationPolicy } from "./notification-policy"
+import { NOTIFICATION_POLICY_OVERRIDE_KEY } from "./notification-settings"
 
 const PENGUIN_DOCS_URL = "https://penguin-rho.vercel.app"
 const OPENCODE_DOCS_URL = "https://opencode.ai/docs"
+const TERMINAL_BACKGROUND_TIMEOUT_MS = 1000
+const PENGUIN_TERMINAL_BACKGROUND_TIMEOUT_MS = 150
 
-async function getTerminalBackgroundColor(): Promise<"dark" | "light"> {
+async function getTerminalBackgroundColor(timeoutMs = TERMINAL_BACKGROUND_TIMEOUT_MS): Promise<"dark" | "light"> {
   // can't set raw mode if not a TTY
   if (!process.stdin.isTTY) return "dark"
 
@@ -99,7 +106,7 @@ async function getTerminalBackgroundColor(): Promise<"dark" | "light"> {
     timeout = setTimeout(() => {
       cleanup()
       resolve("dark")
-    }, 1000)
+    }, timeoutMs)
   })
 }
 
@@ -117,12 +124,21 @@ export function tui(input: {
 }) {
   // promise to prevent immediate exit
   return new Promise<void>(async (resolve) => {
-    const mode = await getTerminalBackgroundColor()
+    profileStartup("tui.start", { penguin: input.penguin })
+    const terminalColorStart = Date.now()
+    const terminalColorTimeout = input.penguin ? PENGUIN_TERMINAL_BACKGROUND_TIMEOUT_MS : TERMINAL_BACKGROUND_TIMEOUT_MS
+    const mode = await getTerminalBackgroundColor(terminalColorTimeout)
+    profileStartup("terminal_background.done", {
+      duration_ms: Date.now() - terminalColorStart,
+      timeout_ms: terminalColorTimeout,
+      mode,
+    })
     const onExit = async () => {
       await input.onExit?.()
       resolve()
     }
 
+    profileStartup("render.start")
     render(
       () => {
         return (
@@ -142,27 +158,29 @@ export function tui(input: {
                         penguin={input.penguin}
                         sessionID={input.sessionID}
                       >
-                        <SyncProvider>
-                          <ThemeProvider mode={mode}>
-                            <LocalProvider>
-                              <KeybindProvider>
-                                <PromptStashProvider>
-                                  <DialogProvider>
-                                    <CommandProvider>
-                                      <FrecencyProvider>
-                                        <PromptHistoryProvider>
-                                          <PromptRefProvider>
-                                            <App />
-                                          </PromptRefProvider>
-                                        </PromptHistoryProvider>
-                                      </FrecencyProvider>
-                                    </CommandProvider>
-                                  </DialogProvider>
-                                </PromptStashProvider>
-                              </KeybindProvider>
-                            </LocalProvider>
-                          </ThemeProvider>
-                        </SyncProvider>
+                        <TerminalFocusProvider>
+                          <SyncProvider>
+                            <ThemeProvider mode={mode}>
+                              <LocalProvider>
+                                <KeybindProvider>
+                                  <PromptStashProvider>
+                                    <DialogProvider>
+                                      <CommandProvider>
+                                        <FrecencyProvider>
+                                          <PromptHistoryProvider>
+                                            <PromptRefProvider>
+                                              <App />
+                                            </PromptRefProvider>
+                                          </PromptHistoryProvider>
+                                        </FrecencyProvider>
+                                      </CommandProvider>
+                                    </DialogProvider>
+                                  </PromptStashProvider>
+                                </KeybindProvider>
+                              </LocalProvider>
+                            </ThemeProvider>
+                          </SyncProvider>
+                        </TerminalFocusProvider>
                       </SDKProvider>
                     </RouteProvider>
                   </ToastProvider>
@@ -187,6 +205,7 @@ export function tui(input: {
         },
       },
     )
+    profileStartup("render.returned")
   })
 }
 
@@ -216,6 +235,13 @@ function App() {
     renderer.clearSelection()
   }
   const [terminalTitleEnabled, setTerminalTitleEnabled] = createSignal(kv.get("terminal_title_enabled", true))
+
+  createEffect(() => {
+    if (!sdk.penguin || !kv.ready) return
+    const override = kv.get(NOTIFICATION_POLICY_OVERRIDE_KEY)
+    if (!override) return
+    sync.set("notification_policy", normalizeNotificationPolicy(override))
+  })
 
   createEffect(() => {
     console.log(JSON.stringify(route.data))
@@ -522,6 +548,18 @@ function App() {
       category: "System",
     },
     {
+      title: "Notification settings",
+      value: "notifications.configure",
+      slash: {
+        name: "notifications",
+      },
+      enabled: sdk.penguin,
+      onSelect: () => {
+        dialog.replace(() => <DialogNotifications />)
+      },
+      category: "System",
+    },
+    {
       title: "Switch theme",
       value: "theme.switch",
       keybind: "theme_list",
@@ -674,11 +712,7 @@ function App() {
         const message = sdk.penguin
           ? "OpenRouter is convenient, but some routed providers behave inconsistently in Penguin.\n\nFor the most reliable results, prefer direct provider connections or OpenRouter models you have already validated yourself."
           : "While openrouter is a convenient way to access LLMs your request will often be routed to subpar providers that do not work well in our testing.\n\nFor reliable access to models check out OpenCode Zen\nhttps://opencode.ai/zen"
-        DialogAlert.show(
-          dialog,
-          "Warning",
-          message,
-        ).then(() => kv.set("openrouter_warning", true))
+        DialogAlert.show(dialog, "Warning", message).then(() => kv.set("openrouter_warning", true))
       })
     }
   })

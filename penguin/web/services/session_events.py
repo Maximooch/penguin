@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from penguin.system.runtime_events import wrap_opencode_event
+
 __all__ = [
     "emit_session_created_event",
     "emit_session_deleted_event",
@@ -35,10 +37,11 @@ async def emit_session_event(
     try:
         await emit(
             "opencode_event",
-            {
-                "type": event_type,
-                "properties": properties,
-            },
+            wrap_opencode_event(
+                event_type,
+                properties,
+                default_session_id=session_id if isinstance(session_id, str) else None,
+            ),
         )
     except Exception:
         logger.debug("Failed to emit %s event", event_type, exc_info=True)
@@ -71,13 +74,14 @@ async def emit_session_diff_event(
     try:
         await emit(
             "opencode_event",
-            {
-                "type": "session.diff",
-                "properties": {
+            wrap_opencode_event(
+                "session.diff",
+                {
                     "sessionID": session_id,
                     "diff": diff,
                 },
-            },
+                default_session_id=session_id,
+            ),
         )
     except Exception:
         logger.debug("Failed to emit session.diff event", exc_info=True)

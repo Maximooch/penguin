@@ -495,7 +495,7 @@ class TestPenguinClientTaskMethods:
             max_iterations=10,
             task_name="Web Server Task",
             task_context={"framework": "fastapi"},
-            enable_events=True
+            enable_events=True,
         )
 
     @pytest.mark.asyncio

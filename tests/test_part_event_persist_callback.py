@@ -176,6 +176,56 @@ async def test_tool_events_attach_to_completed_stream_message_when_available():
     assert tool_parts
     assert tool_parts[0]["messageID"] == message_id
 
+    assistant_updates = [
+        item
+        for item in _opencode_events(bus, "message.updated")
+        if item.get("role") == "assistant" and item.get("id") == message_id
+    ]
+    assert assistant_updates
+    assert any(item.get("finish") == "tool-calls" for item in assistant_updates)
+
+
+@pytest.mark.asyncio
+async def test_tool_start_reopens_completed_stream_message_until_tool_finishes():
+    bus = _EventBus()
+    adapter = PartEventAdapter(bus)
+    adapter.set_session("session_reopen")
+
+    message_id, text_part_id = await adapter.on_stream_start(agent_id="default")
+    await adapter.on_stream_chunk(message_id, text_part_id, "checking", "assistant")
+    await adapter.on_stream_end(message_id, text_part_id)
+
+    completed_updates = [
+        item
+        for item in _opencode_events(bus, "message.updated")
+        if item.get("id") == message_id
+    ]
+    assert completed_updates[-1]["time"]["completed"] is not None
+
+    tool_part_id = await adapter.on_tool_start(
+        "bash",
+        {"command": "pwd"},
+        tool_call_id="call_reopen",
+        message_id=message_id,
+    )
+
+    reopened_updates = [
+        item
+        for item in _opencode_events(bus, "message.updated")
+        if item.get("id") == message_id
+    ]
+    assert reopened_updates[-1]["finish"] == "tool-calls"
+    assert reopened_updates[-1]["time"]["completed"] is None
+
+    await adapter.on_tool_end(tool_part_id, "ok")
+
+    final_updates = [
+        item
+        for item in _opencode_events(bus, "message.updated")
+        if item.get("id") == message_id
+    ]
+    assert final_updates[-1]["time"]["completed"] is not None
+
 
 @pytest.mark.asyncio
 async def test_tool_only_turn_followed_by_stream_reuses_same_message() -> None:
@@ -218,6 +268,7 @@ async def test_tool_only_turn_followed_by_stream_reuses_same_message() -> None:
     assert assistant_updates[-1]["modelID"] == "gpt-5.4"
     assert assistant_updates[-1]["providerID"] == "openai"
     assert assistant_updates[-1]["variant"] == "high"
+    assert "finish" not in assistant_updates[-1]
 
     text_parts = [
         item.get("part", {})
@@ -226,6 +277,49 @@ async def test_tool_only_turn_followed_by_stream_reuses_same_message() -> None:
     ]
     assert text_parts
     assert text_parts[-1]["messageID"] == message_id
+
+
+@pytest.mark.asyncio
+async def test_new_user_turn_does_not_reuse_completed_content_message() -> None:
+    bus = _EventBus()
+    adapter = PartEventAdapter(bus)
+    adapter.set_session("session_no_reuse")
+
+    first_message_id, first_part_id = await adapter.on_stream_start(agent_id="default")
+    await adapter.on_stream_chunk(
+        first_message_id,
+        first_part_id,
+        "first answer",
+        "assistant",
+    )
+    await adapter.on_stream_end(first_message_id, first_part_id)
+
+    await adapter.on_user_message_with_metadata(
+        "next user turn",
+        message_id="msg_user_2",
+    )
+    second_message_id, second_part_id = await adapter.on_stream_start(
+        agent_id="default",
+        model_id="gpt-5.5",
+        provider_id="openai",
+    )
+    await adapter.on_stream_chunk(
+        second_message_id,
+        second_part_id,
+        "second answer",
+        "assistant",
+    )
+
+    assert second_message_id != first_message_id
+
+    assistant_updates = [
+        item
+        for item in _opencode_events(bus, "message.updated")
+        if item.get("role") == "assistant"
+    ]
+    assistant_ids = [item["id"] for item in assistant_updates]
+    assert first_message_id in assistant_ids
+    assert second_message_id in assistant_ids
 
 
 @pytest.mark.asyncio

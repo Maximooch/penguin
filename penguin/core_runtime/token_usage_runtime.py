@@ -105,7 +105,7 @@ def get_session_token_usage(
 ) -> dict[str, Any] | None:
     """Return usage for one persisted session without global fallback."""
 
-    session, _manager = core._find_session_store(session_id)
+    session, manager = core._find_session_store(session_id)
     if session is None:
         return None
 
@@ -120,9 +120,10 @@ def get_session_token_usage(
         metadata_agent_id = None
 
     if agent_id:
+        messages = getattr(session, "messages", []) or []
         message_agent_ids = {
             message_agent_id.strip()
-            for message in getattr(session, "messages", []) or []
+            for message in messages
             if isinstance(
                 message_agent_id := getattr(message, "agent_id", None),
                 str,
@@ -130,16 +131,19 @@ def get_session_token_usage(
             and message_agent_id.strip()
         }
         if agent_id in message_agent_ids:
-            usage = core._usage_from_session_messages(
+            usage = _usage_from_session_messages_with_snapshot(
+                core,
                 session,
                 agent_id=agent_id,
+                manager=manager,
+                metadata=metadata,
             )
         elif metadata_agent_id == agent_id and not message_agent_ids:
             usage_snapshot = metadata.get("_opencode_usage_v1")
             if isinstance(usage_snapshot, dict):
                 usage = dict(usage_snapshot)
             else:
-                usage = core._usage_from_session_messages(session)
+                usage = usage_from_session_messages(core, session, manager=manager)
         else:
             return {
                 "scope": "missing",
@@ -150,10 +154,18 @@ def get_session_token_usage(
             }
     else:
         usage_snapshot = metadata.get("_opencode_usage_v1")
-        if isinstance(usage_snapshot, dict):
+        messages = getattr(session, "messages", []) or []
+        if messages:
+            usage = _usage_from_session_messages_with_snapshot(
+                core,
+                session,
+                manager=manager,
+                metadata=metadata,
+            )
+        elif isinstance(usage_snapshot, dict):
             usage = dict(usage_snapshot)
         else:
-            usage = core._usage_from_session_messages(session)
+            usage = usage_from_session_messages(core, session, manager=manager)
 
     usage["scope"] = "session"
     usage["session_id"] = session_id
@@ -171,6 +183,7 @@ def usage_from_session_messages(
     session: Any,
     *,
     agent_id: str | None = None,
+    manager: Any | None = None,
 ) -> dict[str, Any]:
     """Build a conservative session-scoped usage payload from messages."""
 
@@ -197,7 +210,7 @@ def usage_from_session_messages(
             category_name = "UNKNOWN"
         categories[category_name] = categories.get(category_name, 0) + token_count
 
-    context_window = getattr(core.conversation_manager, "context_window", None)
+    context_window = _session_context_window(core, manager)
     max_tokens = int(getattr(context_window, "max_context_window_tokens", 0) or 0)
     available_tokens = max(max_tokens - current_total_tokens, 0) if max_tokens else 0
     percentage = (current_total_tokens / max_tokens) * 100 if max_tokens else 0
@@ -216,6 +229,46 @@ def usage_from_session_messages(
             "recent_events": [],
         },
     }
+
+
+def _usage_from_session_messages_with_snapshot(
+    core: Any,
+    session: Any,
+    *,
+    agent_id: str | None = None,
+    manager: Any | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build message-derived usage while preserving persisted truncation metadata."""
+
+    usage = usage_from_session_messages(
+        core,
+        session,
+        agent_id=agent_id,
+        manager=manager,
+    )
+    snapshot = (metadata or {}).get("_opencode_usage_v1")
+    if isinstance(snapshot, dict):
+        truncations = snapshot.get("truncations")
+        if isinstance(truncations, dict):
+            usage["truncations"] = dict(truncations)
+    return usage
+
+
+def _session_context_window(core: Any, manager: Any | None) -> Any | None:
+    """Return the most specific context window available for a session."""
+
+    context_window = getattr(manager, "context_window", None)
+    if context_window is not None:
+        return context_window
+
+    conversation_manager = getattr(core, "conversation_manager", None)
+    session_manager = getattr(conversation_manager, "session_manager", None)
+    context_window = getattr(session_manager, "context_window", None)
+    if context_window is not None:
+        return context_window
+
+    return getattr(conversation_manager, "context_window", None)
 
 
 def emit_token_display_update(

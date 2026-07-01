@@ -35,18 +35,16 @@ async def test_emit_session_lifecycle_event_shapes_payload() -> None:
 
     await emit_session_created_event(core, info)
 
-    assert event_bus.events == [
-        (
-            "opencode_event",
-            {
-                "type": "session.created",
-                "properties": {
-                    "sessionID": "session_1",
-                    "info": info,
-                },
-            },
-        )
-    ]
+    assert len(event_bus.events) == 1
+    event_type, payload = event_bus.events[0]
+    assert event_type == "opencode_event"
+    assert payload["type"] == "session.created"
+    assert payload["properties"] == {
+        "sessionID": "session_1",
+        "info": info,
+    }
+    assert payload["runtime_event"]["type"] == "session.created"
+    assert payload["runtime_event"]["scope"]["session_id"] == "session_1"
 
 
 @pytest.mark.asyncio
@@ -59,6 +57,9 @@ async def test_emit_session_lifecycle_event_omits_blank_session_id() -> None:
     _event_type, payload = event_bus.events[-1]
     assert payload["type"] == "session.updated"
     assert payload["properties"] == {"info": {"id": "", "title": "Session"}}
+    assert payload["runtime_event"]["type"] == "session.updated"
+    assert payload["runtime_event"]["scope"] == {}
+    assert payload["runtime_event"]["stream_id"] == "global"
 
 
 @pytest.mark.asyncio
@@ -74,16 +75,17 @@ async def test_emit_session_deleted_and_diff_events() -> None:
     )
 
     assert event_bus.events[0][1]["type"] == "session.deleted"
-    assert event_bus.events[1] == (
-        "opencode_event",
-        {
-            "type": "session.diff",
-            "properties": {
-                "sessionID": "session_2",
-                "diff": [{"file": "src/app.py", "additions": 1, "deletions": 0}],
-            },
-        },
-    )
+    assert event_bus.events[0][1]["runtime_event"]["type"] == "session.deleted"
+
+    event_type, payload = event_bus.events[1]
+    assert event_type == "opencode_event"
+    assert payload["type"] == "session.diff"
+    assert payload["properties"] == {
+        "sessionID": "session_2",
+        "diff": [{"file": "src/app.py", "additions": 1, "deletions": 0}],
+    }
+    assert payload["runtime_event"]["type"] == "session.diff"
+    assert payload["runtime_event"]["scope"]["session_id"] == "session_2"
 
 
 @pytest.mark.asyncio
