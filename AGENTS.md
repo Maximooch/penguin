@@ -20,6 +20,7 @@ Commands
 - If port `9000` is already occupied by a running Penguin backend/TUI session, use a different non-reserved local port for testing or verification, e.g. `8080` or `9010`.
 - Per `docs/docs/usage/web_interface.md`, port `9000` is the documented/default Penguin web server port, so treat it as the primary runtime port and avoid stealing it for ad hoc verification when a real backend is already running.
 - Current runtime truth: `penguin-web` host/port selection is reliably controlled by env vars (`HOST` / `PORT`). Do not assume `penguin-web --host ... --port ...` works until that path is explicitly fixed and verified.
+- `penguin-web` writes one rotating `.txt` server log per run to `{PENGUIN_WORKSPACE:-~/penguin_workspace}/server-logs/penguin-web-<timestamp>-<pid>.txt` by default. Use `PENGUIN_WEB_LOG_DIR` to move the directory, `PENGUIN_WEB_LOG_FILE` to force a single file, or `PENGUIN_WEB_LOG_ENABLED=false` to disable.
 
 Style and Conventions
 - Follow .cursorrules at repo root. Key points: PEP 8, explicit > implicit, single responsibility, comprehensive type annotations, Google-style docstrings, robust exception handling, logging.

@@ -61,6 +61,24 @@ Other entrypoints:
 - `penguin-cli` - headless CLI for automation and scripts
 - `penguin-web` - FastAPI server for web/API usage
 
+### Web Server Logs
+
+`penguin-web` writes one server log file per web server run by default:
+
+```text
+{PENGUIN_WORKSPACE:-~/penguin_workspace}/server-logs/penguin-web-<timestamp>-<pid>.txt
+```
+
+The log file includes Penguin startup/application logs plus Uvicorn error and access
+logs, with per-file rotation enabled. Override the directory, force a specific file,
+or disable this behavior with:
+
+```bash
+export PENGUIN_WEB_LOG_DIR="/path/to/server-logs"
+export PENGUIN_WEB_LOG_FILE="/path/to/logs.txt"
+export PENGUIN_WEB_LOG_ENABLED=false
+```
+
 ## What You Get
 
 - Coding workflow tools: file reads/writes/diffs, shell commands, test execution, search,
