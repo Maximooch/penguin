@@ -176,6 +176,29 @@ def sse_event_frame(event: dict[str, Any]) -> str:
     return f"{prefix}data: {json.dumps(event)}\n\n"
 
 
+def record_opencode_event(core: Any, data: dict[str, Any]) -> dict[str, Any] | None:
+    """Persist an OpenCode event's RuntimeEvent envelope and return it."""
+    runtime_event = runtime_event_from_opencode(data)
+    if runtime_event is None:
+        return None
+
+    from penguin.system.runtime_event_ledger import get_runtime_event_ledger
+
+    get_runtime_event_ledger(core).append(runtime_event)
+
+    # Mutate the shared EventBus payload so downstream live subscribers use the
+    # same event identity and ordering that was persisted at emission time.
+    data["runtime_event"] = runtime_event
+    projected = opencode_payload_from_runtime_event(runtime_event)
+    data["id"] = projected.get("id")
+    data["time"] = projected.get("time")
+    data["order"] = projected.get("order")
+    projected_properties = projected.get("properties")
+    if isinstance(projected_properties, dict):
+        data["properties"] = projected_properties
+    return runtime_event
+
+
 async def emit_opencode_event(
     core: Any,
     event_type: str,
