@@ -1,4 +1,4 @@
-# Penguin CLI – Command Reference (v0.6.x)
+# Penguin CLI – Command Reference (v0.9.x)
 
 Penguin now exposes multiple terminal entrypoints on top of the same runtime:
 

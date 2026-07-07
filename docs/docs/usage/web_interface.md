@@ -1,4 +1,4 @@
-# Web Interface / API Server Guide (v0.6.x)
+# Web Interface / API Server Guide (v0.9.x)
 
 Penguin ships with a **FastAPI-based HTTP server** that exposes chat, projects, tasks, SSE/WS streaming, uploads, and integration routes. That server is also the backend surface used by the OpenCode-derived terminal UI in `penguin-tui/`.
 
