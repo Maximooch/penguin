@@ -5,6 +5,36 @@ Changelog
 
 All notable changes to this project are documented in this file.
 
+0.9.0 — 2026-07-07
+------------------
+
+Highlights
+- **ACBRA core-runtime decomposition closed**: `PenguinCore` is now a thin compatibility/orchestration facade over focused `penguin.core_runtime` modules for startup, model/runtime handling, streaming, action mapping, RunMode events, checkpoints, diagnostics, OpenCode bridging, token usage, and agent lifecycle helpers.
+- **Durable runtime event ledger**: Added persisted runtime-event recording plus canonical runtime-event envelope projection so web/TUI clients can consume normalized, replayable state instead of ad hoc event shapes.
+- **Penguin TUI upstream campaign closed through Phase 10**: Stabilized OpenCode-compatible event frames, prompt/session compatibility, notification controls, backend command registry foundations, provider/model catalog state, and session hydration state.
+- **TUI reliability hardening**: Improved paste handling, prompt context handling, malformed tool input, inline tool errors, live assistant turn ordering, running-state submit blocking, model selection, session lists, usage telemetry, and startup performance.
+- **Operational logging**: Added per-run web server log files with configurable directory/file controls.
+
+Added
+- Durable runtime event ledger and canonical runtime event envelope projection.
+- Runtime event projection docs and backend/TUI contract updates for the upstream TUI path.
+- TUI desktop/terminal notification policy controls.
+- Backend command registry foundations for the OpenCode-compatible TUI backend.
+- Session model hydration state and provider model catalog state for TUI consumers.
+- Per-run `penguin-web` server log files under the Penguin workspace by default.
+
+Changed
+- Refactored core runtime boundaries into focused `penguin.core_runtime` modules while preserving public compatibility paths.
+- Moved OpenCode event emission toward service-layer ownership and normalized event frames.
+- Improved startup behavior by decoupling catalog/session hydration work from critical path execution.
+- Improved model/provider selection and session compatibility edges across Penguin web/TUI surfaces.
+
+Fixed
+- TUI review hardening issues around paste handling, prompt context handling, malformed tool input, inline tool errors, duplicate/blank session handling, session list depth, usage telemetry, model selection, and assistant turn ordering.
+- Runtime event envelope blockers and compatibility gaps for downstream web/TUI consumers.
+- Exposure of multi-agent tools to Responses-style provider flows.
+- OpenAI OAuth environment refresh after callback and OpenRouter model catalog entries without valid context length.
+
 0.7.0 — 2026-04-27
 ------------------
 
