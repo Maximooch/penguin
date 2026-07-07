@@ -269,6 +269,15 @@ Read more:
 
 ## Version Highlights
 
+### v0.9.0
+
+- Completed the ACBRA core-runtime decomposition campaign: `PenguinCore` is now a thin compatibility/orchestration facade over focused `penguin.core_runtime` modules.
+- Added a durable runtime event ledger and canonical runtime-event envelope projection for web/TUI clients, giving downstream surfaces replayable and normalized runtime state.
+- Closed the Penguin TUI upstream-adoption campaign through Phase 10, including stronger OpenCode-compatible event frames, prompt/session compatibility, notification controls, backend command registry foundations, provider/model catalog state, and session hydration state.
+- Hardened the TUI around prompt context handling, paste handling, malformed tool input, inline tool errors, live assistant turn ordering, running-state submit blocking, model selection, session lists, usage telemetry, and startup performance.
+- Expanded multi-agent/tool exposure for Responses-style providers and improved runtime compatibility edges across sessions, web, and TUI surfaces.
+- Added per-run web server file logging with configurable log directory/file controls for easier operational debugging.
+
 ### v0.8.1
 
 - Fixed Python 3.9 import compatibility for MCP configuration by avoiding a runtime PEP 604 union type alias.

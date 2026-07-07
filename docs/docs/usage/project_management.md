@@ -1,6 +1,6 @@
 # Project Management
 
-Penguin v0.6.x introduces a powerful SQLite-backed project management system that provides robust task tracking, hierarchical organization, and integration with Penguin's runtime workflow. This guide covers all aspects of managing projects and tasks in Penguin.
+Penguin includes a SQLite-backed project management system that provides robust task tracking, hierarchical organization, and integration with Penguin's runtime workflow. This guide covers all aspects of managing projects and tasks in Penguin.
 
 ## Overview
 
