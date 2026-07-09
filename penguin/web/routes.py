@@ -39,6 +39,7 @@ from penguin.config import WORKSPACE_PATH
 from penguin.core import PenguinCore
 from penguin.llm.model_config import normalize_openai_service_tier
 from penguin.llm.runtime import (
+    UnsupportedReasoningVariantError,
     apply_reasoning_variant_override as apply_llm_reasoning_variant_override,
     build_reasoning_debug_snapshot as build_llm_reasoning_debug_snapshot,
     build_reasoning_visibility_note as build_llm_reasoning_visibility_note,
@@ -124,6 +125,7 @@ from penguin.web.services.opencode_provider import (
     remove_provider_auth_record,
     set_provider_auth_record,
 )
+from penguin.web.services.provider_catalog import apply_cached_codex_model_metadata
 from penguin.web.services.mcp import (
     close_mcp as close_mcp_service,
     get_mcp_status as get_mcp_status_service,
@@ -1042,10 +1044,17 @@ def _apply_reasoning_variant_override(
     variant: Optional[str],
     *,
     model_config: Optional[Any] = None,
+    api_client: Optional[Any] = None,
 ) -> Optional[Dict[str, Any]]:
+    supported_efforts: Any = None
+    capabilities_getter = getattr(api_client, "get_provider_capabilities", None)
+    if callable(capabilities_getter):
+        capabilities = capabilities_getter()
+        supported_efforts = getattr(capabilities, "reasoning_efforts", None)
     return apply_llm_reasoning_variant_override(
         model_config or getattr(core, "model_config", None),
         variant,
+        supported_efforts=supported_efforts,
     )
 
 
@@ -1148,10 +1157,14 @@ async def _resolve_request_runtime_for_model(
     requested = requested_model.strip() if isinstance(requested_model, str) else ""
     resolver = getattr(core, "resolve_request_runtime", None)
     if callable(resolver):
-        return await resolver(requested or None)
+        model_config, api_client = await resolver(requested or None)
+        apply_cached_codex_model_metadata(model_config)
+        return model_config, api_client
 
     if not requested:
-        return getattr(core, "model_config", None), None
+        model_config = getattr(core, "model_config", None)
+        apply_cached_codex_model_metadata(model_config)
+        return model_config, None
 
     current_model = (
         core.get_current_model() if hasattr(core, "get_current_model") else None
@@ -1170,7 +1183,9 @@ async def _resolve_request_runtime_for_model(
     )
 
     if requested in {current_raw, current_qualified}:
-        return getattr(core, "model_config", None), None
+        model_config = getattr(core, "model_config", None)
+        apply_cached_codex_model_metadata(model_config)
+        return model_config, None
 
     candidates: list[str] = [requested]
     if "/" in requested:
@@ -1193,7 +1208,9 @@ async def _resolve_request_runtime_for_model(
     for candidate in candidates:
         loaded = await loader(candidate)
         if loaded:
-            return getattr(core, "model_config", None), None
+            model_config = getattr(core, "model_config", None)
+            apply_cached_codex_model_metadata(model_config)
+            return model_config, None
         reason = getattr(core, "_last_model_load_error", None)
         if isinstance(reason, str) and reason.strip():
             last_reason = reason.strip()
@@ -4136,11 +4153,15 @@ async def handle_chat_message(
 
             stream_cb = _rest_stream_cb
 
-        reasoning_variant_snapshot = _apply_reasoning_variant_override(
-            core,
-            request.variant,
-            model_config=request_model_config,
-        )
+        try:
+            reasoning_variant_snapshot = _apply_reasoning_variant_override(
+                core,
+                request.variant,
+                model_config=request_model_config,
+                api_client=request_api_client,
+            )
+        except UnsupportedReasoningVariantError as exc:
+            raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
         await _persist_session_model_selection(
             core,
             request_session_id,
@@ -4697,6 +4718,7 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
                     core,
                     variant if isinstance(variant, str) else None,
                     model_config=request_model_config,
+                    api_client=request_api_client,
                 )
                 await _persist_session_model_selection(
                     core,
@@ -4865,6 +4887,11 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
                         f"Client disconnected before complete event could be sent: {e}"
                     )
 
+            except UnsupportedReasoningVariantError as process_err:
+                await websocket.send_json(
+                    {"event": "error", "data": process_err.to_dict()}
+                )
+                continue
             except WebSocketDisconnect as disconnect_err:
                 # Client disconnected during processing - this is normal
                 logger.info(

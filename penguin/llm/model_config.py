@@ -4,16 +4,15 @@ import logging
 import os
 import time
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional
 
+from penguin.constants import get_default_max_history_tokens
 from penguin.llm.reasoning_variants import (
     reasoning_effort_from_metadata,
     reasoning_efforts_from_metadata,
 )
-
-from penguin.constants import get_default_max_history_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -78,17 +77,23 @@ class ModelConfig:
     service_tier: Optional[Literal["auto", "default", "flex", "priority"]] = None
 
     # Reasoning tokens support
-    reasoning_enabled: bool = False
+    reasoning_enabled: Optional[bool] = None
     reasoning_effort: Optional[str] = None
     reasoning_max_tokens: Optional[int] = None
     reasoning_exclude: bool = False
     supports_reasoning: Optional[bool] = None
     supported_reasoning_levels: Optional[list[str]] = None
+    _reasoning_enabled_explicit: bool = field(init=False, repr=False, default=False)
+    _reasoning_effort_explicit: bool = field(init=False, repr=False, default=False)
 
     # OpenRouter debug mode - echoes upstream request body (development only)
     debug_upstream: bool = False
 
     def __post_init__(self):
+        self._reasoning_enabled_explicit = self.reasoning_enabled is not None
+        self._reasoning_effort_explicit = self.reasoning_effort is not None
+        if self.reasoning_enabled is None:
+            self.reasoning_enabled = False
         self.service_tier = normalize_openai_service_tier(self.service_tier)
 
         if self.api_key is None and self.provider:
@@ -136,7 +141,11 @@ class ModelConfig:
             self.supports_reasoning = self._detect_reasoning_support()
 
         # Set default reasoning configuration for reasoning-capable models
-        if self.supports_reasoning and not self.reasoning_enabled:
+        if (
+            self.supports_reasoning
+            and not self.reasoning_enabled
+            and not self._reasoning_enabled_explicit
+        ):
             # Only auto-enable if user hasn't explicitly configured reasoning
             if (
                 self.reasoning_effort is None
@@ -318,7 +327,13 @@ class ModelConfig:
             default_model = os.getenv("PENGUIN_MODEL", "claude-3-5-sonnet-20240620")
 
         # Parse reasoning configuration from environment
-        reasoning_enabled = os.getenv("PENGUIN_REASONING_ENABLED", "").lower() == "true"
+        raw_reasoning_enabled = os.getenv("PENGUIN_REASONING_ENABLED")
+        reasoning_enabled = (
+            raw_reasoning_enabled.strip().lower() == "true"
+            if isinstance(raw_reasoning_enabled, str)
+            and raw_reasoning_enabled.strip()
+            else None
+        )
         raw_reasoning_effort = os.getenv("PENGUIN_REASONING_EFFORT")
         reasoning_effort = (
             raw_reasoning_effort.strip().lower()
@@ -448,6 +463,43 @@ class ModelConfig:
             if supported_reasoning_levels
             else None
         )
+        if supported_reasoning_levels:
+            supported_reasoning_set = set(supported_reasoning_levels)
+            if (
+                configured_reasoning_effort
+                and configured_reasoning_effort not in supported_reasoning_set
+            ):
+                logger.warning(
+                    "Ignoring unsupported configured reasoning effort %r for model %s; "
+                    "supported=%s fallback=%r",
+                    configured_reasoning_effort,
+                    model_name,
+                    list(supported_reasoning_levels),
+                    fallback_reasoning_effort,
+                )
+                configured_reasoning_effort = None
+            if (
+                default_reasoning_effort
+                and default_reasoning_effort not in supported_reasoning_set
+            ):
+                logger.warning(
+                    "Ignoring unsupported default reasoning effort %r for model %s; "
+                    "supported=%s fallback=%r",
+                    default_reasoning_effort,
+                    model_name,
+                    list(supported_reasoning_levels),
+                    fallback_reasoning_effort,
+                )
+                default_reasoning_effort = None
+
+        if "reasoning_enabled" in model_specific:
+            reasoning_enabled = bool(model_specific.get("reasoning_enabled"))
+        elif "enabled" in reasoning_config:
+            reasoning_enabled = bool(reasoning_config.get("enabled"))
+        elif supported_reasoning_levels:
+            reasoning_enabled = True
+        else:
+            reasoning_enabled = None
 
         # Build ModelConfig with model-specific settings
         return cls(
@@ -495,11 +547,7 @@ class ModelConfig:
                 if os.getenv("PENGUIN_MAX_HISTORY_TOKENS")
                 else None
             ),
-            reasoning_enabled=bool(
-                model_specific.get("reasoning_enabled")
-                or reasoning_config.get("enabled", False)
-                or supported_reasoning_levels
-            ),
+            reasoning_enabled=reasoning_enabled,
             reasoning_effort=(
                 configured_reasoning_effort
                 or default_reasoning_effort

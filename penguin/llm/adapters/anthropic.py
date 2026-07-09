@@ -24,6 +24,7 @@ from ..contracts import (
 )
 from ..model_config import ModelConfig
 from ..provider_transform import build_llm_error, normalize_finish_reason
+from ..reasoning_variants import anthropic_reasoning_efforts
 
 from penguin.constants import get_default_max_output_tokens
 
@@ -254,6 +255,7 @@ class AnthropicAdapter(BaseAdapter):
                 getattr(self.model_config, "reasoning_enabled", False)
                 or self.model_config.get_reasoning_config()
             ),
+            reasoning_efforts=anthropic_reasoning_efforts(self.model_config.model),
             vision=self.supports_vision(),
             max_context_tokens=getattr(
                 self.model_config,
