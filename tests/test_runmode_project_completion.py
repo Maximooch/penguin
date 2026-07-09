@@ -161,6 +161,34 @@ async def test_project_continuous_does_not_reselect_finished_blueprint_task():
 
 
 @pytest.mark.asyncio
+async def test_runmode_execute_task_preserves_finish_status():
+    project_manager = MagicMock()
+    core = DummyCore(project_manager=project_manager)
+    core.engine = SimpleNamespace(
+        run_task=AsyncMock(
+            return_value={
+                "status": "pending_review",
+                "finish_status": "partial",
+                "assistant_response": "more work remains",
+                "iterations": 2,
+                "execution_time": 0.5,
+            }
+        ),
+        settings=SimpleNamespace(),
+    )
+    core.finalize_streaming_message = MagicMock(return_value=None)
+    core._handle_stream_chunk = AsyncMock()
+
+    result = await RunMode(core=core)._execute_task(
+        "Example Task",
+        "Do the thing",
+        {"id": "task-123"},
+    )
+
+    assert result["finish_status"] == "partial"
+
+
+@pytest.mark.asyncio
 async def test_runmode_task_prompt_uses_finish_task_not_task_completed():
     captured = {}
     project_manager = MagicMock()

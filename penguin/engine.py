@@ -1574,6 +1574,7 @@ class Engine:
         all_action_results = []
         latest_usage: Dict[str, Any] = {}
         completion_status = config.default_completion_status
+        finish_status: str | None = None
 
         # Reset loop state for this run
         self._get_loop_state().reset()
@@ -1872,6 +1873,7 @@ class Engine:
             "action_results": all_action_results,
             "usage": latest_usage,
             "status": completion_status,
+            "finish_status": finish_status,
             "execution_time": (datetime.utcnow() - self.start_time).total_seconds(),
         }
 

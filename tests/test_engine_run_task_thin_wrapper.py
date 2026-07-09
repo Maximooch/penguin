@@ -24,6 +24,7 @@ async def test_run_task_delegates_to_iteration_loop_and_preserves_task_metadata(
             "assistant_response": "done",
             "iterations": 2,
             "status": "pending_review",
+            "finish_status": "blocked",
             "action_results": [{"action": "finish_task", "status": "completed"}],
             "usage": {"total_tokens": 12},
             "execution_time": 0.5,
@@ -55,6 +56,7 @@ async def test_run_task_delegates_to_iteration_loop_and_preserves_task_metadata(
     assert max_iters == engine.settings.max_iterations_default
 
     assert result["status"] == "pending_review"
+    assert result["finish_status"] == "blocked"
     assert result["task"]["id"] == "task-123"
     assert result["task"]["name"] == "Important Task"
 
