@@ -222,6 +222,7 @@ else:
     from prompt_toolkit.styles import Style  # type: ignore
     from prompt_toolkit.formatted_text import HTML  # type: ignore
 
+from penguin._version import __version__
 from penguin.cli.interface import PenguinInterface
 from penguin.config import (
     DEFAULT_MODEL,
@@ -1253,8 +1254,7 @@ def main_entry(
     Penguin AI Assistant - Your command-line AI companion.
     """
     if version:
-        # TODO: Get version dynamically, e.g., from importlib.metadata or a __version__ string
-        console.print("Penguin AI Assistant v0.1.0 (Placeholder Version)")
+        console.print(f"Penguin {__version__}")
         raise typer.Exit()
 
     # Preconfigure environment for root/project overrides so that even
