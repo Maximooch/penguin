@@ -6116,6 +6116,39 @@ async def session_goal_update(
     return {"goal": goal, "status": "ok"}
 
 
+@router.post("/session/{session_id}/goal/run")
+async def session_goal_run(
+    session_id: str,
+    payload: Optional[Dict[str, Any]] = None,
+    core: PenguinCore = Depends(get_core),
+):
+    """Run one bounded autonomous step for the active session goal."""
+    from penguin.core_runtime.session_goal_runtime import (
+        GoalRunConflictError,
+        GoalRunNotFoundError,
+        GoalRunStateError,
+    )
+
+    body = payload if isinstance(payload, dict) else {}
+    max_iterations = body.get("max_iterations")
+    if max_iterations is not None and (
+        not isinstance(max_iterations, int) or max_iterations <= 0
+    ):
+        raise HTTPException(
+            status_code=422, detail="max_iterations must be a positive integer"
+        )
+    try:
+        return await core.run_session_goal(
+            session_id, max_iterations=max_iterations
+        )
+    except GoalRunConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except GoalRunStateError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except GoalRunNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.delete("/session/{session_id}/goal")
 async def session_goal_clear(
     session_id: str, core: PenguinCore = Depends(get_core)
@@ -6286,6 +6319,16 @@ async def api_session_goal_update(
 ):
     """Alias for Penguin session goal create/update."""
     return await session_goal_update(session_id, payload=payload, core=core)
+
+
+@router.post("/api/v1/session/{session_id}/goal/run")
+async def api_session_goal_run(
+    session_id: str,
+    payload: Optional[Dict[str, Any]] = None,
+    core: PenguinCore = Depends(get_core),
+):
+    """Alias for bounded session goal execution."""
+    return await session_goal_run(session_id, payload=payload, core=core)
 
 
 @router.delete("/api/v1/session/{session_id}/goal")

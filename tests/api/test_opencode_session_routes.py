@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Optional, cast
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
@@ -17,6 +18,7 @@ from penguin.web.routes import (
     api_session_diff,
     api_session_goal,
     api_session_goal_clear,
+    api_session_goal_run,
     api_session_list,
     api_session_summarize,
     api_session_todo,
@@ -28,6 +30,7 @@ from penguin.web.routes import (
     session_diff,
     session_goal,
     session_goal_clear,
+    session_goal_run,
     session_goal_update,
     session_get,
     session_list,
@@ -305,6 +308,27 @@ async def test_session_goal_crud_and_aliases(tmp_path: Path) -> None:
     event_types = [payload["type"] for _, payload in core.event_bus.events]
     assert "session.goal.updated" in event_types
     assert "session.updated" in event_types
+
+
+@pytest.mark.asyncio
+async def test_session_goal_run_route_and_alias(tmp_path: Path) -> None:
+    core = _Core(tmp_path)
+    typed_core = cast(Any, core)
+    created_session = await session_create(payload={"title": "Goal"}, core=typed_core)
+    session_id = created_session["id"]
+    core.run_session_goal = AsyncMock(
+        return_value={"status": "complete", "goal": {"status": "complete"}}
+    )
+
+    result = await session_goal_run(
+        session_id, payload={"max_iterations": 3}, core=typed_core
+    )
+    assert result["status"] == "complete"
+    core.run_session_goal.assert_awaited_once_with(session_id, max_iterations=3)
+
+    core.run_session_goal.reset_mock()
+    await api_session_goal_run(session_id, payload=None, core=typed_core)
+    core.run_session_goal.assert_awaited_once_with(session_id, max_iterations=None)
 
 
 @pytest.mark.asyncio

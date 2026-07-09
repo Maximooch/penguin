@@ -1213,6 +1213,7 @@ class RunMode:
                     "metadata": context.get("metadata", {}) if context else {},
                     "iterations": result.get("iterations", 0),
                     "execution_time": result.get("execution_time", 0),
+                    "finish_status": result.get("finish_status"),
                 }
 
             # Create standardized return format
