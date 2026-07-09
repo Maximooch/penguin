@@ -12,6 +12,7 @@ __all__ = [
     "emit_session_deleted_event",
     "emit_session_diff_event",
     "emit_session_event",
+    "emit_session_goal_event",
     "emit_session_updated_event",
 ]
 
@@ -50,6 +51,26 @@ async def emit_session_event(
 async def emit_session_created_event(core: Any, info: dict[str, Any]) -> None:
     """Emit OpenCode-shaped session.created event."""
     await emit_session_event(core, "session.created", info)
+
+
+async def emit_session_goal_event(
+    core: Any, session_id: str, goal: dict[str, Any] | None
+) -> None:
+    """Emit session.goal.updated with explicit goal state."""
+    emit = getattr(getattr(core, "event_bus", None), "emit", None)
+    if not callable(emit):
+        return
+    try:
+        await emit(
+            "opencode_event",
+            wrap_opencode_event(
+                "session.goal.updated",
+                {"sessionID": session_id, "goal": goal},
+                default_session_id=session_id,
+            ),
+        )
+    except Exception:
+        logger.debug("Failed to emit session.goal.updated event", exc_info=True)
 
 
 async def emit_session_updated_event(core: Any, info: dict[str, Any]) -> None:

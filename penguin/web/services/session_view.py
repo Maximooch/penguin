@@ -16,6 +16,7 @@ from penguin.web.services.provider_catalog import canonical_model_id
 TRANSCRIPT_KEY = "_opencode_transcript_v1"
 USAGE_KEY = "_opencode_usage_v1"
 TODO_KEY = "_opencode_todo_v1"
+GOAL_KEY = "_penguin_goal_v1"
 AGENT_MODE_KEY = "_opencode_agent_mode_v1"
 REVERT_KEY = "_opencode_revert_v1"
 SUMMARY_KEY = "_opencode_summary_v1"
@@ -1794,6 +1795,87 @@ def _normalize_todo_items(raw: Any) -> list[dict[str, str]]:
         )
 
     return normalized
+
+
+def get_session_goal(core: Any, session_id: str) -> Optional[dict[str, Any]]:
+    """Return normalized Penguin goal state for a session."""
+    from penguin.core_runtime.session_goals import normalize_goal
+
+    session, _manager = _find_session(core, session_id)
+    if session is None:
+        return None
+
+    metadata = getattr(session, "metadata", None)
+    if not isinstance(metadata, dict):
+        return None
+    return normalize_goal(metadata.get(GOAL_KEY))
+
+
+def set_session_goal(
+    core: Any,
+    session_id: str,
+    *,
+    objective: str | None = None,
+    status: str | None = None,
+    replace: bool = False,
+    token_budget: int | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> Optional[dict[str, Any]]:
+    """Create, replace, or update a persisted session goal."""
+    from penguin.core_runtime.session_goals import (
+        GoalConflictError,
+        GoalValidationError,
+        UNFINISHED_GOAL_STATUSES,
+        create_goal,
+        normalize_goal,
+        update_goal_status,
+    )
+
+    session, manager = _find_session(core, session_id)
+    if session is None or manager is None:
+        return None
+
+    session_metadata = getattr(session, "metadata", None)
+    if not isinstance(session_metadata, dict):
+        session_metadata = {}
+        session.metadata = session_metadata
+
+    current = normalize_goal(session_metadata.get(GOAL_KEY))
+    if objective is not None:
+        if current and current["status"] in UNFINISHED_GOAL_STATUSES and not replace:
+            raise GoalConflictError("unfinished goal requires replace=true")
+        next_revision = current["revision"] + 1 if current else 1
+        goal = create_goal(
+            objective,
+            revision=next_revision,
+            status=status or "active",
+            token_budget=token_budget,
+            metadata=metadata,
+        )
+    elif current is not None and status is not None:
+        goal = update_goal_status(current, status)
+    else:
+        raise GoalValidationError("objective is required when no goal exists")
+
+    session_metadata[GOAL_KEY] = goal
+    manager.mark_session_modified(session.id)
+    manager.save_session(session)
+    return goal
+
+
+def clear_session_goal(core: Any, session_id: str) -> Optional[bool]:
+    """Remove persisted session goal state."""
+    session, manager = _find_session(core, session_id)
+    if session is None or manager is None:
+        return None
+
+    metadata = getattr(session, "metadata", None)
+    if not isinstance(metadata, dict):
+        return True
+    metadata.pop(GOAL_KEY, None)
+    manager.mark_session_modified(session.id)
+    manager.save_session(session)
+    return True
 
 
 def get_session_todo(core: Any, session_id: str) -> Optional[list[dict[str, str]]]:

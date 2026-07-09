@@ -985,6 +985,65 @@ def test_get_session_messages_dedupes_equivalent_transcript_and_legacy_users():
     ]
 
 
+def test_session_goal_round_trip_and_replacement_policy():
+    from penguin.core_runtime.session_goals import GoalConflictError
+    from penguin.web.services.session_view import (
+        GOAL_KEY,
+        clear_session_goal,
+        get_session_goal,
+        set_session_goal,
+    )
+
+    session = _session("session_goal", "Goal Session", "2026-02-03T00:00:00")
+    core = _core([session])
+
+    created = set_session_goal(core, session.id, objective="  Ship /goal  ")
+
+    assert created is not None
+    assert created["objective"] == "Ship /goal"
+    assert created["status"] == "active"
+    assert created["revision"] == 1
+    assert session.metadata[GOAL_KEY] == created
+    assert get_session_goal(core, session.id) == created
+
+    with pytest.raises(GoalConflictError):
+        set_session_goal(core, session.id, objective="Replace it")
+
+    replaced = set_session_goal(
+        core,
+        session.id,
+        objective="Replace it",
+        replace=True,
+    )
+    assert replaced is not None
+    assert replaced["id"] != created["id"]
+    assert replaced["revision"] == 2
+
+    assert clear_session_goal(core, session.id) is True
+    assert get_session_goal(core, session.id) is None
+
+
+def test_session_goal_validates_objective_status_and_missing_session():
+    from penguin.core_runtime.session_goals import GoalValidationError
+    from penguin.web.services.session_view import (
+        clear_session_goal,
+        get_session_goal,
+        set_session_goal,
+    )
+
+    session = _session("session_goal", "Goal Session", "2026-02-03T00:00:00")
+    core = _core([session])
+
+    with pytest.raises(GoalValidationError):
+        set_session_goal(core, session.id, objective="   ")
+    with pytest.raises(GoalValidationError):
+        set_session_goal(core, session.id, objective="Ship", status="wat")
+
+    assert get_session_goal(core, "missing") is None
+    assert set_session_goal(core, "missing", objective="Ship") is None
+    assert clear_session_goal(core, "missing") is None
+
+
 def test_session_todo_round_trip():
     session = _session("session_todo", "Todo Session", "2026-02-03T00:00:00")
     core = _core([session])

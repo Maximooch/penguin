@@ -15,6 +15,8 @@ from penguin.web.routes import (
     api_session_create,
     api_session_delete,
     api_session_diff,
+    api_session_goal,
+    api_session_goal_clear,
     api_session_list,
     api_session_summarize,
     api_session_todo,
@@ -24,6 +26,9 @@ from penguin.web.routes import (
     session_abort,
     session_delete,
     session_diff,
+    session_goal,
+    session_goal_clear,
+    session_goal_update,
     session_get,
     session_list,
     session_messages,
@@ -255,6 +260,51 @@ async def test_session_alias_endpoints_work(tmp_path: Path) -> None:
 
     deleted = await api_session_delete(session_id, core=typed_core)
     assert deleted is True
+
+
+@pytest.mark.asyncio
+async def test_session_goal_crud_and_aliases(tmp_path: Path) -> None:
+    core = _Core(tmp_path)
+    typed_core = cast(Any, core)
+    created_session = await session_create(payload={"title": "Goal"}, core=typed_core)
+    session_id = created_session["id"]
+
+    empty = await session_goal(session_id, core=typed_core)
+    assert empty == {"goal": None, "status": "ok"}
+
+    created = await session_goal_update(
+        session_id,
+        payload={"objective": "Ship /goal"},
+        core=typed_core,
+    )
+    assert created["goal"]["objective"] == "Ship /goal"
+    assert created["goal"]["status"] == "active"
+
+    with pytest.raises(HTTPException) as conflict:
+        await session_goal_update(
+            session_id,
+            payload={"objective": "Replace"},
+            core=typed_core,
+        )
+    assert conflict.value.status_code == 409
+
+    paused = await session_goal_update(
+        session_id,
+        payload={"status": "paused"},
+        core=typed_core,
+    )
+    assert paused["goal"]["status"] == "paused"
+
+    alias = await api_session_goal(session_id, core=typed_core)
+    assert alias["goal"]["status"] == "paused"
+    assert await api_session_goal_clear(session_id, core=typed_core) == {
+        "goal": None,
+        "status": "ok",
+    }
+
+    event_types = [payload["type"] for _, payload in core.event_bus.events]
+    assert "session.goal.updated" in event_types
+    assert "session.updated" in event_types
 
 
 @pytest.mark.asyncio

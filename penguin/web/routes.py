@@ -47,6 +47,7 @@ from penguin.llm.runtime import (
     resolve_reasoning_payload,
 )
 from penguin.run_mode import RunMode
+from penguin.core_runtime.session_goals import GoalConflictError, GoalValidationError
 from penguin.system.execution_context import ExecutionContext, execution_context_scope, normalize_directory
 from penguin import __version__
 from penguin.constants import get_engine_max_iterations_default
@@ -69,8 +70,10 @@ from penguin.web.services.conversations import (
 from penguin.web.services.session_view import (
     TITLE_SOURCE_AUTO,
     TITLE_SOURCE_MANUAL,
+    clear_session_goal,
     create_session_info,
     get_session_diff,
+    get_session_goal,
     get_session_info,
     get_session_metadata_title,
     get_session_messages,
@@ -79,12 +82,14 @@ from penguin.web.services.session_view import (
     list_session_infos,
     list_session_statuses,
     remove_session_info,
+    set_session_goal,
     update_session_info,
 )
 from penguin.web.services.session_events import (
     emit_session_created_event as _emit_session_created_event,
     emit_session_deleted_event as _emit_session_deleted_event,
     emit_session_diff_event as _emit_session_diff_event,
+    emit_session_goal_event as _emit_session_goal_event,
     emit_session_updated_event as _emit_session_updated_event,
 )
 from penguin.web.services.session_fork import fork_session
@@ -6066,6 +6071,63 @@ async def session_messages(
     return messages
 
 
+async def _emit_goal_events(
+    core: PenguinCore, session_id: str, goal: Optional[Dict[str, Any]]
+) -> None:
+    await _emit_session_goal_event(core, session_id, goal)
+    info = get_session_info(core, session_id)
+    if isinstance(info, dict):
+        await _emit_session_updated_event(core, info)
+
+
+@router.get("/session/{session_id}/goal")
+async def session_goal(session_id: str, core: PenguinCore = Depends(get_core)):
+    """Return the persisted Penguin goal for a session."""
+    if get_session_info(core, session_id) is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    return {"goal": get_session_goal(core, session_id), "status": "ok"}
+
+
+@router.post("/session/{session_id}/goal")
+async def session_goal_update(
+    session_id: str,
+    payload: Optional[Dict[str, Any]] = None,
+    core: PenguinCore = Depends(get_core),
+):
+    """Create, replace, or update the persisted session goal."""
+    body = payload if isinstance(payload, dict) else {}
+    try:
+        goal = set_session_goal(
+            core,
+            session_id,
+            objective=body.get("objective"),
+            status=body.get("status"),
+            replace=body.get("replace") is True,
+            token_budget=body.get("token_budget"),
+            metadata=body.get("metadata") if isinstance(body.get("metadata"), dict) else None,
+        )
+    except GoalConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except GoalValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if goal is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    await _emit_goal_events(core, session_id, goal)
+    return {"goal": goal, "status": "ok"}
+
+
+@router.delete("/session/{session_id}/goal")
+async def session_goal_clear(
+    session_id: str, core: PenguinCore = Depends(get_core)
+):
+    """Clear the persisted session goal."""
+    cleared = clear_session_goal(core, session_id)
+    if cleared is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    await _emit_goal_events(core, session_id, None)
+    return {"goal": None, "status": "ok"}
+
+
 @router.get("/session/{session_id}/todo")
 async def session_todo(session_id: str, core: PenguinCore = Depends(get_core)):
     """OpenCode-compatible session.todo endpoint."""
@@ -6208,6 +6270,30 @@ async def api_session_messages(
 ):
     """Alias for OpenCode-compatible session.messages endpoint."""
     return await session_messages(session_id, core, limit=limit)
+
+
+@router.get("/api/v1/session/{session_id}/goal")
+async def api_session_goal(session_id: str, core: PenguinCore = Depends(get_core)):
+    """Alias for the Penguin session goal endpoint."""
+    return await session_goal(session_id, core=core)
+
+
+@router.post("/api/v1/session/{session_id}/goal")
+async def api_session_goal_update(
+    session_id: str,
+    payload: Optional[Dict[str, Any]] = None,
+    core: PenguinCore = Depends(get_core),
+):
+    """Alias for Penguin session goal create/update."""
+    return await session_goal_update(session_id, payload=payload, core=core)
+
+
+@router.delete("/api/v1/session/{session_id}/goal")
+async def api_session_goal_clear(
+    session_id: str, core: PenguinCore = Depends(get_core)
+):
+    """Alias for Penguin session goal clear."""
+    return await session_goal_clear(session_id, core=core)
 
 
 @router.get("/api/v1/session/{session_id}/todo")
