@@ -6,6 +6,7 @@ payload shapes. They derive provider/model data from Penguin runtime state.
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from threading import RLock
@@ -18,6 +19,8 @@ from penguin.web.services.reasoning_variants import (
     reasoning_effort_from_metadata,
     reasoning_efforts_from_metadata,
 )
+
+logger = logging.getLogger(__name__)
 
 _PROVIDER_METADATA: dict[str, dict[str, Any]] = {
     "openai": {
@@ -365,11 +368,23 @@ def apply_cached_codex_model_metadata(model_config: Any) -> None:
     default_effort = reasoning_effort_from_metadata(
         metadata.get("default_reasoning_level")
     )
-    if (
-        bool(getattr(model_config, "reasoning_enabled", False))
-        and default_effort in levels
-    ):
+    if not bool(getattr(model_config, "reasoning_enabled", False)):
+        return
+    if default_effort in levels:
         model_config.reasoning_effort = default_effort
+        return
+
+    fallback_effort = levels[(len(levels) - 1) // 2]
+    if current_effort not in levels:
+        logger.warning(
+            "Replacing unsupported reasoning effort %r for model %s with %r; "
+            "supported=%s",
+            current_effort,
+            model_id,
+            fallback_effort,
+            list(levels),
+        )
+        model_config.reasoning_effort = fallback_effort
 
 
 def _model_config_field_was_explicit(

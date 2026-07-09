@@ -218,7 +218,33 @@ def test_cached_metadata_preserves_supported_explicit_effort(
     assert model_config.get_reasoning_config() == {"effort": "high"}
 
 
-def _patch_cached_codex_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("catalog_default", [None, "bogus"])
+def test_cached_metadata_replaces_unsupported_effort_without_valid_default(
+    monkeypatch: pytest.MonkeyPatch,
+    catalog_default: str | None,
+) -> None:
+    """Unsupported efforts fall back even when catalog default is unusable."""
+
+    _patch_cached_codex_metadata(monkeypatch, catalog_default=catalog_default)
+    model_config = ModelConfig(
+        model="gpt-5.6-sol",
+        provider="openai",
+        client_preference="native",
+        reasoning_enabled=True,
+        reasoning_effort="minimal",
+    )
+
+    apply_cached_codex_model_metadata(model_config)
+
+    assert model_config.reasoning_effort == "high"
+    assert model_config.get_reasoning_config() == {"effort": "high"}
+
+
+def _patch_cached_codex_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    catalog_default: str | None = "low",
+) -> None:
     """Install deterministic Codex metadata for hydration tests."""
 
     oauth_record = {
@@ -246,7 +272,11 @@ def _patch_cached_codex_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
                         "max",
                         "ultra",
                     ],
-                    "default_reasoning_level": "low",
+                    **(
+                        {"default_reasoning_level": catalog_default}
+                        if catalog_default is not None
+                        else {}
+                    ),
                 }
             }
         },
