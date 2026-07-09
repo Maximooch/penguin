@@ -735,6 +735,41 @@ async def test_openai_oauth_catalog_replaces_static_openai_models(
             return {
                 "models": [
                     {
+                        "slug": "gpt-5.6-sol",
+                        "display_name": "GPT-5.6-Sol",
+                        "visibility": "list",
+                        "priority": 0,
+                        "context_window": 400000,
+                        "max_context_window": 1000000,
+                        "input_modalities": ["text", "image"],
+                        "default_reasoning_level": "low",
+                        "supported_reasoning_levels": [
+                            {"effort": "low"},
+                            {"effort": "medium"},
+                            {"effort": "high"},
+                            {"effort": "xhigh"},
+                            {"effort": "max"},
+                            {"effort": "ultra"},
+                        ],
+                        "supports_reasoning_summaries": True,
+                    },
+                    {
+                        "slug": "gpt-5.6-luna",
+                        "display_name": "GPT-5.6-Luna",
+                        "visibility": "list",
+                        "priority": 3,
+                        "context_window": 400000,
+                        "max_context_window": 1000000,
+                        "input_modalities": ["text", "image"],
+                        "default_reasoning_level": "medium",
+                        "supported_reasoning_levels": [
+                            {"effort": "low"},
+                            {"effort": "medium"},
+                            {"effort": "high"},
+                            {"effort": "max"},
+                        ],
+                    },
+                    {
                         "slug": "gpt-5.5",
                         "display_name": "GPT-5.5",
                         "visibility": "list",
@@ -825,26 +860,45 @@ async def test_openai_oauth_catalog_replaces_static_openai_models(
     )
 
     assert list(openai["models"].keys()) == [
+        "gpt-5.6-sol",
         "gpt-5.5",
         "gpt-5.4",
+        "gpt-5.6-luna",
         "gpt-5.3-codex",
     ]
     assert "gpt-5" not in openai["models"]
     assert "codex-auto-review" not in openai["models"]
-    assert providers_payload["default"]["openai"] == "gpt-5.5"
-    assert openai["models"]["gpt-5.5"]["capabilities"]["attachment"] is True
-    assert openai["models"]["gpt-5.5"]["capabilities"]["reasoning"] is True
+    assert providers_payload["default"]["openai"] == "gpt-5.6-sol"
+    assert openai["models"]["gpt-5.6-sol"]["capabilities"]["attachment"] is True
+    assert openai["models"]["gpt-5.6-sol"]["capabilities"]["reasoning"] is True
+    assert set(openai["models"]["gpt-5.6-sol"]["variants"].keys()) == {
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra",
+    }
+    assert set(openai["models"]["gpt-5.6-luna"]["variants"].keys()) == {
+        "low",
+        "medium",
+        "high",
+        "max",
+    }
+    assert set(openai["models"]["gpt-5.5"]["variants"].keys()) == {"xhigh"}
 
     provider_payload = await opencode_provider_list(core=typed_core)
     openai_provider = next(
         item for item in provider_payload["all"] if item["id"] == "openai"
     )
     assert list(openai_provider["models"].keys()) == [
+        "gpt-5.6-sol",
         "gpt-5.5",
         "gpt-5.4",
+        "gpt-5.6-luna",
         "gpt-5.3-codex",
     ]
-    assert provider_payload["default"]["openai"] == "gpt-5.5"
+    assert provider_payload["default"]["openai"] == "gpt-5.6-sol"
 
 
 @pytest.mark.asyncio

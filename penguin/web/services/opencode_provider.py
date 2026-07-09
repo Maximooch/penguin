@@ -48,6 +48,7 @@ from penguin.web.services.provider_credentials import (
 from penguin.web.services.reasoning_variants import (
     native_reasoning_efforts,
     native_reasoning_variants,
+    reasoning_efforts_from_metadata,
 )
 
 # Compatibility export used by existing tests/patch points.
@@ -207,9 +208,19 @@ def _model_variants_payload(
     provider_id: str,
     model_id: str,
     reasoning_enabled: bool,
+    conf: dict[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]] | None:
     if not reasoning_enabled:
         return None
+
+    metadata_efforts = reasoning_efforts_from_metadata(
+        conf.get("supported_reasoning_levels") if isinstance(conf, dict) else None
+    )
+    if metadata_efforts:
+        return {
+            effort: {"reasoning": {"effort": effort}}
+            for effort in metadata_efforts
+        }
 
     provider_value = provider_id.strip().lower()
 
@@ -579,7 +590,7 @@ def _config_model_payload(
             isinstance(conf.get("reasoning"), dict) and conf["reasoning"].get("enabled")
         )
     )
-    variants = _model_variants_payload(provider_id, model_id, True)
+    variants = _model_variants_payload(provider_id, model_id, True, conf)
     reasoning_supported = reasoning_enabled or bool(variants)
     name = conf.get("name") or conf.get("model") or model_id
     release_date = conf.get("release_date")
@@ -643,7 +654,7 @@ def _provider_list_model_payload(
             isinstance(conf.get("reasoning"), dict) and conf["reasoning"].get("enabled")
         )
     )
-    variants = _model_variants_payload(provider_id, model_id, True)
+    variants = _model_variants_payload(provider_id, model_id, True, conf)
     reasoning_supported = reasoning_enabled or bool(variants)
     release_date = conf.get("release_date")
     if not isinstance(release_date, str) or not release_date.strip():

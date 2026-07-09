@@ -16,6 +16,24 @@ def _image_payload_magic(data_uri: str) -> bytes:
     return base64.b64decode(data_uri.split(",", 1)[1])[:3]
 
 
+def test_prepare_reasoning_config_maps_ultra_to_openai_max() -> None:
+    adapter = OpenAIAdapter(
+        ModelConfig(
+            model="gpt-5.6-sol",
+            provider="openai",
+            client_preference="native",
+            api_key="sk-test",
+            reasoning_enabled=True,
+            reasoning_effort="ultra",
+        )
+    )
+
+    assert adapter._prepare_reasoning_config(  # noqa: SLF001
+        {"effort": "ultra"},
+        stream=True,
+    ) == {"effort": "max", "summary": "auto"}
+
+
 @dataclass(frozen=True)
 class _DummyStreamEvent:
     """Minimal stream event shape used by OpenAIAdapter streaming."""

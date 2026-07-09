@@ -1021,7 +1021,15 @@ class MessageRequest(BaseModel):
     parts: Optional[List[Dict[str, Any]]] = None
 
 
-_REASONING_EFFORT_VARIANTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
+_REASONING_EFFORT_VARIANTS = {
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "ultra",
+}
 _REASONING_MAX_VARIANTS = {"max"}
 _REASONING_DISABLE_VARIANTS = {"off"}
 _INLINE_FILE_REFERENCE_PATTERN = re.compile(
