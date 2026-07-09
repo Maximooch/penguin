@@ -16,6 +16,12 @@ type PenguinHttpCommand = Extract<
   | { kind: "task_execute" }
   | { kind: "task_delete" }
   | { kind: "task_clarification_resume" }
+  | { kind: "goal_status" }
+  | { kind: "goal_set" }
+  | { kind: "goal_pause" }
+  | { kind: "goal_resume" }
+  | { kind: "goal_run" }
+  | { kind: "goal_clear" }
 >
 
 export type PenguinLocalCommandFetch = (input: URL, init?: RequestInit) => Promise<Response>
@@ -29,12 +35,13 @@ export function penguinHttpLocalCommandNeedsSession(command: PenguinLocalCommand
   return (
     command.kind === "project_start" ||
     command.kind === "task_execute" ||
-    command.kind === "task_clarification_resume"
+    command.kind === "task_clarification_resume" ||
+    command.kind.startsWith("goal_")
   )
 }
 
 export function isPenguinHttpLocalCommand(command: PenguinLocalCommand): command is PenguinHttpCommand {
-  return command.kind.startsWith("project_") || command.kind.startsWith("task_")
+  return command.kind.startsWith("project_") || command.kind.startsWith("task_") || command.kind.startsWith("goal_")
 }
 
 function requireArg(value: string | undefined, usage: string): string | undefined {
@@ -71,6 +78,69 @@ export async function executePenguinHttpLocalCommand(options: {
   sessionID?: string
 }): Promise<PenguinCommandResult> {
   const { command, fetch, baseUrl, directory, sessionID } = options
+
+  if (command.kind.startsWith("goal_")) {
+    if (!sessionID) return usage("/goal <objective>|status|pause|resume|run|clear")
+    const goalPath = `/api/v1/session/${encodeURIComponent(sessionID)}/goal`
+
+    if (command.kind === "goal_status") {
+      const payload = objectPayload(await fetchJson(fetch, baseUrl, goalPath))
+      const goal = objectPayload(payload.goal)
+      if (!payload.goal) return { variant: "success", message: "No session goal is set" }
+      return { variant: "success", message: `Goal: ${goal.status ?? "unknown"} — ${goal.objective ?? ""}` }
+    }
+
+    if (command.kind === "goal_clear") {
+      await fetchJson(fetch, baseUrl, goalPath, { method: "DELETE" })
+      return { variant: "success", message: "Session goal cleared" }
+    }
+
+    if (command.kind === "goal_pause") {
+      const payload = objectPayload(
+        await fetchJson(fetch, baseUrl, goalPath, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "paused" }),
+        }),
+      )
+      const goal = objectPayload(payload.goal)
+      return { variant: "success", message: `Goal paused: ${goal.objective ?? "session goal"}` }
+    }
+
+    const runGoal = async () => {
+      const payload = objectPayload(
+        await fetchJson(fetch, baseUrl, `${goalPath}/run`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ directory }),
+        }),
+      )
+      const goal = objectPayload(payload.goal)
+      return {
+        variant: "success" as const,
+        message: `Goal ${goal.status ?? payload.status ?? "updated"}: ${goal.objective ?? "session goal"}`,
+      }
+    }
+
+    if (command.kind === "goal_run") return runGoal()
+
+    if (command.kind === "goal_resume") {
+      await fetchJson(fetch, baseUrl, goalPath, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "active" }),
+      })
+      return runGoal()
+    }
+
+    if (!command.objective) return usage("/goal <objective> [--replace]")
+    await fetchJson(fetch, baseUrl, goalPath, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ objective: command.objective, replace: command.replace }),
+    })
+    return runGoal()
+  }
 
   if (command.kind === "project_create") {
     const projectName = requireArg(command.projectName, "/project create <name> [--description <text>] [--workspace <path>]")

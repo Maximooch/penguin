@@ -21,13 +21,14 @@ function makeFetch(records: RequestRecord[], payload: unknown = {}): typeof fetc
   }) as typeof fetch
 }
 
-async function run(command: PenguinLocalCommand, payload: unknown = {}) {
+async function run(command: PenguinLocalCommand, payload: unknown = {}, sessionID?: string) {
   const records: RequestRecord[] = []
   const result = await executePenguinHttpLocalCommand({
     command: command as any,
     fetch: makeFetch(records, payload),
     baseUrl: "http://127.0.0.1:9010",
     directory: "/tmp/workspace",
+    sessionID,
   })
   return { records, result }
 }
@@ -138,6 +139,65 @@ describe("penguin HTTP local command runtime", () => {
       method: "POST",
       body: { answer: "Use Postgres", answered_by: "tui", directory: "/tmp/workspace" },
     })
+  })
+
+  test("sets and runs a goal", async () => {
+    const records: RequestRecord[] = []
+    let call = 0
+    const result = await executePenguinHttpLocalCommand({
+      command: { kind: "goal_set", objective: "Ship it", replace: false },
+      fetch: (async (input: URL | RequestInfo, init?: RequestInit) => {
+        const url = input instanceof URL ? input.toString() : String(input)
+        const body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined
+        records.push({ url, method: init?.method ?? "GET", body })
+        call++
+        return new Response(
+          JSON.stringify(
+            call === 1
+              ? { goal: { objective: "Ship it", status: "active" } }
+              : { goal: { objective: "Ship it", status: "complete" } },
+          ),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        )
+      }) as typeof fetch,
+      baseUrl: "http://127.0.0.1:9010",
+      directory: "/tmp/workspace",
+      sessionID: "ses_goal",
+    })
+
+    expect(records).toEqual([
+      {
+        url: "http://127.0.0.1:9010/api/v1/session/ses_goal/goal",
+        method: "POST",
+        body: { objective: "Ship it", replace: false },
+      },
+      {
+        url: "http://127.0.0.1:9010/api/v1/session/ses_goal/goal/run",
+        method: "POST",
+        body: { directory: "/tmp/workspace" },
+      },
+    ])
+    expect(result.message).toBe("Goal complete: Ship it")
+  })
+
+  test("routes goal status, pause, resume, run, and clear", async () => {
+    let response = await run({ kind: "goal_status" }, { goal: { objective: "Ship it", status: "active" } }, "ses_goal")
+    expect(response.records[0].method).toBe("GET")
+    expect(response.result.message).toBe("Goal: active — Ship it")
+
+    response = await run({ kind: "goal_pause" }, { goal: { objective: "Ship it", status: "paused" } }, "ses_goal")
+    expect(response.records[0].body).toEqual({ status: "paused" })
+
+    response = await run({ kind: "goal_resume" }, { goal: { objective: "Ship it", status: "active" } }, "ses_goal")
+    expect(response.records).toHaveLength(2)
+    expect(response.records[0].body).toEqual({ status: "active" })
+    expect(response.records[1].url).toEndWith("/api/v1/session/ses_goal/goal/run")
+
+    response = await run({ kind: "goal_run" }, { goal: { objective: "Ship it", status: "active" } }, "ses_goal")
+    expect(response.records[0].url).toEndWith("/api/v1/session/ses_goal/goal/run")
+
+    response = await run({ kind: "goal_clear" }, { goal: null }, "ses_goal")
+    expect(response.records[0].method).toBe("DELETE")
   })
 
   test("returns warnings instead of fetching for missing required arguments", async () => {

@@ -86,6 +86,25 @@ describe("penguin local command parser", () => {
     expect(parsePenguinLocalCommand('/tool_details')).toEqual({ kind: "tool_details" })
   })
 
+  test("parses goal lifecycle commands and the 247 alias", () => {
+    expect(parsePenguinLocalCommand('/goal')).toEqual({ kind: "goal_status" })
+    expect(parsePenguinLocalCommand('/goal status')).toEqual({ kind: "goal_status" })
+    expect(parsePenguinLocalCommand('/goal "Ship session goals" --replace')).toEqual({
+      kind: "goal_set",
+      objective: "Ship session goals",
+      replace: true,
+    })
+    expect(parsePenguinLocalCommand('/goal pause')).toEqual({ kind: "goal_pause" })
+    expect(parsePenguinLocalCommand('/goal resume')).toEqual({ kind: "goal_resume" })
+    expect(parsePenguinLocalCommand('/goal run')).toEqual({ kind: "goal_run" })
+    expect(parsePenguinLocalCommand('/goal clear')).toEqual({ kind: "goal_clear" })
+    expect(parsePenguinLocalCommand('/247 ship it')).toEqual({
+      kind: "goal_set",
+      objective: "ship it",
+      replace: false,
+    })
+  })
+
   test("returns null for non-command input", () => {
     expect(parsePenguinLocalCommand('hello world')).toBeNull()
   })
