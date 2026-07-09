@@ -53,6 +53,41 @@ _REASONING_EFFORT_VARIANTS = {
     "ultra",
 }
 _REASONING_MAX_VARIANTS = {"max"}
+
+
+class UnsupportedReasoningVariantError(ValueError):
+    """Raised when a requested reasoning variant is unsupported by a model."""
+
+    def __init__(
+        self,
+        *,
+        provider: str,
+        model: str,
+        variant: str,
+        supported: tuple[str, ...],
+    ) -> None:
+        self.provider = provider
+        self.model = model
+        self.variant = variant
+        self.supported = supported
+        super().__init__(
+            f"Reasoning variant '{variant}' is not supported by "
+            f"{provider or 'provider'}/{model or 'model'}"
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a client-safe structured error payload."""
+
+        return {
+            "code": "unsupported_reasoning_variant",
+            "message": str(self),
+            "provider": self.provider or None,
+            "model": self.model or None,
+            "variant": self.variant,
+            "supported": list(self.supported),
+        }
+
+
 _REASONING_DISABLE_VARIANTS = {"off"}
 _NATIVE_RESPONSE_COMPLETION_TOOLS = {"finish_response"}
 logger = logging.getLogger(__name__)
@@ -1187,7 +1222,10 @@ def build_reasoning_fallback_note(
 
 
 def apply_reasoning_variant_override(
-    model_config: Any, variant: Optional[str]
+    model_config: Any,
+    variant: Optional[str],
+    *,
+    supported_efforts: Any = None,
 ) -> Optional[Dict[str, Any]]:
     """Apply a temporary reasoning variant override to a model config."""
 
@@ -1217,23 +1255,23 @@ def apply_reasoning_variant_override(
     provider_id = str(getattr(model_config, "provider", "") or "").strip().lower()
     model_id = str(getattr(model_config, "model", "") or "").strip()
 
-    if provider_id in {"openai", "anthropic"}:
-        if provider_id == "anthropic" and value not in {
-            "low",
-            "medium",
-            "high",
-            "max",
-        }:
-            return None
-
-        metadata_variants = reasoning_efforts_from_metadata(
-            getattr(model_config, "supported_reasoning_levels", None)
-        )
-        supported_native_variants = set(
-            metadata_variants or native_reasoning_efforts(provider_id, model_id)
-        )
+    metadata_variants = reasoning_efforts_from_metadata(
+        getattr(model_config, "supported_reasoning_levels", None)
+    )
+    capability_variants = reasoning_efforts_from_metadata(supported_efforts)
+    supported_native_variants = tuple(
+        capability_variants
+        or metadata_variants
+        or native_reasoning_efforts(provider_id, model_id)
+    )
+    if supported_native_variants:
         if value not in supported_native_variants:
-            return None
+            raise UnsupportedReasoningVariantError(
+                provider=provider_id,
+                model=model_id,
+                variant=value,
+                supported=supported_native_variants,
+            )
 
         model_config.reasoning_enabled = True
         model_config.reasoning_effort = value

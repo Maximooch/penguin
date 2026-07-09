@@ -44,6 +44,10 @@ from ..provider_transform import (
     normalize_openai_responses_tool_choice,
     normalize_openai_responses_tools,
 )
+from ..reasoning_variants import (
+    openai_reasoning_efforts,
+    reasoning_efforts_from_metadata,
+)
 from .base import BaseAdapter
 
 logger = logging.getLogger(__name__)
@@ -592,6 +596,12 @@ class OpenAIAdapter(BaseAdapter):
             reasoning=bool(
                 getattr(self.model_config, "reasoning_enabled", False)
                 or self.model_config.get_reasoning_config()
+            ),
+            reasoning_efforts=(
+                reasoning_efforts_from_metadata(
+                    getattr(self.model_config, "supported_reasoning_levels", None)
+                )
+                or openai_reasoning_efforts(self.model_config.model)
             ),
             vision=self.supports_vision(),
             resumable=True,

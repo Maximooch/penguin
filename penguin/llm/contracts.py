@@ -104,6 +104,7 @@ class LLMProviderCapabilities:
     prompt_cache: bool = False
     resumable: bool = False
     background: bool = False
+    reasoning_efforts: tuple[str, ...] = ()
     max_context_tokens: Optional[int] = None
     max_output_tokens: Optional[int] = None
     provider_data: Dict[str, Any] = field(default_factory=dict)
@@ -121,6 +122,7 @@ class LLMProviderCapabilities:
             "prompt_cache": self.prompt_cache,
             "resumable": self.resumable,
             "background": self.background,
+            "reasoning_efforts": list(self.reasoning_efforts),
             "max_context_tokens": self.max_context_tokens,
             "max_output_tokens": self.max_output_tokens,
             "provider_data": dict(self.provider_data or {}),

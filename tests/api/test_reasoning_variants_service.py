@@ -27,9 +27,10 @@ def test_openai_gpt_51_limits_reasoning_efforts() -> None:
 
 
 def test_openai_gpt_56_exposes_max_effort() -> None:
+    """GPT-5.6 exposes the documented effort set without minimal."""
+
     assert native_reasoning_efforts("openai", "gpt-5.6-sol") == (
         "none",
-        "minimal",
         "low",
         "medium",
         "high",
@@ -39,6 +40,8 @@ def test_openai_gpt_56_exposes_max_effort() -> None:
 
 
 def test_openai_gpt_6_exposes_future_reasoning_efforts() -> None:
+    """Future GPT generations retain the conservative fallback effort set."""
+
     assert native_reasoning_efforts("openai", "gpt-6") == (
         "none",
         "minimal",

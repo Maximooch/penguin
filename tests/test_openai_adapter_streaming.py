@@ -17,6 +17,8 @@ def _image_payload_magic(data_uri: str) -> bytes:
 
 
 def test_prepare_reasoning_config_maps_ultra_to_openai_max() -> None:
+    """Ultra metadata is converted to the OpenAI wire-level Max effort."""
+
     adapter = OpenAIAdapter(
         ModelConfig(
             model="gpt-5.6-sol",
@@ -28,13 +30,15 @@ def test_prepare_reasoning_config_maps_ultra_to_openai_max() -> None:
         )
     )
 
-    assert adapter._prepare_reasoning_config(  # noqa: SLF001
+    assert adapter._prepare_reasoning_config(
         {"effort": "ultra"},
         stream=True,
     ) == {"effort": "max", "summary": "auto"}
 
 
 def test_prepare_reasoning_config_maps_mixed_case_ultra_to_openai_max() -> None:
+    """Direct mixed-case Ultra config is normalized to OpenAI-safe Max."""
+
     adapter = OpenAIAdapter(
         ModelConfig(
             model="gpt-5.6-sol",
@@ -46,7 +50,7 @@ def test_prepare_reasoning_config_maps_mixed_case_ultra_to_openai_max() -> None:
         )
     )
 
-    assert adapter._prepare_reasoning_config(  # noqa: SLF001
+    assert adapter._prepare_reasoning_config(
         {"effort": " Ultra "},
         stream=True,
     ) == {"effort": "max", "summary": "auto"}

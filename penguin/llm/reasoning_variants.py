@@ -12,7 +12,8 @@ from typing import Any
 _WIDELY_SUPPORTED_EFFORTS = ("low", "medium", "high")
 _OPENAI_GPT51_EFFORTS = ("none", "low", "medium", "high")
 _OPENAI_FULL_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh")
-_OPENAI_GPT56_PLUS_EFFORTS = _OPENAI_FULL_EFFORTS + ("max",)
+_OPENAI_GPT56_EFFORTS = ("none", "low", "medium", "high", "xhigh", "max")
+_OPENAI_FUTURE_EFFORTS = (*_OPENAI_FULL_EFFORTS, "max")
 _ANTHROPIC_STANDARD_EFFORTS = ("low", "medium", "high")
 _ANTHROPIC_MAX_EFFORTS = ("low", "medium", "high", "max")
 
@@ -59,11 +60,13 @@ def openai_reasoning_efforts(model_id: str) -> tuple[str, ...]:
     if re.search(r"gpt-5(?:-[0-9]+)?-pro", key):
         return ("high",)
 
-    if re.search(r"gpt-5-(?:[6-9]|[1-9][0-9])", key) or re.search(
-        r"gpt-[6-9](?:-|$)",
-        key,
+    if re.search(r"gpt-5-6(?:-|$)", key):
+        return _OPENAI_GPT56_EFFORTS
+
+    if re.search(r"gpt-5-(?:[7-9]|[1-9][0-9])", key) or re.search(
+        r"gpt-[6-9](?:-|$)", key
     ):
-        return _OPENAI_GPT56_PLUS_EFFORTS
+        return _OPENAI_FUTURE_EFFORTS
 
     if re.search(r"gpt-5-(?:[2-9]|[1-9][0-9])", key):
         return _OPENAI_FULL_EFFORTS

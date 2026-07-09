@@ -98,6 +98,8 @@ def test_codex_model_metadata_falls_back_to_middle_supported_effort() -> None:
 
 
 def test_codex_model_metadata_rejects_unsupported_efforts() -> None:
+    """Unsupported configured and default efforts fall back to metadata."""
+
     config = ModelConfig.for_model(
         model_name="openai/gpt-5.6-luna",
         provider="openai",
@@ -121,6 +123,8 @@ def test_codex_model_metadata_rejects_unsupported_efforts() -> None:
 
 
 def test_explicit_reasoning_opt_out_wins_over_supported_metadata() -> None:
+    """An explicit reasoning opt-out wins over inferred catalog support."""
+
     config = ModelConfig.for_model(
         model_name="openai/gpt-5.6-sol",
         provider="openai",
