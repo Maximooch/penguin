@@ -6131,6 +6131,9 @@ async def session_goal_run(
 
     body = payload if isinstance(payload, dict) else {}
     max_iterations = body.get("max_iterations")
+    directory = body.get("directory")
+    if directory is not None and (not isinstance(directory, str) or not directory.strip()):
+        raise HTTPException(status_code=422, detail="directory must be a non-empty string")
     if max_iterations is not None and (
         not isinstance(max_iterations, int) or max_iterations <= 0
     ):
@@ -6139,7 +6142,9 @@ async def session_goal_run(
         )
     try:
         return await core.run_session_goal(
-            session_id, max_iterations=max_iterations
+            session_id,
+            max_iterations=max_iterations,
+            directory=directory.strip() if isinstance(directory, str) else None,
         )
     except GoalRunConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -6154,7 +6159,10 @@ async def session_goal_clear(
     session_id: str, core: PenguinCore = Depends(get_core)
 ):
     """Clear the persisted session goal."""
-    cleared = clear_session_goal(core, session_id)
+    try:
+        cleared = clear_session_goal(core, session_id)
+    except GoalConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if cleared is None:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
     await _emit_goal_events(core, session_id, None)

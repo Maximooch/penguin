@@ -85,6 +85,7 @@ async def test_run_session_goal_runs_once_and_marks_complete(tmp_path: Path) -> 
         session.id,
         run_mode_factory=_RunMode,
         max_iterations=3,
+        directory=str(tmp_path),
     )
 
     assert result["status"] == "complete"
@@ -97,6 +98,7 @@ async def test_run_session_goal_runs_once_and_marks_complete(tmp_path: Path) -> 
     call = core.run_mode.start.await_args
     assert call.kwargs["context"]["run_kind"] == "session_goal"
     assert call.kwargs["context"]["max_iterations"] == 3
+    assert call.kwargs["context"]["session_id"] == session.id
     core._emit_opencode_session_status.assert_any_await(session.id, "busy")
     core._emit_opencode_session_status.assert_any_await(session.id, "idle")
 

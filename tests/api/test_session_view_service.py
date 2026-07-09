@@ -1019,6 +1019,15 @@ def test_session_goal_round_trip_and_replacement_policy():
     assert replaced["id"] != created["id"]
     assert replaced["revision"] == 2
 
+    running = dict(replaced)
+    running["active_run_id"] = "goalrun_1"
+    session.metadata[GOAL_KEY] = running
+    with pytest.raises(GoalConflictError):
+        set_session_goal(core, session.id, status="paused")
+    with pytest.raises(GoalConflictError):
+        clear_session_goal(core, session.id)
+
+    session.metadata[GOAL_KEY] = replaced
     assert clear_session_goal(core, session.id) is True
     assert get_session_goal(core, session.id) is None
 

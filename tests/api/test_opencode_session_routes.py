@@ -300,6 +300,16 @@ async def test_session_goal_crud_and_aliases(tmp_path: Path) -> None:
 
     alias = await api_session_goal(session_id, core=typed_core)
     assert alias["goal"]["status"] == "paused"
+
+    stored = core.conversation_manager.session_manager.current_session.metadata[
+        "_penguin_goal_v1"
+    ]
+    stored["active_run_id"] = "goalrun_1"
+    with pytest.raises(HTTPException) as running_conflict:
+        await session_goal_clear(session_id, core=typed_core)
+    assert running_conflict.value.status_code == 409
+    stored["active_run_id"] = None
+
     assert await api_session_goal_clear(session_id, core=typed_core) == {
         "goal": None,
         "status": "ok",
@@ -321,14 +331,20 @@ async def test_session_goal_run_route_and_alias(tmp_path: Path) -> None:
     )
 
     result = await session_goal_run(
-        session_id, payload={"max_iterations": 3}, core=typed_core
+        session_id,
+        payload={"max_iterations": 3, "directory": str(tmp_path)},
+        core=typed_core,
     )
     assert result["status"] == "complete"
-    core.run_session_goal.assert_awaited_once_with(session_id, max_iterations=3)
+    core.run_session_goal.assert_awaited_once_with(
+        session_id, max_iterations=3, directory=str(tmp_path)
+    )
 
     core.run_session_goal.reset_mock()
     await api_session_goal_run(session_id, payload=None, core=typed_core)
-    core.run_session_goal.assert_awaited_once_with(session_id, max_iterations=None)
+    core.run_session_goal.assert_awaited_once_with(
+        session_id, max_iterations=None, directory=None
+    )
 
 
 @pytest.mark.asyncio

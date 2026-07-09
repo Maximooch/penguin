@@ -1841,6 +1841,10 @@ def set_session_goal(
         session.metadata = session_metadata
 
     current = normalize_goal(session_metadata.get(GOAL_KEY))
+    if current is not None and current.get("active_run_id"):
+        if objective is not None or status is not None:
+            raise GoalConflictError("Goal is currently running")
+
     if objective is not None:
         if current and current["status"] in UNFINISHED_GOAL_STATUSES and not replace:
             raise GoalConflictError("unfinished goal requires replace=true")
@@ -1872,6 +1876,12 @@ def clear_session_goal(core: Any, session_id: str) -> Optional[bool]:
     metadata = getattr(session, "metadata", None)
     if not isinstance(metadata, dict):
         return True
+
+    from penguin.core_runtime.session_goals import GoalConflictError, normalize_goal
+
+    current = normalize_goal(metadata.get(GOAL_KEY))
+    if current is not None and current.get("active_run_id"):
+        raise GoalConflictError("Goal is currently running")
     metadata.pop(GOAL_KEY, None)
     manager.mark_session_modified(session.id)
     manager.save_session(session)

@@ -9,13 +9,15 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
-from penguin.core_runtime import process_lifecycle
-from penguin.core_runtime.session_goals import normalize_goal
+from penguin.core_runtime import process_lifecycle, session_lookup
 from penguin.run_mode import RunMode
 from penguin.system.execution_context import ExecutionContext, execution_context_scope
 from penguin.web.services.session_events import emit_session_goal_event
-from penguin.web.services.session_view import GOAL_KEY, get_session_goal, get_session_info
-from penguin.core_runtime import session_lookup
+from penguin.web.services.session_view import (
+    GOAL_KEY,
+    get_session_goal,
+    get_session_info,
+)
 
 
 class GoalRunError(RuntimeError):
@@ -90,6 +92,7 @@ async def run_session_goal(
     session_id: str,
     *,
     max_iterations: int | None = None,
+    directory: str | None = None,
     run_mode_factory: Callable[..., Any] = RunMode,
 ) -> dict[str, Any]:
     """Run one bounded autonomous step for a persisted active goal."""
@@ -131,9 +134,12 @@ async def run_session_goal(
             core, session_id, asyncio.current_task()
         )
         info = get_session_info(core, session_id) or {}
-        directory = info.get("directory")
-        if not isinstance(directory, str) or not Path(directory).is_dir():
-            directory = None
+        resolved_directory = directory or info.get("directory")
+        if (
+            not isinstance(resolved_directory, str)
+            or not Path(resolved_directory).is_dir()
+        ):
+            resolved_directory = None
         context = {
             "run_kind": "session_goal",
             "session_id": session_id,
@@ -147,9 +153,9 @@ async def run_session_goal(
         execution_context = ExecutionContext(
             session_id=session_id,
             conversation_id=session_id,
-            directory=directory,
-            project_root=directory,
-            workspace_root=directory,
+            directory=resolved_directory,
+            project_root=resolved_directory,
+            workspace_root=resolved_directory,
             request_id=run_id,
         )
 

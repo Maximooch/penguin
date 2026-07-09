@@ -15,9 +15,11 @@ class SessionGoalCoreFacade:
         session_id: str,
         *,
         max_iterations: int | None = None,
+        directory: str | None = None,
     ) -> dict[str, Any]:
         return await run_session_goal(
             self,
             session_id,
             max_iterations=max_iterations,
+            directory=directory,
         )
