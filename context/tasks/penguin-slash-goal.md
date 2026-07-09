@@ -2,7 +2,9 @@
 
 ## Status
 
-Draft architecture plan based on Codex source inspection and Penguin codebase onboarding.
+Revised architecture plan based on Codex source inspection plus a current Penguin v0.9.0 codebase pass.
+
+Last verified on July 9, 2026 against current tree at `08c3c72f6` (`v0.9.0`). The old direction is still mostly right, but the plumbing targets have changed: Penguin now has a refactored `core_runtime/` boundary, a backend command registry consumed by the TUI, durable runtime event-envelope work, and stronger OpenCode-compatible session/request state.
 
 ## Goal
 
@@ -44,17 +46,43 @@ Penguin already has much of the executor and session machinery:
 - `penguin/run_mode.py`
   - `RunMode._execute_task()` delegates formal autonomous work to `Engine.run_task()`.
   - It already handles clarification-needed and pending-review style outcomes.
-- `penguin/core.py`
-  - `Core.process()` distinguishes formal task execution from conversational turns.
-  - `Core.start_run_mode()` wraps RunMode task/project execution.
-  - Sessions are saved after processing.
+- `penguin/core_runtime/`
+  - Current `PenguinCore` behavior has been split into focused runtime modules. New goal plumbing should not be jammed directly into the old `core.py` monolith.
+  - `process_runtime.py` owns normal message processing and session-scoped active request tracking.
+  - `process_lifecycle.py` owns process finalization, token update emission, and OpenCode busy/idle request tracking.
+  - `runmode_facade.py` and `runmode_lifecycle.py` own the compatibility facade for autonomous RunMode execution.
 - `penguin/web/services/session_view.py`
   - Session metadata already stores OpenCode-compatible todos.
   - `get_session_todo()` and `update_session_todo()` provide a good persistence pattern.
 - `penguin/web/routes.py`
   - Existing session/message/todo route style can be extended for goals.
+- `penguin/web/services/command_registry.py`
+  - Backend-owned command metadata is now exposed through `/api/v1/commands`.
+  - Goal commands should be added here as the canonical command-list source, not only hardcoded in the TUI.
 - `penguin-tui/`
-  - Slash-command command definitions and command routing should expose `/goal` and `/247` visibly.
+  - The OpenCode-derived TUI fetches `/api/v1/commands` during sync, but Penguin-local commands still need parser/runtime handling in the prompt component.
+
+Current-code references worth rechecking during implementation:
+
+- `penguin/run_mode.py:240` starts one autonomous task.
+- `penguin/run_mode.py:559` starts continuous mode; useful background, not the MVP path.
+- `penguin/run_mode.py:1014` builds the formal task prompt and calls `Engine.run_task()`.
+- `penguin/run_mode.py:1194` maps clarification-needed into `waiting_input`.
+- `penguin/core_runtime/process_runtime.py:162` registers session-scoped active OpenCode requests.
+- `penguin/core_runtime/process_lifecycle.py:172` increments active request counts and emits busy state.
+- `penguin/core_runtime/process_lifecycle.py:131` finalizes process responses and emits token updates.
+- `penguin/core_runtime/runmode_facade.py:24` is the current `PenguinCore.start_run_mode()` facade seam.
+- `penguin/web/services/session_view.py:970` is the current session metadata update pattern.
+- `penguin/web/services/session_view.py:1047` computes session busy/idle state from stream states, adapters, and active request counts.
+- `penguin/web/routes.py:3393` exposes `/api/v1/commands`.
+- `penguin/web/routes.py:6069` and `penguin/web/routes.py:6213` expose OpenCode-style todo routes and aliases.
+- `penguin/web/services/command_registry.py:38` returns backend command metadata consumed by the TUI.
+- `penguin/system/runtime_events.py:21` defines canonical event categories; `goal.*` is not currently a special category.
+- `penguin/system/runtime_events.py:143` builds redacted public runtime event envelopes.
+- `penguin/system/runtime_event_ledger.py:157` persists public runtime events for replay.
+- `penguin-tui/packages/opencode/src/cli/cmd/tui/context/sync.tsx:729` fetches `/api/v1/commands` during bootstrap.
+- `penguin-tui/packages/opencode/src/cli/cmd/tui/component/prompt/penguin-local-command.ts:151` parses Penguin local slash commands.
+- `penguin-tui/packages/opencode/src/cli/cmd/tui/component/prompt/penguin-local-command-runtime.ts:66` executes parsed Penguin HTTP local commands.
 
 ## Design Principle
 
@@ -100,6 +128,8 @@ Suggested shape:
   "time_used_seconds": 0,
   "created_at": "2026-06-05T00:00:00Z",
   "updated_at": "2026-06-05T00:00:00Z",
+  "revision": 1,
+  "active_run_id": null,
   "last_run_id": null,
   "last_result": null,
   "metadata": {}
@@ -114,20 +144,23 @@ active | paused | blocked | usage_limited | budget_limited | complete | cleared
 
 For MVP, `cleared` may simply mean the metadata key is removed.
 
+`revision` and `active_run_id` are not decorative. They prevent a run that finishes late from resurrecting a cleared goal, overwriting a replacement goal, or changing a goal back to `active` after the user paused it. Every mutation increments `revision`; run completion may update the goal only when both the goal ID and `active_run_id` still match.
+
 ## Proposed Modules
 
 ### 1. Goal Service
 
 Add one of:
 
-- `penguin/goals.py`
-- `penguin/services/goals.py`
+- `penguin/core_runtime/session_goals.py`
 - `penguin/web/services/session_goal.py`
 
 Preferred split:
 
-- `penguin/goals.py` for model/normalization/status policy.
-- `penguin/web/services/session_goal.py` for session lookup/persistence wrappers if `session_view.py` is getting bloated.
+- `penguin/core_runtime/session_goals.py` for model/normalization/status policy and runtime result-to-status mapping.
+- `penguin/web/services/session_goal.py` for route-facing session lookup/persistence wrappers, unless this is kept next to the existing todo metadata helpers in `session_view.py` for the first slice.
+
+Avoid a top-level `penguin/goals.py` unless there is a clear reason. The current codebase is moving runtime concerns into `core_runtime/`; follow that boundary instead of adding another top-level grab bag.
 
 Responsibilities:
 
@@ -139,7 +172,7 @@ Responsibilities:
 
 ### 2. Session Persistence Helpers
 
-Mirror todo helpers in `penguin/web/services/session_view.py` or move both todo/goal helpers into focused services later.
+Mirror todo/session metadata helpers in `penguin/web/services/session_view.py` or add `penguin/web/services/session_goal.py` that imports the private session lookup helpers only if that does not create ugly coupling. The simplest first slice is probably to keep goal helpers in `session_view.py` near the existing todo helpers, then extract later if it grows.
 
 Functions:
 
@@ -171,23 +204,35 @@ Persistence rules:
 - Save via `manager.mark_session_modified(session.id)` and `manager.save_session(session)`.
 - Validate objective is non-empty when creating/replacing.
 - Validate status belongs to the allowed set.
+- Use the same manager/session resolution path as current session APIs. Do not assume the default session manager; multi-agent and OpenCode session aliases matter.
+- Apply compare-and-set semantics for run completion: never overwrite a goal that was paused, cleared, or replaced while the run was in flight.
+- Copy and update only the goal metadata key. Do not replace the session metadata dictionary or clobber unrelated OpenCode/session fields.
 
 ### 3. Web/API Routes
 
-Add OpenCode-style or Penguin-style routes. Exact route style should match existing `penguin/web/routes.py` conventions.
+Add OpenCode-style routes and v1 aliases, matching the current route pattern in `penguin/web/routes.py`.
 
 Candidate routes:
 
 ```text
-GET    /api/v1/sessions/{session_id}/goal
-POST   /api/v1/sessions/{session_id}/goal
-DELETE /api/v1/sessions/{session_id}/goal
-POST   /api/v1/sessions/{session_id}/goal/pause
-POST   /api/v1/sessions/{session_id}/goal/resume
-POST   /api/v1/sessions/{session_id}/goal/run
+GET    /session/{session_id}/goal
+POST   /session/{session_id}/goal
+DELETE /session/{session_id}/goal
+POST   /session/{session_id}/goal/pause
+POST   /session/{session_id}/goal/resume
+POST   /session/{session_id}/goal/run
+
+GET    /api/v1/session/{session_id}/goal
+POST   /api/v1/session/{session_id}/goal
+DELETE /api/v1/session/{session_id}/goal
+POST   /api/v1/session/{session_id}/goal/pause
+POST   /api/v1/session/{session_id}/goal/resume
+POST   /api/v1/session/{session_id}/goal/run
 ```
 
-MVP can skip pause/resume-specific routes if `POST /goal` accepts `status`.
+MVP can skip pause/resume-specific routes if `POST /goal` accepts `status`, but adding explicit pause/resume routes will make TUI command runtime cleaner and matches Codex's control surface.
+
+Use singular `/api/v1/session/...`, not `/api/v1/sessions/...`, unless the route layer is intentionally adding both. Current OpenCode aliases are singular.
 
 Suggested response shape:
 
@@ -206,9 +251,26 @@ For missing session:
 }
 ```
 
+HTTP semantics should follow the existing FastAPI surface rather than returning error-shaped success bodies:
+
+- missing session: `404`
+- missing goal on a control/run operation: `404`
+- unfinished goal replacement without `replace=true`: `409`
+- busy session or already-running goal: `409`
+- invalid objective/status/budget: `422`
+- `GET` for an existing session with no goal: `200` with `{"goal": null, "status": "ok"}`
+
 ### 4. Core Runtime Bridge
 
-Add a high-level method on `PenguinCore`:
+Add a high-level runtime bridge through the current facade/module split, not directly as ad hoc logic in `core.py`.
+
+Recommended shape:
+
+- `penguin/core_runtime/session_goal_runtime.py` implements the work.
+- `penguin/core_runtime/session_goal_facade.py` exposes compatibility methods on `PenguinCore`.
+- `PenguinCore` inherits the facade in the same style as current process/runmode facades.
+
+Facade method:
 
 ```python
 async def run_session_goal(
@@ -226,11 +288,21 @@ Responsibilities:
 - Load current session goal.
 - Refuse if missing, paused, complete, or cleared.
 - Build a formal task prompt from goal objective and current session context.
-- Call RunMode or `engine.run_task()` with explicit goal context.
+- Call RunMode through the current `start_run_mode`/RunMode facade path or construct `RunMode` narrowly if a return value is needed.
+- Execute under an explicit `ExecutionContext` bound to the target `session_id`, conversation ID, agent, and remembered/explicit directory. Verify that messages and token usage persist to that session rather than whichever conversation manager is currently active.
+- Register and finalize the goal run with the existing OpenCode request lifecycle so busy/idle state, abort handling, heartbeat behavior, and duplicate-run guards are truthful. Merely checking `_opencode_active_requests` is insufficient because a direct `RunMode.start(...)` call does not register itself there.
+- Add a per-session `asyncio.Lock` (or an equivalent atomic claim helper) around busy validation, `active_run_id` assignment, persistence, and request registration. The existing request counter is lifecycle accounting, not mutual exclusion.
 - Persist resulting status.
-- Emit goal lifecycle events for UI/web subscribers.
+- Emit goal lifecycle events through the runtime event envelope path plus legacy UI events where needed.
 
-MVP implementation can call `RunMode.start(...)` or `Engine.run_task(...)` directly, but prefer reusing existing `Core.start_run_mode()` if event behavior remains correct.
+Important current-code wrinkle: `PenguinCore.start_run_mode()` returns `None` through the compatibility facade today. A goal runner needs a result to update status. Either:
+
+1. introduce a result-returning `run_session_goal()` that directly creates `RunMode` and calls `RunMode.start(...)`, or
+2. extend `runmode_lifecycle.start_run_mode()` to optionally return the task result without breaking callers.
+
+Do not call `Engine.run_task()` directly unless you also replicate RunMode's streaming, clarification, and event behavior. That duplication is exactly how lifecycle bugs breed.
+
+Critical prerequisite: current `Engine.run_task()` detects the machine-readable `finish_task` status (`done`, `partial`, or `blocked`) but does not include it in its returned result, and `RunMode._execute_task()` drops `action_results`. Therefore `pending_review` alone cannot drive correct goal transitions. Preserve `finish_status` in the Engine result and pass it through RunMode before implementing goal result mapping.
 
 ### 5. Prompt Shape For Goal Runs
 
@@ -287,6 +359,23 @@ Policy:
 - `/goal pause` marks paused and stops future continuation.
 - `/goal clear` removes metadata key or marks cleared.
 
+Current TUI/backend command plumbing changes the implementation details:
+
+1. Add backend command metadata in `penguin/web/services/command_registry.py` so `/api/v1/commands` exposes `goal` and `247`.
+2. Add route tests in `tests/api/test_opencode_command_routes.py` for `requiresSession`, `requiredContext`, templates, and execution metadata.
+3. Add parser variants to `penguin-local-command.ts`:
+   - `{ kind: "goal_status" }`
+   - `{ kind: "goal_set", objective: string, replace?: boolean }`
+   - `{ kind: "goal_pause" }`
+   - `{ kind: "goal_resume" }`
+   - `{ kind: "goal_clear" }`
+   - optional `{ kind: "goal_run" }`
+   - same for `/247` as an alias to the same kinds.
+4. Add HTTP runtime execution in `penguin-local-command-runtime.ts` and mark goal commands as requiring a session.
+5. Add focused Bun tests for the parser/runtime. There are no dedicated Penguin local-command test files in the current tree, so create them rather than assuming an existing neighboring suite.
+
+Blunt point: the backend command registry improves discoverability, but it does not execute commands by itself. The TUI still parses and dispatches Penguin-local commands explicitly. Add both or the command will either show up but not work, or work but be invisible.
+
 ### 7. TUI Display
 
 Minimum:
@@ -312,6 +401,8 @@ MVP:
 - `/goal <objective>` starts one bounded autonomous run.
 - `/goal resume` starts another bounded run.
 - User manually resumes as needed.
+- `/goal pause` prevents future continuation. If a run is already active, MVP does not silently kill it; its late result must be ignored unless the goal still has the matching `active_run_id` and active status.
+- `/goal clear` and replacement during an active run either return `409` or explicitly abort the run first. Do not clear/replace and then allow an old run to write into the new state.
 
 Next slice:
 
@@ -327,13 +418,19 @@ Next slice:
 
 Avoid uncontrolled continuation. Codex uses locks and runtime state to prevent duplicate idle continuations; Penguin should use existing active-request/session heartbeat machinery before adding a new scheduler.
 
+Current-code update: Penguin now tracks `_opencode_active_requests`, `_opencode_process_tasks`, busy/idle session status, and heartbeats for OpenCode sessions. Reuse the public lifecycle helpers for accounting, but add a per-session lock or atomic claim operation for exclusion. Under that lock, refuse when `list_session_statuses(core)[session_id]` is busy, assign/persist `active_run_id`, and register the request before release. Do not build new behavior around direct mutation of private request dictionaries.
+
+Do not add a separate scheduler until the one-shot goal path is stable and observable.
+
 ## Status Transition Policy
 
 Suggested mapping from run result:
 
 | Runtime Outcome | Goal Status |
 |---|---|
-| `finish_task(status="done")` / `pending_review` with acceptance satisfied | `complete` |
+| `finish_task(status="done")` (`finish_status=done`) | `complete` |
+| `finish_task(status="partial")` (`finish_status=partial`) | `active` |
+| `finish_task(status="blocked")` (`finish_status=blocked`) | `blocked` |
 | clarification needed / waiting input | `blocked` |
 | user abort | `paused` |
 | rate/usage limit | `usage_limited` |
@@ -341,7 +438,7 @@ Suggested mapping from run result:
 | ordinary partial progress | `active` |
 | runtime error | `blocked` |
 
-Be careful: Penguin's current `finish_task` marks work pending human review in formal task mode. Decide whether `pending_review` means `complete` for goals or `blocked_on_review`. For MVP, use `complete` only when the result status clearly indicates done; otherwise leave `active` or `blocked`.
+Penguin's task loop reports `pending_review` for every `finish_task` call, including `partial` and `blocked`. For session goals, treat that as transport/lifecycle state, not enough evidence of completion. The preserved `finish_status` is authoritative: only `done` completes the goal. This does not auto-approve a durable project task because a session goal run is not itself a project-task approval operation.
 
 ## Replacement Policy
 
@@ -349,6 +446,7 @@ MVP API behavior:
 
 - If existing goal status is `active`, `paused`, `blocked`, `usage_limited`, or `budget_limited`, require `replace=true` to overwrite objective.
 - If status is `complete`, allow replacement without `replace=true`.
+- If `active_run_id` is set, replacement returns `409` unless the caller explicitly aborts that run and the abort is confirmed first.
 
 TUI behavior:
 
@@ -382,7 +480,11 @@ Add a UI/web event when goal changes:
 }
 ```
 
-Potential event names should align with existing Penguin event conventions. If OpenCode compatibility matters, consider a `session.goal.updated` bridge.
+Potential event names should align with the new runtime event-envelope projection. Prefer a canonical envelope/event type such as `session.goal.updated` or `goal.updated`, then project to any OpenCode/TUI-compatible shape. Do not invent a second event pipeline just for goals.
+
+For MVP compatibility, also emit the existing `session.updated` event after persisted goal changes so current clients know to refresh session state even if they ignore an unknown goal-specific event. The custom goal event is useful for targeted UI updates; `session.updated` is the compatibility floor.
+
+Current nuance: `goal.*` is not listed in `RUNTIME_EVENT_CATEGORIES`, so it will currently fall back to `session_lifecycle`. That is acceptable for MVP if the event type is `session.goal.updated`. If adding standalone `goal.updated`, update `event_category()` explicitly so analytics/replay do not classify it accidentally.
 
 Emit on:
 
@@ -404,6 +506,7 @@ Emit on:
 - Missing session returns `None`/404 behavior.
 - Existing unfinished goal requires replacement confirmation/flag.
 - Completed goal can be replaced.
+- Stale run completion cannot overwrite a paused, cleared, or replacement goal.
 
 ### Service Tests
 
@@ -422,8 +525,12 @@ Emit on:
 ### Runtime Tests
 
 - `run_session_goal()` refuses paused/missing/complete goal.
+- `run_session_goal()` refuses when the session is already busy.
+- Concurrent run attempts are serialized atomically; two callers cannot both pass the idle check.
+- Goal execution is bound to the requested session/directory and persists output there.
 - Active goal invokes RunMode/Engine with goal context.
 - Done result marks complete.
+- Partial result remains active; blocked finish status marks blocked.
 - Clarification result marks blocked.
 - Error marks blocked.
 
@@ -433,6 +540,9 @@ Emit on:
 - `/goal <objective>` creates active goal.
 - `/goal pause`, `resume`, `clear`, `status` route correctly.
 - `/247` aliases `/goal`.
+- Backend command registry exposes `goal` and `247` with `requiresSession=True`.
+- TUI parser recognizes both dashed/space-free slash forms that are intended to work.
+- TUI HTTP runtime sends session ID and directory in goal command bodies.
 
 ## Implementation Slices
 
@@ -441,39 +551,51 @@ Emit on:
 - Add goal normalization/service.
 - Add session metadata helpers.
 - Add web routes.
+- Add `/api/v1/session/{session_id}/goal` aliases as well as `/session/{session_id}/goal` routes.
 - Add unit/route tests.
 
 Acceptance:
 
 - Goal can be created/read/updated/cleared through API and persists in session metadata.
 
-### Slice 2: Runtime Bridge
+### Slice 2: Runtime Result Contract + One-Shot Bridge
 
-- Add `PenguinCore.run_session_goal()`.
-- Generate formal goal prompt.
-- Invoke existing RunMode/Engine path.
-- Persist status transition from result.
-- Add runtime tests with mocked engine.
+- Preserve `finish_status` from Engine through RunMode.
+- Add `session_goal_runtime` + `session_goal_facade` and expose `PenguinCore.run_session_goal()`.
+- Bind execution to the requested session, agent, and directory through `ExecutionContext` and the correct conversation manager.
+- Register/finalize the run with existing busy/idle request lifecycle helpers.
+- Generate the formal goal prompt and persist race-safe status transitions.
+- Add runtime tests with mocked Engine/RunMode plus stale-run and concurrent-run coverage.
 
 Acceptance:
 
-- Active goal can run one bounded autonomous step and update status.
+- Active goal can run one bounded autonomous step, the correct `finish_status` survives the runtime stack, and the target session receives the output/status update.
 
-### Slice 3: Slash Commands
+### Slice 3: Backend Command Registry
 
-- Add `/goal` and `/247` command definitions.
-- Wire command handling to API/core bridge.
+- Add `/goal` and `/247` command metadata in `penguin/web/services/command_registry.py`.
+- Mark commands `requiresSession=True` with `requiredContext=["session", "workspace"]` where runtime execution needs a live session.
+- Add/extend API command registry tests.
+
+Acceptance:
+
+- `/api/v1/commands` exposes goal commands with correct templates, execution metadata, and session requirements.
+
+### Slice 4: TUI Command Dispatch
+
+- Wire TUI parser/runtime handling to the new session goal API.
 - Show status/help messages.
 - Add replacement confirmation where frontend supports it.
+- Add Bun parser/runtime tests.
 
 Acceptance:
 
 - User can set/pause/resume/clear/status goal from the TUI.
 
-### Slice 4: Continuation + Accounting
+### Slice 5: Continuation + Accounting
 
 - Add safe `maybe_continue_goal_if_idle()` behavior.
-- Guard against duplicate active session requests.
+- Guard against duplicate active session requests using current OpenCode active-request/session-status state.
 - Add token/time accounting.
 - Add budget enforcement.
 
@@ -486,11 +608,17 @@ Acceptance:
 1. Should `/goal <objective>` immediately start running, or only persist the goal until `/goal resume` / `/goal run`?
    - Recommendation: start one bounded run immediately; continuation can be opt-in or future.
 2. Should `finish_task(status="done")` always mark goal complete?
-   - Recommendation: yes for MVP when running under `run_kind=session_goal`, but preserve final human-review semantics separately if needed.
+   - Recommendation: yes for MVP when running under `run_kind=session_goal`. Preserve and inspect `finish_status`; never infer completion from `pending_review` alone.
 3. Should goals be persisted in project/task DB instead of session metadata?
    - Recommendation: session metadata for MVP. Move to DB only when cross-session/project goal querying becomes necessary.
 4. Should `/247` differ semantically from `/goal`?
    - Recommendation: no. Alias only. Branding is not architecture.
+5. Should `run_session_goal()` extend `start_run_mode()` to return a result, or instantiate `RunMode` directly?
+   - Recommendation: add a narrow result-returning goal runtime path that uses `RunMode.start(...)` and shares event callbacks. Avoid changing broad `start_run_mode()` semantics unless tests cover all existing callers.
+6. Should goal events be projected into the new durable event ledger immediately?
+   - Recommendation: yes for status changes if the event-ledger API is stable enough; otherwise emit legacy UI events and leave a TODO. Goal state without visible events will feel broken in the TUI.
+7. What should pause/clear/replace do to an in-flight goal run?
+   - Recommendation: pause blocks future continuation and makes late completion a no-op; clear/replace return `409` while running unless an explicit abort completes first. Add stronger cancellation UX later.
 
 ## Risks
 
@@ -499,6 +627,13 @@ Acceptance:
 - TUI-only implementation that leaves API/programmatic callers blind.
 - API-only implementation that leaves users unable to see active goal state.
 - Treating `pending_review` as `complete` too aggressively.
+- Losing `finish_task(status=partial|blocked)` in the Engine/RunMode result and therefore applying the wrong terminal state.
+- A late run overwriting pause/clear/replacement state without goal ID, revision, and run ID checks.
+- Running against the wrong conversation manager/session because `ExecutionContext` was set but the target session was not actually loaded/bound.
+- Checking busy state without registering the goal run, allowing two concurrent callers through the same idle window.
+- Adding only backend command metadata and forgetting TUI parser/runtime dispatch.
+- Bypassing `RunMode` and regressing streaming/clarification behavior that has already been hardened.
+- Fighting the `core_runtime/` refactor by stuffing new lifecycle logic back into `core.py`.
 
 ## Recommendation
 
@@ -506,8 +641,11 @@ Build in this order:
 
 1. Session metadata goal store.
 2. Web/API CRUD.
-3. One-shot runtime bridge.
-4. Slash command UI.
-5. Safe continuation/accounting.
+3. Runtime result contract and one-shot bridge.
+4. Backend command registry metadata.
+5. TUI parser/runtime command handling.
+6. Safe continuation/accounting.
 
 This keeps the MVP small while preserving the architectural truth: `/goal` is durable session objective state plus controlled autonomous execution, not a prompt macro.
+
+The runtime bridge now precedes TUI dispatch because the chosen command semantics say `/goal <objective>` immediately starts a bounded run. Shipping the command before the bridge would expose a UI whose documented behavior is impossible. Backend registry metadata can still land independently, but command execution should not be advertised as complete until the one-shot runtime path exists.
