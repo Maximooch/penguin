@@ -2843,7 +2843,8 @@ class OpenAIAdapter(BaseAdapter):
             return reasoning_config
 
         prepared = dict(reasoning_config)
-        if prepared.get("effort") == "ultra":
+        effort = prepared.get("effort")
+        if isinstance(effort, str) and effort.strip().lower() == "ultra":
             prepared["effort"] = "max"
 
         if bool(getattr(self.model_config, "reasoning_exclude", False)):

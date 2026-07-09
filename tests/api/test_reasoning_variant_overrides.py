@@ -92,3 +92,17 @@ def test_anthropic_native_variant_rejects_max_for_sonnet_46() -> None:
     assert snapshot is None
     assert core.model_config.reasoning_enabled is False
     assert core.model_config.reasoning_effort is None
+
+
+def test_anthropic_metadata_variant_rejects_ultra() -> None:
+    core = _core_with_model_config(
+        "anthropic",
+        "claude-opus-4-6",
+        ["low", "medium", "high", "max", "ultra"],
+    )
+
+    snapshot = _apply_reasoning_variant_override(core, "ultra")
+
+    assert snapshot is None
+    assert core.model_config.reasoning_enabled is False
+    assert core.model_config.reasoning_effort is None

@@ -1218,6 +1218,14 @@ def apply_reasoning_variant_override(
     model_id = str(getattr(model_config, "model", "") or "").strip()
 
     if provider_id in {"openai", "anthropic"}:
+        if provider_id == "anthropic" and value not in {
+            "low",
+            "medium",
+            "high",
+            "max",
+        }:
+            return None
+
         metadata_variants = reasoning_efforts_from_metadata(
             getattr(model_config, "supported_reasoning_levels", None)
         )

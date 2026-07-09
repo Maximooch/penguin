@@ -448,6 +448,41 @@ class ModelConfig:
             if supported_reasoning_levels
             else None
         )
+        if supported_reasoning_levels:
+            supported_reasoning_set = set(supported_reasoning_levels)
+            if (
+                configured_reasoning_effort
+                and configured_reasoning_effort not in supported_reasoning_set
+            ):
+                logger.warning(
+                    "Ignoring unsupported configured reasoning effort %r for model %s; "
+                    "supported=%s fallback=%r",
+                    configured_reasoning_effort,
+                    model_name,
+                    list(supported_reasoning_levels),
+                    fallback_reasoning_effort,
+                )
+                configured_reasoning_effort = None
+            if (
+                default_reasoning_effort
+                and default_reasoning_effort not in supported_reasoning_set
+            ):
+                logger.warning(
+                    "Ignoring unsupported default reasoning effort %r for model %s; "
+                    "supported=%s fallback=%r",
+                    default_reasoning_effort,
+                    model_name,
+                    list(supported_reasoning_levels),
+                    fallback_reasoning_effort,
+                )
+                default_reasoning_effort = None
+
+        if "reasoning_enabled" in model_specific:
+            reasoning_enabled = bool(model_specific.get("reasoning_enabled"))
+        elif "enabled" in reasoning_config:
+            reasoning_enabled = bool(reasoning_config.get("enabled"))
+        else:
+            reasoning_enabled = bool(supported_reasoning_levels)
 
         # Build ModelConfig with model-specific settings
         return cls(
@@ -495,11 +530,7 @@ class ModelConfig:
                 if os.getenv("PENGUIN_MAX_HISTORY_TOKENS")
                 else None
             ),
-            reasoning_enabled=bool(
-                model_specific.get("reasoning_enabled")
-                or reasoning_config.get("enabled", False)
-                or supported_reasoning_levels
-            ),
+            reasoning_enabled=reasoning_enabled,
             reasoning_effort=(
                 configured_reasoning_effort
                 or default_reasoning_effort

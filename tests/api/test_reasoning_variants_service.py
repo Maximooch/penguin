@@ -38,6 +38,18 @@ def test_openai_gpt_56_exposes_max_effort() -> None:
     )
 
 
+def test_openai_gpt_6_exposes_future_reasoning_efforts() -> None:
+    assert native_reasoning_efforts("openai", "gpt-6") == (
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    )
+
+
 def test_openai_gpt_5_pro_is_high_only() -> None:
     assert native_reasoning_efforts("openai", "gpt-5-pro") == ("high",)
 

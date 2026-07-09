@@ -65,10 +65,7 @@ def openai_reasoning_efforts(model_id: str) -> tuple[str, ...]:
     ):
         return _OPENAI_GPT56_PLUS_EFFORTS
 
-    if re.search(r"gpt-5-(?:[2-9]|[1-9][0-9])", key) or re.search(
-        r"gpt-[6-9](?:-|$)",
-        key,
-    ):
+    if re.search(r"gpt-5-(?:[2-9]|[1-9][0-9])", key):
         return _OPENAI_FULL_EFFORTS
 
     if "gpt-5-1" in key:

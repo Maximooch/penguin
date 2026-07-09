@@ -271,9 +271,6 @@ def _openai_codex_model_input_modalities(raw_value: Any) -> list[str]:
     ]
 
 
-def _openai_codex_model_reasoning_enabled(raw_value: Any) -> bool:
-    return bool(reasoning_efforts_from_metadata(raw_value))
-
 # TODO: Look into this later, could be an issue.
 def _openai_codex_cache_key(credential_record: dict[str, Any] | None) -> str | None:
     if not isinstance(credential_record, dict):
@@ -391,9 +388,7 @@ def codex_oauth_provider_models(
         supported_reasoning_levels = reasoning_efforts_from_metadata(
             item.get("supported_reasoning_levels")
         )
-        reasoning_enabled = _openai_codex_model_reasoning_enabled(
-            supported_reasoning_levels
-        )
+        reasoning_enabled = bool(supported_reasoning_levels)
         default_reasoning_level = reasoning_effort_from_metadata(
             item.get("default_reasoning_level")
         )

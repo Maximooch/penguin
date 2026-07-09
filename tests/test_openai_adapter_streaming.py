@@ -34,6 +34,24 @@ def test_prepare_reasoning_config_maps_ultra_to_openai_max() -> None:
     ) == {"effort": "max", "summary": "auto"}
 
 
+def test_prepare_reasoning_config_maps_mixed_case_ultra_to_openai_max() -> None:
+    adapter = OpenAIAdapter(
+        ModelConfig(
+            model="gpt-5.6-sol",
+            provider="openai",
+            client_preference="native",
+            api_key="sk-test",
+            reasoning_enabled=True,
+            reasoning_effort="Ultra",
+        )
+    )
+
+    assert adapter._prepare_reasoning_config(  # noqa: SLF001
+        {"effort": " Ultra "},
+        stream=True,
+    ) == {"effort": "max", "summary": "auto"}
+
+
 @dataclass(frozen=True)
 class _DummyStreamEvent:
     """Minimal stream event shape used by OpenAIAdapter streaming."""
