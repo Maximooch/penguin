@@ -13,6 +13,7 @@ from typing import Any
 
 import httpx
 
+from penguin.web.services.provider_credentials import get_provider_credentials
 from penguin.web.services.reasoning_variants import (
     reasoning_effort_from_metadata,
     reasoning_efforts_from_metadata,
@@ -284,7 +285,9 @@ def _openai_codex_cache_key(credential_record: dict[str, Any] | None) -> str | N
 
     account_id = credential_record.get("accountId")
     account_key = account_id.strip() if isinstance(account_id, str) else ""
-    return f"{access[-12:]}:{account_key}"
+    if account_key:
+        return f"account:{account_key}"
+    return f"token:{access[-12:]}"
 
 
 def codex_oauth_cached_provider_models(
@@ -307,6 +310,83 @@ def codex_oauth_cached_provider_models(
         }
 
     return {"openai": models} if models else {}
+
+
+def apply_cached_codex_model_metadata(model_config: Any) -> None:
+    """Hydrate an OpenAI model config from cached Codex OAuth metadata."""
+
+    if model_config is None:
+        return
+    provider_id = str(getattr(model_config, "provider", "") or "").strip().lower()
+    if provider_id != "openai":
+        return
+    model_id = str(getattr(model_config, "model", "") or "").strip()
+    if model_id.startswith("openai/"):
+        model_id = model_id.split("/", 1)[1]
+    auth_record = get_provider_credentials().get("openai")
+    metadata = (
+        codex_oauth_cached_provider_models(auth_record)
+        .get("openai", {})
+        .get(model_id)
+    )
+    if not isinstance(metadata, dict):
+        return
+
+    raw_levels = metadata.get("supported_reasoning_levels")
+    if not isinstance(raw_levels, (list, tuple)):
+        return
+    levels = reasoning_efforts_from_metadata(raw_levels)
+    model_config.supported_reasoning_levels = list(levels)
+    model_config.supports_reasoning = bool(levels)
+    if not levels:
+        return
+    reasoning_enabled_explicit = _model_config_field_was_explicit(
+        model_config,
+        "reasoning_enabled",
+        "_reasoning_enabled_explicit",
+    )
+    if reasoning_enabled_explicit and not bool(
+        getattr(model_config, "reasoning_enabled", False)
+    ):
+        return
+
+    current_effort = reasoning_effort_from_metadata(
+        getattr(model_config, "reasoning_effort", None)
+    )
+    if (
+        _model_config_field_was_explicit(
+            model_config,
+            "reasoning_effort",
+            "_reasoning_effort_explicit",
+        )
+        and current_effort in levels
+    ):
+        return
+    default_effort = reasoning_effort_from_metadata(
+        metadata.get("default_reasoning_level")
+    )
+    if (
+        bool(getattr(model_config, "reasoning_enabled", False))
+        and default_effort in levels
+    ):
+        model_config.reasoning_effort = default_effort
+
+
+def _model_config_field_was_explicit(
+    model_config: Any,
+    field_name: str,
+    marker_name: str,
+) -> bool:
+    """Return whether a reasoning field was explicitly configured."""
+
+    marker = getattr(model_config, marker_name, None)
+    if marker is not None:
+        return bool(marker)
+    try:
+        values = vars(model_config)
+    except TypeError:
+        values = {}
+    return field_name in values
 
 
 def codex_oauth_provider_models(

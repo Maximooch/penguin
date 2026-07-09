@@ -1255,16 +1255,21 @@ def apply_reasoning_variant_override(
     provider_id = str(getattr(model_config, "provider", "") or "").strip().lower()
     model_id = str(getattr(model_config, "model", "") or "").strip()
 
-    metadata_variants = reasoning_efforts_from_metadata(
-        getattr(model_config, "supported_reasoning_levels", None)
+    raw_metadata_variants = getattr(
+        model_config, "supported_reasoning_levels", None
     )
+    metadata_variants = reasoning_efforts_from_metadata(raw_metadata_variants)
     capability_variants = reasoning_efforts_from_metadata(supported_efforts)
-    supported_native_variants = tuple(
-        capability_variants
-        or metadata_variants
-        or native_reasoning_efforts(provider_id, model_id)
-    )
-    if supported_native_variants:
+    capability_declared = supported_efforts is not None
+    metadata_declared = raw_metadata_variants is not None
+    if capability_declared:
+        supported_native_variants = capability_variants
+    elif metadata_declared:
+        supported_native_variants = metadata_variants
+    else:
+        supported_native_variants = native_reasoning_efforts(provider_id, model_id)
+
+    if capability_declared or metadata_declared or supported_native_variants:
         if value not in supported_native_variants:
             raise UnsupportedReasoningVariantError(
                 provider=provider_id,

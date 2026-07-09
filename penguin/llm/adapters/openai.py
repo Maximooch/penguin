@@ -588,6 +588,9 @@ class OpenAIAdapter(BaseAdapter):
     def get_capabilities(self) -> LLMProviderCapabilities:
         """Return OpenAI/Responses capability metadata."""
 
+        configured_reasoning_levels = getattr(
+            self.model_config, "supported_reasoning_levels", None
+        )
         return LLMProviderCapabilities(
             provider=self.provider,
             model=str(getattr(self.model_config, "model", "") or ""),
@@ -598,10 +601,9 @@ class OpenAIAdapter(BaseAdapter):
                 or self.model_config.get_reasoning_config()
             ),
             reasoning_efforts=(
-                reasoning_efforts_from_metadata(
-                    getattr(self.model_config, "supported_reasoning_levels", None)
-                )
-                or openai_reasoning_efforts(self.model_config.model)
+                reasoning_efforts_from_metadata(configured_reasoning_levels)
+                if configured_reasoning_levels is not None
+                else openai_reasoning_efforts(self.model_config.model)
             ),
             vision=self.supports_vision(),
             resumable=True,

@@ -125,7 +125,7 @@ from penguin.web.services.opencode_provider import (
     remove_provider_auth_record,
     set_provider_auth_record,
 )
-from penguin.web.services.provider_catalog import codex_oauth_cached_provider_models
+from penguin.web.services.provider_catalog import apply_cached_codex_model_metadata
 from penguin.web.services.mcp import (
     close_mcp as close_mcp_service,
     get_mcp_status as get_mcp_status_service,
@@ -1158,12 +1158,12 @@ async def _resolve_request_runtime_for_model(
     resolver = getattr(core, "resolve_request_runtime", None)
     if callable(resolver):
         model_config, api_client = await resolver(requested or None)
-        _apply_cached_provider_model_metadata(model_config)
+        apply_cached_codex_model_metadata(model_config)
         return model_config, api_client
 
     if not requested:
         model_config = getattr(core, "model_config", None)
-        _apply_cached_provider_model_metadata(model_config)
+        apply_cached_codex_model_metadata(model_config)
         return model_config, None
 
     current_model = (
@@ -1184,7 +1184,7 @@ async def _resolve_request_runtime_for_model(
 
     if requested in {current_raw, current_qualified}:
         model_config = getattr(core, "model_config", None)
-        _apply_cached_provider_model_metadata(model_config)
+        apply_cached_codex_model_metadata(model_config)
         return model_config, None
 
     candidates: list[str] = [requested]
@@ -1209,7 +1209,7 @@ async def _resolve_request_runtime_for_model(
         loaded = await loader(candidate)
         if loaded:
             model_config = getattr(core, "model_config", None)
-            _apply_cached_provider_model_metadata(model_config)
+            apply_cached_codex_model_metadata(model_config)
             return model_config, None
         reason = getattr(core, "_last_model_load_error", None)
         if isinstance(reason, str) and reason.strip():
@@ -1226,38 +1226,6 @@ async def _resolve_request_runtime_for_model(
     if last_reason:
         detail = f"{detail}: {last_reason}"
     raise ValueError(detail)
-
-
-def _apply_cached_provider_model_metadata(model_config: Any) -> None:
-    """Apply cached OAuth catalog metadata to a request-scoped model config."""
-
-    if model_config is None:
-        return
-    provider_id = str(getattr(model_config, "provider", "") or "").strip().lower()
-    if provider_id != "openai":
-        return
-    model_id = str(getattr(model_config, "model", "") or "").strip()
-    if model_id.startswith("openai/"):
-        model_id = model_id.split("/", 1)[1]
-    auth_record = get_provider_auth_records().get("openai")
-    metadata = (
-        codex_oauth_cached_provider_models(auth_record)
-        .get("openai", {})
-        .get(model_id)
-    )
-    if not isinstance(metadata, dict):
-        return
-    levels = metadata.get("supported_reasoning_levels")
-    if isinstance(levels, (list, tuple)):
-        model_config.supported_reasoning_levels = list(levels)
-        model_config.supports_reasoning = bool(levels)
-        default_effort = metadata.get("default_reasoning_level")
-        if (
-            bool(getattr(model_config, "reasoning_enabled", False))
-            and isinstance(default_effort, str)
-            and default_effort in levels
-        ):
-            model_config.reasoning_effort = default_effort
 
 
 def _resolve_context_file_path(

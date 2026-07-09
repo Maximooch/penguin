@@ -147,3 +147,17 @@ def test_explicit_reasoning_opt_out_wins_over_supported_metadata() -> None:
     assert config.supports_reasoning is True
     assert config.supported_reasoning_levels == ["low", "medium", "high"]
     assert config.get_reasoning_config() is None
+
+
+def test_direct_explicit_reasoning_opt_out_is_not_auto_enabled() -> None:
+    """Direct construction preserves an explicit False reasoning setting."""
+
+    config = ModelConfig(
+        model="gpt-5.6-sol",
+        provider="openai",
+        client_preference="native",
+        reasoning_enabled=False,
+    )
+
+    assert config.reasoning_enabled is False
+    assert config.get_reasoning_config() is None

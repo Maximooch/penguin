@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -10,10 +11,11 @@ from penguin.llm.adapters.openai import OpenAIAdapter
 from penguin.llm.model_config import ModelConfig
 from penguin.llm.runtime import UnsupportedReasoningVariantError
 from penguin.web.routes import (
-    _apply_cached_provider_model_metadata,
     _apply_reasoning_variant_override,
     _restore_reasoning_variant_override,
 )
+from penguin.web.services import provider_catalog
+from penguin.web.services.provider_catalog import apply_cached_codex_model_metadata
 
 
 def _core_with_model_config(
@@ -129,6 +131,128 @@ def test_anthropic_metadata_variant_rejects_ultra() -> None:
     assert core.model_config.reasoning_effort is None
 
 
+def test_authoritative_empty_capabilities_reject_reasoning_variants() -> None:
+    """An explicitly empty adapter capability prevents heuristic fallback."""
+
+    core = _core_with_model_config("anthropic", "claude-3-7-sonnet")
+    api_client = SimpleNamespace(
+        get_provider_capabilities=lambda: SimpleNamespace(reasoning_efforts=())
+    )
+
+    with pytest.raises(UnsupportedReasoningVariantError):
+        _apply_reasoning_variant_override(core, "ultra", api_client=api_client)
+
+    assert core.model_config.reasoning_enabled is False
+    assert core.model_config.reasoning_effort is None
+
+
+def test_codex_catalog_cache_survives_oauth_token_rotation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stable account identity preserves cached metadata across token refresh."""
+
+    initial = {
+        "type": "oauth",
+        "access": "old-token-aaaaaaaaaaaa",
+        "accountId": "account-stable",
+    }
+    monkeypatch.setitem(
+        provider_catalog._OPENAI_CODEX_MODELS_CACHE,
+        "fetched_at",
+        time.time(),
+    )
+    monkeypatch.setitem(
+        provider_catalog._OPENAI_CODEX_MODELS_CACHE,
+        "cache_key",
+        provider_catalog._openai_codex_cache_key(initial),
+    )
+    monkeypatch.setitem(
+        provider_catalog._OPENAI_CODEX_MODELS_CACHE,
+        "models",
+        {"gpt-5.6-sol": {"reasoning_enabled": True}},
+    )
+    rotated = dict(initial, access="new-token-bbbbbbbbbbbb")
+
+    cached = provider_catalog.codex_oauth_cached_provider_models(rotated)
+
+    assert "gpt-5.6-sol" in cached["openai"]
+
+
+def test_cached_metadata_preserves_explicit_opt_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catalog hydration does not re-enable explicitly disabled reasoning."""
+
+    _patch_cached_codex_metadata(monkeypatch)
+    model_config = ModelConfig(
+        model="gpt-5.6-sol",
+        provider="openai",
+        client_preference="native",
+        reasoning_enabled=False,
+    )
+
+    apply_cached_codex_model_metadata(model_config)
+
+    assert model_config.reasoning_enabled is False
+    assert model_config.reasoning_effort is None
+    assert model_config.get_reasoning_config() is None
+
+
+def test_cached_metadata_preserves_supported_explicit_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catalog defaults do not replace an explicit supported effort."""
+
+    _patch_cached_codex_metadata(monkeypatch)
+    model_config = ModelConfig(
+        model="gpt-5.6-sol",
+        provider="openai",
+        client_preference="native",
+        reasoning_enabled=True,
+        reasoning_effort="high",
+    )
+
+    apply_cached_codex_model_metadata(model_config)
+
+    assert model_config.reasoning_effort == "high"
+    assert model_config.get_reasoning_config() == {"effort": "high"}
+
+
+def _patch_cached_codex_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Install deterministic Codex metadata for hydration tests."""
+
+    oauth_record = {
+        "type": "oauth",
+        "access": "oauth-test-token",
+        "accountId": "account-test",
+    }
+    monkeypatch.setattr(
+        provider_catalog,
+        "get_provider_credentials",
+        lambda: {"openai": oauth_record},
+    )
+    monkeypatch.setattr(
+        provider_catalog,
+        "codex_oauth_cached_provider_models",
+        lambda _record: {
+            "openai": {
+                "gpt-5.6-sol": {
+                    "supported_reasoning_levels": [
+                        "none",
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                        "max",
+                        "ultra",
+                    ],
+                    "default_reasoning_level": "low",
+                }
+            }
+        },
+    )
+
+
 @pytest.mark.asyncio
 async def test_cached_codex_ultra_reaches_openai_safe_prepared_request(
     monkeypatch: pytest.MonkeyPatch,
@@ -141,11 +265,11 @@ async def test_cached_codex_ultra_reaches_openai_safe_prepared_request(
         "accountId": "account-test",
     }
     monkeypatch.setattr(
-        "penguin.web.routes.get_provider_auth_records",
+        "penguin.web.services.provider_catalog.get_provider_credentials",
         lambda: {"openai": oauth_record},
     )
     monkeypatch.setattr(
-        "penguin.web.routes.codex_oauth_cached_provider_models",
+        "penguin.web.services.provider_catalog.codex_oauth_cached_provider_models",
         lambda _record: {
             "openai": {
                 "gpt-5.6-sol": {
@@ -177,7 +301,7 @@ async def test_cached_codex_ultra_reaches_openai_safe_prepared_request(
     api_client = SimpleNamespace(get_provider_capabilities=adapter.get_capabilities)
     core = SimpleNamespace(model_config=model_config)
 
-    _apply_cached_provider_model_metadata(model_config)
+    apply_cached_codex_model_metadata(model_config)
     snapshot = _apply_reasoning_variant_override(
         core,
         "ultra",
