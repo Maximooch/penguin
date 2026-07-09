@@ -12,6 +12,7 @@ from typing import Any
 _WIDELY_SUPPORTED_EFFORTS = ("low", "medium", "high")
 _OPENAI_GPT51_EFFORTS = ("none", "low", "medium", "high")
 _OPENAI_FULL_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh")
+_OPENAI_GPT56_PLUS_EFFORTS = _OPENAI_FULL_EFFORTS + ("max",)
 _ANTHROPIC_STANDARD_EFFORTS = ("low", "medium", "high")
 _ANTHROPIC_MAX_EFFORTS = ("low", "medium", "high", "max")
 
@@ -23,6 +24,32 @@ def _normalized_model_key(model_id: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", value).strip("-")
 
 
+def reasoning_effort_from_metadata(raw_value: Any) -> str | None:
+    """Return a normalized reasoning effort from provider model metadata."""
+
+    value = raw_value.get("effort") if isinstance(raw_value, dict) else raw_value
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    return normalized or None
+
+
+def reasoning_efforts_from_metadata(raw_value: Any) -> tuple[str, ...]:
+    """Return ordered, de-duplicated reasoning efforts from provider metadata."""
+
+    if not isinstance(raw_value, (list, tuple)):
+        return ()
+
+    efforts: list[str] = []
+    seen: set[str] = set()
+    for item in raw_value:
+        effort = reasoning_effort_from_metadata(item)
+        if effort and effort not in seen:
+            seen.add(effort)
+            efforts.append(effort)
+    return tuple(efforts)
+
+
 def openai_reasoning_efforts(model_id: str) -> tuple[str, ...]:
     """Return conservative OpenAI effort variants for a model id."""
     key = _normalized_model_key(model_id)
@@ -31,6 +58,12 @@ def openai_reasoning_efforts(model_id: str) -> tuple[str, ...]:
 
     if re.search(r"gpt-5(?:-[0-9]+)?-pro", key):
         return ("high",)
+
+    if re.search(r"gpt-5-(?:[6-9]|[1-9][0-9])", key) or re.search(
+        r"gpt-[6-9](?:-|$)",
+        key,
+    ):
+        return _OPENAI_GPT56_PLUS_EFFORTS
 
     if re.search(r"gpt-5-(?:[2-9]|[1-9][0-9])", key) or re.search(
         r"gpt-[6-9](?:-|$)",
@@ -91,4 +124,6 @@ __all__ = [
     "native_reasoning_efforts",
     "native_reasoning_variants",
     "openai_reasoning_efforts",
+    "reasoning_effort_from_metadata",
+    "reasoning_efforts_from_metadata",
 ]

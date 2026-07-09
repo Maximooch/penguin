@@ -8,6 +8,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional
 
+from penguin.llm.reasoning_variants import (
+    reasoning_effort_from_metadata,
+    reasoning_efforts_from_metadata,
+)
+
 from penguin.constants import get_default_max_history_tokens
 
 logger = logging.getLogger(__name__)
@@ -74,12 +79,11 @@ class ModelConfig:
 
     # Reasoning tokens support
     reasoning_enabled: bool = False
-    reasoning_effort: Optional[
-        Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
-    ] = None
+    reasoning_effort: Optional[str] = None
     reasoning_max_tokens: Optional[int] = None
     reasoning_exclude: bool = False
     supports_reasoning: Optional[bool] = None
+    supported_reasoning_levels: Optional[list[str]] = None
 
     # OpenRouter debug mode - echoes upstream request body (development only)
     debug_upstream: bool = False
@@ -331,6 +335,7 @@ class ModelConfig:
             "high",
             "xhigh",
             "max",
+            "ultra",
         }
 
         max_output_env = os.getenv("PENGUIN_MAX_OUTPUT_TOKENS") or os.getenv(
@@ -425,6 +430,25 @@ class ModelConfig:
                 "openrouter" if provider == "openrouter" else "native",
             )
 
+        reasoning_config = model_specific.get("reasoning")
+        if not isinstance(reasoning_config, dict):
+            reasoning_config = {}
+
+        supported_reasoning_levels = reasoning_efforts_from_metadata(
+            model_specific.get("supported_reasoning_levels")
+        )
+        configured_reasoning_effort = reasoning_effort_from_metadata(
+            reasoning_config.get("effort")
+        )
+        default_reasoning_effort = reasoning_effort_from_metadata(
+            model_specific.get("default_reasoning_level")
+        )
+        fallback_reasoning_effort = (
+            supported_reasoning_levels[(len(supported_reasoning_levels) - 1) // 2]
+            if supported_reasoning_levels
+            else None
+        )
+
         # Build ModelConfig with model-specific settings
         return cls(
             model=model_name,
@@ -471,18 +495,20 @@ class ModelConfig:
                 if os.getenv("PENGUIN_MAX_HISTORY_TOKENS")
                 else None
             ),
-            reasoning_enabled=model_specific.get("reasoning", {}).get("enabled", False)
-            if isinstance(model_specific.get("reasoning"), dict)
-            else False,
-            reasoning_effort=model_specific.get("reasoning", {}).get("effort")
-            if isinstance(model_specific.get("reasoning"), dict)
-            else None,
-            reasoning_max_tokens=model_specific.get("reasoning", {}).get("max_tokens")
-            if isinstance(model_specific.get("reasoning"), dict)
-            else None,
-            reasoning_exclude=model_specific.get("reasoning", {}).get("exclude", False)
-            if isinstance(model_specific.get("reasoning"), dict)
-            else False,
+            reasoning_enabled=bool(
+                model_specific.get("reasoning_enabled")
+                or reasoning_config.get("enabled", False)
+                or supported_reasoning_levels
+            ),
+            reasoning_effort=(
+                configured_reasoning_effort
+                or default_reasoning_effort
+                or fallback_reasoning_effort
+            ),
+            reasoning_max_tokens=reasoning_config.get("max_tokens"),
+            reasoning_exclude=bool(reasoning_config.get("exclude", False)),
+            supports_reasoning=True if supported_reasoning_levels else None,
+            supported_reasoning_levels=list(supported_reasoning_levels) or None,
             service_tier=normalize_openai_service_tier(
                 model_specific.get("service_tier")
                 or os.getenv("PENGUIN_OPENAI_SERVICE_TIER")

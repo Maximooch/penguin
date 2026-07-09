@@ -13,6 +13,11 @@ from typing import Any
 
 import httpx
 
+from penguin.web.services.reasoning_variants import (
+    reasoning_effort_from_metadata,
+    reasoning_efforts_from_metadata,
+)
+
 _PROVIDER_METADATA: dict[str, dict[str, Any]] = {
     "openai": {
         "name": "OpenAI",
@@ -267,9 +272,7 @@ def _openai_codex_model_input_modalities(raw_value: Any) -> list[str]:
 
 
 def _openai_codex_model_reasoning_enabled(raw_value: Any) -> bool:
-    if not isinstance(raw_value, list):
-        return False
-    return any(isinstance(item, dict) and item.get("effort") for item in raw_value)
+    return bool(reasoning_efforts_from_metadata(raw_value))
 
 # TODO: Look into this later, could be an issue.
 def _openai_codex_cache_key(credential_record: dict[str, Any] | None) -> str | None:
@@ -385,8 +388,14 @@ def codex_oauth_provider_models(
         input_modalities = _openai_codex_model_input_modalities(
             item.get("input_modalities")
         )
-        reasoning_enabled = _openai_codex_model_reasoning_enabled(
+        supported_reasoning_levels = reasoning_efforts_from_metadata(
             item.get("supported_reasoning_levels")
+        )
+        reasoning_enabled = _openai_codex_model_reasoning_enabled(
+            supported_reasoning_levels
+        )
+        default_reasoning_level = reasoning_effort_from_metadata(
+            item.get("default_reasoning_level")
         )
         priority = item.get("priority")
 
@@ -401,6 +410,14 @@ def codex_oauth_provider_models(
             "reasoning_enabled": reasoning_enabled,
             "source": "codex",
         }
+        if supported_reasoning_levels:
+            conf["supported_reasoning_levels"] = list(supported_reasoning_levels)
+        if default_reasoning_level:
+            conf["default_reasoning_level"] = default_reasoning_level
+        if isinstance(item.get("supports_reasoning_summaries"), bool):
+            conf["supports_reasoning_summaries"] = item[
+                "supports_reasoning_summaries"
+            ]
         if isinstance(priority, int):
             conf["priority"] = priority
         discovered[model_id] = conf

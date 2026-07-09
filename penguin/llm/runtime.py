@@ -38,9 +38,20 @@ from .provider_transform import (
     normalize_openai_responses_tool_choice,
     normalize_openai_responses_tools,
 )
-from .reasoning_variants import native_reasoning_efforts
+from .reasoning_variants import (
+    native_reasoning_efforts,
+    reasoning_efforts_from_metadata,
+)
 
-_REASONING_EFFORT_VARIANTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
+_REASONING_EFFORT_VARIANTS = {
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "ultra",
+}
 _REASONING_MAX_VARIANTS = {"max"}
 _REASONING_DISABLE_VARIANTS = {"off"}
 _NATIVE_RESPONSE_COMPLETION_TOOLS = {"finish_response"}
@@ -1207,7 +1218,12 @@ def apply_reasoning_variant_override(
     model_id = str(getattr(model_config, "model", "") or "").strip()
 
     if provider_id in {"openai", "anthropic"}:
-        supported_native_variants = set(native_reasoning_efforts(provider_id, model_id))
+        metadata_variants = reasoning_efforts_from_metadata(
+            getattr(model_config, "supported_reasoning_levels", None)
+        )
+        supported_native_variants = set(
+            metadata_variants or native_reasoning_efforts(provider_id, model_id)
+        )
         if value not in supported_native_variants:
             return None
 

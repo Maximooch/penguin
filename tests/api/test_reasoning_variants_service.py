@@ -1,6 +1,9 @@
 """Unit tests for provider-aware reasoning variant resolution."""
 
-from penguin.web.services.reasoning_variants import native_reasoning_efforts
+from penguin.web.services.reasoning_variants import (
+    native_reasoning_efforts,
+    reasoning_efforts_from_metadata,
+)
 
 
 def test_openai_gpt_54_uses_full_reasoning_effort_surface() -> None:
@@ -23,6 +26,18 @@ def test_openai_gpt_51_limits_reasoning_efforts() -> None:
     )
 
 
+def test_openai_gpt_56_exposes_max_effort() -> None:
+    assert native_reasoning_efforts("openai", "gpt-5.6-sol") == (
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    )
+
+
 def test_openai_gpt_5_pro_is_high_only() -> None:
     assert native_reasoning_efforts("openai", "gpt-5-pro") == ("high",)
 
@@ -38,3 +53,15 @@ def test_anthropic_opus_46_supports_max_effort() -> None:
 
 def test_anthropic_non_effort_model_returns_no_variants() -> None:
     assert native_reasoning_efforts("anthropic", "claude-3-7-sonnet") == ()
+
+
+def test_reasoning_metadata_preserves_custom_efforts_in_order() -> None:
+    assert reasoning_efforts_from_metadata(
+        [
+            {"effort": "Low"},
+            {"effort": "ULTRA"},
+            {"effort": "low"},
+            "max",
+            {"description": "missing effort"},
+        ]
+    ) == ("low", "ultra", "max")

@@ -41,3 +41,57 @@ def test_explicit_reasoning_effort_overrides_support_detection() -> None:
     )
 
     assert config.get_reasoning_config() == {"effort": "xhigh"}
+
+
+def test_codex_model_metadata_sets_supported_reasoning_default() -> None:
+    config = ModelConfig.for_model(
+        model_name="openai/gpt-5.6-sol",
+        provider="openai",
+        model_configs={
+            "openai/gpt-5.6-sol": {
+                "provider": "openai",
+                "model": "gpt-5.6-sol",
+                "reasoning_enabled": True,
+                "default_reasoning_level": "low",
+                "supported_reasoning_levels": [
+                    {"effort": "low"},
+                    {"effort": "medium"},
+                    {"effort": "high"},
+                    {"effort": "xhigh"},
+                    {"effort": "max"},
+                    {"effort": "ultra"},
+                ],
+            }
+        },
+    )
+
+    assert config.supported_reasoning_levels == [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra",
+    ]
+    assert config.get_reasoning_config() == {"effort": "low"}
+
+
+def test_codex_model_metadata_falls_back_to_middle_supported_effort() -> None:
+    config = ModelConfig.for_model(
+        model_name="openai/gpt-5.6-luna",
+        provider="openai",
+        model_configs={
+            "openai/gpt-5.6-luna": {
+                "provider": "openai",
+                "model": "gpt-5.6-luna",
+                "supported_reasoning_levels": [
+                    {"effort": "low"},
+                    {"effort": "medium"},
+                    {"effort": "high"},
+                    {"effort": "max"},
+                ],
+            }
+        },
+    )
+
+    assert config.get_reasoning_config() == {"effort": "medium"}
