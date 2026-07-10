@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import hashlib
 import io
 import json
 import logging
@@ -300,6 +301,7 @@ class APIClient:
         self.model_config = model_config
         self._canonicalize_native_model_id()
         self.system_prompt = None
+        self._system_prompt_fingerprint: Optional[str] = None
         self.logger = logging.getLogger(__name__)
         self.client_handler = None  # Will be set based on preference
         self._last_error: Optional[LLMError] = None
@@ -381,6 +383,9 @@ class APIClient:
     def set_system_prompt(self, prompt: str) -> None:
         """Set the system prompt."""
         self.system_prompt = prompt
+        self._system_prompt_fingerprint = hashlib.sha256(
+            str(prompt).encode("utf-8")
+        ).hexdigest()
         # TODO: How to pass system prompt?
         # Native adapters might have specific methods.
         # LiteLLM expects it in the messages list.
@@ -956,6 +961,9 @@ class APIClient:
             "estimated_input_tokens": estimated_input_tokens,
             "max_output_tokens": max_output_tokens,
             "prompt_cache_key": self._last_prompt_cache_key,
+            "prompt_fingerprint": getattr(
+                self, "_system_prompt_fingerprint", None
+            ),
         }
         self.logger.info(
             "request.accounting request=%s session=%s messages=%s system_chars=%s "

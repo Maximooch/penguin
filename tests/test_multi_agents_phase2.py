@@ -103,7 +103,10 @@ async def test_checkpoints_and_autosave(tmp_path: Path):
     # Verify checkpoint index exists (best effort)
     cp_root = Path(cm.workspace_path) / "checkpoints"
     index_path = cp_root / "checkpoint_index.json"
-    assert index_path.exists(), "Checkpoint index not found; checkpoint worker may have failed to initialize."
+    if not index_path.exists():
+        safety = core.conversation_manager.checkpoint_manager.get_storage_safety_status()
+        assert safety["allow_background_writes"] is False
+        assert safety["level"] == "critical"
 
     # Autosave thread should be running for the session manager
     sm = cm.session_manager

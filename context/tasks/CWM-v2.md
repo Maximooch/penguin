@@ -2,10 +2,28 @@
 
 ## Status
 
-- State: draft task brief
+- State: deferred follow-up PR; not implemented in runtime-reliability branch
 - Created: 2026-05-23
 - Owner: Maximus / Penguin
 - Scope: `penguin/system/` conversation context pipeline, with future shared Penguin/Link package path
+
+## Runtime-Reliability Boundary (2026-07-10)
+
+The current PR owns watchdogs, truthful terminal state, persistence/reconnect,
+tool-loop scheduling, request accounting, prompt modes, stable prompt prefixes,
+and the narrowly scoped native tool-call/tool-result adjacency repair. It does
+not implement CWM v2 history selection, global budgets, tool-output slimming,
+summarization, retrieval, compaction, or persisted-session migration.
+
+The post-reliability baseline is retained at
+`context/tasks/evidence/runtime-reliability-phase3-baseline.json` and prompt
+composition evidence at
+`context/tasks/evidence/runtime-reliability-phase35-prompt-metrics.json`.
+Start CWM v2 from the merged reliability result and compare against those
+repeatable fresh/large-session fixtures; do not compare against the original
+stalled-runtime baseline alone.
+
+Executable follow-up brief: `context/tasks/CWM-v2-followup-goal.md`.
 
 ## Problem
 

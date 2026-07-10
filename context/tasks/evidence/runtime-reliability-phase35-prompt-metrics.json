@@ -1,0 +1,53 @@
+{
+  "phase": "phase3.5",
+  "branch": "fix/runtime-reliability-recovery",
+  "status": "passed",
+  "modes": {
+    "direct": {
+      "prompt_chars": 26769,
+      "estimated_tokens": 6688,
+      "fingerprint": "b4a4ee064fa2cfd2c5f3d2a909b5769b12b1aea9cf5e1e3dcfd95726d4c772a9"
+    },
+    "implement": {
+      "prompt_chars": 26897,
+      "estimated_tokens": 6720,
+      "fingerprint": "6baee0dfe1dc876078ec24d85f2db6ef9db1bb7bd97b58f43b8e277e57a90497"
+    },
+    "review": {
+      "prompt_chars": 24991,
+      "estimated_tokens": 6243,
+      "fingerprint": "38223c082077ddbf8393ee40f2580f83575feb169d6cd07f6dd5c31cf46ed2bd"
+    },
+    "explain": {
+      "prompt_chars": 22224,
+      "estimated_tokens": 5552,
+      "fingerprint": "f6977cb1ae559173f8c91ed3ea95aed0cb566f5e35555a375645793df83956ed"
+    },
+    "compatibility": {
+      "prompt_chars": 52927,
+      "estimated_tokens": 13227,
+      "fingerprint": "47809f881c67432caa3757816908a8855dc9214e9ab63af21886d3e80f693d41"
+    }
+  },
+  "boundaries": {
+    "stable_instruction_prefix": "mode-specific static system prompt with fingerprint",
+    "active_turn_envelope": "[PENGUIN_ACTIVE_TURN] compact JSON appended to the request-local messages",
+    "deferred_history_selection": true,
+    "deferred_compaction": true
+  },
+  "verification": [
+    {
+      "command": "uv run pytest -q tests/prompt/test_runtime_prompt_engineering.py tests/test_prompt_building.py tests/test_system_prompt_snapshot.py tests/test_engine_initialization.py::test_llm_step_injects_plan_mode_notice",
+      "result": "8 passed"
+    },
+    {
+      "command": "python -m compileall -q <touched prompt files>",
+      "result": "passed"
+    }
+  ],
+  "notes": [
+    "The default prompt no longer imposes a fixed investigation-tool quota or one-tool-action-per-turn rule.",
+    "Mode-aware tool guides retain native schemas as authority and use concise optional-surface guidance outside the active mode.",
+    "CWM v2 history selection, global budgets, slimming, summarization, retrieval, and compaction are not implemented here."
+  ]
+}

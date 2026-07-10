@@ -9,19 +9,19 @@ stop‑conditions).  It receives pre‑constructed managers from PenguinCore so 
 remains test‑friendly and avoids hidden globals.
 """
 
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-import json
-import os
-import uuid
 import asyncio
 import copy
-from contextlib import contextmanager
-from contextvars import ContextVar, Token
-from pathlib import Path
-from penguin.constants import UI_ASYNC_SLEEP_SECONDS
+import json
+import logging
+import os
 import re
 import time
+import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar, Token
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 # Removed unused: import multiprocessing as mp
 from typing import (
@@ -35,19 +35,9 @@ from typing import (
     Sequence,
     Tuple,
 )
-from penguin.utils.errors import (
-    LLMEmptyResponseError,
-    NativeToolHistoryPersistenceError,
-)
 
-from penguin.system.conversation_manager import ConversationManager  # type: ignore
-from penguin.utils.parser import (  # type: ignore
-    ActionExecutor,
-    ActionType,
-    CodeActAction,
-    parse_action,
-)
-from penguin.system.state import MessageCategory  # type: ignore
+from penguin.config import TASK_COMPLETION_PHRASE  # Add this import
+from penguin.constants import UI_ASYNC_SLEEP_SECONDS, get_engine_max_iterations_default
 from penguin.llm.api_client import APIClient  # type: ignore
 from penguin.llm.contracts import LLMProviderError
 from penguin.llm.runtime import (
@@ -58,6 +48,10 @@ from penguin.llm.runtime import (
     handler_has_pending_tool_call,
     prepare_responses_tool_kwargs,
 )
+from penguin.system.conversation_manager import ConversationManager  # type: ignore
+from penguin.system.execution_context import get_current_execution_context
+from penguin.system.state import MessageCategory  # type: ignore
+from penguin.system_prompt import build_active_turn_envelope
 from penguin.tools import ToolManager  # type: ignore
 from penguin.tools.runtime import (
     DEFAULT_TOOL_MODEL_OUTPUT_MAX_CHARS,
@@ -67,17 +61,22 @@ from penguin.tools.runtime import (
     execute_tool_calls_ordered,
     image_artifacts_from_action_result,
     legacy_action_result_from_tool_result,
-    tool_call_with_schedule_metadata,
     tool_call_record_from_tool_call,
+    tool_call_with_schedule_metadata,
     tool_calls_from_codeact_actions,
     tool_result_record_from_tool_result,
     tool_results_loop_identity,
 )
-from penguin.config import TASK_COMPLETION_PHRASE  # Add this import
-from penguin.constants import get_engine_max_iterations_default
-from penguin.system.execution_context import get_current_execution_context
-
-import logging
+from penguin.utils.errors import (
+    LLMEmptyResponseError,
+    NativeToolHistoryPersistenceError,
+)
+from penguin.utils.parser import (  # type: ignore
+    ActionExecutor,
+    ActionType,
+    CodeActAction,
+    parse_action,
+)
 
 # MessageBus for inter-agent communication (optional import)
 try:
@@ -3504,38 +3503,70 @@ class Engine:
         self,
         messages: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
-        """Append a plan-mode system notice for the current request context."""
+        """Append the compact active-turn envelope and any plan guard."""
         execution_context = get_current_execution_context()
-        if execution_context is None:
-            return messages
-
-        raw_mode = execution_context.agent_mode
+        raw_mode = (
+            execution_context.agent_mode
+            if execution_context is not None
+            else getattr(self, "prompt_mode", None)
+        )
         mode = raw_mode.strip().lower() if isinstance(raw_mode, str) else None
-        if mode != "plan":
-            return messages
+        mode = mode or "direct"
+        mode = {"build": "implement", "plan": "review"}.get(mode, mode)
 
-        marker = "[PENGUIN_AGENT_MODE_PLAN]"
+        plan_marker = "[PENGUIN_AGENT_MODE_PLAN]"
+        envelope_marker = "[PENGUIN_ACTIVE_TURN]"
+        has_plan_notice = False
+        has_envelope = False
         for message in messages:
             if not isinstance(message, dict):
                 continue
             if message.get("role") != "system":
                 continue
             content = message.get("content")
-            if isinstance(content, str) and marker in content:
-                return messages
+            if isinstance(content, str):
+                has_plan_notice = has_plan_notice or plan_marker in content
+                has_envelope = has_envelope or envelope_marker in content
 
-        notice = (
-            f"{marker} Plan mode is active for this session. You must stay read-only "
-            "and avoid mutating operations. Do not attempt file writes, destructive "
-            "shell commands, or process execution intended to modify state. "
-            "If implementation is required, provide a plan and request build mode."
-        )
-        logger.info(
-            "agent.mode.notice_applied mode=plan session=%s agent=%s",
-            execution_context.session_id,
-            execution_context.agent_id,
-        )
-        return [*messages, {"role": "system", "content": notice}]
+        additions: list[dict[str, str]] = []
+        if raw_mode and raw_mode.strip().lower() == "plan" and not has_plan_notice:
+            additions.append(
+                {
+                    "role": "system",
+                    "content": (
+                        f"{plan_marker} Plan mode is active for this session. You must stay "
+                        "read-only and avoid mutating operations. Do not attempt file "
+                        "writes, destructive shell commands, or process execution intended "
+                        "to modify state. If implementation is required, provide a plan "
+                        "and request build mode."
+                    ),
+                }
+            )
+            logger.info(
+                "agent.mode.notice_applied mode=plan session=%s agent=%s",
+                getattr(execution_context, "session_id", None),
+                getattr(execution_context, "agent_id", None),
+            )
+
+        if not has_envelope:
+            active_task = ""
+            for message in reversed(messages):
+                if message.get("role") != "user":
+                    continue
+                content = message.get("content")
+                if isinstance(content, str):
+                    active_task = content
+                break
+            additions.append(
+                {
+                    "role": "system",
+                    "content": build_active_turn_envelope(
+                        mode=mode,
+                        active_task=active_task,
+                    ),
+                }
+            )
+        return [*messages, *additions] if additions else messages
 
     async def _llm_step(
         self,

@@ -15,7 +15,6 @@ from penguin.tools.editing.registry import (
     get_edit_tool_schema,
 )
 
-
 __all__ = [
     "AGENT_TOOLS",
     "BROWSER_TOOLS",
@@ -1182,26 +1181,59 @@ summary text here; summaries belong on `finish_task`.
 
 
 # =============================================================================
-# ASSEMBLE FULL TOOL GUIDE
+# ASSEMBLE TOOL GUIDES
 # =============================================================================
 
+_COMPACT_TOOL_CATALOG = """
+## Optional Tool Surface
 
-def get_tool_guide() -> str:
-    """Get the complete tool documentation."""
-    return "\n\n".join(
-        [
-            TOOL_INVOCATION_PROTOCOL,
-            MCP_TOOL_GUIDANCE,
-            _build_file_editing_tools(),
-            _build_file_operation_tools(),
-            EXECUTION_TOOLS,
-            SEARCH_TOOLS,
-            MEMORY_TOOLS,
-            TODO_TOOLS,
-            SKILL_TOOLS,
-            QUESTION_TOOLS,
-            AGENT_TOOLS,
-            BROWSER_TOOLS,
-            COMPLETION_TOOLS,
-        ]
+Native provider schemas remain authoritative for memory, todo, skill, agent,
+browser, MCP, and clarification tools. Use them when the task requires them;
+their detailed legacy examples are omitted from the default prompt to keep the
+stable instruction prefix small. Mutation and approval rules still apply.
+"""
+
+
+def get_tool_guide(mode: str | None = None) -> str:
+    """Return a mode-aware tool guide, retaining the full legacy surface on request."""
+
+    if mode is None or str(mode).strip().lower() in {"compatibility", "legacy"}:
+        return "\n\n".join(
+            [
+                TOOL_INVOCATION_PROTOCOL,
+                MCP_TOOL_GUIDANCE,
+                _build_file_editing_tools(),
+                _build_file_operation_tools(),
+                EXECUTION_TOOLS,
+                SEARCH_TOOLS,
+                MEMORY_TOOLS,
+                TODO_TOOLS,
+                SKILL_TOOLS,
+                QUESTION_TOOLS,
+                AGENT_TOOLS,
+                BROWSER_TOOLS,
+                COMPLETION_TOOLS,
+            ]
+        )
+
+    normalized = str(mode).strip().lower()
+    normalized = {"build": "implement", "plan": "review"}.get(
+        normalized,
+        normalized,
     )
+    shared = [
+        TOOL_INVOCATION_PROTOCOL,
+        _build_file_operation_tools(),
+        SEARCH_TOOLS,
+        QUESTION_TOOLS,
+        COMPLETION_TOOLS,
+        _COMPACT_TOOL_CATALOG,
+    ]
+    if normalized in {"implement", "direct"}:
+        shared.insert(1, _build_file_editing_tools())
+        shared.insert(2, EXECUTION_TOOLS)
+    elif normalized == "review":
+        shared.insert(1, _build_file_editing_tools())
+    elif normalized == "explain":
+        shared.insert(2, MEMORY_TOOLS)
+    return "\n\n".join(shared)

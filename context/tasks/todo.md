@@ -252,41 +252,50 @@ Penguin's trust-boundary validation, data-loss handling, safety, accessibility,
 repository instructions, and proportionate verification. See
 <https://github.com/DietrichGebert/ponytail>.
 
-- [ ] Wire the mode-aware prompt builder into the real request path and prove
+- [x] Wire the mode-aware prompt builder into the real request path and prove
   `direct`, `implement`, `review`, `explain`, and compatibility modes materially
   differ.
-- [ ] Make implementation lean and implementation-first; remove the blanket 5–12
+- [x] Make implementation lean and implementation-first; remove the blanket 5–12
   analysis-tool minimum and legacy one-tool-action-per-turn rules.
-- [ ] Resolve contradictory completion/continuation/stopping instructions against the
+- [x] Resolve contradictory completion/continuation/stopping instructions against the
   actual engine contract.
-- [ ] Inventory instructions/tool schemas by tokens and purpose; remove duplication
+- [x] Inventory instructions/tool schemas by tokens and purpose; remove duplication
   and stale guidance without weakening safety, user/repository instructions, or tool
   contracts.
-- [ ] Use task/mode-aware tool exposure or concise descriptions where compatible and
+- [x] Use task/mode-aware tool exposure or concise descriptions where compatible and
   explicitly allow safe parallel read-only inspection.
-- [ ] Separate a stable cacheable instruction prefix from a compact structured
+- [x] Separate a stable cacheable instruction prefix from a compact structured
   active-turn envelope; fingerprint composition and report each overhead section.
-- [ ] Add prompt snapshot/contract and behavioral fixtures; do not implement deferred
+- [x] Add prompt snapshot/contract and behavioral fixtures; do not implement deferred
   CWM history or compaction work.
+
+Phase 3.5 evidence is retained at
+`context/tasks/evidence/runtime-reliability-phase35-prompt-metrics.json`. The active
+implementation path now uses a mode-aware static prefix plus a compact request-local
+envelope; compatibility mode retains the legacy full surface for callers that need it.
 
 #### Phase 4 — CWM v2 separate-PR readiness and handoff
 
-- [ ] Treat Phase 4 in this branch as documentation/evidence handoff only. Begin CWM
+- [x] Treat Phase 4 in this branch as documentation/evidence handoff only. Begin CWM
   v2 implementation only after this PR is independently verified, preferably from
   its merged result, so the two change sets can be tested in isolation.
-- [ ] Lock the PR boundary: this branch owns reliability, persistence, reconnect,
+- [x] Lock the PR boundary: this branch owns reliability, persistence, reconnect,
   request/tool-loop/cache performance, prompt engineering, accounting, and the
   native-adjacency exception only.
-- [ ] Keep CWM v2 final-packet assembly, elastic budgets, historical tool-output
+- [x] Keep CWM v2 final-packet assembly, elastic budgets, historical tool-output
   slimming, optional summarization, retrieval, compaction lifecycle, policies, and
   persisted-session migration in a separate follow-up PR.
-- [ ] Update `context/tasks/CWM-v2.md` with verified post-fix evidence and retain
+- [x] Update `context/tasks/CWM-v2.md` with verified post-fix evidence and retain
   repeatable fresh/large/tool-heavy baselines plus request/adjacency/transcript/tool
   output/attachment/replay fixtures.
-- [ ] Produce a `/goal`-ready follow-up brief with entry criteria, phases, tests,
+- [x] Produce a `/goal`-ready follow-up brief with entry criteria, phases, tests,
   migration/rollback plan, metrics, and exit criteria. Use branch `feat/CWM-v2` or
   `Penguin-Context-Window-Manager-v2` when that follow-up begins.
-- [ ] Confirm this diff contains no CWM v2 implementation beyond native adjacency.
+- [x] Confirm this diff contains no CWM v2 implementation beyond native adjacency.
+
+Phase 4 handoff is complete as documentation/evidence only. The executable brief is
+`context/tasks/CWM-v2-followup-goal.md`; CWM v2 implementation remains deferred to
+its own branch and PR.
 
 #### Program exit criteria
 
