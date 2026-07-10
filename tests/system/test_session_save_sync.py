@@ -135,6 +135,22 @@ class TestSessionSaveSync:
         assert loaded_session.messages[0].content == "Message 1"
         assert loaded_session.messages[1].content == "Response 1"
 
+    def test_readonly_load_does_not_change_active_session_or_cache(self):
+        """Checkpoint lineage reads must not invoke normal LRU/session activation."""
+
+        persisted = self.session_manager.create_session()
+        persisted_id = persisted.id
+        assert self.session_manager.save_session(persisted)
+        active = self.session_manager.create_session()
+        cache_order_before = list(self.session_manager.sessions)
+
+        loaded = self.session_manager.load_session_readonly(persisted_id)
+
+        assert loaded is not None
+        assert loaded.id == persisted_id
+        assert self.session_manager.current_session is active
+        assert list(self.session_manager.sessions) == cache_order_before
+
     def test_auto_save_finds_modified_sessions(self):
         """Test that _auto_save_sessions correctly identifies and saves modified sessions."""
         session = self.session_manager.create_session()

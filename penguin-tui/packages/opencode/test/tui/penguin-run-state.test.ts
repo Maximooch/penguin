@@ -99,6 +99,50 @@ describe("Penguin run state", () => {
     })
   })
 
+  test("marks a run stale when heartbeats arrive without real progress", () => {
+    expect(
+      derivePenguinRunState({
+        localStartedAt: 10_000,
+        now: 30_000,
+        sessionStatus: { type: "busy" },
+        staleAfterMs: 15_000,
+        stream: {
+          lastEventAt: 29_500,
+          lastProgressAt: 12_000,
+          status: "connected",
+          tracksProgress: true,
+        },
+      }),
+    ).toMatchObject({
+      elapsedMs: 20_000,
+      lastEventAgeMs: 500,
+      lastProgressAgeMs: 18_000,
+      type: "stale",
+    })
+  })
+
+  test("does not carry an old run's progress age into a new run", () => {
+    expect(
+      derivePenguinRunState({
+        localStartedAt: 30_000,
+        now: 31_000,
+        pending: true,
+        sessionStatus: { type: "busy" },
+        staleAfterMs: 15_000,
+        stream: {
+          lastEventAt: 30_500,
+          lastProgressAt: 12_000,
+          status: "connected",
+          tracksProgress: true,
+        },
+      }),
+    ).toMatchObject({
+      elapsedMs: 1_000,
+      lastEventAgeMs: 500,
+      type: "running",
+    })
+  })
+
   test("does not mark a completed final response stale after the session is idle", () => {
     expect(
       derivePenguinRunState({

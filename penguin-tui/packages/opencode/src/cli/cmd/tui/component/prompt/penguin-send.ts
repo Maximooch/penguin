@@ -44,14 +44,6 @@ export function recoverPenguinPromptFailure(input: {
   emit: (type: Idle["type"], event: Idle) => void
 }) {
   input.clear()
-  const event = {
-    type: "session.status",
-    properties: {
-      sessionID: input.sessionID,
-      status: { type: "idle" },
-    },
-  } satisfies Idle
-  input.emit(event.type, event)
 }
 
 export function completePenguinPromptSuccess(input: {
@@ -61,15 +53,6 @@ export function completePenguinPromptSuccess(input: {
   emit: (type: Idle["type"], event: Idle) => void
 }) {
   input.clear()
-  const event = {
-    type: "session.status",
-    properties: {
-      messageID: input.messageID,
-      sessionID: input.sessionID,
-      status: { type: "idle" },
-    },
-  } satisfies Idle
-  input.emit(event.type, event)
 }
 
 export function resolveSessionID(value: unknown): string | undefined {
@@ -86,6 +69,7 @@ export async function createPenguinSession(input: {
   directory: string
   fetch: typeof fetch
   model: PenguinModel
+  signal?: AbortSignal
   variant?: string
 }): Promise<string> {
   assertPenguinSendableModel(input.model)
@@ -103,6 +87,7 @@ export async function createPenguinSession(input: {
         modelID: input.model.modelID,
         variant: input.variant,
       }),
+      signal: input.signal,
     })
     .then(async (res) => {
       if (!res.ok) {
@@ -186,13 +171,422 @@ export function emitPenguinOptimisticPrompt(input: {
 export type PenguinPromptSendResult =
   | {
       ok: true
+      terminal: PenguinPromptTerminal
     }
   | {
+      aborted?: boolean
       ok: false
       details?: string
       error?: unknown
       status?: number
+      timedOut?: boolean
     }
+
+export const DEFAULT_PENGUIN_PROMPT_TIMEOUT_MS = 35 * 60 * 1000
+
+export type PenguinPromptTerminal = {
+  aborted: boolean
+  actionCount: number
+  actionResults: unknown[]
+  actions: unknown[]
+  cancelled: boolean
+  completed: boolean
+  continuation?: Record<string, unknown>
+  error?: unknown
+  iterations?: number
+  legacy: boolean
+  partialResponse: string
+  recoverable: boolean
+  response: string
+  runtimeDiagnostics?: Record<string, unknown>
+  state: string
+  status: string
+  terminalReason?: string
+}
+
+export type PenguinPromptContinuation = {
+  action: string
+  endpoint: string
+  label: string
+  method: "POST"
+  request: Record<string, unknown>
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+  return value as Record<string, unknown>
+}
+
+function asText(value: unknown): string {
+  return typeof value === "string" ? value : ""
+}
+
+function asOptionalText(value: unknown): string | undefined {
+  const text = asText(value).trim()
+  return text || undefined
+}
+
+function asBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined
+}
+
+function asNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined
+}
+
+export function parsePenguinPromptTerminal(value: unknown): PenguinPromptTerminal {
+  const data = asRecord(value) ?? {}
+  const truth = [
+    "status",
+    "state",
+    "terminal_reason",
+    "completed",
+    "recoverable",
+    "aborted",
+    "cancelled",
+    "continuation",
+    "actions",
+  ].some((key) => key in data)
+  const legacy = !truth
+  const rawStatus = asOptionalText(data.status)
+  const cancelled = asBoolean(data.cancelled) ?? rawStatus === "cancelled"
+  const aborted = asBoolean(data.aborted) ?? rawStatus === "aborted"
+  const explicitCompleted = asBoolean(data.completed)
+  const completed =
+    explicitCompleted ?? (legacy || rawStatus === "completed" || rawStatus === "success" || rawStatus === "succeeded")
+  const status = rawStatus ?? (completed ? "completed" : cancelled ? "cancelled" : aborted ? "aborted" : "incomplete")
+  const state =
+    asOptionalText(data.state) ?? (completed ? "completed" : cancelled ? "cancelled" : aborted ? "aborted" : "failed")
+  const actionResults = Array.isArray(data.action_results) ? data.action_results : []
+  const actions = Array.isArray(data.actions) ? data.actions : []
+  const continuation = asRecord(data.continuation)
+  const runtimeDiagnostics = asRecord(data.runtime_diagnostics)
+  const response = asText(data.response)
+  const partialResponse = asText(data.partial_response) || (completed ? "" : response)
+
+  return {
+    aborted,
+    actionCount: asNumber(data.action_count) ?? actionResults.length,
+    actionResults,
+    actions,
+    cancelled,
+    completed,
+    continuation,
+    error: data.error,
+    iterations: asNumber(data.iterations),
+    legacy,
+    partialResponse,
+    recoverable: asBoolean(data.recoverable) ?? continuation?.available === true,
+    response,
+    runtimeDiagnostics,
+    state,
+    status,
+    terminalReason: asOptionalText(data.terminal_reason),
+  }
+}
+
+function humanizePenguinTerminalValue(value: string): string {
+  return value.replaceAll("_", " ").replaceAll("-", " ").replace(/\s+/g, " ").trim()
+}
+
+export function getPenguinPromptTerminalActionLabels(terminal: PenguinPromptTerminal): string[] {
+  const entries = terminal.actions.flatMap((value) => {
+    if (typeof value === "string" && value.trim()) return [{ key: value.trim(), label: value.trim() }]
+    const action = asRecord(value)
+    const label = asOptionalText(action?.label) ?? asOptionalText(action?.action)
+    const key = asOptionalText(action?.action) ?? label
+    return label && key ? [{ key, label }] : []
+  })
+  const continuation = terminal.continuation
+  const continuationAction = continuation?.available === true ? asOptionalText(continuation.action) : undefined
+  const seen = new Set(entries.flatMap((entry) => [entry.key.toLowerCase(), entry.label.toLowerCase()]))
+  const labels = [...new Set(entries.map((entry) => entry.label))]
+  if (!continuationAction || seen.has(continuationAction.toLowerCase())) return labels
+  return [...labels, continuationAction]
+}
+
+export function formatPenguinPromptTerminal(terminal: PenguinPromptTerminal): string {
+  const reason = humanizePenguinTerminalValue(terminal.terminalReason ?? terminal.status)
+  const prefix = terminal.cancelled || terminal.aborted ? "Penguin cancelled" : "Penguin stopped"
+  const labels = getPenguinPromptTerminalActionLabels(terminal)
+  if (labels.length === 0) return `${prefix}: ${reason}`
+  return `${prefix}: ${reason} · available: ${labels.join(", ")}`
+}
+
+function compactPenguinTerminalText(value: string, limit = 160): string {
+  const compact = value.replace(/\s+/g, " ").trim()
+  if (compact.length <= limit) return compact
+  return `${compact.slice(0, Math.max(0, limit - 1))}…`
+}
+
+function penguinTerminalErrorSummary(error: unknown): string | undefined {
+  if (typeof error === "string" && error.trim()) return compactPenguinTerminalText(error)
+  const record = asRecord(error)
+  const code = asOptionalText(record?.code)
+  const message = asOptionalText(record?.message)
+  if (code && message) return `${humanizePenguinTerminalValue(code)}: ${compactPenguinTerminalText(message)}`
+  return message ? compactPenguinTerminalText(message) : code ? humanizePenguinTerminalValue(code) : undefined
+}
+
+export function isPenguinTerminalInterruptible(terminal: PenguinPromptTerminal | undefined): boolean {
+  if (!terminal || terminal.completed) return false
+  return terminal.status === "client_timeout" || terminal.status === "request_gate_timeout" || terminal.state === "stalled"
+}
+
+export function formatPenguinPromptTerminalDetails(terminal: PenguinPromptTerminal): string {
+  const lines = [formatPenguinPromptTerminal(terminal)]
+  const partial = compactPenguinTerminalText(terminal.partialResponse)
+  if (partial) lines.push(`partial: ${partial}`)
+  if (terminal.actionCount > 0) lines.push(`tool results: ${terminal.actionCount}`)
+  const error = penguinTerminalErrorSummary(terminal.error)
+  if (error) lines.push(`detail: ${error}`)
+  if (isPenguinTerminalInterruptible(terminal)) lines.push("Esc interrupt")
+  return lines.join("\n")
+}
+
+export function getPenguinPromptContinuation(
+  terminal: PenguinPromptTerminal | undefined,
+): PenguinPromptContinuation | undefined {
+  const continuation = terminal?.continuation
+  if (!continuation || continuation.available !== true) return undefined
+  const method = asOptionalText(continuation.method)?.toUpperCase()
+  const endpoint = asOptionalText(continuation.endpoint)
+  const request = asRecord(continuation.request)
+  const action = asOptionalText(continuation.action)
+  if (method !== "POST" || !endpoint || !request || !action) return undefined
+  const label = asOptionalText(continuation.label) ?? action
+  return {
+    action,
+    endpoint,
+    label,
+    method,
+    request,
+  }
+}
+
+function createPenguinPromptDeadline(input: { signal?: AbortSignal; timeoutMs?: number }) {
+  const controller = new AbortController()
+  const state = { timedOut: false }
+  const relay = () => controller.abort(input.signal?.reason)
+  if (input.signal?.aborted) relay()
+  if (!input.signal?.aborted) input.signal?.addEventListener("abort", relay, { once: true })
+  const timeoutMs = input.timeoutMs ?? DEFAULT_PENGUIN_PROMPT_TIMEOUT_MS
+  const timer = setTimeout(
+    () => {
+      state.timedOut = true
+      controller.abort(new DOMException(`Penguin prompt timed out after ${timeoutMs}ms`, "TimeoutError"))
+    },
+    Math.max(0, timeoutMs),
+  )
+
+  return {
+    clear() {
+      clearTimeout(timer)
+      input.signal?.removeEventListener("abort", relay)
+    },
+    controller,
+    state,
+  }
+}
+
+export async function abortPenguinSession(input: {
+  baseUrl: string | URL
+  directory?: string
+  fetch: typeof fetch
+  sessionID: string
+  timeoutMs?: number
+}): Promise<boolean> {
+  const url = new URL(`/session/${encodeURIComponent(input.sessionID)}/abort`, input.baseUrl)
+  if (input.directory) url.searchParams.set("directory", input.directory)
+  const deadline = createPenguinPromptDeadline({ timeoutMs: input.timeoutMs ?? 5_000 })
+  try {
+    const res = await input.fetch(url, {
+      method: "POST",
+      signal: deadline.controller.signal,
+    })
+    return res.ok
+  } catch {
+    return false
+  } finally {
+    deadline.clear()
+  }
+}
+
+async function parsePenguinPromptResponse(res: Response): Promise<PenguinPromptSendResult> {
+  if (!res.ok) {
+    return {
+      ok: false,
+      status: res.status,
+      details: await res.text().catch(() => ""),
+    }
+  }
+
+  const details = await res.text().catch((error) => error)
+  if (typeof details !== "string") {
+    return {
+      ok: false,
+      status: res.status,
+      error: details,
+      details: "Failed to read the Penguin terminal response.",
+    }
+  }
+  if (!details.trim()) {
+    return { ok: false, status: res.status, details: "Penguin returned an empty 2xx terminal response." }
+  }
+  try {
+    const parsed = JSON.parse(details)
+    const data = asRecord(parsed)
+    if (!data) throw new Error("expected a JSON object")
+    validatePenguinPromptTerminalResponse(data)
+    return {
+      ok: true,
+      terminal: parsePenguinPromptTerminal(data),
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      status: res.status,
+      details: `Invalid Penguin terminal response: ${error instanceof Error ? error.message : String(error)}`,
+    }
+  }
+}
+
+const COMPLETED_TERMINAL_STATUSES = new Set(["completed", "implicit_completion", "pending_review", "success"])
+const MAX_ITERATION_TERMINAL_STATUSES = new Set(["max_iterations", "iterations_exceeded"])
+const PROVIDER_EXHAUSTED_TERMINAL_STATUSES = new Set([
+  "provider_recoverable_error",
+  "provider_timeout",
+  "provider_disconnect",
+  "request_timeout",
+])
+const STALLED_TERMINAL_STATUSES = new Set([
+  "llm_empty_response_error",
+  "repeated_empty_tool_only_iterations",
+  "repeated_empty_response",
+  "repeated_response",
+  "request_gate_timeout",
+  "tool_result_echo",
+  "stalled",
+])
+
+function expectedPenguinTerminalState(status: string, input: { aborted: boolean; cancelled: boolean }): string {
+  if (input.cancelled) return "cancelled"
+  if (input.aborted) return "aborted"
+  if (COMPLETED_TERMINAL_STATUSES.has(status)) return "completed"
+  if (status === "stopped") return "stopped"
+  if (MAX_ITERATION_TERMINAL_STATUSES.has(status)) return "max_iterations"
+  if (PROVIDER_EXHAUSTED_TERMINAL_STATUSES.has(status)) return "provider_exhausted"
+  if (STALLED_TERMINAL_STATUSES.has(status)) return "stalled"
+  if (status === "cancelled") return "cancelled"
+  if (status === "aborted") return "aborted"
+  return "failed"
+}
+
+function validatePenguinPromptTerminalResponse(data: Record<string, unknown>) {
+  for (const key of ["status", "state", "completed", "recoverable"] as const) {
+    if (!(key in data)) throw new Error(`missing required terminal field ${key}`)
+  }
+  const status = asOptionalText(data.status)
+  const state = asOptionalText(data.state)
+  const completed = asBoolean(data.completed)
+  const recoverable = asBoolean(data.recoverable)
+  if (!status || !state || completed === undefined || recoverable === undefined) {
+    throw new Error("terminal truth fields have invalid types")
+  }
+  const aborted = asBoolean(data.aborted) ?? false
+  const cancelled = asBoolean(data.cancelled) ?? false
+  if (aborted && cancelled) throw new Error("terminal cannot be both aborted and cancelled")
+  if (status === "aborted" && !aborted) throw new Error("aborted status contradicts aborted=false")
+  if (status === "cancelled" && !cancelled) throw new Error("cancelled status contradicts cancelled=false")
+  const expectedState = expectedPenguinTerminalState(status, { aborted, cancelled })
+  if (state !== expectedState) throw new Error(`terminal state ${state} contradicts status ${status}`)
+  if (completed && state !== "completed") throw new Error("completed=true contradicts terminal state")
+  if (!completed && state === "completed") throw new Error("completed=false contradicts terminal state")
+  if (completed && recoverable) throw new Error("completed terminal cannot be recoverable")
+  if (completed && (aborted || cancelled)) throw new Error("completed terminal cannot be aborted or cancelled")
+  if (completed && data.error !== undefined && data.error !== null) {
+    throw new Error("completed terminal cannot contain an error")
+  }
+  const continuation = asRecord(data.continuation)
+  if (completed && continuation?.available === true) {
+    throw new Error("completed terminal cannot advertise continuation")
+  }
+  if (!recoverable && continuation?.available === true) {
+    throw new Error("non-recoverable terminal cannot advertise continuation")
+  }
+  const actionResults = Array.isArray(data.action_results) ? data.action_results : undefined
+  const actionCount = asNumber(data.action_count)
+  if (actionResults && actionCount !== undefined && actionCount !== actionResults.length) {
+    throw new Error("action_count contradicts action_results")
+  }
+  if (!completed && status === "completed") throw new Error("completed status contradicts completed=false")
+}
+
+export async function fetchPenguinTerminalState(input: {
+  baseUrl: string | URL
+  directory?: string
+  fetch: typeof fetch
+  sessionID: string
+  signal?: AbortSignal
+}): Promise<PenguinPromptTerminal | undefined> {
+  const url = new URL(`/api/v1/session/${encodeURIComponent(input.sessionID)}/terminal`, input.baseUrl)
+  if (input.directory) url.searchParams.set("directory", input.directory)
+  const res = await input.fetch(url, { signal: input.signal })
+  if (res.status === 404) return undefined
+  const result = await parsePenguinPromptResponse(res)
+  if (result.ok) return result.terminal
+  throw new Error(result.details || `Terminal hydration failed (${result.status ?? "transport"})`)
+}
+
+export async function sendPenguinContinuation(input: {
+  baseUrl: string | URL
+  fetch: typeof fetch
+  signal?: AbortSignal
+  terminal: PenguinPromptTerminal
+  timeoutMs?: number
+}): Promise<PenguinPromptSendResult> {
+  const continuation = getPenguinPromptContinuation(input.terminal)
+  if (!continuation) {
+    return {
+      ok: false,
+      details: "The terminal response did not provide a valid continuation request.",
+    }
+  }
+
+  const base = new URL(input.baseUrl)
+  const url = new URL(continuation.endpoint, base)
+  if (url.origin !== base.origin) {
+    return {
+      ok: false,
+      details: "Refusing a cross-origin Penguin continuation request.",
+    }
+  }
+
+  const deadline = createPenguinPromptDeadline({
+    signal: input.signal,
+    timeoutMs: input.timeoutMs,
+  })
+  try {
+    const res = await input.fetch(url, {
+      method: continuation.method,
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(continuation.request),
+      signal: deadline.controller.signal,
+    })
+    return await parsePenguinPromptResponse(res)
+  } catch (error) {
+    return {
+      aborted: deadline.controller.signal.aborted && !deadline.state.timedOut,
+      ok: false,
+      error,
+      timedOut: deadline.state.timedOut,
+    }
+  } finally {
+    deadline.clear()
+  }
+}
 
 export async function sendPenguinPrompt(input: {
   agentMode: PenguinAgentMode
@@ -205,7 +599,9 @@ export async function sendPenguinPrompt(input: {
   parts: PenguinPromptPart[]
   serviceTier?: string
   sessionID: string
+  signal?: AbortSignal
   text: string
+  timeoutMs?: number
   variant?: string
 }): Promise<PenguinPromptSendResult> {
   if (isPenguinSyntheticModel(input.model)) {
@@ -215,6 +611,10 @@ export async function sendPenguinPrompt(input: {
     }
   }
   const url = new URL("/api/v1/chat/message", input.baseUrl)
+  const deadline = createPenguinPromptDeadline({
+    signal: input.signal,
+    timeoutMs: input.timeoutMs,
+  })
   try {
     const res = await input.fetch(url, {
       method: "POST",
@@ -234,22 +634,32 @@ export async function sendPenguinPrompt(input: {
         client_message_id: input.messageID,
         parts: input.parts,
       }),
+      signal: deadline.controller.signal,
     })
-    if (res.ok) return { ok: true }
-    return {
-      ok: false,
-      status: res.status,
-      details: await res.text().catch(() => ""),
-    }
+    return await parsePenguinPromptResponse(res)
   } catch (error) {
     return {
+      aborted: deadline.controller.signal.aborted && !deadline.state.timedOut,
       ok: false,
       error,
+      timedOut: deadline.state.timedOut,
     }
+  } finally {
+    deadline.clear()
   }
 }
 
-export function formatPenguinPromptFailure(input: { status?: number; details?: string; error?: unknown }) {
+export function formatPenguinPromptFailure(input: {
+  aborted?: boolean
+  status?: number
+  details?: string
+  error?: unknown
+  timedOut?: boolean
+}) {
+  if (input.timedOut) {
+    return "Failed to send message: the Penguin request timed out. The session may still be recoverable; check status before retrying."
+  }
+  if (input.aborted) return "Penguin request cancelled."
   const details = input.details?.trim()
   if (details) return `Failed to send message: ${details}`
 

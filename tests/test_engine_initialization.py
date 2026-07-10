@@ -19,6 +19,10 @@ from penguin.llm.contracts import (
 )
 from penguin.system.execution_context import ExecutionContext, execution_context_scope
 from penguin.system.state import Session
+from penguin.utils.errors import (
+    LLMEmptyResponseError,
+    NativeToolHistoryPersistenceError,
+)
 
 
 def test_engine_initializes_without_run_state_attribute_error() -> None:
@@ -76,14 +80,14 @@ def test_tool_output_artifact_dir_sanitizes_session_id(tmp_path) -> None:
     engine = Engine.__new__(Engine)
     cm = SimpleNamespace(
         workspace_path=str(tmp_path),
-        get_current_session=MagicMock(return_value=SimpleNamespace(id="../bad/session")),
+        get_current_session=MagicMock(
+            return_value=SimpleNamespace(id="../bad/session")
+        ),
     )
 
     artifact_dir = engine._tool_output_artifact_dir(cast(Any, cm))
 
-    assert artifact_dir == (
-        tmp_path / "conversations" / "tool-results" / "bad_session"
-    )
+    assert artifact_dir == (tmp_path / "conversations" / "tool-results" / "bad_session")
 
 
 @pytest.mark.asyncio
@@ -291,9 +295,7 @@ async def test_call_llm_with_retry_replays_retryable_provider_failure_once() -> 
 
 
 @pytest.mark.asyncio
-async def test_call_llm_with_retry_rejects_partial_assistant_provider_failure() -> (
-    None
-):
+async def test_call_llm_with_retry_rejects_partial_assistant_provider_failure() -> None:
     engine = Engine(
         EngineSettings(),
         MagicMock(),
@@ -529,6 +531,38 @@ async def test_llm_step_aborts_stream_on_provider_failure() -> None:
     )
 
     with pytest.raises(LLMProviderError):
+        await engine._llm_step(
+            tools_enabled=True,
+            streaming=True,
+            stream_callback=AsyncMock(),
+            agent_id="default",
+        )
+
+    cm.core.abort_streaming_message.assert_called_once()
+    assert cm.core.abort_streaming_message.call_args.kwargs["agent_id"] == "default"
+
+
+@pytest.mark.asyncio
+async def test_llm_step_aborts_stream_on_empty_response_failure() -> None:
+    cm = MagicMock()
+    cm.conversation.get_formatted_messages.return_value = [
+        {"role": "user", "content": "hi"}
+    ]
+    cm.get_current_session.return_value = SimpleNamespace(id="session_1")
+    cm.core = MagicMock()
+    engine = Engine(
+        EngineSettings(),
+        cm,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+    )
+    engine._prepare_responses_tools = MagicMock(return_value={})  # type: ignore[method-assign]
+    engine._call_llm_with_retry = AsyncMock(  # type: ignore[method-assign]
+        side_effect=LLMEmptyResponseError("provider returned no usable output")
+    )
+
+    with pytest.raises(LLMEmptyResponseError):
         await engine._llm_step(
             tools_enabled=True,
             streaming=True,
@@ -937,6 +971,7 @@ async def test_run_response_uses_request_scoped_api_client_override() -> None:
     )
 
     assert result["assistant_response"] == "override"
+    assert result["status"] == "completed"
     assert default_api.get_response.await_count == 0
     assert override_api.get_response.await_count == 1
 
@@ -992,6 +1027,45 @@ async def test_run_response_repairs_malformed_partial_tool_output() -> None:
     assert conversation.add_message.call_args.kwargs["metadata"]["type"] == (
         "malformed_action_output"
     )
+
+
+@pytest.mark.asyncio
+async def test_run_response_surfaces_native_tool_history_failure_without_retrying() -> (
+    None
+):
+    """The direct response loop preserves the non-retryable history failure."""
+
+    session = SimpleNamespace(id="session-a", messages=[])
+    conversation = SimpleNamespace(
+        session=session,
+        prepare_conversation=MagicMock(),
+        save=MagicMock(return_value=True),
+    )
+    conversation_manager = SimpleNamespace(
+        core=None,
+        conversation=conversation,
+        get_agent_conversation=lambda *args, **kwargs: conversation,
+        save=MagicMock(return_value=True),
+        get_current_session=MagicMock(return_value=session),
+        agent_context_windows={},
+    )
+    engine = Engine(
+        EngineSettings(),
+        cast(Any, conversation_manager),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+    )
+    engine._llm_step = AsyncMock(  # type: ignore[method-assign]
+        side_effect=NativeToolHistoryPersistenceError(["call_pwd"])
+    )
+
+    result = await engine.run_response("continue", streaming=False, max_iterations=2)
+
+    engine._llm_step.assert_awaited_once()
+    assert result["status"] == "native_tool_history_error"
+    assert result["recoverable"] is False
+    assert result["error"]["code"] == "NATIVE_TOOL_HISTORY_PERSISTENCE_FAILED"
 
 
 @pytest.mark.asyncio

@@ -35,7 +35,10 @@ from typing import (
     Sequence,
     Tuple,
 )
-from penguin.utils.errors import LLMEmptyResponseError
+from penguin.utils.errors import (
+    LLMEmptyResponseError,
+    NativeToolHistoryPersistenceError,
+)
 
 from penguin.system.conversation_manager import ConversationManager  # type: ignore
 from penguin.utils.parser import (  # type: ignore
@@ -131,9 +134,7 @@ def _truncations_from_tracker(tracker: Any) -> Dict[str, Any]:
                     "category": category.name
                     if hasattr(category, "name")
                     else str(category),
-                    "messages_removed": int(
-                        getattr(event, "messages_removed", 0) or 0
-                    ),
+                    "messages_removed": int(getattr(event, "messages_removed", 0) or 0),
                     "tokens_freed": int(getattr(event, "tokens_freed", 0) or 0),
                     "timestamp": getattr(event, "timestamp", ""),
                 }
@@ -1344,14 +1345,18 @@ class Engine:
             logger.warning(
                 f"[WALLET_GUARD] Breaking {mode}: model is echoing tool results as text"
             )
-            return True, "implicit_completion" if mode == "task" else None
+            return True, "tool_result_echo"
 
         # Check for repeated/looping responses
         if loop_state.check_repeated(last_response):
             logger.warning(
                 f"[WALLET_GUARD] Breaking {mode}: response repeated {loop_state.repeat_count} times"
             )
-            return True, "implicit_completion" if mode == "task" else None
+            return True, (
+                "repeated_empty_response"
+                if not stripped_response
+                else "repeated_response"
+            )
 
         # Check for empty/trivial responses
         # Tool-bearing turns with assistant text still reset the trivial counter.
@@ -1383,7 +1388,7 @@ class Engine:
             logger.warning(
                 f"[WALLET_GUARD] Breaking {mode}: {loop_state.empty_response_count} consecutive trivial responses"
             )
-            return True, "implicit_completion" if mode == "task" else None
+            return True, "repeated_empty_response"
 
         return False, None
 
@@ -1574,6 +1579,7 @@ class Engine:
         all_action_results = []
         latest_usage: Dict[str, Any] = {}
         completion_status = config.default_completion_status
+        terminal_error: Optional[Dict[str, Any]] = None
 
         # Reset loop state for this run
         self._get_loop_state().reset()
@@ -1810,17 +1816,43 @@ class Engine:
                     completion_status = guard_status or "implicit_completion"
                     break
 
-            # If loop exhausted iterations
-            if self.current_iteration >= max_iterations:
+            else:
+                # The loop budget was genuinely exhausted. Completion on the
+                # final allowed iteration exits through ``break`` above.
                 completion_status = (
                     "max_iterations"
                     if config.mode == "response"
                     else "iterations_exceeded"
                 )
 
+        except NativeToolHistoryPersistenceError as e:
+            logger.error("Native tool history persistence failed: %s", e)
+            completion_status = "native_tool_history_error"
+            terminal_error = e.to_dict()
+            if config.message_callback:
+                await config.message_callback(str(e), "error")
+
+            if config.enable_events and config.task_metadata:
+                await self._publish_task_event(
+                    "FAILED",
+                    config.task_metadata,
+                    {
+                        "error": str(e),
+                        "recoverable": False,
+                        "code": e.code,
+                        "iteration": self.current_iteration,
+                        "max_iterations": max_iterations,
+                    },
+                )
+
         except LLMEmptyResponseError as e:
             logger.warning(f"LLM returned empty response during {config.mode}: {e}")
             completion_status = "llm_empty_response_error"
+            terminal_error = {
+                "code": "llm_empty_response",
+                "message": str(e),
+                "suggested_action": "Resume from the durable conversation state.",
+            }
             if config.message_callback:
                 await config.message_callback(f"LLM Empty Response: {str(e)}", "error")
 
@@ -1866,7 +1898,7 @@ class Engine:
                     },
                 )
 
-        return {
+        result = {
             "assistant_response": last_response,
             "iterations": self.current_iteration,
             "action_results": all_action_results,
@@ -1874,6 +1906,13 @@ class Engine:
             "status": completion_status,
             "execution_time": (datetime.utcnow() - self.start_time).total_seconds(),
         }
+        if completion_status == "llm_empty_response_error":
+            result["recoverable"] = True
+            result["error"] = terminal_error
+        elif completion_status == "native_tool_history_error":
+            result["recoverable"] = False
+            result["error"] = terminal_error
+        return result
 
     def _check_termination_signal(
         self,
@@ -2093,6 +2132,7 @@ class Engine:
 
                 # Check for external stop conditions
                 if await self._check_stop():
+                    final_status = "stopped"
                     break
 
                 # NOTE: Pre-iteration finalize removed - post-iteration finalize (after _llm_step) handles cleanup
@@ -2200,8 +2240,9 @@ class Engine:
                         )
                     break
 
-            # Determine final status
-            if final_status == "completed" and self.current_iteration >= max_iters:
+            else:
+                # Only natural loop exhaustion is max-iterations. Completion
+                # on iteration ``max_iters`` exits through ``break`` above.
                 final_status = "max_iterations"
 
             return {
@@ -2210,6 +2251,38 @@ class Engine:
                 "action_results": all_action_results,
                 "usage": latest_usage,
                 "status": final_status,
+                "execution_time": (datetime.utcnow() - self.start_time).total_seconds(),
+            }
+
+        except NativeToolHistoryPersistenceError as e:
+            logger.error(
+                "Native tool history persistence failed in run_response: %s", e
+            )
+            return {
+                "assistant_response": last_response,
+                "iterations": self.current_iteration,
+                "action_results": all_action_results,
+                "usage": latest_usage,
+                "status": "native_tool_history_error",
+                "recoverable": False,
+                "error": e.to_dict(),
+                "execution_time": (datetime.utcnow() - self.start_time).total_seconds(),
+            }
+
+        except LLMEmptyResponseError as e:
+            logger.warning("LLM returned empty response in run_response: %s", e)
+            return {
+                "assistant_response": last_response,
+                "iterations": self.current_iteration,
+                "action_results": all_action_results,
+                "usage": latest_usage,
+                "status": "llm_empty_response_error",
+                "recoverable": True,
+                "error": {
+                    "code": "llm_empty_response",
+                    "message": str(e),
+                    "suggested_action": ("Resume from the durable conversation state."),
+                },
                 "execution_time": (datetime.utcnow() - self.start_time).total_seconds(),
             }
 
@@ -2723,6 +2796,8 @@ class Engine:
         api_client: APIClient,
         tool_manager,
         cm: ConversationManager,
+        *,
+        assistant_message_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Handle Responses API tool_call if one was triggered.
 
@@ -2738,6 +2813,7 @@ class Engine:
             api_client,
             tool_manager,
             cm,
+            assistant_message_id=assistant_message_id,
         )
         return results[0] if results else None
 
@@ -2783,12 +2859,7 @@ class Engine:
             workspace_path = getattr(cm, "workspace_path", None)
             if workspace_path is None:
                 return None
-            return (
-                Path(workspace_path)
-                / "conversations"
-                / "tool-results"
-                / session_id
-            )
+            return Path(workspace_path) / "conversations" / "tool-results" / session_id
         except Exception:
             logger.debug(
                 "Failed to resolve tool output artifact directory", exc_info=True
@@ -2821,6 +2892,8 @@ class Engine:
         api_client: APIClient,
         tool_manager,
         cm: ConversationManager,
+        *,
+        assistant_message_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Handle all pending Responses API tool calls.
 
@@ -2832,24 +2905,28 @@ class Engine:
         Returns:
             Action result dicts for executed tools.
         """
-        return await execute_pending_tool_calls(
-            api_client=api_client,
-            tool_manager=tool_manager,
-            persist_tool_call_record=lambda tool_call: self._persist_tool_call_record(
+        batch_persister = self._native_tool_batch_persister(
+            cm,
+            assistant_message_id=assistant_message_id,
+        )
+        kwargs: Dict[str, Any] = {
+            "api_client": api_client,
+            "tool_manager": tool_manager,
+            "persist_tool_call_record": lambda tool_call: self._persist_tool_call_record(
                 cm,
                 tool_call,
             ),
-            persist_tool_result_record=lambda tool_call,
+            "persist_tool_result_record": lambda tool_call,
             tool_result: self._persist_tool_result_record(
                 cm,
                 tool_call,
                 tool_result,
             ),
-            execution_policy=self._tool_execution_policy(
+            "execution_policy": self._tool_execution_policy(
                 cm,
                 catch_exceptions=True,
             ),
-            persist_action_result=lambda action_result,
+            "persist_action_result": lambda action_result,
             tool_context: cm.add_action_result(
                 action_type=action_result["action"],
                 result=action_result["result"],
@@ -2857,23 +2934,98 @@ class Engine:
                 tool_call_id=tool_context.get("tool_call_id"),
                 tool_arguments=tool_context.get("tool_arguments"),
             ),
-            emit_action_start=(
+            "emit_action_start": (
                 (lambda payload: cm.core.emit_ui_event("action", payload))
                 if hasattr(cm, "core") and cm.core
                 else None
             ),
-            emit_action_result=(
+            "emit_action_result": (
                 (lambda payload: cm.core.emit_ui_event("action_result", payload))
                 if hasattr(cm, "core") and cm.core
                 else None
             ),
-            emit_tool_timeline=lambda action_result: self._emit_tool_event(
+            "emit_tool_timeline": lambda action_result: self._emit_tool_event(
                 cm, action_result
             ),
-            persist_image_artifacts=lambda action_result: (
+            "persist_image_artifacts": lambda action_result: (
                 self._persist_tool_image_artifacts(cm, action_result)
             ),
-        )
+        }
+        if batch_persister is not None:
+            kwargs["persist_native_tool_batch"] = batch_persister
+        return await execute_pending_tool_calls(**kwargs)
+
+    @staticmethod
+    def _conversation_message_ids(cm: ConversationManager) -> set[str]:
+        """Return current canonical message ids without making transcript guesses."""
+
+        conversation = getattr(cm, "conversation", None)
+        session = getattr(conversation, "session", None)
+        messages = getattr(session, "messages", None)
+        if not isinstance(messages, list):
+            return set()
+        return {
+            str(getattr(message, "id", "") or "").strip()
+            for message in messages
+            if str(getattr(message, "id", "") or "").strip()
+        }
+
+    def _new_current_turn_assistant_message_id(
+        self,
+        cm: ConversationManager,
+        *,
+        pre_finalize_message_ids: set[str],
+    ) -> Optional[str]:
+        """Return only an assistant appended by this LLM turn's finalization."""
+
+        conversation = getattr(cm, "conversation", None)
+        session = getattr(conversation, "session", None)
+        messages = getattr(session, "messages", None)
+        if not isinstance(messages, list) or not messages:
+            return None
+        tail = messages[-1]
+        message_id = str(getattr(tail, "id", "") or "").strip()
+        if (
+            getattr(tail, "role", None) == "assistant"
+            and message_id
+            and message_id not in pre_finalize_message_ids
+        ):
+            return message_id
+        return None
+
+    @staticmethod
+    def _native_tool_batch_persister(
+        cm: ConversationManager,
+        *,
+        assistant_message_id: Optional[str],
+    ) -> Optional[Callable[[List[ToolCall], List[Dict[str, Any]]], bool]]:
+        """Build the atomic-native-history hook when the conversation supports it."""
+
+        conversation = getattr(cm, "conversation", None)
+        appender = getattr(conversation, "append_native_tool_batch", None)
+        if not callable(appender):
+            return None
+
+        def _persist(
+            tool_calls: List[ToolCall],
+            action_results: List[Dict[str, Any]],
+        ) -> bool:
+            appended = appender(
+                tool_calls=tool_calls,
+                action_results=action_results,
+                assistant_message_id=assistant_message_id,
+                # Runtime already persisted detailed tool records before this
+                # callback.  This path only creates one model-visible batch.
+                persist_tool_records=False,
+            )
+            if not appended:
+                raise NativeToolHistoryPersistenceError(
+                    [tool_call.id for tool_call in tool_calls],
+                    reason="Conversation rejected the complete native tool batch.",
+                )
+            return True
+
+        return _persist
 
     def _persist_record(
         self,
@@ -3485,7 +3637,7 @@ class Engine:
                 len(assistant_response or ""),
                 self._handler_has_pending_tool_call(api_client),
             )
-        except LLMProviderError:
+        except (LLMProviderError, LLMEmptyResponseError):
             self._abort_streaming_response(
                 cm,
                 streaming,
@@ -3500,6 +3652,7 @@ class Engine:
         # preamble text is attached to the current assistant turn before the
         # tool result is persisted against it.
         finalize_started = time.perf_counter()
+        pre_finalize_message_ids = self._conversation_message_ids(cm)
         assistant_response = await self._finalize_streaming_response(
             cm,
             assistant_response,
@@ -3519,10 +3672,15 @@ class Engine:
 
         # Step 4: Handle Responses API tool_calls if they were triggered
         responses_tools_started = time.perf_counter()
+        native_tool_assistant_message_id = self._new_current_turn_assistant_message_id(
+            cm,
+            pre_finalize_message_ids=pre_finalize_message_ids,
+        )
         responses_action_results = await self._handle_responses_tool_calls(
             api_client,
             tool_manager,
             cm,
+            assistant_message_id=native_tool_assistant_message_id,
         )
         _trace_log_info(
             "engine.llm_step.responses_tools_done request=%s session=%s agent=%s "

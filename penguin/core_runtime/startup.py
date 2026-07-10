@@ -707,6 +707,7 @@ def initialize_tui_bridge_state(
     owner._opencode_abort_sessions = set()
     owner._opencode_active_requests = {}
     owner._opencode_process_tasks = {}
+    owner._opencode_process_task_refs = {}
 
     owner._subscribe_to_stream_events()
 

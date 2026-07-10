@@ -25,7 +25,7 @@ import mimetypes
 import os
 from pathlib import Path
 import re
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 import tempfile
 import time
 from threading import Lock
@@ -57,6 +57,32 @@ from penguin.web.health import get_health_monitor
 from penguin.web.services.configuration import (
     runtime_config_payload,
     settings_locations_payload,
+)
+from penguin.web.schemas.chat import (
+    ChatContinuationRequest,
+    ChatMessageRequest,
+    ChatTerminalResponse,
+    validate_chat_continuation_controls,
+)
+from penguin.web.services.chat_terminal import (
+    build_continuation_prompt,
+    normalize_chat_terminal_result,
+)
+from penguin.web.services.chat_terminal_state import (
+    ChatContinuationConflict,
+    ChatTerminalStatePersistenceError,
+    activate_chat_continuation,
+    canonical_chat_request_context,
+    get_chat_terminal_state,
+    hydrate_chat_terminal_payload,
+    invalidate_chat_terminal_state,
+    lease_chat_continuation,
+    record_chat_terminal_state,
+    release_chat_continuation,
+)
+from penguin.core_runtime.process_lifecycle import (
+    finalize_opencode_process_request,
+    register_opencode_process_request,
 )
 from penguin.web.services.command_registry import list_opencode_commands
 from penguin.web.services.notification_settings import notification_settings_payload
@@ -113,6 +139,10 @@ from penguin.web.services.system_status import (
     get_vcs_info,
 )
 from penguin.web.services.project_payloads import serialize_task_payload
+from penguin.web.services.request_gate import (
+    SessionRequestGateTimeout,
+    session_request_gate,
+)
 from penguin.web.services.projects import (
     delete_project_with_tasks,
     initialize_project_from_blueprint,
@@ -440,6 +470,92 @@ def _get_session_request_gate(
         request_gates = {}
         setattr(core, "_opencode_request_gates", request_gates)
     return request_gates.setdefault(gate_key, asyncio.Lock())
+
+
+def _chat_request_context(
+    request: Any,
+    *,
+    directory: Optional[str] = None,
+    model_config: Optional[Any] = None,
+    agent_id: Optional[str] = None,
+    agent_mode: Optional[str] = None,
+    service_tier: Optional[str] = None,
+) -> dict[str, Any]:
+    """Return the exact execution identity carried by durable continuations."""
+
+    requested_model = (
+        request.model.strip()
+        if isinstance(getattr(request, "model", None), str)
+        and request.model.strip()
+        else None
+    )
+    if requested_model is None and model_config is not None:
+        provider = str(getattr(model_config, "provider", "") or "").strip()
+        model = str(getattr(model_config, "model", "") or "").strip()
+        requested_model = f"{provider}/{model}" if provider and model else model or None
+    effective_service_tier = service_tier
+    if effective_service_tier is None and model_config is not None:
+        configured_tier = getattr(model_config, "service_tier", None)
+        effective_service_tier = (
+            configured_tier if isinstance(configured_tier, str) else None
+        )
+    return canonical_chat_request_context(
+        {
+            "directory": directory
+            if directory is not None
+            else getattr(request, "directory", None),
+            "model": requested_model,
+            "agent_id": agent_id
+            if agent_id is not None
+            else getattr(request, "agent_id", None),
+            "agent_mode": agent_mode
+            if agent_mode is not None
+            else getattr(request, "agent_mode", None),
+            "variant": getattr(request, "variant", None),
+            "service_tier": effective_service_tier,
+        }
+    )
+
+
+@asynccontextmanager
+async def _already_held_request_gate(wait_ms: float):
+    """Expose an early-acquired continuation gate through the normal route path."""
+
+    yield wait_ms
+
+
+def _terminal_state_persistence_failure_result(
+    process_result: Any,
+) -> dict[str, Any]:
+    """Preserve executed-turn evidence while failing closed on snapshot loss."""
+
+    source = process_result if isinstance(process_result, dict) else {}
+    response = source.get("assistant_response", "")
+    if not isinstance(response, str):
+        response = str(response or "")
+    partial_response = source.get("partial_response")
+    if not isinstance(partial_response, str):
+        partial_response = response
+    action_results = source.get("action_results")
+    if not isinstance(action_results, list):
+        action_results = []
+    return {
+        "assistant_response": response,
+        "partial_response": partial_response,
+        "action_results": action_results,
+        "iterations": source.get("iterations"),
+        "status": "terminal_state_persistence_error",
+        "recoverable": False,
+        "error": {
+            "code": "terminal_state_persistence_error",
+            "message": (
+                "The resumed turn ran, but its successor terminal state could "
+                "not be saved. Its prior continuation has been closed to avoid "
+                "replaying completed work."
+            ),
+            "suggested_action": "Refresh the session before starting a new turn.",
+        },
+    }
 
 
 def _bind_session_directory(
@@ -1003,24 +1119,7 @@ def _queue_session_title_refresh(
     task.add_done_callback(_done_callback)
 
 
-class MessageRequest(BaseModel):
-    text: str
-    conversation_id: Optional[str] = None
-    session_id: Optional[str] = None
-    client_message_id: Optional[str] = None
-    context: Optional[Dict[str, Any]] = None
-    context_files: Optional[List[str]] = None
-    streaming: Optional[bool] = True
-    max_iterations: Optional[int] = None  # Uses MAX_TASK_ITERATIONS if not specified
-    image_paths: Optional[List[str]] = None  # Multiple images supported (max 10)
-    include_reasoning: Optional[bool] = False
-    agent_id: Optional[str] = None
-    agent_mode: Optional[str] = None
-    directory: Optional[str] = None
-    model: Optional[str] = None
-    variant: Optional[str] = None
-    service_tier: Optional[str] = None
-    parts: Optional[List[Dict[str, Any]]] = None
+MessageRequest = ChatMessageRequest
 
 
 _REASONING_EFFORT_VARIANTS = {
@@ -3922,7 +4021,7 @@ async def discover_models(core: PenguinCore = Depends(get_core)):
         )
 
 
-@router.post("/api/v1/chat/message")
+@router.post("/api/v1/chat/message", response_model=ChatTerminalResponse)
 async def handle_chat_message(
     request: MessageRequest, core: PenguinCore = Depends(get_core)
 ):
@@ -3932,12 +4031,17 @@ async def handle_chat_message(
     request_session_id: Optional[str] = None
     request_task: Optional[asyncio.Task[Any]] = None
     request_tracked = False
+    request_gate_context: Optional[Any] = None
+    request_gate_wait_ms: Optional[float] = None
+    continuation_lease_id: Optional[str] = None
+    continuation_execution_started = False
     reasoning_variant_snapshot: Optional[Dict[str, Any]] = None
     request_model_config: Optional[Any] = None
     request_api_client: Optional[Any] = None
     runtime_diagnostics: Optional[RuntimeDiagnosticsRecorder] = None
     runtime_diagnostics_stored = False
     terminal_status: Optional[str] = None
+    request_text = request.text
     try:
         _setup_approval_websocket_callbacks()
         _setup_question_event_callbacks()
@@ -3961,6 +4065,45 @@ async def handle_chat_message(
         request_session_id = (
             effective_session_id if isinstance(effective_session_id, str) else None
         )
+        request_gate_context = session_request_gate(core, request_session_id)
+        request_gate_wait_ms = await request_gate_context.__aenter__()
+        request_task = asyncio.current_task()
+        request_tracked = await register_opencode_process_request(
+            core,
+            request_session_id,
+            request_task,
+        )
+        if request.continuation is not None:
+            tool_boundary = (
+                request.continuation.tool_boundary.model_dump()
+                if hasattr(request.continuation.tool_boundary, "model_dump")
+                else request.continuation.tool_boundary.dict()
+            )
+            leased_marker = await lease_chat_continuation(
+                core,
+                request_session_id or "",
+                action=request.continuation.action,
+                previous_status=request.continuation.previous_status,
+                request_id=request.continuation.request_id,
+                generation=request.continuation.generation,
+                request_context=_chat_request_context(request),
+                tool_boundary=tool_boundary,
+            )
+            continuation_lease_id = str(leased_marker.get("lease_id") or "") or None
+            try:
+                request_text = build_continuation_prompt(
+                    action=request.continuation.action,
+                    previous_status=request.continuation.previous_status,
+                    tool_boundary=leased_marker.get("tool_boundary"),
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+        else:
+            await invalidate_chat_terminal_state(
+                core,
+                request_session_id,
+                superseded_by_request_id=f"pending:{uuid.uuid4()}",
+            )
         bound_directory = _bind_session_directory(
             core,
             effective_session_id,
@@ -3984,30 +4127,6 @@ async def handle_chat_message(
             resolved_agent_mode,
         )
 
-        if request_session_id:
-            request_task = asyncio.current_task()
-            if request_task is not None:
-                tasks_map = getattr(core, "_opencode_process_tasks", None)
-                if not isinstance(tasks_map, dict):
-                    tasks_map = {}
-                    setattr(core, "_opencode_process_tasks", tasks_map)
-                tasks = tasks_map.get(request_session_id)
-                if not isinstance(tasks, set):
-                    tasks = set()
-                    tasks_map[request_session_id] = tasks
-                tasks.add(request_task)
-                request_tracked = True
-                _request_log_debug(
-                    "chat.trace.track request=%s session=%s task=%s tracked=%s session_tasks=%s",
-                    request_task.get_name()
-                    if hasattr(request_task, "get_name")
-                    else hex(id(request_task)),
-                    request_session_id,
-                    hex(id(request_task)),
-                    True,
-                    len(tasks),
-                )
-
         scope_directory = bound_directory or request.directory
         part_context_files, part_image_paths = _extract_paths_from_parts(
             request.parts,
@@ -4018,7 +4137,7 @@ async def handle_chat_message(
             if file_path not in context_files:
                 context_files.append(file_path)
         inline_context_files = _extract_context_files_from_text(
-            request.text,
+            request_text,
             directory=scope_directory,
         )
         for file_path in inline_context_files:
@@ -4072,7 +4191,7 @@ async def handle_chat_message(
             request.model or "",
             bool(request.streaming),
             request.client_message_id or "",
-            len(request.text or ""),
+            len(request_text or ""),
         )
 
         requested_model = (
@@ -4109,7 +4228,7 @@ async def handle_chat_message(
         #         logger.debug(f"No conversation_id provided. Using most recent: {request.conversation_id}")
 
         # Create input data dictionary from request
-        input_data = {"text": request.text}
+        input_data = {"text": request_text}
         if (
             isinstance(request.client_message_id, str)
             and request.client_message_id.strip()
@@ -4203,8 +4322,6 @@ async def handle_chat_message(
         with execution_context_scope(execution_context), runtime_diagnostics_scope(
             runtime_diagnostics
         ):
-            request_gate = _get_session_request_gate(core, request_session_id)
-            gate_locked_before = request_gate.locked()
             gate_wait_started = time.perf_counter()
             active_requests = getattr(core, "_opencode_active_requests", {})
             active_request_count = (
@@ -4213,11 +4330,9 @@ async def handle_chat_message(
                 else 0
             )
             _request_log_debug(
-                "chat.trace.before_process request=%s session=%s gate=%s gate_locked=%s active=%s cm=%s tracked=%s ctx=%s",
+                "chat.trace.before_process request=%s session=%s active=%s cm=%s tracked=%s ctx=%s",
                 execution_context.request_id or "unknown",
                 request_session_id or "unknown",
-                hex(id(request_gate)),
-                gate_locked_before,
                 active_request_count,
                 hex(id(getattr(core, "conversation_manager", None)))
                 if getattr(core, "conversation_manager", None) is not None
@@ -4225,33 +4340,153 @@ async def handle_chat_message(
                 bool(request_tracked),
                 execution_context.as_dict(),
             )
-            async with request_gate:
-                gate_wait_ms = (time.perf_counter() - gate_wait_started) * 1000
-                runtime_diagnostics.record_duration("request.gate_wait", gate_wait_ms)
-                _request_log_debug(
-                    "chat.trace.gate_acquired request=%s session=%s gate=%s wait_ms=%.2f tracked=%s",
-                    execution_context.request_id or "unknown",
-                    request_session_id or "unknown",
-                    hex(id(request_gate)),
-                    gate_wait_ms,
-                    bool(request_tracked),
+            process_ms = 0.0
+            terminal_marker = None
+            try:
+                gate_scope = (
+                    _already_held_request_gate(request_gate_wait_ms or 0.0)
+                    if request_gate_context is not None
+                    else session_request_gate(core, request_session_id)
                 )
-                process_started = time.perf_counter()
-                process_result = await core.process(
-                    input_data=input_data,
-                    context=request.context,
-                    conversation_id=effective_session_id,
-                    agent_id=request.agent_id,
-                    max_iterations=request.max_iterations or 100,
-                    context_files=context_files,
-                    streaming=effective_streaming,
-                    stream_callback=stream_cb,
-                    api_client_override=request_api_client,
-                    model_config_override=request_model_config,
+                async with gate_scope as gate_wait_ms:
+                    if not request_tracked:
+                        request_task = asyncio.current_task()
+                        request_tracked = await register_opencode_process_request(
+                            core,
+                            request_session_id,
+                            request_task,
+                        )
+                    runtime_diagnostics.record_duration(
+                        "request.gate_wait", gate_wait_ms
+                    )
+                    _request_log_debug(
+                        "chat.trace.gate_acquired request=%s session=%s wait_ms=%.2f tracked=%s",
+                        execution_context.request_id or "unknown",
+                        request_session_id or "unknown",
+                        gate_wait_ms,
+                        bool(request_tracked),
+                    )
+                    if request.continuation is not None:
+                        await activate_chat_continuation(
+                            core,
+                            request_session_id or "",
+                            lease_id=continuation_lease_id or "",
+                        )
+                        continuation_execution_started = True
+                    process_started = time.perf_counter()
+                    process_result = await core.process(
+                        input_data=input_data,
+                        context=request.context,
+                        conversation_id=effective_session_id,
+                        agent_id=request.agent_id,
+                        max_iterations=(
+                            request.max_iterations
+                            if request.max_iterations is not None
+                            else get_engine_max_iterations_default()
+                        ),
+                        context_files=context_files,
+                        streaming=effective_streaming,
+                        stream_callback=stream_cb,
+                        api_client_override=request_api_client,
+                        model_config_override=request_model_config,
+                    )
+                    process_ms = (time.perf_counter() - process_started) * 1000
+                    runtime_diagnostics.record_duration("request.process", process_ms)
+                    runtime_diagnostics.mark_progress("runtime")
+                    if request_session_id:
+                        candidate_response = normalize_chat_terminal_result(
+                            process_result,
+                            session_id=request_session_id,
+                            request_id=(
+                                execution_context.request_id or "unknown"
+                            ),
+                        )
+                        continuation_actions = [
+                            str(action.get("action"))
+                            for action in candidate_response.get("actions", [])
+                            if isinstance(action, dict) and action.get("action")
+                        ]
+                        stored_terminal = dict(candidate_response)
+                        stored_terminal["continuation"] = None
+                        stored_terminal["actions"] = []
+                        terminal_marker = await record_chat_terminal_state(
+                            core,
+                            request_session_id,
+                            request_id=(
+                                execution_context.request_id or "unknown"
+                            ),
+                            status=candidate_response["status"],
+                            completed=bool(candidate_response["completed"]),
+                            recoverable=bool(candidate_response["recoverable"]),
+                            continuation_actions=continuation_actions,
+                            terminal_payload=stored_terminal,
+                            request_context=_chat_request_context(
+                                request,
+                                directory=bound_directory,
+                                model_config=request_model_config,
+                                agent_id=(
+                                    request.agent_id
+                                    or getattr(
+                                        getattr(core, "engine", None),
+                                        "default_agent_id",
+                                        None,
+                                    )
+                                    or getattr(core, "default_agent_id", None)
+                                ),
+                                agent_mode=resolved_agent_mode,
+                                service_tier=service_tier_override,
+                            ),
+                            action_results=candidate_response.get("action_results"),
+                        )
+                        if (
+                            continuation_execution_started
+                            and terminal_marker is None
+                        ):
+                            process_result = _terminal_state_persistence_failure_result(
+                                process_result
+                            )
+            except SessionRequestGateTimeout as exc:
+                runtime_diagnostics.record_duration(
+                    "request.gate_wait",
+                    (time.perf_counter() - gate_wait_started) * 1000,
                 )
-                process_ms = (time.perf_counter() - process_started) * 1000
-                runtime_diagnostics.record_duration("request.process", process_ms)
-                runtime_diagnostics.mark_progress("runtime")
+                process_result = {
+                    "assistant_response": "",
+                    "action_results": [],
+                    "status": "request_gate_timeout",
+                    "recoverable": True,
+                    "error": {
+                        "code": "session_busy",
+                        "message": str(exc),
+                        "suggested_action": "Interrupt the active request or retry later.",
+                    },
+                }
+            except ChatContinuationConflict as exc:
+                process_result = {
+                    "assistant_response": "",
+                    "action_results": [],
+                    "status": "continuation_conflict",
+                    "recoverable": False,
+                    "error": {
+                        "code": "stale_continuation",
+                        "message": str(exc),
+                        "suggested_action": "Refresh the session before continuing.",
+                    },
+                }
+            except ChatTerminalStatePersistenceError as exc:
+                process_result = {
+                    "assistant_response": "",
+                    "action_results": [],
+                    "status": "terminal_state_persistence_error",
+                    "recoverable": False,
+                    "error": {
+                        "code": "terminal_state_persistence_error",
+                        "message": str(exc),
+                        "suggested_action": (
+                            "Refresh the session after storage is available."
+                        ),
+                    },
+                }
             _request_log_debug(
                 "chat.trace.after_process request=%s session=%s status=%s "
                 "iterations=%s response_len=%s actions=%s usage=%s "
@@ -4267,26 +4502,38 @@ async def handle_chat_message(
             )
 
         # Build response
-        if request_session_id:
+        if request_session_id and request.continuation is None:
             _queue_session_title_refresh(
                 core,
                 request_session_id,
                 provider_id=getattr(request_model_config, "provider", None),
                 model_id=getattr(request_model_config, "model", None),
-                fallback_text=request.text if isinstance(request.text, str) else None,
+                fallback_text=request_text if isinstance(request_text, str) else None,
             )
 
-        resp: Dict[str, Any] = {
-            "response": process_result.get("assistant_response", ""),
-            "action_results": process_result.get("action_results", []),
-            "aborted": bool(process_result.get("aborted")),
-            "status": process_result.get("status"),
-        }
-        terminal_status = str(process_result.get("status") or "completed")
-        if "recoverable" in process_result:
-            resp["recoverable"] = bool(process_result.get("recoverable"))
-        if isinstance(process_result.get("error"), dict):
-            resp["error"] = process_result.get("error")
+        request_id = execution_context.request_id or "unknown"
+        resp: Dict[str, Any] = normalize_chat_terminal_result(
+            process_result,
+            session_id=request_session_id,
+            request_id=request_id,
+            continuation_generation=(
+                terminal_marker.get("generation")
+                if isinstance(terminal_marker, dict)
+                else None
+            ),
+            continuation_context=(
+                terminal_marker.get("request_context")
+                if isinstance(terminal_marker, dict)
+                else None
+            ),
+            continuation_tool_boundary=(
+                terminal_marker.get("tool_boundary")
+                if isinstance(terminal_marker, dict)
+                else None
+            ),
+            allow_continuation=isinstance(terminal_marker, dict),
+        )
+        terminal_status = str(resp["status"])
         reasoning_text = "".join(reasoning_buf) if include_reasoning else ""
         reasoning_note = _build_reasoning_visibility_note(
             include_reasoning=include_reasoning,
@@ -4341,8 +4588,61 @@ async def handle_chat_message(
             bool(resp.get("aborted")),
         )
         return resp
+    except SessionRequestGateTimeout as exc:
+        terminal_status = "request_gate_timeout"
+        resp = normalize_chat_terminal_result(
+            {
+                "assistant_response": "",
+                "action_results": [],
+                "status": "request_gate_timeout",
+                "recoverable": True,
+                "error": {
+                    "code": "session_busy",
+                    "message": str(exc),
+                    "suggested_action": (
+                        "Interrupt the active request or retry later."
+                    ),
+                },
+            },
+            session_id=request_session_id,
+            allow_continuation=False,
+        )
+        return resp
+    except (ChatContinuationConflict, ChatTerminalStatePersistenceError) as exc:
+        is_persistence_error = isinstance(exc, ChatTerminalStatePersistenceError)
+        terminal_status = (
+            "terminal_state_persistence_error"
+            if is_persistence_error
+            else "continuation_conflict"
+        )
+        resp = normalize_chat_terminal_result(
+            {
+                "assistant_response": "",
+                "action_results": [],
+                "status": terminal_status,
+                "recoverable": False,
+                "error": {
+                    "code": (
+                        "terminal_state_persistence_error"
+                        if is_persistence_error
+                        else "stale_continuation"
+                    ),
+                    "message": str(exc),
+                    "suggested_action": "Refresh the session before continuing.",
+                },
+            },
+            session_id=request_session_id,
+            allow_continuation=False,
+        )
+        return resp
     except asyncio.CancelledError:
-        terminal_status = "cancelled"
+        abort_sessions = getattr(core, "_opencode_abort_sessions", None)
+        explicitly_aborted = bool(
+            request_session_id
+            and isinstance(abort_sessions, set)
+            and request_session_id in abort_sessions
+        )
+        terminal_status = "aborted" if explicitly_aborted else "cancelled"
         _request_log_info(
             "chat.trace.cancelled request=%s session=%s",
             execution_context.request_id
@@ -4350,12 +4650,22 @@ async def handle_chat_message(
             else "unknown",
             request_session_id or "unknown",
         )
-        resp = {
-            "response": "",
-            "action_results": [],
-            "aborted": True,
-            "status": "cancelled",
-        }
+        resp = normalize_chat_terminal_result(
+            {
+                "assistant_response": "",
+                "action_results": [],
+                "status": terminal_status,
+                "aborted": explicitly_aborted,
+                "cancelled": not explicitly_aborted,
+            },
+            session_id=request_session_id,
+            request_id=(
+                execution_context.request_id
+                if "execution_context" in locals()
+                else None
+            ),
+            allow_continuation=False,
+        )
         return resp
     except HTTPException:
         terminal_status = "http_error"
@@ -4379,14 +4689,41 @@ async def handle_chat_message(
             if "resp" in locals() and isinstance(resp, dict):
                 resp["runtime_diagnostics"] = diagnostics_snapshot
         _restore_reasoning_variant_override(core, reasoning_variant_snapshot)
-        if request_tracked and request_session_id and request_task is not None:
-            tasks_map = getattr(core, "_opencode_process_tasks", None)
-            if isinstance(tasks_map, dict):
-                tasks = tasks_map.get(request_session_id)
-                if isinstance(tasks, set):
-                    tasks.discard(request_task)
-                    if not tasks:
-                        tasks_map.pop(request_session_id, None)
+        if (
+            continuation_lease_id
+            and request_session_id
+            and not continuation_execution_started
+        ):
+            try:
+                await asyncio.shield(
+                    release_chat_continuation(
+                        core,
+                        request_session_id,
+                        lease_id=continuation_lease_id,
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to release unfinished continuation lease for %s",
+                    request_session_id,
+                    exc_info=True,
+                )
+        if request_tracked:
+            await finalize_opencode_process_request(
+                core,
+                request_session_id,
+                request_task,
+                request_tracked=True,
+            )
+        if request_gate_context is not None:
+            try:
+                await request_gate_context.__aexit__(None, None, None)
+            except Exception:
+                logger.warning(
+                    "Failed to release chat request gate for %s",
+                    request_session_id,
+                    exc_info=True,
+                )
         for temp_file in temp_image_files:
             try:
                 Path(temp_file).unlink(missing_ok=True)
@@ -4404,6 +4741,62 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
 
     response_queue = asyncio.Queue()
     sender_task = None
+    ws_gate_context: Optional[Any] = None
+    ws_request_task: Optional[asyncio.Task[Any]] = None
+    ws_request_tracked = False
+    ws_continuation_lease_id: Optional[str] = None
+    ws_continuation_execution_started = False
+    ws_scope_session_id: Optional[str] = None
+
+    async def _cleanup_ws_request_scope() -> None:
+        nonlocal ws_continuation_lease_id
+        nonlocal ws_continuation_execution_started
+        nonlocal ws_gate_context
+        nonlocal ws_request_task
+        nonlocal ws_request_tracked
+        nonlocal ws_scope_session_id
+
+        if (
+            ws_continuation_lease_id
+            and ws_scope_session_id
+            and not ws_continuation_execution_started
+        ):
+            try:
+                await asyncio.shield(
+                    release_chat_continuation(
+                        core,
+                        ws_scope_session_id,
+                        lease_id=ws_continuation_lease_id,
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to release WebSocket continuation lease for %s",
+                    ws_scope_session_id,
+                    exc_info=True,
+                )
+        ws_continuation_lease_id = None
+        ws_continuation_execution_started = False
+        if ws_request_tracked:
+            await finalize_opencode_process_request(
+                core,
+                ws_scope_session_id,
+                ws_request_task,
+                request_tracked=True,
+            )
+        if ws_gate_context is not None:
+            try:
+                await ws_gate_context.__aexit__(None, None, None)
+            except Exception:
+                logger.warning(
+                    "Failed to release WebSocket request gate for %s",
+                    ws_scope_session_id,
+                    exc_info=True,
+                )
+        ws_gate_context = None
+        ws_request_task = None
+        ws_request_tracked = False
+        ws_scope_session_id = None
 
     # Task to send messages from the queue to the client
     async def sender(queue: asyncio.Queue):
@@ -4536,7 +4929,28 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
             session_id = data.get("session_id")
             context_files = data.get("context_files")
             context = data.get("context")
-            max_iterations = data.get("max_iterations", 100)
+            requested_max_iterations = data.get("max_iterations")
+            if requested_max_iterations is None:
+                max_iterations = get_engine_max_iterations_default()
+            elif (
+                isinstance(requested_max_iterations, int)
+                and not isinstance(requested_max_iterations, bool)
+                and requested_max_iterations > 0
+            ):
+                max_iterations = requested_max_iterations
+            else:
+                await websocket.send_json(
+                    {
+                        "event": "error",
+                        "data": {
+                            "code": "invalid_max_iterations",
+                            "message": "max_iterations must be a positive integer",
+                        },
+                    }
+                )
+                if sender_task and not sender_task.done():
+                    sender_task.cancel()
+                continue
             image_paths = data.get("image_paths")  # Multiple images supported
             parts = data.get("parts")
             include_reasoning = _resolve_include_reasoning(
@@ -4553,6 +4967,141 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
 
             # Prefer explicit session_id when provided; conversation_id is continuity metadata.
             effective_session_id = session_id or conversation_id
+            try:
+                if agent_id:
+                    _validate_agent_id(agent_id)
+                if agent_mode is not None and _normalize_agent_mode(agent_mode) is None:
+                    raise ValueError("agent_mode must be one of: plan, build")
+                if directory and not normalize_directory(directory):
+                    raise ValueError(f"Invalid directory: {directory}")
+            except (HTTPException, ValueError) as exc:
+                detail = getattr(exc, "detail", None) or str(exc)
+                await websocket.send_json(
+                    {
+                        "event": "error",
+                        "data": {"code": "invalid_request", "message": str(detail)},
+                    }
+                )
+                if sender_task and not sender_task.done():
+                    sender_task.cancel()
+                continue
+            continuation_request = None
+            raw_continuation = data.get("continuation")
+            if raw_continuation is not None:
+                try:
+                    if not isinstance(raw_continuation, dict):
+                        raise ValueError("continuation must be an object")
+                    validate_chat_continuation_controls(data)
+                    continuation_request = ChatContinuationRequest(
+                        **raw_continuation
+                    )
+                    if not isinstance(effective_session_id, str) or not effective_session_id:
+                        raise ValueError("session_id is required for continuation")
+                except Exception as exc:
+                    await websocket.send_json(
+                        {
+                            "event": "error",
+                            "data": {
+                                "code": "invalid_continuation",
+                                "message": str(exc),
+                            },
+                        }
+                    )
+                    if sender_task and not sender_task.done():
+                        sender_task.cancel()
+                    continue
+            try:
+                ws_scope_session_id = (
+                    effective_session_id
+                    if isinstance(effective_session_id, str)
+                    else None
+                )
+                ws_gate_context = session_request_gate(core, ws_scope_session_id)
+                ws_gate_wait_ms = await ws_gate_context.__aenter__()
+                ws_request_task = asyncio.current_task()
+                ws_request_tracked = await register_opencode_process_request(
+                    core,
+                    ws_scope_session_id,
+                    ws_request_task,
+                )
+                if continuation_request is not None:
+                    tool_boundary = (
+                        continuation_request.tool_boundary.model_dump()
+                        if hasattr(continuation_request.tool_boundary, "model_dump")
+                        else continuation_request.tool_boundary.dict()
+                    )
+                    leased_marker = await lease_chat_continuation(
+                        core,
+                        ws_scope_session_id or "",
+                        action=continuation_request.action,
+                        previous_status=continuation_request.previous_status,
+                        request_id=continuation_request.request_id,
+                        generation=continuation_request.generation,
+                        request_context=canonical_chat_request_context(
+                            {
+                                "directory": directory,
+                                "model": model,
+                                "agent_id": agent_id,
+                                "agent_mode": agent_mode,
+                                "variant": variant,
+                                "service_tier": service_tier,
+                            }
+                        ),
+                        tool_boundary=tool_boundary,
+                    )
+                    ws_continuation_lease_id = (
+                        str(leased_marker.get("lease_id") or "") or None
+                    )
+                    text = build_continuation_prompt(
+                        action=continuation_request.action,
+                        previous_status=continuation_request.previous_status,
+                        tool_boundary=leased_marker.get("tool_boundary"),
+                    )
+                else:
+                    await invalidate_chat_terminal_state(
+                        core,
+                        ws_scope_session_id,
+                        superseded_by_request_id=f"pending:{uuid.uuid4()}",
+                    )
+            except (
+                SessionRequestGateTimeout,
+                ChatContinuationConflict,
+                ChatTerminalStatePersistenceError,
+            ) as exc:
+                if isinstance(exc, SessionRequestGateTimeout):
+                    status = "request_gate_timeout"
+                    recoverable = True
+                    code = "session_busy"
+                elif isinstance(exc, ChatTerminalStatePersistenceError):
+                    status = "terminal_state_persistence_error"
+                    recoverable = False
+                    code = status
+                else:
+                    status = "continuation_conflict"
+                    recoverable = False
+                    code = "stale_continuation"
+                payload = normalize_chat_terminal_result(
+                    {
+                        "assistant_response": "",
+                        "action_results": [],
+                        "status": status,
+                        "recoverable": recoverable,
+                        "error": {
+                            "code": code,
+                            "message": str(exc),
+                            "suggested_action": (
+                                "Interrupt the active request or refresh the session."
+                            ),
+                        },
+                    },
+                    session_id=ws_scope_session_id,
+                    allow_continuation=False,
+                )
+                if sender_task and not sender_task.done():
+                    sender_task.cancel()
+                await _cleanup_ws_request_scope()
+                await websocket.send_json({"event": "complete", "data": payload})
+                continue
             bound_directory = _bind_session_directory(
                 core,
                 effective_session_id,
@@ -4625,9 +5174,6 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
             )
             logger.info(f"Processing message for conversation_id: {conversation_id}")
 
-            if agent_id:
-                _validate_agent_id(agent_id)
-
             input_data = {"text": text}
             if image_paths:
                 if len(image_paths) > MAX_IMAGES_PER_REQUEST:
@@ -4672,6 +5218,7 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
                     logger.error(f"Error sending progress update: {e}")
 
             process_task = None
+            stream_process_started = False
             ui_event_handler = None
             try:
                 if hasattr(core, "register_progress_callback"):
@@ -4787,25 +5334,138 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
                         variant_value,
                         reasoning_payload,
                     )
-                try:
+                async def _run_stream_process() -> tuple[Dict[str, Any], Any]:
+                    nonlocal stream_process_started
+                    nonlocal ws_continuation_lease_id
+                    nonlocal ws_continuation_execution_started
                     with execution_context_scope(execution_context):
-                        process_task = asyncio.create_task(
-                            core.process(
-                                input_data=input_data,
-                                conversation_id=effective_session_id,
-                                agent_id=agent_id,
-                                max_iterations=max_iterations,
-                                context_files=context_files,
-                                context=context,
-                                streaming=True,
-                                stream_callback=per_request_stream_callback,
-                                api_client_override=request_api_client,
-                                model_config_override=request_model_config,
+                        if continuation_request is not None:
+                            await activate_chat_continuation(
+                                core,
+                                ws_scope_session_id or "",
+                                lease_id=ws_continuation_lease_id or "",
                             )
+                            ws_continuation_execution_started = True
+                        stream_process_started = True
+                        result = await core.process(
+                            input_data=input_data,
+                            conversation_id=effective_session_id,
+                            agent_id=agent_id,
+                            max_iterations=max_iterations,
+                            context_files=context_files,
+                            context=context,
+                            streaming=True,
+                            stream_callback=per_request_stream_callback,
+                            api_client_override=request_api_client,
+                            model_config_override=request_model_config,
                         )
+                        marker = None
+                        if isinstance(effective_session_id, str):
+                            candidate = normalize_chat_terminal_result(
+                                result,
+                                session_id=effective_session_id,
+                                request_id=(execution_context.request_id or "unknown"),
+                            )
+                            continuation_actions = [
+                                str(action.get("action"))
+                                for action in candidate.get("actions", [])
+                                if isinstance(action, dict) and action.get("action")
+                            ]
+                            stored_terminal = dict(candidate)
+                            stored_terminal["continuation"] = None
+                            stored_terminal["actions"] = []
+                            marker = await record_chat_terminal_state(
+                                core,
+                                effective_session_id,
+                                request_id=(execution_context.request_id or "unknown"),
+                                status=candidate["status"],
+                                completed=bool(candidate["completed"]),
+                                recoverable=bool(candidate["recoverable"]),
+                                continuation_actions=continuation_actions,
+                                terminal_payload=stored_terminal,
+                                request_context=canonical_chat_request_context(
+                                    {
+                                        "directory": bound_directory,
+                                        "model": requested_model
+                                        or (
+                                            f"{getattr(request_model_config, 'provider', '')}/"
+                                            f"{getattr(request_model_config, 'model', '')}"
+                                        ).strip("/"),
+                                        "agent_id": agent_id
+                                        or getattr(
+                                            getattr(core, "engine", None),
+                                            "default_agent_id",
+                                            None,
+                                        )
+                                        or getattr(core, "default_agent_id", None),
+                                        "agent_mode": resolved_agent_mode,
+                                        "variant": variant_value,
+                                        "service_tier": service_tier_override
+                                        or getattr(
+                                            request_model_config,
+                                            "service_tier",
+                                            None,
+                                        ),
+                                    }
+                                ),
+                                action_results=candidate.get("action_results"),
+                            )
+                            if (
+                                ws_continuation_execution_started
+                                and marker is None
+                            ):
+                                result = _terminal_state_persistence_failure_result(
+                                    result
+                                )
+                        return result, marker
 
+                terminal_marker = None
+                try:
+                    process_task = asyncio.create_task(_run_stream_process())
                     # Wait for the core process to finish
-                    process_result = await process_task
+                    process_result, terminal_marker = await process_task
+                except SessionRequestGateTimeout as exc:
+                    process_result = {
+                        "assistant_response": "",
+                        "action_results": [],
+                        "status": "request_gate_timeout",
+                        "recoverable": True,
+                        "error": {
+                            "code": "session_busy",
+                            "message": str(exc),
+                            "suggested_action": (
+                                "Interrupt the active request or retry later."
+                            ),
+                        },
+                    }
+                except ChatContinuationConflict as exc:
+                    process_result = {
+                        "assistant_response": "",
+                        "action_results": [],
+                        "status": "continuation_conflict",
+                        "recoverable": False,
+                        "error": {
+                            "code": "stale_continuation",
+                            "message": str(exc),
+                            "suggested_action": (
+                                "Refresh the session before continuing."
+                            ),
+                        },
+                    }
+                except ChatTerminalStatePersistenceError as exc:
+                    process_result = {
+                        "assistant_response": "",
+                        "action_results": [],
+                        "status": "terminal_state_persistence_error",
+                        "recoverable": False,
+                        "error": {
+                            "code": "terminal_state_persistence_error",
+                            "message": str(exc),
+                            "suggested_action": (
+                                "Refresh the session before continuing."
+                            ),
+                        },
+                    }
                 finally:
                     _restore_reasoning_variant_override(
                         core,
@@ -4817,7 +5477,7 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
                 )
 
                 # Finalize streaming message (adds to conversation with reasoning)
-                if hasattr(core, "finalize_streaming_message"):
+                if stream_process_started and hasattr(core, "finalize_streaming_message"):
                     core.finalize_streaming_message(
                         agent_id=agent_id,
                         session_id=effective_session_id,
@@ -4907,11 +5567,28 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
                     reasoning_debug_snapshot,
                 )
 
-                complete_payload = {
-                    "response": process_result.get("assistant_response", ""),
-                    "action_results": process_result.get("action_results", []),
-                    "aborted": bool(process_result.get("aborted")),
-                }
+                request_id = execution_context.request_id or "unknown"
+                complete_payload = normalize_chat_terminal_result(
+                    process_result,
+                    session_id=effective_session_id,
+                    request_id=request_id,
+                    continuation_generation=(
+                        terminal_marker.get("generation")
+                        if isinstance(terminal_marker, dict)
+                        else None
+                    ),
+                    continuation_context=(
+                        terminal_marker.get("request_context")
+                        if isinstance(terminal_marker, dict)
+                        else None
+                    ),
+                    continuation_tool_boundary=(
+                        terminal_marker.get("tool_boundary")
+                        if isinstance(terminal_marker, dict)
+                        else None
+                    ),
+                    allow_continuation=isinstance(terminal_marker, dict),
+                )
                 if include_reasoning:
                     complete_payload["reasoning"] = reasoning_text or (
                         reasoning_note or ""
@@ -4983,8 +5660,17 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
                     process_task.cancel()
                 if sender_task and not sender_task.done():
                     sender_task.cancel()
-                # Wait briefly for tasks to cancel
-                await asyncio.sleep(0.1)
+                pending_cleanup_tasks = [
+                    task
+                    for task in (process_task, sender_task)
+                    if isinstance(task, asyncio.Task) and not task.done()
+                ]
+                if pending_cleanup_tasks:
+                    await asyncio.gather(
+                        *pending_cleanup_tasks,
+                        return_exceptions=True,
+                    )
+                await _cleanup_ws_request_scope()
 
     except WebSocketDisconnect:
         logger.info("WebSocket client disconnected")
@@ -4997,6 +5683,7 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
         logger.error(f"Unhandled error in websocket handler: {str(e)}", exc_info=True)
     finally:
         logger.info("Cleaning up stream_chat handler.")
+        await _cleanup_ws_request_scope()
         # Ensure sender task is cancelled if connection closes unexpectedly
         if sender_task and not sender_task.done():
             logger.info("Cancelling sender task due to handler exit.")
@@ -6258,6 +6945,26 @@ async def api_session_unrevert(
 async def api_session_abort(session_id: str, core: PenguinCore = Depends(get_core)):
     """Alias for OpenCode-compatible session.abort endpoint."""
     return await session_abort(session_id, core=core)
+
+
+@router.get("/session/{session_id}/terminal", response_model=ChatTerminalResponse)
+@router.get("/api/v1/session/{session_id}/terminal", response_model=ChatTerminalResponse)
+async def session_terminal_state(
+    session_id: str,
+    core: PenguinCore = Depends(get_core),
+):
+    """Return the latest durable terminal truth for response-loss recovery."""
+
+    try:
+        marker = await get_chat_terminal_state(core, session_id)
+    except ChatTerminalStatePersistenceError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if marker is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No terminal state is available for session {session_id}",
+        )
+    return hydrate_chat_terminal_payload(marker, session_id=session_id)
 
 
 @router.post("/api/v1/session/{session_id}/summarize")

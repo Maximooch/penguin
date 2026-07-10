@@ -169,14 +169,14 @@ Process a chat message with optional conversation support, multi-modal capabilit
   "context": {"key": "value"},
   "context_files": ["path/to/file1.py", "path/to/file2.py"],
   "streaming": true,
-  "max_iterations": 5,
+  "max_iterations": 5000,
   "image_paths": ["/path/to/image.png"],
   "include_reasoning": false
 }
 ```
 
 **Parameters:**
-- `text` (required): The message content
+- `text` (required unless `continuation` is present): The message content
 - `conversation_id` (optional): Continue an existing conversation
 - `session_id` (optional): Session identity for request scoping and directory binding (takes precedence for binding when both are provided)
 - `agent_id` (optional): Route to a specific agent
@@ -184,7 +184,9 @@ Process a chat message with optional conversation support, multi-modal capabilit
 - `context` (optional): Additional context dictionary
 - `context_files` (optional): Files to load as context
 - `streaming` (optional): Accepted for compatibility; REST `/chat/message` returns final payloads (use WebSocket endpoint for token streaming)
-- `max_iterations` (optional): Maximum reasoning iterations (default: 5)
+- `max_iterations` (optional): Positive reasoning-iteration budget. The default
+  is the configured `engine.max_iterations_default` (fallback: `5000`) and is
+  shared by Engine, REST chat, and WebSocket chat.
 - `image_paths` (optional): List of image paths for vision models
 - `include_reasoning` (optional): Include reasoning content in response
 
@@ -192,6 +194,7 @@ Process a chat message with optional conversation support, multi-modal capabilit
 ```json
 {
   "response": "I can help you with Python development in several ways...",
+  "partial_response": "",
   "action_results": [
     {
       "action": "code_execution",
@@ -199,9 +202,60 @@ Process a chat message with optional conversation support, multi-modal capabilit
       "status": "completed"
     }
   ],
+  "action_count": 1,
+  "status": "completed",
+  "terminal_reason": "completed",
+  "state": "completed",
+  "completed": true,
+  "recoverable": false,
+  "aborted": false,
+  "cancelled": false,
+  "iterations": 1,
+  "error": null,
+  "continuation": null,
+  "actions": [],
   "reasoning": "First, I'll analyze the requirements..."
 }
 ```
+
+HTTP 2xx means the request transport completed; it does not by itself mean the
+Penguin turn completed. Clients must inspect `completed`, `state`, and
+`terminal_reason`. Non-completed states include `max_iterations`, provider
+retry exhaustion, stalled/repeated tool loops, abort, cancellation, and failure.
+`partial_response` preserves streamed output when a provider fails after making
+progress.
+
+When continuation is safe, the response includes a server-generated,
+successfully persisted one-shot request:
+
+```json
+{
+  "completed": false,
+  "status": "max_iterations",
+  "continuation": {
+    "available": true,
+    "action": "resume",
+    "label": "Resume",
+    "method": "POST",
+    "endpoint": "/api/v1/chat/message",
+    "requires_confirmation": true,
+    "request": {
+      "session_id": "conv_123",
+      "continuation": {
+        "action": "resume",
+        "previous_status": "max_iterations",
+        "request_id": "server-request-id",
+        "generation": 4
+      }
+    }
+  }
+}
+```
+
+Submit that exact request only after an explicit user action. Continuations are
+consumed once; stale, duplicated, or tampered status/action/generation values
+return `continuation_conflict`. Do not synthesize a plain-text `resume`, and do
+not automatically resend a whole turn.
 
 **New Features:**
 - `agent_id`: Route messages to specific agents for specialized handling
@@ -250,7 +304,7 @@ const ws = new WebSocket('ws://127.0.0.1:9000/api/v1/chat/stream');
   "session_id": "conv_123",
   "directory": "/absolute/path/to/repo",
   "include_reasoning": true,
-  "max_iterations": 5,
+  "max_iterations": 5000,
   "context_files": ["main.py"],
   "image_paths": ["/path/to/screenshot.png"]
 }
@@ -268,15 +322,28 @@ const ws = new WebSocket('ws://127.0.0.1:9000/api/v1/chat/stream');
   ```
 - `progress`: Iteration progress updates
   ```json
-  {"event": "progress", "data": {"iteration": 2, "max_iterations": 5}}
+  {"event": "progress", "data": {"iteration": 2, "max_iterations": 5000}}
   ```
 - `complete`: Final response with all results
   ```json
   {
     "event": "complete",
     "data": {
-      "response": "Complete response text...",
+      "response": "Partial or complete response text...",
+      "partial_response": "",
       "action_results": [...],
+      "action_count": 1,
+      "status": "completed",
+      "terminal_reason": "completed",
+      "state": "completed",
+      "completed": true,
+      "recoverable": false,
+      "aborted": false,
+      "cancelled": false,
+      "iterations": 2,
+      "error": null,
+      "continuation": null,
+      "actions": [],
       "reasoning": "Full reasoning content..."
     }
   }
@@ -285,6 +352,9 @@ const ws = new WebSocket('ws://127.0.0.1:9000/api/v1/chat/stream');
   ```json
   {"event": "error", "data": {"message": "Error details"}}
   ```
+
+The WebSocket event name `complete` means the stream envelope ended. Its `data`
+uses the same terminal contract as REST, so `data.completed` may still be false.
 
 **Features:**
 - Token coalescing for improved UI performance (5-character buffer)

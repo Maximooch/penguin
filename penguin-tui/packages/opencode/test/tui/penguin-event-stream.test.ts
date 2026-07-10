@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import {
   cleanPenguinEvent,
   cleanPenguinText,
+  isPenguinProgressEvent,
   parsePenguinSSEEvent,
   type PenguinStreamEvent,
   streamPenguinEvents,
@@ -65,6 +66,33 @@ describe("Penguin event stream", () => {
     expect(parsePenguinSSEEvent("data: not-json\n\n")).toBeUndefined()
   })
 
+  test("does not count busy status heartbeats as real progress", () => {
+    expect(
+      isPenguinProgressEvent({
+        type: "session.status",
+        properties: {
+          sessionID: "ses_1",
+          status: { type: "busy" },
+        },
+      }),
+    ).toBe(false)
+    expect(
+      isPenguinProgressEvent({
+        type: "message.part.updated",
+        properties: { delta: "hello" },
+      }),
+    ).toBe(true)
+    expect(
+      isPenguinProgressEvent({
+        type: "session.status",
+        properties: {
+          sessionID: "ses_1",
+          status: { type: "idle" },
+        },
+      }),
+    ).toBe(true)
+  })
+
   test("preserves the SSE id when the event body omits it", () => {
     expect(
       parsePenguinSSEEvent(
@@ -104,7 +132,7 @@ describe("Penguin event stream", () => {
     }) as typeof fetch
 
     await streamPenguinEvents({
-      baseUrl: "http://127.0.0.1:9000",
+      baseUrl: "http://127.0.0.1:8080",
       directory: "/tmp/project",
       fetch: fetcher,
       onEvent: (event) => events.push(event),
@@ -125,7 +153,7 @@ describe("Penguin event stream", () => {
     const fetcher = (async () => streamResponse("", 401)) as unknown as typeof fetch
 
     await streamPenguinEvents({
-      baseUrl: "http://127.0.0.1:9000",
+      baseUrl: "http://127.0.0.1:8080",
       fetch: fetcher,
       onEvent: (event) => events.push(event),
       onUnauthorized: () => {

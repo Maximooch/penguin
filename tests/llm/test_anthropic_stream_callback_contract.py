@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import pytest
 
 from penguin.llm.adapters.anthropic import AnthropicAdapter
+from penguin.llm.contracts import ErrorCategory, ProviderRequestStatus
+from penguin.llm.model_config import ModelConfig
 
 
 class _Delta:
@@ -66,6 +69,12 @@ def _build_adapter(stream: _FakeStream) -> AnthropicAdapter:
     adapter = AnthropicAdapter.__new__(AnthropicAdapter)
     adapter.async_client = _FakeAsyncClient(stream)
     adapter.logger = logging.getLogger(__name__)
+    adapter.model_config = ModelConfig(
+        model="claude-test",
+        provider="anthropic",
+        client_preference="native",
+    )
+    adapter._last_request_lifecycle = None
     return adapter
 
 
@@ -116,3 +125,48 @@ async def test_anthropic_stream_emits_thinking_delta_as_reasoning() -> None:
     assert response == "answer"
     assert received[0] == ("reasoning...", "reasoning")
     assert received[1] == ("answer", "assistant")
+
+
+@pytest.mark.asyncio
+async def test_anthropic_partial_stream_cancellation_is_terminal_and_propagates() -> (
+    None
+):
+    """Cancellation must not turn already-delivered text into a success."""
+
+    entered = asyncio.Event()
+
+    class _PartialThenBlockStream(_FakeStream):
+        def __init__(self) -> None:
+            super().__init__(
+                [_Chunk("content_block_delta", _Delta("text_delta", "partial"))]
+            )
+
+        async def __anext__(self):
+            if self._chunks:
+                return await super().__anext__()
+            entered.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    adapter = _build_adapter(_PartialThenBlockStream())
+    task = asyncio.create_task(
+        adapter.get_response(
+            [{"role": "user", "content": "hello"}],
+            stream=True,
+        )
+    )
+    await asyncio.wait_for(entered.wait(), timeout=0.5)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    error = adapter.get_last_error()
+    assert error is not None
+    assert error.category is ErrorCategory.RUNTIME
+    assert error.retryable is False
+    assert error.provider_data["partial_output"] == "partial"
+    lifecycle = adapter.get_last_request_lifecycle()
+    assert lifecycle is not None
+    assert lifecycle.status is ProviderRequestStatus.CANCELLED
+    assert lifecycle.error is error

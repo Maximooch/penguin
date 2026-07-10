@@ -11,7 +11,9 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 import anthropic
 from anthropic import AsyncAnthropic
 
-from .base import BaseAdapter
+from penguin.constants import get_default_max_output_tokens
+from penguin.system.native_tool_history import sanitize_native_tool_messages
+
 from ..contracts import (
     ErrorCategory,
     FinishReason,
@@ -25,8 +27,7 @@ from ..contracts import (
 from ..model_config import ModelConfig
 from ..provider_transform import build_llm_error, normalize_finish_reason
 from ..reasoning_variants import anthropic_reasoning_efforts
-
-from penguin.constants import get_default_max_output_tokens
+from .base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,9 @@ class AnthropicAdapter(BaseAdapter):
         self.sync_client = anthropic.Anthropic(api_key=self.api_key)
 
         # Initialize async client for message creation
-        self.async_client = AsyncAnthropic(api_key=self.api_key)
+        # Runtime owns the one safe replay. Disable the SDK's hidden retries so
+        # one logical Penguin request cannot issue more than two physical sends.
+        self.async_client = AsyncAnthropic(api_key=self.api_key, max_retries=0)
         self._last_usage: Dict[str, Any] = {}
         self._last_error: Optional[LLMError] = None
         self._last_finish_reason = FinishReason.UNKNOWN
@@ -169,17 +172,24 @@ class AnthropicAdapter(BaseAdapter):
         return str(error_payload or chunk)[:500]
 
     def _record_anthropic_stream_error(self, chunk: Any) -> LLMError:
+        partial_tool_call = self.has_pending_tool_call()
         error = build_llm_error(
             message=self._anthropic_stream_error_detail(chunk),
             provider=self.provider,
             model=getattr(self.model_config, "model", None),
             finish_reason=FinishReason.ERROR,
+            provider_data={"partial_tool_call": partial_tool_call},
         )
         self._set_last_error(error)
         self._set_last_finish_reason(FinishReason.ERROR)
+        if partial_tool_call:
+            self._pending_tool_calls = []
+            self._last_tool_call = None
+            self._tool_use_accs = {}
         return error
 
     def _record_anthropic_stream_incomplete(self, output_state: str) -> LLMError:
+        partial_tool_call = output_state == "tool_call" or self.has_pending_tool_call()
         error = build_llm_error(
             message=(
                 "Anthropic stream ended before message_stop "
@@ -190,11 +200,13 @@ class AnthropicAdapter(BaseAdapter):
             category=ErrorCategory.NETWORK,
             retryable=True,
             finish_reason=FinishReason.ERROR,
+            provider_data={"partial_tool_call": partial_tool_call},
         )
         self._set_last_error(error)
         self._set_last_finish_reason(FinishReason.ERROR)
         self._pending_tool_calls = []
         self._last_tool_call = None
+        self._tool_use_accs = {}
         return error
 
     def _append_reasoning(self, text: str) -> None:
@@ -315,9 +327,7 @@ class AnthropicAdapter(BaseAdapter):
             protocol="anthropic_messages",
             route="anthropic.messages",
             body={
-                key: value
-                for key, value in request_params.items()
-                if value is not None
+                key: value for key, value in request_params.items() if value is not None
             },
             transport="sdk_stream" if stream else "sdk",
             capabilities=self.get_capabilities(),
@@ -660,7 +670,7 @@ class AnthropicAdapter(BaseAdapter):
             self._finish_request_lifecycle_from_state()
             return content or ""
         except asyncio.CancelledError:
-            error = build_llm_error(
+            error = self.get_last_error() or build_llm_error(
                 message="Anthropic request was cancelled",
                 provider=self.provider,
                 model=getattr(self.model_config, "model", None),
@@ -850,9 +860,7 @@ class AnthropicAdapter(BaseAdapter):
                         stop_reason = final_response_object.stop_reason
                     self._update_request_lifecycle(
                         status=ProviderRequestStatus.STREAMING,
-                        provider_response_id=getattr(
-                            final_response_object, "id", None
-                        ),
+                        provider_response_id=getattr(final_response_object, "id", None),
                     )
                     self._set_last_finish_reason(stop_reason)
                     if not usage_info:
@@ -888,6 +896,29 @@ class AnthropicAdapter(BaseAdapter):
                 if isinstance(stream_error, LLMError):
                     error_message = stream_error.message
                     self._set_last_error(stream_error)
+                else:
+                    partial_tool_call = self.has_pending_tool_call()
+                    stream_error = build_llm_error(
+                        message=error_message,
+                        provider=self.provider,
+                        model=getattr(self.model_config, "model", None),
+                        category=(
+                            ErrorCategory.TIMEOUT
+                            if isinstance(stream_error, TimeoutError)
+                            else ErrorCategory.NETWORK
+                        ),
+                        retryable=True,
+                        finish_reason=FinishReason.ERROR,
+                        provider_data={
+                            "partial_tool_call": partial_tool_call,
+                            "partial_output": complete_response,
+                        },
+                    )
+                    self._set_last_error(stream_error)
+                    if partial_tool_call:
+                        self._pending_tool_calls = []
+                        self._last_tool_call = None
+                        self._tool_use_accs = {}
                 self._set_last_finish_reason(FinishReason.ERROR)
                 if complete_response:
                     return (
@@ -946,17 +977,34 @@ class AnthropicAdapter(BaseAdapter):
             self._set_last_finish_reason(stop_reason or FinishReason.STOP)
             return complete_response
 
-        except asyncio.CancelledError as e:
+        except asyncio.CancelledError:
             self.logger.warning("Anthropic streaming was cancelled")
-            stream_error = e
-            # Return what we've accumulated so far or an error message
-            if accumulated_response:
-                self.logger.info(
-                    f"Returning partial response from cancelled stream ({len(accumulated_response)} chunks)"
-                )
-                return "".join(accumulated_response)
-            else:
-                raise  # Re-raise to properly handle cancellation
+            partial_output = "".join(accumulated_response)
+            partial_tool_call = self.has_pending_tool_call()
+            error = build_llm_error(
+                message="Anthropic streaming request was cancelled",
+                provider=self.provider,
+                model=getattr(self.model_config, "model", None),
+                category=ErrorCategory.RUNTIME,
+                retryable=False,
+                finish_reason=FinishReason.ERROR,
+                provider_data={
+                    "partial_output": partial_output,
+                    "partial_tool_call": partial_tool_call,
+                },
+            )
+            self._set_last_error(error)
+            self._set_last_finish_reason(FinishReason.ERROR)
+            if partial_tool_call:
+                self._pending_tool_calls = []
+                self._last_tool_call = None
+                self._tool_use_accs = {}
+            self._update_request_lifecycle(
+                status=ProviderRequestStatus.CANCELLED,
+                finish_reason=FinishReason.ERROR,
+                error=error,
+            )
+            raise
 
         except Exception as e:
             stream_error = e
@@ -968,14 +1016,23 @@ class AnthropicAdapter(BaseAdapter):
             self.logger.error(
                 f"Stream error details: elapsed_time={elapsed_time:.2f}s, chunks_received={chunk_count}, stop_reason={stop_reason}, usage={usage_info}"
             )
+            partial_tool_call = self.has_pending_tool_call()
             self._set_last_error(
                 build_llm_error(
                     message=error_msg,
                     provider=self.provider,
                     model=getattr(self.model_config, "model", None),
                     finish_reason=stop_reason,
+                    provider_data={
+                        "partial_tool_call": partial_tool_call,
+                        "partial_output": "".join(accumulated_response),
+                    },
                 )
             )
+            if partial_tool_call:
+                self._pending_tool_calls = []
+                self._last_tool_call = None
+                self._tool_use_accs = {}
 
             if callback:
                 await self._safe_invoke_callback(
@@ -1272,9 +1329,173 @@ class AnthropicAdapter(BaseAdapter):
             if isinstance(part, dict) and part.get("type") == "tool_use"
         }
 
+    @staticmethod
+    def _raw_anthropic_tool_use_blocks(message: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Return provider-shaped tool declarations embedded in one message."""
+
+        content = message.get("content")
+        if not isinstance(content, list):
+            return []
+        return [
+            part
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "tool_use"
+        ]
+
+    @staticmethod
+    def _raw_anthropic_tool_result_blocks(
+        message: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Return provider-shaped tool results embedded in one user message."""
+
+        content = message.get("content")
+        if not isinstance(content, list):
+            return []
+        return [
+            part
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "tool_result"
+        ]
+
+    @classmethod
+    def _sanitize_raw_anthropic_tool_blocks(
+        cls,
+        messages: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Keep raw Anthropic tool blocks only as complete adjacent units.
+
+        ConversationSystem normally stores canonical OpenAI-shaped declarations,
+        but checkpoint/import paths can supply already Anthropic-shaped content.
+        Treat that content with the same strict replay rules: an assistant's
+        ``tool_use`` blocks need the immediately following user ``tool_result``
+        blocks with the exact same unique ids.  All orphaned or interleaved
+        provider blocks are stripped before the SDK boundary.
+        """
+
+        sanitized: List[Dict[str, Any]] = []
+        reserved_tool_use_ids: Set[str] = set()
+        index = 0
+        while index < len(messages):
+            message = messages[index]
+            role = message.get("role")
+            raw_tool_uses = cls._raw_anthropic_tool_use_blocks(message)
+
+            if role == "assistant" and raw_tool_uses:
+                tool_use_ids = [
+                    str(block.get("id") or "").strip() for block in raw_tool_uses
+                ]
+                valid_declaration = (
+                    all(tool_use_ids)
+                    and len(tool_use_ids) == len(set(tool_use_ids))
+                    and not reserved_tool_use_ids.intersection(tool_use_ids)
+                    and all(
+                        str(block.get("name") or "").strip() for block in raw_tool_uses
+                    )
+                )
+                # Reserve declaration ids even when the unit is invalid, so a
+                # later message cannot re-use an ambiguous provider identity.
+                reserved_tool_use_ids.update(
+                    tool_use_id for tool_use_id in tool_use_ids if tool_use_id
+                )
+
+                next_message = (
+                    messages[index + 1] if index + 1 < len(messages) else None
+                )
+                raw_tool_results = (
+                    cls._raw_anthropic_tool_result_blocks(next_message)
+                    if isinstance(next_message, dict)
+                    and next_message.get("role") == "user"
+                    else []
+                )
+                result_ids = [
+                    str(block.get("tool_use_id") or "").strip()
+                    for block in raw_tool_results
+                ]
+                next_content = (
+                    next_message.get("content")
+                    if isinstance(next_message, dict)
+                    else None
+                )
+                valid_results = (
+                    isinstance(next_content, list)
+                    and bool(raw_tool_results)
+                    and len(raw_tool_results) == len(next_content)
+                    and all(result_ids)
+                    and len(result_ids) == len(set(result_ids))
+                    and set(result_ids) == set(tool_use_ids)
+                )
+                if valid_declaration and valid_results:
+                    sanitized.append(dict(message))
+                    sanitized.append(dict(next_message))
+                    index += 2
+                    continue
+
+                cleaned = dict(message)
+                content = message.get("content")
+                if isinstance(content, list):
+                    cleaned_content = [
+                        part
+                        for part in content
+                        if not (
+                            isinstance(part, dict) and part.get("type") == "tool_use"
+                        )
+                    ]
+                    cleaned["content"] = cleaned_content or ""
+                sanitized.append(cleaned)
+                index += 1
+                continue
+
+            if raw_tool_uses:
+                # Only assistant messages can declare an Anthropic tool use.
+                cleaned = dict(message)
+                content = message.get("content")
+                if isinstance(content, list):
+                    cleaned["content"] = [
+                        part
+                        for part in content
+                        if not (
+                            isinstance(part, dict) and part.get("type") == "tool_use"
+                        )
+                    ]
+                sanitized.append(cleaned)
+                index += 1
+                continue
+
+            raw_tool_results = cls._raw_anthropic_tool_result_blocks(message)
+            if raw_tool_results:
+                # A valid raw result was consumed together with its declaration
+                # above. Any remaining one is orphaned or interleaved.
+                cleaned = dict(message)
+                content = message.get("content")
+                if isinstance(content, list):
+                    cleaned_content = [
+                        part
+                        for part in content
+                        if not (
+                            isinstance(part, dict) and part.get("type") == "tool_result"
+                        )
+                    ]
+                    if cleaned_content:
+                        cleaned["content"] = cleaned_content
+                        sanitized.append(cleaned)
+                index += 1
+                continue
+
+            sanitized.append(dict(message))
+            index += 1
+
+        return sanitized
+
     def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Format messages for Anthropic API, properly handling images"""
         formatted_messages = []
+        messages = self._sanitize_raw_anthropic_tool_blocks(
+            [
+                message
+                for message in sanitize_native_tool_messages(messages)
+                if isinstance(message, dict)
+            ]
+        )
 
         # Second pass - handle regular messages
         index = 0
@@ -1295,17 +1516,17 @@ class AnthropicAdapter(BaseAdapter):
                     if formatted_messages
                     else set()
                 )
-                synthesized_tool_uses = []
                 while index < len(messages) and messages[index].get("role") == "tool":
                     tool_msg = messages[index]
                     tool_call_id = str(tool_msg.get("tool_call_id") or "").strip()
                     tool_result_content = str(tool_msg.get("content", ""))
                     if tool_call_id:
                         if tool_call_id not in preceding_tool_use_ids:
-                            tool_use = self._tool_use_block_from_tool_message(tool_msg)
-                            if tool_use:
-                                synthesized_tool_uses.append(tool_use)
-                                preceding_tool_use_ids.add(tool_call_id)
+                            # Raw canonical history must contain the matching
+                            # assistant declaration.  Never synthesize one from
+                            # an orphaned result during provider replay.
+                            index += 1
+                            continue
                         block: Dict[str, Any] = {
                             "type": "tool_result",
                             "tool_use_id": tool_call_id,
@@ -1315,18 +1536,12 @@ class AnthropicAdapter(BaseAdapter):
                         if status in {"error", "failed", "cancelled", "interrupted"}:
                             block["is_error"] = True
                         tool_result_blocks.append(block)
-                    else:
-                        tool_result_blocks.append(
-                            {"type": "text", "text": tool_result_content}
-                        )
+                    # Malformed result ids are not provider-replayable.
                     index += 1
-                if synthesized_tool_uses:
+                if tool_result_blocks:
                     formatted_messages.append(
-                        {"role": "assistant", "content": synthesized_tool_uses}
+                        {"role": "user", "content": tool_result_blocks}
                     )
-                formatted_messages.append(
-                    {"role": "user", "content": tool_result_blocks}
-                )
                 continue
 
             # Map roles for Anthropic
@@ -1394,8 +1609,9 @@ class AnthropicAdapter(BaseAdapter):
                                     )
                                 elif image_path and os.path.exists(image_path):
                                     # For local files, read and encode as base64
-                                    from PIL import Image  # type: ignore
                                     import io
+
+                                    from PIL import Image  # type: ignore
 
                                     # Open and process the image
                                     with Image.open(image_path) as img:
@@ -1453,11 +1669,11 @@ class AnthropicAdapter(BaseAdapter):
                                 elif image_url:
                                     # For other URLs (like file:// or unsupported), try to load and convert to base64
                                     try:
-                                        from PIL import Image  # type: ignore
-                                        import io
-
                                         # Import base64 again in this scope to avoid the variable shadowing issue
                                         import base64 as image_base64
+                                        import io
+
+                                        from PIL import Image  # type: ignore
 
                                         # Try to open as local file by removing file:// prefix if present
                                         local_path = image_url

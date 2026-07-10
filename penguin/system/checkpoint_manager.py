@@ -9,25 +9,54 @@ This module implements the conversation plane auto-checkpointing from V2.1 plan:
 """
 
 import asyncio
+import copy
 import gzip
-import hashlib
 import json
 import logging
+import math
 import os
+import threading
 import time
 import uuid
+from concurrent.futures import Future as ConcurrentFuture
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from penguin.system.checkpoint_cleanup import build_checkpoint_cleanup_plan
+from penguin.system.checkpoint_executor import BoundedDaemonExecutor
+from penguin.system.checkpoint_retention import (
+    archive_cleanup_candidates,
+    enforce_automatic_retention,
+    fsync_directory as _fsync_directory,
+    recover_automatic_retention_transactions,
+    recover_confirmed_cleanup_archives,
+    write_json_atomic as _write_json_atomic,
+)
+from penguin.system.checkpoint_snapshot import (
+    build_flat_session_snapshot,
+    preserve_native_tool_adjacency,
+)
 from penguin.system.runtime_diagnostics import record_runtime_duration
 from penguin.system.state import Message, MessageCategory, Session
 from penguin.system.storage_safety import StorageSafetyMonitor, StorageSafetyStatus
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "CheckpointConfig",
+    "CheckpointManager",
+    "CheckpointMetadata",
+    "CheckpointPersistenceError",
+    "CheckpointPersistenceTimeoutError",
+    "CheckpointQueueFullError",
+    "CheckpointSnapshotBoundary",
+    "CheckpointType",
+    "CheckpointWorkerCircuitOpenError",
+    "CheckpointWorkerOwnershipError",
+]
 
 
 class CheckpointType(Enum):
@@ -37,6 +66,30 @@ class CheckpointType(Enum):
     MANUAL = "manual"  # User-created checkpoint with optional name
     BRANCH = "branch"  # Checkpoint created when branching
     ROLLBACK = "rollback"  # Checkpoint created before rollback
+
+
+class CheckpointWorkerOwnershipError(RuntimeError):
+    """Raised when checkpoint work crosses a live worker's event-loop boundary."""
+
+
+class CheckpointQueueFullError(RuntimeError):
+    """Raised when user-requested checkpoint work cannot enter the bounded queue."""
+
+
+class CheckpointWorkerCircuitOpenError(RuntimeError):
+    """Raised when user checkpoint work reaches an unhealthy worker circuit."""
+
+
+class CheckpointPersistenceError(RuntimeError):
+    """Raised when a user-requested checkpoint is not durably persisted."""
+
+
+class CheckpointPersistenceTimeoutError(CheckpointPersistenceError):
+    """Raised when durable checkpoint acknowledgment exceeds its deadline."""
+
+
+class _CheckpointCommitInvalidatedError(CheckpointPersistenceError):
+    """Raised inside an offload after its worker generation was stopped."""
 
 
 @dataclass
@@ -57,9 +110,25 @@ class CheckpointConfig:
             "keep_all_hours": 24,
             "keep_every_nth": 10,
             "max_age_days": 30,
+            "max_bytes": 5 * 1024 * 1024 * 1024,
+            "active_session_keep": 1,
         }
     )
     max_auto_checkpoints: int = 1000  # Hard limit on auto checkpoints
+    queue_maxsize: int = 32
+    enqueue_timeout_seconds: float = 2.0
+    shutdown_drain_timeout_seconds: float = 5.0
+    worker_max_attempts: int = 3
+    worker_retry_base_seconds: float = 0.1
+    worker_retry_max_seconds: float = 2.0
+    circuit_failure_threshold: int = 3
+    circuit_reset_seconds: float = 30.0
+    worker_error_log_interval_seconds: float = 30.0
+    preparation_attempt_timeout_seconds: float = 60.0
+    persistence_attempt_timeout_seconds: float = 60.0
+    persistence_ack_timeout_seconds: float = 65.0
+    maintenance_interval_seconds: float = 300.0
+    foreign_shutdown_timeout_seconds: float = 10.0
 
 
 @dataclass
@@ -77,6 +146,32 @@ class CheckpointMetadata:
     parent_checkpoint: Optional[str] = None
     branch_point: Optional[str] = None
     auto: bool = True
+
+
+@dataclass(frozen=True)
+class _CheckpointWorkItem:
+    """Immutable checkpoint state captured before it enters the worker queue."""
+
+    metadata: CheckpointMetadata
+    session_snapshot: Dict[str, Any]
+    generation: int
+    commit_token: threading.Event
+    completion: Optional[asyncio.Future[bool]] = field(
+        default=None,
+        compare=False,
+        repr=False,
+    )
+
+
+@dataclass(frozen=True)
+class CheckpointSnapshotBoundary:
+    """Constant-size coalescing boundary captured after bounded admission."""
+
+    message_count: int
+    lifecycle_count: int
+    tool_call_count: int
+    tool_result_count: int
+    last_active: str
 
 
 class CheckpointManager:
@@ -116,7 +211,9 @@ class CheckpointManager:
 
         # Checkpoint index for fast lookups
         self.index_path = self.checkpoints_path / "checkpoint_index.json"
+        self._persistence_lock = threading.RLock()
         self.checkpoint_index: Dict[str, CheckpointMetadata] = {}
+        self._checkpoint_index_snapshot: Dict[str, CheckpointMetadata] = {}
         self._load_checkpoint_index()
         self._auto_checkpoint_count = 0
         self._pending_auto_checkpoints = 0
@@ -128,13 +225,43 @@ class CheckpointManager:
         self._last_storage_safety_status: Optional[StorageSafetyStatus] = None
         self._checkpoint_block_reason: Optional[str] = None
         self._last_logged_block_reason: Optional[str] = None
+        self._checkpoint_bytes = _checkpoint_directory_bytes(self.checkpoints_path)
 
         # Async worker setup (queues created lazily in the owning event loop)
-        self.checkpoint_queue: Optional[asyncio.Queue] = None
-        self.cleanup_queue: Optional[asyncio.Queue] = None
+        self.checkpoint_queue: Optional[asyncio.Queue[_CheckpointWorkItem]] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._owner_thread_id: Optional[int] = None
         self._workers_started = False
+        self._workers_stopping = False
+        self._stop_task: Optional[asyncio.Task] = None
         self._worker_tasks: List[asyncio.Task] = []
+        self._checkpoint_worker_task: Optional[asyncio.Task] = None
+        self._maintenance_task: Optional[asyncio.Task] = None
+        self._maintenance_lock: Optional[asyncio.Lock] = None
+        self._worker_generation = 0
+        self._work_capacity_limit = max(1, int(self.config.queue_maxsize))
+        self._inflight_checkpoint_work = 0
+        self._capacity_available: Optional[asyncio.Event] = None
+        self._consecutive_worker_failures = 0
+        self._circuit_open_until = 0.0
+        self._last_worker_error_code: Optional[str] = None
+        self._last_worker_error_log_at = float("-inf")
+        self._suppressed_worker_error_logs = 0
+        self._rejected_auto_checkpoints = 0
+        self._dropped_on_shutdown = 0
+        self._background_checkpoint_tasks: Set[asyncio.Task] = set()
+        self._offload_executor: Optional[BoundedDaemonExecutor] = None
+        self._offload_state_lock = threading.Lock()
+        self._active_offloads: Dict[ConcurrentFuture[Any], int] = {}
+        self._persistence_context = threading.local()
+
+        self._recover_automatic_retention_transactions()
+        self._recover_confirmed_cleanup_archives()
+        self._reconcile_checkpoint_storage()
+        self._last_storage_safety_status = self._storage_safety_monitor.check(
+            force=True,
+            checkpoint_bytes=self._checkpoint_bytes,
+        )
 
         # Message counter for frequency control
         self._message_counter = 0
@@ -144,43 +271,263 @@ class CheckpointManager:
             len(self.checkpoint_index),
         )
 
+    def __del__(self) -> None:
+        """Best-effort bounded release for managers not closed by their owner."""
+
+        try:
+            self._shutdown_offload_executor()
+        except Exception:
+            pass
+
     async def start_workers(self) -> None:
-        """Start the async worker tasks."""
-        if self._workers_started:
-            return
+        """Start one bounded worker owned by the current running event loop.
 
-        # Bind queues to the current running loop and spawn workers in the same loop
+        Repeated calls on the owner loop are idempotent. A different live loop is
+        rejected explicitly; a closed/abandoned owner is reset before restart.
+        """
+
         loop = asyncio.get_running_loop()
+        if self._workers_stopping:
+            raise CheckpointWorkerOwnershipError(
+                "Checkpoint workers are currently stopping"
+            )
+        if self._workers_started:
+            worker_alive = (
+                self._checkpoint_worker_task is not None
+                and not self._checkpoint_worker_task.done()
+            )
+            if self._loop is loop and worker_alive:
+                return
+            if self._loop is loop:
+                await self._stop_workers_on_owner_loop()
+            elif self._loop is not None and self._loop.is_running() and worker_alive:
+                raise CheckpointWorkerOwnershipError(
+                    "Checkpoint workers are owned by another live event loop"
+                )
+            elif self._loop is not None and not self._loop.is_closed():
+                raise CheckpointWorkerOwnershipError(
+                    "Checkpoint owner loop is stopped but not closed; explicit "
+                    "owner-loop shutdown is required before rebinding"
+                )
+            else:
+                self._reset_abandoned_worker_state()
+
+        if self._has_active_offloads():
+            deadline = time.monotonic() + min(
+                1.0,
+                max(0.0, self.config.foreign_shutdown_timeout_seconds),
+            )
+            while self._has_active_offloads() and time.monotonic() < deadline:
+                await asyncio.sleep(0.01)
+            if self._has_active_offloads():
+                raise CheckpointWorkerOwnershipError(
+                    "A detached checkpoint filesystem operation is still active"
+                )
+
         self._loop = loop
-        self.checkpoint_queue = asyncio.Queue()
-        self.cleanup_queue = asyncio.Queue()
-
-        # Start checkpoint worker
-        checkpoint_worker = asyncio.create_task(self._checkpoint_worker())
-        self._worker_tasks.append(checkpoint_worker)
-
-        # Start cleanup worker
-        cleanup_worker = asyncio.create_task(self._cleanup_worker())
-        self._worker_tasks.append(cleanup_worker)
-
+        self._owner_thread_id = threading.get_ident()
+        self.checkpoint_queue = asyncio.Queue(
+            maxsize=max(1, int(self.config.queue_maxsize))
+        )
+        self._worker_generation += 1
+        self._inflight_checkpoint_work = 0
+        self._capacity_available = asyncio.Event()
+        self._capacity_available.set()
+        self._maintenance_lock = asyncio.Lock()
+        checkpoint_worker = asyncio.create_task(
+            self._checkpoint_worker(self._worker_generation),
+            name=f"penguin-checkpoint-worker-{self._worker_generation}",
+        )
+        self._checkpoint_worker_task = checkpoint_worker
+        self._worker_tasks = [checkpoint_worker]
+        if self.config.maintenance_interval_seconds > 0:
+            self._maintenance_task = asyncio.create_task(
+                self._maintenance_loop(self._worker_generation),
+                name=f"penguin-checkpoint-maintenance-{self._worker_generation}",
+            )
+            self._worker_tasks.append(self._maintenance_task)
         self._workers_started = True
-        logger.info("Checkpoint workers started")
+        logger.info(
+            "Checkpoint worker started generation=%s queue_maxsize=%s",
+            self._worker_generation,
+            self.checkpoint_queue.maxsize,
+        )
 
     async def stop_workers(self) -> None:
-        """Stop the async worker tasks."""
+        """Drain and stop workers, including from a foreign caller loop."""
+
         if not self._workers_started:
+            if self._loop is not None and not self._loop.is_closed():
+                raise CheckpointWorkerOwnershipError(
+                    "Checkpoint owner loop is stopped but not closed"
+                )
+            self._reset_abandoned_worker_state()
             return
 
-        # Cancel all worker tasks
-        for task in self._worker_tasks:
-            task.cancel()
+        current_loop = asyncio.get_running_loop()
+        owner_loop = self._loop
+        if owner_loop is current_loop:
+            await self._stop_workers_on_owner_loop()
+            return
+        if owner_loop is not None and owner_loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(
+                self._stop_workers_on_owner_loop(),
+                owner_loop,
+            )
+            try:
+                await asyncio.wait_for(
+                    asyncio.wrap_future(future),
+                    timeout=max(
+                        0.01,
+                        self.config.foreign_shutdown_timeout_seconds,
+                    ),
+                )
+            except asyncio.TimeoutError as exc:
+                future.cancel()
+                raise CheckpointWorkerOwnershipError(
+                    "Timed out waiting for checkpoint owner-loop shutdown"
+                ) from exc
+            return
+        if owner_loop is not None and not owner_loop.is_closed():
+            raise CheckpointWorkerOwnershipError(
+                "Checkpoint owner loop is stopped but not closed"
+            )
+        self._reset_abandoned_worker_state()
 
-        # Wait for tasks to complete
-        await asyncio.gather(*self._worker_tasks, return_exceptions=True)
+    async def _stop_workers_on_owner_loop(self) -> None:
+        """Await one shared bounded shutdown task on the owner loop."""
+
+        existing = self._stop_task
+        if existing is not None:
+            await asyncio.shield(existing)
+            if self._stop_task is existing and existing.done():
+                self._stop_task = None
+            return
+
+        task = asyncio.create_task(
+            self._perform_stop_workers_on_owner_loop(),
+            name=f"penguin-checkpoint-stop-{self._worker_generation}",
+        )
+        self._stop_task = task
+        try:
+            await asyncio.shield(task)
+        finally:
+            if self._stop_task is task and task.done():
+                self._stop_task = None
+
+    async def _perform_stop_workers_on_owner_loop(self) -> None:
+        """Drain and cancel worker tasks while running on their owner loop."""
+
+        self._workers_stopping = True
+        stopping_generation = self._worker_generation
+        queue = self.checkpoint_queue
+        try:
+            background_tasks = list(self._background_checkpoint_tasks)
+            for task in background_tasks:
+                task.cancel()
+            if background_tasks:
+                await asyncio.gather(*background_tasks, return_exceptions=True)
+
+            if queue is not None:
+                try:
+                    await asyncio.wait_for(
+                        queue.join(),
+                        timeout=max(0.0, self.config.shutdown_drain_timeout_seconds),
+                    )
+                except asyncio.TimeoutError:
+                    # Invalidate the generation before task cancellation. A thread
+                    # released after this point must fail its commit guard.
+                    self._worker_generation += 1
+                    dropped = self._discard_queued_work(queue)
+                    self._dropped_on_shutdown += dropped
+                    logger.warning(
+                        "Checkpoint shutdown drain timed out; dropped=%s "
+                        "generation=%s active_offloads=%s",
+                        dropped,
+                        self._worker_generation - 1,
+                        self._active_offload_count(),
+                    )
+
+            if self._worker_generation == stopping_generation:
+                self._worker_generation += 1
+
+            current_task = asyncio.current_task()
+            tasks = [task for task in self._worker_tasks if task is not current_task]
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            self._shutdown_offload_executor()
+            detached = self._active_offload_count()
+            self._clear_worker_state()
+            if detached:
+                logger.warning(
+                    "Checkpoint asyncio workers stopped with detached filesystem "
+                    "operations=%s; restart remains blocked until they finish",
+                    detached,
+                )
+            else:
+                logger.info("Checkpoint worker stopped")
+        finally:
+            self._workers_stopping = False
+
+    def _discard_queued_work(
+        self,
+        queue: asyncio.Queue[_CheckpointWorkItem],
+    ) -> int:
+        """Discard queued work after a bounded shutdown timeout."""
+
+        dropped = 0
+        while True:
+            try:
+                item = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if item.metadata.type == CheckpointType.AUTO:
+                self._pending_auto_checkpoints = max(
+                    0,
+                    self._pending_auto_checkpoints - 1,
+                )
+            item.commit_token.clear()
+            self._resolve_work_completion(item, False)
+            self._release_checkpoint_capacity()
+            queue.task_done()
+            dropped += 1
+        return dropped
+
+    def _reset_abandoned_worker_state(self) -> None:
+        """Clear state left by a closed loop, accounting for abandoned work."""
+
+        queue = self.checkpoint_queue
+        had_owner_state = self._loop is not None or queue is not None
+        if queue is not None:
+            dropped = self._discard_queued_work(queue)
+            if dropped:
+                self._dropped_on_shutdown += dropped
+                logger.warning(
+                    "Reset abandoned checkpoint worker state; dropped=%s",
+                    dropped,
+                )
+        if had_owner_state:
+            self._worker_generation += 1
+        self._shutdown_offload_executor()
+        self._clear_worker_state()
+
+    def _clear_worker_state(self) -> None:
+        """Clear loop-affine worker references after shutdown or abandonment."""
 
         self._worker_tasks.clear()
+        self._checkpoint_worker_task = None
+        self._maintenance_task = None
+        self._maintenance_lock = None
+        self.checkpoint_queue = None
+        self._loop = None
+        self._owner_thread_id = None
         self._workers_started = False
-        logger.info("Checkpoint workers stopped")
+        self._pending_auto_checkpoints = 0
+        self._inflight_checkpoint_work = 0
+        self._capacity_available = None
+        self._background_checkpoint_tasks.clear()
 
     def should_checkpoint(self, message: Message) -> bool:
         """
@@ -212,7 +559,68 @@ class CheckpointManager:
         self._message_counter += 1
         if (self._message_counter % self.config.frequency) != 0:
             return False
-        return self._allow_auto_checkpoint()
+        # Admission, storage maintenance, and circuit checks happen inside the
+        # bounded async path. Applying the storage floor here would prevent a
+        # critically full checkpoint store from ever scheduling the retention
+        # work that can recover it.
+        return True
+
+    def schedule_auto_checkpoint(
+        self,
+        session: Session,
+        message: Message,
+    ) -> bool:
+        """Schedule one observed, bounded automatic checkpoint task.
+
+        This synchronous admission guard runs before ``create_task``. Without it,
+        a burst of message appends can allocate an unbounded number of coroutine
+        tasks before any one of them reaches the async queue reservation.
+        """
+
+        if self._workers_stopping:
+            self._record_checkpoint_block("worker_stopping")
+            return False
+        if len(self._background_checkpoint_tasks) >= self._work_capacity_limit:
+            self._rejected_auto_checkpoints += 1
+            self._record_checkpoint_block("task_capacity_full")
+            return False
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+        if (
+            self._loop is not None
+            and self._loop is not loop
+            and not self._loop.is_closed()
+        ):
+            self._record_checkpoint_block("worker_owner_mismatch")
+            return False
+
+        task = loop.create_task(
+            self.create_checkpoint(
+                session,
+                message,
+            ),
+            name="penguin-auto-checkpoint-admission",
+        )
+        self._background_checkpoint_tasks.add(task)
+        task.add_done_callback(self._finish_background_checkpoint_task)
+        return True
+
+    def _finish_background_checkpoint_task(self, task: asyncio.Task) -> None:
+        """Observe every fire-and-forget checkpoint outcome exactly once."""
+
+        self._background_checkpoint_tasks.discard(task)
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception as exc:
+            self._record_worker_failure(exc, attempt=1, attempts=1)
+            logger.error(
+                "Automatic checkpoint task failed before worker completion",
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
 
     async def create_checkpoint(
         self,
@@ -221,6 +629,9 @@ class CheckpointManager:
         checkpoint_type: CheckpointType = CheckpointType.AUTO,
         name: Optional[str] = None,
         description: Optional[str] = None,
+        snapshot_boundary: Optional[CheckpointSnapshotBoundary] = None,
+        wait_for_persistence: Optional[bool] = None,
+        persistence_timeout_seconds: Optional[float] = None,
     ) -> Optional[str]:
         """
         Create a checkpoint for the current conversation state.
@@ -237,55 +648,596 @@ class CheckpointManager:
         """
         if not self.config.enabled:
             return None
-        if checkpoint_type == CheckpointType.AUTO and not self._allow_auto_checkpoint():
+        await self.start_workers()
+        owner_loop = asyncio.get_running_loop()
+        owner_generation = self._worker_generation
+        queue = self.checkpoint_queue
+        if queue is None:
+            raise CheckpointWorkerOwnershipError(
+                "Checkpoint worker queue is unavailable"
+            )
+        reserved = await self._reserve_checkpoint_capacity(checkpoint_type)
+        if not reserved:
             return None
 
-        # Ensure workers are started
-        if not self._workers_started:
-            await self.start_workers()
-
-        # Generate checkpoint ID
-        checkpoint_id = (
-            f"cp_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+        enqueued = False
+        item: Optional[_CheckpointWorkItem] = None
+        should_wait = (
+            checkpoint_type != CheckpointType.AUTO
+            if wait_for_persistence is None
+            else wait_for_persistence
         )
+        try:
+            if checkpoint_type == CheckpointType.AUTO:
+                if not await self._prepare_auto_checkpoint_admission():
+                    return None
+            elif self._checkpoint_circuit_is_open():
+                raise CheckpointWorkerCircuitOpenError(
+                    "Checkpoint worker circuit is open after repeated persistence "
+                    "failures"
+                )
 
-        # Create checkpoint metadata
-        metadata = CheckpointMetadata(
-            id=checkpoint_id,
-            type=checkpoint_type,
-            created_at=datetime.now().isoformat(),
-            session_id=session.id,
-            message_id=message.id,
-            message_count=len(session.messages),
-            name=name,
-            description=description,
-            auto=(checkpoint_type == CheckpointType.AUTO),
-        )
+            self._assert_checkpoint_owner_current(
+                owner_loop,
+                owner_generation,
+                queue,
+            )
 
-        # Enqueue for async processing (queue is guaranteed after start_workers)
-        assert self.checkpoint_queue is not None
+            checkpoint_id = (
+                f"cp_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+            )
+
+            boundary = snapshot_boundary or self.capture_snapshot_boundary(session)
+
+            metadata = CheckpointMetadata(
+                id=checkpoint_id,
+                type=checkpoint_type,
+                created_at=datetime.now().isoformat(),
+                session_id=session.id,
+                message_id=message.id,
+                message_count=boundary.message_count,
+                name=name,
+                description=description,
+                auto=(checkpoint_type == CheckpointType.AUTO),
+            )
+
+            snapshot_started = time.perf_counter()
+            checkpoint_session = session
+            if checkpoint_type == CheckpointType.MANUAL:
+                checkpoint_session = await self._run_checkpoint_stage_with_retry(
+                    "checkpoint.flatten",
+                    self._build_flat_snapshot_sync,
+                    session,
+                    True,
+                )
+                self._assert_checkpoint_owner_current(
+                    owner_loop,
+                    owner_generation,
+                    queue,
+                )
+                boundary = self.capture_snapshot_boundary(checkpoint_session)
+            session_snapshot = await self._run_checkpoint_stage_with_retry(
+                "checkpoint.snapshot",
+                self._snapshot_session_at_boundary,
+                checkpoint_session,
+                boundary,
+            )
+            self._assert_checkpoint_owner_current(
+                owner_loop,
+                owner_generation,
+                queue,
+            )
+            record_runtime_duration(
+                "checkpoint.snapshot",
+                (time.perf_counter() - snapshot_started) * 1000,
+            )
+            completion = (
+                asyncio.get_running_loop().create_future() if should_wait else None
+            )
+            commit_token = threading.Event()
+            commit_token.set()
+            item = _CheckpointWorkItem(
+                metadata=metadata,
+                session_snapshot=session_snapshot,
+                generation=owner_generation,
+                commit_token=commit_token,
+                completion=completion,
+            )
+
+            try:
+                queue.put_nowait(item)
+            except asyncio.QueueFull as exc:
+                if checkpoint_type == CheckpointType.AUTO:
+                    self._rejected_auto_checkpoints += 1
+                    self._record_checkpoint_block("queue_full")
+                raise CheckpointQueueFullError(
+                    "Checkpoint queue is full after reserved admission"
+                ) from exc
+            enqueued = True
+            logger.debug("Enqueued checkpoint creation: %s", checkpoint_id)
+
+            if completion is not None:
+                timeout = (
+                    self.config.persistence_ack_timeout_seconds
+                    if persistence_timeout_seconds is None
+                    else persistence_timeout_seconds
+                )
+                try:
+                    persisted = await asyncio.wait_for(
+                        asyncio.shield(completion),
+                        timeout=max(0.0, timeout),
+                    )
+                except asyncio.TimeoutError as exc:
+                    item.commit_token.clear()
+                    raise CheckpointPersistenceTimeoutError(
+                        "Timed out waiting for durable checkpoint persistence"
+                    ) from exc
+                if not persisted:
+                    raise CheckpointPersistenceError(
+                        "Checkpoint persistence failed or was dropped before commit"
+                    )
+            return checkpoint_id
+        except asyncio.CancelledError:
+            if enqueued and item is not None:
+                item.commit_token.clear()
+            raise
+        except (
+            CheckpointPersistenceError,
+            CheckpointQueueFullError,
+            CheckpointWorkerCircuitOpenError,
+            CheckpointWorkerOwnershipError,
+        ):
+            if checkpoint_type == CheckpointType.AUTO:
+                return None
+            raise
+        except Exception as exc:
+            if checkpoint_type == CheckpointType.AUTO:
+                logger.warning(
+                    "Automatic checkpoint admission failed: %s",
+                    type(exc).__name__,
+                )
+                return None
+            raise CheckpointPersistenceError(
+                f"Checkpoint preparation failed: {type(exc).__name__}"
+            ) from exc
+        finally:
+            if not enqueued:
+                self._release_reserved_checkpoint(checkpoint_type)
+
+    def _assert_checkpoint_owner_current(
+        self,
+        owner_loop: asyncio.AbstractEventLoop,
+        owner_generation: int,
+        queue: asyncio.Queue[_CheckpointWorkItem],
+    ) -> None:
+        """Reject pre-queue work whose owner was stopped during an offload await."""
+
+        if (
+            self._workers_stopping
+            or not self._workers_started
+            or self._loop is not owner_loop
+            or self._worker_generation != owner_generation
+            or self.checkpoint_queue is not queue
+        ):
+            raise CheckpointWorkerOwnershipError(
+                "Checkpoint worker ownership changed before queue insertion"
+            )
+
+    async def _reserve_checkpoint_capacity(
+        self,
+        checkpoint_type: CheckpointType,
+    ) -> bool:
+        """Reserve bounded capacity before retention, flattening, or snapshotting."""
+
+        if self._workers_stopping:
+            if checkpoint_type == CheckpointType.AUTO:
+                self._record_checkpoint_block("worker_stopping")
+                return False
+            raise CheckpointWorkerOwnershipError("Checkpoint workers are stopping")
+
+        event = self._capacity_available
+        if event is None:
+            raise CheckpointWorkerOwnershipError(
+                "Checkpoint capacity is not owned by a running event loop"
+            )
+
+        if checkpoint_type == CheckpointType.AUTO:
+            if self._inflight_checkpoint_work >= self._work_capacity_limit:
+                self._rejected_auto_checkpoints += 1
+                self._record_checkpoint_block("work_capacity_full")
+                return False
+        else:
+            deadline = time.monotonic() + max(
+                0.0,
+                self.config.enqueue_timeout_seconds,
+            )
+            while self._inflight_checkpoint_work >= self._work_capacity_limit:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise CheckpointQueueFullError(
+                        "Timed out waiting for checkpoint work capacity"
+                    )
+                try:
+                    await asyncio.wait_for(event.wait(), timeout=remaining)
+                except asyncio.TimeoutError as exc:
+                    raise CheckpointQueueFullError(
+                        "Timed out waiting for checkpoint work capacity"
+                    ) from exc
+
+        self._inflight_checkpoint_work += 1
         if checkpoint_type == CheckpointType.AUTO:
             self._pending_auto_checkpoints += 1
-        try:
-            await self.checkpoint_queue.put(("create", session, metadata))
-        except BaseException:
-            if checkpoint_type == CheckpointType.AUTO:
-                self._pending_auto_checkpoints = max(
-                    0,
-                    self._pending_auto_checkpoints - 1,
-                )
-            raise
+        if self._inflight_checkpoint_work >= self._work_capacity_limit:
+            event.clear()
+        return True
 
-        logger.debug(f"Enqueued checkpoint creation: {checkpoint_id}")
+    def _release_reserved_checkpoint(
+        self,
+        checkpoint_type: CheckpointType,
+    ) -> None:
+        """Release one pre-queue reservation after failure or worker completion."""
+
+        if checkpoint_type == CheckpointType.AUTO:
+            self._pending_auto_checkpoints = max(
+                0,
+                self._pending_auto_checkpoints - 1,
+            )
+        self._release_checkpoint_capacity()
+
+    def _release_checkpoint_capacity(self) -> None:
+        """Release one total-work slot on the owning event loop."""
+
+        self._inflight_checkpoint_work = max(
+            0,
+            self._inflight_checkpoint_work - 1,
+        )
+        event = self._capacity_available
+        if (
+            event is not None
+            and self._inflight_checkpoint_work < self._work_capacity_limit
+        ):
+            event.set()
+
+    async def _run_checkpoint_stage_with_retry(
+        self,
+        stage: str,
+        function,
+        *args,
+        retry: bool = True,
+    ):
+        """Run one preparation stage off-loop with bounded retry/circuit behavior."""
+
+        attempts = max(1, int(self.config.worker_max_attempts)) if retry else 1
+        for attempt in range(1, attempts + 1):
+            commit_token = threading.Event()
+            commit_token.set()
+            try:
+                result = await asyncio.wait_for(
+                    self._run_off_loop(
+                        function,
+                        *args,
+                        _commit_token=commit_token,
+                    ),
+                    timeout=_finite_timeout(
+                        self.config.preparation_attempt_timeout_seconds,
+                        default=60.0,
+                    ),
+                )
+                return result
+            except asyncio.CancelledError:
+                commit_token.clear()
+                raise
+            except asyncio.TimeoutError as exc:
+                commit_token.clear()
+                timeout_error = CheckpointPersistenceTimeoutError(
+                    f"{stage} exceeded its offload deadline"
+                )
+                self._record_worker_failure(
+                    timeout_error,
+                    attempt=attempt,
+                    attempts=attempts,
+                )
+                self._force_checkpoint_circuit_open()
+                raise timeout_error from exc
+            except Exception as exc:
+                self._record_worker_failure(exc, attempt=attempt, attempts=attempts)
+                if attempt >= attempts or self._checkpoint_circuit_is_open():
+                    raise CheckpointPersistenceError(
+                        f"{stage} failed after {attempt} attempt(s)"
+                    ) from exc
+                await asyncio.sleep(self._checkpoint_retry_delay(attempt))
+        raise AssertionError("unreachable checkpoint stage retry state")
+
+    async def _run_off_loop(
+        self,
+        function,
+        *args,
+        _commit_token: Optional[threading.Event] = None,
+    ):
+        """Run bounded filesystem/serialization work outside the event loop."""
+
+        generation = self._worker_generation
+        executor = self._offload_executor
+        if executor is None:
+            executor = BoundedDaemonExecutor(
+                max_workers=2,
+                max_pending=max(4, self._work_capacity_limit * 2),
+                thread_name_prefix="penguin-checkpoint-io",
+            )
+            self._offload_executor = executor
+        future = executor.submit(
+            self._run_offload_with_generation,
+            generation,
+            _commit_token,
+            function,
+            args,
+        )
+        with self._offload_state_lock:
+            self._active_offloads[future] = generation
+        future.add_done_callback(self._finish_offload)
+        return await asyncio.wrap_future(future)
+
+    def _shutdown_offload_executor(self) -> None:
+        """Stop accepting offloads without waiting on an active OS filesystem call."""
+
+        executor = self._offload_executor
+        self._offload_executor = None
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+    def _run_offload_with_generation(
+        self,
+        generation: int,
+        commit_token: Optional[threading.Event],
+        function,
+        args,
+    ):
+        """Expose the submitting worker generation to synchronous commit guards."""
+
+        self._persistence_context.generation = generation
+        self._persistence_context.commit_token = commit_token
+        try:
+            return function(*args)
+        finally:
+            self._persistence_context.generation = None
+            self._persistence_context.commit_token = None
+
+    def _finish_offload(self, future: ConcurrentFuture[Any]) -> None:
+        """Forget a completed offload, including one detached by cancellation."""
+
+        with self._offload_state_lock:
+            self._active_offloads.pop(future, None)
+
+    def _active_offload_count(self) -> int:
+        """Return active/queued offloads using a thread-safe snapshot."""
+
+        with self._offload_state_lock:
+            return len(self._active_offloads)
+
+    def _has_active_offloads(self) -> bool:
+        """Return whether any filesystem thread may still mutate or snapshot."""
+
+        return self._active_offload_count() > 0
+
+    def _checkpoint_retry_delay(self, attempt: int) -> float:
+        """Return capped exponential backoff for a completed failed attempt."""
+
+        return min(
+            max(0.0, self.config.worker_retry_max_seconds),
+            max(0.0, self.config.worker_retry_base_seconds) * (2 ** (attempt - 1)),
+        )
+
+    def _resolve_work_completion(
+        self,
+        item: _CheckpointWorkItem,
+        persisted: bool,
+    ) -> None:
+        """Resolve a durable-ack future without leaking invalid-state errors."""
+
+        completion = item.completion
+        if completion is not None and not completion.done():
+            completion.set_result(persisted)
+
+    async def run_automatic_maintenance(self) -> int:
+        """Run one coalesced retention/reconciliation pass without admitting a write."""
+
+        await self.start_workers()
+        return await self._run_automatic_maintenance_owned()
+
+    async def _run_automatic_maintenance_owned(self) -> int:
+        """Run maintenance after the caller has established worker ownership."""
+
+        lock = self._maintenance_lock
+        if lock is None:
+            return 0
+        async with lock:
+            if self._workers_stopping:
+                return 0
+            removed = await self._run_checkpoint_stage_with_retry(
+                "checkpoint.maintenance",
+                self._enforce_automatic_retention_sync,
+                self._pending_auto_checkpoints,
+            )
+            self._reconcile_checkpoint_storage()
+            self._last_storage_safety_status = self._storage_safety_monitor.check(
+                force=True,
+                checkpoint_bytes=self._checkpoint_bytes,
+            )
+            if self._last_storage_safety_status.allow_background_writes:
+                if self._checkpoint_block_reason == "storage_critical":
+                    self._checkpoint_block_reason = None
+            else:
+                self._checkpoint_block_reason = "storage_critical"
+            return int(removed)
+
+    async def _maintenance_loop(self, generation: int) -> None:
+        """Run retention independently of new checkpoint write admission."""
+
+        while generation == self._worker_generation:
+            try:
+                await self._run_automatic_maintenance_owned()
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.warning(
+                    "Checkpoint maintenance pass failed error_type=%s",
+                    type(exc).__name__,
+                )
+            try:
+                await asyncio.sleep(max(0.01, self.config.maintenance_interval_seconds))
+            except asyncio.CancelledError:
+                break
+
+    def capture_snapshot_boundary(
+        self,
+        session: Session,
+    ) -> CheckpointSnapshotBoundary:
+        """Capture list limits only after task/capacity admission succeeds."""
+
+        return CheckpointSnapshotBoundary(
+            message_count=len(session.messages),
+            lifecycle_count=len(session.llm_request_lifecycles),
+            tool_call_count=len(session.tool_call_records),
+            tool_result_count=len(session.tool_result_records),
+            last_active=session.last_active,
+        )
+
+    def _snapshot_session_at_boundary(
+        self,
+        session: Session,
+        boundary: CheckpointSnapshotBoundary,
+    ) -> Dict[str, Any]:
+        """Capture coalesced state off-loop, then enforce trigger list limits."""
+
+        snapshot = copy.deepcopy(session.to_dict())
+        snapshot["messages"] = list(snapshot.get("messages", []))[
+            : boundary.message_count
+        ]
+        snapshot["llm_request_lifecycles"] = list(
+            snapshot.get("llm_request_lifecycles", [])
+        )[: boundary.lifecycle_count]
+        snapshot["tool_call_records"] = list(snapshot.get("tool_call_records", []))[
+            : boundary.tool_call_count
+        ]
+        snapshot["tool_result_records"] = list(snapshot.get("tool_result_records", []))[
+            : boundary.tool_result_count
+        ]
+        snapshot["last_active"] = boundary.last_active
+        metadata = snapshot.get("metadata")
+        if isinstance(metadata, dict):
+            metadata["message_count"] = boundary.message_count
+        return preserve_native_tool_adjacency(snapshot)
+
+    async def create_checkpoint_and_wait(
+        self,
+        session: Session,
+        message: Message,
+        checkpoint_type: CheckpointType = CheckpointType.AUTO,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        snapshot_boundary: Optional[CheckpointSnapshotBoundary] = None,
+    ) -> Optional[str]:
+        """Create, drain, and stop a checkpoint worker for a transient loop."""
+
+        checkpoint_id: Optional[str] = None
+        try:
+            checkpoint_id = await self.create_checkpoint(
+                session,
+                message,
+                checkpoint_type,
+                name,
+                description,
+                snapshot_boundary,
+                wait_for_persistence=True,
+                persistence_timeout_seconds=(
+                    self.config.shutdown_drain_timeout_seconds
+                ),
+            )
+        except CheckpointPersistenceError:
+            logger.warning(
+                "Transient-loop checkpoint did not reach durable persistence",
+                exc_info=True,
+            )
+        finally:
+            # ``stop_workers`` owns the bounded drain policy. A separate
+            # unbounded ``queue.join`` here would make synchronous callers hang
+            # forever when filesystem persistence stalls.
+            await self.stop_workers()
         return checkpoint_id
+
+    async def _prepare_auto_checkpoint_admission(self) -> bool:
+        """Run automatic retention when needed, then evaluate auto admission."""
+
+        if self._checkpoint_circuit_is_open():
+            self._record_checkpoint_block("worker_circuit_open")
+            return False
+        admitted_count = self._auto_checkpoint_count + self._pending_auto_checkpoints
+        status = self._storage_safety_monitor.check(
+            checkpoint_bytes=self._checkpoint_bytes,
+        )
+        self._last_storage_safety_status = status
+        if (
+            admitted_count > self.config.max_auto_checkpoints
+            or not status.allow_background_writes
+        ):
+            try:
+                await self._run_checkpoint_stage_with_retry(
+                    "checkpoint.retention",
+                    self._enforce_automatic_retention_sync,
+                    self._pending_auto_checkpoints,
+                )
+            except CheckpointPersistenceError:
+                self._record_checkpoint_block("retention_failed")
+                return False
+            self._reconcile_checkpoint_storage()
+            self._last_storage_safety_status = self._storage_safety_monitor.check(
+                force=True,
+                checkpoint_bytes=self._checkpoint_bytes,
+            )
+        return self._allow_auto_checkpoint(reservation_included=True)
 
     def refresh_admission_counters(self) -> None:
         """Refresh cached checkpoint counts after index load or test mutation."""
 
+        try:
+            snapshot = dict(self.checkpoint_index)
+        except RuntimeError:
+            snapshot = self._checkpoint_index_snapshot
+        else:
+            self._checkpoint_index_snapshot = snapshot
         self._auto_checkpoint_count = sum(
             1
-            for metadata in self.checkpoint_index.values()
+            for checkpoint_id, metadata in snapshot.items()
             if metadata.type == CheckpointType.AUTO
+            and (self.checkpoints_path / f"{checkpoint_id}.json.gz").exists()
+        )
+
+    def get_checkpoint_index_snapshot(self) -> Dict[str, CheckpointMetadata]:
+        """Return the last atomically published index without taking the writer lock."""
+
+        return self._checkpoint_index_snapshot
+
+    def _reconcile_checkpoint_storage(self) -> None:
+        """Refresh physical-byte and usable-index counters after every mutation."""
+
+        with self._persistence_lock:
+            self._checkpoint_bytes = _checkpoint_directory_bytes(self.checkpoints_path)
+            self.refresh_admission_counters()
+
+    def _recover_automatic_retention_transactions(self) -> None:
+        """Restore or finish crash-interrupted automatic retention transactions."""
+
+        recover_automatic_retention_transactions(
+            self,
+            metadata_from_manifest=_checkpoint_metadata_from_manifest,
+        )
+
+    def _recover_confirmed_cleanup_archives(self) -> None:
+        """Reconcile an archive transaction interrupted before its terminal state."""
+
+        recover_confirmed_cleanup_archives(
+            self,
+            metadata_from_manifest=_checkpoint_metadata_from_manifest,
         )
 
     def get_storage_safety_status(self) -> Dict[str, Any]:
@@ -307,6 +1259,32 @@ class CheckpointManager:
                 "auto_checkpoint_count": self._auto_checkpoint_count,
                 "pending_auto_checkpoints": self._pending_auto_checkpoints,
                 "max_auto_checkpoints": self.config.max_auto_checkpoints,
+                "checkpoint_bytes": self._checkpoint_bytes,
+                "worker": {
+                    "started": self._workers_started,
+                    "generation": self._worker_generation,
+                    "owner_thread_id": self._owner_thread_id,
+                    "queue_size": (
+                        self.checkpoint_queue.qsize()
+                        if self.checkpoint_queue is not None
+                        else 0
+                    ),
+                    "queue_maxsize": max(1, int(self.config.queue_maxsize)),
+                    "inflight_work": self._inflight_checkpoint_work,
+                    "work_capacity": self._work_capacity_limit,
+                    "active_offloads": self._active_offload_count(),
+                    "background_tasks": len(self._background_checkpoint_tasks),
+                    "maintenance_in_progress": bool(
+                        self._maintenance_lock is not None
+                        and self._maintenance_lock.locked()
+                    ),
+                    "consecutive_failures": self._consecutive_worker_failures,
+                    "circuit_open": self._checkpoint_circuit_is_open(),
+                    "last_error_code": self._last_worker_error_code,
+                    "suppressed_error_logs": self._suppressed_worker_error_logs,
+                    "rejected_auto_checkpoints": self._rejected_auto_checkpoints,
+                    "dropped_on_shutdown": self._dropped_on_shutdown,
+                },
             }
         )
         return payload
@@ -316,6 +1294,7 @@ class CheckpointManager:
         *,
         active_session_ids: Optional[Set[str]] = None,
         now: Optional[datetime] = None,
+        max_auto_checkpoints: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Return a read-only cleanup plan with no source-data mutation."""
 
@@ -325,26 +1304,49 @@ class CheckpointManager:
         if current_session_id:
             active_sessions.add(str(current_session_id))
         retention = self.config.retention
+        checkpoint_index = self.get_checkpoint_index_snapshot()
         return build_checkpoint_cleanup_plan(
             self.checkpoints_path,
-            self.checkpoint_index,
+            checkpoint_index,
             keep_all_hours=retention.get("keep_all_hours", 24),
             keep_every_nth=retention.get("keep_every_nth", 10),
             max_age_days=retention.get("max_age_days", 30),
-            max_auto_checkpoints=self.config.max_auto_checkpoints,
+            max_auto_checkpoints=(
+                self.config.max_auto_checkpoints
+                if max_auto_checkpoints is None
+                else max(0, max_auto_checkpoints)
+            ),
+            max_checkpoint_bytes=retention.get("max_bytes"),
+            active_session_keep=retention.get("active_session_keep", 1),
             active_session_ids=active_sessions,
             now=now,
         ).to_dict()
 
-    def _allow_auto_checkpoint(self) -> bool:
+    def _allow_auto_checkpoint(
+        self,
+        *,
+        check_count: bool = True,
+        reservation_included: bool = False,
+    ) -> bool:
         """Return whether one new automatic checkpoint may be enqueued."""
 
         admitted_count = self._auto_checkpoint_count + self._pending_auto_checkpoints
-        if admitted_count >= self.config.max_auto_checkpoints:
+        count_exhausted = (
+            admitted_count > self.config.max_auto_checkpoints
+            if reservation_included
+            else admitted_count >= self.config.max_auto_checkpoints
+        )
+        if check_count and count_exhausted:
             self._record_checkpoint_block("max_auto_checkpoints")
             return False
 
-        status = self._storage_safety_monitor.check()
+        if self._checkpoint_circuit_is_open():
+            self._record_checkpoint_block("worker_circuit_open")
+            return False
+
+        status = self._storage_safety_monitor.check(
+            checkpoint_bytes=self._checkpoint_bytes,
+        )
         self._last_storage_safety_status = status
         if not status.allow_background_writes:
             self._record_checkpoint_block("storage_critical")
@@ -358,6 +1360,28 @@ class CheckpointManager:
                 status.to_dict(),
             )
         return True
+
+    def _checkpoint_circuit_is_open(self) -> bool:
+        """Return whether repeated worker failures are still in cooldown."""
+
+        if self._circuit_open_until <= 0:
+            return False
+        now = time.monotonic()
+        if now < self._circuit_open_until:
+            return True
+        self._circuit_open_until = 0.0
+        self._consecutive_worker_failures = 0
+        self._last_worker_error_code = None
+        return False
+
+    def _force_checkpoint_circuit_open(self) -> None:
+        """Open the circuit after an indeterminate offload timeout."""
+
+        self._circuit_open_until = time.monotonic() + max(
+            0.01,
+            self.config.circuit_reset_seconds,
+        )
+        self._checkpoint_block_reason = "worker_circuit_open"
 
     def _record_checkpoint_block(self, reason: str) -> None:
         """Record and rate-limit one automatic-checkpoint admission warning."""
@@ -480,6 +1504,8 @@ class CheckpointManager:
                     name=name or f"Branch from {checkpoint_id[:8]}",
                     description=description,
                 )
+                if not branch_checkpoint_id:
+                    return None
 
                 # Set as current session
                 self.session_manager.current_session = branch_session
@@ -516,7 +1542,8 @@ class CheckpointManager:
         """
         checkpoints = []
 
-        for cp_id, metadata in self.checkpoint_index.items():
+        checkpoint_items = list(self.get_checkpoint_index_snapshot().items())
+        for cp_id, metadata in checkpoint_items:
             # Apply filters
             if session_id and metadata.session_id != session_id:
                 continue
@@ -560,19 +1587,23 @@ class CheckpointManager:
             PermissionError: If destructive execution lacks exact confirmation.
         """
 
-        plan = self.plan_checkpoint_cleanup()
         if not execute:
+            plan = self.plan_checkpoint_cleanup()
             return {"status": "dry_run", **plan}
 
+        await self.start_workers()
+        plan = self.plan_checkpoint_cleanup()
         expected_confirmation = str(self.workspace_path.expanduser().resolve())
         if confirmation != expected_confirmation:
             raise PermissionError(
                 "Checkpoint cleanup execution requires confirmation equal to the "
                 f"resolved workspace path: {expected_confirmation}"
             )
-        cleaned_count = await asyncio.to_thread(
+        cleaned_count = await self._run_checkpoint_stage_with_retry(
+            "checkpoint.confirmed_cleanup",
             self._archive_cleanup_candidates,
             plan,
+            retry=False,
         )
         return {
             "status": "completed",
@@ -585,68 +1616,17 @@ class CheckpointManager:
     def _archive_cleanup_candidates(self, plan: Dict[str, Any]) -> int:
         """Move reviewed candidates to a recoverable archive and update the index."""
 
-        recovery_plan = plan.get("recovery_plan", {})
-        archive_value = recovery_plan.get("archive_destination")
-        if not isinstance(archive_value, str) or not archive_value:
-            raise RuntimeError("Cleanup plan has no archive destination")
-        archive_path = Path(archive_value).expanduser().resolve()
-        checkpoint_root = self.checkpoints_path.expanduser().resolve()
-        if checkpoint_root not in archive_path.parents:
-            raise RuntimeError(
-                "Checkpoint archive must remain below checkpoint storage"
-            )
-        archive_path.mkdir(parents=True, exist_ok=False)
+        with self._persistence_lock:
+            return self._archive_cleanup_candidates_locked(plan)
 
-        manifest: Dict[str, Any] = {
-            "state": "planned",
-            "generated_at": plan.get("generated_at"),
-            "source": str(checkpoint_root),
-            "archive": str(archive_path),
-            "candidates": [],
-            "moved": [],
-        }
-        for candidate in plan.get("candidates", []):
-            source_value = candidate.get("path")
-            checkpoint_id = candidate.get("checkpoint_id")
-            if not isinstance(source_value, str) or not isinstance(checkpoint_id, str):
-                continue
-            source = Path(source_value).expanduser().resolve()
-            if source.parent != checkpoint_root:
-                raise RuntimeError(f"Unsafe checkpoint cleanup source: {source}")
-            manifest["candidates"].append(
-                {
-                    "checkpoint_id": checkpoint_id,
-                    "source": str(source),
-                    "size_bytes": candidate.get("size_bytes", 0),
-                    "sha256": _sha256_file(source),
-                }
-            )
+    def _archive_cleanup_candidates_locked(self, plan: Dict[str, Any]) -> int:
+        """Archive reviewed candidates while holding the mutation lock."""
 
-        manifest_path = archive_path / "manifest.json"
-        _write_json_atomic(manifest_path, manifest)
-        try:
-            for candidate in manifest["candidates"]:
-                source = Path(candidate["source"])
-                target = archive_path / source.name
-                if target.exists():
-                    raise FileExistsError(f"Archive target already exists: {target}")
-                source.replace(target)
-                manifest["moved"].append(
-                    {
-                        **candidate,
-                        "archive_path": str(target),
-                    }
-                )
-                self.checkpoint_index.pop(candidate["checkpoint_id"], None)
-            manifest["state"] = "completed"
-            self.refresh_admission_counters()
-            self._save_checkpoint_index()
-            _write_json_atomic(manifest_path, manifest)
-        except Exception:
-            manifest["state"] = "partial"
-            _write_json_atomic(manifest_path, manifest)
-            raise
-        return len(manifest["moved"])
+        return archive_cleanup_candidates(
+            self,
+            plan,
+            metadata_to_manifest=_checkpoint_metadata_to_manifest,
+        )
 
     def collect_lineage(self, session_id: str) -> List[str]:
         """
@@ -679,178 +1659,358 @@ class CheckpointManager:
         Returns:
             New session with flattened message history
         """
-        # Collect lineage
-        lineage = self.collect_lineage(tail_session.id)
-
-        # Create new session for the snapshot
-        merged_session = Session(
-            metadata={
-                "branched_from": tail_session.id,
-                "lineage": lineage,
-                "flattened_snapshot": True,
-                "original_created_at": lineage[0]
-                if lineage
-                else tail_session.created_at,
-            }
+        return await self._run_checkpoint_stage_with_retry(
+            "checkpoint.flatten",
+            self._build_flat_snapshot_sync,
+            tail_session,
+            False,
         )
 
-        # Merge messages from all sessions in lineage
-        for session_id in lineage:
-            if session_id == tail_session.id:
-                # Use the tail session directly
-                source_session = tail_session
-            else:
-                # Load the session
-                source_session = self.session_manager.load_session(session_id)
+    def _build_flat_snapshot_sync(
+        self,
+        tail_session: Session,
+        preserve_session_identity: bool = False,
+    ) -> Session:
+        """Build a flattened session snapshot outside the event-loop thread."""
 
-            if source_session:
-                for message in source_session.messages:
-                    # Create a copy of the message
-                    merged_message = Message(
-                        role=message.role,
-                        content=message.content,
-                        category=message.category,
-                        id=message.id,
-                        timestamp=message.timestamp,
-                        metadata=message.metadata.copy(),
-                        tokens=message.tokens,
-                    )
-                    merged_session.add_message(merged_message)
+        lineage = self.collect_lineage(tail_session.id)
+        load_session_readonly = getattr(
+            self.session_manager,
+            "load_session_readonly",
+            None,
+        )
+        if not callable(load_session_readonly):
 
-        # Deduplicate system messages (keep only the latest of each type)
-        await self._dedupe_system_messages(merged_session)
+            def load_session_readonly(_session_id: str) -> Optional[Session]:
+                raise CheckpointPersistenceError(
+                    "Checkpoint lineage flattening requires a non-mutating "
+                    "load_session_readonly() collaborator"
+                )
 
-        return merged_session
+        return build_flat_session_snapshot(
+            tail_session,
+            lineage=lineage,
+            load_session=load_session_readonly,
+            preserve_session_identity=preserve_session_identity,
+        )
 
-    async def _dedupe_system_messages(self, session: Session) -> None:
-        """
-        Remove duplicate system messages, keeping only the latest of each type.
+    async def _checkpoint_worker(self, generation: int) -> None:
+        """Process immutable checkpoint work with bounded failure behavior."""
 
-        Args:
-            session: Session to deduplicate
-        """
-        seen_system_types = set()
-        messages_to_keep = []
-
-        # Process messages in reverse order to keep latest
-        for message in reversed(session.messages):
-            if message.category == MessageCategory.SYSTEM:
-                msg_type = message.metadata.get("type", "generic")
-                if msg_type not in seen_system_types:
-                    seen_system_types.add(msg_type)
-                    messages_to_keep.append(message)
-            else:
-                messages_to_keep.append(message)
-
-        # Restore original order
-        session.messages = list(reversed(messages_to_keep))
-
-    async def _checkpoint_worker(self) -> None:
-        """Async worker that processes checkpoint creation requests."""
-        while True:
-            try:
-                assert self.checkpoint_queue is not None
-                action, session, metadata = await self.checkpoint_queue.get()
-
+        queue = self.checkpoint_queue
+        assert queue is not None
+        while generation == self._worker_generation:
+            remaining = self._circuit_open_until - time.monotonic()
+            if remaining > 0:
                 try:
-                    if action == "create":
-                        await self._create_checkpoint_file(session, metadata)
-                finally:
-                    if metadata.type == CheckpointType.AUTO:
-                        self._pending_auto_checkpoints = max(
-                            0,
-                            self._pending_auto_checkpoints - 1,
-                        )
-                    self.checkpoint_queue.task_done()
-
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Error in checkpoint worker: {e}")
-
-    async def _cleanup_worker(self) -> None:
-        """Async worker that processes cleanup requests."""
-        while True:
+                    await asyncio.sleep(remaining)
+                except asyncio.CancelledError:
+                    break
+                continue
             try:
-                assert self.cleanup_queue is not None
-                action = await self.cleanup_queue.get()
-
-                if action == "cleanup":
-                    cleaned_count = await self._perform_cleanup()
-                    logger.info(f"Cleaned up {cleaned_count} old checkpoints")
-
-                self.cleanup_queue.task_done()
-
+                item = await queue.get()
             except asyncio.CancelledError:
                 break
-            except Exception as e:
-                logger.error(f"Error in cleanup worker: {e}")
+            except Exception as exc:
+                await self._handle_worker_loop_error(exc)
+                continue
 
-    async def _create_checkpoint_file(
-        self, session: Session, metadata: CheckpointMetadata
-    ) -> None:
-        """
-        Create the actual checkpoint file.
+            try:
+                persisted = await self._persist_work_item_with_retry(item)
+                self._resolve_work_completion(item, persisted)
+            except asyncio.CancelledError:
+                self._resolve_work_completion(item, False)
+                raise
+            finally:
+                if item.metadata.type == CheckpointType.AUTO:
+                    self._pending_auto_checkpoints = max(
+                        0,
+                        self._pending_auto_checkpoints - 1,
+                    )
+                self._release_checkpoint_capacity()
+                queue.task_done()
 
-        Args:
-            session: Session to checkpoint
-            metadata: Checkpoint metadata
-        """
-        persistence_started = time.perf_counter()
+    async def _persist_work_item_with_retry(
+        self,
+        item: _CheckpointWorkItem,
+    ) -> bool:
+        """Persist one item with bounded exponential backoff and circuit state."""
+
+        attempts = max(1, int(self.config.worker_max_attempts))
+        for attempt in range(1, attempts + 1):
+            try:
+                await asyncio.wait_for(
+                    self._run_off_loop(
+                        self._persist_checkpoint_work_item,
+                        item,
+                        _commit_token=item.commit_token,
+                    ),
+                    timeout=_finite_timeout(
+                        self.config.persistence_attempt_timeout_seconds,
+                        default=60.0,
+                    ),
+                )
+            except asyncio.CancelledError:
+                item.commit_token.clear()
+                raise
+            except asyncio.TimeoutError:
+                item.commit_token.clear()
+                timeout_error = CheckpointPersistenceTimeoutError(
+                    "Checkpoint persistence attempt exceeded its offload deadline"
+                )
+                self._record_worker_failure(
+                    timeout_error,
+                    attempt=attempt,
+                    attempts=attempts,
+                )
+                self._force_checkpoint_circuit_open()
+                return False
+            except Exception as exc:
+                self._record_worker_failure(exc, attempt=attempt, attempts=attempts)
+                if attempt >= attempts or self._checkpoint_circuit_is_open():
+                    return False
+                await asyncio.sleep(self._checkpoint_retry_delay(attempt))
+                continue
+            self._record_worker_success()
+            return True
+        return False
+
+    def _persist_checkpoint_work_item(self, item: _CheckpointWorkItem) -> None:
+        """Persist one item while preserving compatibility with two-arg test hooks."""
+
+        self._persistence_context.commit_token = item.commit_token
         try:
-            # Build flattened snapshot if this is a branch or manual checkpoint
-            if metadata.type in [CheckpointType.BRANCH, CheckpointType.MANUAL]:
-                checkpoint_session = await self._build_flat_snapshot(session)
-            else:
-                # For auto checkpoints, just use the current session
-                checkpoint_session = session
+            self._assert_checkpoint_generation_current(item.generation)
+            self._persist_checkpoint_snapshot(item.session_snapshot, item.metadata)
+        finally:
+            self._persistence_context.commit_token = None
 
-            # Create checkpoint data with proper enum serialization
+    async def _handle_worker_loop_error(self, exc: BaseException) -> None:
+        """Back off after an unexpected queue/worker-loop failure."""
+
+        self._record_worker_failure(exc, attempt=1, attempts=1)
+        delay = max(0.01, self.config.worker_retry_base_seconds)
+        if self._checkpoint_circuit_is_open():
+            delay = max(delay, self.config.circuit_reset_seconds)
+        await asyncio.sleep(
+            min(delay, max(delay, self.config.worker_retry_max_seconds))
+        )
+
+    def _record_worker_failure(
+        self,
+        exc: BaseException,
+        *,
+        attempt: int,
+        attempts: int,
+    ) -> None:
+        """Update bounded failure/circuit diagnostics with rate-limited logging."""
+
+        self._consecutive_worker_failures += 1
+        self._last_worker_error_code = type(exc).__name__[:64]
+        threshold = max(1, int(self.config.circuit_failure_threshold))
+        if self._consecutive_worker_failures >= threshold:
+            self._circuit_open_until = time.monotonic() + max(
+                0.0,
+                self.config.circuit_reset_seconds,
+            )
+            self._checkpoint_block_reason = "worker_circuit_open"
+
+        now = time.monotonic()
+        if now - self._last_worker_error_log_at >= max(
+            0.0, self.config.worker_error_log_interval_seconds
+        ):
+            logger.error(
+                "Checkpoint worker persistence failed error_type=%s attempt=%s/%s "
+                "consecutive=%s circuit_open=%s suppressed=%s",
+                self._last_worker_error_code,
+                attempt,
+                attempts,
+                self._consecutive_worker_failures,
+                self._circuit_open_until > now,
+                self._suppressed_worker_error_logs,
+            )
+            self._last_worker_error_log_at = now
+            self._suppressed_worker_error_logs = 0
+        else:
+            self._suppressed_worker_error_logs += 1
+
+    def _record_worker_success(self) -> None:
+        """Close failure/circuit state after one fully persisted checkpoint."""
+
+        self._consecutive_worker_failures = 0
+        self._circuit_open_until = 0.0
+        self._last_worker_error_code = None
+        if self._checkpoint_block_reason == "worker_circuit_open":
+            self._checkpoint_block_reason = None
+
+    def _persist_checkpoint_snapshot(
+        self,
+        session_snapshot: Dict[str, Any],
+        metadata: CheckpointMetadata,
+    ) -> None:
+        """Serialize, compress, write, index, and retain one immutable snapshot."""
+
+        self._assert_checkpoint_generation_current()
+        with self._persistence_lock:
+            self._persist_checkpoint_snapshot_locked(session_snapshot, metadata)
+
+    def _assert_checkpoint_generation_current(
+        self,
+        expected_generation: Optional[int] = None,
+    ) -> None:
+        """Prevent a filesystem thread from committing after worker shutdown."""
+
+        if expected_generation is None:
+            expected_generation = getattr(
+                self._persistence_context,
+                "generation",
+                None,
+            )
+        if (
+            expected_generation is not None
+            and expected_generation != self._worker_generation
+        ):
+            raise _CheckpointCommitInvalidatedError(
+                "Checkpoint worker generation was invalidated before commit"
+            )
+        commit_token = getattr(
+            self._persistence_context,
+            "commit_token",
+            None,
+        )
+        if isinstance(commit_token, threading.Event) and not commit_token.is_set():
+            raise _CheckpointCommitInvalidatedError(
+                "Checkpoint offload deadline invalidated this commit"
+            )
+
+    def _persist_checkpoint_snapshot_locked(
+        self,
+        session_snapshot: Dict[str, Any],
+        metadata: CheckpointMetadata,
+    ) -> None:
+        """Persist one snapshot while holding the checkpoint mutation lock."""
+
+        persistence_started = time.perf_counter()
+        checkpoint_file = self.checkpoints_path / f"{metadata.id}.json.gz"
+        temporary = checkpoint_file.with_name(
+            f".{checkpoint_file.name}.{uuid.uuid4().hex}.tmp"
+        )
+        replaced_new_file = False
+        previous_size = 0
+        previous_metadata: Optional[CheckpointMetadata] = None
+        index_committed = False
+        try:
+            self._assert_checkpoint_generation_current()
             metadata_dict = metadata.__dict__.copy()
-            metadata_dict["type"] = metadata.type.value  # Convert enum to string
-
+            metadata_dict["type"] = metadata.type.value
             serialization_started = time.perf_counter()
             checkpoint_data = {
                 "metadata": metadata_dict,
-                "session": checkpoint_session.to_dict(),
+                "session": session_snapshot,
             }
-
-            # Compress and save
-            checkpoint_file = self.checkpoints_path / f"{metadata.id}.json.gz"
-            compressed_data = gzip.compress(json.dumps(checkpoint_data).encode("utf-8"))
+            compressed_data = gzip.compress(
+                json.dumps(checkpoint_data, separators=(",", ":")).encode("utf-8")
+            )
             record_runtime_duration(
                 "checkpoint.serialization",
                 (time.perf_counter() - serialization_started) * 1000,
             )
 
+            previous_size = (
+                checkpoint_file.stat().st_size if checkpoint_file.exists() else 0
+            )
             write_started = time.perf_counter()
-            with open(checkpoint_file, "wb") as f:
-                f.write(compressed_data)
+            with temporary.open("wb") as handle:
+                handle.write(compressed_data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            self._assert_checkpoint_generation_current()
+            temporary.replace(checkpoint_file)
+            replaced_new_file = previous_size == 0
+            _fsync_directory(self.checkpoints_path)
+            self._checkpoint_bytes = _checkpoint_directory_bytes(self.checkpoints_path)
             record_runtime_duration(
                 "checkpoint.write",
                 (time.perf_counter() - write_started) * 1000,
             )
 
-            # Update index
+            previous_metadata = self.checkpoint_index.get(metadata.id)
+            self._assert_checkpoint_generation_current()
             self.checkpoint_index[metadata.id] = metadata
-            if metadata.type == CheckpointType.AUTO:
-                self._auto_checkpoint_count += 1
             index_started = time.perf_counter()
-            self._save_checkpoint_index()
+            try:
+                self._save_checkpoint_index_or_raise()
+            except Exception:
+                if previous_metadata is None:
+                    self.checkpoint_index.pop(metadata.id, None)
+                else:
+                    self.checkpoint_index[metadata.id] = previous_metadata
+                if replaced_new_file:
+                    checkpoint_file.unlink(missing_ok=True)
+                    _fsync_directory(self.checkpoints_path)
+                self._reconcile_checkpoint_storage()
+                raise
+            index_committed = True
             record_runtime_duration(
                 "checkpoint.index",
                 (time.perf_counter() - index_started) * 1000,
             )
-
-            logger.debug(f"Created checkpoint file: {metadata.id}")
-
-        except Exception as e:
-            logger.error(f"Error creating checkpoint file {metadata.id}: {e}")
+            self.refresh_admission_counters()
+            self._checkpoint_bytes = _checkpoint_directory_bytes(self.checkpoints_path)
+            self._enforce_automatic_retention_sync()
+            logger.debug("Created checkpoint file: %s", metadata.id)
+        except _CheckpointCommitInvalidatedError:
+            if index_committed:
+                # File + index are already durable. A watchdog can cancel
+                # post-commit retention, but deleting only the data here would
+                # corrupt the committed checkpoint. Keep the durable pair and
+                # let the next maintenance pass enforce retention.
+                self._reconcile_checkpoint_storage()
+                logger.warning(
+                    "Checkpoint post-commit maintenance was invalidated id=%s",
+                    metadata.id,
+                )
+                return
+            if previous_metadata is None:
+                self.checkpoint_index.pop(metadata.id, None)
+            else:
+                self.checkpoint_index[metadata.id] = previous_metadata
+            if replaced_new_file:
+                checkpoint_file.unlink(missing_ok=True)
+                _fsync_directory(self.checkpoints_path)
+            self._reconcile_checkpoint_storage()
+            raise
         finally:
+            temporary.unlink(missing_ok=True)
             record_runtime_duration(
                 "checkpoint.persistence",
                 (time.perf_counter() - persistence_started) * 1000,
             )
+
+    def _enforce_automatic_retention_sync(
+        self,
+        reserve_auto_slots: int = 0,
+    ) -> int:
+        """Delete only reviewed automatic candidates and persist the index once."""
+
+        with self._persistence_lock:
+            return self._enforce_automatic_retention_locked(
+                reserve_auto_slots=reserve_auto_slots
+            )
+
+    def _enforce_automatic_retention_locked(
+        self,
+        *,
+        reserve_auto_slots: int,
+    ) -> int:
+        """Enforce automatic retention while holding the mutation lock."""
+
+        return enforce_automatic_retention(
+            self,
+            reserve_auto_slots=reserve_auto_slots,
+            is_auto_checkpoint=_is_automatic_checkpoint,
+            metadata_to_manifest=_checkpoint_metadata_to_manifest,
+        )
 
     async def _load_checkpoint_session(self, checkpoint_id: str) -> Optional[Session]:
         """
@@ -862,119 +2022,44 @@ class CheckpointManager:
         Returns:
             Session object if successful, None otherwise
         """
+        await self.start_workers()
+        try:
+            return await self._run_checkpoint_stage_with_retry(
+                "checkpoint.load",
+                self._load_checkpoint_session_sync,
+                checkpoint_id,
+            )
+        except CheckpointPersistenceError as exc:
+            logger.error(
+                "Error loading checkpoint %s: %s",
+                checkpoint_id,
+                exc,
+            )
+            return None
+
+    def _load_checkpoint_session_sync(
+        self,
+        checkpoint_id: str,
+    ) -> Optional[Session]:
+        """Load/decompress one checkpoint under the writer lock off-loop."""
+
         try:
             checkpoint_file = self.checkpoints_path / f"{checkpoint_id}.json.gz"
-
-            if not checkpoint_file.exists():
-                logger.error(f"Checkpoint file not found: {checkpoint_file}")
-                return None
-
-            # Load and decompress
-            with open(checkpoint_file, "rb") as f:
-                compressed_data = f.read()
-
-            data = json.loads(gzip.decompress(compressed_data).decode("utf-8"))
+            with self._persistence_lock:
+                self._assert_checkpoint_generation_current()
+                if not checkpoint_file.exists():
+                    logger.error("Checkpoint file not found: %s", checkpoint_file)
+                    return None
+                compressed_data = checkpoint_file.read_bytes()
+                data = json.loads(gzip.decompress(compressed_data).decode("utf-8"))
 
             # Extract session data
             session_data = data.get("session", {})
             return Session.from_dict(session_data)
 
         except Exception as e:
-            logger.error(f"Error loading checkpoint {checkpoint_id}: {e}")
+            logger.error("Error loading checkpoint %s: %s", checkpoint_id, e)
             return None
-
-    async def _perform_cleanup(self) -> int:
-        """
-        Perform cleanup of old checkpoints according to retention policy.
-
-        Returns:
-            Number of checkpoints cleaned up
-        """
-        try:
-            now = datetime.now()
-            cleaned_count = 0
-
-            # Get retention settings
-            keep_all_hours = self.config.retention["keep_all_hours"]
-            keep_every_nth = self.config.retention["keep_every_nth"]
-            max_age_days = self.config.retention["max_age_days"]
-
-            # Group checkpoints by age
-            recent_cutoff = now - timedelta(hours=keep_all_hours)
-            old_cutoff = now - timedelta(days=max_age_days)
-
-            auto_checkpoints = []
-            for cp_id, metadata in self.checkpoint_index.items():
-                if metadata.type == CheckpointType.AUTO:
-                    created_at = datetime.fromisoformat(metadata.created_at)
-                    auto_checkpoints.append((cp_id, metadata, created_at))
-
-            # Sort by creation time
-            auto_checkpoints.sort(key=lambda x: x[2])
-
-            # Apply retention rules
-            checkpoints_to_delete = []
-
-            for i, (cp_id, metadata, created_at) in enumerate(auto_checkpoints):
-                # Delete if too old
-                if created_at < old_cutoff:
-                    checkpoints_to_delete.append(cp_id)
-                    continue
-
-                # Keep all recent checkpoints
-                if created_at >= recent_cutoff:
-                    continue
-
-                # For older checkpoints, keep every Nth
-                if i % keep_every_nth != 0:
-                    checkpoints_to_delete.append(cp_id)
-
-            # Enforce hard limit on auto checkpoints
-            if len(auto_checkpoints) > self.config.max_auto_checkpoints:
-                excess_count = len(auto_checkpoints) - self.config.max_auto_checkpoints
-                oldest_checkpoints = auto_checkpoints[:excess_count]
-                for cp_id, _, _ in oldest_checkpoints:
-                    if cp_id not in checkpoints_to_delete:
-                        checkpoints_to_delete.append(cp_id)
-
-            # Delete the checkpoints
-            for cp_id in checkpoints_to_delete:
-                await self._delete_checkpoint(cp_id)
-                cleaned_count += 1
-
-            return cleaned_count
-
-        except Exception as e:
-            logger.error(f"Error during checkpoint cleanup: {e}")
-            return 0
-
-    async def _delete_checkpoint(self, checkpoint_id: str) -> None:
-        """
-        Delete a checkpoint file and remove from index.
-
-        Args:
-            checkpoint_id: ID of the checkpoint to delete
-        """
-        try:
-            # Remove file
-            checkpoint_file = self.checkpoints_path / f"{checkpoint_id}.json.gz"
-            if checkpoint_file.exists():
-                checkpoint_file.unlink()
-
-            # Remove from index
-            if checkpoint_id in self.checkpoint_index:
-                metadata = self.checkpoint_index.pop(checkpoint_id)
-                if metadata.type == CheckpointType.AUTO:
-                    self._auto_checkpoint_count = max(
-                        0,
-                        self._auto_checkpoint_count - 1,
-                    )
-                self._save_checkpoint_index()
-
-            logger.debug(f"Deleted checkpoint: {checkpoint_id}")
-
-        except Exception as e:
-            logger.error(f"Error deleting checkpoint {checkpoint_id}: {e}")
 
     def _load_checkpoint_index(self) -> None:
         """Load the checkpoint index from disk."""
@@ -996,44 +2081,70 @@ class CheckpointManager:
     def _save_checkpoint_index(self) -> None:
         """Save the checkpoint index to disk."""
         try:
-            # Convert CheckpointMetadata objects to dicts for serialization
-            index_data = {}
-            for cp_id, metadata in self.checkpoint_index.items():
-                metadata_dict = metadata.__dict__.copy()
-                metadata_dict["type"] = metadata.type.value  # Convert enum to string
-                index_data[cp_id] = metadata_dict
-
-            # Write to temp file first for atomic operation
-            temp_path = self.index_path.with_suffix(".tmp")
-            with open(temp_path, "w") as f:
-                json.dump(index_data, f, indent=2)
-
-            # Atomic rename
-            temp_path.replace(self.index_path)
-
+            self._save_checkpoint_index_or_raise()
         except Exception as e:
             logger.error(f"Error saving checkpoint index: {e}")
 
+    def _save_checkpoint_index_or_raise(self) -> None:
+        """Persist the full index atomically through a unique temporary file."""
 
-def _sha256_file(path: Path) -> str:
-    """Return a streaming SHA-256 digest for an archive manifest entry."""
+        with self._persistence_lock:
+            index_data: Dict[str, Dict[str, Any]] = {}
+            for checkpoint_id, metadata in self.checkpoint_index.items():
+                metadata_dict = metadata.__dict__.copy()
+                metadata_dict["type"] = metadata.type.value
+                index_data[checkpoint_id] = metadata_dict
+            _write_json_atomic(self.index_path, index_data)
 
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+
+def _checkpoint_directory_bytes(path: Path) -> int:
+    """Return current checkpoint file bytes once for cached admission accounting."""
+
+    total = 0
+    if not path.exists():
+        return total
+    for item in path.glob("*.json.gz"):
+        try:
+            total += item.stat().st_size
+        except OSError:
+            continue
+    return total
 
 
-def _write_json_atomic(path: Path, payload: Dict[str, Any]) -> None:
-    """Write one JSON payload through a unique same-directory temporary file."""
+def _checkpoint_metadata_from_manifest(
+    metadata_payload: Dict[str, Any],
+) -> CheckpointMetadata:
+    """Rebuild manager-owned metadata from a retention manifest record."""
 
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    restored_metadata = dict(metadata_payload)
+    restored_metadata["type"] = CheckpointType(restored_metadata["type"])
+    return CheckpointMetadata(**restored_metadata)
+
+
+def _checkpoint_metadata_to_manifest(
+    metadata: CheckpointMetadata,
+) -> Dict[str, Any]:
+    """Serialize manager-owned metadata for a retention manifest record."""
+
+    return {
+        **metadata.__dict__,
+        "type": metadata.type.value,
+    }
+
+
+def _is_automatic_checkpoint(metadata: CheckpointMetadata) -> bool:
+    """Return whether one metadata record is eligible for automatic retention."""
+
+    return metadata.type == CheckpointType.AUTO
+
+
+def _finite_timeout(value: float, *, default: float) -> float:
+    """Return a finite positive watchdog timeout for checkpoint offloads."""
+
     try:
-        with temporary.open("w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=2, sort_keys=True)
-            handle.flush()
-            os.fsync(handle.fileno())
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(parsed) or parsed <= 0:
+        return default
+    return parsed

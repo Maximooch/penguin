@@ -6,7 +6,7 @@ import {
 } from "../../../src/cli/cmd/tui/component/prompt/penguin-send"
 
 describe("prompt penguin send", () => {
-  test("recovers failed sends by clearing pending state and emitting idle status", () => {
+  test("recovers failed sends without inventing idle status", () => {
     const state = {
       pending: true,
       pendingSeenBusy: true,
@@ -36,20 +36,10 @@ describe("prompt penguin send", () => {
       pending: false,
       pendingSeenBusy: false,
     })
-    expect(events).toEqual([
-      {
-        type: "session.status",
-        properties: {
-          sessionID: "ses_123",
-          status: {
-            type: "idle",
-          },
-        },
-      },
-    ])
+    expect(events).toEqual([])
   })
 
-  test("completes successful sends by emitting keyed idle status", () => {
+  test("clears successful sends without inventing keyed idle status", () => {
     const state: {
       pending: boolean
       pendingSeenBusy: boolean
@@ -88,18 +78,7 @@ describe("prompt penguin send", () => {
       pendingSeenBusy: false,
       runStartedAt: undefined,
     })
-    expect(events).toEqual([
-      {
-        type: "session.status",
-        properties: {
-          messageID: "msg_123",
-          sessionID: "ses_123",
-          status: {
-            type: "idle",
-          },
-        },
-      },
-    ])
+    expect(events).toEqual([])
   })
 
   test("formats auth failures with local auth guidance", () => {

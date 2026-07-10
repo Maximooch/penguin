@@ -136,6 +136,13 @@ Penguin exposes the same runtime through several surfaces:
 - `POST /api/v1/tasks/{task_id}/execute` now routes through `RunMode`, so non-terminal outcomes like `waiting_input` and clarification-needed results are preserved instead of being flattened into fake completion/failure states.
 - `POST /api/v1/tasks/{task_id}/clarification/resume` answers the latest open clarification request and resumes execution through the same `RunMode` lifecycle.
 - `GET /api/v1/events/sse` streams OpenCode-compatible events and now includes session-scoped clarification status visibility for web clients.
+- REST and WebSocket chat return explicit terminal truth (`completed`, `state`,
+  `terminal_reason`, partial output, recovery/cancellation details, and
+  iteration/action counts). A 2xx/`complete` transport envelope is not treated
+  as Penguin success unless `completed` is true.
+- Recoverable chat stops offer Retry/Resume only through a server-generated,
+  durably persisted one-shot continuation. Clients do not guess or
+  automatically send a plain-text `resume` turn.
 - `PenguinAPI.run_task(...)` and `PenguinAPI.resume_with_clarification(...)` are aligned with the web route behavior so programmatic callers see the same lifecycle truth.
 
 These surfaces are still under active audit, but the current direction is explicit: web/API consumers should receive the same task/clarification truth that the backend runtime uses internally.

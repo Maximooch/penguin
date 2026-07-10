@@ -167,8 +167,7 @@ async def test_llm_step_persists_assistant_before_responses_tool_result() -> Non
     assert action_result["status"] == "completed"
     assert action_result["tool_call_id"] == "call_123"
     assert (
-        action_result["tool_arguments"]
-        == '{"path":"context/todo.md","content":"hi"}'
+        action_result["tool_arguments"] == '{"path":"context/todo.md","content":"hi"}'
     )
     assert isinstance(action_result["output_hash"], str)
     assert [message.role for message in conversation.session.messages] == [
@@ -224,12 +223,23 @@ async def test_llm_step_includes_multiple_responses_tool_results() -> None:
     engine._extract_usage_from_api_client = lambda _api_client: {}  # type: ignore[method-assign]
 
     session = Session()
+
+    class _CountingContextWindow:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def process_session(self, current_session: Session) -> Session:
+            self.calls += 1
+            return current_session
+
+    context_window = _CountingContextWindow()
     conversation = ConversationSystem(
+        context_window_manager=context_window,
         session_manager=SimpleNamespace(
             current_session=session,
             mark_session_modified=lambda _session_id: None,
             check_session_boundary=lambda _session: False,
-        )
+        ),
     )
     conversation.session = session
 
@@ -291,3 +301,15 @@ async def test_llm_step_includes_multiple_responses_tool_results() -> None:
         for message in conversation.session.messages
         if message.role == "tool"
     ] == ["call_pwd", "call_ls"]
+    assert [message.role for message in conversation.session.messages] == [
+        "assistant",
+        "tool",
+        "tool",
+    ]
+    assert conversation.session.messages[0].content == ""
+    assert [
+        call["id"] for call in conversation.session.messages[0].metadata["tool_calls"]
+    ] == ["call_pwd", "call_ls"]
+    # The batch is installed before CWM runs, even for a zero-text streamed
+    # native turn; it must not process each tool result independently.
+    assert context_window.calls == 1

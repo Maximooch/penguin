@@ -4,7 +4,7 @@ import io
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Optional, Callable, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import httpx
 
@@ -16,6 +16,10 @@ import httpx
 # from litellm import acompletion, completion, token_counter, cost_per_token, completion_cost
 from PIL import Image  # type: ignore
 
+from penguin.constants import get_default_max_history_tokens
+from penguin.utils.callbacks import adapt_stream_callback
+
+from .adapters import get_adapter  # Keep for native preference
 from .contracts import (
     ErrorCategory,
     LLMCallResult,
@@ -27,13 +31,11 @@ from .contracts import (
     LLMRequestLifecycle,
     ProviderRequestStatus,
 )
+from .litellm_support import load_litellm_gateway_class, load_litellm_module
 from .model_config import ModelConfig
 from .provider_registry import ProviderRegistry
 from .provider_transform import apply_model_config_transforms, build_llm_error
-from penguin.constants import get_default_max_history_tokens
-from penguin.utils.callbacks import adapt_stream_callback
-from .adapters import get_adapter  # Keep for native preference
-from .litellm_support import load_litellm_gateway_class, load_litellm_module
+
 # Lazy import gateways to avoid import overhead
 # from .litellm_gateway import LiteLLMGateway
 # from .openrouter_gateway import OpenRouterGateway
@@ -528,12 +530,34 @@ class APIClient:
             self.logger.debug("Failed to inspect handler pending tool call")
             return False
 
+    def _handler_network_attempt_count(self) -> int:
+        """Return physical sends reported by the active provider handler."""
+
+        handler = getattr(self, "client_handler", None)
+        getter = getattr(handler, "get_last_network_attempt_count", None)
+        if not callable(getter):
+            return 0
+        try:
+            return max(0, int(getter() or 0))
+        except Exception:
+            self.logger.debug("Failed to inspect handler network attempts")
+            return 0
+
+    @staticmethod
+    def _is_legacy_error_text(text: Optional[str]) -> bool:
+        """Return whether text uses Penguin's legacy provider-error sentinel."""
+
+        if not isinstance(text, str):
+            return False
+        return text.lstrip().startswith(("[Error:", "Error:", "[Model finished"))
+
     def _build_response_result(
         self,
         *,
         text: Optional[str],
         error: Optional[LLMError] = None,
         provider_data: Optional[Dict[str, Any]] = None,
+        streamed_assistant_chunks: bool = False,
     ) -> LLMCallResult:
         lifecycle = self.get_last_request_lifecycle()
         completed_event_seen = (
@@ -543,6 +567,26 @@ class APIClient:
         resolved_error = error
         if resolved_error is None and isinstance(lifecycle, LLMRequestLifecycle):
             resolved_error = lifecycle.error
+        if resolved_error is None and self._is_legacy_error_text(text):
+            resolved_error = build_llm_error(
+                message=str(text),
+                provider=getattr(self.model_config, "provider", None),
+                model=getattr(self.model_config, "model", None),
+                category=ErrorCategory.RUNTIME,
+                retryable=False,
+            )
+
+        resolved_provider_data = dict(provider_data or {})
+        if resolved_error is not None:
+            network_attempts = resolved_error.provider_data.get("network_attempts")
+            if network_attempts is not None:
+                resolved_provider_data.setdefault("network_attempts", network_attempts)
+        handler_network_attempts = self._handler_network_attempt_count()
+        if handler_network_attempts > 0:
+            resolved_provider_data.setdefault(
+                "network_attempts",
+                handler_network_attempts,
+            )
 
         if isinstance(lifecycle, LLMRequestLifecycle) and (
             lifecycle.status == ProviderRequestStatus.CANCELLED
@@ -568,8 +612,15 @@ class APIClient:
             error=resolved_error,
             lifecycle=lifecycle,
             completed_event_seen=completed_event_seen,
-            pending_tool_call=self._handler_has_pending_tool_call(),
-            provider_data=dict(provider_data or {}),
+            streamed_assistant_chunks=streamed_assistant_chunks,
+            pending_tool_call=bool(
+                self._handler_has_pending_tool_call()
+                or (
+                    resolved_error is not None
+                    and resolved_error.provider_data.get("partial_tool_call")
+                )
+            ),
+            provider_data=resolved_provider_data,
         )
 
     def get_provider_capabilities(self) -> LLMProviderCapabilities:
@@ -631,8 +682,7 @@ class APIClient:
 
         prepared = preparer(
             messages=prepared_messages,
-            max_output_tokens=max_output_tokens
-            or self.model_config.max_output_tokens,
+            max_output_tokens=max_output_tokens or self.model_config.max_output_tokens,
             temperature=temperature
             if temperature is not None
             else self.model_config.temperature,
@@ -740,6 +790,7 @@ class APIClient:
         use_streaming = (
             stream if stream is not None else self.model_config.streaming_enabled
         )
+        streamed_assistant_chunks = False
         prepared_messages = self._prepare_messages_with_system_prompt(messages)
         estimated_input_tokens: Optional[int] = None
 
@@ -832,9 +883,22 @@ class APIClient:
                 return response_text
 
             # Normalize callback to async (chunk, message_type) signature
-            effective_callback = (
+            adapted_callback = (
                 adapt_stream_callback(stream_callback) if use_streaming else None
             )
+            if adapted_callback is not None:
+
+                async def effective_callback(
+                    chunk: str,
+                    message_type: str = "assistant",
+                ) -> None:
+                    nonlocal streamed_assistant_chunks
+                    if chunk and message_type == "assistant":
+                        streamed_assistant_chunks = True
+                    await adapted_callback(chunk, message_type)
+
+            else:
+                effective_callback = None
             self.logger.debug(
                 f"[APIClient:{request_id_api}] Calling {type(self.client_handler).__name__}.get_response. Streaming: {use_streaming}. Callback: {effective_callback is not None}"
             )
@@ -898,28 +962,35 @@ class APIClient:
                 ) and response_text.lstrip().startswith(
                     ("[Error:", "Error:", "[Model finished")
                 )
-                if is_error_like or not str(response_text or "").strip():
-                    diag_id = (
-                        self._extract_diagnostic_id(response_text or "")
-                        or self._extract_diagnostic_id(handler_error.message)
-                        or f"llm_{os.urandom(5).hex()}"
-                    )
-                    formatted_error = self._format_user_error_message(
-                        error=handler_error,
-                        diag_id=diag_id,
-                    )
-                    self._last_response_result = self._build_response_result(
-                        text=formatted_error,
-                        error=handler_error,
-                    )
-                    return formatted_error
-                self._last_response_result = self._build_response_result(
-                    text=response_text,
-                    error=handler_error,
+                diag_id = (
+                    self._extract_diagnostic_id(response_text or "")
+                    or self._extract_diagnostic_id(handler_error.message)
+                    or f"llm_{os.urandom(5).hex()}"
                 )
+                formatted_error = self._format_user_error_message(
+                    error=handler_error,
+                    diag_id=diag_id,
+                )
+                partial_output = handler_error.provider_data.get("partial_output")
+                typed_text = (
+                    response_text
+                    if not is_error_like and str(response_text or "").strip()
+                    else partial_output
+                    if isinstance(partial_output, str) and partial_output
+                    else formatted_error
+                )
+                self._last_response_result = self._build_response_result(
+                    text=typed_text,
+                    error=handler_error,
+                    streamed_assistant_chunks=streamed_assistant_chunks,
+                )
+                # Legacy string callers cannot distinguish partial output from a
+                # successful response. Keep the partial only on the typed result.
+                return formatted_error
             else:
                 self._last_response_result = self._build_response_result(
                     text=response_text,
+                    streamed_assistant_chunks=streamed_assistant_chunks,
                 )
 
             # If streaming, the callback handled output. Return minimal response.
@@ -955,6 +1026,7 @@ class APIClient:
             if self._last_response_result is None:
                 self._last_response_result = self._build_response_result(
                     text=response_text,
+                    streamed_assistant_chunks=streamed_assistant_chunks,
                 )
             return response_text
             # --- End Ideal Flow ---
@@ -982,10 +1054,19 @@ class APIClient:
                 error=error_payload,
                 diag_id=diag_id,
             )
-            self._last_response_result = self._build_response_result(
-                text=formatted_error,
-                error=error_payload,
+            partial_output = error_payload.provider_data.get("partial_output")
+            result_text = (
+                partial_output
+                if isinstance(partial_output, str) and partial_output
+                else formatted_error
             )
+            self._last_response_result = self._build_response_result(
+                text=result_text,
+                error=error_payload,
+                streamed_assistant_chunks=streamed_assistant_chunks,
+            )
+            # Legacy callers receive an unmistakable failure string; typed
+            # callers recover the partial output from _last_response_result.
             return formatted_error
 
     async def get_response_result(

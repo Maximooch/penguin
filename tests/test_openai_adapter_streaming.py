@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -65,6 +65,7 @@ class _DummyStreamEvent:
     part: Any = None
     item: Any = None
     item_id: str = ""
+    response: Any = None
 
 
 class _DummyResponseStream:
@@ -78,13 +79,36 @@ class _DummyResponseStream:
         events: list[_DummyStreamEvent] | None = None,
     ) -> None:
         if events is not None:
-            self._events = list(events)
+            self._events = [
+                replace(
+                    event,
+                    response=SimpleNamespace(
+                        id="resp-test",
+                        output_text=final_text,
+                        output=[],
+                        usage={},
+                    ),
+                )
+                if event.type == "response.completed" and event.response is None
+                else event
+                for event in events
+            ]
         else:
             self._events = [
                 _DummyStreamEvent(type="response.output_text.delta", delta=d)
                 for d in (deltas or [])
             ]
-            self._events.append(_DummyStreamEvent(type="response.completed"))
+            self._events.append(
+                _DummyStreamEvent(
+                    type="response.completed",
+                    response=SimpleNamespace(
+                        id="resp-test",
+                        output_text=final_text,
+                        output=[],
+                        usage={},
+                    ),
+                )
+            )
         self._idx = 0
         self._final_text = final_text
 
@@ -434,10 +458,12 @@ def test_openai_adapter_uses_oauth_access_token_when_api_key_missing(
             api_key: str,
             base_url: str | None = None,
             default_headers: dict[str, str] | None = None,
+            max_retries: int = 0,
         ) -> None:
             self.api_key = api_key
             self.base_url = base_url
             self.default_headers = default_headers
+            self.max_retries = max_retries
             self.responses = _DummyResponses()
 
     monkeypatch.setattr("penguin.llm.adapters.openai.AsyncOpenAI", _Client)
@@ -455,6 +481,7 @@ def test_openai_adapter_uses_oauth_access_token_when_api_key_missing(
     assert adapter.client.default_headers == {  # type: ignore[attr-defined]
         "OpenAI-Account": "acct_test_123"
     }
+    assert adapter.client.max_retries == 0  # type: ignore[attr-defined]
 
 
 def test_openai_adapter_normalizes_codex_oauth_display_model_names(

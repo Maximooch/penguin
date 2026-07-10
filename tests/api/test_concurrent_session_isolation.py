@@ -1034,7 +1034,10 @@ async def test_rest_chat_queued_request_returns_aborted_when_cancelled(
     request_task.cancel()
     response = await request_task
 
-    assert response["aborted"] is True
+    assert response["aborted"] is False
+    assert response["cancelled"] is True
+    assert response["status"] == "cancelled"
+    assert response["completed"] is False
     assert response["response"] == ""
     assert response["action_results"] == []
 

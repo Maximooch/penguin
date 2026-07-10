@@ -5,13 +5,6 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any
 
-from tenacity import (
-    AsyncRetrying,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
-
 from penguin.system.execution_context import get_current_execution_context
 from penguin.system.state import MessageCategory
 
@@ -29,31 +22,6 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
 __all__ = ["process", "process_with_retry"]
-
-
-def _process_retry_error_callback(retry_state: Any) -> Any:
-    """Preserve PenguinCore.process retry exhaustion behavior."""
-    exception = retry_state.outcome.exception()
-    if isinstance(exception, KeyboardInterrupt):
-        return None
-    return exception
-
-
-def _process_retrying(
-    *,
-    sleep: Callable[[float], Awaitable[None]] | None = None,
-) -> AsyncRetrying:
-    """Build the retry policy for public process requests."""
-    kwargs: dict[str, Any] = {
-        "stop": stop_after_attempt(3),
-        "wait": wait_exponential(multiplier=1, min=4, max=10),
-        "reraise": True,
-        "retry": retry_if_exception_type(Exception),
-        "retry_error_callback": _process_retry_error_callback,
-    }
-    if sleep is not None:
-        kwargs["sleep"] = sleep
-    return AsyncRetrying(**kwargs)
 
 
 async def process_with_retry(
@@ -74,27 +42,57 @@ async def process_with_retry(
     trace_log_info: Callable[..., None],
     log_error_fn: Callable[..., None],
     retry_sleep: Callable[[float], Awaitable[None]] | None = None,
-) -> dict[str, Any] | BaseException:
-    """Process a user request with the public retry policy applied."""
-    retrying = _process_retrying(sleep=retry_sleep)
-    return await retrying(
-        process,
-        owner,
-        input_data=input_data,
-        context=context,
-        conversation_id=conversation_id,
-        agent_id=agent_id,
-        max_iterations=max_iterations,
-        context_files=context_files,
-        streaming=streaming,
-        stream_callback=stream_callback,
-        multi_step=multi_step,
-        api_client_override=api_client_override,
-        model_config_override=model_config_override,
-        log=log,
-        trace_log_info=trace_log_info,
-        log_error_fn=log_error_fn,
-    )
+) -> dict[str, Any]:
+    """Process exactly once; provider-safe replay happens below this boundary.
+
+    This compatibility name is retained for callers, but replaying the whole
+    process can duplicate user messages, tool effects, and session writes.
+    ``retry_sleep`` is accepted only to avoid breaking older test/integration
+    call sites.
+    """
+
+    del retry_sleep
+    try:
+        return await process(
+            owner,
+            input_data=input_data,
+            context=context,
+            conversation_id=conversation_id,
+            agent_id=agent_id,
+            max_iterations=max_iterations,
+            context_files=context_files,
+            streaming=streaming,
+            stream_callback=stream_callback,
+            multi_step=multi_step,
+            api_client_override=api_client_override,
+            model_config_override=model_config_override,
+            log=log,
+            trace_log_info=trace_log_info,
+            log_error_fn=log_error_fn,
+        )
+    except asyncio.CancelledError:
+        raise
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:
+        log.error(
+            "Core process failed before a safe result was produced",
+            exc_info=True,
+        )
+        try:
+            log_error_fn(exc, context={"method": "process_with_retry"})
+        except Exception:
+            log.debug("Failed to record core process failure", exc_info=True)
+        return {
+            "assistant_response": "Penguin could not start or finish this request.",
+            "action_results": [],
+            "status": "error",
+            "recoverable": False,
+            "error": {
+                "code": "core_process_failure",
+                "message": str(exc),
+            },
+        }
 
 
 async def process(

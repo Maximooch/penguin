@@ -150,25 +150,40 @@ Phase 0 evidence:
 
 #### Phase 1 — Stop, retry, and visible-state correctness
 
-- [ ] Make checkpoint worker queues/tasks single-loop-owned, bounded, idempotent, and
+- [x] Make checkpoint worker queues/tasks single-loop-owned, bounded, idempotent, and
   offload serialization/compression/file/index work from the event loop.
-- [ ] Add bounded checkpoint retry/backoff, rate-limited logging, a circuit breaker,
+- [x] Add bounded checkpoint retry/backoff, rate-limited logging, a circuit breaker,
   and automatic count/age/size retention with active/manual/branch protection.
-- [ ] Add OpenAI/Codex chunk-idle and total-attempt watchdogs with typed timeout,
+- [x] Add OpenAI/Codex chunk-idle and total-attempt watchdogs with typed timeout,
   disconnect, incomplete-stream, and retry-exhaustion failures.
-- [ ] Keep provider replay bounded and partial-output/native-tool safe; guarantee
+- [x] Keep provider replay bounded and partial-output/native-tool safe; guarantee
   provider, request, session, and tool-state release on every terminal path.
-- [ ] Preserve structured API outcome truth in the TUI: status, recoverability,
+- [x] Preserve structured API outcome truth in the TUI: status, recoverability,
   details, iteration/action counts, partial output, abort, and cancellation.
-- [ ] Distinguish running, reconnecting, stalled/degraded, max-iterations, provider
+- [x] Distinguish running, reconnecting, stalled/degraded, max-iterations, provider
   exhaustion, repeated empty/tool-only loops, aborted, cancelled, completed, and
   failed states.
-- [ ] Base healthy liveness on real progress, add bounded POST/gate waits, and expose
+- [x] Base healthy liveness on real progress, add bounded POST/gate waits, and expose
   Interrupt/Retry/Resume actions for stalled runs.
-- [ ] Define and test one explicit iteration/continuation contract rather than hiding
+- [x] Define and test one explicit iteration/continuation contract rather than hiding
   loops behind a larger cap.
 
+Phase 1 evidence is retained at
+`context/tasks/evidence/runtime-reliability-phase1-gate.json`. The gate covers
+checkpoint lifecycle/retention, typed provider watchdogs and bounded replay,
+structured REST/WebSocket/TUI terminal state, continuation leases, and native
+tool adjacency. No live provider or port `9000` was used.
+
 #### Phase 2 — Event, transcript, checkpoint, and session persistence
+
+Phase 2 design audit (before implementation): the current live recorder still
+waits on synchronous SQLite append/cleanup, stores cumulative text projections,
+and has no writer lifecycle. Runtime event IDs are process-counter based, so
+restart-safe identity and conflict reporting are prerequisites. `server.connected`
+and `server.replay_gap` are control frames and must not advance a durable cursor.
+The TUI must retain only committed, scope-matching event IDs and reconcile
+canonical state after replay. See the read-only audit recorded in this task's
+working notes; these constraints remain open until Phase 2 lands.
 
 - [ ] Move ledger writes behind a bounded single-writer queue with batched
   transactions and explicit durability/backpressure/overflow/shutdown semantics.
@@ -184,7 +199,7 @@ Phase 0 evidence:
 - [ ] Coalesce durable saves; serialize each session's writes with unique temp files,
   atomic replacement, and protection from autosave/request-save stale writers.
 - [ ] Avoid full global index rewrites for small updates.
-- [ ] Preserve native tool-call/tool-result units atomically through existing trim,
+- [x] Preserve native tool-call/tool-result units atomically through existing trim,
   transcript, replay, and provider sanitation boundaries without implementing wider
   CWM v2 behavior.
 - [ ] Add production-path stress, multi-server isolation, ledger fault, reconnect,
@@ -215,6 +230,13 @@ selection.
 descriptions/exposure, and the compact active-turn envelope. Conversation-history
 selection, global budgets, historical tool-output slimming, summarization, retrieval,
 and compaction remain CWM v2.
+
+Ponytail is a useful input to this phase, not a dependency to install: apply its
+YAGNI ladder after tracing the real request path, prefer existing/native mechanisms,
+and make implementation mode stop at the first sufficient solution. Preserve
+Penguin's trust-boundary validation, data-loss handling, safety, accessibility,
+repository instructions, and proportionate verification. See
+<https://github.com/DietrichGebert/ponytail>.
 
 - [ ] Wire the mode-aware prompt builder into the real request path and prove
   `direct`, `implement`, `review`, `explain`, and compatibility modes materially

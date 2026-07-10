@@ -59,7 +59,7 @@ class CheckpointCleanupPlan:
     retained: tuple[CheckpointInventoryItem, ...]
     age_buckets: dict[str, dict[str, int]]
     session_ownership: dict[str, dict[str, int]]
-    retention_policy: dict[str, int]
+    retention_policy: dict[str, int | None]
     recovery_plan: dict[str, object]
 
     def to_dict(self) -> dict[str, object]:
@@ -92,6 +92,8 @@ def build_checkpoint_cleanup_plan(
     keep_every_nth: int,
     max_age_days: int,
     max_auto_checkpoints: int,
+    max_checkpoint_bytes: int | None = None,
+    active_session_keep: int = 1,
     active_session_ids: Collection[str] = (),
     now: datetime | None = None,
 ) -> CheckpointCleanupPlan:
@@ -104,7 +106,10 @@ def build_checkpoint_cleanup_plan(
         keep_every_nth: Sampling interval for older, non-expired auto checkpoints.
         max_age_days: Maximum age for unprotected automatic checkpoints.
         max_auto_checkpoints: Maximum number of retained unprotected autos.
-        active_session_ids: Sessions whose checkpoints cannot be removed.
+        max_checkpoint_bytes: Maximum retained checkpoint bytes when configured.
+        active_session_keep: Newest automatic checkpoints protected per active
+            session. Older automatic checkpoints remain eligible for retention.
+        active_session_ids: Sessions whose newest checkpoints are protected.
         now: Deterministic evaluation time. Defaults to current UTC time.
 
     Returns:
@@ -173,7 +178,28 @@ def build_checkpoint_cleanup_plan(
         item.checkpoint_id for item in indexed_items if not item.path.exists()
     }
     auto_items = [item for item in indexed_items if item.checkpoint_type == "auto"]
-    sampled_items = sorted(auto_items, key=lambda item: item.created_at, reverse=True)
+    usable_auto_items = [
+        item for item in auto_items if item.checkpoint_id not in missing_ids
+    ]
+    active_auto_ids: set[str] = set()
+    for active_session_id in active_sessions:
+        active_items = sorted(
+            (
+                item
+                for item in usable_auto_items
+                if item.session_id == active_session_id
+            ),
+            key=lambda item: item.created_at,
+            reverse=True,
+        )
+        active_auto_ids.update(
+            item.checkpoint_id for item in active_items[: max(1, active_session_keep)]
+        )
+    sampled_items = sorted(
+        usable_auto_items,
+        key=lambda item: item.created_at,
+        reverse=True,
+    )
     sample_positions = {
         item.checkpoint_id: position for position, item in enumerate(sampled_items)
     }
@@ -184,7 +210,7 @@ def build_checkpoint_cleanup_plan(
         if item.checkpoint_id in missing_ids:
             item.decision = "retain"
             item.reason = "missing_file_requires_review"
-        elif item.session_id in active_sessions:
+        elif item.checkpoint_id in active_auto_ids:
             item.decision = "retain"
             item.reason = "active_session"
         elif item.checkpoint_type != "auto":
@@ -205,15 +231,16 @@ def build_checkpoint_cleanup_plan(
 
     protected_auto_count = sum(
         1
-        for item in auto_items
+        for item in usable_auto_items
         if item.decision == "retain" and item.reason == "active_session"
     )
     available_auto_slots = max(0, max_auto_checkpoints - protected_auto_count)
     unprotected_retained_autos = sorted(
         (
             item
-            for item in auto_items
-            if item.decision == "retain" and item.reason != "active_session"
+            for item in usable_auto_items
+            if item.decision == "retain"
+            and item.reason not in {"active_session", "missing_file_requires_review"}
         ),
         key=lambda item: item.created_at,
         reverse=True,
@@ -221,6 +248,29 @@ def build_checkpoint_cleanup_plan(
     for item in unprotected_retained_autos[available_auto_slots:]:
         item.decision = "delete"
         item.reason = "max_auto_checkpoints"
+
+    if max_checkpoint_bytes is not None and max_checkpoint_bytes >= 0:
+        retained_bytes = sum(
+            item.size_bytes
+            for item in [*indexed_items, *orphan_items]
+            if item.decision != "delete"
+        )
+        size_candidates = sorted(
+            (
+                item
+                for item in usable_auto_items
+                if item.decision == "retain"
+                and item.reason
+                not in {"active_session", "missing_file_requires_review"}
+            ),
+            key=lambda item: (item.created_at, item.checkpoint_id),
+        )
+        for item in size_candidates:
+            if retained_bytes <= max_checkpoint_bytes:
+                break
+            item.decision = "delete"
+            item.reason = "max_checkpoint_bytes"
+            retained_bytes -= item.size_bytes
 
     all_items = [*indexed_items, *orphan_items]
     candidates = tuple(
@@ -260,6 +310,8 @@ def build_checkpoint_cleanup_plan(
             "keep_every_nth": keep_every,
             "max_age_days": max_age_days,
             "max_auto_checkpoints": max_auto_checkpoints,
+            "max_checkpoint_bytes": max_checkpoint_bytes,
+            "active_session_keep": max(1, active_session_keep),
         },
         recovery_plan={
             "archive_before_delete": True,

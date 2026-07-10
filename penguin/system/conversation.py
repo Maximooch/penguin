@@ -13,6 +13,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from penguin.config import CONVERSATION_CONFIG
+from penguin.system.native_tool_history import (
+    sanitize_native_tool_messages,
+    sanitize_native_tool_session,
+)
 from penguin.system.runtime_diagnostics import record_runtime_duration
 from penguin.system.state import Message, MessageCategory, Session
 from penguin.utils.diagnostics import diagnostics
@@ -80,11 +84,105 @@ class ConversationSystem:
 
         # Track if save is needed
         self._modified = False
+        self._message_bus_tasks: set[Any] = set()
 
     def set_system_prompt(self, prompt: str) -> None:
         """Set system prompt and mark for sending on next interaction."""
         self.system_prompt = prompt
         self.system_prompt_sent = False
+
+    def _mark_session_modified(self) -> None:
+        """Mark the active session dirty in both conversation and cache state."""
+
+        self._modified = True
+        if self.session_manager and self.session:
+            try:
+                self.session_manager.mark_session_modified(self.session.id)
+            except Exception:
+                logger.warning(
+                    "Failed to mark session modified during message append: session=%s",
+                    getattr(self.session, "id", "unknown"),
+                    exc_info=True,
+                )
+
+    def _publish_protocol_message(self, message: Message) -> None:
+        """Publish one appended message without making conversation writes block."""
+
+        try:
+            if MessageBus and ProtocolMessage:
+                bus = MessageBus.get_instance()
+                protocol_message = ProtocolMessage(
+                    sender=message.agent_id,
+                    recipient=None,
+                    content=message.content,
+                    message_type=message.message_type,
+                    metadata={
+                        **(message.metadata or {}),
+                        "category": message.category.name,
+                        "role": message.role,
+                    },
+                    session_id=self.session.id,
+                    message_id=message.id,
+                )
+                import asyncio as _asyncio
+
+                try:
+                    loop = _asyncio.get_running_loop()
+                except RuntimeError:
+                    return
+                task = loop.create_task(bus.send(protocol_message))
+                self._message_bus_tasks.add(task)
+                task.add_done_callback(self._message_bus_tasks.discard)
+        except Exception:
+            logger.debug("Failed to publish protocol message", exc_info=True)
+
+    def _schedule_auto_checkpoint(self, message: Message) -> None:
+        """Schedule a checkpoint only after its full message unit is appended."""
+
+        if not self.checkpoint_manager or not self.checkpoint_manager.should_checkpoint(
+            message
+        ):
+            return
+
+        import asyncio
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            try:
+                asyncio.run(
+                    self.checkpoint_manager.create_checkpoint_and_wait(
+                        self.session,
+                        message,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Failed to create checkpoint: %s", exc)
+        else:
+            self.checkpoint_manager.schedule_auto_checkpoint(self.session, message)
+
+    def _process_context_window_and_sanitize(self) -> None:
+        """Run ordinary CWM processing then fail closed on split native units."""
+
+        if self.context_window:
+            self.session = self.context_window.process_session(self.session)
+        self.session = sanitize_native_tool_session(self.session)
+
+    def _handle_session_boundary(self) -> None:
+        """Advance to a continuation session after a completed append operation."""
+
+        if not self.session_manager or not self.session_manager.check_session_boundary(
+            self.session
+        ):
+            return
+        logger.info(
+            "Session %s reached boundary, creating continuation", self.session.id
+        )
+        self.save()
+        new_session = self.session_manager.create_continuation_session(self.session)
+        self.session = new_session
+        self._modified = True
+        logger.info("Transitioned to continuation session %s", new_session.id)
 
     def add_message(
         self,
@@ -150,102 +248,14 @@ class ConversationSystem:
             message_type=message_type,
         )
 
-        # Add to current session
-        self.session.messages.append(message)
-        self._modified = True
-
-        # Sync modified state to SessionManager's cache for auto-save reliability
-        if self.session_manager and self.session:
-            try:
-                self.session_manager.mark_session_modified(self.session.id)
-            except Exception:
-                logger.warning(
-                    "Failed to mark session modified during message append: session=%s",
-                    getattr(self.session, "id", "unknown"),
-                    exc_info=True,
-                )
-
-        # Phase 3: publish protocol message to MessageBus (best-effort)
-        try:
-            if MessageBus and ProtocolMessage:
-                bus = MessageBus.get_instance()
-                pm = ProtocolMessage(
-                    sender=message.agent_id,
-                    recipient=None,
-                    content=message.content,
-                    message_type=message.message_type,
-                    metadata={
-                        **(message.metadata or {}),
-                        "category": message.category.name,
-                        "role": message.role,
-                    },
-                    session_id=self.session.id,
-                    message_id=message.id,
-                )
-                # Fire-and-forget, don't block
-                import asyncio as _asyncio
-
-                try:
-                    loop = _asyncio.get_event_loop()
-                    if loop.is_running():
-                        _asyncio.create_task(bus.send(pm))
-                except RuntimeError:
-                    # No running loop; skip bus delivery in sync contexts
-                    pass
-        except Exception:
-            pass
-
-        # NEW: Auto-checkpoint integration
-        if self.checkpoint_manager and self.checkpoint_manager.should_checkpoint(
-            message
-        ):
-            # Create checkpoint asynchronously to avoid blocking
-            import asyncio
-
-            try:
-                # Try to get the current event loop
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # If we're in an async context, create a task
-                    asyncio.create_task(
-                        self.checkpoint_manager.create_checkpoint(self.session, message)
-                    )
-                else:
-                    # If no loop is running, run the checkpoint creation
-                    asyncio.run(
-                        self.checkpoint_manager.create_checkpoint(self.session, message)
-                    )
-            except RuntimeError:
-                # If we can't get a loop, try to run it
-                try:
-                    asyncio.run(
-                        self.checkpoint_manager.create_checkpoint(self.session, message)
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to create checkpoint: {e}")
-
-        # Process session through context window manager if available
-        if self.context_window:
-            self.session = self.context_window.process_session(self.session)
-
-        # Check session boundaries and handle transitions automatically
-        if self.session_manager and self.session_manager.check_session_boundary(
-            self.session
-        ):
-            logger.info(
-                f"Session {self.session.id} reached boundary, creating continuation"
-            )
-
-            # Save current session before transitioning
-            self.save()
-
-            # Create continuation session and switch to it
-            new_session = self.session_manager.create_continuation_session(self.session)
-            self.session = new_session
-            self._modified = True
-
-            # Log transition for debugging
-            logger.info(f"Transitioned to continuation session {new_session.id}")
+        # Append one ordinary message.  Native tool replies use the dedicated
+        # batch method below so CWM never sees a declaration without its results.
+        self.session.add_message(message)
+        self._mark_session_modified()
+        self._publish_protocol_message(message)
+        self._schedule_auto_checkpoint(message)
+        self._process_context_window_and_sanitize()
+        self._handle_session_boundary()
 
         return message
 
@@ -287,63 +297,43 @@ class ConversationSystem:
         """Add a message from the assistant."""
         return self.add_message("assistant", content)
 
-    def add_action_result(
+    @staticmethod
+    def _native_tool_call_payload(tool_call: Any) -> Optional[Dict[str, str]]:
+        """Normalize one runtime tool call into the canonical transcript shape."""
+
+        if isinstance(tool_call, dict):
+            call_id = tool_call.get("id") or tool_call.get("call_id")
+            name = tool_call.get("name")
+            arguments = tool_call.get("arguments")
+        else:
+            call_id = getattr(tool_call, "id", None)
+            name = getattr(tool_call, "name", None)
+            arguments = getattr(tool_call, "arguments", None)
+        resolved_id = str(call_id or "").strip()
+        resolved_name = str(name or "").strip()
+        if not resolved_id or not resolved_name:
+            return None
+        if isinstance(arguments, str):
+            resolved_arguments = arguments.strip() or "{}"
+        elif arguments is None:
+            resolved_arguments = "{}"
+        else:
+            try:
+                resolved_arguments = json.dumps(arguments, sort_keys=True)
+            except Exception:
+                resolved_arguments = str(arguments)
+        return {
+            "id": resolved_id,
+            "name": resolved_name,
+            "arguments": resolved_arguments,
+        }
+
+    def _persist_native_tool_runtime_records(
         self,
-        action_type: str,
-        result: str,
-        status: str = "completed",
-        *,
-        tool_call_id: Optional[str] = None,
-        tool_arguments: Optional[str] = None,
-    ) -> Message:
-        """
-        Add an action result message using the 'tool' role for better
-        compatibility with modern LLMs.
-
-        This method finds the last assistant message (which should contain the
-        tool call), assigns it a unique tool_call_id if it doesn't have one,
-        and then adds a new message with the 'tool' role containing the result,
-        linked by the same ID.
-
-        Args:
-            action_type: Type of action executed (used in metadata).
-            result: Result of the action (becomes the message content).
-            status: Status of execution (completed, error, etc.).
-
-        Returns:
-            The created Message object for the tool result.
-        """
-        # Find the last assistant message to attach the tool call ID to
-        last_assistant_message = None
-        for msg in reversed(self.session.messages):
-            if msg.role == "assistant":
-                last_assistant_message = msg
-                break
-
-        # Generate a unique ID for this tool interaction
-        resolved_tool_call_id = tool_call_id or f"call_{uuid.uuid4().hex[:8]}"
-
-        if last_assistant_message:
-            # Ensure the assistant message's metadata is a dict
-            if not isinstance(last_assistant_message.metadata, dict):
-                last_assistant_message.metadata = {}
-
-            # Add tool_calls information to the assistant's message
-            if "tool_calls" not in last_assistant_message.metadata:
-                last_assistant_message.metadata["tool_calls"] = []
-
-            # This part is a simplification. A real implementation would parse
-            # the tool call from the assistant's content. Here, we just log it.
-            last_assistant_message.metadata["tool_calls"].append(
-                {
-                    "id": resolved_tool_call_id,
-                    "type": "function",
-                    "function": {
-                        "name": action_type,
-                        "arguments": tool_arguments or "{}",
-                    },
-                }
-            )
+        tool_calls: List[Dict[str, str]],
+        action_results: List[Dict[str, Any]],
+    ) -> None:
+        """Persist direct-call records without using them as replay evidence."""
 
         try:
             from penguin.tools.runtime import (
@@ -353,48 +343,212 @@ class ConversationSystem:
                 tool_result_record_from_tool_result,
             )
 
-            self.session.add_tool_call_record(
-                tool_call_record_from_tool_call(
-                    ToolCall(
-                        id=resolved_tool_call_id,
-                        name=action_type,
-                        arguments=tool_arguments or "{}",
-                        source="internal",
+            results_by_id = {
+                str(result.get("tool_call_id") or "").strip(): result
+                for result in action_results
+            }
+            for tool_call in tool_calls:
+                call_id = tool_call["id"]
+                self.session.add_tool_call_record(
+                    tool_call_record_from_tool_call(
+                        ToolCall(
+                            id=call_id,
+                            name=tool_call["name"],
+                            arguments=tool_call["arguments"],
+                            source="internal",
+                        )
                     )
                 )
-            )
-
-            tool_result = tool_result_from_action_result(
-                {
-                    "action": action_type,
-                    "result": result,
-                    "status": status,
-                },
-                call_id=resolved_tool_call_id,
-                structured_output={"tool_arguments": tool_arguments or "{}"},
-            )
-            self.session.add_tool_result_record(
-                tool_result_record_from_tool_result(
-                    tool_result,
-                    arguments=tool_arguments or "{}",
+                action_result = results_by_id[call_id]
+                tool_result = tool_result_from_action_result(
+                    {
+                        "action": tool_call["name"],
+                        "result": action_result.get("result", ""),
+                        "status": action_result.get("status", "completed"),
+                    },
+                    call_id=call_id,
+                    structured_output={"tool_arguments": tool_call["arguments"]},
                 )
-            )
+                self.session.add_tool_result_record(
+                    tool_result_record_from_tool_result(
+                        tool_result,
+                        arguments=tool_call["arguments"],
+                    )
+                )
         except Exception as exc:
             logger.warning("Failed to persist tool runtime records: %s", exc)
 
-        # Add the tool result message
-        return self.add_message(
-            role="tool",
-            content=str(result),  # Content is just the result string
-            category=MessageCategory.SYSTEM_OUTPUT,
-            metadata={
-                "tool_call_id": resolved_tool_call_id,
-                "action_type": action_type,
-                "tool_arguments": tool_arguments,
-                "status": status,
-            },
-            message_type="action",
+    def append_native_tool_batch(
+        self,
+        *,
+        tool_calls: List[Any],
+        action_results: List[Dict[str, Any]],
+        assistant_message_id: Optional[str] = None,
+        persist_tool_records: bool = True,
+    ) -> List[Message]:
+        """Append one complete native tool unit before CWM sees any part of it.
+
+        The optional assistant id is an explicit current-turn handoff from the
+        engine.  It is deliberately *not* a search through historic assistant
+        messages: if it is not the current tail, a fresh empty assistant
+        declaration is created instead.  Empty text is a valid native-tool turn.
+        """
+
+        normalized_calls = [
+            payload
+            for payload in (
+                self._native_tool_call_payload(tool_call) for tool_call in tool_calls
+            )
+            if payload is not None
+        ]
+        call_ids = [tool_call["id"] for tool_call in normalized_calls]
+        results_by_id: Dict[str, Dict[str, Any]] = {}
+        for action_result in action_results:
+            if not isinstance(action_result, dict):
+                continue
+            call_id = str(action_result.get("tool_call_id") or "").strip()
+            if call_id and call_id not in results_by_id:
+                results_by_id[call_id] = dict(action_result)
+
+        # Do not attempt a partial replay.  Native declarations are atomic:
+        # duplicate, unknown, or missing ids leave only durable side records.
+        if (
+            not normalized_calls
+            or len(normalized_calls) != len(tool_calls)
+            or len(call_ids) != len(set(call_ids))
+            or set(results_by_id) != set(call_ids)
+            or len(results_by_id) != len(action_results)
+        ):
+            logger.warning(
+                "Dropped incomplete native tool batch: calls=%s result_ids=%s",
+                len(normalized_calls),
+                sorted(results_by_id),
+            )
+            return []
+
+        if persist_tool_records:
+            self._persist_native_tool_runtime_records(normalized_calls, action_results)
+
+        assistant_message: Optional[Message] = None
+        if assistant_message_id and self.session.messages:
+            tail = self.session.messages[-1]
+            tail_metadata = tail.metadata if isinstance(tail.metadata, dict) else {}
+            if (
+                tail.role == "assistant"
+                and tail.id == assistant_message_id
+                and "tool_calls" not in tail_metadata
+            ):
+                assistant_message = tail
+
+        appended_messages: List[Message] = []
+        if assistant_message is None:
+            try:
+                agent_id = self.session.metadata.get("agent_id")
+            except Exception:
+                agent_id = None
+            assistant_message = Message(
+                role="assistant",
+                content="",
+                category=MessageCategory.DIALOG,
+                id=f"msg_{uuid.uuid4().hex[:8]}",
+                timestamp=datetime.now().isoformat(),
+                metadata={},
+                tokens=0,
+                agent_id=agent_id,
+                message_type="action",
+            )
+            self.session.add_message(assistant_message)
+            appended_messages.append(assistant_message)
+
+        if not isinstance(assistant_message.metadata, dict):
+            assistant_message.metadata = {}
+        assistant_message.metadata["tool_calls"] = [
+            {
+                "id": tool_call["id"],
+                "type": "function",
+                "function": {
+                    "name": tool_call["name"],
+                    "arguments": tool_call["arguments"],
+                },
+            }
+            for tool_call in normalized_calls
+        ]
+
+        tool_messages: List[Message] = []
+        for tool_call in normalized_calls:
+            action_result = results_by_id[tool_call["id"]]
+            tool_message = Message(
+                role="tool",
+                content=str(action_result.get("result", "")),
+                category=MessageCategory.SYSTEM_OUTPUT,
+                id=f"msg_{uuid.uuid4().hex[:8]}",
+                timestamp=datetime.now().isoformat(),
+                metadata={
+                    "tool_call_id": tool_call["id"],
+                    "action_type": tool_call["name"],
+                    "tool_arguments": tool_call["arguments"],
+                    "status": action_result.get("status", "completed"),
+                },
+                tokens=0,
+                agent_id=assistant_message.agent_id,
+                message_type="action",
+            )
+            self.session.add_message(tool_message)
+            tool_messages.append(tool_message)
+            appended_messages.append(tool_message)
+
+        self._mark_session_modified()
+        for message in appended_messages:
+            self._publish_protocol_message(message)
+            self._schedule_auto_checkpoint(message)
+
+        # Run CWM once after the full declaration/results unit is visible, then
+        # sanitize the raw canonical order in case category trimming split it.
+        self._process_context_window_and_sanitize()
+        self._handle_session_boundary()
+        return [assistant_message, *tool_messages]
+
+    def add_action_result(
+        self,
+        action_type: str,
+        result: str,
+        status: str = "completed",
+        *,
+        tool_call_id: Optional[str] = None,
+        tool_arguments: Optional[str] = None,
+    ) -> Message:
+        """Append a one-call native tool batch without historic backscanning."""
+
+        resolved_tool_call_id = tool_call_id or f"call_{uuid.uuid4().hex[:8]}"
+        assistant_message_id = None
+        if self.session.messages:
+            tail = self.session.messages[-1]
+            tail_metadata = tail.metadata if isinstance(tail.metadata, dict) else {}
+            if tail.role == "assistant" and "tool_calls" not in tail_metadata:
+                assistant_message_id = tail.id
+
+        appended = self.append_native_tool_batch(
+            tool_calls=[
+                {
+                    "id": resolved_tool_call_id,
+                    "name": action_type,
+                    "arguments": tool_arguments or "{}",
+                }
+            ],
+            action_results=[
+                {
+                    "tool_call_id": resolved_tool_call_id,
+                    "action": action_type,
+                    "result": result,
+                    "status": status,
+                    "tool_arguments": tool_arguments or "{}",
+                }
+            ],
+            assistant_message_id=assistant_message_id,
         )
+        if appended:
+            return appended[-1]
+        raise RuntimeError("Native tool result could not be appended safely")
 
     def add_context(self, content: str, source: Optional[str] = None) -> Message:
         """
@@ -441,6 +595,7 @@ class ConversationSystem:
         Returns:
             List of messages in API-compatible format
         """
+        self.session = sanitize_native_tool_session(self.session)
         # Format for API consumption (remove extra fields)
         return [
             {"role": msg.role, "content": msg.content} for msg in self.session.messages
@@ -455,6 +610,9 @@ class ConversationSystem:
             List of formatted message dictionaries
         """
         assembly_started = time.perf_counter()
+        # Recovery can load historical pre-fix sessions.  Validate the raw
+        # canonical order before projecting it into any provider transcript.
+        self.session = sanitize_native_tool_session(self.session)
         # Group by category
         categorized = {
             MessageCategory.SYSTEM: [],
@@ -490,11 +648,16 @@ class ConversationSystem:
         )
 
         # Merge dialogue and system output by timestamp
-        dialog_and_output = (
-            categorized[MessageCategory.DIALOG]
-            + categorized[MessageCategory.SYSTEM_OUTPUT]
-        )
-        dialog_and_output.sort(key=lambda msg: msg.timestamp)
+        dialog_and_output = [
+            (index, message)
+            for index, message in enumerate(self.session.messages)
+            if message.category
+            in {MessageCategory.DIALOG, MessageCategory.SYSTEM_OUTPUT}
+        ]
+        # Category buckets must not reorder a native assistant declaration and
+        # its tool results when timestamps are equal/coarse.  Original session
+        # index is the stable tie-breaker for provider replay integrity.
+        dialog_and_output.sort(key=lambda item: (item[1].timestamp, item[0]))
 
         def _tool_records_by_call_id(name: str) -> Dict[str, Dict[str, Any]]:
             records = getattr(self.session, name, [])
@@ -503,8 +666,7 @@ class ConversationSystem:
             return {
                 str(record.get("call_id") or "").strip(): record
                 for record in records
-                if isinstance(record, dict)
-                and str(record.get("call_id") or "").strip()
+                if isinstance(record, dict) and str(record.get("call_id") or "").strip()
             }
 
         def _render_tool_arguments(arguments: Any) -> str:
@@ -521,7 +683,7 @@ class ConversationSystem:
         tool_result_records = _tool_records_by_call_id("tool_result_records")
 
         # Add merged messages
-        for msg in dialog_and_output:
+        for _index, msg in dialog_and_output:
             # --- START MODIFICATION: Handle 'tool' role ---
             if msg.role == "tool":
                 tool_call_id = str(msg.metadata.get("tool_call_id", "")).strip()
@@ -560,6 +722,12 @@ class ConversationSystem:
                 messages.append(api_msg)
             # --- END MODIFICATION ---
 
+        messages = [
+            message
+            for message in sanitize_native_tool_messages(messages)
+            if isinstance(message, dict)
+        ]
+
         # If no messages, add a default user message to prevent API errors
         if not messages:
             messages.append(
@@ -592,11 +760,7 @@ class ConversationSystem:
             return message.content
 
         escaped_source = html.escape(source.strip(), quote=True)
-        return (
-            f'<context source="{escaped_source}">\n'
-            f"{message.content}\n"
-            "</context>"
-        )
+        return f'<context source="{escaped_source}">\n{message.content}\n</context>'
 
     def save(self) -> bool:
         """
@@ -632,7 +796,9 @@ class ConversationSystem:
         loaded_session = self.session_manager.load_session(session_id)
         if loaded_session:
             self.session = loaded_session
-            self._modified = False
+            before_native_sanitization = self.session.to_dict()
+            self.session = sanitize_native_tool_session(self.session)
+            self._modified = self.session.to_dict() != before_native_sanitization
             # Update sent status
             self.system_prompt_sent = any(
                 msg.category == MessageCategory.SYSTEM for msg in self.session.messages

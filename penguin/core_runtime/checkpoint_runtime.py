@@ -98,7 +98,16 @@ def get_checkpoint_stats(conversation_manager: Any) -> dict[str, Any]:
         }
 
     checkpoints = conversation_manager.list_checkpoints(limit=1000)
-    indexed_checkpoints = getattr(checkpoint_manager, "checkpoint_index", None)
+    index_snapshot_method = getattr(
+        checkpoint_manager,
+        "get_checkpoint_index_snapshot",
+        None,
+    )
+    indexed_checkpoints = (
+        index_snapshot_method()
+        if callable(index_snapshot_method)
+        else getattr(checkpoint_manager, "checkpoint_index", None)
+    )
     config = getattr(checkpoint_manager, "config", None)
     retention = getattr(config, "retention", None)
     if not isinstance(retention, dict):

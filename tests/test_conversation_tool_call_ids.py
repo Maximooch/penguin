@@ -50,7 +50,7 @@ def test_add_action_result_preserves_explicit_tool_call_id() -> None:
     assert session.tool_result_records[0]["call_id"] == "call_123"
 
 
-def test_formatted_tool_message_can_repair_replay_metadata_from_records() -> None:
+def test_formatted_tool_message_drops_orphaned_replay_metadata_from_records() -> None:
     session = Session()
     session.add_tool_call_record(
         {
@@ -91,11 +91,9 @@ def test_formatted_tool_message_can_repair_replay_metadata_from_records() -> Non
 
     formatted = conversation.get_formatted_messages()
 
-    assert formatted[-1] == {
-        "role": "tool",
-        "tool_call_id": "call_trimmed",
-        "content": "cancelled while tool was running",
-        "name": "read_file",
-        "tool_arguments": '{"max_lines": 20, "path": "README.md"}',
-        "status": "cancelled",
-    }
+    # Side records are useful diagnostics, but they cannot synthesize an
+    # assistant declaration after CWM/recovery removed it.  Replaying that
+    # orphan would make native providers execute or reject an ambiguous unit.
+    assert formatted == [
+        {"role": "user", "content": "Placeholder message to prevent API errors"}
+    ]

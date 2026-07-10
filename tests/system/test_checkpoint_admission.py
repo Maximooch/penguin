@@ -44,17 +44,36 @@ def _message() -> Message:
 
 
 @pytest.mark.asyncio
-async def test_auto_checkpoint_cap_blocks_before_worker_start(
+async def test_auto_checkpoint_cap_blocks_new_write_after_maintenance(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """The configured count ceiling is admission control, not cleanup advice."""
 
+    monitor = StorageSafetyMonitor(
+        tmp_path,
+        policy=StorageSafetyPolicy(
+            warning_free_bytes=10,
+            critical_free_bytes=5,
+            warning_free_fraction=0.01,
+            critical_free_fraction=0.001,
+            max_checkpoint_bytes=None,
+        ),
+        disk_usage_provider=lambda _path: DiskUsage(
+            total=10_000,
+            used=100,
+            free=9_900,
+        ),
+    )
+    session_manager = _SessionManager()
     manager = CheckpointManager(
         tmp_path,
-        _SessionManager(),
+        session_manager,
         CheckpointConfig(max_auto_checkpoints=1),
+        storage_safety_monitor=monitor,
     )
+    existing_path = manager.checkpoints_path / "existing.json.gz"
+    existing_path.write_bytes(b"existing")
     manager.checkpoint_index["existing"] = CheckpointMetadata(
         id="existing",
         type=CheckpointType.AUTO,
@@ -64,7 +83,8 @@ async def test_auto_checkpoint_cap_blocks_before_worker_start(
         message_count=1,
     )
     manager.refresh_admission_counters()
-    session = Session()
+    session = Session(id="session")
+    session_manager.current_session = session
     message = _message()
     session.add_message(message)
 
@@ -72,14 +92,15 @@ async def test_auto_checkpoint_cap_blocks_before_worker_start(
         checkpoint_id = await manager.create_checkpoint(session, message)
 
     assert checkpoint_id is None
-    assert manager._workers_started is False
-    assert manager.checkpoint_queue is None
+    assert manager._workers_started is True
+    assert manager.checkpoint_queue is not None
     assert manager.get_storage_safety_status()["block_reason"] == (
         "max_auto_checkpoints"
     )
     assert any(
         "Automatic checkpoint blocked" in record.message for record in caplog.records
     )
+    await manager.stop_workers()
 
 
 @pytest.mark.asyncio
@@ -139,6 +160,7 @@ async def test_manager_cleanup_plan_defaults_to_read_only(tmp_path: Path) -> Non
         message_id="message",
         message_count=1,
     )
+    manager.refresh_admission_counters()
 
     plan = manager.plan_checkpoint_cleanup(
         now=datetime(2026, 7, 10, tzinfo=timezone.utc)

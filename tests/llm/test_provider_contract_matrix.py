@@ -5,12 +5,14 @@ from typing import Any
 
 import pytest
 
+from penguin.llm.api_client import APIClient
 from penguin.llm.contracts import (
     ErrorCategory,
     FinishReason,
     LLMProviderError,
     ProviderRequestStatus,
 )
+from penguin.llm.runtime import call_with_retry
 
 from .provider_contract_fixtures import (
     ANTHROPIC_USAGE,
@@ -24,7 +26,6 @@ from .provider_contract_fixtures import (
     build_openrouter_handler,
     make_openrouter_chunk,
 )
-
 
 REQUIRED_USAGE_KEYS = {
     "input_tokens",
@@ -477,7 +478,7 @@ def _build_handler(
                         content="answer",
                         finish_reason="stop",
                         usage=OPENROUTER_USAGE,
-                    )
+                    ),
                 ],
                 final_text="answer",
                 usage=OPENROUTER_USAGE,
@@ -901,6 +902,9 @@ async def test_provider_contract_incomplete_stream_matrix(
     assert last_error is not None
     assert last_error.category == ErrorCategory.NETWORK
     assert last_error.retryable is True
+    assert bool(last_error.provider_data.get("partial_tool_call")) is (
+        scenario == "incomplete_partial_tool"
+    )
     assert "ended before" in last_error.message
     assert "ended before" in result
     assert handler.get_last_finish_reason() == FinishReason.ERROR
@@ -914,6 +918,41 @@ async def test_provider_contract_incomplete_stream_matrix(
     assert lifecycle.status == ProviderRequestStatus.DISCONNECTED
     assert lifecycle.error is not None
     assert lifecycle.error.category == ErrorCategory.NETWORK
+
+
+@pytest.mark.parametrize("provider_id", ["openai", "anthropic", "openrouter"])
+@pytest.mark.asyncio
+async def test_incomplete_native_tool_stream_is_never_replayed(
+    provider_id: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Released adapter state retains a typed marker that blocks duplicate tools."""
+
+    handler = _build_handler(
+        provider_id,
+        monkeypatch,
+        scenario="incomplete_partial_tool_then_success",
+    )
+    if provider_id == "anthropic":
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
+    api_client = APIClient(handler.model_config)
+    api_client.client_handler = handler
+    chunks: list[tuple[str, str]] = []
+
+    async def on_chunk(chunk: str, message_type: str) -> None:
+        chunks.append((chunk, message_type))
+
+    with pytest.raises(LLMProviderError) as raised:
+        await call_with_retry(
+            api_client=api_client,
+            messages=[{"role": "user", "content": "call tool once"}],
+            streaming=True,
+            stream_callback=on_chunk,
+            extra_kwargs={},
+        )
+
+    assert raised.value.error.provider_data["partial_tool_call"] is True
+    assert ("recovered", "assistant") not in chunks
 
 
 @pytest.mark.parametrize(
@@ -1168,7 +1207,7 @@ def test_anthropic_formats_tool_transcript() -> None:
     }
 
 
-def test_anthropic_repairs_orphaned_tool_result_adjacency() -> None:
+def test_anthropic_drops_interleaved_native_tool_unit() -> None:
     handler = build_anthropic_handler(
         stream_chunks=[AnthropicStreamChunk("message_stop")],
         final_text="answer",
@@ -1210,14 +1249,128 @@ def test_anthropic_repairs_orphaned_tool_result_adjacency() -> None:
             "role": "user",
             "content": [{"type": "text", "text": "what dir are you in?"}],
         },
+    ]
+
+
+def test_anthropic_drops_orphaned_provider_shaped_tool_result() -> None:
+    """A checkpoint/import cannot replay a raw orphan tool_result block."""
+
+    handler = build_anthropic_handler(
+        stream_chunks=[AnthropicStreamChunk("message_stop")],
+        final_text="answer",
+        usage=ANTHROPIC_USAGE,
+    )
+
+    formatted = handler.format_messages(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_orphan",
+                        "content": "must not replay",
+                    }
+                ],
+            }
+        ]
+    )
+
+    assert formatted == []
+
+
+def test_anthropic_drops_interleaved_provider_shaped_tool_unit() -> None:
+    """Raw tool_use blocks need immediate, exact raw tool_result companions."""
+
+    handler = build_anthropic_handler(
+        stream_chunks=[AnthropicStreamChunk("message_stop")],
+        final_text="answer",
+        usage=ANTHROPIC_USAGE,
+    )
+
+    formatted = handler.format_messages(
+        [
+            {"role": "user", "content": "start"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "I will run this."},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_interleaved",
+                        "name": "shell",
+                        "input": {"command": "pwd"},
+                    },
+                ],
+            },
+            {"role": "user", "content": "Wait."},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_interleaved",
+                        "content": "/tmp/project",
+                    }
+                ],
+            },
+        ]
+    )
+
+    assert formatted == [
+        {"role": "user", "content": [{"type": "text", "text": "start"}]},
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "I will run this."}],
+        },
+        {"role": "user", "content": [{"type": "text", "text": "Wait."}]},
+    ]
+
+
+def test_anthropic_keeps_complete_provider_shaped_tool_unit() -> None:
+    """Adapter-level sanitation preserves an already Anthropic-shaped pair."""
+
+    handler = build_anthropic_handler(
+        stream_chunks=[AnthropicStreamChunk("message_stop")],
+        final_text="answer",
+        usage=ANTHROPIC_USAGE,
+    )
+
+    formatted = handler.format_messages(
+        [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_complete",
+                        "name": "read_file",
+                        "input": {"path": "README.md"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_complete",
+                        "content": "# README",
+                    }
+                ],
+            },
+        ]
+    )
+
+    assert formatted == [
         {
             "role": "assistant",
             "content": [
                 {
                     "type": "tool_use",
-                    "id": "toolu_1",
-                    "name": "shell",
-                    "input": {"command": "pwd"},
+                    "id": "toolu_complete",
+                    "name": "read_file",
+                    "input": {"path": "README.md"},
                 }
             ],
         },
@@ -1226,8 +1379,8 @@ def test_anthropic_repairs_orphaned_tool_result_adjacency() -> None:
             "content": [
                 {
                     "type": "tool_result",
-                    "tool_use_id": "toolu_1",
-                    "content": "/tmp/project",
+                    "tool_use_id": "toolu_complete",
+                    "content": "# README",
                 }
             ],
         },
@@ -1244,6 +1397,20 @@ def test_anthropic_marks_failed_tool_replay_statuses_as_errors(status: str) -> N
 
     formatted = handler.format_messages(
         [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "toolu_failed",
+                        "type": "function",
+                        "function": {
+                            "name": "shell",
+                            "arguments": '{"command":"long-running"}',
+                        },
+                    }
+                ],
+            },
             {
                 "role": "tool",
                 "tool_call_id": "toolu_failed",

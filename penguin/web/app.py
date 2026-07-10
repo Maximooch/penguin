@@ -178,23 +178,58 @@ def create_app() -> "FastAPI":
     async def lifespan(app: "FastAPI"):
         # Startup
         logger.info("Penguin web application starting up...")
+        runtime_core: Optional[PenguinCore] = None
         try:
-            start_vcs_watcher(get_or_create_core())
+            runtime_core = get_or_create_core()
+            start_vcs_watcher(runtime_core)
+            checkpoint_manager = getattr(
+                getattr(runtime_core, "conversation_manager", None),
+                "checkpoint_manager",
+                None,
+            )
+            start_checkpoint_workers = getattr(
+                checkpoint_manager,
+                "start_workers",
+                None,
+            )
+            if callable(start_checkpoint_workers):
+                await start_checkpoint_workers()
         except Exception:
-            logger.debug("Unable to start VCS watcher", exc_info=True)
-        yield
-        # Shutdown: close connection pools
-        logger.info("Penguin web application shutting down...")
+            logger.debug(
+                "Unable to initialize core startup hooks or start VCS watcher",
+                exc_info=True,
+            )
         try:
-            await stop_vcs_watcher()
-        except Exception:
-            logger.debug("Unable to stop VCS watcher", exc_info=True)
-        try:
-            pool = ConnectionPoolManager.get_instance()
-            await pool.close_all()
-            logger.info("Connection pools closed successfully")
-        except Exception as e:
-            logger.warning(f"Error closing connection pools: {e}")
+            yield
+        finally:
+            # Shutdown: close every resource owned by the lifespan even when the
+            # serving body exits with an exception or cancellation.
+            logger.info("Penguin web application shutting down...")
+            try:
+                await stop_vcs_watcher()
+            except Exception:
+                logger.debug("Unable to stop VCS watcher", exc_info=True)
+            try:
+                checkpoint_manager = getattr(
+                    getattr(runtime_core, "conversation_manager", None),
+                    "checkpoint_manager",
+                    None,
+                )
+                stop_checkpoint_workers = getattr(
+                    checkpoint_manager,
+                    "stop_workers",
+                    None,
+                )
+                if callable(stop_checkpoint_workers):
+                    await stop_checkpoint_workers()
+            except Exception:
+                logger.warning("Unable to stop checkpoint workers", exc_info=True)
+            try:
+                pool = ConnectionPoolManager.get_instance()
+                await pool.close_all()
+                logger.info("Connection pools closed successfully")
+            except Exception as e:
+                logger.warning(f"Error closing connection pools: {e}")
 
     app = FastAPI(
         lifespan=lifespan,

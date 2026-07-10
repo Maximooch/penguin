@@ -54,6 +54,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Union, Any, Callable, Tuple
 
 from penguin.system.state import Message, MessageCategory, Session
+from penguin.system.native_tool_history import sanitize_native_tool_session
 from penguin.system.runtime_diagnostics import record_runtime_duration
 
 from penguin.constants import CONTEXT_UNCATEGORIZED_BUDGET_FRACTION
@@ -296,8 +297,7 @@ class ContextWindowManager:
             total = 0
             for item in content:
                 if isinstance(item, dict) and (
-                    item.get("type") in ["image", "image_url"]
-                    or "image_path" in item
+                    item.get("type") in ["image", "image_url"] or "image_path" in item
                 ):
                     # Much more realistic image token estimates - Claude models use ~4000 tokens per image
                     total += 4000  # Higher default for safety
@@ -406,6 +406,21 @@ class ContextWindowManager:
             for budget in self._budgets.values():
                 budget.current_tokens = 0
 
+    def _sanitize_native_tool_units_and_refresh_usage(
+        self, session: Session
+    ) -> Session:
+        """Drop split native units and keep tracked usage aligned with the result."""
+
+        sanitized_session = sanitize_native_tool_session(session)
+        self.reset_usage()
+        for message in sanitized_session.messages:
+            token_count = int(message.tokens or 0)
+            if token_count == 0:
+                token_count = self.token_counter(message.content)
+                message.tokens = token_count
+            self.update_usage(message.category, token_count)
+        return sanitized_session
+
     def is_over_budget(self, category: Optional[MessageCategory] = None) -> bool:
         """Check if a category or the entire context is over budget"""
         if category:
@@ -503,8 +518,7 @@ class ContextWindowManager:
             last_active=session.last_active,
             metadata=session.metadata.copy(),
             llm_request_lifecycles=[
-                self._copy_record(record)
-                for record in session.llm_request_lifecycles
+                self._copy_record(record) for record in session.llm_request_lifecycles
             ],
             tool_call_records=[
                 self._copy_record(record) for record in session.tool_call_records
@@ -737,12 +751,10 @@ class ContextWindowManager:
                     for record in session.llm_request_lifecycles
                 ],
                 tool_call_records=[
-                    self._copy_record(record)
-                    for record in session.tool_call_records
+                    self._copy_record(record) for record in session.tool_call_records
                 ],
                 tool_result_records=[
-                    self._copy_record(record)
-                    for record in session.tool_result_records
+                    self._copy_record(record) for record in session.tool_result_records
                 ],
             )
 
@@ -884,9 +896,7 @@ class ContextWindowManager:
                 "chars": _content_chars(getattr(msg, "content", "")),
             }
             if include_previews:
-                candidate["preview"] = _message_preview(
-                    getattr(msg, "content", "")
-                )
+                candidate["preview"] = _message_preview(getattr(msg, "content", ""))
             largest_candidates.append(candidate)
         largest_messages = sorted(
             largest_candidates,
@@ -1026,14 +1036,17 @@ class ContextWindowManager:
                 "context.process_session",
                 (time.perf_counter() - assembly_started) * 1000,
             )
-            return trimmed_session
+            # Category trimming is intentionally allowed to remove old content,
+            # but a native assistant declaration and its tool results are one
+            # provider replay unit.  Any split unit is dropped after trimming.
+            return self._sanitize_native_tool_units_and_refresh_usage(trimmed_session)
 
         # If we get here, no trimming needed
         record_runtime_duration(
             "context.process_session",
             (time.perf_counter() - assembly_started) * 1000,
         )
-        return session
+        return self._sanitize_native_tool_units_and_refresh_usage(session)
 
     def format_token_usage(self) -> str:
         """

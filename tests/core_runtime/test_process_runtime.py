@@ -48,7 +48,7 @@ def _process_kwargs(**overrides: Any) -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
-async def test_process_with_retry_retries_transient_runtime_failure(
+async def test_process_with_retry_does_not_replay_transient_whole_turn_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     attempts: list[str] = []
@@ -56,9 +56,7 @@ async def test_process_with_retry_retries_transient_runtime_failure(
 
     async def flaky_process(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         attempts.append("attempt")
-        if len(attempts) == 1:
-            raise RuntimeError("transient")
-        return {"assistant_response": "done", "action_results": []}
+        raise RuntimeError("transient")
 
     async def no_sleep(delay: float) -> None:
         sleeps.append(delay)
@@ -71,13 +69,15 @@ async def test_process_with_retry_retries_transient_runtime_failure(
         **_process_kwargs(),
     )
 
-    assert result == {"assistant_response": "done", "action_results": []}
-    assert attempts == ["attempt", "attempt"]
-    assert sleeps == [4.0]
+    assert result["status"] == "error"
+    assert result["recoverable"] is False
+    assert result["error"]["code"] == "core_process_failure"
+    assert attempts == ["attempt"]
+    assert sleeps == []
 
 
 @pytest.mark.asyncio
-async def test_process_with_retry_returns_exception_after_retry_exhaustion(
+async def test_process_with_retry_returns_typed_failure_without_exception_object(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     attempts: list[str] = []
@@ -98,10 +98,122 @@ async def test_process_with_retry_returns_exception_after_retry_exhaustion(
         **_process_kwargs(),
     )
 
-    assert isinstance(result, RuntimeError)
-    assert str(result) == "persistent"
-    assert attempts == ["attempt", "attempt", "attempt"]
-    assert sleeps == [4.0, 4.0]
+    assert isinstance(result, dict)
+    assert result["status"] == "error"
+    assert result["error"]["message"] == "persistent"
+    assert attempts == ["attempt"]
+    assert sleeps == []
+
+
+@pytest.mark.parametrize(
+    "failure_point",
+    ["busy", "start_heartbeat", "stop_heartbeat", "idle"],
+)
+@pytest.mark.asyncio
+async def test_lifecycle_notification_failure_does_not_leak_or_replay_request(
+    monkeypatch: pytest.MonkeyPatch,
+    failure_point: str,
+) -> None:
+    """Lifecycle projection failures must not become whole-turn retries."""
+
+    class Owner:
+        def __init__(self) -> None:
+            self.engine = object()
+            self.status_attempts: list[str] = []
+
+        async def _emit_opencode_session_status(
+            self,
+            _session_id: str,
+            status_type: str,
+        ) -> None:
+            self.status_attempts.append(status_type)
+            if failure_point == status_type:
+                raise RuntimeError(f"{status_type} projection failed")
+
+        def _ensure_opencode_session_status_heartbeat(
+            self,
+            _session_id: str,
+        ) -> None:
+            if failure_point == "start_heartbeat":
+                raise RuntimeError("heartbeat start failed")
+
+        def _cancel_opencode_session_status_heartbeat(
+            self,
+            _session_id: str,
+        ) -> None:
+            if failure_point == "stop_heartbeat":
+                raise RuntimeError("heartbeat stop failed")
+
+    owner = Owner()
+    conversation_manager = SimpleNamespace(
+        conversation=SimpleNamespace(session=SimpleNamespace(id="session-1"))
+    )
+    engine_attempts: list[str] = []
+    sleeps: list[float] = []
+
+    async def run_engine_process(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        engine_attempts.append("attempt")
+        return {
+            "assistant_response": "done",
+            "action_results": [],
+            "status": "completed",
+            "iterations": 1,
+        }
+
+    async def no_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(
+        process_runtime,
+        "get_current_execution_context",
+        lambda: SimpleNamespace(request_id="request-1", session_id="session-1"),
+    )
+    monkeypatch.setattr(
+        process_runtime.core_conversations,
+        "resolve_conversation_manager",
+        lambda *_args, **_kwargs: conversation_manager,
+    )
+    monkeypatch.setattr(
+        process_runtime.core_conversations,
+        "load_process_context_files",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setattr(
+        process_runtime.core_process_lifecycle,
+        "emit_process_user_message",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        process_runtime.core_process_lifecycle,
+        "finalize_process_response",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        process_runtime.core_process_streaming,
+        "prepare_engine_process_context",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            stream_callback=None,
+            scoped_conversation_id="session-1",
+        ),
+    )
+    monkeypatch.setattr(
+        process_runtime.core_process_engine,
+        "run_engine_process",
+        run_engine_process,
+    )
+
+    result = await process_runtime.process_with_retry(
+        owner,
+        retry_sleep=no_sleep,
+        **_process_kwargs(),
+    )
+
+    assert result["assistant_response"] == "done"
+    assert engine_attempts == ["attempt"]
+    assert sleeps == []
+    assert owner.status_attempts == ["busy", "idle"]
+    assert owner._opencode_active_requests == {}
+    assert owner._opencode_process_tasks == {}
 
 
 @pytest.mark.asyncio
@@ -497,7 +609,7 @@ async def test_process_tracks_current_session_without_explicit_conversation(
 
 
 @pytest.mark.asyncio
-async def test_process_cancelled_returns_aborted_payload_and_releases_request(
+async def test_process_transport_cancellation_returns_truth_and_releases_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     owner = SimpleNamespace(engine=object())
@@ -590,6 +702,8 @@ async def test_process_cancelled_returns_aborted_payload_and_releases_request(
     assert result == {
         "assistant_response": "",
         "action_results": [],
-        "aborted": True,
+        "status": "cancelled",
+        "aborted": False,
+        "cancelled": True,
     }
     assert finalized == [("session-1", True)]

@@ -334,6 +334,30 @@ class SessionManager:
             f"Primary error: {type(primary_error).__name__}: {str(primary_error)}"
         )
         return self._create_recovery_session(session_id)
+
+    def load_session_readonly(self, session_id: str) -> Optional[Session]:
+        """Load one persisted session without changing cache or active-session state.
+
+        Checkpoint lineage flattening performs its filesystem reads on a bounded
+        worker thread. It must not use ``load_session()``, whose normal LRU
+        behavior changes ``current_session`` and can save/evict other sessions.
+        """
+
+        primary_path = self.base_path / f"{session_id}.{self.format}"
+        backup_path = self.base_path / f"{session_id}.{self.format}.bak"
+        for candidate_path in (primary_path, backup_path):
+            try:
+                session = self._load_from_file(candidate_path)
+            except Exception:
+                logger.warning(
+                    "Unable to read session snapshot path=%s",
+                    candidate_path,
+                    exc_info=True,
+                )
+                continue
+            if session is not None and session.validate():
+                return session
+        return None
     
     def _add_to_session_cache(self, session_id: str, session: Session) -> None:
         """Add a session to the cache, managing the LRU behavior."""

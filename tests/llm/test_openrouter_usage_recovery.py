@@ -6,9 +6,15 @@ import asyncio
 import json
 from typing import Any, cast
 
+import httpx
 import pytest
 
-from penguin.llm.contracts import ErrorCategory, FinishReason, ProviderRequestStatus
+from penguin.llm.contracts import (
+    ErrorCategory,
+    FinishReason,
+    LLMProviderError,
+    ProviderRequestStatus,
+)
 from penguin.llm.model_config import ModelConfig
 from penguin.llm.openrouter_gateway import OpenRouterGateway
 
@@ -361,6 +367,9 @@ async def test_sdk_stream_stall_returns_timeout_error(
     )
 
     class _HangingStream:
+        def __init__(self) -> None:
+            self.closed = False
+
         def __aiter__(self):
             return self
 
@@ -368,20 +377,77 @@ async def test_sdk_stream_stall_returns_timeout_error(
             await asyncio.sleep(3600)
             raise StopAsyncIteration
 
+        async def aclose(self) -> None:
+            self.closed = True
+
     async def _create_completion(**kwargs: Any):
         del kwargs
-        return _HangingStream()
+        return stream
 
+    stream = _HangingStream()
     gateway.client.chat.completions.create = _create_completion  # type: ignore[attr-defined]
 
-    result = await gateway.get_response(
-        messages=[{"role": "user", "content": "hello"}],
-        stream=True,
-        stream_callback=lambda *_args: None,
-    )
+    async def _callback(*_args: Any) -> None:
+        return None
 
-    assert "stream stalled" in result.lower()
-    assert "glm-5-turbo" in result
+    with pytest.raises(LLMProviderError) as raised:
+        await gateway.get_response(
+            messages=[{"role": "user", "content": "hello"}],
+            stream=True,
+            stream_callback=_callback,
+        )
+
+    assert raised.value.error.category is ErrorCategory.TIMEOUT
+    assert raised.value.error.retryable is True
+    assert raised.value.error.provider_data["stage"] == "sdk_stream_timeout"
+    assert stream.closed is True
+    lifecycle = gateway.get_last_request_lifecycle()
+    assert lifecycle is not None
+    assert lifecycle.status is ProviderRequestStatus.DISCONNECTED
+    assert lifecycle.error is raised.value.error
+
+
+@pytest.mark.asyncio
+async def test_sdk_stream_close_deadline_detaches_ignored_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hung async close cannot hold the timeout path indefinitely."""
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("PENGUIN_OPENROUTER_STREAM_CLOSE_TIMEOUT_SECONDS", "0.01")
+    gateway = OpenRouterGateway(
+        ModelConfig(
+            model="z-ai/glm-5-turbo",
+            provider="openrouter",
+            client_preference="openrouter",
+        )
+    )
+    release = asyncio.Event()
+    entered = asyncio.Event()
+    finished = asyncio.Event()
+
+    class _CancellationIgnoringClose:
+        def __init__(self) -> None:
+            self.cancelled = 0
+
+        async def aclose(self) -> None:
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled += 1
+                await release.wait()
+            finally:
+                finished.set()
+
+    stream = _CancellationIgnoringClose()
+    try:
+        await asyncio.wait_for(gateway._close_sdk_stream(stream), timeout=0.5)
+        assert entered.is_set()
+        assert stream.cancelled == 1
+    finally:
+        release.set()
+        await asyncio.wait_for(finished.wait(), timeout=0.5)
 
 
 @pytest.mark.asyncio
@@ -404,6 +470,7 @@ async def test_direct_stream_stall_returns_timeout_error(
         def __init__(self) -> None:
             self.status_code = 200
             self.headers: dict[str, str] = {}
+            self.closed = False
 
         async def aread(self) -> bytes:
             return b""
@@ -412,6 +479,9 @@ async def test_direct_stream_stall_returns_timeout_error(
             await asyncio.sleep(3600)
             if False:
                 yield ""
+
+        async def aclose(self) -> None:
+            self.closed = True
 
     class _StreamContext:
         def __init__(self, response: _StreamResponse) -> None:
@@ -430,19 +500,189 @@ async def test_direct_stream_stall_returns_timeout_error(
             return False
 
     class _Client:
+        def __init__(self) -> None:
+            self.response = _StreamResponse()
+
         def stream(
             self, method: str, url: str, headers: dict[str, str], json: dict[str, Any]
         ):
             del method, url, headers, json
-            return _StreamContext(_StreamResponse())
+            return _StreamContext(self.response)
 
-    result = await gateway._handle_streaming_response(
-        client=cast(Any, _Client()),
-        url="https://openrouter.ai/api/v1/chat/completions",
-        headers={"Authorization": "Bearer test-key"},
-        params={"model": gateway.model_config.model, "messages": []},
-        stream_callback=None,
+    class _PoolContext:
+        async def __aenter__(self) -> _Client:
+            return client
+
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: Any | None,
+        ) -> bool:
+            del exc_type, exc, tb
+            return False
+
+    class _Pool:
+        def client_context(self, _base_url: str) -> _PoolContext:
+            return _PoolContext()
+
+    client = _Client()
+    from penguin.llm.api_client import ConnectionPoolManager
+
+    monkeypatch.setattr(
+        ConnectionPoolManager,
+        "get_instance",
+        classmethod(lambda _cls: _Pool()),
     )
 
-    assert "stream stalled" in result.lower()
-    assert "claude-sonnet-4.5" in result
+    async def _callback(*_args: Any) -> None:
+        return None
+
+    with pytest.raises(LLMProviderError) as raised:
+        await gateway.get_response(
+            messages=[{"role": "user", "content": "hello"}],
+            stream=True,
+            stream_callback=_callback,
+        )
+
+    assert raised.value.error.category is ErrorCategory.TIMEOUT
+    assert raised.value.error.retryable is True
+    assert raised.value.error.provider_data["stage"] == "direct_stream_timeout"
+    assert client.response.closed is True
+    lifecycle = gateway.get_last_request_lifecycle()
+    assert lifecycle is not None
+    assert lifecycle.status is ProviderRequestStatus.DISCONNECTED
+    assert lifecycle.error is raised.value.error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("timeout_type", "expected_stage"),
+    [
+        (httpx.ReadTimeout, "direct_read_timeout"),
+        (httpx.ConnectTimeout, "direct_connect_timeout"),
+    ],
+)
+async def test_direct_transport_timeout_is_typed_and_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+    timeout_type: type[httpx.TimeoutException],
+    expected_stage: str,
+) -> None:
+    """Pool-entry transport timeouts stay typed through the reasoning path."""
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    gateway = OpenRouterGateway(
+        ModelConfig(
+            model="anthropic/claude-sonnet-4.5",
+            provider="openrouter",
+            client_preference="openrouter",
+            reasoning_enabled=True,
+            reasoning_effort="medium",
+        )
+    )
+
+    class _TimeoutContext:
+        async def __aenter__(self) -> Any:
+            raise timeout_type("synthetic direct transport timeout")
+
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: Any | None,
+        ) -> bool:
+            del exc_type, exc, tb
+            return False
+
+    class _Pool:
+        def client_context(self, _base_url: str) -> _TimeoutContext:
+            return _TimeoutContext()
+
+    from penguin.llm.api_client import ConnectionPoolManager
+
+    monkeypatch.setattr(
+        ConnectionPoolManager,
+        "get_instance",
+        classmethod(lambda _cls: _Pool()),
+    )
+
+    async def _callback(*_args: Any) -> None:
+        return None
+
+    with pytest.raises(LLMProviderError) as raised:
+        await gateway.get_response(
+            messages=[{"role": "user", "content": "hello"}],
+            stream=True,
+            stream_callback=_callback,
+        )
+
+    assert raised.value.error.category is ErrorCategory.TIMEOUT
+    assert raised.value.error.retryable is True
+    assert raised.value.error.provider_data["stage"] == expected_stage
+    assert raised.value.error.provider_data["partial_output"] == ""
+    lifecycle = gateway.get_last_request_lifecycle()
+    assert lifecycle is not None
+    assert lifecycle.status is ProviderRequestStatus.DISCONNECTED
+    assert lifecycle.error is raised.value.error
+
+
+@pytest.mark.asyncio
+async def test_direct_wrapped_timeout_is_typed_and_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A proxy-wrapped timeout cannot fall back to a legacy error string."""
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    gateway = OpenRouterGateway(
+        ModelConfig(
+            model="anthropic/claude-sonnet-4.5",
+            provider="openrouter",
+            client_preference="openrouter",
+            reasoning_enabled=True,
+            reasoning_effort="medium",
+        )
+    )
+
+    class _TimeoutContext:
+        async def __aenter__(self) -> Any:
+            raise RuntimeError("proxy timeout while opening direct stream")
+
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: Any | None,
+        ) -> bool:
+            del exc_type, exc, tb
+            return False
+
+    class _Pool:
+        def client_context(self, _base_url: str) -> _TimeoutContext:
+            return _TimeoutContext()
+
+    from penguin.llm.api_client import ConnectionPoolManager
+
+    monkeypatch.setattr(
+        ConnectionPoolManager,
+        "get_instance",
+        classmethod(lambda _cls: _Pool()),
+    )
+
+    async def _callback(*_args: Any) -> None:
+        return None
+
+    with pytest.raises(LLMProviderError) as raised:
+        await gateway.get_response(
+            messages=[{"role": "user", "content": "hello"}],
+            stream=True,
+            stream_callback=_callback,
+        )
+
+    assert raised.value.error.category is ErrorCategory.TIMEOUT
+    assert raised.value.error.retryable is True
+    assert raised.value.error.provider_data["stage"] == "direct_wrapped_timeout"
+    assert raised.value.error.provider_data["partial_output"] == ""
+    lifecycle = gateway.get_last_request_lifecycle()
+    assert lifecycle is not None
+    assert lifecycle.status is ProviderRequestStatus.DISCONNECTED
+    assert lifecycle.error is raised.value.error

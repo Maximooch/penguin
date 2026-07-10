@@ -232,8 +232,12 @@ async def test_oauth_request_routes_to_codex_with_required_headers(
     assert seen["headers"]["ChatGPT-Account-Id"] == "acct-1"
     assert seen["json"]["store"] is False
     assert seen["json"]["stream"] is True
-    assert getattr(seen["timeout"], "read", object()) is None
+    assert getattr(seen["timeout"], "read", None) == 120.0
     assert getattr(seen["timeout"], "connect", None) == 30.0
+    lifecycle = adapter.get_last_request_lifecycle()
+    assert lifecycle is not None
+    assert lifecycle.provider_data["requested_stream"] is False
+    assert lifecycle.provider_data["transport_stream"] is True
     assert "max_output_tokens" not in seen["json"]
     assert isinstance(seen["json"]["input"], list)
     assert all(item.get("role") != "system" for item in seen["json"]["input"])
@@ -731,9 +735,106 @@ def test_codex_input_items_include_function_call_and_output_for_tool_history() -
     } in items
 
 
-def test_codex_input_items_synthesize_function_call_from_tool_message_when_needed() -> (
-    None
-):
+def test_codex_input_items_keep_assistant_text_outside_native_call_batch() -> None:
+    """Codex input must not separate a call from its contiguous output batch."""
+
+    model_config = ModelConfig(
+        model="gpt-5.4",
+        provider="openai",
+        client_preference="native",
+        api_key="sk-test",
+    )
+    adapter = OpenAIAdapter(model_config)
+
+    items = adapter._build_codex_input_items(
+        [
+            {
+                "role": "assistant",
+                "content": "I will inspect the repository first.",
+                "tool_calls": [
+                    {
+                        "id": "call_contiguous",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path":"README.md"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_contiguous",
+                "name": "read_file",
+                "content": "# README",
+            },
+            {"role": "user", "content": "Continue."},
+        ]
+    )
+
+    call_index = next(
+        index for index, item in enumerate(items) if item.get("type") == "function_call"
+    )
+    output_index = next(
+        index
+        for index, item in enumerate(items)
+        if item.get("type") == "function_call_output"
+    )
+    assert output_index == call_index + 1
+    assert items[call_index - 1] == {
+        "type": "message",
+        "role": "assistant",
+        "content": [
+            {
+                "type": "output_text",
+                "text": "I will inspect the repository first.",
+            }
+        ],
+    }
+
+
+def test_codex_input_sanitizer_drops_call_interleaved_from_its_output() -> None:
+    """A message between a Codex call and output invalidates the whole unit."""
+
+    model_config = ModelConfig(
+        model="gpt-5.4",
+        provider="openai",
+        client_preference="native",
+        api_key="sk-test",
+    )
+    adapter = OpenAIAdapter(model_config)
+
+    sanitized = adapter._sanitize_codex_input_items(
+        [
+            {
+                "type": "function_call",
+                "call_id": "call_interleaved",
+                "name": "read_file",
+                "arguments": '{"path":"README.md"}',
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "interleaved"}],
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_interleaved",
+                "output": "# README",
+            },
+        ]
+    )
+
+    assert sanitized == [
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "interleaved"}],
+        }
+    ]
+
+
+def test_codex_input_items_drop_orphaned_tool_message() -> None:
     model_config = ModelConfig(
         model="gpt-5.4",
         provider="openai",
@@ -754,19 +855,7 @@ def test_codex_input_items_synthesize_function_call_from_tool_message_when_neede
         ]
     )
 
-    assert items == [
-        {
-            "type": "function_call",
-            "call_id": "call_456",
-            "name": "code_execution",
-            "arguments": '{"code":"print(44)"}',
-        },
-        {
-            "type": "function_call_output",
-            "call_id": "call_456",
-            "output": "44\nRESULT=44",
-        },
-    ]
+    assert items == []
 
 
 def test_codex_input_items_drop_orphaned_function_call_without_output() -> None:
@@ -882,22 +971,9 @@ def test_codex_input_items_drop_duplicate_function_call_ids() -> None:
         ]
     )
 
-    assert (
-        items.count(
-            {
-                "type": "function_call",
-                "call_id": "call_dup",
-                "name": "read_file",
-                "arguments": '{"path":"README.md"}',
-            }
-        )
-        == 1
+    assert not any(
+        item.get("type") in {"function_call", "function_call_output"} for item in items
     )
-    assert {
-        "type": "function_call_output",
-        "call_id": "call_dup",
-        "output": "README contents",
-    } in items
 
 
 def test_codex_input_items_preserve_only_complete_tool_pairs_after_cwm_trimming() -> (
@@ -1085,7 +1161,7 @@ async def test_oauth_codex_request_replays_completed_tool_pair_in_order(
 
 
 @pytest.mark.asyncio
-async def test_oauth_codex_request_synthesizes_call_when_only_tool_result_survives(
+async def test_oauth_codex_request_drops_orphaned_tool_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _install_oauth_codex_test_auth(monkeypatch)
@@ -1120,19 +1196,7 @@ async def test_oauth_codex_request_synthesizes_call_when_only_tool_result_surviv
         for item in sent_items
         if item.get("type") in {"function_call", "function_call_output"}
     ]
-    assert function_items == [
-        {
-            "type": "function_call",
-            "call_id": "call_result_only",
-            "name": "code_execution",
-            "arguments": '{"code":"print(7)"}',
-        },
-        {
-            "type": "function_call_output",
-            "call_id": "call_result_only",
-            "output": "7\nRESULT=7",
-        },
-    ]
+    assert function_items == []
 
 
 @pytest.mark.asyncio
