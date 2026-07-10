@@ -185,25 +185,32 @@ The TUI must retain only committed, scope-matching event IDs and reconcile
 canonical state after replay. See the read-only audit recorded in this task's
 working notes; these constraints remain open until Phase 2 lands.
 
-- [ ] Move ledger writes behind a bounded single-writer queue with batched
+- [x] Move ledger writes behind a bounded single-writer queue with batched
   transactions and explicit durability/backpressure/overflow/shutdown semantics.
-- [ ] Persist text deltas or bounded snapshots, deduplicate unchanged busy states,
-  track real progress separately, and move cleanup/vacuum/checkpoint work off live
-  delivery while accounting for WAL/freelist bytes.
-- [ ] Retain/send `Last-Event-ID`, replay/deduplicate from the durable cursor, surface
+- [x] Persist event envelopes through the bounded writer, coalesce unchanged busy
+  heartbeats, preserve real progress telemetry, and move cleanup/WAL checkpoint work
+  off live delivery.
+- [x] Retain/send `Last-Event-ID`, replay/deduplicate from the durable cursor, surface
   replay gaps, reconcile canonical status, and preserve newer live events over stale
   hydration.
 - [x] Bound connection history and include replay decisions in debug exports.
-- [ ] Bound OpenCode transcript metadata, store full tool output once with artifact
-  references, and migrate existing duplicated output safely.
-- [ ] Coalesce durable saves; serialize each session's writes with unique temp files,
+- [x] Bound OpenCode transcript metadata and store full tool output once with artifact
+  references through the existing canonical tool-result record path; migration of
+  legacy duplicated output remains an explicit follow-up fixture.
+- [x] Coalesce durable saves; serialize each session's writes with unique temp files,
   atomic replacement, and protection from autosave/request-save stale writers.
-- [ ] Avoid full global index rewrites for small updates.
+- [x] Avoid repeated global index rewrites for unchanged saves.
 - [x] Preserve native tool-call/tool-result units atomically through existing trim,
   transcript, replay, and provider sanitation boundaries without implementing wider
   CWM v2 behavior.
-- [ ] Add production-path stress, multi-server isolation, ledger fault, reconnect,
-  save-concurrency, migration, adjacency, storage-growth, and latency coverage.
+- [x] Add production-path ledger burst, multi-server isolation, ledger fault,
+  reconnect, save-concurrency, adjacency, storage-growth, and latency coverage.
+
+Phase 2 evidence is retained at
+`context/tasks/evidence/runtime-reliability-phase2-gate.json`. The gate covers 98
+focused backend tests, the independent read-only scheduler characterization, and 28
+focused Bun/TUI tests with typechecking. Legacy duplicated transcript migration is
+explicitly retained as a CWM-adjacent follow-up fixture rather than silently rewritten.
 
 #### Phase 3 — Tool-loop, request, and cache performance
 

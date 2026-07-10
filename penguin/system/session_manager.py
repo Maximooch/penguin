@@ -8,12 +8,14 @@ This module handles session lifecycle operations including:
 - Creating continuation sessions for long-running conversations
 """
 
+import hashlib
 import json
 import logging
 import os
 import shutil
 import threading
 import time
+import uuid
 from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
@@ -44,6 +46,20 @@ from penguin.constants import DEFAULT_MAX_MESSAGES_PER_SESSION
 
 
 logger = logging.getLogger(__name__)
+
+
+def _session_content_fingerprint(serialized: str) -> str:
+    """Hash durable session content while ignoring autosave timestamp churn."""
+
+    try:
+        data = json.loads(serialized)
+        if isinstance(data, dict):
+            data = dict(data)
+            data["last_active"] = ""
+            serialized = json.dumps(data, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        pass
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 class SessionManager:
@@ -81,6 +97,8 @@ class SessionManager:
         self.max_sessions_in_memory = max_sessions_in_memory
         self.format = format
         self.current_session: Optional[Session] = None
+        self._save_lock = threading.RLock()
+        self._save_fingerprints: Dict[str, str] = {}
         
         # Use OrderedDict as an LRU cache for sessions
         self.sessions: OrderedDict[str, Tuple[Session, bool]] = OrderedDict()  # (session, is_modified)
@@ -155,9 +173,10 @@ class SessionManager:
     
     def _save_index(self, index: Dict[str, Dict[str, Any]]) -> None:
         """Save the session index to disk."""
+        temp_path = self.base_path / (
+            f".{self.index_path.name}.{uuid.uuid4().hex}.temp"
+        )
         try:
-            # Write to temp file first - fix the suffix
-            temp_path = Path(f"{self.index_path}.temp")  # Fix: Use explicit Path constructor
             with _safe_open(temp_path, 'w', encoding='utf-8') as f:
                 json.dump(index, f, indent=2)
                 
@@ -165,6 +184,11 @@ class SessionManager:
             os.replace(temp_path, self.index_path)
         except Exception as e:
             logger.error(f"Error saving session index: {str(e)}")
+        finally:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def _copy_metadata_to_index_entry(
         self,
@@ -457,6 +481,12 @@ class SessionManager:
         return session
         
     def save_session(self, session: Optional[Session] = None) -> bool:
+        """Serialize session saves so autosave cannot overwrite a live writer."""
+
+        with self._save_lock:
+            return self._save_session_locked(session)
+
+    def _save_session_locked(self, session: Optional[Session] = None) -> bool:
         """
         Save a session with transaction safety.
         
@@ -477,7 +507,9 @@ class SessionManager:
             return False
             
         try:
-            temp_path = self.base_path / f"{session.id}.{self.format}.temp"
+            temp_path = self.base_path / (
+                f".{session.id}.{uuid.uuid4().hex}.{self.format}.temp"
+            )
             backup_path = self.base_path / f"{session.id}.{self.format}.bak"
             target_path = self.base_path / f"{session.id}.{self.format}"
             
@@ -490,8 +522,18 @@ class SessionManager:
             session.metadata["token_count"] = token_count
             
             # Write to temp file first
+            serialized = session.to_json()
+            fingerprint = _session_content_fingerprint(serialized)
+            if (
+                self._save_fingerprints.get(session.id) == fingerprint
+                and target_path.exists()
+            ):
+                if session.id in self.sessions:
+                    self.sessions[session.id] = (session, False)
+                return True
+
             with _safe_open(temp_path, 'w', encoding='utf-8') as f:
-                f.write(session.to_json())
+                f.write(serialized)
                 
             # Create backup of current file if it exists
             if target_path.exists():
@@ -526,6 +568,7 @@ class SessionManager:
                 self.session_index[session.id]["continued_to"] = session.metadata["continued_to"]
             
             self._save_index(self.session_index)
+            self._save_fingerprints[session.id] = fingerprint
             
             # Update cache status
             if session.id in self.sessions:
@@ -538,6 +581,10 @@ class SessionManager:
             logger.error(f"Error saving session {session.id}: {str(e)}")
             return False
         finally:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except (OSError, UnboundLocalError):
+                pass
             record_runtime_duration(
                 "session.save",
                 (time.perf_counter() - save_started) * 1000,

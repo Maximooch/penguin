@@ -166,6 +166,7 @@ async def events_sse(
         queued_live_event_ids: set[str] = set()
         delivered_event_ids: set[str] = set()
         delivered_event_order: deque[str] = deque()
+        live_status_seen = False
         event_order = 0
 
         def mark_delivered(event_id: object) -> None:
@@ -278,6 +279,7 @@ async def events_sse(
 
         def event_handler(event_type: str, data: Any):
             """Handler for EventBus events."""
+            nonlocal live_status_seen
             # Only handle opencode_event type
             if event_type != "opencode_event":
                 return
@@ -293,6 +295,12 @@ async def events_sse(
             if not event_allowed(normalized):
                 return
 
+            if normalized.get("type") == "session.status":
+                live_status_seen = True
+
+            delivery_properties = dict(normalized.get("properties") or {})
+            delivery_properties["_penguin_delivery"] = {"durability": "pending"}
+            normalized["properties"] = delivery_properties
             normalized_id = normalized.get("id")
             if isinstance(normalized_id, str) and normalized_id in delivered_event_ids:
                 return
@@ -322,8 +330,7 @@ async def events_sse(
                     "directory": directory,
                 },
             }
-            normalized_connected = next_event(connected_event)
-            if normalized_connected:
+            if connected_event:
                 _record_connection_state(core, "connected")
                 _record_connection_state(
                     core,
@@ -332,7 +339,9 @@ async def events_sse(
                         "cursor_present" if effective_last_event_id else "no_cursor"
                     ),
                 )
-                yield sse_event_frame(normalized_connected)
+                # Control frames are never ledger rows and must not advance a
+                # reconnect cursor or consume a runtime-event sequence.
+                yield sse_event_frame(connected_event, include_id=False)
 
             if effective_last_event_id:
                 replay_cursor = effective_last_event_id
@@ -361,15 +370,16 @@ async def events_sse(
                             "replay_gap",
                             reason_code="cursor_not_available",
                         )
-                        gap_event = next_event(
-                            _replay_gap_event(
-                                replay_cursor,
-                                oldest_event_id=replay.oldest_event_id,
-                                newest_event_id=replay.newest_event_id,
-                            )
+                        gap_event = _replay_gap_event(
+                            replay_cursor,
+                            oldest_event_id=replay.oldest_event_id,
+                            newest_event_id=replay.newest_event_id,
+                            session_id=effective_session_id,
+                            agent_id=effective_agent_id,
+                            directory=effective_directory,
                         )
-                        if gap_event and event_allowed(gap_event):
-                            yield sse_event_frame(gap_event)
+                        if event_allowed(gap_event):
+                            yield sse_event_frame(gap_event, include_id=False)
                         break
                     if not replay.events:
                         _record_connection_state(
@@ -412,6 +422,37 @@ async def events_sse(
                         break
                     replay_cursor = next_cursor
 
+            # Reconcile the canonical session status after replay. A status
+            # event queued while replay was running wins over this snapshot,
+            # preventing stale hydration from replacing newer live state.
+            if effective_session_id and not live_status_seen:
+                status_event = await _canonical_session_status_event(
+                    core,
+                    effective_session_id,
+                    agent_id=effective_agent_id,
+                    directory=effective_directory,
+                )
+                if status_event is not None:
+                    _record_connection_state(
+                        core,
+                        "status_reconciled",
+                        reason_code="canonical_session_status",
+                    )
+                    yield sse_event_frame(status_event, include_id=False)
+
+            if effective_last_event_id:
+                yield sse_event_frame(
+                    {
+                        "type": "server.replay_complete",
+                        "properties": {
+                            "sessionID": effective_session_id,
+                            "agentID": effective_agent_id,
+                            "directory": effective_directory,
+                        },
+                    },
+                    include_id=False,
+                )
+
             # Stream events
             while True:
                 try:
@@ -424,6 +465,9 @@ async def events_sse(
                     if isinstance(event_id, str):
                         queued_live_event_ids.discard(event_id)
                         mark_delivered(event_id)
+                    # Live events are admitted asynchronously. The pending
+                    # marker keeps clients from advancing a durable cursor until
+                    # the same event is replayed from SQLite after commit.
                     yield sse_event_frame(event)
                 except asyncio.TimeoutError:
                     # Send keepalive comment
@@ -509,6 +553,9 @@ def _replay_gap_event(
     *,
     oldest_event_id: str | None = None,
     newest_event_id: str | None = None,
+    session_id: str | None = None,
+    agent_id: str | None = None,
+    directory: str | None = None,
 ) -> dict[str, Any]:
     return {
         "type": "server.replay_gap",
@@ -517,6 +564,39 @@ def _replay_gap_event(
             "oldestEventID": oldest_event_id,
             "newestEventID": newest_event_id,
             "reason": "last_event_id_not_available",
+            "sessionID": session_id,
+            "agentID": agent_id,
+            "directory": directory,
+        },
+    }
+
+
+async def _canonical_session_status_event(
+    core: Any,
+    session_id: str,
+    *,
+    agent_id: str | None,
+    directory: str | None,
+) -> dict[str, Any] | None:
+    """Build an id-less status snapshot for reconnect reconciliation."""
+
+    try:
+        from penguin.web.services.session_view import list_session_statuses
+
+        statuses = await asyncio.to_thread(list_session_statuses, core)
+    except Exception:
+        logger.debug("Failed to hydrate canonical SSE session status", exc_info=True)
+        return None
+    status = statuses.get(session_id) if isinstance(statuses, dict) else None
+    if not isinstance(status, dict):
+        return None
+    return {
+        "type": "session.status",
+        "properties": {
+            "sessionID": session_id,
+            "status": dict(status),
+            "agentID": agent_id,
+            "directory": directory,
         },
     }
 

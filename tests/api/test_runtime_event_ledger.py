@@ -91,6 +91,35 @@ def test_ledger_suppresses_duplicate_runtime_event_ids(tmp_path: Path) -> None:
     assert [item["id"] for item in ledger.newest(limit=10)] == [event["id"]]
 
 
+def test_ledger_preserves_same_id_with_different_payload(tmp_path: Path) -> None:
+    reset_runtime_event_sequences()
+    ledger = _ledger(tmp_path)
+    original = _event("ses_1", 1)
+    changed = copy.deepcopy(original)
+    changed["payload"]["role"] = "user"
+
+    assert ledger.append(original) is True
+    assert ledger.append(changed) is True
+    assert ledger.append(changed) is False
+
+    newest = ledger.newest(limit=10)
+    assert len(newest) == 2
+    assert newest[0]["id"] == original["id"]
+    assert newest[1]["id"].startswith(f"{original['id']}:conflict:")
+    assert newest[1]["payload"]["role"] == "user"
+
+
+def test_ledger_id_survives_reopening_database(tmp_path: Path) -> None:
+    first = _ledger(tmp_path)
+    ledger_id = first.ledger_id
+    assert ledger_id
+    assert first.shutdown() is True
+
+    reopened = _ledger(tmp_path)
+    assert reopened.ledger_id == ledger_id
+    assert reopened.shutdown() is True
+
+
 def test_ledger_keeps_repeated_part_deltas_as_distinct_events(tmp_path: Path) -> None:
     reset_runtime_event_sequences()
     ledger = _ledger(tmp_path)

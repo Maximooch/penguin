@@ -319,7 +319,8 @@ async def test_sse_reports_replay_gap_for_evicted_last_event_id(tmp_path: Path):
         extra = await asyncio.wait_for(replay_stream.__anext__(), timeout=0.05)
     except (asyncio.TimeoutError, StopAsyncIteration):
         extra = None
-    assert extra is None
+    assert extra is not None
+    assert _parse_sse(extra)["type"] == "server.replay_complete"
 
     await replay_stream.aclose()
 
@@ -392,6 +393,10 @@ async def test_sse_reconnect_does_not_duplicate_live_event_already_in_replay(
         await asyncio.wait_for(replay_stream.__anext__(), timeout=0.25)
     )
     assert replayed["id"] == second_event["id"]
+    replay_complete = _parse_sse(
+        await asyncio.wait_for(replay_stream.__anext__(), timeout=0.25)
+    )
+    assert replay_complete["type"] == "server.replay_complete"
 
     await event_bus.emit(
         "opencode_event",
@@ -416,6 +421,46 @@ async def test_sse_reconnect_does_not_duplicate_live_event_already_in_replay(
         assert _parse_sse(duplicate)["id"] != second_event["id"]
 
     await replay_stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sse_reconciles_canonical_status_without_advancing_cursor(
+    tmp_path: Path,
+    monkeypatch,
+):
+    event_bus = _EventBus()
+    runtime = SimpleNamespace(
+        workspace_root=str(tmp_path),
+        project_root=str(tmp_path),
+        active_root=str(tmp_path),
+    )
+    core = SimpleNamespace(
+        event_bus=event_bus,
+        runtime_config=runtime,
+        _opencode_session_directories={},
+    )
+    _install_test_ledger(core, tmp_path)
+    monkeypatch.setattr(
+        "penguin.web.services.session_view.list_session_statuses",
+        lambda _core: {"session_one": {"type": "busy"}},
+    )
+    set_core_instance(core)
+
+    response = await events_sse(
+        session_id="session_one",
+        conversation_id=None,
+        agent_id=None,
+        directory=str(tmp_path),
+    )
+    stream = response.body_iterator
+    connected = _parse_sse(await stream.__anext__())
+    status = _parse_sse(await stream.__anext__())
+
+    assert connected["type"] == "server.connected"
+    assert status["type"] == "session.status"
+    assert status["properties"]["status"] == {"type": "busy"}
+    assert "id" not in status
+    await stream.aclose()
 
 
 @pytest.mark.asyncio

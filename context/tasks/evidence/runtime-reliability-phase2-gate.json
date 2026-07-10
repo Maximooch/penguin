@@ -1,0 +1,36 @@
+{
+  "phase": "phase2",
+  "branch": "fix/runtime-reliability-recovery",
+  "status": "passed",
+  "scope": [
+    "bounded single-writer runtime-event ledger with batched commits, stable ledger identity, conflict preservation, retention, and shutdown barriers",
+    "durable SSE cursor replay, replay-gap controls, pending-delivery semantics, reconnect status hydration, and TUI Last-Event-ID retention",
+    "coalesced atomic session saves with unique temporary files and stale-writer serialization",
+    "read-only busy-heartbeat coalescing and independent read-only tool scheduling characterization"
+  ],
+  "verification": [
+    {
+      "command": "uv run pytest -q tests/api/test_runtime_event_ledger.py tests/api/test_runtime_event_ledger_writer.py tests/api/test_opencode_events_service.py tests/api/test_sse_and_status_scoping.py tests/system/test_session_save_sync.py tests/api/test_concurrent_session_isolation.py tests/system/test_context_lifecycle_records.py tests/system/test_context_borrowing_integration.py tests/system/test_context_autoload.py tests/web/test_runtime_storage.py",
+      "result": "98 passed"
+    },
+    {
+      "command": "uv run pytest -q tests/test_tool_runtime_ir.py::test_scheduler_parallelizes_independent_read_only_calls",
+      "result": "passed"
+    },
+    {
+      "command": "bun run typecheck && bun test test/tui/penguin-event-stream.test.ts test/tui/penguin-send.test.ts",
+      "result": "28 passed; tsgo --noEmit passed"
+    },
+    {
+      "command": "python -m compileall -q <touched Phase 2 Python files>",
+      "result": "passed"
+    }
+  ],
+  "notes": [
+    "No live provider or production port 9000 was used.",
+    "Live event admission is bounded and nonblocking; only the writer thread performs SQLite append, retention, WAL checkpoint, and cleanup work.",
+    "Pending live SSE frames never advance the TUI durable cursor; only replayed committed rows do.",
+    "Identical same-id events remain idempotent; same-id/different-payload events are preserved under deterministic conflict ids.",
+    "CWM v2 history selection, slimming, summarization, retrieval, budgeting, and compaction remain deferred."
+  ]
+}

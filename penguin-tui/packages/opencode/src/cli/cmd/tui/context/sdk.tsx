@@ -51,6 +51,7 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     let timer: Timer | undefined
     let last = 0
     let streamAbort: AbortController | undefined
+    const lastEventIds = new Map<string, string>()
     const auth = { denied: false }
     const [stream, setStream] = createSignal<{
       lastEventAt?: number
@@ -79,6 +80,29 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     const handleEvent = (event: Event) => {
       const now = Date.now()
       if (penguin) {
+        const activeSessionID = sessionID()
+        const eventId =
+          "id" in event && typeof event.id === "string" ? event.id : undefined
+        const delivery =
+          "properties" in event &&
+          event.properties &&
+          typeof event.properties === "object" &&
+          "_penguin_delivery" in event.properties
+            ? event.properties._penguin_delivery
+            : undefined
+        const isPendingDelivery =
+          delivery &&
+          typeof delivery === "object" &&
+          "durability" in delivery &&
+          delivery.durability === "pending"
+        if (
+          activeSessionID &&
+          eventId &&
+          !isPendingDelivery &&
+          !event.type.startsWith("server.")
+        ) {
+          lastEventIds.set(activeSessionID, eventId)
+        }
         setStream((current) => ({
           lastEventAt: now,
           lastProgressAt: isPenguinProgressEvent(event) ? now : current.lastProgressAt,
@@ -115,6 +139,7 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
         directory: props.directory,
         fetch: request,
         sessionID: activeSessionID,
+        lastEventId: activeSessionID ? lastEventIds.get(activeSessionID) : undefined,
         signal: currentStreamAbort.signal,
         isCurrentSession: () => sessionID() === activeSessionID,
         onOpen: () => {

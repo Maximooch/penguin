@@ -174,10 +174,14 @@ def normalize_opencode_event(
     return opencode_payload_from_runtime_event(runtime_event)
 
 
-def sse_event_frame(event: dict[str, Any]) -> str:
+def sse_event_frame(event: dict[str, Any], *, include_id: bool = True) -> str:
     """Serialize a normalized OpenCode event as one SSE frame."""
     event_id = event.get("id")
-    prefix = f"id: {event_id}\n" if isinstance(event_id, str) and event_id else ""
+    prefix = (
+        f"id: {event_id}\n"
+        if include_id and isinstance(event_id, str) and event_id
+        else ""
+    )
     return f"{prefix}data: {json.dumps(event)}\n\n"
 
 
@@ -194,12 +198,29 @@ def record_opencode_event(core: Any, data: dict[str, Any]) -> dict[str, Any] | N
 
     from penguin.system.runtime_event_ledger import get_runtime_event_ledger
 
-    ledger_started = time.perf_counter()
-    get_runtime_event_ledger(core).append(runtime_event)
-    record_runtime_duration(
-        "ledger.append",
-        (time.perf_counter() - ledger_started) * 1000,
-    )
+    coalesced = _coalesce_unchanged_busy_status(core, runtime_event)
+    if coalesced:
+        accepted = False
+        runtime_event = dict(runtime_event)
+        runtime_event["delivery"] = {
+            "durability": "coalesced",
+            "reason": "unchanged_busy_status",
+        }
+    else:
+        ledger_started = time.perf_counter()
+        accepted = get_runtime_event_ledger(core).enqueue(runtime_event)
+        record_runtime_duration(
+            "ledger.enqueue",
+            (time.perf_counter() - ledger_started) * 1000,
+        )
+    if not accepted and not coalesced:
+        # The live event remains deliverable, but durable replay will report a
+        # gap instead of pretending a dropped queue item was committed.
+        runtime_event = dict(runtime_event)
+        runtime_event["delivery"] = {
+            "durability": "rejected",
+            "reason": "ledger_queue_full_or_stopped",
+        }
 
     # Mutate the shared EventBus payload so downstream live subscribers use the
     # same event identity and ordering that was persisted at emission time.
@@ -216,6 +237,40 @@ def record_opencode_event(core: Any, data: dict[str, Any]) -> dict[str, Any] | N
         data["properties"] = projected_properties
     mark_runtime_progress("ui")
     return runtime_event
+
+
+def _coalesce_unchanged_busy_status(
+    core: Any,
+    runtime_event: dict[str, Any],
+) -> bool:
+    """Drop repeated heartbeat snapshots while retaining live delivery."""
+
+    if runtime_event.get("type") != "session.status":
+        return False
+    payload = runtime_event.get("payload")
+    if not isinstance(payload, dict):
+        return False
+    scope = runtime_event.get("scope")
+    session_id = scope.get("session_id") if isinstance(scope, dict) else None
+    key = str(session_id or "global")
+    fingerprints = getattr(core, "_runtime_busy_status_fingerprints", None)
+    if not isinstance(fingerprints, dict):
+        fingerprints = {}
+        setattr(core, "_runtime_busy_status_fingerprints", fingerprints)
+    status = payload.get("status")
+    if not isinstance(status, dict) or status.get("type") != "busy":
+        fingerprints.pop(key, None)
+        return False
+    fingerprint = json.dumps(
+        {"type": runtime_event.get("type"), "payload": payload},
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    if fingerprints.get(key) == fingerprint:
+        return True
+    fingerprints[key] = fingerprint
+    return False
 
 
 async def emit_opencode_event(

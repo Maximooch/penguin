@@ -230,6 +230,13 @@ def create_app() -> "FastAPI":
                 logger.info("Connection pools closed successfully")
             except Exception as e:
                 logger.warning(f"Error closing connection pools: {e}")
+            try:
+                ledger = getattr(runtime_core, "_runtime_event_ledger_v1", None)
+                shutdown_ledger = getattr(ledger, "shutdown", None)
+                if callable(shutdown_ledger):
+                    await asyncio.to_thread(shutdown_ledger)
+            except Exception:
+                logger.warning("Unable to drain runtime event ledger", exc_info=True)
 
     app = FastAPI(
         lifespan=lifespan,

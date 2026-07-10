@@ -11,6 +11,7 @@ export type PenguinEventStreamOptions<T extends PenguinStreamEvent = PenguinStre
   directory?: string
   fetch: typeof fetch
   isCurrentSession?: (sessionID?: string) => boolean
+  lastEventId?: string
   onEvent: (event: T) => void
   onOpen?: () => void
   onUnauthorized?: () => void
@@ -88,6 +89,7 @@ export async function streamPenguinEvents<T extends PenguinStreamEvent = Penguin
     signal: options.signal,
     headers: {
       Accept: "text/event-stream",
+      ...(options.lastEventId ? { "Last-Event-ID": options.lastEventId } : {}),
     },
   })
 

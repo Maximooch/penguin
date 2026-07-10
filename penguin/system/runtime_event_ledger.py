@@ -8,11 +8,14 @@ private diagnostics store.
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
+import queue
 import sqlite3
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -28,6 +31,10 @@ DEFAULT_LEDGER_MAX_EVENTS = 100_000
 DEFAULT_LEDGER_MAX_AGE_DAYS = 14
 DEFAULT_LEDGER_MAX_BYTES = 256 * 1024 * 1024
 DEFAULT_LEDGER_CLEANUP_INTERVAL_SECONDS = 60.0
+DEFAULT_LEDGER_WRITER_QUEUE_MAX_EVENTS = 2048
+DEFAULT_LEDGER_WRITER_BATCH_MAX_EVENTS = 100
+DEFAULT_LEDGER_WRITER_BATCH_MAX_DELAY_SECONDS = 0.05
+DEFAULT_LEDGER_WRITER_SHUTDOWN_TIMEOUT_SECONDS = 2.0
 _RUNTIME_EVENT_LEDGER_ATTR = "_runtime_event_ledger_v1"
 
 
@@ -47,6 +54,14 @@ class RuntimeEventLedgerPolicy:
     max_age_seconds: int | None = DEFAULT_LEDGER_MAX_AGE_DAYS * 24 * 60 * 60
     max_bytes: int | None = DEFAULT_LEDGER_MAX_BYTES
     cleanup_interval_seconds: float = DEFAULT_LEDGER_CLEANUP_INTERVAL_SECONDS
+    writer_queue_max_events: int = DEFAULT_LEDGER_WRITER_QUEUE_MAX_EVENTS
+    writer_batch_max_events: int = DEFAULT_LEDGER_WRITER_BATCH_MAX_EVENTS
+    writer_batch_max_delay_seconds: float = (
+        DEFAULT_LEDGER_WRITER_BATCH_MAX_DELAY_SECONDS
+    )
+    writer_shutdown_timeout_seconds: float = (
+        DEFAULT_LEDGER_WRITER_SHUTDOWN_TIMEOUT_SECONDS
+    )
 
 
 @dataclass(frozen=True)
@@ -64,6 +79,14 @@ class ReplayResult:
     events: list[dict[str, Any]]
     oldest_event_id: str | None = None
     newest_event_id: str | None = None
+
+
+@dataclass(frozen=True)
+class _LedgerQueueItem:
+    """One event or durability barrier owned by the ledger writer."""
+
+    event: Mapping[str, Any] | None = None
+    barrier: threading.Event | None = None
 
 
 def default_ledger_path() -> Path:
@@ -102,6 +125,34 @@ def policy_from_env() -> RuntimeEventLedgerPolicy:
         cleanup_interval_seconds=_env_cleanup_interval_seconds(
             "PENGUIN_RUNTIME_EVENT_LEDGER_CLEANUP_INTERVAL_SECONDS",
             DEFAULT_LEDGER_CLEANUP_INTERVAL_SECONDS,
+        ),
+        writer_queue_max_events=max(
+            1,
+            _env_int(
+                "PENGUIN_RUNTIME_EVENT_LEDGER_WRITER_QUEUE_MAX_EVENTS",
+                DEFAULT_LEDGER_WRITER_QUEUE_MAX_EVENTS,
+            ),
+        ),
+        writer_batch_max_events=max(
+            1,
+            _env_int(
+                "PENGUIN_RUNTIME_EVENT_LEDGER_WRITER_BATCH_MAX_EVENTS",
+                DEFAULT_LEDGER_WRITER_BATCH_MAX_EVENTS,
+            ),
+        ),
+        writer_batch_max_delay_seconds=max(
+            0.001,
+            _env_float(
+                "PENGUIN_RUNTIME_EVENT_LEDGER_WRITER_BATCH_MAX_DELAY_SECONDS",
+                DEFAULT_LEDGER_WRITER_BATCH_MAX_DELAY_SECONDS,
+            ),
+        ),
+        writer_shutdown_timeout_seconds=max(
+            0.1,
+            _env_float(
+                "PENGUIN_RUNTIME_EVENT_LEDGER_WRITER_SHUTDOWN_TIMEOUT_SECONDS",
+                DEFAULT_LEDGER_WRITER_SHUTDOWN_TIMEOUT_SECONDS,
+            ),
         ),
     )
 
@@ -155,6 +206,189 @@ class RuntimeEventLedger:
         self._last_cleanup = 0.0
         self._initialized = False
 
+        self._writer_queue: queue.Queue[_LedgerQueueItem] = queue.Queue(
+            maxsize=max(1, int(self.policy.writer_queue_max_events))
+        )
+        self._writer_state_lock = threading.RLock()
+        self._writer_thread: threading.Thread | None = None
+        self._writer_stop_requested = False
+        self._writer_error: BaseException | None = None
+        self._writer_failed_events = 0
+        self._ledger_id: str | None = None
+
+    def enqueue(self, event: Mapping[str, Any]) -> bool:
+        """Admit an event without waiting on SQLite or filesystem work.
+
+        ``True`` means accepted in memory, not durable. Call :meth:`flush` for
+        a bounded durability barrier. A full queue returns ``False`` so live
+        event delivery cannot turn into an unbounded disk wait.
+        """
+
+        prepared = _prepare_event(event)
+        if prepared is None:
+            return False
+        with self._writer_state_lock:
+            if self._writer_stop_requested:
+                return False
+            self._ensure_writer_started_locked()
+            try:
+                self._writer_queue.put_nowait(_LedgerQueueItem(event=prepared))
+            except queue.Full:
+                return False
+        return True
+
+    def flush(self, timeout_seconds: float | None = None) -> bool:
+        """Wait for all events admitted before this call to be committed."""
+
+        with self._writer_state_lock:
+            if self._writer_thread is None:
+                return self._writer_error is None
+            timeout = (
+                timeout_seconds
+                if timeout_seconds is not None
+                else self.policy.writer_shutdown_timeout_seconds
+            )
+        deadline = time.monotonic() + max(0.0, timeout)
+        barrier = threading.Event()
+        while True:
+            with self._writer_state_lock:
+                try:
+                    self._writer_queue.put_nowait(_LedgerQueueItem(barrier=barrier))
+                    break
+                except queue.Full:
+                    pass
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.01)
+        if not barrier.wait(max(0.0, deadline - time.monotonic())):
+            return False
+        return self._writer_error is None
+
+    def shutdown(
+        self,
+        *,
+        drain: bool = True,
+        timeout_seconds: float | None = None,
+    ) -> bool:
+        """Stop the writer, draining admitted events up to a deadline."""
+
+        with self._writer_state_lock:
+            thread = self._writer_thread
+            if thread is None:
+                return self._writer_error is None
+            self._writer_stop_requested = True
+            if not drain:
+                while True:
+                    try:
+                        self._writer_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    self._writer_queue.task_done()
+        timeout = (
+            timeout_seconds
+            if timeout_seconds is not None
+            else self.policy.writer_shutdown_timeout_seconds
+        )
+        thread.join(max(0.0, timeout))
+        stopped = not thread.is_alive()
+        if stopped:
+            with self._writer_state_lock:
+                self._writer_thread = None
+                self._writer_stop_requested = False
+        return stopped and self._writer_error is None
+
+    @property
+    def pending_count(self) -> int:
+        """Return the number of events/barriers waiting in the writer queue."""
+
+        return self._writer_queue.qsize()
+
+    @property
+    def writer_failed_events(self) -> int:
+        """Return the number of admitted events lost to a writer failure."""
+
+        with self._writer_state_lock:
+            return self._writer_failed_events
+
+    @property
+    def ledger_id(self) -> str:
+        """Return the stable identifier for this on-disk ledger."""
+
+        with self._lock:
+            conn = self._thread_connection()
+            self._ensure_schema(conn)
+            return self._ledger_id or "unknown"
+
+    def _ensure_writer_started_locked(self) -> None:
+        if self._writer_thread is not None and self._writer_thread.is_alive():
+            return
+        self._writer_stop_requested = False
+        self._writer_thread = threading.Thread(
+            target=self._writer_loop,
+            name="penguin-runtime-event-ledger",
+            daemon=True,
+        )
+        self._writer_thread.start()
+
+    def _writer_loop(self) -> None:
+        while True:
+            try:
+                first = self._writer_queue.get(
+                    timeout=self.policy.writer_batch_max_delay_seconds
+                )
+            except queue.Empty:
+                if self._writer_stop_requested and self._writer_queue.empty():
+                    return
+                continue
+
+            items = [first]
+            deadline = time.monotonic() + self.policy.writer_batch_max_delay_seconds
+            while len(items) < max(1, self.policy.writer_batch_max_events):
+                remaining = max(0.0, deadline - time.monotonic())
+                if remaining == 0:
+                    break
+                try:
+                    items.append(self._writer_queue.get(timeout=remaining))
+                except queue.Empty:
+                    break
+
+            events = [item.event for item in items if item.event is not None]
+            failed = False
+            if events:
+                try:
+                    with self._lock:
+                        self._append_batch(events)
+                except BaseException as exc:
+                    failed = True
+                    with self._writer_state_lock:
+                        self._writer_error = exc
+                        self._writer_failed_events += len(events)
+                        self._writer_stop_requested = True
+                finally:
+                    for item in items:
+                        self._writer_queue.task_done()
+            else:
+                for item in items:
+                    self._writer_queue.task_done()
+
+            for item in items:
+                if item.barrier is not None:
+                    item.barrier.set()
+
+            if failed:
+                while True:
+                    try:
+                        discarded = self._writer_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    self._writer_queue.task_done()
+                    if discarded.barrier is not None:
+                        discarded.barrier.set()
+                return
+
+            if self._writer_stop_requested and self._writer_queue.empty():
+                return
+
     def append(self, event: Mapping[str, Any]) -> bool:
         """Persist a redacted public RuntimeEvent envelope.
 
@@ -165,114 +399,10 @@ class RuntimeEventLedger:
             True when a new row was inserted. False when the event is invalid,
             unsafe to persist, or already present.
         """
-        event_id = event.get("id")
-        if not isinstance(event_id, str) or not event_id:
+        if _prepare_event(event) is None:
             return False
-        if not _looks_like_public_runtime_event(event):
-            return False
-
-        scope = event.get("scope")
-        if not isinstance(scope, Mapping):
-            scope = {}
-        privacy = event.get("privacy")
-        if not isinstance(privacy, Mapping):
-            privacy = {}
-        payload = event.get("payload")
-        projections = event.get("projections")
-        serialization_started = time.perf_counter()
-        payload_json = _json_dump(payload if isinstance(payload, Mapping) else {})
-        projection_json = _json_dump(
-            projections if isinstance(projections, Mapping) else {}
-        )
-        event_json = _json_dump(dict(event))
-        record_runtime_duration(
-            "ledger.serialize",
-            (time.perf_counter() - serialization_started) * 1000,
-        )
-
         with self._lock:
-            connection_started = time.perf_counter()
-            conn = self._thread_connection()
-            record_runtime_duration(
-                "ledger.connection",
-                (time.perf_counter() - connection_started) * 1000,
-            )
-            try:
-                schema_started = time.perf_counter()
-                self._ensure_schema(conn)
-                record_runtime_duration(
-                    "ledger.schema",
-                    (time.perf_counter() - schema_started) * 1000,
-                )
-                before_changes = conn.total_changes
-                insert_started = time.perf_counter()
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO runtime_events (
-                        event_id,
-                        stream_id,
-                        sequence,
-                        event_type,
-                        category,
-                        event_time,
-                        inserted_at,
-                        session_id,
-                        conversation_id,
-                        agent_id,
-                        task_id,
-                        run_id,
-                        project_id,
-                        directory,
-                        privacy_classification,
-                        redacted,
-                        payload_json,
-                        projection_json,
-                        event_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        event_id,
-                        _string_or_none(event.get("stream_id")) or "global",
-                        _positive_int_or_zero(event.get("sequence")),
-                        _string_or_none(event.get("type")) or "unknown",
-                        _string_or_none(event.get("category")) or "session_lifecycle",
-                        _positive_int_or_zero(event.get("time")),
-                        int(time.time() * 1000),
-                        _string_or_none(scope.get("session_id")),
-                        _string_or_none(scope.get("conversation_id")),
-                        _string_or_none(scope.get("agent_id")),
-                        _string_or_none(scope.get("task_id")),
-                        _string_or_none(scope.get("run_id")),
-                        _string_or_none(scope.get("project_id")),
-                        _string_or_none(scope.get("directory")),
-                        _string_or_none(privacy.get("classification")) or "public",
-                        1 if privacy.get("redacted") else 0,
-                        payload_json,
-                        projection_json,
-                        event_json,
-                    ),
-                )
-                record_runtime_duration(
-                    "ledger.insert",
-                    (time.perf_counter() - insert_started) * 1000,
-                )
-                inserted = conn.total_changes > before_changes
-                cleanup_started = time.perf_counter()
-                self.cleanup_if_due(conn=conn)
-                record_runtime_duration(
-                    "ledger.cleanup",
-                    (time.perf_counter() - cleanup_started) * 1000,
-                )
-                commit_started = time.perf_counter()
-                conn.commit()
-                record_runtime_duration(
-                    "ledger.commit",
-                    (time.perf_counter() - commit_started) * 1000,
-                )
-                return inserted
-            except Exception:
-                conn.rollback()
-                raise
+            return self._append_batch([event]) > 0
 
     def extend(self, events: Iterable[Mapping[str, Any]]) -> int:
         """Persist multiple redacted public RuntimeEvent envelopes.
@@ -283,11 +413,110 @@ class RuntimeEventLedger:
         Returns:
             Number of rows inserted into the ledger.
         """
-        accepted = 0
-        for event in events:
-            if self.append(event):
-                accepted += 1
-        return accepted
+        prepared = [event for event in events if _prepare_event(event) is not None]
+        if not prepared:
+            return 0
+        with self._lock:
+            return self._append_batch(prepared)
+
+    def _append_batch(self, events: Iterable[Mapping[str, Any]]) -> int:
+        """Persist one event batch in one transaction."""
+
+        prepared_events = [
+            prepared
+            for event in events
+            if (prepared := _prepare_event(event)) is not None
+        ]
+        if not prepared_events:
+            return 0
+
+        connection_started = time.perf_counter()
+        conn = self._thread_connection()
+        record_runtime_duration(
+            "ledger.connection",
+            (time.perf_counter() - connection_started) * 1000,
+        )
+        try:
+            schema_started = time.perf_counter()
+            self._ensure_schema(conn)
+            record_runtime_duration(
+                "ledger.schema",
+                (time.perf_counter() - schema_started) * 1000,
+            )
+            inserted = 0
+            insert_started = time.perf_counter()
+            for event in prepared_events:
+                event_to_insert = event
+                event_json = _json_dump(event)
+                existing = conn.execute(
+                    "SELECT event_json FROM runtime_events WHERE event_id = ? LIMIT 1",
+                    (event["id"],),
+                ).fetchone()
+                if existing is not None:
+                    if existing["event_json"] == event_json:
+                        continue
+                    event_to_insert = _conflict_event(event, event_json, conn)
+                    if event_to_insert is None:
+                        continue
+
+                scope = event_to_insert.get("scope")
+                scope = scope if isinstance(scope, Mapping) else {}
+                privacy = event_to_insert.get("privacy")
+                privacy = privacy if isinstance(privacy, Mapping) else {}
+                before_changes = conn.total_changes
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO runtime_events (
+                        event_id, stream_id, sequence, event_type, category,
+                        event_time, inserted_at, session_id, conversation_id,
+                        agent_id, task_id, run_id, project_id, directory,
+                        privacy_classification, redacted, payload_json,
+                        projection_json, event_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        event_to_insert["id"],
+                        _string_or_none(event_to_insert.get("stream_id")) or "global",
+                        _positive_int_or_zero(event_to_insert.get("sequence")),
+                        _string_or_none(event_to_insert.get("type")) or "unknown",
+                        _string_or_none(event_to_insert.get("category")) or "session_lifecycle",
+                        _positive_int_or_zero(event_to_insert.get("time")),
+                        int(time.time() * 1000),
+                        _string_or_none(scope.get("session_id")),
+                        _string_or_none(scope.get("conversation_id")),
+                        _string_or_none(scope.get("agent_id")),
+                        _string_or_none(scope.get("task_id")),
+                        _string_or_none(scope.get("run_id")),
+                        _string_or_none(scope.get("project_id")),
+                        _string_or_none(scope.get("directory")),
+                        _string_or_none(privacy.get("classification")) or "public",
+                        1 if privacy.get("redacted") else 0,
+                        _json_dump(event_to_insert.get("payload", {})),
+                        _json_dump(event_to_insert.get("projections", {})),
+                        _json_dump(event_to_insert),
+                    ),
+                )
+                inserted += int(conn.total_changes > before_changes)
+            record_runtime_duration(
+                "ledger.insert",
+                (time.perf_counter() - insert_started) * 1000,
+            )
+            cleanup_started = time.perf_counter()
+            self.cleanup_if_due(conn=conn)
+            record_runtime_duration(
+                "ledger.cleanup",
+                (time.perf_counter() - cleanup_started) * 1000,
+            )
+            commit_started = time.perf_counter()
+            conn.commit()
+            record_runtime_duration(
+                "ledger.commit",
+                (time.perf_counter() - commit_started) * 1000,
+            )
+            return inserted
+        except Exception:
+            conn.rollback()
+            raise
 
     def contains(self, event_id: str) -> bool:
         """Return whether an event id exists in the ledger.
@@ -298,6 +527,7 @@ class RuntimeEventLedger:
         Returns:
             True when the event id is currently retained.
         """
+        self.flush()
         with self._lock:
             conn = self._connect()
             try:
@@ -335,6 +565,7 @@ class RuntimeEventLedger:
         if not isinstance(last_event_id, str) or not last_event_id:
             return ReplayResult(found=False, events=[], **self.bounds())
 
+        self.flush()
         with self._lock:
             conn = self._connect()
             try:
@@ -387,6 +618,7 @@ class RuntimeEventLedger:
             Retained RuntimeEvent envelopes ordered oldest-to-newest within the
             selected newest slice.
         """
+        self.flush()
         with self._lock:
             conn = self._connect()
             try:
@@ -419,6 +651,7 @@ class RuntimeEventLedger:
         """
         owns_connection = conn is None
         if conn is None:
+            self.flush()
             conn = self._connect()
         try:
             self._ensure_schema(conn)
@@ -595,6 +828,21 @@ class RuntimeEventLedger:
             return
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS ledger_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO ledger_meta (key, value)
+            VALUES ('ledger_id', ?)
+            """,
+            (uuid.uuid4().hex,),
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS runtime_events (
                 event_id TEXT PRIMARY KEY,
                 stream_id TEXT NOT NULL,
@@ -636,11 +884,59 @@ class RuntimeEventLedger:
             ON runtime_events(event_time)
             """
         )
+        ledger_row = conn.execute(
+            "SELECT value FROM ledger_meta WHERE key = 'ledger_id'"
+        ).fetchone()
+        if ledger_row is not None:
+            self._ledger_id = str(ledger_row["value"])
         conn.commit()
         self._initialized = True
 
 
 _PROCESS_LEDGER: RuntimeEventLedger | None = None
+
+
+def _prepare_event(event: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Validate and copy one event before queueing or writing it."""
+
+    event_id = event.get("id")
+    if not isinstance(event_id, str) or not event_id:
+        return None
+    if not _looks_like_public_runtime_event(event):
+        return None
+    return dict(event)
+
+
+def _conflict_event(
+    event: Mapping[str, Any],
+    event_json: str,
+    conn: sqlite3.Connection,
+) -> dict[str, Any] | None:
+    """Return a deterministic id for a same-id/different-payload event.
+
+    A process restart or provider retry can re-use a source id with changed
+    content. ``INSERT OR IGNORE`` would silently discard that content, so keep
+    the original id and preserve the conflicting envelope under a stable
+    derived id. Repeating the same conflict remains idempotent.
+    """
+
+    base_id = f"{event['id']}:conflict:{hashlib.sha256(event_json.encode()).hexdigest()[:16]}"
+    candidate = base_id
+    suffix = 1
+    while True:
+        conflict = dict(event)
+        conflict["id"] = candidate
+        conflict_json = _json_dump(conflict)
+        existing = conn.execute(
+            "SELECT event_json FROM runtime_events WHERE event_id = ? LIMIT 1",
+            (candidate,),
+        ).fetchone()
+        if existing is None:
+            return conflict
+        if existing["event_json"] == conflict_json:
+            return None
+        candidate = f"{base_id}:{suffix}"
+        suffix += 1
 
 
 def _looks_like_public_runtime_event(event: Mapping[str, Any]) -> bool:
@@ -715,6 +1011,16 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
 def _env_optional_int(name: str, default: int | None) -> int | None:
     raw = os.getenv(name)
     if raw is None or raw == "":
@@ -757,6 +1063,10 @@ __all__ = [
     "DEFAULT_LEDGER_MAX_AGE_DAYS",
     "DEFAULT_LEDGER_MAX_BYTES",
     "DEFAULT_LEDGER_MAX_EVENTS",
+    "DEFAULT_LEDGER_WRITER_BATCH_MAX_DELAY_SECONDS",
+    "DEFAULT_LEDGER_WRITER_BATCH_MAX_EVENTS",
+    "DEFAULT_LEDGER_WRITER_QUEUE_MAX_EVENTS",
+    "DEFAULT_LEDGER_WRITER_SHUTDOWN_TIMEOUT_SECONDS",
     "ReplayResult",
     "RuntimeEventLedger",
     "RuntimeEventLedgerPolicy",
