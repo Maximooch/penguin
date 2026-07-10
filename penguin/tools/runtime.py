@@ -14,6 +14,7 @@ import hashlib
 import inspect
 import json
 import logging
+import os
 import shlex
 import time
 import uuid
@@ -45,6 +46,8 @@ ToolResource = str
 TOOL_RECORD_OUTPUT_PREVIEW_CHARS = 500
 TOOL_RECORD_ARGUMENT_PREVIEW_CHARS = 500
 DEFAULT_TOOL_MODEL_OUTPUT_MAX_CHARS = 24_000
+DEFAULT_TOOL_ARTIFACT_MAX_BYTES = 512 * 1024 * 1024
+DEFAULT_TOOL_ARTIFACT_MAX_FILES = 2_048
 ORDERED_TOOL_BATCH_NAME = "ordered_tool_batch"
 ORDERED_TOOL_BATCH_REJECTED_NAMES = frozenset(
     {
@@ -494,13 +497,17 @@ def prepare_model_visible_tool_output(
         )
 
     artifact_path: Optional[str] = None
+    artifact_reason: Optional[str] = None
     safe_id = _safe_artifact_id(artifact_id, output_hash)
     if artifact_dir is not None:
         directory = Path(artifact_dir)
         directory.mkdir(parents=True, exist_ok=True)
-        path = directory / f"tool-output-{safe_id}.txt"
-        path.write_text(full_output, encoding="utf-8")
-        artifact_path = str(path)
+        if _artifact_quota_allows(directory, byte_count):
+            path = directory / f"tool-output-{safe_id}.txt"
+            path.write_text(full_output, encoding="utf-8")
+            artifact_path = str(path)
+        else:
+            artifact_reason = "artifact_quota_exceeded"
 
     effective_max = max(int(max_chars), 0)
     notice_parts = [
@@ -511,6 +518,8 @@ def prepare_model_visible_tool_output(
     ]
     if artifact_path:
         notice_parts.append(f"artifact={artifact_path}")
+    elif artifact_reason:
+        notice_parts.append(f"artifact=not_saved reason={artifact_reason}")
     notice = "\n\n[" + " ".join(notice_parts) + "]"
     preview_budget = max(effective_max - len(notice), 0)
     preview = _truncate_output_preview(
@@ -535,6 +544,37 @@ def prepare_model_visible_tool_output(
         artifact_id=safe_id,
         max_chars=max_chars,
     )
+
+
+def _artifact_quota_allows(directory: Path, additional_bytes: int) -> bool:
+    """Apply a non-destructive file/byte admission limit to tool artifacts."""
+
+    max_bytes = _nonnegative_env_int(
+        "PENGUIN_TOOL_ARTIFACT_MAX_BYTES",
+        DEFAULT_TOOL_ARTIFACT_MAX_BYTES,
+    )
+    max_files = _nonnegative_env_int(
+        "PENGUIN_TOOL_ARTIFACT_MAX_FILES",
+        DEFAULT_TOOL_ARTIFACT_MAX_FILES,
+    )
+    existing_files = list(directory.glob("tool-output-*.txt"))
+    if len(existing_files) >= max_files:
+        return False
+    existing_bytes = 0
+    for path in existing_files:
+        try:
+            existing_bytes += path.stat().st_size
+        except OSError:
+            continue
+    return existing_bytes + max(0, int(additional_bytes)) <= max_bytes
+
+
+def _nonnegative_env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    try:
+        return max(0, int(raw)) if raw is not None else default
+    except (TypeError, ValueError):
+        return default
 
 
 def _stable_json(value: Any) -> str:
@@ -766,7 +806,9 @@ def _ordered_child_name(item: dict[str, Any]) -> tuple[str, Optional[str]]:
     return name, None
 
 
-def _ordered_child_arguments(item: dict[str, Any]) -> tuple[dict[str, Any], Optional[str]]:
+def _ordered_child_arguments(
+    item: dict[str, Any],
+) -> tuple[dict[str, Any], Optional[str]]:
     """Return one child argument object from a batch item or an error string."""
 
     sentinel = object()
@@ -921,9 +963,7 @@ def ordered_tool_batch_result_from_results(
     child_summaries: list[dict[str, Any]] = []
     for index, result in enumerate(child_results):
         duration_ms = max((result.ended_at - result.started_at) * 1000, 0.0)
-        source_call = (
-            plan.tool_calls[index] if index < len(plan.tool_calls) else None
-        )
+        source_call = plan.tool_calls[index] if index < len(plan.tool_calls) else None
         child_summaries.append(
             {
                 "call_id": result.call_id,
@@ -942,7 +982,9 @@ def ordered_tool_batch_result_from_results(
                 ),
             }
         )
-    failed = [summary for summary in child_summaries if summary["status"] != "completed"]
+    failed = [
+        summary for summary in child_summaries if summary["status"] != "completed"
+    ]
     status: ToolResultStatus = "error" if failed else "completed"
     completed_count = len(child_summaries) - len(failed)
     output_lines = [
@@ -1888,6 +1930,8 @@ def legacy_action_result_from_tool_result(tool_result: ToolResult) -> dict[str, 
 
 
 __all__ = [
+    "DEFAULT_TOOL_ARTIFACT_MAX_BYTES",
+    "DEFAULT_TOOL_ARTIFACT_MAX_FILES",
     "ToolArguments",
     "DEFAULT_TOOL_MODEL_OUTPUT_MAX_CHARS",
     "ToolEffect",

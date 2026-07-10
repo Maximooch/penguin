@@ -297,6 +297,13 @@ workspace, conversations, checkpoints, logs, tool artifacts, auth/credential cac
 and runtime-event ledger; a different port alone does not isolate those files. Use
 `--debug` for reload mode and `--describe` to inspect paths without starting a server.
 
+Truncated tool output is retained as a bounded artifact when a tool-result directory
+is configured. The default admission limit is 2,048 files or 512 MiB per artifact
+directory; deployments can lower or raise those limits with
+`PENGUIN_TOOL_ARTIFACT_MAX_FILES` and `PENGUIN_TOOL_ARTIFACT_MAX_BYTES`. When the
+limit is reached, Penguin keeps the bounded model preview and records the output
+hash/size without writing another artifact.
+
 ---
 
 ## Known Limitations

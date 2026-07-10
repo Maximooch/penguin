@@ -15,6 +15,9 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+MAX_PERSISTED_LLM_REQUEST_LIFECYCLES = 256
+MAX_PERSISTED_TOOL_RECORDS = 512
+
 
 def _default_session_id() -> str:
     """Create Penguin's timestamped session id."""
@@ -233,6 +236,9 @@ class Session:
                 if str(existing_record.get("request_id") or "").strip() != request_id
             ]
         self.llm_request_lifecycles.append(record)
+        self.llm_request_lifecycles = self.llm_request_lifecycles[
+            -MAX_PERSISTED_LLM_REQUEST_LIFECYCLES:
+        ]
         self.last_active = datetime.now().isoformat()
         self.metadata["llm_request_lifecycle_count"] = len(self.llm_request_lifecycles)
 
@@ -274,7 +280,7 @@ class Session:
                 merged_records.append(existing)
         if not replaced:
             merged_records.append(record)
-        return merged_records
+        return merged_records[-MAX_PERSISTED_TOOL_RECORDS:]
 
     def add_tool_call_record(self, record: Any) -> None:
         """Persist or update one lightweight tool-call record."""
@@ -330,17 +336,17 @@ class Session:
         session.messages = [Message.from_dict(msg) for msg in messages_data]
         session.llm_request_lifecycles = [
             dict(record) for record in lifecycles_data if isinstance(record, dict)
-        ]
+        ][-MAX_PERSISTED_LLM_REQUEST_LIFECYCLES:]
         session.tool_call_records = [
             dict(record)
             for record in tool_call_records_data
             if isinstance(record, dict)
-        ]
+        ][-MAX_PERSISTED_TOOL_RECORDS:]
         session.tool_result_records = [
             dict(record)
             for record in tool_result_records_data
             if isinstance(record, dict)
-        ]
+        ][-MAX_PERSISTED_TOOL_RECORDS:]
         return session
 
     def to_json(self) -> str:

@@ -196,7 +196,8 @@ working notes; these constraints remain open until Phase 2 lands.
 - [x] Bound connection history and include replay decisions in debug exports.
 - [x] Bound OpenCode transcript metadata and store full tool output once with artifact
   references through the existing canonical tool-result record path; migration of
-  legacy duplicated output remains an explicit follow-up fixture.
+  legacy duplicated output remains an explicit follow-up fixture. Diagnostic
+  lifecycle/tool-record lists are capped at load and append boundaries.
 - [x] Coalesce durable saves; serialize each session's writes with unique temp files,
   atomic replacement, and protection from autosave/request-save stale writers.
 - [x] Avoid repeated global index rewrites for unchanged saves.
@@ -299,24 +300,24 @@ its own branch and PR.
 
 #### Program exit criteria
 
-- [ ] No backend worker/provider path can wait or error-loop without a bound.
-- [ ] `no events` becomes a truthful stalled/degraded state with bounded visible
+- [x] No backend worker/provider path can wait or error-loop without a bound.
+- [x] `no events` becomes a truthful stalled/degraded state with bounded visible
   recovery; all non-completed reasons remain visible to the TUI.
-- [ ] 8080 verification cannot read as active state, lock, mutate, or contend with
+- [x] 8080 verification cannot read as active state, lock, mutate, or contend with
   9000 production runtime storage.
-- [ ] Checkpoint, ledger, transcript, session, backup, artifact, and log growth are
+- [x] Checkpoint, ledger, transcript, session, backup, artifact, and log growth are
   bounded; disk safety prevents another `ENOSPC` cascade.
-- [ ] Live UI delivery does not synchronously wait on per-event commits or large
+- [x] Live UI delivery does not synchronously wait on per-event commits or large
   session rewrites; local overhead is separately measured.
-- [ ] Durable cursor replay, canonical reconnect status, serialized atomic saves, and
+- [x] Durable cursor replay, canonical reconnect status, serialized atomic saves, and
   canonical tool output pass concurrency/stress tests.
-- [ ] Native tool adjacency survives trimming/replay/provider sanitation.
-- [ ] Tool concurrency safety, iteration continuation, prompt cache affinity, prompt
+- [x] Native tool adjacency survives trimming/replay/provider sanitation.
+- [x] Tool concurrency safety, iteration continuation, prompt cache affinity, prompt
   modes, stable-prefix/active-turn composition, and full request accounting are
   implemented and verified.
-- [ ] Public docs describe shipped runtime truth; focused fault/concurrency/TUI/stress
+- [x] Public docs describe shipped runtime truth; focused fault/concurrency/TUI/stress
   tests, relevant Bun suites, Ruff/format, and core pytest verification pass.
-- [ ] Record before/after evidence, commands, storage behavior, residual risks, and
+- [x] Record before/after evidence, commands, storage behavior, residual risks, and
   the executable CWM v2 handoff before completing the goal.
 
 ### PR: CLI Workspace Semantics and Ergonomics

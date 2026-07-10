@@ -14,8 +14,8 @@ from penguin.tools.runtime import (
     hash_tool_output,
     legacy_action_result_from_tool_result,
     prepare_model_visible_tool_output,
-    tool_result_with_model_output_policy,
     tool_result_from_action_result,
+    tool_result_with_model_output_policy,
 )
 
 
@@ -73,6 +73,26 @@ def test_model_visible_tool_output_handles_tiny_budget(tmp_path: Path) -> None:
     assert view.artifact_path is not None
     assert Path(view.artifact_path).name.startswith("tool-output-")
     assert Path(view.artifact_path).read_text(encoding="utf-8") == "x" * 100
+
+
+def test_model_visible_tool_output_skips_artifact_when_quota_is_exhausted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PENGUIN_TOOL_ARTIFACT_MAX_FILES", "0")
+
+    view = prepare_model_visible_tool_output(
+        "x" * 500,
+        max_chars=180,
+        artifact_dir=tmp_path,
+        artifact_id="quota",
+    )
+
+    assert view.truncated is True
+    assert view.artifact_path is None
+    assert "artifact=not_saved" in view.model_output
+    assert "artifact_quota_exceeded" in view.model_output
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_tool_result_records_output_metadata() -> None:
