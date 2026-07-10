@@ -10,6 +10,7 @@ Branch: `fix/runtime-reliability-recovery`
 - `bf65effc3` — Phase 3 safe tool scheduling, request accounting, and prompt cache affinity
 - `1b84ff956` — Phase 3.5 mode-aware prompts and active-turn envelope/CWM handoff
 - `bd49ea411` — Typer-compatible CLI regression assertions
+- `71f8a5e7b` — bounded session diagnostics and tool-artifact admission
 
 ## Verification
 
