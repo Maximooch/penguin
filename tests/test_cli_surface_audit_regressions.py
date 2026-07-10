@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import click
 from click.testing import CliRunner
 import pytest
+import typer
 
 from penguin.cli.event_manager import EventManager
 from penguin.cli.interface import PenguinInterface
@@ -265,7 +266,7 @@ def test_task_list_accepts_uppercase_status_filter_and_shows_real_options():
     with patch.object(cli_module, "_initialize_core_components_globally", AsyncMock()), patch.object(
         cli_module, "_core", core
     ), patch.object(cli_module, "console") as console_mock:
-        with pytest.raises(click.exceptions.Exit):
+        with pytest.raises(typer.Exit):
             cli_module.task_list(project_id=None, status="not-a-status")
 
     printed = " ".join(str(call.args[0]) for call in console_mock.print.call_args_list if call.args)
@@ -605,7 +606,7 @@ def test_project_start_fails_when_no_ready_tasks():
     )
 
     with patch.object(cli_module, "_initialize_core_components_globally", AsyncMock()),          patch.object(cli_module, "_core", core),          patch.object(cli_module, "console") as console_mock:
-        with pytest.raises(click.exceptions.Exit):
+        with pytest.raises(typer.Exit):
             cli_module.project_start("project-1", continuous=True, time_limit=None)
 
     printed = " ".join(str(call.args[0]) for call in console_mock.print.call_args_list if call.args)
