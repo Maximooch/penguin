@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
+from penguin.system.runtime_diagnostics import (
+    mark_runtime_progress,
+    record_runtime_duration,
+)
 from penguin.system.runtime_events import (
     opencode_payload_from_runtime_event,
     runtime_event_from_opencode,
@@ -178,13 +183,23 @@ def sse_event_frame(event: dict[str, Any]) -> str:
 
 def record_opencode_event(core: Any, data: dict[str, Any]) -> dict[str, Any] | None:
     """Persist an OpenCode event's RuntimeEvent envelope and return it."""
+    projection_started = time.perf_counter()
     runtime_event = runtime_event_from_opencode(data)
+    record_runtime_duration(
+        "event.projection",
+        (time.perf_counter() - projection_started) * 1000,
+    )
     if runtime_event is None:
         return None
 
     from penguin.system.runtime_event_ledger import get_runtime_event_ledger
 
+    ledger_started = time.perf_counter()
     get_runtime_event_ledger(core).append(runtime_event)
+    record_runtime_duration(
+        "ledger.append",
+        (time.perf_counter() - ledger_started) * 1000,
+    )
 
     # Mutate the shared EventBus payload so downstream live subscribers use the
     # same event identity and ordering that was persisted at emission time.
@@ -199,6 +214,7 @@ def record_opencode_event(core: Any, data: dict[str, Any]) -> dict[str, Any] | N
     projected_properties = projected.get("properties")
     if isinstance(projected_properties, dict):
         data["properties"] = projected_properties
+    mark_runtime_progress("ui")
     return runtime_event
 
 

@@ -62,6 +62,12 @@ from penguin.web.services.command_registry import list_opencode_commands
 from penguin.web.services.notification_settings import notification_settings_payload
 from penguin.web.services.opencode_events import schedule_opencode_event
 from penguin.system.runtime_events import wrap_opencode_event
+from penguin.system.runtime_diagnostics import (
+    RuntimeDiagnosticsRecorder,
+    get_runtime_diagnostics_history,
+    runtime_diagnostics_scope,
+    store_runtime_diagnostics,
+)
 from penguin.web.services.conversations import (
     create_conversation_payload,
     get_conversation_payload,
@@ -752,16 +758,10 @@ def _request_log_info(message: str, *args: Any) -> None:
 
 def _request_log_debug(message: str, *args: Any) -> None:
     """Log verbose request-level traces via app and uvicorn logger."""
-    logger.info(message, *args)
+    logger.debug(message, *args)
     uvicorn_logger = logging.getLogger("uvicorn.error")
     if uvicorn_logger is not logger:
-        uvicorn_logger.info(message, *args)
-
-
-def _preview_text(value: Any, limit: int = 120) -> str:
-    text = value if isinstance(value, str) else str(value)
-    text = text.replace("\n", "\\n")
-    return text[:limit] + ("..." if len(text) > limit else "")
+        uvicorn_logger.debug(message, *args)
 
 
 _AUTO_TITLE_MAX_USER_PROMPTS = 3
@@ -3927,6 +3927,7 @@ async def handle_chat_message(
     request: MessageRequest, core: PenguinCore = Depends(get_core)
 ):
     """Process a chat message, with optional conversation support."""
+    route_started = time.perf_counter()
     temp_image_files: List[str] = []
     request_session_id: Optional[str] = None
     request_task: Optional[asyncio.Task[Any]] = None
@@ -3934,6 +3935,9 @@ async def handle_chat_message(
     reasoning_variant_snapshot: Optional[Dict[str, Any]] = None
     request_model_config: Optional[Any] = None
     request_api_client: Optional[Any] = None
+    runtime_diagnostics: Optional[RuntimeDiagnosticsRecorder] = None
+    runtime_diagnostics_stored = False
+    terminal_status: Optional[str] = None
     try:
         _setup_approval_websocket_callbacks()
         _setup_question_event_callbacks()
@@ -4048,8 +4052,18 @@ async def handle_chat_message(
             agent_mode=resolved_agent_mode,
             directory=bound_directory or request.directory,
         )
+        runtime_diagnostics = RuntimeDiagnosticsRecorder(
+            request_id=execution_context.request_id or "unknown",
+            session_id=request_session_id,
+        )
+        runtime_diagnostics.record_duration(
+            "request.preprocess",
+            (time.perf_counter() - route_started) * 1000,
+        )
+        runtime_diagnostics.mark_progress("runtime")
         _request_log_debug(
-            "chat.trace.start request=%s session=%s agent=%s mode=%s dir=%s model=%s streaming=%s client_msg=%s prompt=%r",
+            "chat.trace.start request=%s session=%s agent=%s mode=%s dir=%s "
+            "model=%s streaming=%s client_msg=%s prompt_chars=%s",
             execution_context.request_id or "unknown",
             request_session_id or "unknown",
             request.agent_id or "default",
@@ -4058,7 +4072,7 @@ async def handle_chat_message(
             request.model or "",
             bool(request.streaming),
             request.client_message_id or "",
-            _preview_text(request.text),
+            len(request.text or ""),
         )
 
         requested_model = (
@@ -4186,7 +4200,9 @@ async def handle_chat_message(
             )
 
         # Process the message with all available options
-        with execution_context_scope(execution_context):
+        with execution_context_scope(execution_context), runtime_diagnostics_scope(
+            runtime_diagnostics
+        ):
             request_gate = _get_session_request_gate(core, request_session_id)
             gate_locked_before = request_gate.locked()
             gate_wait_started = time.perf_counter()
@@ -4211,6 +4227,7 @@ async def handle_chat_message(
             )
             async with request_gate:
                 gate_wait_ms = (time.perf_counter() - gate_wait_started) * 1000
+                runtime_diagnostics.record_duration("request.gate_wait", gate_wait_ms)
                 _request_log_debug(
                     "chat.trace.gate_acquired request=%s session=%s gate=%s wait_ms=%.2f tracked=%s",
                     execution_context.request_id or "unknown",
@@ -4233,8 +4250,12 @@ async def handle_chat_message(
                     model_config_override=request_model_config,
                 )
                 process_ms = (time.perf_counter() - process_started) * 1000
+                runtime_diagnostics.record_duration("request.process", process_ms)
+                runtime_diagnostics.mark_progress("runtime")
             _request_log_debug(
-                "chat.trace.after_process request=%s session=%s status=%s iterations=%s response_len=%s actions=%s usage=%s process_ms=%.2f preview=%r",
+                "chat.trace.after_process request=%s session=%s status=%s "
+                "iterations=%s response_len=%s actions=%s usage=%s "
+                "process_ms=%.2f",
                 execution_context.request_id or "unknown",
                 request_session_id or "unknown",
                 process_result.get("status"),
@@ -4243,7 +4264,6 @@ async def handle_chat_message(
                 len(process_result.get("action_results", []) or []),
                 process_result.get("usage") or {},
                 process_ms,
-                _preview_text(process_result.get("assistant_response", "")),
             )
 
         # Build response
@@ -4262,6 +4282,7 @@ async def handle_chat_message(
             "aborted": bool(process_result.get("aborted")),
             "status": process_result.get("status"),
         }
+        terminal_status = str(process_result.get("status") or "completed")
         if "recoverable" in process_result:
             resp["recoverable"] = bool(process_result.get("recoverable"))
         if isinstance(process_result.get("error"), dict):
@@ -4311,16 +4332,17 @@ async def handle_chat_message(
         if reasoning_note:
             resp["reasoning_note"] = reasoning_note
         _request_log_debug(
-            "chat.trace.response request=%s session=%s response_len=%s reasoning_len=%s aborted=%s preview=%r",
+            "chat.trace.response request=%s session=%s response_len=%s "
+            "reasoning_len=%s aborted=%s",
             execution_context.request_id or "unknown",
             request_session_id or "unknown",
             len(resp.get("response", "") or ""),
             len(resp.get("reasoning", "") or ""),
             bool(resp.get("aborted")),
-            _preview_text(resp.get("response", "")),
         )
         return resp
     except asyncio.CancelledError:
+        terminal_status = "cancelled"
         _request_log_info(
             "chat.trace.cancelled request=%s session=%s",
             execution_context.request_id
@@ -4328,13 +4350,34 @@ async def handle_chat_message(
             else "unknown",
             request_session_id or "unknown",
         )
-        return {"response": "", "action_results": [], "aborted": True}
+        resp = {
+            "response": "",
+            "action_results": [],
+            "aborted": True,
+            "status": "cancelled",
+        }
+        return resp
     except HTTPException:
+        terminal_status = "http_error"
         raise
     except Exception as e:
+        terminal_status = "failed"
         logger.error(f"Error processing message: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
+        if runtime_diagnostics is not None and not runtime_diagnostics_stored:
+            runtime_diagnostics.record_duration(
+                "request.end_to_end",
+                (time.perf_counter() - route_started) * 1000,
+            )
+            runtime_diagnostics.finish(terminal_status or "failed")
+            diagnostics_snapshot = store_runtime_diagnostics(
+                core,
+                runtime_diagnostics,
+            )
+            runtime_diagnostics_stored = True
+            if "resp" in locals() and isinstance(resp, dict):
+                resp["runtime_diagnostics"] = diagnostics_snapshot
         _restore_reasoning_variant_override(core, reasoning_variant_snapshot)
         if request_tracked and request_session_id and request_task is not None:
             tasks_map = getattr(core, "_opencode_process_tasks", None)
@@ -6828,15 +6871,30 @@ async def get_checkpoint_stats(core: PenguinCore = Depends(get_core)):
 
 
 @router.post("/api/v1/checkpoints/cleanup")
-async def cleanup_old_checkpoints(core: PenguinCore = Depends(get_core)):
-    """Clean up old checkpoints according to retention policy."""
+async def cleanup_old_checkpoints(
+    execute: bool = False,
+    confirmation: Optional[str] = None,
+    core: PenguinCore = Depends(get_core),
+):
+    """Plan checkpoint cleanup by default; mutate only with exact confirmation."""
+
     try:
-        cleaned_count = await core.cleanup_old_checkpoints()
-        return {
-            "status": "completed",
-            "cleaned_count": cleaned_count,
-            "message": f"Cleaned up {cleaned_count} old checkpoints",
-        }
+        result = await core.cleanup_old_checkpoints(
+            execute=execute,
+            confirmation=confirmation,
+        )
+        if result.get("status") == "dry_run":
+            result["message"] = (
+                "Dry run only; no checkpoints were changed. Review the candidate "
+                "and recovery plan before requesting confirmed execution."
+            )
+        else:
+            result["message"] = (
+                f"Archived {result.get('cleaned_count', 0)} old checkpoints"
+            )
+        return result
+    except PermissionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as e:
         logger.error(f"Error cleaning up checkpoints: {str(e)}")
         raise HTTPException(
@@ -7179,6 +7237,18 @@ async def get_system_status(core: PenguinCore = Depends(get_core)):
         raise HTTPException(
             status_code=500, detail=f"Error getting system status: {str(e)}"
         )
+
+
+@router.get("/api/v1/system/runtime-diagnostics")
+async def get_runtime_diagnostics(core: PenguinCore = Depends(get_core)):
+    """Return bounded, content-free request and SSE lifecycle diagnostics."""
+
+    from penguin.web.sse_events import get_sse_connection_history
+
+    return {
+        "requests": get_runtime_diagnostics_history(core),
+        "sse_connections": get_sse_connection_history(core),
+    }
 
 
 # ============================================================================

@@ -439,17 +439,18 @@ ProtocolMessage (system/message_bus.py):
 ```
 WORKSPACE_PATH/                    # Configurable via PENGUIN_WORKSPACE env var
   ├── conversations/               # Session and message storage
-  │   ├── default/
-  │   │   ├── {session_id}/
-  │   │   │   ├── messages.json
-  │   │   │   ├── metadata.json
-  │   │   │   └── checkpoints/
-  │   │   └── current.json
-  │   └── {agent_id}/
-  │       └── {session_id}/
+  │   ├── {session_id}.json         # Canonical persisted session
+  │   ├── {session_id}.json.backup  # Recovery copy when present
+  │   ├── session_index.json        # Session discovery metadata
+  │   └── tool-results/             # Full outputs referenced by bounded records
   ├── checkpoints/                 # Checkpoint storage (managed by CheckpointManager)
+  │   ├── checkpoint_index.json
+  │   ├── cp_*.json.gz
+  │   └── archive/                  # Confirmed cleanup archive, never default cleanup
+  ├── runtime_events/
+  │   └── runtime_events.db         # Redacted durable SSE replay ledger
   ├── memory_db/                   # Memory storage
-  ├── logs/                        # Log files
+  ├── server-logs/                  # Rotating penguin-web logs
   └── context/                     # Context files
 
 Project Root/                      # Project-level configuration
@@ -458,6 +459,19 @@ Project Root/                      # Project-level configuration
       ├── settings.local.yml       # Local settings (gitignored)
       └── projects.db              # Task/project database
 ```
+
+### Runtime storage roles
+
+Port separation is not storage isolation. Port `9000` is the primary runtime, while
+port `8080` is reserved for test servers. The supported test runner
+(`scripts/run_runtime_reliability_server.py`) assigns one unique test workspace and
+keeps the ledger, logs, conversations, checkpoints, tool artifacts, local-auth cache,
+provider credentials, and XDG cache/config paths beneath it. Startup acquires
+workspace and ledger leases and fails closed if another live backend owns them.
+
+The hermetic baseline runner (`scripts/benchmark_runtime_reliability.py`) installs the
+same 8080 test-role environment before importing configuration. It uses a deterministic
+local provider and does not start a network listener.
 
 ### Context Window Management
 
@@ -736,15 +750,18 @@ The message loop treats provider attempts and local tool execution as separate r
 
 ### 2. Token Optimization
 
-- Intelligent context trimming
+- Category-priority and recency-based context trimming
 - Category-based budgets
-- Compression of old messages
 - Selective tool result inclusion
 - Model-specific routing
 
+The current context-window manager does not summarize or compact old messages.
+Summarization, retrieval, compaction, and elastic final-packet budgeting are deferred
+to the separate CWM v2 follow-up.
+
 ### 3. Concurrent Processing
 
-- Parallel tool execution
+- Ordered serial tool execution (safe parallel read scheduling is not active yet)
 - Async API calls
 - Background indexing
 - Stream processing

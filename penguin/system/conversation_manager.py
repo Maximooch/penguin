@@ -1703,14 +1703,23 @@ class ConversationManager:
             session_id=session_id, checkpoint_type=checkpoint_type, limit=limit
         )
 
-    async def cleanup_old_checkpoints(self) -> int:
-        """
-        Clean up old checkpoints according to retention policy.
+    async def cleanup_old_checkpoints(
+        self,
+        *,
+        execute: bool = False,
+        confirmation: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Plan checkpoint cleanup or execute a confirmed reviewed plan."""
 
-        Returns:
-            Number of checkpoints cleaned up
-        """
         if not self.checkpoint_manager:
-            return 0
+            return {
+                "status": "unavailable",
+                "dry_run": True,
+                "candidate_count": 0,
+                "candidate_bytes": 0,
+            }
 
-        return await self.checkpoint_manager.cleanup_old_checkpoints()
+        return await self.checkpoint_manager.cleanup_old_checkpoints(
+            execute=execute,
+            confirmation=confirmation,
+        )

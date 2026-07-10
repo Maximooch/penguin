@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from collections import deque
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from fastapi import APIRouter, Header, Query
 from fastapi.responses import StreamingResponse
 
+from penguin.system.runtime_diagnostics import ConnectionHistory
 from penguin.system.runtime_events import opencode_payload_from_runtime_event
 from penguin.web.services.opencode_events import (
     GLOBAL_STATUS_EVENTS,
@@ -40,6 +42,9 @@ _SSE_QUEUE_MAX_EVENTS = 1000
 _SSE_REPLAY_PAGE_SIZE = 1000
 _SSE_KEEPALIVE_TIMEOUT_SECONDS = 300.0
 _SSE_DEDUPE_MAX_EVENTS = 1000
+_SSE_CONNECTION_HISTORY_MAX_ENTRIES = 64
+_SSE_CONNECTION_HISTORY_ATTR = "_sse_connection_history_v1"
+_SSE_CONNECTION_HISTORY_LOCK = threading.RLock()
 
 # Global reference to core instance (set by app.py)
 _core_instance: PenguinCore | None = None
@@ -49,6 +54,7 @@ def set_core_instance(core: PenguinCore):
     """Set the core instance for dependency injection."""
     global _core_instance
     _core_instance = core
+    _get_or_create_connection_history(core)
     _install_runtime_event_ledger_recorder(core)
 
 
@@ -57,6 +63,52 @@ def get_core_instance() -> PenguinCore:
     if _core_instance is None:
         raise RuntimeError("Core instance not set - call set_core_instance() first")
     return _core_instance
+
+
+def get_sse_connection_history(
+    core: Any | None = None,
+) -> list[dict[str, str | float | None]]:
+    """Return a bounded, content-free SSE lifecycle snapshot.
+
+    The snapshot deliberately excludes cursor values, session identifiers,
+    directories, URLs, payloads, and exception text so a later debug route can
+    expose it without disclosing conversation content or credentials.
+    """
+
+    owner = core if core is not None else get_core_instance()
+    return _get_or_create_connection_history(owner).snapshot()
+
+
+def _get_or_create_connection_history(core: Any) -> ConnectionHistory:
+    """Return the per-core connection history, creating it exactly once."""
+
+    history = getattr(core, _SSE_CONNECTION_HISTORY_ATTR, None)
+    if isinstance(history, ConnectionHistory):
+        return history
+
+    with _SSE_CONNECTION_HISTORY_LOCK:
+        history = getattr(core, _SSE_CONNECTION_HISTORY_ATTR, None)
+        if not isinstance(history, ConnectionHistory):
+            history = ConnectionHistory(
+                max_entries=_SSE_CONNECTION_HISTORY_MAX_ENTRIES,
+            )
+            setattr(core, _SSE_CONNECTION_HISTORY_ATTR, history)
+        return history
+
+
+def _record_connection_state(
+    core: Any,
+    state: str,
+    *,
+    reason_code: str | None = None,
+) -> None:
+    """Record one privacy-safe SSE connection state transition."""
+
+    _get_or_create_connection_history(core).record(
+        state,
+        transport="sse",
+        reason_code=reason_code,
+    )
 
 
 @router.get("/api/v1/events/sse")
@@ -82,6 +134,7 @@ async def events_sse(
     - directory: Workspace directory (for context)
     """
     core = get_core_instance()
+    _record_connection_state(core, "attempt")
 
     # Use conversation_id if session_id not provided (API compatibility)
     effective_session_id = session_id or conversation_id
@@ -258,6 +311,7 @@ async def events_sse(
         # Subscribe to events
         core.event_bus.subscribe("opencode_event", event_handler)
 
+        close_reason = "generator_closed"
         try:
             # Send initial server.connected event
             connected_event = {
@@ -270,21 +324,43 @@ async def events_sse(
             }
             normalized_connected = next_event(connected_event)
             if normalized_connected:
+                _record_connection_state(core, "connected")
+                _record_connection_state(
+                    core,
+                    "replay_requested" if effective_last_event_id else "replay_skipped",
+                    reason_code=(
+                        "cursor_present" if effective_last_event_id else "no_cursor"
+                    ),
+                )
                 yield sse_event_frame(normalized_connected)
 
             if effective_last_event_id:
                 replay_cursor = effective_last_event_id
+                replayed_any = False
                 while True:
-                    replay = await asyncio.to_thread(
-                        _replay_events_after,
-                        core,
-                        replay_cursor,
-                        limit=_SSE_REPLAY_PAGE_SIZE,
-                        session_id=effective_session_id,
-                        agent_id=effective_agent_id,
-                        directory=effective_directory,
-                    )
+                    try:
+                        replay = await asyncio.to_thread(
+                            _replay_events_after,
+                            core,
+                            replay_cursor,
+                            limit=_SSE_REPLAY_PAGE_SIZE,
+                            session_id=effective_session_id,
+                            agent_id=effective_agent_id,
+                            directory=effective_directory,
+                        )
+                    except Exception:
+                        _record_connection_state(
+                            core,
+                            "replay_failed",
+                            reason_code="ledger_read_error",
+                        )
+                        raise
                     if not replay.found:
+                        _record_connection_state(
+                            core,
+                            "replay_gap",
+                            reason_code="cursor_not_available",
+                        )
                         gap_event = next_event(
                             _replay_gap_event(
                                 replay_cursor,
@@ -296,7 +372,21 @@ async def events_sse(
                             yield sse_event_frame(gap_event)
                         break
                     if not replay.events:
+                        _record_connection_state(
+                            core,
+                            "replay_complete",
+                            reason_code=(
+                                "events_replayed" if replayed_any else "no_new_events"
+                            ),
+                        )
                         break
+                    if not replayed_any:
+                        _record_connection_state(
+                            core,
+                            "replay_started",
+                            reason_code="cursor_found",
+                        )
+                    replayed_any = True
                     for runtime_event in replay.events:
                         event = opencode_payload_from_runtime_event(runtime_event)
                         event_id = event.get("id")
@@ -314,6 +404,11 @@ async def events_sse(
                         len(replay.events) < _SSE_REPLAY_PAGE_SIZE
                         or not isinstance(next_cursor, str)
                     ):
+                        _record_connection_state(
+                            core,
+                            "replay_complete",
+                            reason_code="events_replayed",
+                        )
                         break
                     replay_cursor = next_cursor
 
@@ -336,8 +431,16 @@ async def events_sse(
 
         except asyncio.CancelledError:
             # Client disconnected
-            pass
+            close_reason = "client_cancelled"
+        except Exception:
+            close_reason = "stream_error"
+            raise
         finally:
+            _record_connection_state(
+                core,
+                "disconnected",
+                reason_code=close_reason,
+            )
             # Always unsubscribe
             try:
                 core.event_bus.unsubscribe("opencode_event", event_handler)

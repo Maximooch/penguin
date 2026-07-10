@@ -8,8 +8,28 @@ from penguin.web import server
 
 
 @pytest.fixture(autouse=True)
-def disable_web_file_logging(monkeypatch):
+def isolate_web_server_runtime(monkeypatch, tmp_path):
+    """Keep entrypoint tests away from the user's production runtime storage."""
+
     monkeypatch.setenv("PENGUIN_WEB_LOG_ENABLED", "false")
+    monkeypatch.setenv("PENGUIN_WORKSPACE", str(tmp_path))
+    monkeypatch.setenv(
+        "PENGUIN_RUNTIME_EVENT_LEDGER_PATH",
+        str(tmp_path / "runtime_events" / "runtime_events.db"),
+    )
+    monkeypatch.setenv("PENGUIN_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+    monkeypatch.setenv("PENGUIN_LOCAL_AUTH_CACHE_DIR", str(tmp_path / "auth"))
+    monkeypatch.setenv(
+        "PENGUIN_PROVIDER_CREDENTIALS_STORE",
+        str(tmp_path / "credentials" / "providers.json"),
+    )
+    monkeypatch.setenv(
+        "PENGUIN_PROVIDER_AUTH_STORE",
+        str(tmp_path / "credentials" / "provider_auth.json"),
+    )
+    monkeypatch.delenv("PENGUIN_SERVER_ROLE", raising=False)
     yield
     root_logger = logging.getLogger()
     for handler in list(root_logger.handlers):
@@ -97,28 +117,42 @@ def test_configure_server_file_logging_creates_uvicorn_log_config(
     assert "file" in log_config["loggers"]["uvicorn.access"]["handlers"]
 
 
-def test_main_debug_uses_reload_safe_import_string(monkeypatch, capsys):
+def test_main_debug_uses_reload_safe_import_string(monkeypatch, capsys, tmp_path):
     calls = []
+    app_factory_calls = 0
+
+    def create_app():
+        nonlocal app_factory_calls
+        app_factory_calls += 1
+        return object()
 
     fake_uvicorn = types.SimpleNamespace(
         run=lambda *args, **kwargs: calls.append((args, kwargs))
     )
     monkeypatch.setitem(sys.modules, "uvicorn", fake_uvicorn)
-    monkeypatch.setattr(server, "create_app_factory", lambda: object())
-    monkeypatch.setenv("HOST", "0.0.0.0")
+    monkeypatch.setattr(server, "create_app_factory", create_app)
+    monkeypatch.setattr(server, "_validate_app_factory_import", lambda: None)
+    monkeypatch.setenv("HOST", "127.0.0.1")
     monkeypatch.setenv("PORT", "8080")
     monkeypatch.setenv("DEBUG", "false")
     monkeypatch.setenv("PENGUIN_AUTH_ENABLED", "true")
+    monkeypatch.setenv("PENGUIN_SERVER_ROLE", "test")
+    monkeypatch.setenv("PENGUIN_WORKSPACE", str(tmp_path))
+    monkeypatch.setenv(
+        "PENGUIN_RUNTIME_EVENT_LEDGER_PATH",
+        str(tmp_path / "runtime_events" / "runtime_events.db"),
+    )
 
     assert server.main(["--debug"]) == 0
 
     output = capsys.readouterr().out
-    assert "http://localhost:8080" in output
+    assert "http://127.0.0.1:8080" in output
     assert calls[0][0][0] == "penguin.web.server:create_app_factory"
     assert calls[0][1]["reload"] is True
     assert calls[0][1]["factory"] is True
     assert calls[0][1]["port"] == 8080
     assert calls[0][1]["log_config"] is None
+    assert app_factory_calls == 0
 
 
 def test_main_defaults_to_localhost_without_auth(monkeypatch, capsys):

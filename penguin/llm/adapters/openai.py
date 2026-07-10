@@ -13,6 +13,10 @@ import httpx  # type: ignore
 import tiktoken  # type: ignore
 from openai import AsyncOpenAI  # type: ignore
 
+from penguin.system.runtime_diagnostics import (
+    mark_runtime_progress,
+    record_runtime_duration,
+)
 from penguin.web.services.provider_auth import (
     ProviderOAuthError,
     refresh_provider_oauth,
@@ -29,8 +33,8 @@ from ..contracts import (
     FinishReason,
     LLMError,
     LLMPreparedRequest,
-    LLMProviderError,
     LLMProviderCapabilities,
+    LLMProviderError,
     LLMRequestLifecycle,
     LLMUsage,
     ProviderRequestStatus,
@@ -1822,6 +1826,8 @@ class OpenAIAdapter(BaseAdapter):
         tool_arg_chars = 0
         tool_arg_chars_by_item: Dict[str, int] = {}
         response: httpx.Response | None = None
+        stream_entered_at: float | None = None
+        setup_recorded = False
         saw_done_marker = False
         saw_completed_event = False
         self._start_request_lifecycle(
@@ -1841,6 +1847,12 @@ class OpenAIAdapter(BaseAdapter):
                     headers=headers,
                     json=stream_payload,
                 ) as response:
+                    stream_entered_at = time.monotonic()
+                    record_runtime_duration(
+                        "provider.setup",
+                        (stream_entered_at - started) * 1000,
+                    )
+                    setup_recorded = True
                     if response.status_code >= 400:
                         response_text = (await response.aread()).decode(
                             "utf-8",
@@ -1892,6 +1904,11 @@ class OpenAIAdapter(BaseAdapter):
                         event_elapsed_ms = int((event_now - started) * 1000)
                         if first_event_ms is None:
                             first_event_ms = event_elapsed_ms
+                            record_runtime_duration(
+                                "provider.wait_first_event",
+                                (event_now - (stream_entered_at or started)) * 1000,
+                            )
+                        mark_runtime_progress("provider")
                         if last_event_at is not None:
                             max_event_gap_ms = max(
                                 max_event_gap_ms,
@@ -2045,6 +2062,18 @@ class OpenAIAdapter(BaseAdapter):
                 stage="stream_transport",
                 diag_id=diag_id,
             )
+        finally:
+            finished_at = time.monotonic()
+            if not setup_recorded:
+                record_runtime_duration(
+                    "provider.setup",
+                    (finished_at - started) * 1000,
+                )
+            if stream_entered_at is not None:
+                record_runtime_duration(
+                    "provider.stream",
+                    (finished_at - stream_entered_at) * 1000,
+                )
 
         if response is None:
             self._raise_codex_transport_error(
@@ -2812,6 +2841,8 @@ class OpenAIAdapter(BaseAdapter):
         message_type: str,
     ) -> None:
         """Invoke provided callback safely with support for legacy signatures."""
+        callback_started_at = time.monotonic()
+        callback_completed = False
         try:
             import inspect
 
@@ -2841,8 +2872,16 @@ class OpenAIAdapter(BaseAdapter):
                         None,
                         lambda: cast(Callable[..., Any], cb)(chunk),
                     )
+            callback_completed = True
         except Exception as e:
             logger.error(f"Error in stream callback: {e}")
+        finally:
+            record_runtime_duration(
+                "stream.callback",
+                (time.monotonic() - callback_started_at) * 1000,
+            )
+        if callback_completed:
+            mark_runtime_progress("ui")
 
     def _prepare_reasoning_config(
         self,

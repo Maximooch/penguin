@@ -57,10 +57,22 @@ class CheckpointCoreFacade:
             limit=limit,
         )
 
-    async def cleanup_old_checkpoints(self) -> int:
-        """Clean up old checkpoints according to retention policy."""
+    async def cleanup_old_checkpoints(
+        self,
+        *,
+        execute: bool = False,
+        confirmation: str | None = None,
+    ) -> dict[str, Any]:
+        """Plan cleanup by default or execute an explicitly confirmed plan."""
+
+        if not execute and confirmation is None:
+            return await core_checkpoint_runtime.cleanup_old_checkpoints(
+                self.conversation_manager
+            )
         return await core_checkpoint_runtime.cleanup_old_checkpoints(
-            self.conversation_manager
+            self.conversation_manager,
+            execute=execute,
+            confirmation=confirmation,
         )
 
     def get_checkpoint_stats(self) -> dict[str, Any]:

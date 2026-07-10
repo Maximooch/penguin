@@ -10,17 +10,22 @@ This module implements the conversation plane auto-checkpointing from V2.1 plan:
 
 import asyncio
 import gzip
+import hashlib
 import json
 import logging
 import os
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Callable
 from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set
 
+from penguin.system.checkpoint_cleanup import build_checkpoint_cleanup_plan
+from penguin.system.runtime_diagnostics import record_runtime_duration
 from penguin.system.state import Message, MessageCategory, Session
+from penguin.system.storage_safety import StorageSafetyMonitor, StorageSafetyStatus
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +95,7 @@ class CheckpointManager:
         workspace_path: Path,
         session_manager,
         config: Optional[CheckpointConfig] = None,
+        storage_safety_monitor: Optional[StorageSafetyMonitor] = None,
     ):
         """
         Initialize the checkpoint manager.
@@ -98,6 +104,7 @@ class CheckpointManager:
             workspace_path: Base workspace directory
             session_manager: SessionManager instance for lineage operations
             config: Checkpoint configuration
+            storage_safety_monitor: Optional injected disk-safety monitor
         """
         self.workspace_path = Path(workspace_path)
         self.session_manager = session_manager
@@ -111,6 +118,16 @@ class CheckpointManager:
         self.index_path = self.checkpoints_path / "checkpoint_index.json"
         self.checkpoint_index: Dict[str, CheckpointMetadata] = {}
         self._load_checkpoint_index()
+        self._auto_checkpoint_count = 0
+        self._pending_auto_checkpoints = 0
+        self.refresh_admission_counters()
+        self._storage_safety_monitor = storage_safety_monitor or StorageSafetyMonitor(
+            self.workspace_path,
+            checkpoint_path=self.checkpoints_path,
+        )
+        self._last_storage_safety_status: Optional[StorageSafetyStatus] = None
+        self._checkpoint_block_reason: Optional[str] = None
+        self._last_logged_block_reason: Optional[str] = None
 
         # Async worker setup (queues created lazily in the owning event loop)
         self.checkpoint_queue: Optional[asyncio.Queue] = None
@@ -123,7 +140,8 @@ class CheckpointManager:
         self._message_counter = 0
 
         logger.info(
-            f"CheckpointManager initialized with {len(self.checkpoint_index)} existing checkpoints"
+            "CheckpointManager initialized with %s existing checkpoints",
+            len(self.checkpoint_index),
         )
 
     async def start_workers(self) -> None:
@@ -177,21 +195,9 @@ class CheckpointManager:
         if not self.config.enabled or not self.config.planes.get("conversation", True):
             return False
 
-        # Start workers if not already started
-        if not self._workers_started:
-            try:
-                import asyncio
-
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.create_task(self.start_workers())
-            except RuntimeError:
-                # No event loop available, workers will start when checkpoint is created
-                pass
-
         # Skip certain system messages
         if message.category == MessageCategory.SYSTEM:
-            # Only checkpoint system messages that are action results or important markers
+            # Checkpoint only action results and important system markers.
             important_markers = [
                 "action executed",
                 "session transition",
@@ -204,7 +210,9 @@ class CheckpointManager:
 
         # Apply frequency filter
         self._message_counter += 1
-        return (self._message_counter % self.config.frequency) == 0
+        if (self._message_counter % self.config.frequency) != 0:
+            return False
+        return self._allow_auto_checkpoint()
 
     async def create_checkpoint(
         self,
@@ -228,6 +236,8 @@ class CheckpointManager:
             Checkpoint ID if successful, None otherwise
         """
         if not self.config.enabled:
+            return None
+        if checkpoint_type == CheckpointType.AUTO and not self._allow_auto_checkpoint():
             return None
 
         # Ensure workers are started
@@ -254,10 +264,113 @@ class CheckpointManager:
 
         # Enqueue for async processing (queue is guaranteed after start_workers)
         assert self.checkpoint_queue is not None
-        await self.checkpoint_queue.put(("create", session, metadata))
+        if checkpoint_type == CheckpointType.AUTO:
+            self._pending_auto_checkpoints += 1
+        try:
+            await self.checkpoint_queue.put(("create", session, metadata))
+        except BaseException:
+            if checkpoint_type == CheckpointType.AUTO:
+                self._pending_auto_checkpoints = max(
+                    0,
+                    self._pending_auto_checkpoints - 1,
+                )
+            raise
 
         logger.debug(f"Enqueued checkpoint creation: {checkpoint_id}")
         return checkpoint_id
+
+    def refresh_admission_counters(self) -> None:
+        """Refresh cached checkpoint counts after index load or test mutation."""
+
+        self._auto_checkpoint_count = sum(
+            1
+            for metadata in self.checkpoint_index.values()
+            if metadata.type == CheckpointType.AUTO
+        )
+
+    def get_storage_safety_status(self) -> Dict[str, Any]:
+        """Return current checkpoint admission evidence for diagnostics/UI."""
+
+        status = self._last_storage_safety_status
+        payload: Dict[str, Any] = (
+            status.to_dict()
+            if status is not None
+            else {
+                "level": "unknown",
+                "allow_background_writes": self._checkpoint_block_reason is None,
+                "reasons": [],
+            }
+        )
+        payload.update(
+            {
+                "block_reason": self._checkpoint_block_reason,
+                "auto_checkpoint_count": self._auto_checkpoint_count,
+                "pending_auto_checkpoints": self._pending_auto_checkpoints,
+                "max_auto_checkpoints": self.config.max_auto_checkpoints,
+            }
+        )
+        return payload
+
+    def plan_checkpoint_cleanup(
+        self,
+        *,
+        active_session_ids: Optional[Set[str]] = None,
+        now: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
+        """Return a read-only cleanup plan with no source-data mutation."""
+
+        active_sessions = set(active_session_ids or ())
+        current_session = getattr(self.session_manager, "current_session", None)
+        current_session_id = getattr(current_session, "id", None)
+        if current_session_id:
+            active_sessions.add(str(current_session_id))
+        retention = self.config.retention
+        return build_checkpoint_cleanup_plan(
+            self.checkpoints_path,
+            self.checkpoint_index,
+            keep_all_hours=retention.get("keep_all_hours", 24),
+            keep_every_nth=retention.get("keep_every_nth", 10),
+            max_age_days=retention.get("max_age_days", 30),
+            max_auto_checkpoints=self.config.max_auto_checkpoints,
+            active_session_ids=active_sessions,
+            now=now,
+        ).to_dict()
+
+    def _allow_auto_checkpoint(self) -> bool:
+        """Return whether one new automatic checkpoint may be enqueued."""
+
+        admitted_count = self._auto_checkpoint_count + self._pending_auto_checkpoints
+        if admitted_count >= self.config.max_auto_checkpoints:
+            self._record_checkpoint_block("max_auto_checkpoints")
+            return False
+
+        status = self._storage_safety_monitor.check()
+        self._last_storage_safety_status = status
+        if not status.allow_background_writes:
+            self._record_checkpoint_block("storage_critical")
+            return False
+
+        self._checkpoint_block_reason = None
+        self._last_logged_block_reason = None
+        if status.level.value == "warning":
+            logger.warning(
+                "Checkpoint storage pressure warning: %s",
+                status.to_dict(),
+            )
+        return True
+
+    def _record_checkpoint_block(self, reason: str) -> None:
+        """Record and rate-limit one automatic-checkpoint admission warning."""
+
+        self._checkpoint_block_reason = reason
+        if self._last_logged_block_reason == reason:
+            return
+        self._last_logged_block_reason = reason
+        logger.warning(
+            "Automatic checkpoint blocked: reason=%s status=%s",
+            reason,
+            self.get_storage_safety_status(),
+        )
 
     async def rollback_to_checkpoint(self, checkpoint_id: str) -> bool:
         """
@@ -274,8 +387,6 @@ class CheckpointManager:
             if checkpoint_id not in self.checkpoint_index:
                 logger.error(f"Checkpoint {checkpoint_id} not found in index")
                 return False
-
-            metadata = self.checkpoint_index[checkpoint_id]
 
             # Load the checkpoint session
             checkpoint_session = await self._load_checkpoint_session(checkpoint_id)
@@ -374,7 +485,9 @@ class CheckpointManager:
                 self.session_manager.current_session = branch_session
 
                 logger.info(
-                    f"Created branch {branch_checkpoint_id} from checkpoint {checkpoint_id}"
+                    "Created branch %s from checkpoint %s",
+                    branch_checkpoint_id,
+                    checkpoint_id,
                 )
                 return branch_checkpoint_id
 
@@ -428,15 +541,112 @@ class CheckpointManager:
 
         return checkpoints[:limit]
 
-    async def cleanup_old_checkpoints(self) -> int:
-        """
-        Clean up old checkpoints according to retention policy.
+    async def cleanup_old_checkpoints(
+        self,
+        *,
+        execute: bool = False,
+        confirmation: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Plan cleanup by default and require explicit confirmation to mutate.
+
+        Args:
+            execute: Whether to execute the reviewed retention plan.
+            confirmation: Exact resolved workspace path required for execution.
 
         Returns:
-            Number of checkpoints cleaned up
+            Dry-run plan or completed cleanup result.
+
+        Raises:
+            PermissionError: If destructive execution lacks exact confirmation.
         """
-        await self.cleanup_queue.put("cleanup")
-        return 0  # Actual count will be logged by worker
+
+        plan = self.plan_checkpoint_cleanup()
+        if not execute:
+            return {"status": "dry_run", **plan}
+
+        expected_confirmation = str(self.workspace_path.expanduser().resolve())
+        if confirmation != expected_confirmation:
+            raise PermissionError(
+                "Checkpoint cleanup execution requires confirmation equal to the "
+                f"resolved workspace path: {expected_confirmation}"
+            )
+        cleaned_count = await asyncio.to_thread(
+            self._archive_cleanup_candidates,
+            plan,
+        )
+        return {
+            "status": "completed",
+            "dry_run": False,
+            "cleaned_count": cleaned_count,
+            "reviewed_candidate_count": plan["candidate_count"],
+            "reviewed_candidate_bytes": plan["candidate_bytes"],
+        }
+
+    def _archive_cleanup_candidates(self, plan: Dict[str, Any]) -> int:
+        """Move reviewed candidates to a recoverable archive and update the index."""
+
+        recovery_plan = plan.get("recovery_plan", {})
+        archive_value = recovery_plan.get("archive_destination")
+        if not isinstance(archive_value, str) or not archive_value:
+            raise RuntimeError("Cleanup plan has no archive destination")
+        archive_path = Path(archive_value).expanduser().resolve()
+        checkpoint_root = self.checkpoints_path.expanduser().resolve()
+        if checkpoint_root not in archive_path.parents:
+            raise RuntimeError(
+                "Checkpoint archive must remain below checkpoint storage"
+            )
+        archive_path.mkdir(parents=True, exist_ok=False)
+
+        manifest: Dict[str, Any] = {
+            "state": "planned",
+            "generated_at": plan.get("generated_at"),
+            "source": str(checkpoint_root),
+            "archive": str(archive_path),
+            "candidates": [],
+            "moved": [],
+        }
+        for candidate in plan.get("candidates", []):
+            source_value = candidate.get("path")
+            checkpoint_id = candidate.get("checkpoint_id")
+            if not isinstance(source_value, str) or not isinstance(checkpoint_id, str):
+                continue
+            source = Path(source_value).expanduser().resolve()
+            if source.parent != checkpoint_root:
+                raise RuntimeError(f"Unsafe checkpoint cleanup source: {source}")
+            manifest["candidates"].append(
+                {
+                    "checkpoint_id": checkpoint_id,
+                    "source": str(source),
+                    "size_bytes": candidate.get("size_bytes", 0),
+                    "sha256": _sha256_file(source),
+                }
+            )
+
+        manifest_path = archive_path / "manifest.json"
+        _write_json_atomic(manifest_path, manifest)
+        try:
+            for candidate in manifest["candidates"]:
+                source = Path(candidate["source"])
+                target = archive_path / source.name
+                if target.exists():
+                    raise FileExistsError(f"Archive target already exists: {target}")
+                source.replace(target)
+                manifest["moved"].append(
+                    {
+                        **candidate,
+                        "archive_path": str(target),
+                    }
+                )
+                self.checkpoint_index.pop(candidate["checkpoint_id"], None)
+            manifest["state"] = "completed"
+            self.refresh_admission_counters()
+            self._save_checkpoint_index()
+            _write_json_atomic(manifest_path, manifest)
+        except Exception:
+            manifest["state"] = "partial"
+            _write_json_atomic(manifest_path, manifest)
+            raise
+        return len(manifest["moved"])
 
     def collect_lineage(self, session_id: str) -> List[str]:
         """
@@ -542,10 +752,16 @@ class CheckpointManager:
                 assert self.checkpoint_queue is not None
                 action, session, metadata = await self.checkpoint_queue.get()
 
-                if action == "create":
-                    await self._create_checkpoint_file(session, metadata)
-
-                self.checkpoint_queue.task_done()
+                try:
+                    if action == "create":
+                        await self._create_checkpoint_file(session, metadata)
+                finally:
+                    if metadata.type == CheckpointType.AUTO:
+                        self._pending_auto_checkpoints = max(
+                            0,
+                            self._pending_auto_checkpoints - 1,
+                        )
+                    self.checkpoint_queue.task_done()
 
             except asyncio.CancelledError:
                 break
@@ -580,6 +796,7 @@ class CheckpointManager:
             session: Session to checkpoint
             metadata: Checkpoint metadata
         """
+        persistence_started = time.perf_counter()
         try:
             # Build flattened snapshot if this is a branch or manual checkpoint
             if metadata.type in [CheckpointType.BRANCH, CheckpointType.MANUAL]:
@@ -592,6 +809,7 @@ class CheckpointManager:
             metadata_dict = metadata.__dict__.copy()
             metadata_dict["type"] = metadata.type.value  # Convert enum to string
 
+            serialization_started = time.perf_counter()
             checkpoint_data = {
                 "metadata": metadata_dict,
                 "session": checkpoint_session.to_dict(),
@@ -600,18 +818,39 @@ class CheckpointManager:
             # Compress and save
             checkpoint_file = self.checkpoints_path / f"{metadata.id}.json.gz"
             compressed_data = gzip.compress(json.dumps(checkpoint_data).encode("utf-8"))
+            record_runtime_duration(
+                "checkpoint.serialization",
+                (time.perf_counter() - serialization_started) * 1000,
+            )
 
+            write_started = time.perf_counter()
             with open(checkpoint_file, "wb") as f:
                 f.write(compressed_data)
+            record_runtime_duration(
+                "checkpoint.write",
+                (time.perf_counter() - write_started) * 1000,
+            )
 
             # Update index
             self.checkpoint_index[metadata.id] = metadata
+            if metadata.type == CheckpointType.AUTO:
+                self._auto_checkpoint_count += 1
+            index_started = time.perf_counter()
             self._save_checkpoint_index()
+            record_runtime_duration(
+                "checkpoint.index",
+                (time.perf_counter() - index_started) * 1000,
+            )
 
             logger.debug(f"Created checkpoint file: {metadata.id}")
 
         except Exception as e:
             logger.error(f"Error creating checkpoint file {metadata.id}: {e}")
+        finally:
+            record_runtime_duration(
+                "checkpoint.persistence",
+                (time.perf_counter() - persistence_started) * 1000,
+            )
 
     async def _load_checkpoint_session(self, checkpoint_id: str) -> Optional[Session]:
         """
@@ -724,7 +963,12 @@ class CheckpointManager:
 
             # Remove from index
             if checkpoint_id in self.checkpoint_index:
-                del self.checkpoint_index[checkpoint_id]
+                metadata = self.checkpoint_index.pop(checkpoint_id)
+                if metadata.type == CheckpointType.AUTO:
+                    self._auto_checkpoint_count = max(
+                        0,
+                        self._auto_checkpoint_count - 1,
+                    )
                 self._save_checkpoint_index()
 
             logger.debug(f"Deleted checkpoint: {checkpoint_id}")
@@ -736,7 +980,7 @@ class CheckpointManager:
         """Load the checkpoint index from disk."""
         try:
             if self.index_path.exists():
-                with open(self.index_path, "r") as f:
+                with open(self.index_path) as f:
                     data = json.load(f)
 
                 # Convert dict data back to CheckpointMetadata objects
@@ -769,3 +1013,27 @@ class CheckpointManager:
 
         except Exception as e:
             logger.error(f"Error saving checkpoint index: {e}")
+
+
+def _sha256_file(path: Path) -> str:
+    """Return a streaming SHA-256 digest for an archive manifest entry."""
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _write_json_atomic(path: Path, payload: Dict[str, Any]) -> None:
+    """Write one JSON payload through a unique same-directory temporary file."""
+
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)

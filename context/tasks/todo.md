@@ -37,6 +37,243 @@ parallel.
 
 ## In Progress
 
+### Program: Runtime Reliability and Performance Recovery
+
+**Status:** diagnosis complete / implementation in progress on
+`fix/runtime-reliability-recovery`
+
+**Priority:** supersedes product-facing follow-up work until Penguin can run long
+sessions without silent stalls, unbounded local persistence, or guessed manual
+`resume` prompts.
+
+#### Confirmed symptom and operating rules
+
+- [x] During the common outage the TUI remains `running`, sometimes displaying
+  `no events <duration> • running <duration>`.
+- [x] Request existence and actual provider/runtime progress are separate liveness
+  signals.
+- [x] Port `9000` is the production backend and must not be used for verification.
+- [x] Port `8080` is the test backend for this program and must use isolated mutable
+  storage for workspace, logs, conversations, checkpoints, artifacts, backups, and
+  the runtime-event ledger.
+- [x] CWM v2 is a separate follow-up PR. This PR may repair native
+  tool-call/tool-result adjacency because malformed provider history is a protocol
+  correctness bug, but it must not implement CWM v2 budgeting, slimming,
+  summarization, retrieval, or compaction.
+
+#### Evidence baseline
+
+- [x] A checkpoint worker emitted 96,998 cross-event-loop queue errors in roughly
+  2.2 seconds without backoff before backend replacement.
+- [x] Checkpoint storage reached roughly 13 GB / 41,000 files despite a configured
+  1,000-auto-checkpoint maximum that was not enforced automatically.
+- [x] The data volume reached 99% usage and recent operations failed with `ENOSPC`.
+- [x] OpenAI/Codex used an unbounded active-stream read and produced multi-minute
+  waits that ended only after user abort.
+- [x] Provider replay was bounded to one safe retry, but exhausted recovery became a
+  terminal result hidden by the TUI.
+- [x] The chat route returned HTTP 200 for `max_iterations`, repeated empty/tool-only
+  stalls, and recoverable provider failures while the TUI discarded structured
+  status and treated any 2xx response as success.
+- [x] The effective TUI request cap was 100 iterations; multiple 15–30 minute runs
+  ended with partial work and required another `resume` turn.
+- [x] Millisecond tools sometimes accumulated tens of seconds of Penguin-local
+  orchestration and persistence latency.
+- [x] The runtime-event ledger synchronously committed each event, stored cumulative
+  part snapshots, repeated busy status, and ran SQLite cleanup on live delivery.
+- [x] Production and test servers used different ports but shared the default runtime
+  event database.
+- [x] The TUI parsed but did not retain/send SSE event IDs and did not reconcile
+  canonical session state after reconnect.
+- [x] Roughly 461 KB of canonical message text occupied a roughly 45 MB session plus
+  a 45 MB backup, dominated by OpenCode transcript metadata and duplicated tool
+  output.
+- [x] Terminal tool events, engine iteration saves, and autosave rewrote the same
+  session concurrently; fixed temp paths produced rename collisions.
+- [x] Nominal prompt modes shared a roughly 53k-character / 12k-token system prompt
+  before roughly 50 tool schemas.
+- [x] Prompt instructions imposed a 5–12 analysis-tool minimum and serial
+  one-action-per-response behavior.
+- [x] Current CWM behavior is category-priority/recency trimming, not compaction or
+  summarization.
+- [x] Independent tool-result trimming orphaned native tool calls, forced large Codex
+  replay-sanitization drops, shifted request prefixes, and correlated with reduced
+  cache reads.
+
+#### Phase 0 — Operational containment and measurement
+
+- [x] Add a supported `127.0.0.1:8080` test configuration with a unique
+  `PENGUIN_WORKSPACE` and ledger path; keep all mutable artifacts inside it.
+- [x] Emit startup diagnostics for server role, host/port, PID, workspace, log,
+  ledger, checkpoint, and conversation paths.
+- [x] Warn or fail when two backends would unintentionally share mutable runtime
+  storage; prove 8080 cannot contend with 9000 in deterministic two-server tests.
+- [x] Add a read-only checkpoint inventory/cleanup planner reporting candidates,
+  retained items, bytes, age buckets, ownership, active protection, policy reasons,
+  and recovery/archive steps. Default to dry-run; do not execute destructive mode.
+- [x] Add deterministic disk-space/checkpoint-growth safety floors that stop new
+  background checkpoint work before `ENOSPC` while preserving active conversation
+  behavior and visible errors.
+- [x] Instrument provider, UI/event, ledger, tool, transcript, session-save,
+  checkpoint, context, and request stages with monotonic progress timestamps and
+  privacy-safe diagnostics.
+- [x] Record reproducible isolated-8080 fake-provider baselines for fresh and large
+  sessions before Phase 1.
+
+Phase 0 evidence:
+
+- Supported runner: `uv run python scripts/run_runtime_reliability_server.py`.
+  Imports install isolation before configuration; `--describe` does not start a
+  server. Cross-process leases fail promptly rather than contending.
+- Real-writer isolation tests cover session, checkpoint, runtime-event SQLite,
+  local-auth, provider-credential, and tool-artifact persistence while proving a
+  production sentinel tree remains byte/stat identical.
+- Cleanup remains a read-only plan by default. Confirmed execution archives rather
+  than deletes and requires the exact resolved workspace; it was not executed during
+  this goal.
+- The local test volume was already below the configured critical free-fraction
+  floor, and automatic checkpoint admission correctly stopped without preventing
+  conversation/session persistence.
+- Baseline evidence is retained at
+  `context/tasks/evidence/runtime-reliability-phase0-baseline.json`. In the first
+  deterministic run, fresh request processing was about 49 ms (including roughly
+  12 ms ledger connection, 10 ms schema initialization, 12 ms ledger cleanup, and
+  6 ms session save). The 202-message fixture spent about 8 ms assembling context
+  and 22 ms saving the session. Provider and controlled tool execution were
+  sub-millisecond; tool orchestration was about 0.7 ms.
+- Baseline uncertainty remains explicit: this calls the production REST handler and
+  real local components without socket overhead, uses a minimal core instead of the
+  full PenguinCore/Engine loop, and does not yet exercise Phase 1/2 watchdog,
+  reconnect, fault, or queued-writer behavior.
+- Phase 0 gate: 71 focused tests plus 26 checkpoint compatibility tests and the full
+  28-test Codex OAuth suite passed. No live provider or network server was used.
+
+#### Phase 1 — Stop, retry, and visible-state correctness
+
+- [ ] Make checkpoint worker queues/tasks single-loop-owned, bounded, idempotent, and
+  offload serialization/compression/file/index work from the event loop.
+- [ ] Add bounded checkpoint retry/backoff, rate-limited logging, a circuit breaker,
+  and automatic count/age/size retention with active/manual/branch protection.
+- [ ] Add OpenAI/Codex chunk-idle and total-attempt watchdogs with typed timeout,
+  disconnect, incomplete-stream, and retry-exhaustion failures.
+- [ ] Keep provider replay bounded and partial-output/native-tool safe; guarantee
+  provider, request, session, and tool-state release on every terminal path.
+- [ ] Preserve structured API outcome truth in the TUI: status, recoverability,
+  details, iteration/action counts, partial output, abort, and cancellation.
+- [ ] Distinguish running, reconnecting, stalled/degraded, max-iterations, provider
+  exhaustion, repeated empty/tool-only loops, aborted, cancelled, completed, and
+  failed states.
+- [ ] Base healthy liveness on real progress, add bounded POST/gate waits, and expose
+  Interrupt/Retry/Resume actions for stalled runs.
+- [ ] Define and test one explicit iteration/continuation contract rather than hiding
+  loops behind a larger cap.
+
+#### Phase 2 — Event, transcript, checkpoint, and session persistence
+
+- [ ] Move ledger writes behind a bounded single-writer queue with batched
+  transactions and explicit durability/backpressure/overflow/shutdown semantics.
+- [ ] Persist text deltas or bounded snapshots, deduplicate unchanged busy states,
+  track real progress separately, and move cleanup/vacuum/checkpoint work off live
+  delivery while accounting for WAL/freelist bytes.
+- [ ] Retain/send `Last-Event-ID`, replay/deduplicate from the durable cursor, surface
+  replay gaps, reconcile canonical status, and preserve newer live events over stale
+  hydration.
+- [x] Bound connection history and include replay decisions in debug exports.
+- [ ] Bound OpenCode transcript metadata, store full tool output once with artifact
+  references, and migrate existing duplicated output safely.
+- [ ] Coalesce durable saves; serialize each session's writes with unique temp files,
+  atomic replacement, and protection from autosave/request-save stale writers.
+- [ ] Avoid full global index rewrites for small updates.
+- [ ] Preserve native tool-call/tool-result units atomically through existing trim,
+  transcript, replay, and provider sanitation boundaries without implementing wider
+  CWM v2 behavior.
+- [ ] Add production-path stress, multi-server isolation, ledger fault, reconnect,
+  save-concurrency, migration, adjacency, storage-growth, and latency coverage.
+
+#### Phase 3 — Tool-loop, request, and cache performance
+
+- [ ] Parallelize independent read-only inspection while serializing mutation, Git,
+  process control, installs, tests, and order-dependent tools.
+- [ ] Measure queue/schedule/event/persistence separately from tool execution and use
+  ordered native batching where required.
+- [ ] Replace the silent 100-iteration mismatch with a documented cap/continuation
+  contract and visible stale/repeated-tool-loop detection.
+- [ ] Measure system prompt, messages, tool schemas, provider framing, input/cached
+  input/output/reasoning, and service-tier/model-variant boundaries per request.
+- [ ] Add a bounded stable session-scoped OpenAI `prompt_cache_key`, distinct between
+  sessions, while preserving prefix stability and explicit cache-boundary events.
+- [ ] Reuse provider clients/connections where safe rather than recreating them every
+  iteration.
+
+#### Phase 3.5 — Prompt and immediate-context engineering
+
+**PR placement:** Phase 3.5 follows Phase 3 and remains in this
+runtime-reliability PR. It must be testable without changing historical conversation
+selection.
+
+**Boundary:** this phase owns instructions, task/mode routing, tool
+descriptions/exposure, and the compact active-turn envelope. Conversation-history
+selection, global budgets, historical tool-output slimming, summarization, retrieval,
+and compaction remain CWM v2.
+
+- [ ] Wire the mode-aware prompt builder into the real request path and prove
+  `direct`, `implement`, `review`, `explain`, and compatibility modes materially
+  differ.
+- [ ] Make implementation lean and implementation-first; remove the blanket 5–12
+  analysis-tool minimum and legacy one-tool-action-per-turn rules.
+- [ ] Resolve contradictory completion/continuation/stopping instructions against the
+  actual engine contract.
+- [ ] Inventory instructions/tool schemas by tokens and purpose; remove duplication
+  and stale guidance without weakening safety, user/repository instructions, or tool
+  contracts.
+- [ ] Use task/mode-aware tool exposure or concise descriptions where compatible and
+  explicitly allow safe parallel read-only inspection.
+- [ ] Separate a stable cacheable instruction prefix from a compact structured
+  active-turn envelope; fingerprint composition and report each overhead section.
+- [ ] Add prompt snapshot/contract and behavioral fixtures; do not implement deferred
+  CWM history or compaction work.
+
+#### Phase 4 — CWM v2 separate-PR readiness and handoff
+
+- [ ] Treat Phase 4 in this branch as documentation/evidence handoff only. Begin CWM
+  v2 implementation only after this PR is independently verified, preferably from
+  its merged result, so the two change sets can be tested in isolation.
+- [ ] Lock the PR boundary: this branch owns reliability, persistence, reconnect,
+  request/tool-loop/cache performance, prompt engineering, accounting, and the
+  native-adjacency exception only.
+- [ ] Keep CWM v2 final-packet assembly, elastic budgets, historical tool-output
+  slimming, optional summarization, retrieval, compaction lifecycle, policies, and
+  persisted-session migration in a separate follow-up PR.
+- [ ] Update `context/tasks/CWM-v2.md` with verified post-fix evidence and retain
+  repeatable fresh/large/tool-heavy baselines plus request/adjacency/transcript/tool
+  output/attachment/replay fixtures.
+- [ ] Produce a `/goal`-ready follow-up brief with entry criteria, phases, tests,
+  migration/rollback plan, metrics, and exit criteria. Use branch `feat/CWM-v2` or
+  `Penguin-Context-Window-Manager-v2` when that follow-up begins.
+- [ ] Confirm this diff contains no CWM v2 implementation beyond native adjacency.
+
+#### Program exit criteria
+
+- [ ] No backend worker/provider path can wait or error-loop without a bound.
+- [ ] `no events` becomes a truthful stalled/degraded state with bounded visible
+  recovery; all non-completed reasons remain visible to the TUI.
+- [ ] 8080 verification cannot read as active state, lock, mutate, or contend with
+  9000 production runtime storage.
+- [ ] Checkpoint, ledger, transcript, session, backup, artifact, and log growth are
+  bounded; disk safety prevents another `ENOSPC` cascade.
+- [ ] Live UI delivery does not synchronously wait on per-event commits or large
+  session rewrites; local overhead is separately measured.
+- [ ] Durable cursor replay, canonical reconnect status, serialized atomic saves, and
+  canonical tool output pass concurrency/stress tests.
+- [ ] Native tool adjacency survives trimming/replay/provider sanitation.
+- [ ] Tool concurrency safety, iteration continuation, prompt cache affinity, prompt
+  modes, stable-prefix/active-turn composition, and full request accounting are
+  implemented and verified.
+- [ ] Public docs describe shipped runtime truth; focused fault/concurrency/TUI/stress
+  tests, relevant Bun suites, Ruff/format, and core pytest verification pass.
+- [ ] Record before/after evidence, commands, storage behavior, residual risks, and
+  the executable CWM v2 handoff before completing the goal.
+
 ### PR: CLI Workspace Semantics and Ergonomics
 
 **Status:** materially underway / first implementation slice exists

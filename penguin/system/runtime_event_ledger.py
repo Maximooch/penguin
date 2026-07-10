@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from penguin.config import WORKSPACE_PATH
+from penguin.system.runtime_diagnostics import record_runtime_duration
 from penguin.system.runtime_events import (
     RUNTIME_EVENT_SCHEMA_VERSION,
     redact_runtime_payload,
@@ -178,12 +179,33 @@ class RuntimeEventLedger:
             privacy = {}
         payload = event.get("payload")
         projections = event.get("projections")
+        serialization_started = time.perf_counter()
+        payload_json = _json_dump(payload if isinstance(payload, Mapping) else {})
+        projection_json = _json_dump(
+            projections if isinstance(projections, Mapping) else {}
+        )
+        event_json = _json_dump(dict(event))
+        record_runtime_duration(
+            "ledger.serialize",
+            (time.perf_counter() - serialization_started) * 1000,
+        )
 
         with self._lock:
+            connection_started = time.perf_counter()
             conn = self._thread_connection()
+            record_runtime_duration(
+                "ledger.connection",
+                (time.perf_counter() - connection_started) * 1000,
+            )
             try:
+                schema_started = time.perf_counter()
                 self._ensure_schema(conn)
+                record_runtime_duration(
+                    "ledger.schema",
+                    (time.perf_counter() - schema_started) * 1000,
+                )
                 before_changes = conn.total_changes
+                insert_started = time.perf_counter()
                 conn.execute(
                     """
                     INSERT OR IGNORE INTO runtime_events (
@@ -225,16 +247,28 @@ class RuntimeEventLedger:
                         _string_or_none(scope.get("directory")),
                         _string_or_none(privacy.get("classification")) or "public",
                         1 if privacy.get("redacted") else 0,
-                        _json_dump(payload if isinstance(payload, Mapping) else {}),
-                        _json_dump(
-                            projections if isinstance(projections, Mapping) else {}
-                        ),
-                        _json_dump(dict(event)),
+                        payload_json,
+                        projection_json,
+                        event_json,
                     ),
                 )
+                record_runtime_duration(
+                    "ledger.insert",
+                    (time.perf_counter() - insert_started) * 1000,
+                )
                 inserted = conn.total_changes > before_changes
+                cleanup_started = time.perf_counter()
                 self.cleanup_if_due(conn=conn)
+                record_runtime_duration(
+                    "ledger.cleanup",
+                    (time.perf_counter() - cleanup_started) * 1000,
+                )
+                commit_started = time.perf_counter()
                 conn.commit()
+                record_runtime_duration(
+                    "ledger.commit",
+                    (time.perf_counter() - commit_started) * 1000,
+                )
                 return inserted
             except Exception:
                 conn.rollback()

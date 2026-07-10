@@ -5,6 +5,7 @@ It uses the app factory from app.py to create and configure the FastAPI applicat
 """
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -17,6 +18,11 @@ from urllib.parse import quote
 
 from penguin.constants import DEFAULT_WEB_PORT
 from penguin.local_auth import is_web_auth_enabled, write_local_auth_token
+from penguin.web.runtime_storage import (
+    RuntimeStorageLayout,
+    RuntimeStorageLease,
+    resolve_runtime_storage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,8 +68,7 @@ def _resolve_server_log_path() -> Path:
     directory_override = os.environ.get("PENGUIN_WEB_LOG_DIR", "").strip()
     if directory_override:
         return (
-            Path(directory_override).expanduser().resolve()
-            / _new_server_log_filename()
+            Path(directory_override).expanduser().resolve() / _new_server_log_filename()
         )
 
     from penguin.config import get_workspace_root
@@ -238,6 +243,19 @@ def create_app_factory():
     return create_app()
 
 
+def _validate_app_factory_import() -> None:
+    """Validate web dependencies without constructing a reload-parent app."""
+
+    try:
+        from .app import create_app
+    except ImportError as exc:
+        raise ImportError(
+            "Web dependencies not available. Install with: pip install penguin-ai[web]"
+        ) from exc
+    if not callable(create_app):
+        raise RuntimeError("Penguin web application factory is not callable")
+
+
 def _display_host(host: str) -> str:
     """Return the user-facing host for startup messaging."""
     return "localhost" if host in {"0.0.0.0", "::", ""} else host
@@ -292,6 +310,15 @@ def _print_startup_banner(host: str, port: int) -> None:
     print("\n\033[96m=== Penguin Server ===\033[0m")
     print(f"\033[96mVisit http://{display_host}:{port} to start using Penguin!\033[0m")
     print(f"\033[96mAPI documentation: http://{display_host}:{port}/api/docs\033[0m\n")
+
+
+def _log_runtime_storage(layout: RuntimeStorageLayout) -> None:
+    """Log one privacy-safe storage ownership record at startup."""
+
+    logger.info(
+        "Penguin runtime storage: %s",
+        json.dumps(layout.to_diagnostics(), sort_keys=True),
+    )
 
 
 def _print_no_auth_warning(host: str, port: int) -> None:
@@ -384,52 +411,62 @@ def main(argv: Optional[Sequence[str]] = None):
         print("Install with: pip install penguin-ai[web]")
         return 1
 
+    storage_lease: Optional[RuntimeStorageLease] = None
     try:
         host, port, debug = _resolve_runtime_settings(argv)
+        storage_layout = resolve_runtime_storage(host=host, port=port)
+        storage_lease = RuntimeStorageLease(storage_layout).acquire()
         log_level = "debug" if debug else "info"
         log_config = _configure_server_file_logging(log_level)
+        _log_runtime_storage(storage_layout)
         app = None
         validate_startup_security(host)
         if debug:
-            create_app_factory()
+            _validate_app_factory_import()
         else:
             app = create_app_factory()
     except Exception as e:
+        if storage_lease is not None:
+            storage_lease.release()
         print(f"Error: Failed to initialize Penguin web application: {e}")
         return 1
 
-    _print_startup_banner(host, port)
-    auth_enabled = is_web_auth_enabled()
-    if auth_enabled:
-        _print_local_auth_bootstrap_banner(host, port)
-    else:
-        _print_no_auth_warning(host, port)
+    try:
+        _print_startup_banner(host, port)
+        auth_enabled = is_web_auth_enabled()
+        if auth_enabled:
+            _print_local_auth_bootstrap_banner(host, port)
+        else:
+            _print_no_auth_warning(host, port)
 
-    if debug:
+        if debug:
+            uvicorn.run(
+                "penguin.web.server:create_app_factory",
+                host=host,
+                port=port,
+                log_level=log_level,
+                log_config=log_config,
+                reload=True,
+                factory=True,
+            )
+            return 0
+
+        if app is None:
+            return 1
+
         uvicorn.run(
-            "penguin.web.server:create_app_factory",
+            app,
             host=host,
             port=port,
             log_level=log_level,
             log_config=log_config,
-            reload=True,
-            factory=True,
+            reload=False,
         )
+
         return 0
-
-    if app is None:
-        return 1
-
-    uvicorn.run(
-        app,
-        host=host,
-        port=port,
-        log_level=log_level,
-        log_config=log_config,
-        reload=False,
-    )
-
-    return 0
+    finally:
+        if storage_lease is not None:
+            storage_lease.release()
 
 
 def start_server(
@@ -449,31 +486,34 @@ def start_server(
             "Web dependencies not available. Install with: pip install penguin-ai[web]"
         ) from exc
 
-    log_level = "debug" if debug else "info"
-    log_config = _configure_server_file_logging(log_level)
-    validate_startup_security(host)
+    storage_layout = resolve_runtime_storage(host=host, port=port)
+    with RuntimeStorageLease(storage_layout):
+        log_level = "debug" if debug else "info"
+        log_config = _configure_server_file_logging(log_level)
+        _log_runtime_storage(storage_layout)
+        validate_startup_security(host)
 
-    if debug:
+        if debug:
+            uvicorn.run(
+                "penguin.web.server:create_app_factory",
+                host=host,
+                port=port,
+                log_level=log_level,
+                log_config=log_config,
+                reload=True,
+                factory=True,
+            )
+            return
+
+        app = create_app_factory()
         uvicorn.run(
-            "penguin.web.server:create_app_factory",
+            app,
             host=host,
             port=port,
             log_level=log_level,
             log_config=log_config,
-            reload=True,
-            factory=True,
+            reload=False,
         )
-        return
-
-    app = create_app_factory()
-    uvicorn.run(
-        app,
-        host=host,
-        port=port,
-        log_level=log_level,
-        log_config=log_config,
-        reload=False,
-    )
 
 
 if __name__ == "__main__":

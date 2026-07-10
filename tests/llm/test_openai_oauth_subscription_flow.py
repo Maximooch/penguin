@@ -14,6 +14,10 @@ from penguin.llm.contracts import (
     ProviderRequestStatus,
 )
 from penguin.llm.model_config import ModelConfig
+from penguin.system.runtime_diagnostics import (
+    RuntimeDiagnosticsRecorder,
+    runtime_diagnostics_scope,
+)
 from penguin.web.services.provider_auth import ProviderOAuthError
 
 from .codex_oauth_fixtures import (
@@ -29,6 +33,51 @@ from .codex_oauth_fixtures import (
     codex_text_delta as _codex_text_delta,
     install_oauth_codex_test_auth as _install_oauth_codex_test_auth,
 )
+
+
+@pytest.mark.asyncio
+async def test_codex_stream_records_content_free_request_stages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex streaming attributes setup, first-event, stream, and callback time."""
+
+    _install_oauth_codex_test_auth(monkeypatch)
+    transport = _FakeCodexTransport(
+        [_FakeResponse(200, lines=_codex_completed_text("diagnostic answer"))]
+    )
+    monkeypatch.setattr(
+        "penguin.llm.adapters.openai.httpx.AsyncClient",
+        transport.async_client_class(),
+    )
+    adapter = _codex_adapter()
+    recorder = RuntimeDiagnosticsRecorder(
+        request_id="codex-diagnostics",
+        session_id="session-diagnostics",
+    )
+    chunks: list[tuple[str, str]] = []
+
+    async def callback(chunk: str, message_type: str) -> None:
+        chunks.append((chunk, message_type))
+
+    with runtime_diagnostics_scope(recorder):
+        result = await adapter.get_response(
+            [{"role": "user", "content": "diagnostics request"}],
+            stream=True,
+            stream_callback=callback,
+        )
+    recorder.finish("completed")
+    snapshot = recorder.snapshot()
+
+    assert result == "diagnostic answer"
+    assert chunks == [("diagnostic answer", "assistant")]
+    assert set(snapshot["stages"]) >= {
+        "provider.setup",
+        "provider.wait_first_event",
+        "provider.stream",
+        "stream.callback",
+    }
+    assert snapshot["progress_age_ms"]["provider"] is not None
+    assert snapshot["progress_age_ms"]["ui"] is not None
 
 
 @pytest.mark.asyncio

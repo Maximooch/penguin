@@ -69,9 +69,20 @@ def list_checkpoints(
     )
 
 
-async def cleanup_old_checkpoints(conversation_manager: Any) -> int:
-    """Clean up old checkpoints according to retention policy."""
-    return await conversation_manager.cleanup_old_checkpoints()
+async def cleanup_old_checkpoints(
+    conversation_manager: Any,
+    *,
+    execute: bool = False,
+    confirmation: str | None = None,
+) -> dict[str, Any]:
+    """Plan cleanup by default or execute an explicitly confirmed plan."""
+
+    if not execute and confirmation is None:
+        return await conversation_manager.cleanup_old_checkpoints()
+    return await conversation_manager.cleanup_old_checkpoints(
+        execute=execute,
+        confirmation=confirmation,
+    )
 
 
 def get_checkpoint_stats(conversation_manager: Any) -> dict[str, Any]:
@@ -87,14 +98,19 @@ def get_checkpoint_stats(conversation_manager: Any) -> dict[str, Any]:
         }
 
     checkpoints = conversation_manager.list_checkpoints(limit=1000)
+    indexed_checkpoints = getattr(checkpoint_manager, "checkpoint_index", None)
     config = getattr(checkpoint_manager, "config", None)
     retention = getattr(config, "retention", None)
     if not isinstance(retention, dict):
         retention = {}
 
-    return {
+    payload = {
         "enabled": True,
-        "total_checkpoints": len(checkpoints),
+        "total_checkpoints": (
+            len(indexed_checkpoints)
+            if isinstance(indexed_checkpoints, dict)
+            else len(checkpoints)
+        ),
         "auto_checkpoints": len(
             [checkpoint for checkpoint in checkpoints if checkpoint.get("auto", False)]
         ),
@@ -118,3 +134,11 @@ def get_checkpoint_stats(conversation_manager: Any) -> dict[str, Any]:
             "max_age_days": retention.get("max_age_days"),
         },
     }
+    safety_method = getattr(
+        type(checkpoint_manager),
+        "get_storage_safety_status",
+        None,
+    )
+    if callable(safety_method):
+        payload["storage_safety"] = checkpoint_manager.get_storage_safety_status()
+    return payload

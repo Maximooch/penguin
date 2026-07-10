@@ -286,12 +286,16 @@ penguin-web
 ### TUI against a running development server
 
 ```bash
-HOST=127.0.0.1 PORT=8080 uv run penguin-web
+# Creates a unique isolated workspace and refuses to replace an existing 8080 owner.
+uv run python scripts/run_runtime_reliability_server.py
 uv run penguin --url http://127.0.0.1:8080 --no-web-autostart
 ```
 
-Use a non-reserved alternate port such as `8080` or `9010` when another Penguin
-backend is already using the default `9000` port.
+Port `9000` is the primary runtime and must not be repurposed for verification.
+Port `8080` is reserved for test servers. The supported runner isolates the
+workspace, conversations, checkpoints, logs, tool artifacts, auth/credential caches,
+and runtime-event ledger; a different port alone does not isolate those files. Use
+`--debug` for reload mode and `--describe` to inspect paths without starting a server.
 
 ---
 

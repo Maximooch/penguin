@@ -46,12 +46,15 @@ in terms of short/long term memory.
 
 
 import logging
+import os
+import time
 import warnings
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional, Union, Any, Callable, Tuple
 
 from penguin.system.state import Message, MessageCategory, Session
+from penguin.system.runtime_diagnostics import record_runtime_duration
 
 from penguin.constants import CONTEXT_UNCATEGORIZED_BUDGET_FRACTION
 
@@ -81,6 +84,17 @@ def _message_preview(value: Any, limit: int = 120) -> str:
     if len(text) <= limit:
         return text
     return text[: max(limit - 3, 0)] + "..."
+
+
+def _context_previews_enabled() -> bool:
+    """Return whether sensitive context previews are explicitly enabled."""
+
+    return os.getenv("PENGUIN_LOG_CONTEXT_PREVIEWS", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 @dataclass
@@ -820,6 +834,7 @@ class ContextWindowManager:
         Returns:
             Processed session (trimmed if needed)
         """
+        assembly_started = time.perf_counter()
         # Analyze token usage
         stats = self.analyze_session(session)
 
@@ -858,18 +873,23 @@ class ContextWindowManager:
         adjusted_total = stats["total_tokens"] - system_tokens
         adjusted_budget = self.max_context_window_tokens - system_tokens
         total_over_budget = adjusted_total > adjusted_budget
+        include_previews = _context_previews_enabled()
+        largest_candidates = []
+        for msg in session.messages:
+            candidate = {
+                "id": getattr(msg, "id", ""),
+                "role": getattr(msg, "role", ""),
+                "category": _category_name(getattr(msg, "category", None)),
+                "tokens": int(getattr(msg, "tokens", 0) or 0),
+                "chars": _content_chars(getattr(msg, "content", "")),
+            }
+            if include_previews:
+                candidate["preview"] = _message_preview(
+                    getattr(msg, "content", "")
+                )
+            largest_candidates.append(candidate)
         largest_messages = sorted(
-            [
-                {
-                    "id": getattr(msg, "id", ""),
-                    "role": getattr(msg, "role", ""),
-                    "category": _category_name(getattr(msg, "category", None)),
-                    "tokens": int(getattr(msg, "tokens", 0) or 0),
-                    "chars": _content_chars(getattr(msg, "content", "")),
-                    "preview": _message_preview(getattr(msg, "content", "")),
-                }
-                for msg in session.messages
-            ],
+            largest_candidates,
             key=lambda item: item["tokens"],
             reverse=True,
         )[:5]
@@ -1002,9 +1022,17 @@ class ContextWindowManager:
             for msg in trimmed_session.messages:
                 self.update_usage(msg.category, msg.tokens)
 
+            record_runtime_duration(
+                "context.process_session",
+                (time.perf_counter() - assembly_started) * 1000,
+            )
             return trimmed_session
 
         # If we get here, no trimming needed
+        record_runtime_duration(
+            "context.process_session",
+            (time.perf_counter() - assembly_started) * 1000,
+        )
         return session
 
     def format_token_usage(self) -> str:

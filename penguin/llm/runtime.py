@@ -7,6 +7,7 @@ import logging
 import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
+from penguin.system.runtime_diagnostics import record_runtime_duration
 from penguin.tools.runtime import (
     ORDERED_TOOL_BATCH_NAME,
     OrderedToolBatchPlan,
@@ -1109,6 +1110,11 @@ async def execute_pending_tool_calls(
                     }
                 )
         return []
+    finally:
+        record_runtime_duration(
+            "tool.batch",
+            (time.perf_counter() - batch_started) * 1000,
+        )
 
 
 def resolve_reasoning_payload(model_config: Any) -> Optional[Dict[str, Any]]:

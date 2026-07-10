@@ -38,6 +38,7 @@ _safe_open = builtins.open  # type: ignore[assignment]
 builtins.open = _safe_open  # type: ignore[attr-defined]
 
 from penguin.config import CONVERSATIONS_PATH
+from penguin.system.runtime_diagnostics import record_runtime_duration
 from penguin.system.state import Message, MessageCategory, Session, create_message
 from penguin.constants import DEFAULT_MAX_MESSAGES_PER_SESSION
 
@@ -441,6 +442,7 @@ class SessionManager:
         Returns:
             True if saved successfully, False otherwise
         """
+        save_started = time.perf_counter()
         # Guard against external tampering with the built-in open during runtime.
         import builtins as _blt
         if getattr(_blt, "open", None) is not _safe_open:
@@ -511,6 +513,11 @@ class SessionManager:
         except Exception as e:
             logger.error(f"Error saving session {session.id}: {str(e)}")
             return False
+        finally:
+            record_runtime_duration(
+                "session.save",
+                (time.perf_counter() - save_started) * 1000,
+            )
     
     def check_session_boundary(self, session: Optional[Session] = None) -> bool:
         """

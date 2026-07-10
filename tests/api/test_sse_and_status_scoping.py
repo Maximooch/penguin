@@ -15,7 +15,11 @@ from penguin.system.runtime_event_ledger import (
 )
 from penguin.system.runtime_events import reset_runtime_event_sequences
 from penguin.web.services.system_status import get_path_info
-from penguin.web.sse_events import events_sse, set_core_instance
+from penguin.web.sse_events import (
+    events_sse,
+    get_sse_connection_history,
+    set_core_instance,
+)
 
 
 def _install_test_ledger(core, tmp_path: Path, *, max_events: int = 100) -> None:
@@ -52,6 +56,51 @@ def _parse_sse(chunk: str) -> dict:
         if line.startswith("data: "):
             return json.loads(line[len("data: ") :])
     raise AssertionError(f"Missing data line in SSE chunk: {chunk}")
+
+
+@pytest.mark.asyncio
+async def test_sse_connection_history_is_bounded_and_content_free(
+    tmp_path: Path,
+) -> None:
+    """Connection diagnostics retain lifecycle truth without request content."""
+
+    event_bus = _EventBus()
+    core = SimpleNamespace(
+        event_bus=event_bus,
+        runtime_config=SimpleNamespace(
+            workspace_root=str(tmp_path),
+            project_root=str(tmp_path),
+            active_root=str(tmp_path),
+        ),
+        _opencode_session_directories={},
+    )
+    _install_test_ledger(core, tmp_path)
+    set_core_instance(core)
+
+    secret_session = "session-secret-never-export"
+    for _ in range(20):
+        response = await events_sse(
+            session_id=secret_session,
+            conversation_id=None,
+            agent_id=None,
+            directory=str(tmp_path),
+        )
+        stream = response.body_iterator
+        assert _parse_sse(await stream.__anext__())["type"] == "server.connected"
+        await stream.aclose()
+
+    history = get_sse_connection_history(core)
+    encoded = json.dumps(history, sort_keys=True)
+
+    assert len(history) == 64
+    assert {entry["state"] for entry in history} >= {
+        "attempt",
+        "connected",
+        "replay_skipped",
+        "disconnected",
+    }
+    assert secret_session not in encoded
+    assert str(tmp_path) not in encoded
 
 
 @pytest.mark.asyncio

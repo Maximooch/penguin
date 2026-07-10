@@ -3,6 +3,7 @@ import html
 import json
 import logging
 import os
+import time
 import uuid
 import yaml  # type: ignore
 from dataclasses import asdict, dataclass, field
@@ -12,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from penguin.config import CONVERSATION_CONFIG
+from penguin.system.runtime_diagnostics import record_runtime_duration
 from penguin.system.state import Message, MessageCategory, Session
 from penguin.utils.diagnostics import diagnostics
 
@@ -452,6 +454,7 @@ class ConversationSystem:
         Returns:
             List of formatted message dictionaries
         """
+        assembly_started = time.perf_counter()
         # Group by category
         categorized = {
             MessageCategory.SYSTEM: [],
@@ -572,6 +575,10 @@ class ConversationSystem:
         #     logger.error(f"Error logging formatted messages: {e}") # Log formatting errors too
         # --- End logging ---
 
+        record_runtime_duration(
+            "context.format_messages",
+            (time.perf_counter() - assembly_started) * 1000,
+        )
         return messages
 
     def _format_context_content_for_model(self, message: Message) -> Any:

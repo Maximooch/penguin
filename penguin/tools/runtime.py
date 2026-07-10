@@ -21,6 +21,10 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, Optional, Union, cast
 
 from penguin.system.execution_context import get_current_execution_context
+from penguin.system.runtime_diagnostics import (
+    mark_runtime_progress,
+    record_runtime_duration,
+)
 from penguin.utils.parser import CodeActAction, parse_action
 
 logger = logging.getLogger(__name__)
@@ -1463,6 +1467,8 @@ async def execute_tool_calls_serially(
                 output = await output
             ended_at = time.time()
             duration_ms = (time.perf_counter() - started_perf) * 1000
+            record_runtime_duration("tool.execution", duration_ms)
+            mark_runtime_progress("tool")
             if isinstance(output, ToolResult):
                 result = tool_result_with_model_output_policy(
                     output,
@@ -1541,6 +1547,8 @@ async def execute_tool_calls_serially(
                 break
         except Exception as exc:
             duration_ms = (time.perf_counter() - started_perf) * 1000
+            record_runtime_duration("tool.execution", duration_ms)
+            mark_runtime_progress("tool")
             logger.warning(
                 "tool.exec.error request=%s session=%s call_id=%s tool=%s "
                 "source=%s duration_ms=%.2f args_chars=%s error=%s",

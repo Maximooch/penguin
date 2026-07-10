@@ -25,7 +25,8 @@ Installation:
     ```
 """
 
-from typing import Optional
+from importlib import import_module
+from typing import Any, Optional
 
 from penguin.constants import DEFAULT_WEB_PORT
 
@@ -51,25 +52,35 @@ def get_web_app():
     return _web_app
 
 
-# Try to expose web components
-try:
-    from .app import create_app, PenguinAPI
-    from .routes import router as api_router
-    from .server import start_server, main
+__all__ = [
+    "PenguinAPI",
+    "PenguinWeb",
+    "api_router",
+    "create_app",
+    "get_web_app",
+    "main",
+    "start_server",
+]
 
-    __all__ = [
-        "create_app",
-        "PenguinAPI",
-        "api_router",
-        "start_server",
-        "main",
-        "get_web_app",
-        "PenguinWeb",
-    ]
 
-except ImportError:
-    # Web dependencies not available (minimal install)
-    __all__ = ["get_web_app"]
+def __getattr__(name: str) -> Any:
+    """Load optional web exports without importing config at package import time.
+
+    Keeping ``penguin.web`` lazy is a correctness requirement for the isolated
+    8080 launcher: its environment must be installed before application/config
+    modules resolve or create mutable workspace paths.
+    """
+
+    if name in {"create_app", "PenguinAPI"}:
+        value = getattr(import_module(".app", __name__), name)
+    elif name == "api_router":
+        value = getattr(import_module(".routes", __name__), "router")
+    elif name in {"start_server", "main"}:
+        value = getattr(import_module(".server", __name__), name)
+    else:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    globals()[name] = value
+    return value
 
 
 class PenguinWeb:
@@ -87,7 +98,8 @@ class PenguinWeb:
         self.app = get_web_app()
         if not self.app:
             raise ImportError(
-                "Web dependencies not available. Install with: pip install penguin-ai[web]"
+                "Web dependencies not available. Install with: "
+                "pip install penguin-ai[web]"
             )
 
     def run(self, **kwargs):
