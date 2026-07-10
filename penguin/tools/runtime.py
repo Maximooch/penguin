@@ -9,6 +9,7 @@ from __future__ import annotations
 
 # Keep Optional/Union annotations for Python 3.9 compatibility.
 # ruff: noqa: UP007
+import asyncio
 import hashlib
 import inspect
 import json
@@ -254,6 +255,7 @@ class ToolExecutionPolicy:
     max_output_chars: Optional[int] = None
     artifact_dir: Optional[Union[str, Path]] = None
     truncation_direction: Literal["head", "tail", "middle"] = "tail"
+    allow_parallel: bool = True
 
 
 @dataclass(frozen=True)
@@ -1030,7 +1032,10 @@ def tool_call_with_schedule_metadata(
     inferred_resources = infer_tool_resources(tool_call)
     mutates_state = metadata.get("mutates_state", tool_call.mutates_state)
     requires_approval = metadata.get("requires_approval", tool_call.requires_approval)
-    parallel_safe = metadata.get("parallel_safe", tool_call.parallel_safe)
+    parallel_safe = metadata.get(
+        "parallel_safe",
+        tool_call.parallel_safe or inferred_effect == "read",
+    )
     long_running = metadata.get("long_running", tool_call.long_running)
     streams_output = metadata.get("streams_output", tool_call.streams_output)
     if inferred_effect == "read" and not metadata:
@@ -1434,6 +1439,34 @@ async def execute_tool_calls_serially(
     results: list[ToolResult] = []
     selected_calls = select_ordered_tool_calls_for_policy(tool_calls, active_policy)
     parallel_decision = parallel_schedule_decision(selected_calls)
+    if (
+        active_policy.allow_parallel
+        and not active_policy.stop_on_error
+        and len(selected_calls) > 1
+        and parallel_decision.allowed
+    ):
+        logger.info(
+            "tool.batch.schedule mode=parallel count=%s reason=%s",
+            len(selected_calls),
+            parallel_decision.reason,
+        )
+        started = time.perf_counter()
+        child_policy = replace(active_policy, max_calls=None, allow_parallel=False)
+        parallel_results = await asyncio.gather(
+            *(
+                execute_tool_calls_serially(
+                    [tool_call],
+                    execute_call,
+                    policy=child_policy,
+                )
+                for tool_call in selected_calls
+            )
+        )
+        record_runtime_duration(
+            "tool.schedule",
+            (time.perf_counter() - started) * 1000,
+        )
+        return [result for batch in parallel_results for result in batch]
     if selected_calls:
         logger.info(
             "tool.batch.schedule mode=ordered count=%s parallel_allowed=%s reason=%s "
@@ -1597,7 +1630,12 @@ async def execute_tool_calls_ordered(
 ) -> list[ToolResult]:
     """Execute a dependent multi-tool batch in deterministic serial order."""
 
-    return await execute_tool_calls_serially(tool_calls, execute_call, policy=policy)
+    ordered_policy = replace(policy or ToolExecutionPolicy(), allow_parallel=False)
+    return await execute_tool_calls_serially(
+        tool_calls,
+        execute_call,
+        policy=ordered_policy,
+    )
 
 
 def tool_call_from_responses_info(tool_info: dict[str, Any]) -> Optional[ToolCall]:

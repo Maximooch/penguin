@@ -22,6 +22,7 @@ from penguin.tools.runtime import (
     ToolExecutionPolicy,
     ToolResult,
     execute_tool_calls_ordered,
+    execute_tool_calls_serially,
     legacy_action_result_from_tool_result,
     ordered_tool_batch_preflight_error_result,
     ordered_tool_batch_result_from_results,
@@ -1411,6 +1412,10 @@ async def execute_pending_tool_calls(
                 tool_call,
                 record_name="native tool-call record",
             )
+    record_runtime_duration(
+        "tool.queue",
+        (time.perf_counter() - batch_started) * 1000,
+    )
 
     parsed_args_by_id: Dict[str, Dict[str, Any]] = {}
     raw_args_by_id: Dict[str, str] = {}
@@ -1488,7 +1493,8 @@ async def execute_pending_tool_calls(
                 parsed_args_by_id.get(current_tool_call.id, {}),
             )
 
-        scheduler_results = await execute_tool_calls_ordered(
+        schedule_started = time.perf_counter()
+        scheduler_results = await execute_tool_calls_serially(
             tool_calls,
             _execute_scheduled_tool_call,
             policy=ToolExecutionPolicy(
@@ -1504,6 +1510,10 @@ async def execute_pending_tool_calls(
                 truncation_direction=base_policy.truncation_direction,
             ),
         )
+        record_runtime_duration(
+            "tool.batch.schedule",
+            (time.perf_counter() - schedule_started) * 1000,
+        )
         if not scheduler_results:
             logger.info(
                 "llm.tool_batch.done provider=%s model=%s count=%s results=0 "
@@ -1514,6 +1524,7 @@ async def execute_pending_tool_calls(
                 (time.perf_counter() - batch_started) * 1000,
             )
             return []
+        persistence_started = time.perf_counter()
         action_results: List[Dict[str, Any]] = []
         native_batch_calls: List[ToolCall] = []
         native_batch_results: List[Dict[str, Any]] = []
@@ -1590,6 +1601,10 @@ async def execute_pending_tool_calls(
             action_results.append(
                 legacy_action_result if suppress_ui_artifacts else runtime_action_result
             )
+        record_runtime_duration(
+            "tool.persistence",
+            (time.perf_counter() - persistence_started) * 1000,
+        )
         if native_batch_calls and persist_native_tool_batch is not None:
             try:
                 persisted = persist_native_tool_batch(

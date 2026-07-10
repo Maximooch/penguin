@@ -5,12 +5,12 @@ import logging
 import pytest
 
 from penguin.llm.api_client import APIClient
-from penguin.llm.model_config import ModelConfig
 from penguin.llm.contracts import (
     LLMPreparedRequest,
     LLMProviderCapabilities,
     stable_payload_hash,
 )
+from penguin.llm.model_config import ModelConfig
 
 from .provider_contract_fixtures import (
     ANTHROPIC_USAGE,
@@ -111,6 +111,32 @@ async def test_openai_family_prepares_responses_request(
     assert prepared.body["tool_choice"] == "auto"
     assert prepared.capabilities is not None
     assert prepared.capabilities.native_tools is True
+    assert prepared.capabilities.prompt_cache is True
+
+
+@pytest.mark.asyncio
+async def test_openai_prepared_request_keeps_prompt_cache_affinity_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_OAUTH_ACCESS_TOKEN", raising=False)
+    monkeypatch.setattr(
+        "penguin.llm.adapters.openai.get_provider_credential",
+        lambda _provider_id: None,
+    )
+    handler = build_openai_handler(
+        provider="openai",
+        stream_events=[],
+        final_text="answer",
+        usage=OPENAI_USAGE,
+    )
+
+    prepared = await handler.prepare_request(
+        _messages(),
+        stream=True,
+        prompt_cache_key="penguin_0123456789abcdef",
+    )
+
+    assert prepared.body["prompt_cache_key"] == "penguin_0123456789abcdef"
 
 
 @pytest.mark.asyncio

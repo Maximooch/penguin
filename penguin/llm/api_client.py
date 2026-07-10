@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import io
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -33,6 +34,7 @@ from .contracts import (
 )
 from .litellm_support import load_litellm_gateway_class, load_litellm_module
 from .model_config import ModelConfig
+from .prompt_cache import build_prompt_cache_key
 from .provider_registry import ProviderRegistry
 from .provider_transform import apply_model_config_transforms, build_llm_error
 
@@ -302,6 +304,8 @@ class APIClient:
         self.client_handler = None  # Will be set based on preference
         self._last_error: Optional[LLMError] = None
         self._last_response_result: Optional[LLMCallResult] = None
+        self._last_prompt_cache_key: Optional[str] = None
+        self._last_request_accounting: Dict[str, Any] = {}
         self._base_url = base_url
         self._extra_headers = dict(extra_headers or {})
         self.provider_registry = ProviderRegistry(
@@ -519,6 +523,11 @@ class APIClient:
             return None
         return self._last_response_result
 
+    def get_last_request_accounting(self) -> Dict[str, Any]:
+        """Return privacy-safe size and usage boundaries for the last request."""
+
+        return dict(getattr(self, "_last_request_accounting", {}))
+
     def _handler_has_pending_tool_call(self) -> bool:
         handler = getattr(self, "client_handler", None)
         getter = getattr(handler, "has_pending_tool_call", None)
@@ -529,6 +538,52 @@ class APIClient:
         except Exception:
             self.logger.debug("Failed to inspect handler pending tool call")
             return False
+
+    def _with_prompt_cache_key(
+        self,
+        kwargs: Dict[str, Any],
+        *,
+        session_id: str | None = None,
+    ) -> Dict[str, Any]:
+        """Attach OpenAI cache affinity without leaking raw session ids."""
+
+        resolved = dict(kwargs)
+        provider = str(getattr(self.model_config, "provider", "") or "").lower()
+        if provider not in {"openai", "openai_compatible"}:
+            self._last_prompt_cache_key = None
+            return resolved
+        if session_id is None:
+            try:
+                from penguin.system.execution_context import (
+                    get_current_execution_context,
+                )
+
+                context = get_current_execution_context()
+                session_id = (
+                    context.session_id or context.conversation_id
+                    if context is not None
+                    else None
+                )
+            except Exception:
+                session_id = None
+        variant = resolved.get("variant") or resolved.get("reasoning_effort")
+        previous_key = getattr(self, "_last_prompt_cache_key", None)
+        key = build_prompt_cache_key(
+            session_id=session_id,
+            provider=provider,
+            model=getattr(self.model_config, "model", None),
+            variant=str(variant) if variant is not None else None,
+        )
+        self._last_prompt_cache_key = key
+        if previous_key and previous_key != key:
+            self.logger.info(
+                "llm.prompt_cache.boundary provider=%s model=%s reason=variant_or_session_changed",
+                provider,
+                getattr(self.model_config, "model", None),
+            )
+        if key is not None:
+            resolved.setdefault("prompt_cache_key", key)
+        return resolved
 
     def _handler_network_attempt_count(self) -> int:
         """Return physical sends reported by the active provider handler."""
@@ -577,6 +632,16 @@ class APIClient:
             )
 
         resolved_provider_data = dict(provider_data or {})
+        prompt_cache_key = getattr(self, "_last_prompt_cache_key", None)
+        if prompt_cache_key:
+            resolved_provider_data.setdefault(
+                "prompt_cache_key", prompt_cache_key
+            )
+        request_accounting = getattr(self, "_last_request_accounting", {})
+        if request_accounting:
+            resolved_provider_data.setdefault(
+                "request_accounting", dict(request_accounting)
+            )
         if resolved_error is not None:
             network_attempts = resolved_error.provider_data.get("network_attempts")
             if network_attempts is not None:
@@ -673,6 +738,7 @@ class APIClient:
             stream if stream is not None else self.model_config.streaming_enabled
         )
         prepared_messages = self._prepare_messages_with_system_prompt(messages)
+        kwargs = self._with_prompt_cache_key(kwargs)
         preparer = getattr(self.client_handler, "prepare_request", None)
         if not callable(preparer):
             raise RuntimeError(
@@ -808,6 +874,8 @@ class APIClient:
             request_id_ctx = None
             session_id_ctx = None
 
+        kwargs = self._with_prompt_cache_key(kwargs, session_id=session_id_ctx)
+
         request_id_api = request_id_ctx or os.urandom(4).hex()
         self._last_error = None
         self._last_response_result = None
@@ -858,6 +926,52 @@ class APIClient:
                 f"[Request:{request_id_api}] Error creating safe log/counting tokens for prepared_messages: {log_err}"
             )
         # >>>------------------------------------------- >>>
+
+        system_chars = sum(
+            len(str(message.get("content") or ""))
+            for message in prepared_messages
+            if message.get("role") == "system"
+        )
+        message_chars = sum(
+            len(str(message.get("content") or "")) for message in prepared_messages
+        )
+        tool_schemas = kwargs.get("tools")
+        tool_schema_chars = len(
+            json.dumps(tool_schemas, default=str, separators=(",", ":"))
+        ) if tool_schemas is not None else 0
+        provider_framing_chars = max(
+            0,
+            len(json.dumps(prepared_messages, default=str, separators=(",", ":")))
+            - message_chars,
+        )
+        self._last_request_accounting = {
+            "message_count": len(prepared_messages),
+            "system_chars": system_chars,
+            "message_chars": message_chars,
+            "tool_schema_count": len(tool_schemas)
+            if isinstance(tool_schemas, list)
+            else 0,
+            "tool_schema_chars": tool_schema_chars,
+            "provider_framing_chars": provider_framing_chars,
+            "estimated_input_tokens": estimated_input_tokens,
+            "max_output_tokens": max_output_tokens,
+            "prompt_cache_key": self._last_prompt_cache_key,
+        }
+        self.logger.info(
+            "request.accounting request=%s session=%s messages=%s system_chars=%s "
+            "message_chars=%s tool_schemas=%s tool_schema_chars=%s "
+            "provider_framing_chars=%s estimated_input_tokens=%s cache_affinity=%s",
+            request_id_api,
+            session_id_ctx,
+            len(prepared_messages),
+            system_chars,
+            message_chars,
+            self._last_request_accounting["tool_schema_count"],
+            tool_schema_chars,
+            provider_framing_chars,
+            estimated_input_tokens,
+            bool(self._last_prompt_cache_key),
+        )
 
         try:
             # --- Ideal Flow (Enforce Interface - See Step 2) ---

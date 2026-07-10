@@ -816,6 +816,7 @@ class OpenAIAdapter(BaseAdapter):
             model=str(getattr(self.model_config, "model", "") or ""),
             native_tools=True,
             streaming=bool(getattr(self.model_config, "streaming_enabled", True)),
+            prompt_cache=True,
             reasoning=bool(
                 getattr(self.model_config, "reasoning_enabled", False)
                 or self.model_config.get_reasoning_config()
@@ -854,6 +855,7 @@ class OpenAIAdapter(BaseAdapter):
         tools: Optional[List[Dict[str, Any]]],
         tool_choice: Optional[Union[str, Dict[str, Any]]],
         service_tier: Optional[str],
+        prompt_cache_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Build the native Responses API request body."""
 
@@ -896,6 +898,8 @@ class OpenAIAdapter(BaseAdapter):
             request_params["tool_choice"] = tool_choice
         if service_tier:
             request_params["service_tier"] = service_tier
+        if prompt_cache_key:
+            request_params["prompt_cache_key"] = prompt_cache_key
 
         try:
             uses_effort_style = bool(self.model_config._uses_effort_style())
@@ -935,6 +939,7 @@ class OpenAIAdapter(BaseAdapter):
         tools = normalize_openai_responses_tools(kwargs.get("tools"))
         tool_choice = normalize_openai_responses_tool_choice(kwargs.get("tool_choice"))
         service_tier = self._get_service_tier()
+        prompt_cache_key = kwargs.get("prompt_cache_key")
 
         oauth_record = self._peek_oauth_record_for_prepare()
         if oauth_record is not None:
@@ -982,6 +987,7 @@ class OpenAIAdapter(BaseAdapter):
             tools=tools,
             tool_choice=tool_choice,
             service_tier=service_tier,
+            prompt_cache_key=prompt_cache_key,
         )
         return LLMPreparedRequest(
             provider=self.provider,
@@ -1051,6 +1057,7 @@ class OpenAIAdapter(BaseAdapter):
         tools = normalize_openai_responses_tools(kwargs.get("tools"))
         tool_choice = normalize_openai_responses_tool_choice(kwargs.get("tool_choice"))
         service_tier = self._get_service_tier()
+        prompt_cache_key = kwargs.get("prompt_cache_key")
 
         oauth_record = await self._resolve_oauth_record_for_request()
         if oauth_record is not None:
@@ -1106,6 +1113,7 @@ class OpenAIAdapter(BaseAdapter):
             tools=tools,
             tool_choice=tool_choice,
             service_tier=service_tier,
+            prompt_cache_key=prompt_cache_key,
         )
 
         self._start_request_lifecycle(

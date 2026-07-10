@@ -214,18 +214,25 @@ explicitly retained as a CWM-adjacent follow-up fixture rather than silently rew
 
 #### Phase 3 — Tool-loop, request, and cache performance
 
-- [ ] Parallelize independent read-only inspection while serializing mutation, Git,
+- [x] Parallelize independent read-only inspection while serializing mutation, Git,
   process control, installs, tests, and order-dependent tools.
-- [ ] Measure queue/schedule/event/persistence separately from tool execution and use
+- [x] Measure queue/schedule/event/persistence separately from tool execution and use
   ordered native batching where required.
-- [ ] Replace the silent 100-iteration mismatch with a documented cap/continuation
-  contract and visible stale/repeated-tool-loop detection.
-- [ ] Measure system prompt, messages, tool schemas, provider framing, input/cached
+- [x] Replace the silent 100-iteration mismatch with the existing documented
+  cap/continuation contract and visible stale/repeated-tool-loop detection.
+- [x] Measure system prompt, messages, tool schemas, provider framing, input/cached
   input/output/reasoning, and service-tier/model-variant boundaries per request.
-- [ ] Add a bounded stable session-scoped OpenAI `prompt_cache_key`, distinct between
+- [x] Add a bounded stable session-scoped OpenAI `prompt_cache_key`, distinct between
   sessions, while preserving prefix stability and explicit cache-boundary events.
-- [ ] Reuse provider clients/connections where safe rather than recreating them every
-  iteration.
+- [x] Reuse provider clients/connections where safe rather than recreating them every
+  iteration; native adapters already own reusable clients and HTTP fallbacks use the
+  shared connection pool.
+
+Phase 3 evidence is retained at
+`context/tasks/evidence/runtime-reliability-phase3-baseline.json`; the focused gate
+also covers 147 provider/tool/cache tests. The deterministic fresh and large-session
+8080 harness records separate tool queue, schedule, execution, persistence, provider,
+session-save, ledger, and request timings without starting a network server.
 
 #### Phase 3.5 — Prompt and immediate-context engineering
 
