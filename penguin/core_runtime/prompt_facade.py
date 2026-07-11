@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from penguin.system_prompt import get_system_prompt
+from penguin.system_prompt import get_system_prompt, normalize_prompt_mode
 
 from . import prompt_settings as core_prompt_settings
 
@@ -22,6 +22,7 @@ class PromptCoreFacade:
             self,
             mode,
             get_system_prompt=get_system_prompt,
+            normalize_prompt_mode=normalize_prompt_mode,
             logger=logger,
         )
 

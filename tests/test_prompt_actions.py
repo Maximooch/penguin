@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from penguin.prompt_actions import get_tool_guide
+from penguin.prompt_actions import get_runtime_tool_protocol, get_tool_guide
 from penguin.prompt_workflow import get_workflow_guide
 from penguin.tools.editing.registry import (
     get_edit_tool_public_names,
@@ -79,3 +79,12 @@ def test_tool_guide_documents_skills_tools_and_rules() -> None:
     assert "### activate_skill" in guide
     assert "Activated skill content is `CONTEXT`, not `SYSTEM`" in guide
     assert "Do not activate every skill" in guide
+
+
+def test_runtime_tool_protocol_keeps_only_always_relevant_contracts() -> None:
+    protocol = get_runtime_tool_protocol()
+
+    assert "## Tool Invocation Protocol" in protocol
+    assert "## Completion Signals" in protocol
+    assert "### pydoll_browser_navigate" not in protocol
+    assert "### spawn_sub_agent" not in protocol

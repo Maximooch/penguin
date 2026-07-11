@@ -21,7 +21,7 @@ EngineSettingsFactory = Callable[..., Any]
 RuntimeConfigFactory = Callable[[dict[str, Any]], Any]
 ModelConfigFactory = Callable[..., Any]
 ToolManagerFactory = Callable[..., Any]
-SystemPromptBuilder = Callable[[str], str]
+SystemPromptBuilder = Callable[..., str]
 OutputFormatter = Callable[[str], Any]
 EnvLoader = Callable[[], Any]
 ProgressCallback = Callable[[int, int, str], Any]
@@ -883,15 +883,23 @@ def initialize_prompt_and_output_state(
     output_config = getattr(owner.config, "output", None)
     owner.show_tool_results = _resolve_show_tool_results(output_config, raw_config)
     owner.prompt_mode = _resolve_prompt_mode(raw_config)
+    owner.git_attribution_prompt = _resolve_git_attribution_prompt(raw_config)
     owner.output_style = _apply_output_style(
         output_config,
         raw_config,
         set_output_formatting=set_output_formatting,
     )
     try:
-        owner.system_prompt = get_system_prompt(owner.prompt_mode)
+        owner.system_prompt = get_system_prompt(
+            owner.prompt_mode,
+            output_style=owner.output_style,
+            git_attribution_prompt=owner.git_attribution_prompt,
+        )
     except Exception:
         owner.system_prompt = fallback_system_prompt
+    api_client = getattr(owner, "api_client", None)
+    if api_client and hasattr(api_client, "set_system_prompt"):
+        api_client.set_system_prompt(owner.system_prompt)
 
 
 def _resolve_show_tool_results(output_config: Any, raw_config: Any) -> bool:
@@ -922,7 +930,31 @@ def _resolve_prompt_mode(raw_config: Any) -> str:
         mode = str(raw_config.get("prompt", {}).get("mode", "direct")).strip().lower()
     except Exception:
         mode = "direct"
-    return mode or "direct"
+    try:
+        from penguin.prompt.profiles import normalize_prompt_mode
+
+        return normalize_prompt_mode(mode or "direct")
+    except ValueError:
+        return "direct"
+
+
+def _resolve_git_attribution_prompt(raw_config: Any) -> bool:
+    """Return whether Git attribution guidance belongs in the active prompt."""
+
+    try:
+        value = raw_config.get("git", {}).get("attribution", {}).get("prompt", True)
+    except Exception:
+        return True
+
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+    return True
 
 
 def _apply_output_style(

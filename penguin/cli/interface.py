@@ -1389,7 +1389,10 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
             current_mode = self.core.get_prompt_mode()
 
             # Rebuild prompt with latest rules
-            new_prompt = get_system_prompt(current_mode)
+            new_prompt = get_system_prompt(
+                current_mode,
+                output_style=self.core.get_output_style(),
+            )
 
             # Update in Core and ConversationManager
             self.core.set_system_prompt(new_prompt)

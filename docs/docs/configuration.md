@@ -59,6 +59,57 @@ curl -X POST http://127.0.0.1:9000/api/v1/system/config/execution-mode \
 
 See [Runtime Configuration API](api_reference/api_server.md#runtime-configuration-management) for full API documentation.
 
+## Prompt Modes
+
+Penguin renders one focused system prompt per task mode instead of applying one
+large workflow manual to every turn. Configure the default in `config.yml` or
+switch it for the active session with `/mode set <mode>`.
+
+```yaml
+prompt:
+  mode: direct
+```
+
+| Mode | Use it for |
+| --- | --- |
+| `direct` | Lean default: smallest excellent change, evidence, and explicit completion. |
+| `implement` / `test` / `research` / `review` | Focused implementation, validation, investigation, or normal quality review. |
+| `product` | User-facing work requiring complete interaction states and appropriate visual verification. |
+| `rigorous` | Persistence, permissions, concurrency, provider/runtime behavior, and destructive operations. |
+| `complexity_review` | Ponytail-inspired delete-list review for unnecessary complexity only; it does not replace correctness review. |
+| `terse`, `explain`, `bench_minimal` | Response-shape variants that retain the runtime and completion contract. |
+
+`lean` aliases `direct`; `ponytail` aliases `complexity_review`. Unknown modes
+are rejected rather than silently claiming a mode that was not rendered.
+
+Prompt modes do not create default execution limits. An unconfigured goal still
+continues until completion, interruption, required input, or a real
+external/runtime failure. Configured token, iteration, and time limits remain
+explicit runtime contracts.
+
+## Git Attribution Prompt
+
+Penguin includes a commit-attribution reminder by default. It asks the agent to
+add this trailer when it creates a commit:
+
+```text
+Co-authored-by: Penguin <penguin@penguinagents.com>
+```
+
+This is prompt guidance only: it does not alter Git identity, rewrite existing
+commits, or guarantee attribution for arbitrary shell commands. Disable the
+reminder locally or per project with:
+
+```yaml
+git:
+  attribution:
+    prompt: false
+```
+
+For example, `/config --global set git.attribution.prompt false` persists the
+setting in the user configuration. Restart Penguin or begin a new runtime for
+the changed prompt to take effect.
+
 ## Configuration Methods
 
 ### 1. Environment Variables
@@ -194,7 +245,7 @@ project:
     workspace: ./projects
     write_root: project  # Default execution mode: 'project' (set to workspace to isolate)
     auto_checkpoint: true
-    max_iterations: 10
+    # max_iterations: 10  # Optional explicit task limit; unset is unbounded
   constraints:
     max_projects: 100
     max_tasks_per_project: 500
@@ -418,8 +469,8 @@ project:
 ```yaml
 project:
   execution:
-    max_iterations: 10
-    timeout_minutes: 60
+    # max_iterations: 10  # Optional explicit task limit; unset is unbounded
+    # timeout_minutes: 60  # Optional explicit wall-clock limit; unset is unbounded
     auto_checkpoint: true
     
     # Resource constraints

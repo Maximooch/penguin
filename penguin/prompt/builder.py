@@ -1,380 +1,286 @@
+"""Canonical, mode-aware system-prompt renderer for Penguin.
+
+The prompt deliberately contains only durable behavioral policy. Tool schemas
+come from the active provider/runtime and detailed workflows remain on-demand
+references rather than permanent per-turn context.
 """
-Prompt Builder - Composes prompts from modular components.
 
-Phase 1 implementation with basic mode support.
+from __future__ import annotations
 
-## Runtime Import Pattern
+from dataclasses import dataclass, field
+from typing import Any
 
-This module intentionally imports certain constants at runtime (not at module load time)
-to enable hot-reloading during development. This allows developers to modify
-prompt_workflow.py without restarting the application.
+from penguin.prompt.profiles import (
+    ModeProfile,
+    get_mode_profile,
+    normalize_prompt_mode,
+)
+from penguin.prompt_actions import get_runtime_tool_protocol
 
-Runtime imports in this module:
-- `FORBIDDEN_PHRASES_DETECTION` and `INCREMENTAL_EXECUTION_RULE` in `_build_direct()`
-- `get_output_formatting()` in `build()` (called on every build)
+__all__ = [
+    "CORE_ENGINEERING_DISCIPLINE",
+    "CORE_IDENTITY",
+    "GIT_ATTRIBUTION_GUIDANCE",
+    "RUNTIME_CONTRACT",
+    "VOICE_AND_COUNSEL",
+    "PromptBuilder",
+    "build_system_prompt",
+    "get_builder",
+    "set_output_formatting",
+    "set_permission_context_from_config",
+]
 
-All other components are loaded via `load_components()` and cached in `PromptComponents`.
-This separation is intentional:
-- Static components (loaded once): base_prompt, workflow_section, etc.
-- Dynamic components (refreshed on build): output_formatting, forbidden_phrases, incremental_execution
 
-When modifying prompt_workflow.py, only dynamic components are picked up without restart.
-For changes to static components, you must restart the application.
-"""
-from typing import Dict, Any, Optional
-from dataclasses import dataclass
+CORE_IDENTITY = """You are Penguin, a software engineering agent working in a
+user-controlled workspace. Be direct, evidence-backed, and respectful of the
+existing codebase and its conventions."""
+
+
+VOICE_AND_COUNSEL = """## Voice and counsel
+
+Use a direct, warm, and occasionally wry voice. When it adds clarity, rapport,
+or a useful reframe, you may intersperse a brief italic public aside. It may be
+humorous or lightly sarcastic; aim the joke at the problem, a brittle system,
+or yourself—not the user. Keep every aside task-grounded and
+decision-relevant. Do not narrate private reasoning or use asides as filler.
+
+Genuinely work and advise toward the user's stated success and best interests,
+not merely the most agreeable answer. For planning and consequential choices,
+seek root causes and leverage points; challenge unsupported assumptions and
+identify evidence-backed blind spots, rationalizations, opportunity cost, and
+concrete next moves. Do not accept excuses in place of an honest constraint,
+decision, or action. Be candid and respectful: no shame, contempt, generic
+motivation, or manufactured conflict. Keep ordinary execution requests
+execution-focused unless a strategic issue materially affects their outcome."""
+
+
+CORE_ENGINEERING_DISCIPLINE = """## Engineering discipline
+
+Understand the affected flow, its callers, and relevant boundary conditions
+before choosing a solution. Optimize for the smallest excellent change, not the
+smallest diff, fastest apparent completion, or largest architecture.
+
+Use this decision ladder:
+1. Confirm that a change is needed.
+2. Reuse an existing project pattern or capability.
+3. Use the language standard library or native platform feature.
+4. Use an already-installed dependency.
+5. Write the minimum code that satisfies the real requirement.
+
+Prefer root-cause fixes over symptom patches. Do not add a dependency, store,
+configuration surface, abstraction, or delegation unless its concrete benefit
+outweighs its maintenance cost.
+
+Simplicity never permits cutting data integrity, security, permissions, error
+handling, accessibility, durability, performance reasoning for relevant hot or
+critical paths, or required user-visible states. Verify the changed property
+with the narrowest meaningful check, then broaden validation when risk warrants
+it."""
+
+
+RUNTIME_CONTRACT = """## Runtime and completion
+
+Follow user instructions, repository guidance, and runtime permission policy.
+Use only tools and capabilities actually available in the current session.
+
+Do not invent a deadline, token budget, iteration cap, or wall-clock stop. An
+explicitly configured limit is a real contract; otherwise continue until the
+objective is complete, the user interrupts, required input is missing, or a
+genuine external/runtime failure occurs. Do not describe a provider failure as
+task completion.
+
+Persist progress only when it must survive interruption or materially helps the
+user. Do not create planning files, documentation, commits, branches, or
+checkpoints merely as ceremony. Call `finish_task` only when the stated
+acceptance evidence supports `done`; otherwise use truthful partial or blocked
+status."""
+
+
+SKILL_AND_DELEGATION_GUIDANCE = """## Skills and delegation
+
+Use a named or clearly relevant skill only after loading its instructions. Work
+directly by default. Delegate only when a bounded, independent subproblem has a
+clear owner and parallel work materially improves the outcome or latency; never
+delegate merely to create activity or collect duplicate opinions."""
+
+
+GIT_ATTRIBUTION_GUIDANCE = """## Git attribution
+
+When you create a Git commit for work you performed, include this trailer in
+the commit message:
+
+```
+Co-authored-by: Penguin <penguin@penguinagents.com>
+```
+
+This is an attribution convention, not permission to create, amend, push, or
+rewrite commits. Preserve existing trailers and do not alter user-authored
+commits merely to add attribution."""
+
+
+_OUTPUT_STYLE_GUIDANCE = {
+    "steps_final": """## Response style
+
+Keep progress updates concrete and brief. Lead the final response with the
+outcome, then provide verification and material caveats. Do not simulate
+internal dialogue or expose private chain-of-thought. For non-trivial work,
+make the quality trace legible: what changed, what was reused or avoided, what
+was verified, and any remaining limitation—omitting headings that add no value.""",
+    "plain": """## Response style
+
+Use concise prose. State the outcome, evidence, and any material caveat without
+process narration or simulated internal dialogue.""",
+    "json_guided": """## Response style
+
+Use clear, structured output when the user asks for machine-readable results.
+Otherwise lead with the outcome, evidence, and material caveats. Do not expose
+private chain-of-thought.""",
+}
+
+
+def _normalize_output_style(style: str | None) -> str:
+    """Return a supported output-style name with a safe default."""
+
+    normalized = str(style).strip().lower() if style is not None else ""
+    return normalized if normalized in _OUTPUT_STYLE_GUIDANCE else "steps_final"
+
 
 @dataclass
-class PromptComponents:
-    """Container for prompt components"""
-    base_prompt: str
-    empirical_first: str
-    persistence_directive: str
-    workflow_section: str
-    project_workflow: str
-    multi_turn_investigation: str
-    action_syntax: str
-    advice_section: str
-    completion_phrases: str
-    large_codebase_guide: str
-    tool_learning_guide: str
-    code_analysis_guide: str
-    python_guide: str
-    documentation_research: str = ""  # Optional, defaults to empty string
-    tool_reference_convention: str = ""  # Optional, defaults to empty string
-
 class PromptBuilder:
-    """
-    Builds prompts by composing modular components.
-    Phase 1: Basic assembly with mode support.
-    """
-    
-    def __init__(self):
-        self.components = None
-        # Output formatting guidance appended to prompts; defaults lazily
-        self.output_formatting: str = ""
-        # Security/permission context section (generated dynamically)
-        self._permission_section: str = ""
-        self._permission_config: dict = {}
-        
-    def load_components(self,
-                       base_prompt: str,
-                       empirical_first: str,
-                       persistence_directive: str,
-                       workflow_section: str,
-                       project_workflow: str,
-                       multi_turn_investigation: str,
-                       action_syntax: str,
-                       advice_section: str,
-                       completion_phrases: str,
-                       large_codebase_guide: str,
-                       tool_learning_guide: str,
-                       code_analysis_guide: str,
-                       python_guide: str,
-                       documentation_research: str = "",
-                       tool_reference_convention: str = "") -> None:
-        """Load all prompt components"""
-        self.components = PromptComponents(
-            base_prompt=base_prompt,
-            empirical_first=empirical_first,
-            persistence_directive=persistence_directive,
-            workflow_section=workflow_section,
-            project_workflow=project_workflow,
-            multi_turn_investigation=multi_turn_investigation,
-            action_syntax=action_syntax,
-            advice_section=advice_section,
-            completion_phrases=completion_phrases,
-            large_codebase_guide=large_codebase_guide,
-            tool_learning_guide=tool_learning_guide,
-            code_analysis_guide=code_analysis_guide,
-            python_guide=python_guide,
-            documentation_research=documentation_research,
-            tool_reference_convention=tool_reference_convention
-        )
-    
+    """Compose the core policy with one explicit task-mode overlay."""
+
+    output_style: str = "steps_final"
+    permission_section: str = ""
+    _legacy_components: dict[str, Any] = field(default_factory=dict)
+
+    def load_components(self, **kwargs: Any) -> None:
+        """Retain legacy caller inputs without making them active prompt policy.
+
+        Older integrations imported this builder and populated an expansive set
+        of sections. The canonical renderer intentionally ignores those static
+        guides so one legacy caller cannot silently restore the monolith.
+        """
+
+        self._legacy_components = dict(kwargs)
+
     def set_permission_context(
         self,
+        *,
         mode: str = "workspace",
         enabled: bool = True,
-        workspace_root: Optional[str] = None,
-        project_root: Optional[str] = None,
-        allowed_paths: Optional[list] = None,
-        denied_paths: Optional[list] = None,
-        require_approval: Optional[list] = None,
+        workspace_root: str | None = None,
+        project_root: str | None = None,
+        allowed_paths: list[str] | None = None,
+        denied_paths: list[str] | None = None,
+        require_approval: list[str] | None = None,
     ) -> None:
-        """Set the permission/security context for prompt generation.
-        
-        This updates the permission section that gets included in prompts,
-        informing the agent what operations are allowed.
-        
-        Args:
-            mode: Permission mode ('read_only', 'workspace', 'full')
-            enabled: Whether permission checks are active
-            workspace_root: Current workspace directory
-            project_root: Current project directory
-            allowed_paths: Additional allowed path patterns
-            denied_paths: Denied path patterns
-            require_approval: Operations requiring approval
-        """
-        self._permission_config = {
-            "mode": mode,
-            "enabled": enabled,
-            "workspace_root": workspace_root,
-            "project_root": project_root,
-            "allowed_paths": allowed_paths or [],
-            "denied_paths": denied_paths or [],
-            "require_approval": require_approval or [],
-        }
-        # Regenerate the permission section
-        self._regenerate_permission_section()
-    
-    def _regenerate_permission_section(self) -> None:
-        """Regenerate the permission section from current config."""
-        try:
-            from penguin.security.prompt_integration import get_permission_section
-            self._permission_section = get_permission_section(**self._permission_config)
-        except ImportError:
-            # Security module not available, use minimal fallback
-            mode = self._permission_config.get("mode", "workspace")
-            enabled = self._permission_config.get("enabled", True)
-            if not enabled:
-                self._permission_section = "\n## Permissions\n**YOLO mode active** - no restrictions.\n"
-            else:
-                self._permission_section = f"\n## Permissions\n**Mode: {mode.upper()}** - Standard boundaries apply.\n"
-        except Exception:
-            self._permission_section = ""
-    
-    def build(self, mode: str = "direct", **kwargs) -> str:
-        """
-        Build system prompt with mode-specific adjustments.
-        
-        Args:
-            mode: Prompt mode ('direct', 'bench_minimal', 'explain', 'terse', 'review')
-            **kwargs: Additional context variables
-            
-        Returns:
-            Assembled system prompt
-        """
-        if not self.components:
-            raise ValueError("Components not loaded. Call load_components() first.")
+        """Record a concise permission reminder for compatibility callers."""
 
-        # ALWAYS refresh output formatting to pick up latest changes from prompt_workflow.py
-        # Don't cache it - we want to get updates when prompt_workflow.py is modified
-        try:
-            from penguin.prompt_workflow import get_output_formatting
-            # Determine style from config or use default
-            from penguin.config import config as raw_config
-            style = str(raw_config.get("output", {}).get("prompt_style", "steps_final")).strip().lower()
-            self.output_formatting = get_output_formatting(style or "steps_final")
-        except Exception as e:
-            # Safe fallback: no additional formatting guidance
-            self.output_formatting = ""
-            
-        # Apply mode-specific deltas
-        if mode == "bench_minimal":
-            return self._build_bench_minimal()
-        elif mode == "direct":
-            return self._build_direct()
-        elif mode == "terse":
-            return self._build_terse()
-        elif mode == "explain":
-            return self._build_explain()
-        elif mode == "review":
-            return self._build_review()
-        elif mode == "implement":
-            return self._build_implement()
-        elif mode == "test":
-            return self._build_test()
-        else:
-            # Default to direct mode
-            return self._build_direct()
-    
-    def _build_bench_minimal(self) -> str:
-        """Build minimal prompt for benchmark compatibility"""
-        return (
-            "You are Penguin, a software engineering agent.\n\n" +
-            "## Core Rules\n" +
-            "- Continue working until task completion\n" +
-            "- Check paths before writing; create backups automatically\n" +  
-            "- Use <execute> for Python code, <apply_diff> for file edits\n" +
-            "- Acknowledge tool results before next action\n\n" +
-            self.components.action_syntax
-        )
-    
-    def _build_direct(self) -> str:
-        """Build standard direct mode prompt"""
-        # Import forbidden phrases detection at runtime
-        from penguin.prompt_workflow import FORBIDDEN_PHRASES_DETECTION
-        
-        # Import incremental execution rule at runtime
-        from penguin.prompt_workflow import INCREMENTAL_EXECUTION_RULE
-        
-        return (
-            """**OUTPUT STYLE (Codex/Cursor/Claude Code Pattern):**
-
-Show your work, not your process:
-- ✅ Execute tools → Show results → Answer the question
-- ❌ Never say: "Let me start by...", "I need to...", "I'll check...", "Following instructions..."
-- ❌ Never list: "1. First I'll... 2. Then I'll... 3. Finally..."
-- ✅ If uncertain: Ask clarifying question, don't explain your uncertainty
-- ✅ Planning OK: Brief *italicized* thoughts (goes to reasoning block, hidden by default)
-
-Match Codex/Cursor directness: Answer → Evidence → Done
-
-""" +
-            INCREMENTAL_EXECUTION_RULE +
-            "\n\n" +
-            FORBIDDEN_PHRASES_DETECTION +
-            "\n\n" +
-            self.components.base_prompt +
-            self._permission_section +  # Include permission context
-            self.components.empirical_first +
-            self.components.persistence_directive +
-            self.components.workflow_section +
-            self.components.project_workflow +
-            self.components.multi_turn_investigation +
-            self.components.action_syntax +
-            self.output_formatting +
-            self.components.documentation_research +
-            self.components.advice_section +
-            self.components.completion_phrases +
-            self.components.large_codebase_guide +
-            self.components.tool_learning_guide +
-            self.components.code_analysis_guide +
-            self.components.python_guide +
-            self.components.tool_reference_convention
-        )
-    
-    def _build_terse(self) -> str:
-        """Build ultra-minimal prompt"""
-        return (
-            self.components.base_prompt +
-            self._permission_section +
-            self.components.persistence_directive + 
-            self.components.action_syntax +
-            self.output_formatting +
-            "\n## Response Style\nBe concise. Minimal explanations unless asked."
-        )
-    
-    def _build_explain(self) -> str:
-        """Build educational mode prompt"""
-        return (
-            self.components.base_prompt +
-            self._permission_section +
-            self.components.persistence_directive + 
-            self.components.workflow_section +
-            self.components.project_workflow +
-            self.components.action_syntax +
-            self.output_formatting +
-            self.components.advice_section +
-            "\n## Response Style\nExplain your reasoning and provide educational context when helpful."
-        )
-    
-    def _build_review(self) -> str:
-        """Build code review focused prompt"""
-        return (
-            self.components.base_prompt +
-            self._permission_section +
-            self.components.persistence_directive + 
-            self.components.workflow_section +
-            self.components.project_workflow +
-            self.components.action_syntax +
-            self.output_formatting +
-            "\n## Review Focus\nPrioritize security, performance, and maintainability. Provide checklists and risk assessments."
+        del workspace_root, project_root, allowed_paths, denied_paths, require_approval
+        if not enabled:
+            self.permission_section = ""
+            return
+        self.permission_section = (
+            "## Permissions\n"
+            f"The active permission mode is `{mode}`. Honor runtime allow, ask, and "
+            "deny decisions; do not bypass them through another tool or path."
         )
 
-    def _build_implement(self) -> str:
-        """Build implementation-focused prompt (spec-first, incremental)."""
-        return (
-            self.components.base_prompt +
-            self._permission_section +
-            self.components.persistence_directive +
-            self.components.workflow_section +
-            self.components.project_workflow +
-            self.components.action_syntax +
-            self.output_formatting +
-            "\n## Implementation Focus\nFollow spec-first, domain-driven steps. Work in small, verifiable increments, updating tests and docs as you go."
-        )
+    def set_output_style(self, style: str) -> None:
+        """Set the response-style overlay used by future rendered prompts."""
 
-    def _build_test(self) -> str:
-        """Build testing/validation-focused prompt."""
-        return (
-            self.components.base_prompt +
-            self._permission_section +
-            self.components.persistence_directive +
-            self.components.workflow_section +
-            self.components.project_workflow +
-            self.components.action_syntax +
-            self.output_formatting +
-            "\n## Testing Focus\nDesign and run tests first when possible. Execute, observe, iterate until green; then validate against acceptance criteria."
-        )
+        self.output_style = _normalize_output_style(style)
 
-# Global instance
+    def build(
+        self,
+        mode: str = "direct",
+        *,
+        output_style: str | None = None,
+        git_attribution_prompt: bool = True,
+        **_kwargs: Any,
+    ) -> str:
+        """Build a deterministic prompt for one supported mode."""
+
+        canonical_mode = normalize_prompt_mode(mode)
+        profile = get_mode_profile(canonical_mode)
+        selected_output_style = _normalize_output_style(
+            self.output_style if output_style is None else output_style
+        )
+        sections = [
+            CORE_IDENTITY,
+            VOICE_AND_COUNSEL,
+            CORE_ENGINEERING_DISCIPLINE,
+            RUNTIME_CONTRACT,
+            SKILL_AND_DELEGATION_GUIDANCE,
+        ]
+        if self.permission_section:
+            sections.append(self.permission_section)
+        if git_attribution_prompt:
+            sections.append(GIT_ATTRIBUTION_GUIDANCE)
+        sections.extend(
+            [
+                self._profile_guidance(profile),
+                _OUTPUT_STYLE_GUIDANCE[selected_output_style],
+                get_runtime_tool_protocol(),
+            ]
+        )
+        return "\n\n".join(section.strip() for section in sections if section.strip())
+
+    @staticmethod
+    def _profile_guidance(profile: ModeProfile) -> str:
+        """Return one profile overlay, keeping mode logic out of the base policy."""
+
+        return profile.guidance
+
+
 _builder = PromptBuilder()
 
+
 def get_builder() -> PromptBuilder:
-    """Get the global prompt builder instance"""
+    """Return the process-local canonical prompt builder."""
+
     return _builder
 
-def build_system_prompt(mode: str = "direct", **kwargs) -> str:
-    """
-    Convenience function to build system prompt.
-    
-    Args:
-        mode: Prompt mode
-        **kwargs: Additional context variables
-        
-    Returns:
-        Assembled system prompt
-    """
-    return _builder.build(mode=mode, **kwargs)
+
+def build_system_prompt(
+    mode: str = "direct",
+    *,
+    output_style: str | None = None,
+    git_attribution_prompt: bool = True,
+    **kwargs: Any,
+) -> str:
+    """Render a system prompt for a supported task mode."""
+
+    return _builder.build(
+        mode=mode,
+        output_style=output_style,
+        git_attribution_prompt=git_attribution_prompt,
+        **kwargs,
+    )
+
 
 def set_output_formatting(style: str = "steps_final") -> None:
-    """Set the global builder's output formatting style.
+    """Compatibility entry point used by runtime output-style settings."""
 
-    Args:
-        style: One of 'steps_final', 'plain', 'json_guided'
-    """
-    try:
-        from penguin.prompt_workflow import get_output_formatting
-        _builder.output_formatting = get_output_formatting(style)
-    except Exception:
-        _builder.output_formatting = ""
+    _builder.set_output_style(style)
 
 
 def set_permission_context_from_config() -> None:
-    """Initialize permission context from current config.
-    
-    Reads security settings from Config and RuntimeConfig,
-    then updates the prompt builder's permission section.
-    """
+    """Load a concise permission reminder from configuration when available."""
+
     try:
-        from penguin.config import Config, RuntimeConfig, load_config
-        
-        # Load config
+        from penguin.config import load_config
+
         config_data = load_config()
-        security_data = config_data.get("security", {})
-        
-        # Try to get runtime config for workspace/project roots
-        workspace_root = None
-        project_root = None
-        try:
-            # RuntimeConfig may not be initialized yet
-            runtime = RuntimeConfig(config_data)
-            workspace_root = runtime.workspace_root
-            project_root = runtime.project_root
-        except Exception:
-            pass
-        
-        _builder.set_permission_context(
-            mode=security_data.get("mode", "workspace"),
-            enabled=security_data.get("enabled", True),
-            workspace_root=workspace_root,
-            project_root=project_root,
-            allowed_paths=security_data.get("allowed_paths", []),
-            denied_paths=security_data.get("denied_paths", []),
-            require_approval=security_data.get("require_approval", []),
+        security = (
+            config_data.get("security", {}) if isinstance(config_data, dict) else {}
         )
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).debug(f"Could not set permission context from config: {e}")
+        _builder.set_permission_context(
+            mode=str(security.get("mode", "workspace")),
+            enabled=bool(security.get("enabled", True)),
+            allowed_paths=list(security.get("allowed_paths") or []),
+            denied_paths=list(security.get("denied_paths") or []),
+            require_approval=list(security.get("require_approval") or []),
+        )
+    except Exception:
+        _builder.permission_section = ""

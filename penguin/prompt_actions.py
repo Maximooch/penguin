@@ -30,6 +30,7 @@ __all__ = [
     "SKILL_TOOLS",
     "TODO_TOOLS",
     "TOOL_INVOCATION_PROTOCOL",
+    "get_runtime_tool_protocol",
     "get_tool_guide",
 ]
 
@@ -60,9 +61,7 @@ def _native_example_payload(tool_name: str, body: str) -> str:
     return body
 
 
-def _render_tool_examples(
-    tool_name: str, examples: List[ToolPromptExample]
-) -> str:
+def _render_tool_examples(tool_name: str, examples: List[ToolPromptExample]) -> str:
     blocks: List[str] = []
     for example in examples:
         native_payload = _native_example_payload(tool_name, example.body)
@@ -923,7 +922,8 @@ then return a structured summary.
 **Payload fields:**
 - `task` (required) - Exploration objective
 - `directory` (optional) - Starting path (default: current)
-- `max_iterations` (optional int) - Exploration rounds (capped)
+- `max_iterations` (optional int) - Explicit exploration-round limit. Omit it to
+  continue until the exploration completes or the parent run is interrupted.
 
 **ActionXML fallback example:**
 ```actionxml
@@ -1205,3 +1205,14 @@ def get_tool_guide() -> str:
             COMPLETION_TOOLS,
         ]
     )
+
+
+def get_runtime_tool_protocol() -> str:
+    """Return the compact tool and completion contract for every prompt turn.
+
+    Detailed per-tool examples belong in provider schemas and on-demand help;
+    injecting the entire encyclopedia into every model turn obscures the actual
+    task policy.
+    """
+
+    return "\n\n".join([TOOL_INVOCATION_PROTOCOL, COMPLETION_TOOLS])
