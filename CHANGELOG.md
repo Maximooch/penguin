@@ -5,6 +5,33 @@ Changelog
 
 All notable changes to this project are documented in this file.
 
+0.9.1 — 2026-07-09
+------------------
+
+Highlights
+- **GPT-5.6 day-one compatibility**: Added OpenAI/Codex catalog support for GPT-5.6 Sol, Terra, and Luna when advertised and provisioned for the authenticated account.
+- **Metadata-driven reasoning**: Preserved provider-advertised reasoning levels through model selection and request execution, including OpenAI-safe `ultra` to `max` request mapping.
+- **Reasoning contract hardening**: Added provider-capability validation and explicit REST/WebSocket rejection for unsupported reasoning variants before persistence or execution.
+- **CLI refactor campaign**: Added a dedicated ACBRA plan for decomposing CLI startup, model configuration, command services, rendering, and interactive lifecycle behavior before broader ergonomics work.
+
+Added
+- Dynamic GPT-5.6 Codex model and reasoning-level discovery for authenticated OpenAI accounts.
+- Request-level reasoning variant validation against provider capabilities and cached catalog metadata.
+- `context/tasks/cli-acbra-testing-refactor.md` as the characterization-first Python CLI decomposition campaign.
+
+Changed
+- Carried Codex reasoning metadata into request-scoped model configuration rather than relying only on static model configuration.
+- Used stable OpenAI account identity for cached Codex catalog metadata so OAuth token rotation does not discard model capabilities.
+- Preserved explicit reasoning opt-outs and supported configured efforts when applying catalog defaults.
+
+Fixed
+- Unsupported reasoning variants being silently ignored, persisted, or forwarded through incompatible provider paths.
+- GPT-5.6 reasoning effort exposure so the non-catalog fallback uses the documented `none`, `low`, `medium`, `high`, `xhigh`, and `max` levels.
+- CLI startup reconstruction losing implicit or explicit reasoning configuration for the configured model.
+
+Known preview note
+- GPT-5.6 availability is controlled by OpenAI's staged rollout. A model may briefly appear in the account catalog before its execution backend is provisioned; Penguin forwards the documented model ID and surfaces the upstream error.
+
 0.9.0 — 2026-07-07
 ------------------
 

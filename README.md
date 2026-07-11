@@ -289,6 +289,14 @@ Read more:
 
 ## Version Highlights
 
+### v0.9.1
+
+- Added day-one GPT-5.6 support through Penguin's OpenAI/Codex OAuth catalog path, including Sol, Terra, and Luna when advertised and provisioned for the authenticated account.
+- Preserved model-specific reasoning metadata through request execution and mapped Codex `ultra` mode to the OpenAI-safe `max` wire effort.
+- Rejected unsupported reasoning variants before REST/WebSocket requests can persist or execute them.
+- Preserved explicit reasoning opt-outs and supported configured efforts across catalog hydration and OAuth token refreshes.
+- Added a dedicated CLI ACBRA decomposition campaign, with broader CLI ergonomics work sequenced after structural stabilization.
+
 ### v0.9.0
 
 - Completed the ACBRA core-runtime decomposition campaign: `PenguinCore` is now a thin compatibility/orchestration facade over focused `penguin.core_runtime` modules.

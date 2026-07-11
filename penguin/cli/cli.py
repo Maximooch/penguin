@@ -222,6 +222,7 @@ else:
     from prompt_toolkit.styles import Style  # type: ignore
     from prompt_toolkit.formatted_text import HTML  # type: ignore
 
+from penguin._version import __version__
 from penguin.cli.interface import PenguinInterface
 from penguin.config import (
     DEFAULT_MODEL,
@@ -424,6 +425,68 @@ def _ensure_config_compatible(config_data: Any) -> Any:
     return config_data
 
 
+def _project_reasoning_config(model_config: ModelConfig) -> dict[str, Any]:
+    """Project reasoning fields without converting implicit state to explicit off."""
+
+    reasoning_enabled_explicit = bool(
+        getattr(model_config, "_reasoning_enabled_explicit", False)
+    )
+    reasoning_effort_explicit = bool(
+        getattr(model_config, "_reasoning_effort_explicit", False)
+    )
+    return {
+        "reasoning_enabled": (
+            model_config.reasoning_enabled
+            if reasoning_enabled_explicit
+            else None
+        ),
+        "reasoning_effort": (
+            model_config.reasoning_effort if reasoning_effort_explicit else None
+        ),
+        "reasoning_max_tokens": (
+            model_config.reasoning_max_tokens
+            if reasoning_enabled_explicit
+            else None
+        ),
+        "reasoning_exclude": model_config.reasoning_exclude,
+        "supports_reasoning": model_config.supports_reasoning,
+        "supported_reasoning_levels": model_config.supported_reasoning_levels,
+    }
+
+
+def _resolve_cli_reasoning_config(model_dict: dict[str, Any]) -> dict[str, Any]:
+    """Resolve flat or nested CLI reasoning configuration without inventing values."""
+
+    nested = model_dict.get("reasoning")
+    reasoning = nested if isinstance(nested, dict) else {}
+    if "enabled" in reasoning:
+        reasoning_enabled: bool | None = bool(reasoning.get("enabled"))
+    elif "reasoning_enabled" in model_dict:
+        configured_enabled = model_dict.get("reasoning_enabled")
+        reasoning_enabled = (
+            None if configured_enabled is None else bool(configured_enabled)
+        )
+    else:
+        reasoning_enabled = None
+    reasoning_effort = reasoning.get(
+        "effort", model_dict.get("reasoning_effort")
+    )
+    return {
+        "reasoning_enabled": reasoning_enabled,
+        "reasoning_effort": reasoning_effort,
+        "reasoning_max_tokens": reasoning.get(
+            "max_tokens", model_dict.get("reasoning_max_tokens")
+        ),
+        "reasoning_exclude": bool(
+            reasoning.get("exclude", model_dict.get("reasoning_exclude", False))
+        ),
+        "supports_reasoning": model_dict.get("supports_reasoning"),
+        "supported_reasoning_levels": model_dict.get(
+            "supported_reasoning_levels"
+        ),
+    }
+
+
 async def _initialize_core_components_globally(
     model_override: Optional[str] = None,
     workspace_override: Optional[Path] = None,
@@ -496,6 +559,7 @@ async def _initialize_core_components_globally(
                 "vision_enabled": getattr(_model_cfg, "vision_enabled", False),
                 "max_output_tokens": getattr(_model_cfg, "max_output_tokens", None),
                 "context_window": getattr(_model_cfg, "max_context_window_tokens", None),
+                **_project_reasoning_config(_model_cfg),
             }
         else:
             model_dict = {}
@@ -531,6 +595,7 @@ async def _initialize_core_components_globally(
         model_dict = {}
         api_base = None
 
+    reasoning_config = _resolve_cli_reasoning_config(model_dict)
     _model_config = ModelConfig(
         model=model_override or model_dict.get("default", DEFAULT_MODEL),
         provider=model_dict.get("provider", DEFAULT_PROVIDER),
@@ -538,45 +603,22 @@ async def _initialize_core_components_globally(
         client_preference=model_dict.get("client_preference", "openrouter"),
         streaming_enabled=streaming_enabled,
         vision_enabled=model_dict.get("vision_enabled", False),
-        max_output_tokens=model_dict.get("max_output_tokens", model_dict.get("max_tokens", 8000)),
+        max_output_tokens=model_dict.get(
+            "max_output_tokens", model_dict.get("max_tokens", 8000)
+        ),
         max_context_window_tokens=model_dict.get(
             "max_context_window_tokens",
             model_dict.get("context_window"),
         ),
         temperature=model_dict.get("temperature", 0.7),
-        # Reasoning configuration (supports both legacy flat keys and nested `reasoning:` block)
-        reasoning_enabled=(
-            bool(
-                model_dict.get("reasoning", {}).get(
-                    "enabled", model_dict.get("reasoning_enabled", False)
-                )
-            )
-            if isinstance(model_dict.get("reasoning"), dict)
-            else bool(model_dict.get("reasoning_enabled", False))
-        ),
-        reasoning_effort=(
-            model_dict.get("reasoning", {}).get(
-                "effort", model_dict.get("reasoning_effort")
-            )
-            if isinstance(model_dict.get("reasoning"), dict)
-            else model_dict.get("reasoning_effort")
-        ),
-        reasoning_max_tokens=(
-            model_dict.get("reasoning", {}).get(
-                "max_tokens", model_dict.get("reasoning_max_tokens")
-            )
-            if isinstance(model_dict.get("reasoning"), dict)
-            else model_dict.get("reasoning_max_tokens")
-        ),
-        reasoning_exclude=(
-            bool(
-                model_dict.get("reasoning", {}).get(
-                    "exclude", model_dict.get("reasoning_exclude", False)
-                )
-            )
-            if isinstance(model_dict.get("reasoning"), dict)
-            else bool(model_dict.get("reasoning_exclude", False))
-        ),
+        reasoning_enabled=reasoning_config["reasoning_enabled"],
+        reasoning_effort=reasoning_config["reasoning_effort"],
+        reasoning_max_tokens=reasoning_config["reasoning_max_tokens"],
+        reasoning_exclude=reasoning_config["reasoning_exclude"],
+        supports_reasoning=reasoning_config["supports_reasoning"],
+        supported_reasoning_levels=reasoning_config[
+            "supported_reasoning_levels"
+        ],
         service_tier=model_dict.get("service_tier"),
     )
 
@@ -1212,8 +1254,7 @@ def main_entry(
     Penguin AI Assistant - Your command-line AI companion.
     """
     if version:
-        # TODO: Get version dynamically, e.g., from importlib.metadata or a __version__ string
-        console.print("Penguin AI Assistant v0.1.0 (Placeholder Version)")
+        console.print(f"Penguin {__version__}")
         raise typer.Exit()
 
     # Preconfigure environment for root/project overrides so that even

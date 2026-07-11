@@ -9,6 +9,8 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from fastapi import HTTPException
+from starlette.websockets import WebSocketDisconnect
 
 from penguin.llm.model_config import ModelConfig
 from penguin.llm.openrouter_gateway import OpenRouterGateway
@@ -18,8 +20,7 @@ from penguin.system.execution_context import (
     get_current_execution_context,
 )
 from penguin.tools.tool_manager import ToolManager
-from penguin.web import routes as routes_module
-from penguin.web.routes import MessageRequest, handle_chat_message
+from penguin.web.routes import MessageRequest, handle_chat_message, stream_chat
 
 
 def _dummy_log_error(exc: Exception, context: str = "") -> None:
@@ -488,6 +489,158 @@ async def test_rest_chat_variant_emits_outbound_reasoning_payload(
     assert core.model_config.reasoning_effort is None
     assert core.model_config.reasoning_max_tokens is None
     assert core.model_config.supports_reasoning is False
+
+
+@pytest.mark.asyncio
+async def test_rest_chat_rejects_variant_before_session_persistence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unsupported reasoning variant returns 400 before persistence or execution."""
+
+    repo = tmp_path / "chat_repo_variant_rejection"
+    repo.mkdir()
+    persisted: list[tuple[Any, ...]] = []
+
+    class _Core:
+        def __init__(self) -> None:
+            self.runtime_config = SimpleNamespace(
+                workspace_root=str(tmp_path),
+                project_root=str(tmp_path),
+                active_root=str(tmp_path),
+            )
+            self._opencode_session_directories: dict[str, str] = {}
+            self.model_config = ModelConfig(
+                model="claude-sonnet-4-6",
+                provider="anthropic",
+                client_preference="native",
+                reasoning_enabled=False,
+            )
+
+        async def resolve_request_runtime(self, _model_id: str | None):
+            api_client = SimpleNamespace(
+                get_provider_capabilities=lambda: SimpleNamespace(
+                    reasoning_efforts=("low", "medium", "high")
+                )
+            )
+            return self.model_config, api_client
+
+        async def process(self, **kwargs):  # type: ignore[no-untyped-def]
+            raise AssertionError(f"process should not run: {kwargs}")
+
+    async def _fake_persist(*args: Any, **kwargs: Any) -> None:
+        persisted.append((*args, kwargs))
+
+    monkeypatch.setattr(
+        "penguin.web.routes._persist_session_model_selection",
+        _fake_persist,
+    )
+    request = MessageRequest(
+        text="ping",
+        session_id="session_variant_rejection",
+        directory=str(repo),
+        streaming=False,
+    )
+    setattr(request, "variant", "ultra")
+
+    with pytest.raises(HTTPException) as exc_info:
+        await handle_chat_message(request, core=cast(Any, _Core()))
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail["code"] == "unsupported_reasoning_variant"
+    assert persisted == []
+
+
+@pytest.mark.asyncio
+async def test_websocket_chat_rejects_variant_before_session_persistence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WebSocket variant errors are structured and skip persistence and execution."""
+
+    persisted: list[tuple[Any, ...]] = []
+
+    class _WebSocket:
+        def __init__(self) -> None:
+            self.events: list[dict[str, Any]] = []
+            self.client_state = SimpleNamespace(name="CONNECTED")
+            self._received = False
+
+        async def accept(self) -> None:
+            return None
+
+        async def receive_json(self) -> dict[str, Any]:
+            if self._received:
+                raise WebSocketDisconnect()
+            self._received = True
+            return {"text": "ping", "variant": "ultra"}
+
+        async def send_json(self, payload: dict[str, Any]) -> None:
+            self.events.append(payload)
+
+    class _EventBus:
+        def subscribe(self, *_args: Any) -> None:
+            return None
+
+        def unsubscribe(self, *_args: Any) -> None:
+            return None
+
+    class _Core:
+        def __init__(self) -> None:
+            self.runtime_config = SimpleNamespace(
+                workspace_root=str(tmp_path),
+                project_root=str(tmp_path),
+                active_root=str(tmp_path),
+            )
+            self._opencode_session_directories: dict[str, str] = {}
+            self.model_config = ModelConfig(
+                model="claude-sonnet-4-6",
+                provider="anthropic",
+                client_preference="native",
+                reasoning_enabled=False,
+            )
+
+        async def resolve_request_runtime(self, _model_id: str | None):
+            api_client = SimpleNamespace(
+                get_provider_capabilities=lambda: SimpleNamespace(
+                    reasoning_efforts=("low", "medium", "high")
+                )
+            )
+            return self.model_config, api_client
+
+        async def process(self, **kwargs):  # type: ignore[no-untyped-def]
+            raise AssertionError(f"process should not run: {kwargs}")
+
+    async def _noop_async(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    async def _fake_persist(*args: Any, **kwargs: Any) -> None:
+        persisted.append((*args, kwargs))
+
+    monkeypatch.setattr("penguin.web.routes.require_websocket_auth", _noop_async)
+    monkeypatch.setattr(
+        "penguin.web.routes._setup_approval_websocket_callbacks", lambda: None
+    )
+    monkeypatch.setattr(
+        "penguin.web.routes._setup_question_event_callbacks", lambda: None
+    )
+    monkeypatch.setattr(
+        "penguin.web.routes._persist_session_agent_mode", _noop_async
+    )
+    monkeypatch.setattr(
+        "penguin.web.routes._persist_session_model_selection", _fake_persist
+    )
+    monkeypatch.setattr(
+        "penguin.web.routes.CLIEventBus.get_sync", lambda: _EventBus()
+    )
+    websocket = _WebSocket()
+
+    await stream_chat(cast(Any, websocket), core=cast(Any, _Core()))
+
+    assert websocket.events[0] == {"event": "start", "data": {}}
+    assert websocket.events[1]["event"] == "error"
+    assert websocket.events[1]["data"]["code"] == "unsupported_reasoning_variant"
+    assert persisted == []
 
 
 @pytest.mark.asyncio
