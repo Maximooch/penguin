@@ -86,7 +86,7 @@ async def run_engine_process(
     *,
     message: str,
     image_paths: list[str],
-    max_iterations: int,
+    max_iterations: int | None,
     context: dict[str, Any] | None,
     multi_step: bool,
     streaming: bool | None,

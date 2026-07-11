@@ -44,6 +44,9 @@ class _ResultClient:
             }
         )
         result = self.results.pop(0)
+        usage_setter = getattr(self.client_handler, "set_usage", None)
+        if callable(usage_setter):
+            usage_setter(result.get("usage", {}))
         callback = result.get("callback")
         if callback and stream_callback:
             chunk, message_type = callback
@@ -63,6 +66,44 @@ def _retryable_stream_error() -> LLMError:
         provider="openai",
         model="gpt-test",
     )
+
+
+@pytest.mark.asyncio
+async def test_call_with_retry_reports_usage_for_every_provider_attempt() -> None:
+    class _UsageHandler:
+        def __init__(self) -> None:
+            self.usage: dict[str, Any] = {}
+
+        def set_usage(self, usage: dict[str, Any]) -> None:
+            self.usage = dict(usage)
+
+        def get_last_usage(self) -> dict[str, Any]:
+            return dict(self.usage)
+
+    handler = _UsageHandler()
+    client = _ResultClient(
+        [
+            {"text": "", "usage": {"total_tokens": 5}},
+            {"text": "recovered", "usage": {"total_tokens": 7}},
+        ],
+        client_handler=handler,
+    )
+    attempt_usage: list[dict[str, Any]] = []
+
+    result = await call_with_retry(
+        api_client=client,
+        messages=[{"role": "user", "content": "hi"}],
+        streaming=False,
+        stream_callback=None,
+        extra_kwargs={},
+        usage_callback=attempt_usage.append,
+    )
+
+    assert result == "recovered"
+    assert attempt_usage == [
+        {"total_tokens": 5},
+        {"total_tokens": 7},
+    ]
 
 
 @pytest.mark.asyncio

@@ -10,13 +10,24 @@ from pathlib import Path
 from typing import Any, Optional
 
 from penguin import __version__
+from penguin.core_runtime.session_goal_store import (
+    clear_session_goal as _clear_session_goal,
+    load_session_goal as _load_session_goal,
+    set_session_goal as _set_session_goal,
+)
+from penguin.core_runtime.session_goals import (
+    GOAL_METADATA_KEY,
+    GoalNotFoundError,
+    normalize_goal,
+)
 from penguin.core_runtime import session_lookup
+from penguin.system.state import MessageCategory
 from penguin.web.services.provider_catalog import canonical_model_id
 
 TRANSCRIPT_KEY = "_opencode_transcript_v1"
 USAGE_KEY = "_opencode_usage_v1"
 TODO_KEY = "_opencode_todo_v1"
-GOAL_KEY = "_penguin_goal_v1"
+GOAL_KEY = GOAL_METADATA_KEY
 AGENT_MODE_KEY = "_opencode_agent_mode_v1"
 REVERT_KEY = "_opencode_revert_v1"
 SUMMARY_KEY = "_opencode_summary_v1"
@@ -393,6 +404,9 @@ def _index_entry_from_session(session: Any) -> dict[str, Any]:
     permission = metadata.get("permission")
     if isinstance(permission, list):
         entry["permission"] = permission
+    goal = normalize_goal(metadata.get(GOAL_KEY))
+    if goal is not None:
+        entry[GOAL_KEY] = goal
     return entry
 
 
@@ -575,6 +589,9 @@ def _build_index_session_info(
             "updated": updated,
         },
     }
+    goal = normalize_goal(metadata.get(GOAL_KEY))
+    if goal is not None:
+        payload["goal"] = goal
 
     agent_mode = _normalize_agent_mode(
         metadata.get(AGENT_MODE_KEY) or metadata.get("agent_mode")
@@ -670,6 +687,18 @@ def _load_session_view_only(manager: Any, session_id: str) -> Optional[Any]:
             manager.current_session = previous
 
 
+def _is_internal_legacy_message(message: Any) -> bool:
+    """Return whether a legacy message is implementation-only state."""
+
+    category = getattr(message, "category", None)
+    if category is MessageCategory.INTERNAL:
+        return True
+    if isinstance(category, str) and category.upper() == "INTERNAL":
+        return True
+    metadata = getattr(message, "metadata", None)
+    return isinstance(metadata, dict) and metadata.get("visibility") == "internal"
+
+
 def _infer_title(session: Any) -> str:
     """Derive a usable title for a session."""
     metadata = getattr(session, "metadata", {})
@@ -680,6 +709,8 @@ def _infer_title(session: Any) -> str:
 
     messages = getattr(session, "messages", [])
     for item in messages:
+        if _is_internal_legacy_message(item):
+            continue
         if getattr(item, "role", None) != "user":
             continue
         content = getattr(item, "content", "")
@@ -699,6 +730,8 @@ def _has_fallback_title(session: Any) -> bool:
 
     messages = getattr(session, "messages", [])
     for item in messages:
+        if _is_internal_legacy_message(item):
+            continue
         if getattr(item, "role", None) != "user":
             continue
         content = getattr(item, "content", "")
@@ -733,6 +766,7 @@ def _display_message_count(session: Any) -> int:
         1
         for message in getattr(session, "messages", [])
         if getattr(message, "role", "") in {"user", "assistant", "tool"}
+        and not _is_internal_legacy_message(message)
     )
     return max(transcript_count, legacy_count)
 
@@ -807,6 +841,10 @@ def _build_session_info(core: Any, session: Any, manager: Any) -> dict[str, Any]
             "updated": updated,
         },
     }
+    if isinstance(metadata, dict):
+        goal = normalize_goal(metadata.get(GOAL_KEY))
+        if goal is not None:
+            payload["goal"] = goal
 
     model_state = _resolve_session_model_state(core, session)
     _apply_model_selection(payload, model_state)
@@ -1799,16 +1837,10 @@ def _normalize_todo_items(raw: Any) -> list[dict[str, str]]:
 
 def get_session_goal(core: Any, session_id: str) -> Optional[dict[str, Any]]:
     """Return normalized Penguin goal state for a session."""
-    from penguin.core_runtime.session_goals import normalize_goal
-
-    session, _manager = _find_session(core, session_id)
-    if session is None:
+    try:
+        return _load_session_goal(core, session_id)
+    except GoalNotFoundError:
         return None
-
-    metadata = getattr(session, "metadata", None)
-    if not isinstance(metadata, dict):
-        return None
-    return normalize_goal(metadata.get(GOAL_KEY))
 
 
 def set_session_goal(
@@ -1822,70 +1854,30 @@ def set_session_goal(
     metadata: dict[str, Any] | None = None,
 ) -> Optional[dict[str, Any]]:
     """Create, replace, or update a persisted session goal."""
-    from penguin.core_runtime.session_goals import (
-        GoalConflictError,
-        GoalValidationError,
-        UNFINISHED_GOAL_STATUSES,
-        create_goal,
-        normalize_goal,
-        update_goal_status,
-    )
-
-    session, manager = _find_session(core, session_id)
-    if session is None or manager is None:
-        return None
-
-    session_metadata = getattr(session, "metadata", None)
-    if not isinstance(session_metadata, dict):
-        session_metadata = {}
-        session.metadata = session_metadata
-
-    current = normalize_goal(session_metadata.get(GOAL_KEY))
-    if current is not None and current.get("active_run_id"):
-        if objective is not None or status is not None:
-            raise GoalConflictError("Goal is currently running")
-
-    if objective is not None:
-        if current and current["status"] in UNFINISHED_GOAL_STATUSES and not replace:
-            raise GoalConflictError("unfinished goal requires replace=true")
-        next_revision = current["revision"] + 1 if current else 1
-        goal = create_goal(
-            objective,
-            revision=next_revision,
-            status=status or "active",
+    try:
+        return _set_session_goal(
+            core,
+            session_id,
+            objective=objective,
+            status=status,
+            replace=replace,
             token_budget=token_budget,
             metadata=metadata,
         )
-    elif current is not None and status is not None:
-        goal = update_goal_status(current, status)
-    else:
-        raise GoalValidationError("objective is required when no goal exists")
-
-    session_metadata[GOAL_KEY] = goal
-    manager.mark_session_modified(session.id)
-    manager.save_session(session)
-    return goal
+    except GoalNotFoundError:
+        if objective is not None:
+            return None
+        raise
 
 
 def clear_session_goal(core: Any, session_id: str) -> Optional[bool]:
     """Remove persisted session goal state."""
-    session, manager = _find_session(core, session_id)
-    if session is None or manager is None:
-        return None
-
-    metadata = getattr(session, "metadata", None)
-    if not isinstance(metadata, dict):
-        return True
-
-    from penguin.core_runtime.session_goals import GoalConflictError, normalize_goal
-
-    current = normalize_goal(metadata.get(GOAL_KEY))
-    if current is not None and current.get("active_run_id"):
-        raise GoalConflictError("Goal is currently running")
-    metadata.pop(GOAL_KEY, None)
-    manager.mark_session_modified(session.id)
-    manager.save_session(session)
-    return True
+    try:
+        return _clear_session_goal(core, session_id)
+    except GoalNotFoundError:
+        if get_session_info(core, session_id) is None:
+            return None
+        raise
 
 
 def get_session_todo(core: Any, session_id: str) -> Optional[list[dict[str, str]]]:
@@ -1971,6 +1963,8 @@ def get_session_messages(
 
     legacy_rows: list[dict[str, Any]] = []
     for message in getattr(session, "messages", []):
+        if _is_internal_legacy_message(message):
+            continue
         role = getattr(message, "role", "")
         if role not in {"user", "assistant", "tool"}:
             continue

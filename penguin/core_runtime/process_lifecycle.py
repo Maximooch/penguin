@@ -2,21 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import traceback
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    import asyncio
+from typing import Any
 
 __all__ = [
     "discard_opencode_abort_session",
     "emit_process_user_message",
     "finalize_opencode_process_request",
     "finalize_process_response",
+    "get_session_request_gate",
     "handle_process_cancelled",
     "handle_process_error",
     "register_opencode_process_request",
 ]
+
+logger = logging.getLogger(__name__)
+_SESSION_STATUS_EMIT_TIMEOUT_SECONDS = 5.0
 
 
 def _session_id(value: Any) -> str:
@@ -30,6 +33,48 @@ def _ensure_request_state(owner: Any) -> None:
         owner._opencode_process_tasks = {}
     if not isinstance(getattr(owner, "_opencode_active_requests", None), dict):
         owner._opencode_active_requests = {}
+
+
+async def _emit_session_status_best_effort(
+    owner: Any,
+    session_id: str,
+    status_type: str,
+) -> None:
+    """Emit bounded UI status without making request accounting depend on it."""
+
+    try:
+        await asyncio.wait_for(
+            owner._emit_opencode_session_status(session_id, status_type),
+            timeout=_SESSION_STATUS_EMIT_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Timed out emitting OpenCode session status %s for %s",
+            status_type,
+            session_id,
+        )
+    except Exception:
+        logger.warning(
+            "Failed to emit OpenCode session status %s for %s",
+            status_type,
+            session_id,
+            exc_info=True,
+        )
+
+
+def get_session_request_gate(owner: Any, session_id: Any) -> asyncio.Lock:
+    """Return the shared request-execution lock for one session."""
+
+    sid = _session_id(session_id) or "__default__"
+    gates = getattr(owner, "_opencode_request_gates", None)
+    if not isinstance(gates, dict):
+        gates = {}
+        owner._opencode_request_gates = gates
+    gate = gates.get(sid)
+    if not isinstance(gate, asyncio.Lock):
+        gate = asyncio.Lock()
+        gates[sid] = gate
+    return gate
 
 
 def discard_opencode_abort_session(owner: Any, session_id: Any) -> None:
@@ -191,12 +236,42 @@ async def register_opencode_process_request(
         owner._opencode_process_tasks[sid] = tasks
     tasks.add(request_task)
 
-    next_count = owner._opencode_active_requests.get(sid, 0) + 1
+    previous_count = owner._opencode_active_requests.get(sid, 0)
+    next_count = previous_count + 1
     owner._opencode_active_requests[sid] = next_count
-    if next_count == 1:
-        await owner._emit_opencode_session_status(sid, "busy")
-        owner._ensure_opencode_session_status_heartbeat(sid)
-    return True
+    try:
+        if next_count == 1:
+            await _emit_session_status_best_effort(owner, sid, "busy")
+            owner._ensure_opencode_session_status_heartbeat(sid)
+        return True
+    except BaseException:
+        tasks.discard(request_task)
+        if not tasks:
+            owner._opencode_process_tasks.pop(sid, None)
+        current_count = owner._opencode_active_requests.get(sid, 0)
+        remaining_count = max(current_count - 1, 0)
+        if remaining_count > 0:
+            owner._opencode_active_requests[sid] = remaining_count
+            try:
+                owner._ensure_opencode_session_status_heartbeat(sid)
+            except Exception:
+                logger.warning(
+                    "Failed to preserve heartbeat during request rollback for %s",
+                    sid,
+                    exc_info=True,
+                )
+        else:
+            owner._opencode_active_requests.pop(sid, None)
+        if remaining_count == 0:
+            try:
+                owner._cancel_opencode_session_status_heartbeat(sid)
+            except Exception:
+                logger.debug(
+                    "Failed to cancel heartbeat during request rollback for %s",
+                    sid,
+                    exc_info=True,
+                )
+        raise
 
 
 async def finalize_opencode_process_request(
@@ -226,5 +301,12 @@ async def finalize_opencode_process_request(
 
     owner._opencode_active_requests.pop(sid, None)
     owner._opencode_abort_sessions.discard(sid)
-    owner._cancel_opencode_session_status_heartbeat(sid)
-    await owner._emit_opencode_session_status(sid, "idle")
+    try:
+        owner._cancel_opencode_session_status_heartbeat(sid)
+    except Exception:
+        logger.warning(
+            "Failed to cancel OpenCode session heartbeat for %s",
+            sid,
+            exc_info=True,
+        )
+    await _emit_session_status_best_effort(owner, sid, "idle")

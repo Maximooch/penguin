@@ -249,7 +249,9 @@ class OpenRouterStream:
 
 
 class OpenRouterCompletionsStub:
-    def __init__(self, *, stream_response: Any | list[Any], create_response: Any) -> None:
+    def __init__(
+        self, *, stream_response: Any | list[Any], create_response: Any
+    ) -> None:
         self.stream_responses = (
             list(stream_response)
             if isinstance(stream_response, list)
@@ -270,7 +272,9 @@ class OpenRouterCompletionsStub:
 
 
 class OpenRouterClientStub:
-    def __init__(self, *, stream_response: Any | list[Any], create_response: Any) -> None:
+    def __init__(
+        self, *, stream_response: Any | list[Any], create_response: Any
+    ) -> None:
         self.chat = SimpleNamespace(
             completions=OpenRouterCompletionsStub(
                 stream_response=stream_response,
@@ -440,9 +444,16 @@ def build_openrouter_handler(
     )
 
     class _ClientFactory:
-        def __init__(self, *, base_url: str, api_key: str) -> None:
+        def __init__(
+            self,
+            *,
+            base_url: str,
+            api_key: str,
+            timeout: float | None,
+        ) -> None:
             self.base_url = base_url
             self.api_key = api_key
+            self.timeout = timeout
             self.chat = SimpleNamespace(
                 completions=OpenRouterCompletionsStub(
                     stream_response=stream_response,

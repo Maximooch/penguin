@@ -169,7 +169,15 @@ async def test_runmode_execute_task_preserves_finish_status():
             return_value={
                 "status": "pending_review",
                 "finish_status": "partial",
+                "finish_summary": "Implemented the core path; docs remain",
                 "assistant_response": "more work remains",
+                "action_results": [
+                    {
+                        "action": "finish_task",
+                        "status": "completed",
+                    }
+                ],
+                "usage": {"total_tokens": 42},
                 "iterations": 2,
                 "execution_time": 0.5,
             }
@@ -186,6 +194,39 @@ async def test_runmode_execute_task_preserves_finish_status():
     )
 
     assert result["finish_status"] == "partial"
+    assert result["finish_summary"] == "Implemented the core path; docs remain"
+    assert result["action_results"] == [
+        {"action": "finish_task", "status": "completed"}
+    ]
+    assert result["usage"] == {"total_tokens": 42}
+
+
+@pytest.mark.asyncio
+async def test_runmode_passes_run_token_budget_to_engine():
+    project_manager = MagicMock()
+    core = DummyCore(project_manager=project_manager)
+    core.engine = SimpleNamespace(
+        run_task=AsyncMock(
+            return_value={
+                "status": "budget_limited",
+                "assistant_response": "budget reached",
+                "iterations": 1,
+                "execution_time": 0.2,
+            }
+        ),
+        settings=SimpleNamespace(),
+    )
+    core.finalize_streaming_message = MagicMock(return_value=None)
+    core._handle_stream_chunk = AsyncMock()
+
+    result = await RunMode(core=core)._execute_task(
+        "Example Task",
+        "Do the thing",
+        {"id": "task-123", "run_token_budget": 25},
+    )
+
+    assert result["status"] == "budget_limited"
+    assert core.engine.run_task.await_args.kwargs["token_budget"] == 25
 
 
 @pytest.mark.asyncio
@@ -370,4 +411,3 @@ async def test_project_continuous_idle_reports_blocked_dependency_frontier():
         for event in events
         if event.get("type") == "message"
     )
-

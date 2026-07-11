@@ -1,4 +1,12 @@
 import type { PenguinLocalCommand } from "./penguin-local-command"
+import { emitPenguinOptimisticPrompt } from "./penguin-send"
+import { PenguinGoalSchema } from "../../context/sync-bootstrap"
+import { summarizeSessionGoal } from "../../routes/session/goal-summary"
+
+type GoalSetCommand = Extract<PenguinLocalCommand, { kind: "goal_set" }>
+type GoalPromptOptions = Omit<Parameters<typeof emitPenguinOptimisticPrompt>[0], "text"> & {
+  command: GoalSetCommand
+}
 
 type PenguinHttpCommand = Extract<
   PenguinLocalCommand,
@@ -29,6 +37,25 @@ export type PenguinLocalCommandFetch = (input: URL, init?: RequestInit) => Promi
 export type PenguinCommandResult = {
   variant: "success" | "warning"
   message: string
+  cancelled?: boolean
+}
+
+export function emitPenguinOptimisticGoal(options: GoalPromptOptions): string {
+  emitPenguinOptimisticPrompt({
+    agentName: options.agentName,
+    emit: options.emit,
+    messageID: options.messageID,
+    model: options.model,
+    now: options.now,
+    partID: options.partID,
+    sessionID: options.sessionID,
+    text: options.command.displayCommand,
+  })
+  return options.messageID
+}
+
+export function shouldEmitPenguinOptimisticGoal(command: PenguinLocalCommand): command is GoalSetCommand {
+  return command.kind === "goal_set" && command.objective.trim().length > 0
 }
 
 export function penguinHttpLocalCommandNeedsSession(command: PenguinLocalCommand): boolean {
@@ -52,6 +79,16 @@ function usage(message: string): PenguinCommandResult {
   return { variant: "warning", message: `Usage: ${message}` }
 }
 
+class PenguinHttpCommandError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message)
+    this.name = "PenguinHttpCommandError"
+  }
+}
+
 async function fetchJson(
   fetcher: PenguinLocalCommandFetch,
   baseUrl: string | URL,
@@ -61,7 +98,7 @@ async function fetchJson(
   const response = await fetcher(new URL(path, baseUrl), init)
   if (!response.ok) {
     const detail = await response.text().catch(() => `${path} failed`)
-    throw new Error(detail)
+    throw new PenguinHttpCommandError(response.status, detail)
   }
   return response.json()
 }
@@ -74,6 +111,9 @@ export async function executePenguinHttpLocalCommand(options: {
   command: PenguinHttpCommand
   fetch: PenguinLocalCommandFetch
   baseUrl: string | URL
+  clientMessageID?: string
+  clientPartID?: string
+  confirmGoalReplace?: (objective: string) => Promise<boolean>
   directory: string
   sessionID?: string
 }): Promise<PenguinCommandResult> {
@@ -87,6 +127,14 @@ export async function executePenguinHttpLocalCommand(options: {
       const payload = objectPayload(await fetchJson(fetch, baseUrl, goalPath))
       const goal = objectPayload(payload.goal)
       if (!payload.goal) return { variant: "success", message: "No session goal is set" }
+      const parsed = PenguinGoalSchema.safeParse(payload.goal)
+      if (parsed.success) {
+        const summary = summarizeSessionGoal(parsed.data)
+        return {
+          variant: "success",
+          message: `Goal: ${summary.status} — ${summary.objective} (${summary.tokens})`,
+        }
+      }
       return { variant: "success", message: `Goal: ${goal.status ?? "unknown"} — ${goal.objective ?? ""}` }
     }
 
@@ -133,13 +181,54 @@ export async function executePenguinHttpLocalCommand(options: {
       return runGoal()
     }
 
+    if (command.kind !== "goal_set") return usage("/goal <objective>|status|pause|resume|run|clear")
     if (!command.objective) return usage("/goal <objective> [--replace]")
-    await fetchJson(fetch, baseUrl, goalPath, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ objective: command.objective, replace: command.replace }),
-    })
-    return runGoal()
+    const setGoal = async (replace: boolean, displayCommand: string) => {
+      const displayMessage = options.clientMessageID
+        ? {
+            display_command: displayCommand,
+            client_message_id: options.clientMessageID,
+            ...(options.clientPartID ? { client_part_id: options.clientPartID } : {}),
+          }
+        : {}
+      await fetchJson(fetch, baseUrl, goalPath, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          objective: command.objective,
+          replace,
+          ...displayMessage,
+        }),
+      })
+    }
+    try {
+      await setGoal(command.replace, command.displayCommand)
+    } catch (error) {
+      const replacementConflict =
+        !command.replace &&
+        error instanceof PenguinHttpCommandError &&
+        error.status === 409 &&
+        error.message.includes("unfinished goal requires replace=true")
+      if (!replacementConflict || !options.confirmGoalReplace) throw error
+      const confirmed = await options.confirmGoalReplace(command.objective)
+      if (!confirmed) {
+        return {
+          variant: "warning",
+          message: "Goal replacement cancelled",
+          cancelled: true,
+        }
+      }
+      await setGoal(true, `${command.displayCommand} --replace`)
+    }
+    try {
+      return await runGoal()
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      return {
+        variant: "warning",
+        message: `Goal saved, but its run did not start: ${detail}`,
+      }
+    }
   }
 
   if (command.kind === "project_create") {
@@ -288,6 +377,7 @@ export async function executePenguinHttpLocalCommand(options: {
     return { variant: "success", message: String(payload.message ?? `Task deleted: ${taskId}`) }
   }
 
+  if (command.kind !== "task_clarification_resume") return usage("/task resume <task-id> <answer>")
   const taskId = requireArg(command.taskId, "/task resume <task-id> <answer>")
   const answer = requireArg(command.answer, "/task resume <task-id> <answer>")
   if (!taskId || !answer) return usage("/task resume <task-id> <answer>")

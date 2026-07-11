@@ -27,6 +27,28 @@ export type SessionUsage = {
   }
 }
 
+export const PenguinGoalSchema = z
+  .object({
+    id: z.string().trim().min(1),
+    objective: z.string().trim().min(1).max(8_000),
+    status: z.enum(["active", "paused", "blocked", "usage_limited", "budget_limited", "complete"]),
+    revision: z.number().int().min(1),
+    token_budget: z.number().int().min(1).max(5_000_000).nullable(),
+    tokens_used: z.number().int().nonnegative(),
+    time_used_seconds: z.number().nonnegative(),
+    created_at: z.string().trim().min(1),
+    updated_at: z.string().trim().min(1),
+    active_run_id: z.string().trim().min(1).nullable(),
+    active_run_owner: z.string().trim().min(1).nullable(),
+    active_run_started_at: z.string().trim().min(1).nullable(),
+    last_run_id: z.string().trim().min(1).nullable(),
+    last_result: z.unknown(),
+    metadata: z.record(z.string(), z.unknown()),
+  })
+  .passthrough()
+
+export type PenguinGoal = z.infer<typeof PenguinGoalSchema>
+
 export type PenguinSession = Session & {
   agent_mode?: string
   agent_id?: string
@@ -37,6 +59,7 @@ export type PenguinSession = Session & {
   message_count?: number
   display_message_count?: number
   fallback_title?: boolean
+  goal?: PenguinGoal
 }
 
 const PenguinSessionTimeSchema = z
@@ -64,6 +87,7 @@ export const PenguinSessionSchema = z
     message_count: z.number().optional(),
     display_message_count: z.number().optional(),
     fallback_title: z.boolean().optional(),
+    goal: PenguinGoalSchema.optional(),
   })
   .passthrough()
 
@@ -309,6 +333,8 @@ function mapPenguinSession(input: { directory: string; item: Record<string, unkn
   if (agentID) payload.agent_id = agentID
   const parentAgentID = typeof input.item.parent_agent_id === "string" ? input.item.parent_agent_id : undefined
   if (parentAgentID) payload.parent_agent_id = parentAgentID
+  const goal = PenguinGoalSchema.safeParse(input.item.goal)
+  if (goal.success) payload.goal = goal.data
   return payload
 }
 

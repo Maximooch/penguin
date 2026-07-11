@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -1022,14 +1023,109 @@ def test_session_goal_round_trip_and_replacement_policy():
     running = dict(replaced)
     running["active_run_id"] = "goalrun_1"
     session.metadata[GOAL_KEY] = running
-    with pytest.raises(GoalConflictError):
-        set_session_goal(core, session.id, status="paused")
+    paused = set_session_goal(core, session.id, status="paused")
+    assert paused is not None
+    assert paused["status"] == "paused"
+    assert paused["active_run_id"] == "goalrun_1"
     with pytest.raises(GoalConflictError):
         clear_session_goal(core, session.id)
 
     session.metadata[GOAL_KEY] = replaced
     assert clear_session_goal(core, session.id) is True
     assert get_session_goal(core, session.id) is None
+
+
+def test_saved_goal_is_present_in_limited_session_index(
+    tmp_path: Path,
+) -> None:
+    from penguin.web.services.session_view import set_session_goal
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    manager = SessionManager(
+        base_path=str(tmp_path / "conversations"),
+        auto_save_interval=0,
+    )
+    session = manager.create_session()
+    session.metadata["directory"] = str(project_dir)
+    manager.mark_session_modified(session.id)
+    assert manager.save_session(session) is True
+    core = SimpleNamespace(
+        conversation_manager=SimpleNamespace(
+            session_manager=manager,
+            agent_session_managers={},
+        ),
+        runtime_config=SimpleNamespace(
+            active_root=str(project_dir),
+            project_root=str(project_dir),
+        ),
+        model_config=SimpleNamespace(model="test-model", provider="test-provider"),
+    )
+
+    goal = set_session_goal(core, session.id, objective="Persist in the index")
+    listed = list_session_infos(core, limit=50)
+
+    assert goal is not None
+    assert len(listed) == 1
+    assert listed[0]["goal"] == goal
+    index_on_disk = json.loads(manager.index_path.read_text(encoding="utf-8"))
+    assert index_on_disk[session.id]["_penguin_goal_v1"] == goal
+
+
+def test_session_index_rebuilds_goal_after_index_checkpoint_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from penguin.web.services.session_view import set_session_goal
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    conversations_dir = tmp_path / "conversations"
+    manager = SessionManager(
+        base_path=str(conversations_dir),
+        auto_save_interval=0,
+    )
+    session = manager.create_session()
+    session.metadata["directory"] = str(project_dir)
+    assert manager.save_session(session) is True
+    core = SimpleNamespace(
+        conversation_manager=SimpleNamespace(
+            session_manager=manager,
+            agent_session_managers={},
+        ),
+        runtime_config=SimpleNamespace(
+            active_root=str(project_dir),
+            project_root=str(project_dir),
+        ),
+        model_config=SimpleNamespace(model="test-model", provider="test-provider"),
+    )
+
+    monkeypatch.setattr(manager, "_save_index", lambda _index: None)
+    goal = set_session_goal(core, session.id, objective="Recover the index")
+    stale_index = json.loads(manager.index_path.read_text(encoding="utf-8"))
+    assert "_penguin_goal_v1" not in stale_index[session.id]
+
+    session_path = conversations_dir / f"{session.id}.json"
+    index_mtime = manager.index_path.stat().st_mtime_ns
+    os.utime(session_path, ns=(index_mtime + 1, index_mtime + 1))
+
+    reloaded = SessionManager(
+        base_path=str(conversations_dir),
+        auto_save_interval=0,
+    )
+    reloaded_core = SimpleNamespace(
+        conversation_manager=SimpleNamespace(
+            session_manager=reloaded,
+            agent_session_managers={},
+        ),
+        runtime_config=core.runtime_config,
+        model_config=core.model_config,
+    )
+
+    listed = list_session_infos(reloaded_core, limit=50)
+
+    assert goal is not None
+    assert listed[0]["goal"] == goal
 
 
 def test_session_goal_validates_objective_status_and_missing_session():
@@ -1051,6 +1147,54 @@ def test_session_goal_validates_objective_status_and_missing_session():
     assert get_session_goal(core, "missing") is None
     assert set_session_goal(core, "missing", objective="Ship") is None
     assert clear_session_goal(core, "missing") is None
+
+
+def test_internal_goal_prompt_is_hidden_from_session_projection_and_title():
+    from penguin.web.services.session_view import get_session_info, get_session_messages
+
+    session = _session("session_internal_goal", None, "2026-02-03T00:00:00")
+    session.messages.append(
+        Message(
+            role="user",
+            content="Execute task: Session goal: hidden runtime prompt",
+            category=MessageCategory.INTERNAL,
+            metadata={"internal_prompt": True, "visibility": "internal"},
+        )
+    )
+    session.metadata[TRANSCRIPT_KEY] = {
+        "order": ["msg_goal_command"],
+        "messages": {
+            "msg_goal_command": {
+                "info": {
+                    "id": "msg_goal_command",
+                    "sessionID": session.id,
+                    "role": "user",
+                    "time": {"created": 1, "completed": 1},
+                },
+                "part_order": ["part_goal_command"],
+                "parts": {
+                    "part_goal_command": {
+                        "id": "part_goal_command",
+                        "sessionID": session.id,
+                        "messageID": "msg_goal_command",
+                        "type": "text",
+                        "text": "/goal Ship the visible path",
+                    }
+                },
+            }
+        },
+    }
+    core = _core([session])
+
+    rows = get_session_messages(core, session.id)
+    assert rows is not None
+    assert [row["parts"][0]["text"] for row in rows] == [
+        "/goal Ship the visible path"
+    ]
+    info = get_session_info(core, session.id)
+    assert info is not None
+    assert info["fallback_title"] is True
+    assert "Execute task" not in info["title"]
 
 
 def test_session_todo_round_trip():

@@ -11,15 +11,7 @@ describe("prompt penguin send", () => {
       pending: true,
       pendingSeenBusy: true,
     }
-    const events: Array<{
-      type: string
-      properties: {
-        sessionID: string
-        status: {
-          type: string
-        }
-      }
-    }> = []
+    const events: unknown[] = []
 
     recoverPenguinPromptFailure({
       sessionID: "ses_123",

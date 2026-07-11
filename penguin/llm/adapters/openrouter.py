@@ -3,7 +3,7 @@ import logging
 import asyncio
 import json
 import time
-from typing import List, Dict, Optional, Any, Union, Callable, AsyncIterator
+from typing import List, Dict, Optional, Any, Union, Callable, AsyncIterator, NoReturn
 
 # --- Added Imports for Vision Handling ---
 import base64
@@ -21,6 +21,7 @@ from penguin.llm.contracts import (
     ErrorCategory,
     FinishReason,
     LLMError,
+    LLMProviderError,
     LLMPreparedRequest,
     LLMProviderCapabilities,
     LLMRequestLifecycle,
@@ -143,6 +144,7 @@ class OpenRouterGateway:
             self.client = AsyncOpenAI(
                 base_url=self.base_url,
                 api_key=api_key,
+                timeout=None,
             )
             self.logger.info(
                 f"OpenRouterGateway initialized for model: {model_config.model} at {self.base_url}"
@@ -183,63 +185,76 @@ class OpenRouterGateway:
 
         return "openrouter"
 
-    def _stream_timeout_seconds(self, env_name: str, default: float) -> float:
-        """Read a positive streaming timeout from the environment."""
+    def _stream_timeout_seconds(self, env_name: str) -> Optional[float]:
+        """Return an explicitly configured positive streaming timeout.
+
+        A missing or invalid setting intentionally leaves the stream unbounded.
+        Long-running agent work must not acquire a Penguin-local provider timeout
+        merely because an operator did not configure one.
+        """
         raw_value = os.getenv(env_name)
         if not isinstance(raw_value, str) or not raw_value.strip():
-            return default
+            return None
         try:
             parsed = float(raw_value.strip())
         except Exception:
             self.logger.warning(
-                "Invalid %s=%r; using default timeout %ss",
+                "Invalid %s=%r; disabling OpenRouter stream watchdog",
                 env_name,
                 raw_value,
-                default,
             )
-            return default
+            return None
         if parsed <= 0:
             self.logger.warning(
-                "Non-positive %s=%r; using default timeout %ss",
+                "Non-positive %s=%r; disabling OpenRouter stream watchdog",
                 env_name,
                 raw_value,
-                default,
             )
-            return default
+            return None
         return parsed
 
-    def _stream_chunk_timeout_seconds(self) -> float:
-        """Return maximum wait for the next streaming chunk."""
+    def _stream_chunk_timeout_seconds(self) -> Optional[float]:
+        """Return the explicitly configured maximum wait for one stream chunk."""
         return self._stream_timeout_seconds(
-            "PENGUIN_OPENROUTER_STREAM_CHUNK_TIMEOUT_SECONDS",
-            75.0,
+            "PENGUIN_OPENROUTER_STREAM_CHUNK_TIMEOUT_SECONDS"
         )
 
-    def _stream_total_timeout_seconds(self) -> float:
-        """Return maximum total duration for one streaming response."""
+    def _stream_total_timeout_seconds(self) -> Optional[float]:
+        """Return the explicitly configured maximum duration for one stream."""
         return self._stream_timeout_seconds(
-            "PENGUIN_OPENROUTER_STREAM_TOTAL_TIMEOUT_SECONDS",
-            300.0,
+            "PENGUIN_OPENROUTER_STREAM_TOTAL_TIMEOUT_SECONDS"
         )
 
     async def _next_stream_item(
         self,
         iterator: AsyncIterator[Any],
         *,
-        wait_timeout: float,
-        total_timeout: float,
+        wait_timeout: Optional[float],
+        total_timeout: Optional[float],
         started_at: float,
         phase: str,
     ) -> Any:
-        """Wait for the next stream item with chunk and total timeout guards."""
-        elapsed = asyncio.get_running_loop().time() - started_at
-        remaining_total = max(total_timeout - elapsed, 0.0)
-        if remaining_total <= 0:
-            raise TimeoutError(
-                f"{phase} exceeded total timeout after {total_timeout:.1f}s"
-            )
-        effective_timeout = min(wait_timeout, remaining_total)
-        return await asyncio.wait_for(iterator.__anext__(), timeout=effective_timeout)
+        """Wait for the next stream item, applying only configured guards."""
+        configured_timeouts: List[float] = []
+        if wait_timeout is not None:
+            configured_timeouts.append(wait_timeout)
+
+        if total_timeout is not None:
+            elapsed = asyncio.get_running_loop().time() - started_at
+            remaining_total = max(total_timeout - elapsed, 0.0)
+            if remaining_total <= 0:
+                raise TimeoutError(
+                    f"{phase} exceeded total timeout after {total_timeout:.1f}s"
+                )
+            configured_timeouts.append(remaining_total)
+
+        if not configured_timeouts:
+            return await iterator.__anext__()
+
+        return await asyncio.wait_for(
+            iterator.__anext__(),
+            timeout=min(configured_timeouts),
+        )
 
     def _to_dict(self, value: Any) -> Dict[str, Any]:
         if isinstance(value, dict):
@@ -589,12 +604,45 @@ class OpenRouterGateway:
             retryable=True,
         )
         self._set_last_finish_reason(FinishReason.ERROR)
+        self._clear_pending_tool_state()
+        self._finish_request_lifecycle_from_state()
+        return f"[Error: {message}]"
+
+    def _clear_pending_tool_state(self) -> None:
+        """Discard incomplete tool-call state after an interrupted stream."""
         self._pending_tool_calls = []
         self._last_tool_call = None
         self._tool_call_acc = {"name": None, "arguments": ""}
         self._tool_call_accs = {}
-        self._finish_request_lifecycle_from_state()
-        return f"[Error: {message}]"
+
+    def _raise_stream_timeout(
+        self,
+        exc: Exception,
+        *,
+        phase: str,
+        chunk_timeout_seconds: Optional[float],
+        total_timeout_seconds: Optional[float],
+    ) -> NoReturn:
+        """Record and raise a canonical failure for an explicit watchdog timeout."""
+        provider_data: Dict[str, Any] = {"phase": phase}
+        if chunk_timeout_seconds is not None:
+            provider_data["chunk_timeout_seconds"] = chunk_timeout_seconds
+        if total_timeout_seconds is not None:
+            provider_data["total_timeout_seconds"] = total_timeout_seconds
+
+        self._record_error(
+            message=(f"{phase} stalled for {self.model_config.model}: {exc}"),
+            finish_reason=FinishReason.ERROR,
+            category=ErrorCategory.TIMEOUT,
+            retryable=True,
+            provider_data=provider_data,
+        )
+        self._set_last_finish_reason(FinishReason.ERROR)
+        self._clear_pending_tool_state()
+        error = self.get_last_error()
+        if error is None:
+            raise RuntimeError("Failed to record OpenRouter stream timeout") from exc
+        raise LLMProviderError(error) from exc
 
     def _tool_call_payload(self, tool_call: Any) -> Dict[str, Any]:
         payload = tool_call if isinstance(tool_call, dict) else {}
@@ -1125,16 +1173,14 @@ class OpenRouterGateway:
             result_ids: set[str] = set()
             cursor = start_index
             while cursor < len(messages) and messages[cursor].get("role") == "tool":
-                tool_call_id = str(
-                    messages[cursor].get("tool_call_id") or ""
-                ).strip()
+                tool_call_id = str(messages[cursor].get("tool_call_id") or "").strip()
                 if tool_call_id:
                     result_ids.add(tool_call_id)
                 cursor += 1
             return result_ids
 
         def _tool_call_from_tool_message(
-            tool_message: Dict[str, Any]
+            tool_message: Dict[str, Any],
         ) -> Optional[Dict[str, Any]]:
             tool_call_id = str(tool_message.get("tool_call_id") or "").strip()
             name = str(
@@ -1485,7 +1531,7 @@ class OpenRouterGateway:
                         )
                     except StopAsyncIteration:
                         break
-                    except TimeoutError as exc:
+                    except (asyncio.TimeoutError, TimeoutError) as exc:
                         self.logger.warning(
                             "[OpenRouterGateway] SDK stream stalled model=%s chunk_timeout=%ss total_timeout=%ss detail=%s",
                             self.model_config.model,
@@ -1493,9 +1539,11 @@ class OpenRouterGateway:
                             total_timeout_seconds,
                             exc,
                         )
-                        return (
-                            f"[Error: OpenRouter stream stalled for {self.model_config.model}. "
-                            "No chunks were received before timeout. Try again or switch models.]"
+                        self._raise_stream_timeout(
+                            exc,
+                            phase="OpenRouter SDK stream",
+                            chunk_timeout_seconds=chunk_timeout_seconds,
+                            total_timeout_seconds=total_timeout_seconds,
                         )
 
                     self._update_request_lifecycle(
@@ -1990,6 +2038,8 @@ class OpenRouterGateway:
                 error=error,
             )
             raise
+        except LLMProviderError:
+            raise
         except APIError as e:
             self.logger.error(f"OpenRouter API error: {e}", exc_info=True)
             # Safely extract attributes - OpenAI SDK APIError may have different structure
@@ -2058,7 +2108,7 @@ class OpenRouterGateway:
 
         try:
             # Use connection pool for efficient parallel LLM calls
-            # The pool handles timeouts via ConnectionPoolConfig (default: 300s read timeout)
+            # Read timeouts are opt-in through ConnectionPoolConfig.
             pool = ConnectionPoolManager.get_instance()
             async with pool.client_context(self.base_url) as client:
                 if use_streaming:
@@ -2070,6 +2120,8 @@ class OpenRouterGateway:
                         client, url, headers, direct_params, stream_callback
                     )
 
+        except LLMProviderError:
+            raise
         except httpx.ReadTimeout:
             self.logger.error(f"Request timed out for model {self.model_config.model}")
             self._record_error(
@@ -2153,7 +2205,7 @@ class OpenRouterGateway:
                     )
                 except StopAsyncIteration:
                     break
-                except TimeoutError as exc:
+                except (asyncio.TimeoutError, TimeoutError) as exc:
                     self.logger.warning(
                         "[OpenRouterGateway] Direct stream stalled model=%s chunk_timeout=%ss total_timeout=%ss detail=%s",
                         self.model_config.model,
@@ -2161,12 +2213,11 @@ class OpenRouterGateway:
                         total_timeout_seconds,
                         exc,
                     )
-                    self._record_error(
-                        message=f"OpenRouter stream stalled for {self.model_config.model}",
-                    )
-                    return (
-                        f"[Error: OpenRouter stream stalled for {self.model_config.model}. "
-                        "No chunks were received before timeout. Try again or switch models.]"
+                    self._raise_stream_timeout(
+                        exc,
+                        phase="OpenRouter direct stream",
+                        chunk_timeout_seconds=chunk_timeout_seconds,
+                        total_timeout_seconds=total_timeout_seconds,
                     )
 
                 if not line.strip():
@@ -2365,7 +2416,9 @@ class OpenRouterGateway:
                 return f"{full_content}\n\n[Error: Stream interrupted by {provider}: {error_msg}]"
             return f"[Error: {provider} returned mid-stream error: {error_msg}]"
 
-        if not interrupted_reason and (not saw_done_marker or last_finish_reason is None):
+        if not interrupted_reason and (
+            not saw_done_marker or last_finish_reason is None
+        ):
             output_state = (
                 "tool_call"
                 if self.has_pending_tool_call() or self._tool_call_accs
@@ -2450,9 +2503,7 @@ class OpenRouterGateway:
                 for tool_call in getattr(self, "_pending_tool_calls", [])
                 if isinstance(tool_call, dict) and tool_call.get("name")
             ]
-            if not pending and isinstance(
-                getattr(self, "_last_tool_call", None), dict
-            ):
+            if not pending and isinstance(getattr(self, "_last_tool_call", None), dict):
                 pending = [dict(self._last_tool_call)]
             return pending
         except Exception as exc:

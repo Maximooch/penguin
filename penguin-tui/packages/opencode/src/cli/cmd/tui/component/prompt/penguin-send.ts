@@ -9,6 +9,14 @@ type Idle = {
   }
 }
 
+type Removed = {
+  type: "message.removed"
+  properties: {
+    messageID: string
+    sessionID: string
+  }
+}
+
 type Emit = (type: string, event: any) => void
 
 type PenguinPromptPart = {
@@ -39,11 +47,22 @@ function assertPenguinSendableModel(model: PenguinModel) {
 }
 
 export function recoverPenguinPromptFailure(input: {
+  messageID?: string
   sessionID: string
   clear: () => void
-  emit: (type: Idle["type"], event: Idle) => void
+  emit: (type: Idle["type"] | Removed["type"], event: Idle | Removed) => void
 }) {
   input.clear()
+  if (input.messageID) {
+    const removed = {
+      type: "message.removed",
+      properties: {
+        messageID: input.messageID,
+        sessionID: input.sessionID,
+      },
+    } satisfies Removed
+    input.emit(removed.type, removed)
+  }
   const event = {
     type: "session.status",
     properties: {
@@ -124,7 +143,7 @@ export async function createPenguinSession(input: {
   throw new Error(`Session create returned empty id (${details})`)
 }
 
-export function shouldStripPenguinVirtualPart(part: PenguinPromptPart): boolean {
+export function shouldStripPenguinVirtualPart(part: { type: string; mime?: string }): boolean {
   return part.type === "file" && typeof part.mime === "string" && part.mime.startsWith("image/")
 }
 
@@ -200,6 +219,7 @@ export async function sendPenguinPrompt(input: {
   baseUrl: string | URL
   directory: string
   fetch: typeof fetch
+  clientPartID?: string
   messageID: string
   model: PenguinModel
   parts: PenguinPromptPart[]
@@ -232,6 +252,7 @@ export async function sendPenguinPrompt(input: {
         variant: input.variant,
         service_tier: input.serviceTier,
         client_message_id: input.messageID,
+        client_part_id: input.clientPartID,
         parts: input.parts,
       }),
     })

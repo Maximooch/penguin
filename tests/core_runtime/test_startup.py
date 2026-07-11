@@ -740,7 +740,6 @@ def test_initialize_core_instance_state_orchestrates_constructor_dependencies(
         default_max_messages_per_session=42,
         engine_factory=_Engine,
         engine_settings_factory=lambda **kwargs: kwargs,
-        token_budget_stop_factory=lambda: SimpleNamespace(name="stop"),
         logger=_FakeLogger(),
     )
 
@@ -1109,9 +1108,8 @@ def test_initialize_conversation_action_state_uses_empty_skills_without_config_d
     assert conversation_payloads[0]["project_root"] is None
 
 
-def test_initialize_engine_state_wires_engine_and_runtime_integrations() -> None:
+def test_initialize_engine_state_wires_engine_without_implicit_token_stop() -> None:
     logger = _FakeLogger()
-    stop = SimpleNamespace(name="stop")
 
     class _EngineSettings:
         def __init__(self, *, streaming_default: bool) -> None:
@@ -1157,7 +1155,6 @@ def test_initialize_engine_state_wires_engine_and_runtime_integrations() -> None
         owner,
         engine_factory=_Engine,
         engine_settings_factory=_EngineSettings,
-        token_budget_stop_factory=lambda: stop,
         logger=logger,
     )
 
@@ -1166,7 +1163,7 @@ def test_initialize_engine_state_wires_engine_and_runtime_integrations() -> None
     assert owner.engine.api_client is owner.api_client
     assert owner.engine.tool_manager is owner.tool_manager
     assert owner.engine.action_executor is owner.action_executor
-    assert owner.engine.stop_conditions == [stop]
+    assert owner.engine.stop_conditions == []
     assert owner.engine.model_config is owner.model_config
     assert owner.engine.coordinator.name == "coordinator"
     assert owner.engine.telemetry is owner.telemetry
@@ -1204,7 +1201,6 @@ def test_initialize_engine_state_defaults_streaming_when_model_config_unavailabl
         ),
         engine_factory=_Engine,
         engine_settings_factory=lambda **kwargs: kwargs,
-        token_budget_stop_factory=lambda: object(),
         logger=_FakeLogger(),
     )
 
@@ -1235,7 +1231,6 @@ def test_initialize_engine_state_keeps_engine_when_coordination_setup_fails() ->
         owner,
         engine_factory=lambda *_args, **_kwargs: _Engine(),
         engine_settings_factory=lambda **kwargs: kwargs,
-        token_budget_stop_factory=lambda: object(),
         logger=logger,
     )
 
@@ -1264,7 +1259,6 @@ def test_initialize_engine_state_sets_none_when_engine_construction_fails() -> N
         owner,
         engine_factory=_engine_factory,
         engine_settings_factory=lambda **kwargs: kwargs,
-        token_budget_stop_factory=lambda: object(),
         logger=logger,
     )
 

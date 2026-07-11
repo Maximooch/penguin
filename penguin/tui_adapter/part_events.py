@@ -56,6 +56,7 @@ class Message:
     path: Dict[str, str] = field(default_factory=dict)
     mode: str = "chat"
     cost: float = 0.0
+    error: Optional[Dict[str, Any]] = None
     tokens: Dict[str, Any] = field(
         default_factory=lambda: {
             "input": 0,
@@ -402,6 +403,7 @@ class PartEventAdapter:
         else:
             message.time_completed = None
             message.finish = None
+            message.error = None
             message.agent_id = agent_id or message.agent_id
             if model_id:
                 message.model_id = model_id
@@ -508,6 +510,57 @@ class PartEventAdapter:
         self._action_active = None
         self._action_buffer = ""
         await self._sync_session_status()
+
+    async def on_assistant_error(
+        self,
+        message: str,
+        *,
+        error: Optional[Dict[str, Any]] = None,
+        agent_id: str = "default",
+        model_id: Optional[str] = None,
+        provider_id: Optional[str] = None,
+        variant: Optional[str] = None,
+    ) -> str:
+        """Emit a completed assistant message carrying an OpenCode API error."""
+        error_data: Dict[str, Any] = {
+            "message": message,
+            "isRetryable": bool((error or {}).get("retryable", False)),
+        }
+        status_code = (error or {}).get("status_code")
+        if isinstance(status_code, int) and not isinstance(status_code, bool):
+            error_data["statusCode"] = status_code
+
+        metadata = {
+            key: str(value)
+            for key, value in {
+                "category": (error or {}).get("category"),
+                "provider": (error or {}).get("provider"),
+                "model": (error or {}).get("model"),
+            }.items()
+            if isinstance(value, str) and value
+        }
+        if metadata:
+            error_data["metadata"] = metadata
+
+        message_id = self._next_id("msg")
+        assistant_message = Message(
+            id=message_id,
+            session_id=self._session_id or "unknown",
+            role="assistant",
+            time_created=time.time(),
+            time_completed=time.time(),
+            model_id=model_id,
+            provider_id=provider_id,
+            variant=variant,
+            agent_id=agent_id,
+            parent_id=self._assistant_parent_id(),
+            path=self._path(),
+            mode=self._mode(),
+            error={"name": "APIError", "data": error_data},
+        )
+        self._active_messages[message_id] = assistant_message
+        await self._emit("message.updated", self._message_to_dict(assistant_message))
+        return message_id
 
     async def on_tool_start(
         self,
@@ -699,10 +752,12 @@ class PartEventAdapter:
         content: str,
         *,
         message_id: Optional[str] = None,
+        part_id: Optional[str] = None,
         agent_id: str = "default",
         model_id: Optional[str] = None,
         provider_id: Optional[str] = None,
         variant: Optional[str] = None,
+        persist: bool = True,
     ) -> str:
         """Called when user sends a message with optional OpenCode metadata."""
         # A new user turn should not let future tool-only assistant work attach
@@ -720,7 +775,7 @@ class PartEventAdapter:
             session_id=self._session_id or "unknown",
             role="user",
             time_created=time.time(),
-            time_completed=time.time(),  # User messages are complete immediately
+            time_completed=None,
             model_id=model_id,
             provider_id=provider_id,
             variant=variant,
@@ -732,18 +787,30 @@ class PartEventAdapter:
         self._last_user_message_id = resolved_message_id
 
         # Create text part for user message
-        part_id = self._next_id("part")
+        resolved_part_id = part_id or self._next_id("part")
         text_part = Part(
-            id=part_id,
+            id=resolved_part_id,
             message_id=resolved_message_id,
             session_id=self._session_id or "unknown",
             type=PartType.TEXT,
-            content={"text": self._strip_internal(content)},
+            content={"text": content},
         )
 
-        await self._emit("message.updated", self._message_to_dict(message))
         await self._emit(
-            "message.part.updated", {"part": self._part_to_dict(text_part)}
+            "message.updated",
+            self._message_to_dict(message),
+            persist=persist,
+        )
+        await self._emit(
+            "message.part.updated",
+            {"part": self._part_to_dict(text_part)},
+            persist=persist,
+        )
+        message.time_completed = time.time()
+        await self._emit(
+            "message.updated",
+            self._message_to_dict(message),
+            persist=persist,
         )
 
         return resolved_message_id
@@ -820,6 +887,8 @@ class PartEventAdapter:
             }
             if msg.finish:
                 result["finish"] = msg.finish
+            if msg.error:
+                result["error"] = msg.error
             return result
         if msg.role == "user":
             return {
@@ -844,9 +913,15 @@ class PartEventAdapter:
         result.update(part.content)
         return result
 
-    async def _emit(self, event_type: str, properties: Dict[str, Any]):
+    async def _emit(
+        self,
+        event_type: str,
+        properties: Dict[str, Any],
+        *,
+        persist: bool = True,
+    ):
         """Emit through EventBus with OpenCode envelope format."""
-        if self.persist_callback is not None:
+        if persist and self.persist_callback is not None:
             try:
                 result = self.persist_callback(event_type, properties)
                 if result is not None:

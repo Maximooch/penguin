@@ -61,6 +61,10 @@ The following global flags can be combined with either interactive or non-intera
 | `--time-limit <MIN>`    | Set an explicit CLI-supplied cap on RunMode duration |
 | `--version/-V`          | Print Penguin version and exit |
 
+`/247` and `--247` are intentionally different. `/247` is an in-session alias
+for the durable `/goal` lifecycle described below. `--247` (also
+`--continuous`) is a process-level CLI flag that starts continuous RunMode.
+
 ---
 
 ## Sub-commands (Typer / headless CLI)
@@ -188,6 +192,41 @@ Additional context management commands:
 /truncations [limit]              # Recent context window trimming events
 ```
 
+### Session Goals
+
+Session goals attach one durable objective to a persisted session. If `/goal`
+is entered before a TUI session exists, the TUI first creates and persists the
+session. An API or low-level caller must supply an existing session ID.
+
+```text
+/goal <objective> [--replace]     # Save a goal and start execution
+/goal status                      # Show objective, lifecycle state, and usage
+/goal pause                       # Prevent another run; fence late completion
+/goal resume                      # Mark active and resume execution
+/goal run                         # Restart an active goal after a non-terminal return
+/goal clear                       # Remove the persisted goal
+/247 ...                          # Exact alias for the same /goal operation
+```
+
+`/goal <objective>` is not a prompt macro and is not continuous mode. It
+persists the objective, marks it active, and starts RunMode execution. Penguin
+does not impose iteration, wall-clock, or token limits when the user leaves
+them unset. Positive `max_iterations`, `timeout_seconds`, and cumulative goal
+`token_budget` values remain available as explicit controls, with no Penguin
+hard maximum. Token usage is checked between provider turns, so a final billed
+response may cross an explicitly configured budget before another turn is
+refused. Exhausting an explicit limit leaves durable non-complete state instead
+of pretending the goal finished.
+
+An unfinished `active`, `paused`, `blocked`, `usage_limited`, or
+`budget_limited` goal must be replaced explicitly with `--replace`. A completed
+goal may be replaced directly. An in-flight run, a conflicting session request,
+or an illegal lifecycle transition is reported as a conflict rather than
+starting duplicate work.
+
+`/247` is branding for the same session-goal state and commands. It does not
+mean the `--247` / `--continuous` CLI flag described above.
+
 ### Run Mode (Autonomous Execution)
 ```text
 /run task "Name" [description]           # Start autonomous execution for a specific task target
@@ -199,6 +238,8 @@ Current truth for continuous mode:
 - project-scoped runs work the ready frontier and may stop honestly when no tasks are ready
 - non-project runs may continue exploratorily by determining next steps
 - `--time-limit` currently represents an explicit CLI-supplied run cap; it should not be read as proof that blueprint/task-defined timing fields are fully surfaced through this CLI
+- session `/goal` and `/247` commands do not enter this continuous loop; they
+  execute one bounded task step at a time
 
 When Run Mode needs human input, the interactive CLI now surfaces both:
 - `clarification_needed` status

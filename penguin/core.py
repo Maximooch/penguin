@@ -255,7 +255,7 @@ class PenguinCore(
         """Initialize PenguinCore with required components."""
         from penguin.cli.events import EventBus, EventType
         from penguin.config import WORKSPACE_PATH, RuntimeConfig
-        from penguin.engine import Engine, EngineSettings, TokenBudgetStop
+        from penguin.engine import Engine, EngineSettings
         from penguin.system.checkpoint_manager import CheckpointConfig
         from penguin.tui_adapter import PartEventAdapter
 
@@ -286,6 +286,5 @@ class PenguinCore(
             default_max_messages_per_session=DEFAULT_MAX_MESSAGES_PER_SESSION,
             engine_factory=Engine,
             engine_settings_factory=EngineSettings,
-            token_budget_stop_factory=TokenBudgetStop,
             logger=logger,
         )

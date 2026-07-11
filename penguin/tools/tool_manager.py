@@ -519,7 +519,7 @@ class ToolManager:
                             "description": "Completion status: done (objective met), partial (some progress), blocked (cannot proceed).",
                         },
                     },
-                    "required": [],
+                    "required": ["status"],
                 },
             },
             # Deprecated: kept for backward compatibility
@@ -1998,7 +1998,7 @@ class ToolManager:
                         },
                         "max_iterations": {
                             "type": "integer",
-                            "description": "Max tool rounds (default: 100, max: 100)",
+                            "description": "Optional explicit tool-round limit",
                         },
                     },
                     "required": ["task"],
@@ -7189,8 +7189,6 @@ class ToolManager:
         Returns:
             JSON string with exploration results
         """
-        from penguin.constants import DELEGATE_EXPLORE_TASK_MAX_ITERATIONS_CAP
-        from penguin.constants import get_engine_max_iterations_default
         from pathlib import Path
         import re
 
@@ -7199,12 +7197,23 @@ class ToolManager:
             return json.dumps({"error": "delegate_explore_task requires 'task'"})
 
         start_dir = tool_input.get("directory", ".")
-        requested_max = tool_input.get(
-            "max_iterations", get_engine_max_iterations_default()
-        )
-        max_iterations = min(
-            int(requested_max), int(DELEGATE_EXPLORE_TASK_MAX_ITERATIONS_CAP)
-        )
+        requested_max = tool_input.get("max_iterations")
+        max_iterations: int | None = None
+        if requested_max is not None:
+            if isinstance(requested_max, bool):
+                return json.dumps(
+                    {"error": "max_iterations must be a positive integer when provided"}
+                )
+            try:
+                max_iterations = int(requested_max)
+            except (TypeError, ValueError):
+                return json.dumps(
+                    {"error": "max_iterations must be a positive integer when provided"}
+                )
+            if max_iterations <= 0:
+                return json.dumps(
+                    {"error": "max_iterations must be a positive integer when provided"}
+                )
 
         cwd = os.getcwd()
 
@@ -7322,7 +7331,9 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             ]
 
             final_content = ""
-            for iteration in range(max_iterations):
+            iteration = 0
+            while max_iterations is None or iteration < max_iterations:
+                iteration += 1
                 response = await gateway.get_response(messages=messages)
 
                 content = ""
@@ -7356,6 +7367,6 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
                 else:
                     return f"[Haiku Explorer]:\n{content}"
 
-            return f"[Haiku Explorer] (max iterations reached):\n{final_content}"
+            return f"[Haiku Explorer] (configured max iterations reached):\n{final_content}"
         except Exception as e:
             return json.dumps({"error": f"delegate_explore_task failed: {e}"})

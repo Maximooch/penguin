@@ -4,7 +4,7 @@ export type PenguinLocalCommand =
   | { kind: "tool_details" }
   | { kind: "thinking" }
   | { kind: "goal_status" }
-  | { kind: "goal_set"; objective: string; replace: boolean }
+  | { kind: "goal_set"; objective: string; replace: boolean; displayCommand: string }
   | { kind: "goal_pause" }
   | { kind: "goal_resume" }
   | { kind: "goal_run" }
@@ -154,7 +154,7 @@ function parseTaskList(args: string[]): PenguinLocalCommand {
   }
 }
 
-function parseGoal(args: string[]): PenguinLocalCommand {
+function parseGoal(args: string[], displayCommand: string): PenguinLocalCommand {
   const subcommand = args[0]
   if (!subcommand || subcommand === "status") return { kind: "goal_status" }
   if (subcommand === "pause") return { kind: "goal_pause" }
@@ -164,11 +164,12 @@ function parseGoal(args: string[]): PenguinLocalCommand {
 
   const replace = args.includes("--replace")
   const objective = args.filter((arg) => arg !== "--replace").join(" ").trim()
-  return { kind: "goal_set", objective, replace }
+  return { kind: "goal_set", objective, replace, displayCommand }
 }
 
 export function parsePenguinLocalCommand(inputText: string): PenguinLocalCommand | null {
-  const firstLine = inputText.split("\n", 1)[0]?.trim() ?? ""
+  const normalizedInput = inputText.trim()
+  const firstLine = normalizedInput.split("\n", 1)[0]?.trim() ?? ""
   if (!firstLine.startsWith("/")) return null
 
   const tokens = splitArgs(firstLine)
@@ -182,7 +183,10 @@ export function parsePenguinLocalCommand(inputText: string): PenguinLocalCommand
   if (command === "settings") return { kind: "settings" }
   if (command === "tool_details") return { kind: "tool_details" }
   if (command === "thinking") return { kind: "thinking" }
-  if (command === "goal" || command === "247") return parseGoal(tokens.slice(1))
+  if (command === "goal" || command === "247") {
+    const goalArguments = normalizedInput.slice(head.length).trim()
+    return parseGoal(splitArgs(goalArguments), normalizedInput)
+  }
 
   if (command === "project-create") return parseProjectCreate(tokens.slice(1))
   if (command === "project-init") return parseProjectInit(tokens.slice(1))

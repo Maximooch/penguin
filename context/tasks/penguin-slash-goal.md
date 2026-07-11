@@ -8,7 +8,7 @@ Last verified on July 9, 2026 against current tree at `08c3c72f6` (`v0.9.0`). Th
 
 ## Goal
 
-Implement a session-scoped `/goal` command, with `/247` as an alias or branded wrapper, similar in spirit to Codex's `/goal`: a durable objective attached to a saved session that can drive bounded autonomous work, expose explicit lifecycle state, and resume/pause/clear without pretending it is just a one-off prompt.
+Implement a session-scoped `/goal` command, with `/247` as an alias or branded wrapper, similar in spirit to Codex's `/goal`: a durable objective attached to a saved session that can drive long-running autonomous work, expose explicit lifecycle state, and resume/pause/clear without pretending it is just a one-off prompt.
 
 ## Non-Goals
 
@@ -398,29 +398,31 @@ Updated: 2m ago
 
 MVP:
 
-- `/goal <objective>` starts one bounded autonomous run.
-- `/goal resume` starts another bounded run.
-- User manually resumes as needed.
+- `/goal <objective>` starts autonomous execution with no Penguin-local
+  iteration, wall-clock, or token limit unless the user explicitly configured
+  one.
+- `/goal resume` resumes eligible paused or blocked durable state.
+- `/goal run` restarts an active goal after an explicit configured limit or
+  non-terminal partial return.
 - `/goal pause` prevents future continuation. If a run is already active, MVP does not silently kill it; its late result must be ignored unless the goal still has the matching `active_run_id` and active status.
 - `/goal clear` and replacement during an active run either return `409` or explicitly abort the run first. Do not clear/replace and then allow an old run to write into the new state.
 
-Next slice:
-
-- If status is `active` and no request is running for session, `maybe_continue_goal_if_idle()` can enqueue another run.
-- Stop continuation on:
+Execution stops on:
   - `complete`
   - `paused`
   - `blocked`
   - clarification needed
-  - usage/token budget exceeded
+  - an explicitly configured iteration, time, or token limit
   - user abort
-  - process error
+  - a real provider, process, or persistence error
 
-Avoid uncontrolled continuation. Codex uses locks and runtime state to prevent duplicate idle continuations; Penguin should use existing active-request/session heartbeat machinery before adding a new scheduler.
+No default limit may be justified as an internal safety checkpoint. Durable
+checkpointing and persistence must occur without stopping goal execution.
 
 Current-code update: Penguin now tracks `_opencode_active_requests`, `_opencode_process_tasks`, busy/idle session status, and heartbeats for OpenCode sessions. Reuse the public lifecycle helpers for accounting, but add a per-session lock or atomic claim operation for exclusion. Under that lock, refuse when `list_session_statuses(core)[session_id]` is busy, assign/persist `active_run_id`, and register the request before release. Do not build new behavior around direct mutation of private request dictionaries.
 
-Do not add a separate scheduler until the one-shot goal path is stable and observable.
+Do not add a separate scheduler merely to compensate for artificial execution
+limits. Process-restart recovery may need its own durable continuation mechanism.
 
 ## Status Transition Policy
 
@@ -435,6 +437,8 @@ Suggested mapping from run result:
 | user abort | `paused` |
 | rate/usage limit | `usage_limited` |
 | token budget exceeded | `budget_limited` |
+| explicitly configured iteration limit reached | `active` with visible reason |
+| explicitly configured wall-clock limit reached | `paused` with visible reason |
 | ordinary partial progress | `active` |
 | runtime error | `blocked` |
 
@@ -569,7 +573,9 @@ Acceptance:
 
 Acceptance:
 
-- Active goal can run one bounded autonomous step, the correct `finish_status` survives the runtime stack, and the target session receives the output/status update.
+- Active goal can run without implicit local limits, the correct `finish_status`
+  survives the runtime stack, and the target session receives the output/status
+  update.
 
 ### Slice 3: Backend Command Registry
 
@@ -606,7 +612,7 @@ Acceptance:
 ## Open Questions
 
 1. Should `/goal <objective>` immediately start running, or only persist the goal until `/goal resume` / `/goal run`?
-   - Recommendation: start one bounded run immediately; continuation can be opt-in or future.
+   - Decision: start immediately and apply no local iteration, wall-clock, or token limit unless the user explicitly configured one.
 2. Should `finish_task(status="done")` always mark goal complete?
    - Recommendation: yes for MVP when running under `run_kind=session_goal`. Preserve and inspect `finish_status`; never infer completion from `pending_review` alone.
 3. Should goals be persisted in project/task DB instead of session metadata?
@@ -641,11 +647,15 @@ Build in this order:
 
 1. Session metadata goal store.
 2. Web/API CRUD.
-3. Runtime result contract and one-shot bridge.
+3. Runtime result contract and execution bridge.
 4. Backend command registry metadata.
 5. TUI parser/runtime command handling.
 6. Safe continuation/accounting.
 
 This keeps the MVP small while preserving the architectural truth: `/goal` is durable session objective state plus controlled autonomous execution, not a prompt macro.
 
-The runtime bridge now precedes TUI dispatch because the chosen command semantics say `/goal <objective>` immediately starts a bounded run. Shipping the command before the bridge would expose a UI whose documented behavior is impossible. Backend registry metadata can still land independently, but command execution should not be advertised as complete until the one-shot runtime path exists.
+The runtime bridge now precedes TUI dispatch because the chosen command semantics
+say `/goal <objective>` immediately starts execution. Shipping the command before
+the bridge would expose a UI whose documented behavior is impossible. Backend
+registry metadata can still land independently, but command execution should not
+be advertised as complete until the runtime path exists.

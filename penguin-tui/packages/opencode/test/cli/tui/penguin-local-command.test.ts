@@ -89,10 +89,11 @@ describe("penguin local command parser", () => {
   test("parses goal lifecycle commands and the 247 alias", () => {
     expect(parsePenguinLocalCommand('/goal')).toEqual({ kind: "goal_status" })
     expect(parsePenguinLocalCommand('/goal status')).toEqual({ kind: "goal_status" })
-    expect(parsePenguinLocalCommand('/goal "Ship session goals" --replace')).toEqual({
+    expect(parsePenguinLocalCommand('/goal "Ship session goals"\nignored second line\n--replace')).toEqual({
       kind: "goal_set",
-      objective: "Ship session goals",
+      objective: "Ship session goals ignored second line",
       replace: true,
+      displayCommand: '/goal "Ship session goals"\nignored second line\n--replace',
     })
     expect(parsePenguinLocalCommand('/goal pause')).toEqual({ kind: "goal_pause" })
     expect(parsePenguinLocalCommand('/goal resume')).toEqual({ kind: "goal_resume" })
@@ -102,6 +103,7 @@ describe("penguin local command parser", () => {
       kind: "goal_set",
       objective: "ship it",
       replace: false,
+      displayCommand: "/247 ship it",
     })
   })
 

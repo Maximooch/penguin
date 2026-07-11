@@ -844,19 +844,10 @@ def _populate_api_keys():
     GITHUB_APP_INSTALLATION_ID = os.environ.get("GITHUB_APP_INSTALLATION_ID")
 
 # Constants
-# CONTINUATION_EXIT_PHRASE = "AUTOMODE_COMPLETE"
-# MAX_CONTINUATION_ITERATIONS = 100
 TASK_COMPLETION_PHRASE = "TASK_COMPLETED"  # Single task completion
 CONTINUOUS_COMPLETION_PHRASE = "CONTINUOUS_COMPLETED"  # End of continuous session
 EMERGENCY_STOP_PHRASE = "EMERGENCY_STOP"  # Immediate termination needed
 NEED_USER_CLARIFICATION_PHRASE = "NEED_USER_CLARIFICATION"  # Pause for user input
-# Canonical iteration budget (config-driven).
-# Source of truth: config.yml → engine.max_iterations_default
-try:
-    MAX_TASK_ITERATIONS = int(_get_nested(config, "engine.max_iterations_default", 5000))
-except Exception:
-    MAX_TASK_ITERATIONS = 5000
-
 
 # Default model configuration (safe defaults for CI/non-interactive)
 DEFAULT_MODEL = os.getenv("PENGUIN_DEFAULT_MODEL", _MODEL.get("default")) or "openai/gpt-5"
