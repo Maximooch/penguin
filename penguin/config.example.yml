@@ -35,6 +35,12 @@ tools:
   allow_file_operations: true
   allow_code_execution: true
 
+# Controls only whether Penguin is prompted to add its co-author trailer when
+# it creates a commit. It does not configure Git identity or enforce commits.
+git:
+  attribution:
+    prompt: true
+
 diagnostics:
   enabled: true
   verbose_logging: true

@@ -17,12 +17,16 @@ class _ConversationManager:
         self.prompts.append(prompt)
 
 
-def _prompt(mode: str) -> str:
+def _prompt(mode: str, **_kwargs: object) -> str:
     return f"prompt:{mode}"
 
 
 def test_set_prompt_mode_normalizes_and_updates_owner_and_conversation() -> None:
-    owner = SimpleNamespace(conversation_manager=_ConversationManager())
+    api_prompts: list[str] = []
+    owner = SimpleNamespace(
+        api_client=SimpleNamespace(set_system_prompt=api_prompts.append),
+        conversation_manager=_ConversationManager(),
+    )
 
     result = prompt_settings.set_prompt_mode(
         owner,
@@ -34,11 +38,12 @@ def test_set_prompt_mode_normalizes_and_updates_owner_and_conversation() -> None
     assert result == "Prompt mode set to 'review'."
     assert owner.prompt_mode == "review"
     assert owner.system_prompt == "prompt:review"
+    assert api_prompts == ["prompt:review"]
     assert owner.conversation_manager.prompts == ["prompt:review"]
 
 
 def test_set_prompt_mode_returns_error_message_when_prompt_builder_fails() -> None:
-    def failing_prompt(_mode: str) -> str:
+    def failing_prompt(_mode: str, **_kwargs: object) -> str:
         raise RuntimeError("bad mode")
 
     result = prompt_settings.set_prompt_mode(
@@ -49,6 +54,89 @@ def test_set_prompt_mode_returns_error_message_when_prompt_builder_fails() -> No
     )
 
     assert result == "Failed to set prompt mode 'bad': bad mode"
+
+
+def test_set_prompt_mode_can_canonicalize_an_alias() -> None:
+    owner = SimpleNamespace(conversation_manager=_ConversationManager())
+
+    result = prompt_settings.set_prompt_mode(
+        owner,
+        "Ponytail",
+        get_system_prompt=_prompt,
+        normalize_prompt_mode=lambda _mode: "complexity_review",
+        logger=logging.getLogger(__name__),
+    )
+
+    assert result == "Prompt mode set to 'complexity_review'."
+    assert owner.prompt_mode == "complexity_review"
+    assert owner.system_prompt == "prompt:complexity_review"
+
+
+def test_set_prompt_mode_preserves_the_owners_output_style() -> None:
+    render_calls: list[tuple[str, str | None, bool]] = []
+
+    def render(
+        mode: str,
+        *,
+        output_style: str | None = None,
+        git_attribution_prompt: bool = True,
+    ) -> str:
+        render_calls.append((mode, output_style, git_attribution_prompt))
+        return f"prompt:{mode}:{output_style}"
+
+    owner = SimpleNamespace(
+        output_style="plain",
+        conversation_manager=_ConversationManager(),
+    )
+
+    prompt_settings.set_prompt_mode(
+        owner,
+        "review",
+        get_system_prompt=render,
+        logger=logging.getLogger(__name__),
+    )
+
+    assert render_calls == [("review", "plain", True)]
+    assert owner.system_prompt == "prompt:review:plain"
+
+
+def test_prompt_rebuilds_preserve_disabled_git_attribution() -> None:
+    render_calls: list[tuple[str, str | None, bool]] = []
+
+    def render(
+        mode: str,
+        *,
+        output_style: str | None = None,
+        git_attribution_prompt: bool = True,
+    ) -> str:
+        render_calls.append((mode, output_style, git_attribution_prompt))
+        return f"prompt:{mode}:{output_style}:{git_attribution_prompt}"
+
+    owner = SimpleNamespace(
+        prompt_mode="direct",
+        output_style="plain",
+        git_attribution_prompt=False,
+        conversation_manager=_ConversationManager(),
+    )
+
+    prompt_settings.set_prompt_mode(
+        owner,
+        "review",
+        get_system_prompt=render,
+        logger=logging.getLogger(__name__),
+    )
+    prompt_settings.set_output_style(
+        owner,
+        "json_guided",
+        get_system_prompt=render,
+        set_output_formatting=lambda _style: None,
+        logger=logging.getLogger(__name__),
+    )
+
+    assert render_calls == [
+        ("review", "plain", False),
+        ("review", "json_guided", False),
+    ]
 
 
 def test_prompt_and_output_style_getters_default_when_missing() -> None:
@@ -132,4 +220,4 @@ def test_core_prompt_setting_shims_delegate_to_runtime(monkeypatch) -> None:
         "manual",
         "prompt:test",
     ]
-    assert formats == ["manual", "json_guided"]
+    assert formats == ["prompt:test", "manual", "json_guided", "prompt:test"]

@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""
-Snapshot-style checks for prompt modes using print + exit code style.
-
-Validates that:
-- Direct/explain/terse/review modes include essential invariants and persistence directive
-- Bench_minimal mode is minimal but still contains core rules
-"""
+"""Snapshot-style checks for the canonical prompt mode renderer."""
 
 from typing import List, Tuple
 
@@ -22,12 +16,13 @@ def assert_true(cond: bool, msg: str) -> bool:
 def main() -> int:
     failures = 0
     try:
+        from penguin.prompt.profiles import list_available_modes
         from penguin.system_prompt import get_system_prompt
     except Exception as e:
         print(f"❌ Failed to import get_system_prompt: {e}")
         return 1
 
-    modes = ["direct", "bench_minimal", "terse", "explain", "review"]
+    modes = list_available_modes()
     results: List[Tuple[str, str]] = []
     for m in modes:
         try:
@@ -37,31 +32,25 @@ def main() -> int:
             print(f"❌ Failed to build prompt for mode '{m}': {e}")
             failures += 1
 
-    # Core invariants expected in full modes
+    # Core invariants expected in every supported mode.
     core_needles = [
-        "Pre-write existence check",
-        "Edits must be safe",
-        "Respect permissions",
-        "Post-verify touched files only",
-        "Avoid destructive ops",
-    ]
-    persistence_needles = [
-        "Execution Persistence (Guarded)",
-        "Continue working until the user's task is fully complete.",
+        "## Engineering discipline",
+        "## Runtime and completion",
+        "## Tool Invocation Protocol",
+        "### finish_task",
     ]
 
     for mode, prompt in results:
         print(f"\n--- Checking mode: {mode} ---")
-        if mode == "bench_minimal":
-            ok = True
-            ok &= assert_true("You are Penguin, a software engineering agent." in prompt, "bench_minimal header present")
-            ok &= assert_true("Continue working until task completion" in prompt, "bench_minimal persistence gist present")
-            failures += 0 if ok else 1
-            continue
-
         ok = True
-        ok &= assert_true(all(n in prompt for n in core_needles), f"{mode}: essential invariants present")
-        ok &= assert_true(all(n in prompt for n in persistence_needles), f"{mode}: persistence directive present")
+        ok &= assert_true(
+            all(n in prompt for n in core_needles),
+            f"{mode}: core runtime contract present",
+        )
+        ok &= assert_true(
+            "Minimum 5-12 tool calls" not in prompt,
+            f"{mode}: no arbitrary tool-call quota",
+        )
         failures += 0 if ok else 1
 
     if failures == 0:
