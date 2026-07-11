@@ -38,11 +38,17 @@ def test_git_attribution_prompt_is_enabled_by_default() -> None:
     prompt = get_system_prompt("direct")
 
     assert "## Git attribution" in prompt
-    assert "Co-authored-by: Penguin <penguin@penguinagents.com>" in prompt
+    assert (
+        "Co-authored-by: penguin-agent[bot] "
+        "<penguin-agent[bot]@users.noreply.github.com>" in prompt
+    )
 
 
 def test_git_attribution_prompt_can_be_disabled() -> None:
     prompt = get_system_prompt("direct", git_attribution_prompt=False)
 
     assert "## Git attribution" not in prompt
-    assert "Co-authored-by: Penguin <penguin@penguinagents.com>" not in prompt
+    assert (
+        "Co-authored-by: penguin-agent[bot] "
+        "<penguin-agent[bot]@users.noreply.github.com>" not in prompt
+    )

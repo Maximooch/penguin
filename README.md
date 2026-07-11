@@ -266,8 +266,9 @@ interface. Session-goal run ownership is process-local in this release, so a
 shared conversation store must be served by one Penguin web process rather than
 multiple workers.
 
-Penguin prompts for `Co-authored-by: Penguin <penguin@penguinagents.com>` on
-agent-created commits by default. This is configurable prompt guidance only;
+Penguin prompts for
+`Co-authored-by: penguin-agent[bot] <penguin-agent[bot]@users.noreply.github.com>`
+on agent-created commits by default. This is configurable prompt guidance only;
 it does not modify Git identity or rewrite commits.
 
 ## Architecture

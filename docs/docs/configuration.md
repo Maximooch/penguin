@@ -93,7 +93,7 @@ Penguin includes a commit-attribution reminder by default. It asks the agent to
 add this trailer when it creates a commit:
 
 ```text
-Co-authored-by: Penguin <penguin@penguinagents.com>
+Co-authored-by: penguin-agent[bot] <penguin-agent[bot]@users.noreply.github.com>
 ```
 
 This is prompt guidance only: it does not alter Git identity, rewrite existing
