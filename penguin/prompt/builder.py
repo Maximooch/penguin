@@ -110,7 +110,7 @@ When you create a Git commit for work you performed, include this trailer in
 the commit message:
 
 ```
-Co-authored-by: Penguin <penguin@penguinagents.com>
+Co-authored-by: penguin-agent[bot] <penguin-agent[bot]@users.noreply.github.com>
 ```
 
 This is an attribution convention, not permission to create, amend, push, or
