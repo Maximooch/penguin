@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NoReturn, Optional
 from fastapi import (
     APIRouter,
     Depends,
@@ -6155,7 +6155,7 @@ def _goal_request(model: Any, payload: Any) -> Any:
         raise HTTPException(status_code=422, detail=exc.errors()) from exc
 
 
-def _raise_goal_http_error(exc: Exception) -> None:
+def _raise_goal_http_error(exc: Exception) -> NoReturn:
     """Translate goal domain failures to stable HTTP semantics."""
 
     from penguin.core_runtime.session_goal_runtime import (
@@ -6172,7 +6172,15 @@ def _raise_goal_http_error(exc: Exception) -> None:
         exc,
         (GoalConflictError, GoalRunConflictError, GoalRunStateError),
     ):
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        detail: str | dict[str, str] = str(exc)
+        if isinstance(exc, GoalConflictError) and str(exc) == (
+            "unfinished goal requires replace=true"
+        ):
+            detail = {
+                "code": "goal_replace_required",
+                "message": str(exc),
+            }
+        raise HTTPException(status_code=409, detail=detail) from exc
     if isinstance(exc, (GoalValidationError, GoalRunValidationError)):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if isinstance(exc, (GoalPersistenceError, GoalRunExecutionError)):

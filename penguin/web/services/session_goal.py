@@ -452,12 +452,6 @@ async def _emit_goal_events_bounded(
             session_id,
             exc_info=True,
         )
-    except Exception:
-        logger.warning(
-            "Failed to emit goal events for %s",
-            session_id,
-            exc_info=True,
-        )
 
 
 def _restore_owned_metadata_value(

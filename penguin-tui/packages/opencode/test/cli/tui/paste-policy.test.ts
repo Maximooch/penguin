@@ -62,6 +62,17 @@ describe("prompt paste policy", () => {
     })
   })
 
+  test("materializes an empty text part by removing its virtual marker", () => {
+    expect(
+      materializePromptText({
+        text: "before [Pasted] after",
+        parts: [{ type: "text", text: "" }],
+        extmarks: [{ id: 1, start: 7, end: 15 }],
+        extmarkToPartIndex: new Map([[1, 0]]),
+      }),
+    ).toBe("before  after")
+  })
+
   test("summarizes long or multiline paste unless disabled", () => {
     expect(shouldSummarizePaste("one\ntwo\nthree")).toBe(true)
     expect(shouldSummarizePaste("one\rtwo\rthree")).toBe(true)

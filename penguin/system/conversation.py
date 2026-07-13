@@ -32,6 +32,23 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def is_human_visible_message(message: Message) -> bool:
+    """Return whether a persisted message may be shown outside model context."""
+
+    category = getattr(message, "category", None)
+    category_name = getattr(category, "name", category)
+    if category is MessageCategory.INTERNAL or (
+        isinstance(category_name, str) and category_name.lower() == "internal"
+    ):
+        return False
+
+    metadata = getattr(message, "metadata", None)
+    visibility = metadata.get("visibility") if isinstance(metadata, dict) else None
+    return not (
+        isinstance(visibility, str) and visibility.strip().lower() == "internal"
+    )
+
+
 class ConversationSystem:
     """
     Manages conversation state and message preparation.
@@ -457,9 +474,15 @@ class ConversationSystem:
         Returns:
             List of messages in API-compatible format
         """
-        # Format for API consumption (remove extra fields)
+        return self.get_human_history()
+
+    def get_human_history(self) -> List[Dict[str, Any]]:
+        """Return API-compatible history without private runtime messages."""
+
         return [
-            {"role": msg.role, "content": msg.content} for msg in self.session.messages
+            {"role": msg.role, "content": msg.content}
+            for msg in self.session.messages
+            if is_human_visible_message(msg)
         ]
 
     def get_formatted_messages(self) -> List[Dict[str, Any]]:

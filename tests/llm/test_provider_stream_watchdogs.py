@@ -117,6 +117,19 @@ def test_openrouter_stream_watchdog_rejects_invalid_timeout_env(
     assert gateway._stream_total_timeout_seconds() is None
 
 
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_openrouter_stream_watchdog_rejects_non_finite_timeout_env(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    """Configured watchdog values must be finite before reaching wait_for."""
+
+    gateway = _gateway()
+    monkeypatch.setenv("PENGUIN_OPENROUTER_STREAM_CHUNK_TIMEOUT_SECONDS", value)
+
+    assert gateway._stream_chunk_timeout_seconds() is None
+
+
 def test_openrouter_stream_watchdog_has_no_default_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -49,7 +49,7 @@ agent = PenguinAgent()
 |--------|-------------|
 | `chat(message: str, *, context: dict | None = None) -> str` | Single turn – returns assistant reply. |
 | `stream(message: str, *, context: dict | None = None) -> Iterator[str]` | Yields chunks of the assistant reply. |
-| `run_task(prompt: str, *, max_iterations: int | None = None) -> dict` | Multi-step reasoning/action loop using core.run_mode; a limit is applied only when supplied. |
+| `run_task(prompt: str, *, max_iterations: int \| None = None) -> dict` | Multi-step reasoning/action loop using core.run_mode; a limit is applied only when supplied. |
 | `new_conversation() -> str` | Start fresh conversation, returns session id. |
 | `load_conversation(session_id: str) -> bool` | Load a saved session into memory. |
 

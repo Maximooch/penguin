@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from penguin.system.execution_context import get_current_execution_context
 from penguin.system.state import Message, MessageCategory, Session
@@ -43,6 +44,7 @@ from penguin.web.routes import (
     session_todo,
     session_update,
 )
+from penguin.web.schemas.session_goal import SessionGoalUpdateRequest
 from penguin.web.services.session_view import (
     TODO_KEY,
     TRANSCRIPT_KEY,
@@ -316,6 +318,10 @@ async def test_session_goal_crud_and_aliases(tmp_path: Path) -> None:
             core=typed_core,
         )
     assert conflict.value.status_code == 409
+    assert conflict.value.detail == {
+        "code": "goal_replace_required",
+        "message": "unfinished goal requires replace=true",
+    }
 
     paused = await session_goal_update(
         session_id,
@@ -496,6 +502,13 @@ async def test_session_goal_routes_enforce_strict_contracts(tmp_path: Path) -> N
         with pytest.raises(HTTPException) as invalid_create:
             await session_goal_update(session_id, payload=payload, core=typed_core)
         assert invalid_create.value.status_code == 422
+
+
+def test_session_goal_schema_rejects_whitespace_only_objective() -> None:
+    """Goal validation rejects an objective that becomes empty after trimming."""
+
+    with pytest.raises(ValidationError):
+        SessionGoalUpdateRequest(objective="   ")
 
 
 @pytest.mark.asyncio

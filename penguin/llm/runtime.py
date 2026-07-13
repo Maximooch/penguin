@@ -86,8 +86,6 @@ class UnsupportedReasoningVariantError(ValueError):
             "variant": self.variant,
             "supported": list(self.supported),
         }
-
-
 _REASONING_DISABLE_VARIANTS = {"off"}
 _NATIVE_RESPONSE_COMPLETION_TOOLS = {"finish_response"}
 logger = logging.getLogger(__name__)
@@ -597,12 +595,22 @@ async def call_with_retry(
                 try:
                     usage = getter() if callable(getter) else {}
                 except Exception:
+                    logger.warning(
+                        "Failed to collect provider usage after an LLM attempt",
+                        exc_info=True,
+                    )
                     usage = {}
-                callback_result = usage_callback(
-                    dict(usage) if isinstance(usage, dict) else {}
-                )
-                if inspect.isawaitable(callback_result):
-                    await callback_result
+                try:
+                    callback_result = usage_callback(
+                        dict(usage) if isinstance(usage, dict) else {}
+                    )
+                    if inspect.isawaitable(callback_result):
+                        await callback_result
+                except Exception:
+                    logger.warning(
+                        "Failed to report provider usage after an LLM attempt",
+                        exc_info=True,
+                    )
 
     async def _tracked_stream_callback(
         chunk: str, message_type: str = "assistant"

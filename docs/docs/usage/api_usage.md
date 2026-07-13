@@ -251,6 +251,7 @@ Pause through the goal mutation endpoint:
 ```bash
 curl -X POST http://127.0.0.1:9000/api/v1/session/SESSION_ID/goal \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: your-key" \
   -d '{"status": "paused"}'
 ```
 
@@ -259,10 +260,12 @@ Resume by setting `active`, then explicitly starting a run:
 ```bash
 curl -X POST http://127.0.0.1:9000/api/v1/session/SESSION_ID/goal \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: your-key" \
   -d '{"status": "active"}'
 
 curl -X POST http://127.0.0.1:9000/api/v1/session/SESSION_ID/goal/run \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: your-key" \
   -d '{"max_iterations": 8, "timeout_seconds": 600}'
 ```
 
@@ -287,7 +290,8 @@ paused, cleared, or replaced state wins.
 ### Clear a Goal
 
 ```bash
-curl -X DELETE http://127.0.0.1:9000/api/v1/session/SESSION_ID/goal
+curl -X DELETE http://127.0.0.1:9000/api/v1/session/SESSION_ID/goal \
+  -H "X-API-Key: your-key"
 ```
 
 Successful reads and mutations use an operation acknowledgement at the top

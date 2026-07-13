@@ -83,6 +83,7 @@ class PenguinHttpCommandError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    readonly code?: string,
   ) {
     super(message)
     this.name = "PenguinHttpCommandError"
@@ -97,8 +98,18 @@ async function fetchJson(
 ): Promise<unknown> {
   const response = await fetcher(new URL(path, baseUrl), init)
   if (!response.ok) {
-    const detail = await response.text().catch(() => `${path} failed`)
-    throw new PenguinHttpCommandError(response.status, detail)
+    const rawDetail = await response.text().catch(() => `${path} failed`)
+    let detail = rawDetail
+    let code: string | undefined
+    try {
+      const body = objectPayload(JSON.parse(rawDetail))
+      const structuredDetail = objectPayload(body.detail)
+      const rawCode = structuredDetail.code ?? body.code
+      const rawMessage = structuredDetail.message ?? body.message ?? body.detail
+      if (typeof rawCode === "string" && rawCode) code = rawCode
+      if (typeof rawMessage === "string" && rawMessage) detail = rawMessage
+    } catch {}
+    throw new PenguinHttpCommandError(response.status, detail, code)
   }
   return response.json()
 }
@@ -208,7 +219,7 @@ export async function executePenguinHttpLocalCommand(options: {
         !command.replace &&
         error instanceof PenguinHttpCommandError &&
         error.status === 409 &&
-        error.message.includes("unfinished goal requires replace=true")
+        error.code === "goal_replace_required"
       if (!replacementConflict || !options.confirmGoalReplace) throw error
       const confirmed = await options.confirmGoalReplace(command.objective)
       if (!confirmed) {

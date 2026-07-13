@@ -332,7 +332,7 @@ agent = PenguinAgent()
 |--------|-------------|
 | `chat(message: str, *, context: dict | None = None) -> str` | One-shot chat |
 | `stream(message: str, *, context: dict | None = None) -> Iterator[str]` | Streaming generator |
-| `run_task(prompt: str, *, max_iterations: int | None = None) -> dict` | Multi-step task execution; omitted means no Penguin-local iteration limit |
+| `run_task(prompt: str, *, max_iterations: int \| None = None) -> dict` | Multi-step task execution; omitted means no Penguin-local iteration limit |
 | `new_conversation() -> str` | Start new session |
 | `load_conversation(session_id: str) -> bool` | Load previous session |
 

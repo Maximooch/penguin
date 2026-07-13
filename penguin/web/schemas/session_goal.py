@@ -33,6 +33,7 @@ StrictGoalTimeoutSeconds = conint(
 )
 StrictGoalObjective = constr(
     strict=True,
+    strip_whitespace=True,
     min_length=1,
     max_length=MAX_GOAL_OBJECTIVE_CHARS,
 )

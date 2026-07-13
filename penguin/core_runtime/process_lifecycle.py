@@ -20,6 +20,7 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 _SESSION_STATUS_EMIT_TIMEOUT_SECONDS = 5.0
+_FALLBACK_REQUEST_GATE_KEY = object()
 
 
 def _session_id(value: Any) -> str:
@@ -65,7 +66,7 @@ async def _emit_session_status_best_effort(
 def get_session_request_gate(owner: Any, session_id: Any) -> asyncio.Lock:
     """Return the shared request-execution lock for one session."""
 
-    sid = _session_id(session_id) or "__default__"
+    sid = _session_id(session_id) or _FALLBACK_REQUEST_GATE_KEY
     gates = getattr(owner, "_opencode_request_gates", None)
     if not isinstance(gates, dict):
         gates = {}

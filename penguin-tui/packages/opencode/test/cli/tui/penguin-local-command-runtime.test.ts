@@ -56,7 +56,7 @@ describe("penguin HTTP local command runtime", () => {
     const client = emitPenguinOptimisticGoal({
       command,
       agentName: "general",
-      emit: (type, event) => events.push({ type, event }),
+      emit: (event) => events.push({ type: event.type, event }),
       messageID: "msg_goal_1",
       model: { providerID: "openai", modelID: "gpt-5" },
       now: 123,
@@ -362,7 +362,7 @@ describe("penguin HTTP local command runtime", () => {
         records.push({ url, method: init?.method ?? "GET", body })
         call++
         if (call === 1) {
-          return new Response(JSON.stringify({ detail: "unfinished goal requires replace=true" }), {
+          return new Response(JSON.stringify({ detail: { code: "goal_replace_required" } }), {
             status: 409,
           })
         }
@@ -407,7 +407,7 @@ describe("penguin HTTP local command runtime", () => {
         const url = input instanceof URL ? input.toString() : String(input)
         const body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined
         records.push({ url, method: init?.method ?? "GET", body })
-        return new Response(JSON.stringify({ detail: "unfinished goal requires replace=true" }), {
+        return new Response(JSON.stringify({ detail: { code: "goal_replace_required" } }), {
           status: 409,
         })
       }) as typeof fetch,

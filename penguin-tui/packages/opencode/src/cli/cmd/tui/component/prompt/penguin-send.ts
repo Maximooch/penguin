@@ -1,23 +1,20 @@
-type Idle = {
-  type: "session.status"
-  properties: {
-    messageID?: string
-    sessionID: string
-    status: {
-      type: "idle"
-    }
-  }
-}
+import type {
+  EventMessagePartUpdated,
+  EventMessageRemoved,
+  EventMessageUpdated,
+  EventSessionStatus,
+  TextPart,
+  UserMessage,
+} from "@opencode-ai/sdk/v2"
 
-type Removed = {
-  type: "message.removed"
-  properties: {
-    messageID: string
-    sessionID: string
-  }
-}
+type Idle = EventSessionStatus
+type Removed = EventMessageRemoved
+type PenguinOptimisticEvent =
+  | EventMessagePartUpdated
+  | EventMessageUpdated
+  | EventSessionStatus
 
-type Emit = (type: string, event: any) => void
+export type PenguinOptimisticEmitter = (event: PenguinOptimisticEvent) => void
 
 type PenguinPromptPart = {
   type: string
@@ -74,7 +71,6 @@ export function recoverPenguinPromptFailure(input: {
 }
 
 export function completePenguinPromptSuccess(input: {
-  messageID: string
   sessionID: string
   clear: () => void
   emit: (type: Idle["type"], event: Idle) => void
@@ -83,7 +79,6 @@ export function completePenguinPromptSuccess(input: {
   const event = {
     type: "session.status",
     properties: {
-      messageID: input.messageID,
       sessionID: input.sessionID,
       status: { type: "idle" },
     },
@@ -149,7 +144,7 @@ export function shouldStripPenguinVirtualPart(part: { type: string; mime?: strin
 
 export function emitPenguinOptimisticPrompt(input: {
   agentName: string
-  emit: Emit
+  emit: PenguinOptimisticEmitter
   messageID: string
   model: PenguinModel
   now?: number
@@ -170,7 +165,7 @@ export function emitPenguinOptimisticPrompt(input: {
       providerID: input.model.providerID,
       modelID: input.model.modelID,
     },
-  }
+  } satisfies UserMessage
   const part = {
     id: input.partID,
     sessionID: input.sessionID,
@@ -181,23 +176,28 @@ export function emitPenguinOptimisticPrompt(input: {
       start: now,
       end: now,
     },
-  }
+  } satisfies TextPart
 
-  input.emit("message.updated", {
+  const messageUpdated = {
     type: "message.updated",
     properties: { info: user },
-  })
-  input.emit("message.part.updated", {
+  } satisfies EventMessageUpdated
+  input.emit(messageUpdated)
+
+  const messagePartUpdated = {
     type: "message.part.updated",
     properties: { part, delta: input.text },
-  })
-  input.emit("session.status", {
+  } satisfies EventMessagePartUpdated
+  input.emit(messagePartUpdated)
+
+  const sessionStatus = {
     type: "session.status",
     properties: {
       sessionID: input.sessionID,
       status: { type: "busy" as const },
     },
-  })
+  } satisfies EventSessionStatus
+  input.emit(sessionStatus)
 
   return { user, part }
 }

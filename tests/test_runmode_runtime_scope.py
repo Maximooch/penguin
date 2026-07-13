@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from penguin.run_mode import RunMode
+from penguin.utils.errors import LLMEmptyResponseError
 from penguin.utils.events import EventBus, TaskEvent
 
 
@@ -161,6 +162,22 @@ async def test_runmode_has_no_iteration_limit_when_omitted() -> None:
     )
 
     assert run_task.await_args.kwargs["max_iterations"] is None
+
+
+@pytest.mark.asyncio
+async def test_runmode_marks_empty_provider_response_for_continuous_retry() -> None:
+    """The empty-response recovery path uses the status the loop recognizes."""
+
+    core = _core(AsyncMock(side_effect=LLMEmptyResponseError("empty response")))
+
+    result = await RunMode(core=core)._execute_task(
+        "Retry empty response",
+        "Retry rather than stopping the continuous run",
+        {},
+    )
+
+    assert result["status"] == "llm_empty_response_error"
+    assert result["completion_type"] == "llm_empty_response_error"
 
 
 @pytest.mark.asyncio

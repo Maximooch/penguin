@@ -107,6 +107,43 @@ async def test_call_with_retry_reports_usage_for_every_provider_attempt() -> Non
 
 
 @pytest.mark.asyncio
+async def test_call_with_retry_preserves_provider_failure_when_usage_hooks_fail(
+) -> None:
+    """Best-effort usage reporting must not replace the provider exception."""
+
+    provider_error = _retryable_stream_error()
+
+    class _BrokenUsageHandler:
+        def get_last_usage(self) -> dict[str, Any]:
+            raise RuntimeError("usage unavailable")
+
+    class _FailingClient:
+        client_handler = _BrokenUsageHandler()
+
+        async def get_response_result(
+            self,
+            *_args: Any,
+            **_kwargs: Any,
+        ) -> LLMCallResult:
+            raise LLMProviderError(provider_error)
+
+    async def broken_usage_callback(_usage: dict[str, Any]) -> None:
+        raise RuntimeError("usage callback failed")
+
+    with pytest.raises(LLMProviderError) as raised:
+        await call_with_retry(
+            api_client=_FailingClient(),
+            messages=[{"role": "user", "content": "hi"}],
+            streaming=False,
+            stream_callback=None,
+            extra_kwargs={},
+            usage_callback=broken_usage_callback,
+        )
+
+    assert raised.value.error is provider_error
+
+
+@pytest.mark.asyncio
 async def test_call_with_retry_replays_after_reasoning_only_stream_failure() -> None:
     retryable_error = _retryable_stream_error()
     client = _ResultClient(

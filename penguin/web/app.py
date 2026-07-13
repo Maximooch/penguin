@@ -564,11 +564,13 @@ class PenguinAPI:
             # Switch to the conversation
             await self.core.conversation_manager.switch_conversation(conversation_id)
 
-            # Get the formatted messages
-            messages = (
-                self.core.conversation_manager.conversation.get_formatted_messages()
-            )
-            return messages
+            # History returned to a caller is human-facing; model formatting may
+            # include private runtime prompts and remains internal.
+            conversation = self.core.conversation_manager.conversation
+            get_human_history = getattr(conversation, "get_human_history", None)
+            if callable(get_human_history):
+                return get_human_history()
+            return conversation.get_history()
         except Exception as e:
             logger.error(f"Error getting conversation history: {str(e)}")
             raise

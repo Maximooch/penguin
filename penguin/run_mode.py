@@ -637,19 +637,22 @@ class RunMode:
             "clarification_answered_by": answered_by,
         }
 
-        return await self._execute_task(
-            task.title,
-            task.description,
-            resumed_context,
-        )
-        logger.debug("Cleaning up run mode state")
-
-        # If not in continuous mode, emit end event
-        if not self.continuous_mode:
-            logger.info("RunMode: Session ended.")
-            await self._emit_event(
-                {"type": "status", "status_type": "run_mode_ended", "data": {}}
+        try:
+            result = await self._execute_task(
+                task.title,
+                task.description,
+                resumed_context,
             )
+        finally:
+            logger.debug("Cleaning up run mode state")
+
+            # If not in continuous mode, emit end event.
+            if not self.continuous_mode:
+                logger.info("RunMode: Session ended.")
+                await self._emit_event(
+                    {"type": "status", "status_type": "run_mode_ended", "data": {}}
+                )
+        return result
 
     async def start_continuous(
         self,
@@ -1500,7 +1503,7 @@ class RunMode:
                 )
 
                 return {
-                    "status": "error",
+                    "status": "llm_empty_response_error",
                     "message": user_message,
                     "completion_type": "llm_empty_response_error",
                 }

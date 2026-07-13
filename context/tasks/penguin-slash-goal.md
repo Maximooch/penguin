@@ -302,11 +302,15 @@ Important current-code wrinkle: `PenguinCore.start_run_mode()` returns `None` th
 
 Do not call `Engine.run_task()` directly unless you also replicate RunMode's streaming, clarification, and event behavior. That duplication is exactly how lifecycle bugs breed.
 
-Critical prerequisite: current `Engine.run_task()` detects the machine-readable `finish_task` status (`done`, `partial`, or `blocked`) but does not include it in its returned result, and `RunMode._execute_task()` drops `action_results`. Therefore `pending_review` alone cannot drive correct goal transitions. Preserve `finish_status` in the Engine result and pass it through RunMode before implementing goal result mapping.
+Implemented invariant: `Engine.run_task()` preserves the machine-readable
+`finish_task` status (`done`, `partial`, or `blocked`) and summary, and
+`RunMode._execute_task()` carries `finish_status`, `finish_summary`, and
+`action_results` into its result. `pending_review` alone is still not enough to
+drive a goal transition; the preserved `finish_status` is authoritative.
 
 ### 5. Prompt Shape For Goal Runs
 
-Generated prompt should be explicit and bounded:
+Generated prompt should be explicit about its completion contract:
 
 ```text
 You are executing the active session goal.
@@ -317,7 +321,7 @@ Status: {status}
 Work toward this goal using the available tools. Make concrete progress.
 When the goal is fully satisfied, call finish_task with status done.
 If blocked on missing information, call finish_task with status blocked or request clarification using existing Penguin clarification flow.
-Do not loop indefinitely. Stop after meaningful progress or when the current acceptance condition is met.
+Continue until the goal is complete, blocked on required input or an external dependency, interrupted, or encounters a real runtime failure. Do not invent an arbitrary local stopping condition.
 ```
 
 Potential context fields:

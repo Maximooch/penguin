@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from types import MethodType, SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
@@ -237,6 +238,21 @@ async def test_run_session_goal_has_no_deadline_when_timeout_is_omitted(
 
 
 @pytest.mark.asyncio
+async def test_run_deadline_preserves_provider_timeout_error() -> None:
+    """Provider timeouts must not be relabeled as a configured goal deadline."""
+
+    async def provider_timeout() -> None:
+        raise TimeoutError("provider read timed out")
+
+    with pytest.raises(TimeoutError, match="provider read timed out"):
+        await session_goal_runtime._await_with_run_deadline(
+            provider_timeout(),
+            started=asyncio.get_running_loop().time(),
+            timeout_seconds=60,
+        )
+
+
+@pytest.mark.asyncio
 async def test_run_session_goal_passes_only_user_configured_token_budget(
     tmp_path: Path,
 ) -> None:
@@ -366,6 +382,31 @@ async def test_run_session_goal_primes_requested_session_scope(tmp_path: Path) -
         core.conversation_manager,
     )
     assert conversation.session.id == session.id
+
+
+@pytest.mark.asyncio
+async def test_run_session_goal_resolves_scope_while_holding_goal_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Scope metadata is read under the same lock that claims the goal run."""
+
+    session, core = _session(tmp_path)
+    original_resolve_scope = session_goal_runtime._resolve_scope
+    observed_lock_states: list[bool] = []
+
+    def resolve_scope(
+        *args: Any,
+        **kwargs: Any,
+    ) -> tuple[Any, Any, dict[str, Any], str, str, str | None]:
+        observed_lock_states.append(get_session_goal_lock(core, session.id).locked())
+        return original_resolve_scope(*args, **kwargs)
+
+    monkeypatch.setattr(session_goal_runtime, "_resolve_scope", resolve_scope)
+
+    await run_session_goal(core, session.id, run_mode_factory=_RunMode)
+
+    assert observed_lock_states == [True]
 
 
 @pytest.mark.asyncio
@@ -564,6 +605,7 @@ async def test_pause_during_run_survives_late_success(tmp_path: Path) -> None:
 
     paused = set_session_goal(core, session.id, status="paused")
     assert paused is not None
+    paused_snapshot = deepcopy(paused)
     core.run_release.set()
     result = await task
 
@@ -572,16 +614,38 @@ async def test_pause_during_run_survives_late_success(tmp_path: Path) -> None:
     assert goal is not None
     assert goal["status"] == "paused"
     assert goal["active_run_id"] is None
-    assert result["result"]["message"] == (
-        "Goal run finished — Completed after the pause request"
+    assert goal["active_run_owner"] is None
+    assert goal["active_run_started_at"] is None
+    assert goal["tokens_used"] == paused_snapshot["tokens_used"]
+    assert goal["time_used_seconds"] == paused_snapshot["time_used_seconds"]
+    assert goal["last_result"] == paused_snapshot["last_result"]
+    assert goal["revision"] == paused_snapshot["revision"] + 1
+    assert "message" not in result["result"]
+    core._emit_opencode_stream_chunk.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_goal_completion_stream_aborts_after_chunk_failure(
+    tmp_path: Path,
+) -> None:
+    """A failed synthesized completion does not leave its started stream active."""
+
+    session, core = _session(tmp_path)
+    core.run_mode_result = {
+        "status": "pending_review",
+        "finish_status": "done",
+        "finish_summary": "Persist this final",
+        "message": "",
+    }
+    core._emit_opencode_stream_chunk = AsyncMock(
+        side_effect=RuntimeError("chunk failed")
     )
-    assert goal["last_result"]["message"] == result["result"]["message"]
-    core._emit_opencode_stream_chunk.assert_awaited_once_with(
-        "msg_goal_final",
-        "part_goal_final",
-        result["result"]["message"],
-        "assistant",
-    )
+    core.abort_streaming_message = MagicMock(return_value=True)
+
+    with pytest.raises(GoalRunExecutionError, match="Failed to emit"):
+        await run_session_goal(core, session.id, run_mode_factory=_RunMode)
+
+    core.abort_streaming_message.assert_called_once_with(agent_id="default")
 
 
 @pytest.mark.asyncio

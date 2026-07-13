@@ -1987,7 +1987,12 @@ class ProjectManager:
                 result_display = f"[{result_color}]{result}[/{result_color}]"
                 
                 # Format iterations
-                iterations = f"{record['iterations']}/{record['max_iterations']}"
+                configured_limit = record["max_iterations"]
+                iterations = (
+                    f"{record['iterations']}/{configured_limit}"
+                    if configured_limit is not None
+                    else f"{record['iterations']}/unbounded"
+                )
                 
                 # Format tools
                 tools = ", ".join(record["tools_used"]) if record["tools_used"] else "None"

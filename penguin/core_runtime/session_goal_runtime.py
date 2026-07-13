@@ -114,10 +114,22 @@ async def _await_with_run_deadline(
     if timeout_seconds is None:
         return await awaitable
     remaining = timeout_seconds - (time.monotonic() - started)
+    task = asyncio.ensure_future(awaitable)
     try:
-        return await asyncio.wait_for(awaitable, timeout=max(remaining, 0.0))
+        if remaining <= 0:
+            raise asyncio.TimeoutError
+        return await asyncio.wait_for(asyncio.shield(task), timeout=remaining)
     except asyncio.TimeoutError as exc:
+        if task.done():
+            return task.result()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
         raise _GoalRunDeadlineExceeded from exc
+    except BaseException:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        raise
 
 
 @asynccontextmanager
@@ -458,14 +470,40 @@ async def _emit_completion_message(
     if not all(callable(item) for item in (start, chunk, end)):
         return False
 
+    message_id: str | None = None
+    part_id: str | None = None
+
+    async def _abort_started_stream() -> None:
+        if message_id is None or part_id is None:
+            return
+        abort = getattr(core, "abort_streaming_message", None)
+        if not callable(abort):
+            return
+        try:
+            aborted = abort(agent_id=agent_id)
+            if inspect.isawaitable(aborted):
+                await aborted
+        except Exception:
+            logger.warning(
+                "Failed to abort synthesized goal completion stream message=%s part=%s",
+                message_id,
+                part_id,
+                exc_info=True,
+            )
+
     async def _emit() -> None:
+        nonlocal message_id, part_id
         message_id, part_id = await start(
             agent_id=agent_id,
             model_id=model_id,
             provider_id=provider_id,
         )
-        await chunk(message_id, part_id, text, "assistant")
-        await end(message_id, part_id)
+        try:
+            await chunk(message_id, part_id, text, "assistant")
+            await end(message_id, part_id)
+        except BaseException:
+            await _abort_started_stream()
+            raise
 
     try:
         await asyncio.wait_for(
@@ -572,6 +610,26 @@ def _finalize_goal_locked(
     assert latest is not None
     if latest["id"] != goal_id or latest.get("active_run_id") != run_id:
         return latest, False, None
+
+    if latest["revision"] != claimed_revision or latest["status"] != "active":
+        released = deepcopy(latest)
+        released["active_run_id"] = None
+        released["active_run_owner"] = None
+        released["active_run_started_at"] = None
+        released["revision"] = latest["revision"] + 1
+        released["updated_at"] = _timestamp()
+        changed = save_session_goal(
+            core,
+            session_id,
+            released,
+            expected_goal_id=goal_id,
+            expected_revision=latest["revision"],
+            expected_run_id=run_id,
+        )
+        if not changed:
+            current = load_session_goal_record(core, session_id, require_goal=True).goal
+            return current, False, None
+        return released, True, None
 
     updated = deepcopy(latest)
     updated["tokens_used"] += _run_tokens(result)
@@ -697,18 +755,6 @@ async def run_session_goal(
         timeout_seconds,
         field="timeout_seconds",
     )
-    try:
-        (
-            _session,
-            _manager,
-            session_metadata,
-            agent_id,
-            agent_mode,
-            resolved_directory,
-        ) = _resolve_scope(core, session_id, directory)
-    except GoalNotFoundError as exc:
-        raise GoalRunNotFoundError(str(exc)) from exc
-
     owner_id = _runtime_owner_id(core)
     live_runs = _live_runs(core)
     goal_lock = get_session_goal_lock(core, session_id)
@@ -724,11 +770,26 @@ async def run_session_goal(
     model_id: str | None = None
     recovered: dict[str, Any] | None = None
     limited: dict[str, Any] | None = None
+    session_metadata: dict[str, Any] = {}
+    agent_id = "default"
+    agent_mode = "build"
+    resolved_directory: str | None = None
     async with _goal_lock_with_run_deadline(
         goal_lock,
         started=started,
         timeout_seconds=resolved_timeout,
     ):
+        try:
+            (
+                _session,
+                _manager,
+                session_metadata,
+                agent_id,
+                agent_mode,
+                resolved_directory,
+            ) = _resolve_scope(core, session_id, directory)
+        except GoalNotFoundError as exc:
+            raise GoalRunNotFoundError(str(exc)) from exc
         try:
             record = load_session_goal_record(core, session_id, require_goal=True)
         except GoalNotFoundError as exc:

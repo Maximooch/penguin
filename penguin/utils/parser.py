@@ -8,6 +8,7 @@
 import asyncio
 import json
 import logging
+import math
 import re
 import time
 from datetime import datetime
@@ -2451,9 +2452,18 @@ class ActionExecutor:
         if requested_max_iterations is not None:
             if isinstance(requested_max_iterations, bool):
                 return "max_iterations must be a positive integer when provided"
+            if isinstance(requested_max_iterations, float) and (
+                not math.isfinite(requested_max_iterations)
+                or not requested_max_iterations.is_integer()
+            ):
+                return "max_iterations must be a positive integer when provided"
             try:
                 max_iterations = int(requested_max_iterations)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
+                return "max_iterations must be a positive integer when provided"
+            if not isinstance(requested_max_iterations, str) and (
+                max_iterations != requested_max_iterations
+            ):
                 return "max_iterations must be a positive integer when provided"
             if max_iterations <= 0:
                 return "max_iterations must be a positive integer when provided"

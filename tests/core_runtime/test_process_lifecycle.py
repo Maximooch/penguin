@@ -119,28 +119,35 @@ async def test_register_second_request_does_not_emit_duplicate_busy() -> None:
 async def test_cancelled_busy_status_emission_rolls_back_request_accounting() -> None:
     owner = _Owner()
     blocked = asyncio.Event()
+    status_started = asyncio.Event()
 
     async def _hang_status(_session_id: str, _status_type: str) -> None:
+        status_started.set()
         await blocked.wait()
 
     owner._emit_opencode_session_status = _hang_status
     task = asyncio.create_task(_sleeping_task())
+    registration = asyncio.create_task(
+        process_lifecycle.register_opencode_process_request(
+            owner,
+            "session_1",
+            task,
+        )
+    )
     try:
+        await asyncio.wait_for(status_started.wait(), timeout=1)
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(
-                process_lifecycle.register_opencode_process_request(
-                    owner,
-                    "session_1",
-                    task,
-                ),
+                registration,
                 timeout=0.01,
             )
 
         assert owner._opencode_process_tasks == {}
         assert owner._opencode_active_requests == {}
     finally:
+        registration.cancel()
         task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.gather(registration, task, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -185,7 +192,7 @@ async def test_cancelled_first_registration_preserves_concurrent_second_request(
         registration.cancel()
         first.cancel()
         second.cancel()
-        await asyncio.gather(first, second, return_exceptions=True)
+        await asyncio.gather(registration, first, second, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -307,6 +314,20 @@ async def test_blank_session_or_missing_task_does_not_track_request() -> None:
     assert owner._opencode_active_requests == {}
     assert owner.status_events == []
     assert owner.heartbeat_events == []
+
+
+def test_request_gate_uses_a_non_colliding_fallback_key() -> None:
+    """Blank session identifiers share a gate without aliasing a real session."""
+
+    owner = _Owner()
+
+    fallback_gate = process_lifecycle.get_session_request_gate(owner, None)
+    assert (
+        process_lifecycle.get_session_request_gate(owner, "   ") is fallback_gate
+    )
+
+    named_gate = process_lifecycle.get_session_request_gate(owner, "__default__")
+    assert named_gate is not fallback_gate
 
 
 def test_discard_abort_session_ignores_blank_session_and_repairs_state() -> None:

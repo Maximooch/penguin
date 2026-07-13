@@ -40,7 +40,7 @@ export function materializePromptText(input: {
 
     const before = text.slice(0, extmark.start)
     const after = text.slice(extmark.end)
-    if (part.type === "text" && part.text) {
+    if (part.type === "text" && part.text !== undefined) {
       text = before + part.text + after
       continue
     }

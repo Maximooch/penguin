@@ -46,6 +46,7 @@ import {
   resolveSessionID,
   sendPenguinPrompt,
   shouldStripPenguinVirtualPart,
+  type PenguinOptimisticEmitter,
 } from "./penguin-send"
 import { parsePenguinLocalCommand } from "./penguin-local-command"
 import {
@@ -110,6 +111,18 @@ export function Prompt(props: PromptProps) {
   const kv = useKV()
   const pasteDuplicateGuard = createPasteDuplicateGuard()
   const pasteTaskQueue = createPasteTaskQueue()
+  const emitPenguinOptimisticEvent: PenguinOptimisticEmitter = (event) => {
+    switch (event.type) {
+      case "message.updated":
+        sdk.event.emit("message.updated", event)
+        return
+      case "message.part.updated":
+        sdk.event.emit("message.part.updated", event)
+        return
+      case "session.status":
+        sdk.event.emit("session.status", event)
+    }
+  }
   const activeSessionID = createMemo(() => props.sessionID ?? sdk.sessionID ?? "")
   const status = createMemo(() => sync.data.session_status?.[activeSessionID()] ?? { type: "idle" })
   const model = createMemo(() => {
@@ -363,6 +376,7 @@ export function Prompt(props: PromptProps) {
       renderer.requestRender()
     }
 
+    // Why are these hard coded into index.tsx? need to move somewhere else
     return [
       {
         title: "Clear prompt",
@@ -1132,7 +1146,7 @@ export function Prompt(props: PromptProps) {
                 ? emitPenguinOptimisticGoal({
                     command: localCommand,
                     agentName: agent.name,
-                    emit: (type, event) => sdk.event.emit(type as any, event as any),
+                    emit: emitPenguinOptimisticEvent,
                     messageID: goalPromptIDs.messageID,
                     model: selectedModel,
                     partID: goalPromptIDs.partID,
@@ -1180,7 +1194,6 @@ export function Prompt(props: PromptProps) {
                       })
                     } else {
                       completePenguinPromptSuccess({
-                        messageID: clientMessageID,
                         sessionID: commandSessionID,
                         clear: () => undefined,
                         emit: sdk.event.emit,
@@ -1248,7 +1261,7 @@ export function Prompt(props: PromptProps) {
         const clientPartID = gen.next("part")
         emitPenguinOptimisticPrompt({
           agentName: agent.name,
-          emit: (type, event) => sdk.event.emit(type as any, event as any),
+          emit: emitPenguinOptimisticEvent,
           messageID,
           model: selectedModel,
           partID: clientPartID,
@@ -1320,7 +1333,6 @@ export function Prompt(props: PromptProps) {
           .then((result) => {
             if (result.ok) {
               completePenguinPromptSuccess({
-                messageID,
                 sessionID,
                 clear: () => {
                   setStore("pending", false)
@@ -1513,7 +1525,13 @@ export function Prompt(props: PromptProps) {
     return
   }
 
-  async function processPastedText(normalizedText: string) {
+  async function processPastedText(
+    normalizedText: string,
+    pasteInput: TextareaRenderable,
+  ) {
+    const isPasteInputActive = () => input === pasteInput && !pasteInput.isDestroyed
+    if (!isPasteInputActive()) return
+
     const pastedContent = normalizedText.trim()
     if (!pastedContent) {
       command.trigger("prompt.paste")
@@ -1571,11 +1589,13 @@ export function Prompt(props: PromptProps) {
       try {
         const file = Bun.file(local)
         const exists = await file.exists().catch(() => false)
+        if (!isPasteInputActive()) return
         if (!exists) continue
 
         // Handle SVG as raw text content, not as base64 image.
         if (file.type === "image/svg+xml") {
           const content = await file.text().catch(() => {})
+          if (!isPasteInputActive()) return
           if (content) {
             const cleaned = cleanedTextAroundPath(entry, local)
             if (cleaned) {
@@ -1590,6 +1610,7 @@ export function Prompt(props: PromptProps) {
             .arrayBuffer()
             .then((buffer) => Buffer.from(buffer).toString("base64"))
             .catch(() => {})
+          if (!isPasteInputActive()) return
           if (content) {
             const cleaned = cleanedTextAroundPath(entry, local)
             if (cleaned) {
@@ -1608,16 +1629,19 @@ export function Prompt(props: PromptProps) {
 
     if (pathLike) {
       // No valid image detected from a path-like paste; preserve original text.
+      if (!isPasteInputActive()) return
       input.insertText(normalizedText)
       return
     }
 
     if (shouldSummarizePaste(pastedContent, sync.data.config.experimental?.disable_paste_summary)) {
       const lineCount = (pastedContent.match(/\n/g)?.length ?? 0) + 1
+      if (!isPasteInputActive()) return
       pasteText(pastedContent, `[Pasted ~${lineCount} lines]`)
       return
     }
 
+    if (!isPasteInputActive()) return
     input.insertText(normalizedText)
 
     setTimeout(() => {
@@ -1843,16 +1867,19 @@ export function Prompt(props: PromptProps) {
                   return
                 }
 
-                if (shouldOwnPasteEvent(normalizedText)) {
-                  // OpenTUI does not await async onPaste handlers before applying
-                  // its default textarea paste. Claim the event before any file
-                  // probing awaits, then insert the intended text/content below.
-                  event.preventDefault()
-                }
-                void pasteTaskQueue.enqueue(() => processPastedText(normalizedText)).catch((error) => {
-                  const detail = error instanceof Error ? error.message : String(error)
-                  toast.show({ variant: "error", message: `Failed to process pasted content: ${detail}` })
-                })
+                if (!shouldOwnPasteEvent(normalizedText)) return
+
+                // OpenTUI does not await async onPaste handlers before applying
+                // its default textarea paste. Claim the event before any file
+                // probing awaits, then insert the intended text/content below.
+                event.preventDefault()
+                const pasteInput = input
+                void pasteTaskQueue
+                  .enqueue(() => processPastedText(normalizedText, pasteInput))
+                  .catch((error) => {
+                    const detail = error instanceof Error ? error.message : String(error)
+                    toast.show({ variant: "error", message: `Failed to process pasted content: ${detail}` })
+                  })
               }}
               ref={(r: TextareaRenderable) => {
                 input = r

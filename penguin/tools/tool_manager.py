@@ -1,5 +1,6 @@
 import base64
 import logging
+import math
 import os
 import subprocess
 import asyncio
@@ -7204,9 +7205,21 @@ class ToolManager:
                 return json.dumps(
                     {"error": "max_iterations must be a positive integer when provided"}
                 )
+            if isinstance(requested_max, float) and (
+                not math.isfinite(requested_max) or not requested_max.is_integer()
+            ):
+                return json.dumps(
+                    {"error": "max_iterations must be a positive integer when provided"}
+                )
             try:
                 max_iterations = int(requested_max)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
+                return json.dumps(
+                    {"error": "max_iterations must be a positive integer when provided"}
+                )
+            if not isinstance(requested_max, str) and (
+                max_iterations != requested_max
+            ):
                 return json.dumps(
                     {"error": "max_iterations must be a positive integer when provided"}
                 )

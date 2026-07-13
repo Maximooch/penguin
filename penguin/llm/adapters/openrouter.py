@@ -2,6 +2,7 @@ import os
 import logging
 import asyncio
 import json
+import math
 import time
 from typing import List, Dict, Optional, Any, Union, Callable, AsyncIterator, NoReturn
 
@@ -204,9 +205,10 @@ class OpenRouterGateway:
                 raw_value,
             )
             return None
-        if parsed <= 0:
+        if not math.isfinite(parsed) or parsed <= 0:
             self.logger.warning(
-                "Non-positive %s=%r; disabling OpenRouter stream watchdog",
+                "Non-finite or non-positive %s=%r; "
+                "disabling OpenRouter stream watchdog",
                 env_name,
                 raw_value,
             )

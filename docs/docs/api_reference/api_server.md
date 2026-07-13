@@ -270,7 +270,7 @@ const ws = new WebSocket('ws://127.0.0.1:9000/api/v1/chat/stream');
 - `progress`: Iteration progress updates. `max_iterations` is `null` when no
   explicit limit was configured.
   ```json
-  {"event": "progress", "data": {"iteration": 2, "max_iterations": 5}}
+  {"event": "progress", "data": {"iteration": 2, "max_iterations": 20}}
   ```
 - `complete`: Final response with all results
   ```json
