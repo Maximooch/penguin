@@ -10,11 +10,42 @@ Run Mode enables Penguin to:
 - Maintain workspace state across tasks
 - Operate with time limits and graceful shutdowns
 
+## Session Goals Are a Lifecycle Controller
+
+`/goal` is durable session state; `RunMode` executes that state. Setting
+`/goal <objective>` persists the objective and starts task execution. `/goal
+resume` and `/goal run` resume or restart eligible durable state.
+
+Session goals require a saved session and retain lifecycle state, revision,
+active run ID, token usage, and elapsed time across requests. Iteration,
+wall-clock, and cumulative token limits are optional and exist only when the
+user explicitly configures them. Penguin applies no hidden default or hard
+maximum. Usage is checked between provider turns, so the last billed response
+may cross an explicit threshold before another turn is refused.
+
+An `active` goal may remain active after an explicit partial result until the
+user runs it again. `/247` is an exact slash-command alias for `/goal`; the
+process-level `--247` / `--continuous` option enters continuous RunMode and is a
+different contract.
+
+Validated `finish_task(status="done")` completes a session goal. The deprecated
+`task_completed` result marker remains accepted as a compatibility bridge when
+it carries an anchored machine-readable done status. Partial
+and blocked outcomes remain truthful non-complete states. Goal ID, run ID,
+revision, and active status fence late results so an old run cannot resurrect a
+paused, cleared, or replaced goal.
+
+Goal mutation locks and live-run ownership are process-local. Run a Penguin
+session store behind a single `penguin-web` process for this release; multiple
+worker processes sharing the same conversation files are not a supported
+high-availability configuration. Durable revisions protect normal retries and
+restarts, but they are not a cross-process lease service.
+
 ```mermaid
 classDiagram
     class RunMode {
         -PenguinCore core
-        -int max_iterations
+        -Optional[int] max_iterations
         -bool _interrupted
         -bool continuous_mode
         -datetime start_time
@@ -112,14 +143,15 @@ stateDiagram-v2
 def __init__(
     self,
     core,
-    max_iterations: int = MAX_TASK_ITERATIONS,
+    max_iterations: Optional[int] = None,
     time_limit: Optional[int] = None,
 ):
 ```
 
 Parameters:
 - `core`: `PenguinCore` instance to use for operations. `RunMode` delegates task execution to `core.engine`.
-- `max_iterations`: Maximum iterations per task. Default from config.
+- `max_iterations`: Optional explicit maximum iterations per task. When unset,
+  RunMode adds no Penguin-local iteration ceiling.
 - `time_limit`: Optional time limit in minutes for continuous mode.
 
 ## Key Methods
@@ -218,7 +250,7 @@ Ensures clean shutdown by:
 
 ```python
 # Create a RunMode instance
-run_mode = RunMode(core, time_limit=60)  # 60 minute limit
+run_mode = RunMode(core)  # No local iteration or wall-clock limit by default
 
 # Run a specific task
 await run_mode.start(
@@ -232,14 +264,18 @@ await run_mode.start_continuous()
 
 ## Command Line Usage
 
-RunMode is activated through slash commands inside the Penguin CLI:
+Goal execution and process-level continuous mode are activated separately:
 
 ```bash
-penguin               # start the CLI
+penguin  # start the TUI
 /run task build_data_parser "Create a parser for CSV files"
 
-# Start continuous mode for 2 hours
-/run --247 --time 120
+# Persist a session goal and execute it without implicit local limits.
+/goal "Create a parser for CSV files"
+/247 status  # alias for /goal status, not continuous mode
+
+# Start process-level continuous RunMode for 2 hours.
+penguin-cli --247 --time-limit 120
 ```
 
 ## Integration with Task Manager
@@ -319,7 +355,7 @@ stateDiagram-v2
 ### Enabling ITUV
 
 ```yaml
-# config.yml
+# Explicitly opt-in config.yml policy; omit phase timeouts for an unbounded run.
 orchestration:
   backend: native  # or "temporal" for durability
   phase_timeouts:

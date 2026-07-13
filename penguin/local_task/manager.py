@@ -17,7 +17,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from penguin.config import MAX_TASK_ITERATIONS
 from rich import box  # type: ignore
 from rich.console import Console  # type: ignore
 from rich.panel import Panel  # type: ignore
@@ -451,7 +450,7 @@ class ProjectManager:
                 )
                 
                 # Set initial properties
-                execution_record.max_iterations = data.get("max_iterations", MAX_TASK_ITERATIONS)
+                execution_record.max_iterations = data.get("max_iterations")
                 execution_record.execution_context = data.get("context", {})
                 
                 # Save the updated task
@@ -1988,7 +1987,12 @@ class ProjectManager:
                 result_display = f"[{result_color}]{result}[/{result_color}]"
                 
                 # Format iterations
-                iterations = f"{record['iterations']}/{record['max_iterations']}"
+                configured_limit = record["max_iterations"]
+                iterations = (
+                    f"{record['iterations']}/{configured_limit}"
+                    if configured_limit is not None
+                    else f"{record['iterations']}/unbounded"
+                )
                 
                 # Format tools
                 tools = ", ".join(record["tools_used"]) if record["tools_used"] else "None"

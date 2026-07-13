@@ -8,7 +8,12 @@ from typing import Any, cast
 
 import pytest
 
-from penguin.llm.contracts import ErrorCategory, FinishReason, ProviderRequestStatus
+from penguin.llm.contracts import (
+    ErrorCategory,
+    FinishReason,
+    LLMProviderError,
+    ProviderRequestStatus,
+)
 from penguin.llm.model_config import ModelConfig
 from penguin.llm.openrouter_gateway import OpenRouterGateway
 
@@ -346,7 +351,7 @@ async def test_direct_stream_incomplete_tool_call_releases_pending_state(
 
 
 @pytest.mark.asyncio
-async def test_sdk_stream_stall_returns_timeout_error(
+async def test_sdk_stream_stall_raises_typed_timeout_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
@@ -374,18 +379,27 @@ async def test_sdk_stream_stall_returns_timeout_error(
 
     gateway.client.chat.completions.create = _create_completion  # type: ignore[attr-defined]
 
-    result = await gateway.get_response(
-        messages=[{"role": "user", "content": "hello"}],
-        stream=True,
-        stream_callback=lambda *_args: None,
-    )
+    with pytest.raises(LLMProviderError) as raised:
+        await gateway.get_response(
+            messages=[{"role": "user", "content": "hello"}],
+            stream=True,
+            stream_callback=lambda *_args: None,
+        )
 
-    assert "stream stalled" in result.lower()
-    assert "glm-5-turbo" in result
+    error = raised.value.error
+    assert error.category == ErrorCategory.TIMEOUT
+    assert error.retryable is True
+    assert error.finish_reason == FinishReason.ERROR
+    assert error.provider_data["phase"] == "OpenRouter SDK stream"
+
+    lifecycle = gateway.get_last_request_lifecycle()
+    assert lifecycle is not None
+    assert lifecycle.status == ProviderRequestStatus.DISCONNECTED
+    assert lifecycle.error is error
 
 
 @pytest.mark.asyncio
-async def test_direct_stream_stall_returns_timeout_error(
+async def test_direct_stream_stall_raises_typed_timeout_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
@@ -436,13 +450,24 @@ async def test_direct_stream_stall_returns_timeout_error(
             del method, url, headers, json
             return _StreamContext(_StreamResponse())
 
-    result = await gateway._handle_streaming_response(
-        client=cast(Any, _Client()),
-        url="https://openrouter.ai/api/v1/chat/completions",
-        headers={"Authorization": "Bearer test-key"},
-        params={"model": gateway.model_config.model, "messages": []},
-        stream_callback=None,
-    )
+    gateway._start_request_lifecycle(messages=[], stream=True)
 
-    assert "stream stalled" in result.lower()
-    assert "claude-sonnet-4.5" in result
+    with pytest.raises(LLMProviderError) as raised:
+        await gateway._handle_streaming_response(
+            client=cast(Any, _Client()),
+            url="https://openrouter.ai/api/v1/chat/completions",
+            headers={"Authorization": "Bearer test-key"},
+            params={"model": gateway.model_config.model, "messages": []},
+            stream_callback=None,
+        )
+
+    error = raised.value.error
+    assert error.category == ErrorCategory.TIMEOUT
+    assert error.retryable is True
+    assert error.finish_reason == FinishReason.ERROR
+    assert error.provider_data["phase"] == "OpenRouter direct stream"
+
+    lifecycle = gateway.get_last_request_lifecycle()
+    assert lifecycle is not None
+    assert lifecycle.status == ProviderRequestStatus.DISCONNECTED
+    assert lifecycle.error is error

@@ -5,6 +5,7 @@ import {
   hasSparsePenguinProviderCatalog,
   mapPenguinBootstrap,
   parsePenguinSessionArray,
+  PenguinGoalSchema,
   PenguinSessionArraySchema,
   parsePenguinUsage,
   unwrapBootstrapData,
@@ -152,6 +153,23 @@ describe("sync bootstrap", () => {
           },
           display_message_count: 1,
           fallback_title: false,
+          goal: {
+            id: "goal_1",
+            objective: "Ship a robust session goal",
+            status: "active",
+            revision: 1,
+            token_budget: 50_000,
+            tokens_used: 1_250,
+            time_used_seconds: 12.5,
+            created_at: "2026-07-09T12:00:00+00:00",
+            updated_at: "2026-07-09T12:01:00+00:00",
+            active_run_id: null,
+            active_run_owner: null,
+            active_run_started_at: null,
+            last_run_id: null,
+            last_result: null,
+            metadata: {},
+          },
         },
       ]).success,
     ).toBe(true)
@@ -163,6 +181,26 @@ describe("sync bootstrap", () => {
           title: "Missing Time",
         },
       ]).success,
+    ).toBe(false)
+
+    expect(
+      PenguinGoalSchema.safeParse({
+        id: "goal_1",
+        objective: "Ship a robust session goal",
+        status: "active",
+        revision: 1,
+        token_budget: 50_000,
+        tokens_used: -1,
+        time_used_seconds: 12.5,
+        created_at: "2026-07-09T12:00:00+00:00",
+        updated_at: "2026-07-09T12:01:00+00:00",
+        active_run_id: null,
+        active_run_owner: null,
+        active_run_started_at: null,
+        last_run_id: null,
+        last_result: null,
+        metadata: {},
+      }).success,
     ).toBe(false)
   })
 
@@ -234,6 +272,23 @@ describe("sync bootstrap", () => {
           message_count: 0,
           display_message_count: 0,
           fallback_title: false,
+          goal: {
+            id: "goal_1",
+            objective: "Ship a robust session goal",
+            status: "active",
+            revision: 1,
+            token_budget: 50_000,
+            tokens_used: 1_250,
+            time_used_seconds: 12.5,
+            created_at: "2026-07-09T12:00:00+00:00",
+            updated_at: "2026-07-09T12:01:00+00:00",
+            active_run_id: null,
+            active_run_owner: null,
+            active_run_started_at: null,
+            last_run_id: null,
+            last_result: null,
+            metadata: {},
+          },
           usage: {
             current_total_tokens: 42,
             max_context_window_tokens: 100,
@@ -275,6 +330,13 @@ describe("sync bootstrap", () => {
       message_count: 0,
       display_message_count: 0,
       fallback_title: false,
+      goal: {
+        id: "goal_1",
+        objective: "Ship a robust session goal",
+        status: "active",
+        token_budget: 50_000,
+        tokens_used: 1_250,
+      },
     })
     expect(result.session_usage.ses_1?.current_total_tokens).toBe(42)
     expect(result.session_status.ses_1).toEqual({ type: "idle" })

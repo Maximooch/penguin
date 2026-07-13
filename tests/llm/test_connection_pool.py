@@ -22,6 +22,7 @@ from penguin.llm.api_client import (
 # FIXTURES
 # =============================================================================
 
+
 @pytest.fixture(autouse=True)
 def reset_singleton():
     """Reset the singleton instance before/after each test."""
@@ -56,6 +57,7 @@ def pool_config():
 # =============================================================================
 # SINGLETON PATTERN TESTS
 # =============================================================================
+
 
 class TestSingletonPattern:
     """Test the singleton pattern for ConnectionPoolManager."""
@@ -92,6 +94,7 @@ class TestSingletonPattern:
 # CONFIGURATION TESTS
 # =============================================================================
 
+
 class TestConfiguration:
     """Test ConnectionPoolConfig behavior."""
 
@@ -103,8 +106,9 @@ class TestConfiguration:
         assert config.max_connections == 100
         assert config.keepalive_expiry == 30.0
         assert config.connect_timeout == 10.0
-        assert config.read_timeout == 300.0  # Actual default from implementation
+        assert config.read_timeout is None
         assert config.write_timeout == 10.0
+        assert config.to_timeout().read is None
 
     def test_custom_config_values(self):
         """Test custom configuration values."""
@@ -142,6 +146,7 @@ class TestConfiguration:
 # CLIENT CREATION TESTS (with mocked httpx)
 # =============================================================================
 
+
 class TestClientCreation:
     """Test HTTP client creation and caching."""
 
@@ -157,7 +162,7 @@ class TestClientCreation:
         manager = ConnectionPoolManager.get_instance()
 
         # Mock httpx.AsyncClient to avoid actual HTTP setup
-        with patch('penguin.llm.api_client.httpx.AsyncClient') as mock_client:
+        with patch("penguin.llm.api_client.httpx.AsyncClient") as mock_client:
             mock_instance = MagicMock()
             mock_client.return_value = mock_instance
 
@@ -171,7 +176,7 @@ class TestClientCreation:
         """Test that get_client returns cached client for same URL."""
         manager = ConnectionPoolManager.get_instance()
 
-        with patch('penguin.llm.api_client.httpx.AsyncClient') as mock_client:
+        with patch("penguin.llm.api_client.httpx.AsyncClient") as mock_client:
             mock_instance = MagicMock()
             mock_client.return_value = mock_instance
 
@@ -187,7 +192,7 @@ class TestClientCreation:
         """Test that different URLs get different clients."""
         manager = ConnectionPoolManager.get_instance()
 
-        with patch('penguin.llm.api_client.httpx.AsyncClient') as mock_client:
+        with patch("penguin.llm.api_client.httpx.AsyncClient") as mock_client:
             mock_instance1 = MagicMock()
             mock_instance2 = MagicMock()
             mock_client.side_effect = [mock_instance1, mock_instance2]
@@ -203,6 +208,7 @@ class TestClientCreation:
 # CONTEXT MANAGER TESTS
 # =============================================================================
 
+
 class TestContextManager:
     """Test the async context manager interface."""
 
@@ -211,7 +217,7 @@ class TestContextManager:
         """Test basic client_context usage."""
         manager = ConnectionPoolManager.get_instance()
 
-        with patch('penguin.llm.api_client.httpx.AsyncClient') as mock_client:
+        with patch("penguin.llm.api_client.httpx.AsyncClient") as mock_client:
             mock_instance = MagicMock()
             mock_client.return_value = mock_instance
 
@@ -224,7 +230,7 @@ class TestContextManager:
         """Test that client_context reuses cached client."""
         manager = ConnectionPoolManager.get_instance()
 
-        with patch('penguin.llm.api_client.httpx.AsyncClient') as mock_client:
+        with patch("penguin.llm.api_client.httpx.AsyncClient") as mock_client:
             mock_instance = MagicMock()
             mock_client.return_value = mock_instance
 
@@ -243,6 +249,7 @@ class TestContextManager:
 # CLEANUP TESTS
 # =============================================================================
 
+
 class TestCleanup:
     """Test cleanup and shutdown operations."""
 
@@ -251,7 +258,7 @@ class TestCleanup:
         """Test close_all clears all clients."""
         manager = ConnectionPoolManager.get_instance()
 
-        with patch('penguin.llm.api_client.httpx.AsyncClient') as mock_client:
+        with patch("penguin.llm.api_client.httpx.AsyncClient") as mock_client:
             mock_instance = MagicMock()
             mock_instance.aclose = AsyncMock()
             mock_client.return_value = mock_instance
@@ -282,7 +289,7 @@ class TestCleanup:
         """Test that clients can be recreated after close."""
         manager = ConnectionPoolManager.get_instance()
 
-        with patch('penguin.llm.api_client.httpx.AsyncClient') as mock_client:
+        with patch("penguin.llm.api_client.httpx.AsyncClient") as mock_client:
             mock_instance1 = MagicMock()
             mock_instance1.aclose = AsyncMock()
             mock_instance2 = MagicMock()
@@ -301,6 +308,7 @@ class TestCleanup:
 # CONCURRENT ACCESS TESTS
 # =============================================================================
 
+
 class TestConcurrentAccess:
     """Test thread-safe concurrent access."""
 
@@ -309,15 +317,12 @@ class TestConcurrentAccess:
         """Test concurrent get_client calls for same URL."""
         manager = ConnectionPoolManager.get_instance()
 
-        with patch('penguin.llm.api_client.httpx.AsyncClient') as mock_client:
+        with patch("penguin.llm.api_client.httpx.AsyncClient") as mock_client:
             mock_instance = MagicMock()
             mock_client.return_value = mock_instance
 
             # Concurrent requests for same URL
-            tasks = [
-                manager.get_client("https://api.example.com")
-                for _ in range(10)
-            ]
+            tasks = [manager.get_client("https://api.example.com") for _ in range(10)]
 
             clients = await asyncio.gather(*tasks)
 
@@ -331,7 +336,7 @@ class TestConcurrentAccess:
         """Test concurrent get_client calls for different URLs."""
         manager = ConnectionPoolManager.get_instance()
 
-        with patch('penguin.llm.api_client.httpx.AsyncClient') as mock_client:
+        with patch("penguin.llm.api_client.httpx.AsyncClient") as mock_client:
             # Create unique mock for each call
             mock_client.side_effect = [MagicMock() for _ in range(5)]
 
@@ -347,6 +352,7 @@ class TestConcurrentAccess:
 # =============================================================================
 # ASYNC INSTANCE TESTS
 # =============================================================================
+
 
 class TestAsyncInstance:
     """Test async singleton accessor."""

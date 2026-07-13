@@ -55,7 +55,7 @@ class ProjectSpecificationParser:
             logger.info("Routing specification through Engine for analysis")
             result = await self.engine.run_task(
                 task_prompt=analysis_prompt,
-                max_iterations=3,
+                max_iterations=None,
                 task_name="Parse Project Specification",
                 task_context={"operation": "project_specification_parsing"},
                 enable_events=False
@@ -478,4 +478,4 @@ async def parse_project_specification(
     parser = ProjectSpecificationParser(engine, project_manager)
     return await parser.parse_project_specification(
         specification, project_name, context_files
-    ) 
+    )

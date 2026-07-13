@@ -8,6 +8,7 @@ from unittest.mock import Mock
 
 from penguin.core import PenguinCore
 from penguin.core_runtime import conversations
+from penguin.system.state import MessageCategory
 
 
 class _ConversationManager:
@@ -282,6 +283,53 @@ def test_get_conversation_returns_none_when_load_fails() -> None:
 
     assert conversations.get_conversation(manager, "missing") is None
     assert manager.calls == [("load", "missing")]
+
+
+def test_session_payload_hides_private_runtime_messages() -> None:
+    """Conversation reads do not expose category or metadata-private messages."""
+
+    session = SimpleNamespace(
+        id="conv_private",
+        messages=[
+            SimpleNamespace(
+                role="system",
+                content="internal category",
+                timestamp="2026-05-25T00:00:00",
+                agent_id="default",
+                recipient_id=None,
+                message_type="message",
+                category=MessageCategory.INTERNAL,
+                metadata={},
+            ),
+            SimpleNamespace(
+                role="system",
+                content="metadata private",
+                timestamp="2026-05-25T00:00:01",
+                agent_id="default",
+                recipient_id=None,
+                message_type="message",
+                category=MessageCategory.SYSTEM,
+                metadata={"visibility": "internal"},
+            ),
+            SimpleNamespace(
+                role="user",
+                content="visible",
+                timestamp="2026-05-25T00:00:02",
+                agent_id="default",
+                recipient_id=None,
+                message_type="message",
+                category=MessageCategory.DIALOG,
+                metadata={},
+            ),
+        ],
+        created_at="created",
+        last_active="active",
+        metadata={},
+    )
+
+    payload = conversations.session_payload(session)
+
+    assert [message["content"] for message in payload["messages"]] == ["visible"]
 
 
 def test_history_create_delete_and_stats_forward_to_manager() -> None:

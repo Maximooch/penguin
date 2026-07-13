@@ -195,6 +195,9 @@ async def test_resume_with_clarification_persists_answer_and_resumes(tmp_path):
         payload.get("status_type") == "clarification_answered"
         for payload in status_calls
     )
+    assert any(
+        payload.get("status_type") == "run_mode_ended" for payload in status_calls
+    )
 
 
 @pytest.mark.asyncio
@@ -301,4 +304,3 @@ async def test_clarification_happy_path_e2e_waits_then_resumes_to_completion(tmp
         payload.get("status_type") == "clarification_answered"
         for payload in status_calls
     )
-

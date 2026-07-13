@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NoReturn, Optional
 from fastapi import (
     APIRouter,
     Depends,
@@ -12,7 +12,7 @@ from fastapi import (
     File,
     Query,
 )  # type: ignore
-from pydantic import BaseModel  # type: ignore
+from pydantic import BaseModel, ValidationError  # type: ignore
 from fastapi.responses import PlainTextResponse
 from datetime import datetime  # type: ignore
 from collections import OrderedDict
@@ -37,6 +37,7 @@ from PIL import Image, UnidentifiedImageError
 
 from penguin.config import WORKSPACE_PATH
 from penguin.core import PenguinCore
+from penguin.core_runtime import process_lifecycle
 from penguin.llm.model_config import normalize_openai_service_tier
 from penguin.llm.runtime import (
     UnsupportedReasoningVariantError,
@@ -48,9 +49,14 @@ from penguin.llm.runtime import (
     resolve_reasoning_payload,
 )
 from penguin.run_mode import RunMode
+from penguin.core_runtime.session_goals import (
+    GoalConflictError,
+    GoalNotFoundError,
+    GoalPersistenceError,
+    GoalValidationError,
+)
 from penguin.system.execution_context import ExecutionContext, execution_context_scope, normalize_directory
 from penguin import __version__
-from penguin.constants import get_engine_max_iterations_default
 from penguin.utils.events import EventBus as UtilsEventBus
 from penguin.cli.events import EventBus as CLIEventBus, EventType
 from penguin.web.health import get_health_monitor
@@ -81,6 +87,15 @@ from penguin.web.services.session_view import (
     list_session_statuses,
     remove_session_info,
     update_session_info,
+)
+from penguin.web.schemas.session_goal import (
+    SessionGoalRunRequest,
+    SessionGoalUpdateRequest,
+)
+from penguin.web.services import session_goal as session_goal_service
+from penguin.web.services.session_goal_command import (
+    execute_session_goal_command,
+    parse_session_goal_command,
 )
 from penguin.web.services.session_events import (
     emit_session_created_event as _emit_session_created_event,
@@ -428,12 +443,7 @@ def _get_session_request_gate(
     core: PenguinCore, session_id: Optional[str]
 ) -> asyncio.Lock:
     """Return a REST request gate scoped to one session."""
-    gate_key = session_id or "__default__"
-    request_gates = getattr(core, "_opencode_request_gates", None)
-    if not isinstance(request_gates, dict):
-        request_gates = {}
-        setattr(core, "_opencode_request_gates", request_gates)
-    return request_gates.setdefault(gate_key, asyncio.Lock())
+    return process_lifecycle.get_session_request_gate(core, session_id)
 
 
 def _bind_session_directory(
@@ -1008,10 +1018,11 @@ class MessageRequest(BaseModel):
     conversation_id: Optional[str] = None
     session_id: Optional[str] = None
     client_message_id: Optional[str] = None
+    client_part_id: Optional[str] = None
     context: Optional[Dict[str, Any]] = None
     context_files: Optional[List[str]] = None
     streaming: Optional[bool] = True
-    max_iterations: Optional[int] = None  # Uses MAX_TASK_ITERATIONS if not specified
+    max_iterations: Optional[int] = None
     image_paths: Optional[List[str]] = None  # Multiple images supported (max 10)
     include_reasoning: Optional[bool] = False
     agent_id: Optional[str] = None
@@ -3980,6 +3991,14 @@ async def handle_chat_message(
             resolved_agent_mode,
         )
 
+        goal_command = parse_session_goal_command(request.text)
+        if goal_command is not None:
+            if not request_session_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail="/goal commands require a persisted session",
+                )
+
         if request_session_id:
             request_task = asyncio.current_task()
             if request_task is not None:
@@ -4169,6 +4188,35 @@ async def handle_chat_message(
             model_id=getattr(request_model_config, "model", None),
             variant=request.variant,
         )
+        if goal_command is not None:
+            _request_log_info(
+                "chat.goal_fallback session=%s action=%s client_msg=%s",
+                request_session_id,
+                goal_command.action,
+                request.client_message_id or "",
+            )
+            try:
+                goal_result = await execute_session_goal_command(
+                    core,
+                    request_session_id,
+                    goal_command,
+                    client_message_id=request.client_message_id,
+                    client_part_id=request.client_part_id,
+                    directory=bound_directory or request.directory,
+                )
+            except Exception as exc:
+                _raise_goal_http_error(exc)
+
+            assistant_response = str(goal_result.get("assistant_response") or "")
+            return {
+                "response": assistant_response,
+                "action_results": goal_result.get("action_results", []),
+                "aborted": bool(goal_result.get("aborted")),
+                "goal": goal_result.get("goal"),
+                "iterations": goal_result.get("iterations"),
+                "status": goal_result.get("status", "ok"),
+                "usage": goal_result.get("usage", {}),
+            }
         model_config = request_model_config or getattr(core, "model_config", None)
         variant_value = (
             request.variant.strip().lower()
@@ -4225,7 +4273,7 @@ async def handle_chat_message(
                     context=request.context,
                     conversation_id=effective_session_id,
                     agent_id=request.agent_id,
-                    max_iterations=request.max_iterations or 100,
+                    max_iterations=request.max_iterations,
                     context_files=context_files,
                     streaming=effective_streaming,
                     stream_callback=stream_cb,
@@ -4493,7 +4541,7 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
             session_id = data.get("session_id")
             context_files = data.get("context_files")
             context = data.get("context")
-            max_iterations = data.get("max_iterations", 100)
+            max_iterations = data.get("max_iterations")
             image_paths = data.get("image_paths")  # Multiple images supported
             parts = data.get("parts")
             include_reasoning = _resolve_include_reasoning(
@@ -5508,7 +5556,7 @@ async def execute_task_sync(
         # Execute task using Engine
         result = await core.engine.run_task(
             task_prompt=task_prompt,
-            max_iterations=get_engine_max_iterations_default(),
+            max_iterations=None,
             task_name=request.name,
             task_context={
                 "continuous": request.continuous,
@@ -6093,6 +6141,104 @@ async def session_messages(
     return messages
 
 
+def _goal_request(model: Any, payload: Any) -> Any:
+    """Validate a direct-call or FastAPI goal request with strict schemas."""
+
+    if isinstance(payload, model):
+        return payload
+    try:
+        validator = getattr(model, "model_validate", None)
+        if callable(validator):
+            return validator(payload or {})
+        return model.parse_obj(payload or {})
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+
+
+def _raise_goal_http_error(exc: Exception) -> NoReturn:
+    """Translate goal domain failures to stable HTTP semantics."""
+
+    from penguin.core_runtime.session_goal_runtime import (
+        GoalRunConflictError,
+        GoalRunExecutionError,
+        GoalRunNotFoundError,
+        GoalRunStateError,
+        GoalRunValidationError,
+    )
+
+    if isinstance(exc, (GoalNotFoundError, GoalRunNotFoundError)):
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if isinstance(
+        exc,
+        (GoalConflictError, GoalRunConflictError, GoalRunStateError),
+    ):
+        detail: str | dict[str, str] = str(exc)
+        if isinstance(exc, GoalConflictError) and str(exc) == (
+            "unfinished goal requires replace=true"
+        ):
+            detail = {
+                "code": "goal_replace_required",
+                "message": str(exc),
+            }
+        raise HTTPException(status_code=409, detail=detail) from exc
+    if isinstance(exc, (GoalValidationError, GoalRunValidationError)):
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if isinstance(exc, (GoalPersistenceError, GoalRunExecutionError)):
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    raise exc
+
+
+@router.get("/session/{session_id}/goal")
+async def session_goal(session_id: str, core: PenguinCore = Depends(get_core)):
+    """Return the persisted Penguin goal for a session."""
+    try:
+        goal = session_goal_service.get_goal(core, session_id)
+    except Exception as exc:
+        _raise_goal_http_error(exc)
+    return {"goal": goal, "status": "ok"}
+
+
+@router.post("/session/{session_id}/goal")
+async def session_goal_update(
+    session_id: str,
+    payload: Optional[SessionGoalUpdateRequest] = None,
+    core: PenguinCore = Depends(get_core),
+):
+    """Create, replace, or update the persisted session goal."""
+    request = _goal_request(SessionGoalUpdateRequest, payload)
+    try:
+        goal = await session_goal_service.update_goal(core, session_id, request)
+    except Exception as exc:
+        _raise_goal_http_error(exc)
+    return {"goal": goal, "status": "ok"}
+
+
+@router.post("/session/{session_id}/goal/run")
+async def session_goal_run(
+    session_id: str,
+    payload: Optional[SessionGoalRunRequest] = None,
+    core: PenguinCore = Depends(get_core),
+):
+    """Run the active session goal with only caller-configured limits."""
+    request = _goal_request(SessionGoalRunRequest, payload)
+    try:
+        return await session_goal_service.run_goal(core, session_id, request)
+    except Exception as exc:
+        _raise_goal_http_error(exc)
+
+
+@router.delete("/session/{session_id}/goal")
+async def session_goal_clear(
+    session_id: str, core: PenguinCore = Depends(get_core)
+):
+    """Clear the persisted session goal."""
+    try:
+        await session_goal_service.clear_goal(core, session_id)
+    except Exception as exc:
+        _raise_goal_http_error(exc)
+    return {"goal": None, "status": "ok"}
+
+
 @router.get("/session/{session_id}/todo")
 async def session_todo(session_id: str, core: PenguinCore = Depends(get_core)):
     """OpenCode-compatible session.todo endpoint."""
@@ -6235,6 +6381,40 @@ async def api_session_messages(
 ):
     """Alias for OpenCode-compatible session.messages endpoint."""
     return await session_messages(session_id, core, limit=limit)
+
+
+@router.get("/api/v1/session/{session_id}/goal")
+async def api_session_goal(session_id: str, core: PenguinCore = Depends(get_core)):
+    """Alias for the Penguin session goal endpoint."""
+    return await session_goal(session_id, core=core)
+
+
+@router.post("/api/v1/session/{session_id}/goal")
+async def api_session_goal_update(
+    session_id: str,
+    payload: Optional[SessionGoalUpdateRequest] = None,
+    core: PenguinCore = Depends(get_core),
+):
+    """Alias for Penguin session goal create/update."""
+    return await session_goal_update(session_id, payload=payload, core=core)
+
+
+@router.post("/api/v1/session/{session_id}/goal/run")
+async def api_session_goal_run(
+    session_id: str,
+    payload: Optional[SessionGoalRunRequest] = None,
+    core: PenguinCore = Depends(get_core),
+):
+    """Alias for session goal execution."""
+    return await session_goal_run(session_id, payload=payload, core=core)
+
+
+@router.delete("/api/v1/session/{session_id}/goal")
+async def api_session_goal_clear(
+    session_id: str, core: PenguinCore = Depends(get_core)
+):
+    """Alias for Penguin session goal clear."""
+    return await session_goal_clear(session_id, core=core)
 
 
 @router.get("/api/v1/session/{session_id}/todo")

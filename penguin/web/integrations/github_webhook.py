@@ -441,7 +441,7 @@ async def handle_review_command(
         result = await core.process(
             input_data={"text": review_prompt},
             conversation_id=conversation_id,  # Enable persistence and follow-up questions
-            max_iterations=3,
+            max_iterations=None,
             streaming=False
         )
 
@@ -591,7 +591,7 @@ async def handle_followup_question(
         result = await core.process(
             input_data={"text": question},
             conversation_id=conversation_id,  # Use existing conversation context
-            max_iterations=3,
+            max_iterations=None,
             streaming=False
         )
 

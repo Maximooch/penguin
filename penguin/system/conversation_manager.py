@@ -19,7 +19,7 @@ from penguin.config import WORKSPACE_PATH
 from penguin.config import config as global_config
 from penguin.system.context_loader import SimpleContextLoader
 from penguin.system.context_window import ContextWindowManager
-from penguin.system.conversation import ConversationSystem
+from penguin.system.conversation import ConversationSystem, is_human_visible_message
 from penguin.system.session_manager import SessionManager
 from penguin.system.state import Message, MessageCategory, Session
 from penguin.system.checkpoint_manager import (
@@ -1205,6 +1205,8 @@ class ConversationManager:
 
         messages: List[Dict[str, Any]] = []
         for message in session.messages:
+            if not is_human_visible_message(message):
+                continue
             if not include_system and message.role == "system":
                 continue
             entry = {

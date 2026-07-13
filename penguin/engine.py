@@ -71,7 +71,6 @@ from penguin.tools.runtime import (
     tool_results_loop_identity,
 )
 from penguin.config import TASK_COMPLETION_PHRASE  # Add this import
-from penguin.constants import get_engine_max_iterations_default
 from penguin.system.execution_context import get_current_execution_context
 
 import logging
@@ -131,9 +130,7 @@ def _truncations_from_tracker(tracker: Any) -> Dict[str, Any]:
                     "category": category.name
                     if hasattr(category, "name")
                     else str(category),
-                    "messages_removed": int(
-                        getattr(event, "messages_removed", 0) or 0
-                    ),
+                    "messages_removed": int(getattr(event, "messages_removed", 0) or 0),
                     "tokens_freed": int(getattr(event, "tokens_freed", 0) or 0),
                     "timestamp": getattr(event, "timestamp", ""),
                 }
@@ -288,6 +285,9 @@ class LoopConfig:
     # Default completion status when loop ends without explicit signal
     default_completion_status: str = "completed"
 
+    # Optional billed-token ceiling for this loop invocation.
+    token_budget: Optional[int] = None
+
 
 @dataclass
 class LoopState:
@@ -402,6 +402,55 @@ _TOOL_ONLY_STALL_NOTES = {
     ),
 }
 
+_VALID_TASK_FINISH_STATUSES = frozenset({"done", "partial", "blocked"})
+_LEGACY_TASK_FINISH_STATUS_PATTERN = re.compile(
+    r"\[FINISH_STATUS:(done|partial|blocked)\]\s*$"
+)
+_USAGE_TOKEN_FIELDS = (
+    "input_tokens",
+    "output_tokens",
+    "reasoning_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+)
+
+
+def _accumulate_usage(
+    cumulative: Dict[str, Any],
+    current: Any,
+) -> Dict[str, Any]:
+    """Return normalized billed usage accumulated across provider turns."""
+    if not isinstance(current, dict) or not current:
+        return cumulative
+
+    updated = dict(cumulative)
+    for key in _USAGE_TOKEN_FIELDS:
+        value = current.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        updated[key] = int(updated.get(key, 0) or 0) + max(int(value), 0)
+
+    total_tokens = current.get("total_tokens")
+    if isinstance(total_tokens, bool) or not isinstance(total_tokens, (int, float)):
+        total_tokens = sum(
+            max(int(current.get(key, 0) or 0), 0)
+            for key in ("input_tokens", "output_tokens", "reasoning_tokens")
+            if isinstance(current.get(key), (int, float))
+            and not isinstance(current.get(key), bool)
+        )
+    updated["total_tokens"] = int(updated.get("total_tokens", 0) or 0) + max(
+        int(total_tokens),
+        0,
+    )
+
+    cost = current.get("cost")
+    if not isinstance(cost, bool) and isinstance(cost, (int, float)):
+        updated["cost"] = float(updated.get("cost", 0.0) or 0.0) + max(
+            float(cost),
+            0.0,
+        )
+    return updated
+
 
 @dataclass
 class EngineSettings:
@@ -410,9 +459,6 @@ class EngineSettings:
     retry_attempts: int = 2
     backoff_seconds: float = 1.5
     streaming_default: bool = False
-    max_iterations_default: int = field(
-        default_factory=get_engine_max_iterations_default
-    )
     token_budget_stop_enabled: bool = False
     wall_clock_stop_seconds: Optional[int] = None
 
@@ -494,6 +540,7 @@ class EngineRunState:
     )
     api_client: Optional[Any] = None
     model_config: Optional[Any] = None
+    provider_attempt_usage: Dict[str, Any] = field(default_factory=dict)
 
 
 _CURRENT_ENGINE_RUN_STATE: ContextVar[Optional[EngineRunState]] = ContextVar(
@@ -1273,6 +1320,26 @@ class Engine:
             return {}
         return usage if isinstance(usage, dict) else {}
 
+    def _reset_provider_attempt_usage(self) -> None:
+        """Reset request-local provider usage before a logical LLM step."""
+        run_state = _CURRENT_ENGINE_RUN_STATE.get() or self._default_run_state
+        run_state.provider_attempt_usage = {}
+
+    def _record_provider_attempt_usage(self, usage: Dict[str, Any]) -> None:
+        """Accumulate one provider request's normalized billed usage."""
+        run_state = _CURRENT_ENGINE_RUN_STATE.get() or self._default_run_state
+        run_state.provider_attempt_usage = _accumulate_usage(
+            getattr(run_state, "provider_attempt_usage", {}),
+            usage,
+        )
+
+    def _consume_provider_attempt_usage(self) -> Dict[str, Any]:
+        """Return and clear usage accumulated across provider retries."""
+        run_state = _CURRENT_ENGINE_RUN_STATE.get() or self._default_run_state
+        usage = dict(getattr(run_state, "provider_attempt_usage", {}))
+        run_state.provider_attempt_usage = {}
+        return usage
+
     # ------------------------------------------------------------------
     # Iteration Loop Helpers
     # ------------------------------------------------------------------
@@ -1555,7 +1622,7 @@ class Engine:
         self,
         cm: ConversationManager,
         config: LoopConfig,
-        max_iterations: int,
+        max_iterations: int | None,
     ) -> Dict[str, Any]:
         """Unified iteration loop for both run_response and run_task modes.
 
@@ -1565,15 +1632,19 @@ class Engine:
         Args:
             cm: Conversation manager for the target agent
             config: Loop configuration specifying mode-specific behavior
-            max_iterations: Maximum iterations before forced termination
+            max_iterations: Optional explicit iteration limit. ``None`` runs until
+                another completion, interruption, or failure condition occurs.
 
         Returns:
             Dict with 'assistant_response', 'iterations', 'action_results', 'status', 'execution_time'
         """
         last_response = ""
         all_action_results = []
-        latest_usage: Dict[str, Any] = {}
+        cumulative_usage: Dict[str, Any] = {}
         completion_status = config.default_completion_status
+        finish_status: str | None = None
+        finish_summary: str | None = None
+        provider_error: dict[str, Any] | None = None
 
         # Reset loop state for this run
         self._get_loop_state().reset()
@@ -1591,7 +1662,15 @@ class Engine:
             )
 
         try:
-            while self.current_iteration < max_iterations:
+            while max_iterations is None or self.current_iteration < max_iterations:
+                if (
+                    config.token_budget is not None
+                    and int(cumulative_usage.get("total_tokens", 0) or 0)
+                    >= config.token_budget
+                ):
+                    completion_status = "budget_limited"
+                    break
+
                 self.current_iteration += 1
                 iteration_started = time.perf_counter()
                 logger.debug(
@@ -1624,8 +1703,7 @@ class Engine:
                 last_response = response_data.get("assistant_response", "")
                 iteration_results = response_data.get("action_results", [])
                 usage_data = response_data.get("usage")
-                if isinstance(usage_data, dict) and usage_data:
-                    latest_usage = usage_data
+                cumulative_usage = _accumulate_usage(cumulative_usage, usage_data)
                 last_response = self._suppress_empty_tool_only_placeholder(
                     cm,
                     last_response,
@@ -1688,8 +1766,13 @@ class Engine:
                             "iteration": self.current_iteration,
                             "max_iterations": max_iterations,
                             "response": last_response,
-                            "progress": min(
-                                100, int(100 * self.current_iteration / max_iterations)
+                            "progress": (
+                                min(
+                                    100,
+                                    int(100 * self.current_iteration / max_iterations),
+                                )
+                                if max_iterations is not None
+                                else None
                             ),
                         },
                     )
@@ -1709,8 +1792,13 @@ class Engine:
                 )
 
                 # Check for explicit termination signal
-                termination_detected, finish_status = self._check_termination_signal(
-                    iteration_results, config.termination_action
+                (
+                    termination_detected,
+                    finish_status,
+                    finish_summary,
+                ) = self._check_termination_signal(
+                    iteration_results,
+                    config.termination_action,
                 )
                 if termination_detected:
                     if config.mode == "task":
@@ -1728,6 +1816,7 @@ class Engine:
                                     "iteration": self.current_iteration,
                                     "max_iterations": max_iterations,
                                     "finish_status": finish_status,
+                                    "finish_summary": finish_summary,
                                     "requires_review": True,
                                 },
                             )
@@ -1735,6 +1824,14 @@ class Engine:
                         logger.debug(
                             f"Response completion: {config.termination_action} tool called"
                         )
+                    break
+
+                if (
+                    config.token_budget is not None
+                    and int(cumulative_usage.get("total_tokens", 0) or 0)
+                    >= config.token_budget
+                ):
+                    completion_status = "budget_limited"
                     break
 
                 # Debug: Check if termination signal mentioned but not parsed correctly
@@ -1761,27 +1858,10 @@ class Engine:
                         config.mode,
                     )
                     completion_status = (
-                        "pending_review"
+                        "completion_phrase"
                         if config.mode == "task"
                         else config.default_completion_status
                     )
-                    if (
-                        config.mode == "task"
-                        and config.enable_events
-                        and config.task_metadata
-                    ):
-                        await self._publish_task_event(
-                            "COMPLETED",
-                            config.task_metadata,
-                            {
-                                "response": last_response,
-                                "iteration": self.current_iteration,
-                                "max_iterations": max_iterations,
-                                "completion_status": completion_status,
-                                "finish_status": "completion_phrase",
-                                "requires_review": True,
-                            },
-                        )
                     break
 
                 if not iteration_results and self._queue_malformed_action_repair_note(
@@ -1810,21 +1890,37 @@ class Engine:
                     completion_status = guard_status or "implicit_completion"
                     break
 
-            # If loop exhausted iterations
-            if self.current_iteration >= max_iterations:
-                completion_status = (
-                    "max_iterations"
-                    if config.mode == "response"
-                    else "iterations_exceeded"
-                )
+            else:
+                # The loop condition expired without an explicit or guarded break.
+                if (
+                    config.token_budget is not None
+                    and int(cumulative_usage.get("total_tokens", 0) or 0)
+                    >= config.token_budget
+                ):
+                    completion_status = "budget_limited"
+                else:
+                    completion_status = (
+                        "max_iterations"
+                        if config.mode == "response"
+                        else "iterations_exceeded"
+                    )
 
         except LLMEmptyResponseError as e:
+            cumulative_usage = _accumulate_usage(
+                cumulative_usage,
+                self._consume_provider_attempt_usage(),
+            )
             logger.warning(f"LLM returned empty response during {config.mode}: {e}")
             completion_status = "llm_empty_response_error"
             if config.message_callback:
                 await config.message_callback(f"LLM Empty Response: {str(e)}", "error")
 
         except LLMProviderError as e:
+            cumulative_usage = _accumulate_usage(
+                cumulative_usage,
+                self._consume_provider_attempt_usage(),
+            )
+            provider_error = e.error.to_dict()
             logger.warning(
                 "Provider request failed during %s: retryable=%s detail=%s",
                 config.mode,
@@ -1850,6 +1946,10 @@ class Engine:
                 )
 
         except Exception as e:
+            cumulative_usage = _accumulate_usage(
+                cumulative_usage,
+                self._consume_provider_attempt_usage(),
+            )
             logger.error(f"Error in {config.mode} loop: {str(e)}")
             completion_status = "error"
             if config.message_callback:
@@ -1870,8 +1970,16 @@ class Engine:
             "assistant_response": last_response,
             "iterations": self.current_iteration,
             "action_results": all_action_results,
-            "usage": latest_usage,
+            "usage": cumulative_usage,
             "status": completion_status,
+            "finish_status": finish_status,
+            "finish_summary": finish_summary,
+            "error": provider_error,
+            "recoverable": (
+                bool(provider_error.get("retryable"))
+                if provider_error is not None
+                else None
+            ),
             "execution_time": (datetime.utcnow() - self.start_time).total_seconds(),
         }
 
@@ -1879,7 +1987,7 @@ class Engine:
         self,
         iteration_results: List[Dict[str, Any]],
         termination_action: str,
-    ) -> Tuple[bool, str]:
+    ) -> Tuple[bool, str | None, str | None]:
         """Check if termination signal was received in iteration results.
 
         Args:
@@ -1887,22 +1995,59 @@ class Engine:
             termination_action: Action name that signals termination
 
         Returns:
-            Tuple of (signal_detected, finish_status)
+            Tuple of (signal_detected, finish_status, finish_summary).
         """
         for result in iteration_results:
-            if isinstance(result, dict):
-                action_name = result.get("action", "")
-                # Also check for legacy "task_completed" action
-                if action_name == termination_action or (
-                    termination_action == "finish_task"
-                    and action_name == "task_completed"
+            if not isinstance(result, dict):
+                continue
+
+            action_name = result.get("action", "")
+            is_termination_action = action_name == termination_action or (
+                termination_action == "finish_task" and action_name == "task_completed"
+            )
+            if not is_termination_action or result.get("status") != "completed":
+                continue
+
+            if termination_action != "finish_task":
+                return True, None, None
+
+            arguments = result.get("tool_arguments")
+            payload: dict[str, Any] | None = None
+            legacy_summary: str | None = None
+            if isinstance(arguments, dict):
+                payload = arguments
+            elif isinstance(arguments, str) and arguments.strip():
+                try:
+                    parsed = json.loads(arguments)
+                except (TypeError, ValueError):
+                    parsed = None
+                if isinstance(parsed, dict):
+                    payload = parsed
+                elif (
+                    action_name == "task_completed"
+                    and not arguments.lstrip().startswith(("{", "["))
                 ):
-                    # Extract status from machine-readable marker [FINISH_STATUS:xxx]
-                    result_output = result.get("result", "")
-                    status_match = re.search(r"\[FINISH_STATUS:(\w+)\]", result_output)
-                    finish_status = status_match.group(1) if status_match else "done"
-                    return True, finish_status
-        return False, ""
+                    legacy_summary = arguments.strip()
+
+            summary = legacy_summary
+            if payload is not None:
+                raw_summary = payload.get("summary")
+                if isinstance(raw_summary, str) and raw_summary.strip():
+                    summary = raw_summary.strip()
+
+                raw_status = payload.get("status")
+                if isinstance(raw_status, str):
+                    normalized_status = raw_status.strip().lower()
+                    if normalized_status in _VALID_TASK_FINISH_STATUSES:
+                        return True, normalized_status, summary
+
+            result_output = result.get("result", "")
+            if action_name == "task_completed" and isinstance(result_output, str):
+                legacy_match = _LEGACY_TASK_FINISH_STATUS_PATTERN.search(result_output)
+                if legacy_match:
+                    return True, legacy_match.group(1), summary
+
+        return False, None, None
 
     async def _publish_task_event(
         self,
@@ -2035,18 +2180,15 @@ class Engine:
         Args:
             prompt: The initial prompt to process
             image_paths: Optional list of image paths for multi-modal inputs
-            max_iterations: Maximum number of iterations (default: 10)
+            max_iterations: Optional explicit iteration limit. ``None`` runs
+                until a natural or external terminal condition.
             streaming: Whether to use streaming for responses
             stream_callback: Optional callback for streaming chunks
 
         Returns:
             Dictionary with final response and execution metadata
         """
-        max_iters = (
-            max_iterations
-            if max_iterations is not None
-            else self.settings.max_iterations_default
-        )
+        max_iters = max_iterations
         # Prepare conversation with initial prompt for the selected agent
         selected, lite_output = await self._resolve_agent(
             agent_id=agent_id, agent_role=agent_role, prompt=prompt
@@ -2085,7 +2227,7 @@ class Engine:
             # Reset loop state for this run
             self._get_loop_state().reset()
 
-            while self.current_iteration < max_iters:
+            while max_iters is None or self.current_iteration < max_iters:
                 self.current_iteration += 1
                 logger.debug(
                     "Engine iteration %s (run_response)", self.current_iteration
@@ -2201,7 +2343,11 @@ class Engine:
                     break
 
             # Determine final status
-            if final_status == "completed" and self.current_iteration >= max_iters:
+            if (
+                final_status == "completed"
+                and max_iters is not None
+                and self.current_iteration >= max_iters
+            ):
                 final_status = "max_iterations"
 
             return {
@@ -2262,6 +2408,7 @@ class Engine:
         agent_role: Optional[str] = None,
         api_client_override: Optional[Any] = None,
         model_config_override: Optional[Any] = None,
+        token_budget: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Run a task-oriented reasoning loop using the shared iteration engine.
 
@@ -2272,8 +2419,8 @@ class Engine:
         Args:
             task_prompt: The prompt describing the task to execute.
             image_paths: Optional image inputs for multimodal task execution.
-            max_iterations: Maximum iterations for the task loop. If ``None``,
-                ``self.settings.max_iterations_default`` is used.
+            max_iterations: Optional explicit iteration limit for the task loop.
+                ``None`` means no Penguin-local iteration limit.
             task_context: Optional task-scoped metadata/context.
             task_id: Optional explicit task identifier. If omitted, a generated
                 fallback identifier is used.
@@ -2290,6 +2437,7 @@ class Engine:
             api_client_override: Optional API client override for the resolved run.
             model_config_override: Optional model config override for the resolved
                 run.
+            token_budget: Optional non-negative billed-token ceiling for this run.
 
         Returns:
             A dictionary containing the final assistant response, iteration count,
@@ -2317,11 +2465,47 @@ class Engine:
             )
             ```
         """
-        max_iters = (
-            max_iterations
-            if max_iterations is not None
-            else self.settings.max_iterations_default
-        )
+        if token_budget is not None and (
+            isinstance(token_budget, bool)
+            or not isinstance(token_budget, int)
+            or token_budget < 0
+        ):
+            raise ValueError("token_budget must be a non-negative integer or None")
+
+        max_iters = max_iterations
+        task_start_time = datetime.utcnow()
+        task_metadata = {
+            "id": task_id
+            or (
+                f"task_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_"
+                f"{uuid.uuid4().hex}"
+            ),
+            "name": task_name or "Unnamed Task",
+            "context": task_context or {},
+            "max_iterations": max_iters,
+            "start_time": task_start_time.isoformat(),
+            "prompt": task_prompt,
+        }
+        if token_budget == 0:
+            result = {
+                "assistant_response": "",
+                "iterations": 0,
+                "action_results": [],
+                "usage": {},
+                "status": "budget_limited",
+                "finish_status": None,
+                "finish_summary": None,
+                "execution_time": (datetime.utcnow() - task_start_time).total_seconds(),
+                "task": task_metadata,
+            }
+            if on_completion:
+                try:
+                    await on_completion(result)
+                except Exception:
+                    logger.exception("Error in completion callback")
+                    raise
+            return result
+
         selected, lite_output = await self._resolve_agent(
             agent_id=agent_id,
             agent_role=agent_role,
@@ -2342,29 +2526,40 @@ class Engine:
             )
         )
         self.current_iteration = 0
-        self.start_time = datetime.utcnow()
-
+        self.start_time = task_start_time
         try:
             cm, _api, _tm, _ae = self._resolve_components(self.current_agent_id)
-            cm.conversation.prepare_conversation(task_prompt, image_paths=image_paths)
+            internal_prompt = bool(
+                task_context and task_context.get("internal_prompt") is True
+            )
+            prepare_kwargs: Dict[str, Any] = {"image_paths": image_paths}
+            if internal_prompt:
+                prepare_kwargs.update(
+                    {
+                        "category": MessageCategory.INTERNAL,
+                        "metadata": {
+                            "internal_prompt": True,
+                            "visibility": "internal",
+                        },
+                    }
+                )
+            cm.conversation.prepare_conversation(task_prompt, **prepare_kwargs)
 
             telemetry = getattr(self, "telemetry", None)
             if telemetry is not None:
                 await telemetry.record_task(self.current_agent_id, task_name)
 
-            task_metadata = {
-                "id": task_id
-                or f"task_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex}",
-                "name": task_name or "Unnamed Task",
-                "context": task_context or {},
-                "max_iterations": max_iters,
-                "start_time": self.start_time.isoformat(),
-                "prompt": task_prompt,
-            }
-
             all_completion_phrases = [TASK_COMPLETION_PHRASE]
             if completion_phrases:
                 all_completion_phrases.extend(completion_phrases)
+            task_streaming = self.settings.streaming_default
+            override_streaming = getattr(
+                model_config_override,
+                "streaming_enabled",
+                None,
+            )
+            if isinstance(override_streaming, bool):
+                task_streaming = override_streaming
 
             async def task_message_callback_wrapper(
                 chunk: str,
@@ -2389,7 +2584,7 @@ class Engine:
                 mode="task",
                 termination_action="finish_task",
                 completion_phrases=all_completion_phrases,
-                streaming=self.settings.streaming_default,
+                streaming=task_streaming,
                 stream_callback=task_stream_adapter if message_callback else None,
                 manage_streaming_state=False,
                 async_save=True,
@@ -2399,6 +2594,7 @@ class Engine:
                     task_message_callback_wrapper if message_callback else None
                 ),
                 default_completion_status="iterations_exceeded",
+                token_budget=token_budget,
             )
 
             result = await self._iteration_loop(cm, config, max_iters)
@@ -2581,6 +2777,16 @@ class Engine:
         """
         request_id, session_id = self._trace_request_fields()
         started = time.perf_counter()
+        reset_usage = getattr(self, "_reset_provider_attempt_usage", None)
+        if callable(reset_usage):
+            reset_usage()
+        record_usage = getattr(self, "_record_provider_attempt_usage", None)
+        runtime_model_getter = getattr(self, "_get_runtime_model_config", None)
+        runtime_model_config = (
+            runtime_model_getter()
+            if callable(runtime_model_getter)
+            else getattr(self, "model_config", None)
+        )
         _trace_log_info(
             "engine.llm_attempt.start request=%s session=%s model=%s provider=%s "
             "streaming=%s messages=%s tools=%s",
@@ -2601,7 +2807,8 @@ class Engine:
                 streaming=streaming,
                 stream_callback=stream_callback,
                 extra_kwargs=extra_kwargs,
-                model_config=getattr(self, "model_config", None),
+                model_config=runtime_model_config,
+                usage_callback=(record_usage if callable(record_usage) else None),
             )
             lifecycle = None
             lifecycle_getter = getattr(api_client, "get_last_request_lifecycle", None)
@@ -2783,12 +2990,7 @@ class Engine:
             workspace_path = getattr(cm, "workspace_path", None)
             if workspace_path is None:
                 return None
-            return (
-                Path(workspace_path)
-                / "conversations"
-                / "tool-results"
-                / session_id
-            )
+            return Path(workspace_path) / "conversations" / "tool-results" / session_id
         except Exception:
             logger.debug(
                 "Failed to resolve tool output artifact directory", exc_info=True
@@ -3563,7 +3765,9 @@ class Engine:
                 ],
             )
 
-        usage = self._extract_usage_from_api_client(api_client)
+        usage = self._consume_provider_attempt_usage()
+        if not usage:
+            usage = self._extract_usage_from_api_client(api_client)
         _trace_log_info(
             "engine.llm_step.done request=%s session=%s agent=%s conv_session=%s "
             "duration_ms=%.2f response_len=%s actions=%s usage=%s",

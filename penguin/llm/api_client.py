@@ -66,7 +66,7 @@ class ConnectionPoolConfig:
         max_connections: int = 100,
         keepalive_expiry: float = 30.0,
         connect_timeout: float = 10.0,
-        read_timeout: float = 300.0,  # Long for cold-start models
+        read_timeout: Optional[float] = None,
         write_timeout: float = 10.0,
     ):
         self.max_keepalive_connections = max_keepalive_connections
@@ -85,7 +85,7 @@ class ConnectionPoolConfig:
 
     def to_timeout(self) -> httpx.Timeout:
         return httpx.Timeout(
-            timeout=self.read_timeout,  # Default for unspecified values
+            timeout=None,
             connect=self.connect_timeout,
             read=self.read_timeout,
             write=self.write_timeout,
@@ -631,8 +631,7 @@ class APIClient:
 
         prepared = preparer(
             messages=prepared_messages,
-            max_output_tokens=max_output_tokens
-            or self.model_config.max_output_tokens,
+            max_output_tokens=max_output_tokens or self.model_config.max_output_tokens,
             temperature=temperature
             if temperature is not None
             else self.model_config.temperature,

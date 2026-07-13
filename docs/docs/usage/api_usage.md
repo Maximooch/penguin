@@ -9,6 +9,7 @@ Penguin provides a comprehensive REST API and WebSocket interface for integratin
 - Send messages and receive responses
 - Stream responses in real-time
 - Manage conversations
+- Persist and control session-scoped goals
 - Execute tasks
 - Access context files
 - Monitor token usage
@@ -197,6 +198,153 @@ for message in data["messages"]:
     print(f"{message['role']}: {message['content']}")
 ```
 
+## Session Goals
+
+A session goal is durable lifecycle state attached to an existing saved
+session. The HTTP API separates persistence from execution: creating a goal
+stores it, while `POST .../goal/run` starts RunMode execution. The TUI's
+`/goal <objective>` command calls both operations for convenience.
+
+There is one goal per session. `/247` is a TUI alias for `/goal`; it does not
+create a second goal type and does not enable automatic continuation.
+
+The current implementation assumes one server process owns a session store.
+Its locks and live-run registry are process-local, so do not point multiple web
+workers at the same conversation files. Cross-process leases are not part of
+this release.
+
+### Read Goal State
+
+```bash
+curl http://127.0.0.1:9000/api/v1/session/SESSION_ID/goal \
+  -H "X-API-Key: your-key"
+```
+
+An existing session with no goal returns `200`:
+
+```json
+{"goal": null, "status": "ok"}
+```
+
+### Create or Replace a Goal
+
+```bash
+curl -X POST http://127.0.0.1:9000/api/v1/session/SESSION_ID/goal \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-key" \
+  -d '{
+    "objective": "Ship the session-goal API with regression tests",
+    "token_budget": 50000,
+    "replace": false
+  }'
+```
+
+The objective must be non-empty. `token_budget`, when present, is a positive
+cumulative stop threshold across runs. Replacing an unfinished goal requires
+`"replace": true`; completed goals may be replaced without the flag. A goal
+with an active run cannot be replaced until that run is stopped and released.
+
+### Pause and Resume
+
+Pause through the goal mutation endpoint:
+
+```bash
+curl -X POST http://127.0.0.1:9000/api/v1/session/SESSION_ID/goal \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-key" \
+  -d '{"status": "paused"}'
+```
+
+Resume by setting `active`, then explicitly starting a run:
+
+```bash
+curl -X POST http://127.0.0.1:9000/api/v1/session/SESSION_ID/goal \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-key" \
+  -d '{"status": "active"}'
+
+curl -X POST http://127.0.0.1:9000/api/v1/session/SESSION_ID/goal/run \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-key" \
+  -d '{"max_iterations": 8, "timeout_seconds": 600}'
+```
+
+`max_iterations` and `timeout_seconds` are optional positive integers with no
+Penguin hard maximum. If omitted, they remain unset and do not stop execution.
+Likewise, the runtime passes a token ceiling only when the goal has an explicit
+cumulative `token_budget`. Because usage is reported after a provider response,
+the last billed turn may cross that configured threshold; a valid structured
+finish on that turn still wins. An exhausted explicit cumulative budget returns
+`budget_limited`.
+
+Goal creation and execution are separate HTTP requests. If a client loses its
+connection after creation but before `/goal/run` is acknowledged, read the
+persisted goal first: retry the same create request identifiers when available,
+or call `/goal/run` for the already-active, unrun goal. Do not replace the goal
+just to recover from an uncertain response.
+
+Pausing does not silently rewrite a completed result from an already-running
+request. Goal ID, run ID, revision, and active status fence late completion so
+paused, cleared, or replaced state wins.
+
+### Clear a Goal
+
+```bash
+curl -X DELETE http://127.0.0.1:9000/api/v1/session/SESSION_ID/goal \
+  -H "X-API-Key: your-key"
+```
+
+Successful reads and mutations use an operation acknowledgement at the top
+level; the lifecycle value remains inside `goal`:
+
+```json
+{
+  "status": "ok",
+  "goal": {
+    "id": "goal_...",
+    "objective": "Ship the session-goal API with regression tests",
+    "status": "active",
+    "revision": 3,
+    "token_budget": 50000,
+    "tokens_used": 12000,
+    "time_used_seconds": 91.4,
+    "active_run_id": null
+  }
+}
+```
+
+Successful `/goal/run` responses instead expose the resulting lifecycle status
+at the top level and include the bounded RunMode result:
+
+```json
+{
+  "status": "active",
+  "goal": { "id": "goal_...", "status": "active" },
+  "result": {
+    "status": "pending_review",
+    "finish_status": "partial",
+    "finish_summary": "Implemented the first verified slice"
+  }
+}
+```
+
+Goal lifecycle values are `active`, `paused`, `blocked`, `usage_limited`,
+`budget_limited`, and `complete`. A successful validated
+`finish_task(status="done")` marks a goal complete; the deprecated
+`task_completed` result marker is also honored when it carries an anchored
+machine-readable done status. Partial progress remains
+active; clarification or an explicit blocked finish leaves it blocked.
+
+Goal API errors use these status codes:
+
+- `404`: session missing, or a pause/resume/run/clear operation has no goal.
+- `409`: unfinished replacement lacks `replace=true`, a run/session is busy, or
+  the requested lifecycle transition conflicts with current state.
+- `422`: malformed JSON fields, unknown status, empty objective, non-positive or
+  over-limit budget/iteration value, or other schema validation failure.
+- `500`: the server could not durably save/finalize goal state or initialize the
+  scoped runtime; the run is fenced for recovery rather than reported as success.
+
 ## Project and Task Management
 
 ### Create Project
@@ -289,6 +437,8 @@ The API uses standard HTTP status codes:
 - 200: Success
 - 400: Bad Request (invalid parameters)
 - 404: Not Found (resource doesn't exist)
+- 409: Conflict (resource lifecycle or active-run conflict)
+- 422: Unprocessable Entity (request schema or value validation failed)
 - 500: Server Error
 
 Example error handling:

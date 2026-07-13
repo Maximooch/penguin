@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import copy
 import logging
-from typing import Any, Awaitable, Callable, Mapping
+from typing import Any, Awaitable, Callable, Mapping, Optional
 
 from penguin.llm.model_config import (
     ModelConfig,
@@ -21,7 +21,7 @@ from penguin.llm.model_config import (
 logger = logging.getLogger(__name__)
 
 FetchModelSpecs = Callable[[str], Awaitable[dict[str, Any]]]
-ResolveModelProvider = Callable[[str], tuple[str | None, str]]
+ResolveModelProvider = Callable[[str], tuple[Optional[str], str]]
 ApiClientFactory = Callable[..., Any]
 RefreshActiveClient = Callable[[], None]
 LLMClientFactory = Callable[[ModelConfig, Any], Any]

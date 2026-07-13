@@ -116,6 +116,86 @@ async def test_register_second_request_does_not_emit_duplicate_busy() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cancelled_busy_status_emission_rolls_back_request_accounting() -> None:
+    owner = _Owner()
+    blocked = asyncio.Event()
+    status_started = asyncio.Event()
+
+    async def _hang_status(_session_id: str, _status_type: str) -> None:
+        status_started.set()
+        await blocked.wait()
+
+    owner._emit_opencode_session_status = _hang_status
+    task = asyncio.create_task(_sleeping_task())
+    registration = asyncio.create_task(
+        process_lifecycle.register_opencode_process_request(
+            owner,
+            "session_1",
+            task,
+        )
+    )
+    try:
+        await asyncio.wait_for(status_started.wait(), timeout=1)
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(
+                registration,
+                timeout=0.01,
+            )
+
+        assert owner._opencode_process_tasks == {}
+        assert owner._opencode_active_requests == {}
+    finally:
+        registration.cancel()
+        task.cancel()
+        await asyncio.gather(registration, task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_first_registration_preserves_concurrent_second_request() -> (
+    None
+):
+    owner = _Owner()
+    status_started = asyncio.Event()
+
+    async def _hang_busy(_session_id: str, _status_type: str) -> None:
+        status_started.set()
+        await asyncio.Event().wait()
+
+    owner._emit_opencode_session_status = _hang_busy
+    first = asyncio.create_task(_sleeping_task())
+    second = asyncio.create_task(_sleeping_task())
+    registration = asyncio.create_task(
+        process_lifecycle.register_opencode_process_request(
+            owner,
+            "session_1",
+            first,
+        )
+    )
+    try:
+        await asyncio.wait_for(status_started.wait(), timeout=1)
+        assert (
+            await process_lifecycle.register_opencode_process_request(
+                owner,
+                "session_1",
+                second,
+            )
+            is True
+        )
+        registration.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await registration
+
+        assert owner._opencode_process_tasks == {"session_1": {second}}
+        assert owner._opencode_active_requests == {"session_1": 1}
+        assert owner.heartbeat_events == [("ensure", "session_1")]
+    finally:
+        registration.cancel()
+        first.cancel()
+        second.cancel()
+        await asyncio.gather(registration, first, second, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_finalize_only_emits_idle_after_last_active_request() -> None:
     owner = _Owner()
     first = asyncio.create_task(_sleeping_task())
@@ -171,6 +251,43 @@ async def test_finalize_only_emits_idle_after_last_active_request() -> None:
 
 
 @pytest.mark.asyncio
+async def test_finalize_does_not_wedge_on_hung_idle_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner = _Owner()
+    task = asyncio.create_task(_sleeping_task())
+    await process_lifecycle.register_opencode_process_request(
+        owner,
+        "session_1",
+        task,
+    )
+
+    async def _hang_idle(_session_id: str, status_type: str) -> None:
+        if status_type == "idle":
+            await asyncio.Event().wait()
+
+    owner._emit_opencode_session_status = _hang_idle
+    monkeypatch.setattr(
+        process_lifecycle,
+        "_SESSION_STATUS_EMIT_TIMEOUT_SECONDS",
+        0.01,
+    )
+    try:
+        await process_lifecycle.finalize_opencode_process_request(
+            owner,
+            "session_1",
+            task,
+            request_tracked=True,
+        )
+
+        assert owner._opencode_process_tasks == {}
+        assert owner._opencode_active_requests == {}
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_blank_session_or_missing_task_does_not_track_request() -> None:
     owner = _Owner()
 
@@ -197,6 +314,20 @@ async def test_blank_session_or_missing_task_does_not_track_request() -> None:
     assert owner._opencode_active_requests == {}
     assert owner.status_events == []
     assert owner.heartbeat_events == []
+
+
+def test_request_gate_uses_a_non_colliding_fallback_key() -> None:
+    """Blank session identifiers share a gate without aliasing a real session."""
+
+    owner = _Owner()
+
+    fallback_gate = process_lifecycle.get_session_request_gate(owner, None)
+    assert (
+        process_lifecycle.get_session_request_gate(owner, "   ") is fallback_gate
+    )
+
+    named_gate = process_lifecycle.get_session_request_gate(owner, "__default__")
+    assert named_gate is not fallback_gate
 
 
 def test_discard_abort_session_ignores_blank_session_and_repairs_state() -> None:

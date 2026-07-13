@@ -111,6 +111,10 @@ Penguin exposes the same runtime through several surfaces:
   - Task payloads include `status`, `phase`, `dependencies`, `dependency_specs`, `artifact_evidence`, `recipe`, `metadata`, and `clarification_requests` where relevant.
 - `POST /api/v1/tasks/{task_id}/execute` now routes through `RunMode`, so non-terminal outcomes like `waiting_input` and clarification-needed results are preserved instead of being flattened into fake completion/failure states.
 - `POST /api/v1/tasks/{task_id}/clarification/resume` answers the latest open clarification request and resumes execution through the same `RunMode` lifecycle.
+- Session-goal endpoints under `/api/v1/session/{session_id}/goal` persist one
+  durable objective per saved session and execute it through bounded RunMode steps.
+  Goal control and run operations use explicit `404`, `409`, and `422` responses
+  for missing state, lifecycle conflicts, and invalid input.
 - `GET /api/v1/events/sse` streams OpenCode-compatible events and now includes session-scoped clarification status visibility for web clients.
 - `PenguinAPI.run_task(...)` and `PenguinAPI.resume_with_clarification(...)` are aligned with the web route behavior so programmatic callers see the same lifecycle truth.
 
@@ -243,7 +247,23 @@ You can also override the release endpoint for staging/testing with `PENGUIN_TUI
 /rollback <checkpoint>  # restore a checkpoint
 /tokens                 # token usage summary
 /run task "Name"       # start a specific task
+/goal <objective>       # save a session goal and start execution
+/goal status            # show the current session goal
+/goal pause|resume      # pause it, or resume execution
+/goal run               # restart an active goal after a non-terminal return
+/goal clear             # remove the session goal
+/247 ...                # exact alias for the corresponding /goal command
 ```
+
+Session goals require a persisted session. `/goal <objective>` stores durable
+lifecycle state, then starts RunMode execution. With no user-configured
+`max_iterations`, `timeout_seconds`, or goal `token_budget`, Penguin adds no
+local iteration, wall-clock, or token stop. Replacing an unfinished goal requires
+`--replace`. `/247` is only a slash-command alias for `/goal`; the headless
+`--247` / `--continuous` flag still means continuous RunMode and is a different
+interface. Session-goal run ownership is process-local in this release, so a
+shared conversation store must be served by one Penguin web process rather than
+multiple workers.
 
 ## Architecture
 

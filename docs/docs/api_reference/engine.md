@@ -30,7 +30,7 @@ If Engine initialization fails, higher-level execution paths should fail clearly
 - `async run_response(prompt: str, *, image_path: Optional[str] = None, max_iterations: Optional[int] = None, streaming: Optional[bool] = None, stream_callback: Optional[Callable[[str], None]] = None) -> Dict[str, Any]`
   Conversational helper that loops until the model stops taking actions. Useful for natural chat flows where each iteration is saved as a separate message.
 - `async run_task(task_prompt: str, *, image_path: Optional[str] = None, max_iterations: Optional[int] = None, task_context: Optional[Dict[str, Any]] = None, task_id: Optional[str] = None, task_name: Optional[str] = None, completion_phrases: Optional[List[str]] = None, on_completion: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None, enable_events: bool = True, message_callback: Optional[Callable[[str, str], Awaitable[None]]] = None) -> Dict[str, Any]`
-  Runs a multi-step reasoning/action loop with optional EventBus integration. The loop stops when a `StopCondition` triggers, `completion_phrases` are detected, or the maximum iterations are reached.
+  Runs a multi-step reasoning/action loop with optional EventBus integration. The loop stops when a `StopCondition` triggers, `completion_phrases` are detected, or an explicitly configured maximum-iteration limit is reached. Omitting `max_iterations` does not add a Penguin-local limit.
 - `async stream(prompt: str)`
   Initiates a streaming response for the given prompt, yielding chunks as they arrive.
 - `async spawn_child(purpose: str = "child", inherit_tools: bool = False, shared_conversation: bool = False) -> Engine`

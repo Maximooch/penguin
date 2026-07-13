@@ -11,9 +11,16 @@ def test_openrouter_gateway_ignores_openai_base_url(monkeypatch) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-fixture")
 
     class _Client:
-        def __init__(self, *, base_url: str, api_key: str) -> None:
+        def __init__(
+            self,
+            *,
+            base_url: str,
+            api_key: str,
+            timeout: float | None,
+        ) -> None:
             self.base_url = base_url
             self.api_key = api_key
+            self.timeout = timeout
 
     monkeypatch.setattr("penguin.llm.adapters.openrouter.AsyncOpenAI", _Client)
 
@@ -30,6 +37,7 @@ def test_openrouter_gateway_ignores_openai_base_url(monkeypatch) -> None:
     assert gateway.base_url == "https://openrouter.ai/api/v1"
     assert gateway.client.base_url == "https://openrouter.ai/api/v1"
     assert gateway.client.api_key == "sk-or-v1-fixture"
+    assert gateway.client.timeout is None
 
 
 def test_openrouter_gateway_honors_openrouter_specific_base_url(monkeypatch) -> None:
@@ -39,9 +47,10 @@ def test_openrouter_gateway_honors_openrouter_specific_base_url(monkeypatch) -> 
 
     monkeypatch.setattr(
         "penguin.llm.adapters.openrouter.AsyncOpenAI",
-        lambda *, base_url, api_key: SimpleNamespace(
+        lambda *, base_url, api_key, timeout: SimpleNamespace(
             base_url=base_url,
             api_key=api_key,
+            timeout=timeout,
         ),
     )
 
@@ -57,6 +66,7 @@ def test_openrouter_gateway_honors_openrouter_specific_base_url(monkeypatch) -> 
 
     assert gateway.base_url == "https://proxy.example.test/v1"
     assert gateway.client.base_url == "https://proxy.example.test/v1"
+    assert gateway.client.timeout is None
 
 
 def test_openrouter_gateway_rejects_placeholder_api_key(monkeypatch) -> None:

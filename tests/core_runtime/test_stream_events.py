@@ -20,6 +20,7 @@ class _Adapter:
         self.starts: list[dict[str, Any]] = []
         self.chunks: list[tuple[str, str, str, str]] = []
         self.ends: list[tuple[str, str]] = []
+        self.errors: list[dict[str, Any]] = []
         self._active_parts: dict[str, dict[str, Any]] = {}
 
     async def on_stream_start(
@@ -57,6 +58,28 @@ class _Adapter:
     async def on_stream_end(self, message_id: str, part_id: str) -> None:
         self.ends.append((message_id, part_id))
 
+    async def on_assistant_error(
+        self,
+        message: str,
+        *,
+        error: dict[str, Any],
+        agent_id: str,
+        model_id: str | None,
+        provider_id: str | None,
+        variant: str | None,
+    ) -> str:
+        self.errors.append(
+            {
+                "message": message,
+                "error": error,
+                "agent_id": agent_id,
+                "model_id": model_id,
+                "provider_id": provider_id,
+                "variant": variant,
+            }
+        )
+        return f"msg_error_{len(self.errors)}"
+
 
 class _Owner:
     def __init__(self, adapter: _Adapter) -> None:
@@ -68,11 +91,17 @@ class _Owner:
         del session_id
         return self.adapter
 
-    def _resolve_opencode_model_state(self, session_id: str) -> dict[str, str]:
+    def _resolve_opencode_model_state(
+        self,
+        *,
+        session_id: str,
+        model_id: str | None = None,
+        provider_id: str | None = None,
+    ) -> dict[str, str]:
         del session_id
         return {
-            "modelID": "gpt-5.4",
-            "providerID": "openai",
+            "modelID": model_id or "gpt-5.4",
+            "providerID": provider_id or "openai",
             "variant": "high",
         }
 
@@ -321,6 +350,44 @@ async def test_emit_opencode_session_status_shapes_and_scopes_event() -> None:
     assert payload["runtime_event"]["type"] == "session.status"
     assert payload["runtime_event"]["scope"]["session_id"] == "session_1"
     assert payload["runtime_event"]["scope"]["task_id"] == "task_1"
+
+
+@pytest.mark.asyncio
+async def test_emit_opencode_assistant_error_uses_scoped_adapter() -> None:
+    adapter = _Adapter()
+    owner = _Owner(adapter)
+    error = {
+        "message": "OpenRouter SDK stream stalled",
+        "category": "timeout",
+        "retryable": True,
+        "provider": "openrouter",
+        "model": "z-ai/glm-5.2",
+    }
+
+    with execution_context_scope(
+        ExecutionContext(
+            session_id="session_1",
+            conversation_id="session_1",
+            agent_id="agent_1",
+        )
+    ):
+        message_id = await stream_events.emit_opencode_assistant_error(
+            owner,
+            error["message"],
+            error=error,
+        )
+
+    assert message_id == "msg_error_1"
+    assert adapter.errors == [
+        {
+            "message": "OpenRouter SDK stream stalled",
+            "error": error,
+            "agent_id": "agent_1",
+            "model_id": "z-ai/glm-5.2",
+            "provider_id": "openrouter",
+            "variant": "high",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -933,6 +1000,7 @@ async def test_emit_opencode_user_message_with_metadata_uses_model_state() -> No
             content: str,
             *,
             message_id: str | None = None,
+            part_id: str | None = None,
             agent_id: str = "default",
             model_id: str | None = None,
             provider_id: str | None = None,
@@ -942,6 +1010,7 @@ async def test_emit_opencode_user_message_with_metadata_uses_model_state() -> No
                 {
                     "content": content,
                     "message_id": message_id,
+                    "part_id": part_id,
                     "agent_id": agent_id,
                     "model_id": model_id,
                     "provider_id": provider_id,
@@ -965,6 +1034,7 @@ async def test_emit_opencode_user_message_with_metadata_uses_model_state() -> No
         owner,
         "hello",
         message_id="msg_client_1",
+        part_id="part_client_1",
         agent_id="agent-a",
         execution_context=SimpleNamespace(
             session_id="session_1",
@@ -977,6 +1047,7 @@ async def test_emit_opencode_user_message_with_metadata_uses_model_state() -> No
         {
             "content": "hello",
             "message_id": "msg_client_1",
+            "part_id": "part_client_1",
             "agent_id": "agent-a",
             "model_id": "gpt-5.4",
             "provider_id": "openai",

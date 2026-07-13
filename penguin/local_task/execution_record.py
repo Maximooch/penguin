@@ -42,7 +42,7 @@ class ExecutionRecord:
     
     # Execution details
     iterations: int = 0
-    max_iterations: int = 0
+    max_iterations: Optional[int] = None
     tools_used: List[str] = field(default_factory=list)
     token_usage: Dict[str, int] = field(default_factory=dict)
     
@@ -177,4 +177,4 @@ def calculate_execution_metrics(records: List[ExecutionRecord]) -> Dict[str, Any
         "avg_iterations": avg_iterations,
         "common_tools": common_tools,
         "token_efficiency": token_efficiency,
-    } 
+    }

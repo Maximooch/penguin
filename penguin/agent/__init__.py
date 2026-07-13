@@ -26,8 +26,6 @@ import asyncio
 from typing import Any, AsyncGenerator, Dict, Generator, List, Optional
 
 from penguin.core import PenguinCore
-from penguin.config import MAX_TASK_ITERATIONS
-
 # Concrete agent implementations
 from .basic_agent import BasicPenguinAgent
 from .container_executor import ContainerExecutor
@@ -109,7 +107,12 @@ class PenguinAgent:  # pylint: disable=too-few-public-methods
             except StopAsyncIteration:
                 break
 
-    def run_task(self, prompt: str, *, max_iterations: int = MAX_TASK_ITERATIONS) -> Dict[str, Any]:
+    def run_task(
+        self,
+        prompt: str,
+        *,
+        max_iterations: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """Multi-step reasoning using Engine.run_task (blocking)."""
         return _run_sync(self._core.engine.run_task(prompt, max_iterations=max_iterations))
 
@@ -241,7 +244,12 @@ class PenguinAgentAsync:
         async for chunk in self._core.engine.stream(prompt=message):
             yield chunk
 
-    async def run_task(self, prompt: str, *, max_iterations: int = MAX_TASK_ITERATIONS):
+    async def run_task(
+        self,
+        prompt: str,
+        *,
+        max_iterations: Optional[int] = None,
+    ):
         return await self._core.engine.run_task(prompt, max_iterations=max_iterations)
 
     async def checkpoint(self, name: Optional[str] = None, description: Optional[str] = None):
@@ -338,4 +346,4 @@ __all__ = [
 from penguin.agent.schema import AgentConfig  # noqa: E402  (after sys.path tweaks)
 from penguin.agent.base import BaseAgent  # noqa: E402
 from penguin.agent.launcher import AgentLauncher  # noqa: E402
-from penguin.agent.manager import AgentManager, get_agent_roster, get_agent_profile  # noqa: E402 
+from penguin.agent.manager import AgentManager, get_agent_roster, get_agent_profile  # noqa: E402
