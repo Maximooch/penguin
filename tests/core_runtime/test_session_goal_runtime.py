@@ -696,7 +696,11 @@ async def test_run_uses_persisted_model_scope_and_accounts_tokens(
             "_opencode_variant_v1": "medium",
         }
     )
-    model_config = SimpleNamespace(provider="openai", model="gpt-test")
+    model_config = SimpleNamespace(
+        provider="openai",
+        model="gpt-test",
+        supported_reasoning_levels=["medium"],
+    )
     api_client = object()
     core.resolve_request_runtime = AsyncMock(return_value=(model_config, api_client))
     core.run_mode_result = {
