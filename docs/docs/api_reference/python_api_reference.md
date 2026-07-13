@@ -233,7 +233,7 @@ options = ChatOptions(
     context={"key": "value"},             # Optional context data
     context_files=["file1.py"],          # Optional context files
     streaming=True,                       # Enable streaming
-    max_iterations=5,                     # Max processing iterations
+    max_iterations=20,                    # Optional explicit processing limit
     image_path="/path/to/image.png"       # Optional image for vision models
 )
 ```
@@ -332,7 +332,7 @@ agent = PenguinAgent()
 |--------|-------------|
 | `chat(message: str, *, context: dict | None = None) -> str` | One-shot chat |
 | `stream(message: str, *, context: dict | None = None) -> Iterator[str]` | Streaming generator |
-| `run_task(prompt: str, *, max_iterations: int = 5) -> dict` | Multi-step task execution |
+| `run_task(prompt: str, *, max_iterations: int \| None = None) -> dict` | Multi-step task execution; omitted means no Penguin-local iteration limit |
 | `new_conversation() -> str` | Start new session |
 | `load_conversation(session_id: str) -> bool` | Load previous session |
 

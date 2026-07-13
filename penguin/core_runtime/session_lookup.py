@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
-SessionLoader = Callable[[Any, str], Any | None]
+SessionLoader = Callable[[Any, str], Optional[Any]]
 
 __all__ = [
     "SessionLoader",

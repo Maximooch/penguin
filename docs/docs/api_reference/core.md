@@ -273,14 +273,14 @@ async def process(
     input_data: Union[Dict[str, Any], str],
     context: Optional[Dict[str, Any]] = None,
     conversation_id: Optional[str] = None,
-    max_iterations: int = 5,
+    max_iterations: Optional[int] = None,
     context_files: Optional[List[str]] = None,
     streaming: Optional[bool] = None,
     stream_callback: Optional[Callable[[str], None]] = None # Note: Used by Engine/APIClient
 ) -> Dict[str, Any]
 ```
 
-**Primary low-level processing interface.** This compatibility method delegates to `penguin.core_runtime.process_runtime.process_with_retry`, which normalizes input, applies scoped runtime overrides, and routes execution through Engine-backed runtime flows. Returns a dictionary containing the assistant response and any accumulated action/tool results.
+**Primary low-level processing interface.** This compatibility method delegates to `penguin.core_runtime.process_runtime.process_with_retry`, which normalizes input, applies scoped runtime overrides, and routes execution through Engine-backed runtime flows. `max_iterations` is an explicit opt-in limit; when it is omitted, the runtime has no Penguin-local iteration ceiling. Returns a dictionary containing the assistant response and any accumulated action/tool results.
 
 ### `get_response`
 

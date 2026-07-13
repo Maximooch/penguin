@@ -42,8 +42,6 @@ import logging
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 
-from penguin.constants import get_engine_max_iterations_default
-
 from .core import PenguinCore
 
 logger = logging.getLogger(__name__)
@@ -56,7 +54,7 @@ class ChatOptions:
     context: Optional[Dict[str, Any]] = None
     context_files: Optional[List[str]] = None
     streaming: bool = False
-    max_iterations: Optional[int] = None  # Uses config default if None
+    max_iterations: Optional[int] = None
     image_path: Optional[str] = None
     agent_id: Optional[str] = None
 
@@ -414,7 +412,7 @@ class PenguinClient:
         if hasattr(self.core, 'engine') and self.core.engine:
             return await self.core.engine.run_task(
                 task_prompt=prompt,
-                max_iterations=opts.max_iterations or get_engine_max_iterations_default(),
+                max_iterations=opts.max_iterations,
                 task_name=opts.name or "API Task",
                 task_context=opts.context or {},
                 enable_events=True
@@ -424,7 +422,7 @@ class PenguinClient:
             return await self.core.process(
                 input_data={"text": prompt},
                 context=opts.context,
-                max_iterations=opts.max_iterations or get_engine_max_iterations_default()
+                max_iterations=opts.max_iterations,
             )
 
     async def start_run_mode(

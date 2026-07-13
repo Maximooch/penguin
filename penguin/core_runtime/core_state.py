@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 __all__ = [
     "branch_from_snapshot",
@@ -19,7 +19,7 @@ __all__ = [
     "validate_path",
 ]
 
-ProgressCallback = Callable[[int, int, str | None], None]
+ProgressCallback = Callable[[int, int, Optional[str]], None]
 AccessCheck = Callable[[Path, int], bool]
 ScheduleCleanup = Callable[[], Any]
 

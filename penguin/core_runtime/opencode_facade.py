@@ -228,6 +228,26 @@ class OpenCodeCoreFacade:
             execution_context=get_current_execution_context(),
         )
 
+    async def _emit_opencode_assistant_error(
+        self,
+        message: str,
+        *,
+        error: dict[str, Any] | None = None,
+        agent_id: str | None = None,
+        model_id: str | None = None,
+        provider_id: str | None = None,
+    ) -> str:
+        """Emit a persisted OpenCode error message for a provider failure."""
+        return await core_stream_events.emit_opencode_assistant_error(
+            self,
+            message,
+            error=error,
+            agent_id=agent_id,
+            model_id=model_id,
+            provider_id=provider_id,
+            execution_context=get_current_execution_context(),
+        )
+
     async def _emit_opencode_stream_chunk(
         self,
         message_id: str,
@@ -275,13 +295,17 @@ class OpenCodeCoreFacade:
         content: str,
         *,
         message_id: str | None = None,
+        part_id: str | None = None,
         agent_id: str | None = None,
+        persist: bool = True,
     ) -> str:
         """Emit user message in OpenCode format with stable message metadata."""
         return await core_stream_events.emit_opencode_user_message_with_metadata(
             self,
             content,
             message_id=message_id,
+            part_id=part_id,
             agent_id=agent_id,
+            persist=persist,
             execution_context=get_current_execution_context(),
         )

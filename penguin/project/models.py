@@ -16,7 +16,6 @@ import json
 
 from penguin.utils.events import TaskEvent  ## type: ignore
 from penguin.utils.serialization import to_dict, from_dict  ## type: ignore
-from penguin.constants import DEFAULT_ENGINE_MAX_ITERATIONS
 
 
 class TaskPhase(Enum):
@@ -220,7 +219,7 @@ class ExecutionRecord:
     response: str = ""
     task_prompt: str = ""
     iterations: int = 0
-    max_iterations: int = DEFAULT_ENGINE_MAX_ITERATIONS
+    max_iterations: Optional[int] = None
     tokens_used: Dict[str, int] = field(default_factory=dict)
     tools_used: List[str] = field(default_factory=list)
     execution_context: Dict[str, Any] = field(default_factory=dict)
@@ -885,4 +884,4 @@ class Project:
             data['workspace_path'] = Path(data['workspace_path'])
         if 'context_path' in data and data['context_path']:
             data['context_path'] = Path(data['context_path'])
-        return from_dict(cls, data) 
+        return from_dict(cls, data)

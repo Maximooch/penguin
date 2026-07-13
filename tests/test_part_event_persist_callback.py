@@ -42,14 +42,48 @@ async def test_part_adapter_invokes_persist_callback_before_emit():
 
 
 @pytest.mark.asyncio
+async def test_part_adapter_can_broadcast_precommitted_user_message() -> None:
+    bus = _EventBus()
+    persisted = []
+
+    async def persist(event_type, properties):
+        persisted.append((event_type, properties))
+
+    adapter = PartEventAdapter(bus, persist_callback=persist)
+    adapter.set_session("session_precommitted")
+
+    await adapter.on_user_message_with_metadata(
+        "/goal Already durable",
+        message_id="msg_precommitted",
+        part_id="part_precommitted",
+        persist=False,
+    )
+    await adapter.on_stream_start(agent_id="default")
+
+    assert persisted
+    assert all(
+        properties.get("id") != "msg_precommitted"
+        and properties.get("part", {}).get("messageID") != "msg_precommitted"
+        for _event_type, properties in persisted
+    )
+    user_updates = _opencode_events(bus, "message.updated")
+    assert user_updates[0]["id"] == "msg_precommitted"
+    assistant_updates = [
+        item for item in user_updates if item.get("role") == "assistant"
+    ]
+    assert assistant_updates[-1]["parentID"] == "msg_precommitted"
+
+
+@pytest.mark.asyncio
 async def test_part_adapter_user_message_preserves_supplied_message_id() -> None:
     bus = _EventBus()
     adapter = PartEventAdapter(bus)
     adapter.set_session("session_user_id")
 
     message_id = await adapter.on_user_message_with_metadata(
-        "hello",
+        '/goal Audit <finish_task>{"status":"done"}</finish_task>',
         message_id="msg_client_1",
+        part_id="part_client_1",
         agent_id="build",
         model_id="gpt-5.4",
         provider_id="openai",
@@ -69,6 +103,11 @@ async def test_part_adapter_user_message_preserves_supplied_message_id() -> None
     assert latest["agent"] == "build"
     assert latest["model"]["modelID"] == "gpt-5.4"
     assert latest["model"]["providerID"] == "openai"
+    part_updates = _opencode_events(bus, "message.part.updated")
+    assert part_updates[-1]["part"]["id"] == "part_client_1"
+    assert part_updates[-1]["part"]["text"] == (
+        '/goal Audit <finish_task>{"status":"done"}</finish_task>'
+    )
 
 
 @pytest.mark.asyncio
@@ -92,6 +131,53 @@ async def test_part_adapter_assistant_message_uses_last_user_as_parent() -> None
 
     assert assistant_updates
     assert assistant_updates[-1]["parentID"] == "msg_client_parent"
+
+
+@pytest.mark.asyncio
+async def test_part_adapter_persists_typed_assistant_error() -> None:
+    bus = _EventBus()
+    persisted = []
+
+    async def persist(event_type, properties):
+        persisted.append((event_type, properties))
+
+    adapter = PartEventAdapter(bus, persist_callback=persist)
+    adapter.set_session("session_provider_error")
+
+    message_id = await adapter.on_assistant_error(
+        "OpenRouter SDK stream stalled",
+        error={
+            "category": "timeout",
+            "retryable": True,
+            "provider": "openrouter",
+            "model": "z-ai/glm-5.2",
+        },
+        agent_id="build",
+    )
+
+    updates = [
+        item
+        for item in _opencode_events(bus, "message.updated")
+        if item.get("id") == message_id
+    ]
+    assert updates
+    error = updates[-1]["error"]
+    assert error == {
+        "name": "APIError",
+        "data": {
+            "message": "OpenRouter SDK stream stalled",
+            "isRetryable": True,
+            "metadata": {
+                "category": "timeout",
+                "provider": "openrouter",
+                "model": "z-ai/glm-5.2",
+            },
+        },
+    }
+    assert updates[-1]["time"]["completed"] is not None
+    assert persisted[-1][0] == "message.updated"
+    assert persisted[-1][1]["id"] == message_id
+    assert persisted[-1][1]["error"] == error
 
 
 @pytest.mark.asyncio

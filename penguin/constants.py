@@ -1,19 +1,11 @@
 from __future__ import annotations
-import os
-from typing import Any, Optional
 
+import os
+from typing import Any
 
 # -----------------------------------------------------------------------------
 # Numeric defaults (fallbacks)
 # -----------------------------------------------------------------------------
-
-DEFAULT_ENGINE_MAX_ITERATIONS = 5000
-
-# Keep a hard cap for the autonomous explorer loop to prevent runaway tool-spam.
-# This is NOT tied to engine.max_iterations_default on purpose.
-DELEGATE_EXPLORE_TASK_MAX_ITERATIONS_CAP = int(
-    os.getenv("PENGUIN_DELEGATE_EXPLORE_MAX_ITERATIONS_CAP", "100")
-)
 
 DEFAULT_MAX_HISTORY_TOKENS = 200_000
 DEFAULT_CONTEXT_WINDOW_EMERGENCY_FALLBACK_TOKENS = 100_000
@@ -51,6 +43,13 @@ DEFAULT_LARGE_FILE_THRESHOLD_BYTES = int(
     os.getenv("PENGUIN_LARGE_FILE_THRESHOLD_BYTES", "100000")
 )
 
+# Helper reasoning loops must remain bounded even when a primary /goal run has
+# no overall iteration ceiling. This prevents one delegated provider loop from
+# holding its parent request forever.
+DELEGATE_EXPLORE_TASK_MAX_ITERATIONS_CAP = int(
+    os.getenv("PENGUIN_DELEGATE_EXPLORE_MAX_ITERATIONS", "100")
+)
+
 # Web/API server defaults
 DEFAULT_WEB_PORT = int(os.getenv("PENGUIN_WEB_PORT", "9000"))
 
@@ -66,25 +65,6 @@ def _coerce_int(value: Any, default: int) -> int:
         return int(value)
     except Exception:
         return default
-
-
-def get_engine_max_iterations_default() -> int:
-    """Return the canonical default max-iterations budget.
-
-    Source of truth:
-      - config key: engine.max_iterations_default
-      - fallback: DEFAULT_ENGINE_MAX_ITERATIONS
-    """
-    try:
-        from penguin.config import get_config_value
-
-        configured = get_config_value("engine.max_iterations_default", None)
-        if configured is not None:
-            return _coerce_int(configured, DEFAULT_ENGINE_MAX_ITERATIONS)
-    except Exception:
-        pass
-
-    return DEFAULT_ENGINE_MAX_ITERATIONS
 
 
 def get_default_max_history_tokens() -> int:

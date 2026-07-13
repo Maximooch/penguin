@@ -119,7 +119,9 @@ describe("Penguin prompt send helper", () => {
 
     const result = emitPenguinOptimisticPrompt({
       agentName: "general",
-      emit: (type, event) => events.push({ type, event }),
+      emit: (event) => {
+        events.push({ type: event.type, event })
+      },
       messageID: "msg_1",
       model: {
         providerID: "anthropic",
@@ -187,6 +189,7 @@ describe("Penguin prompt send helper", () => {
       baseUrl: "http://127.0.0.1:8080",
       directory: "/tmp/project",
       fetch: fetcher,
+      clientPartID: "part_1",
       messageID: "msg_1",
       model: {
         providerID: "anthropic",
@@ -219,6 +222,7 @@ describe("Penguin prompt send helper", () => {
       variant: "thinking",
       service_tier: "fast",
       client_message_id: "msg_1",
+      client_part_id: "part_1",
       parts: [{ type: "file", mime: "image/png", url: "data:image/png;base64,abc" }],
     })
   })
@@ -732,6 +736,7 @@ describe("Penguin prompt send helper", () => {
     let cleared = false
 
     recoverPenguinPromptFailure({
+      messageID: "msg_1",
       sessionID: "ses_1",
       clear: () => {
         cleared = true

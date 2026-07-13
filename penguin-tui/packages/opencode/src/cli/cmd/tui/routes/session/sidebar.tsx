@@ -12,6 +12,7 @@ import { useDirectory } from "../../context/directory"
 import { useKV } from "../../context/kv"
 import { TodoItem } from "../../component/todo-item"
 import { useSDK } from "../../context/sdk"
+import { summarizeSessionGoal } from "./goal-summary"
 
 export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
   const sync = useSync()
@@ -22,6 +23,10 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
   const todo = createMemo(() => sync.data.todo[props.sessionID] ?? [])
   const messages = createMemo(() => sync.data.message[props.sessionID] ?? [])
   const usage = createMemo(() => sync.data.session_usage[props.sessionID])
+  const goal = createMemo(() => {
+    const current = session().goal
+    return current ? summarizeSessionGoal(current) : undefined
+  })
 
   const [expanded, setExpanded] = createStore({
     mcp: true,
@@ -105,6 +110,17 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
                 <text fg={theme.textMuted}>{session().share!.url}</text>
               </Show>
             </box>
+            <Show when={goal()}>
+              {(current) => (
+                <box>
+                  <text fg={theme.text}>
+                    <b>Goal</b> <span style={{ fg: theme.textMuted }}>{current().status}</span>
+                  </text>
+                  <text fg={theme.textMuted}>{current().objective}</text>
+                  <text fg={theme.textMuted}>{current().tokens}</text>
+                </box>
+              )}
+            </Show>
             <box>
               <text fg={theme.text}>
                 <b>Context</b>

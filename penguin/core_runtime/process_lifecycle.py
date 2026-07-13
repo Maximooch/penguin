@@ -25,10 +25,15 @@ __all__ = [
     "emit_process_user_message",
     "finalize_opencode_process_request",
     "finalize_process_response",
+    "get_session_request_gate",
     "handle_process_cancelled",
     "handle_process_error",
     "register_opencode_process_request",
 ]
+
+logger = logging.getLogger(__name__)
+_SESSION_STATUS_EMIT_TIMEOUT_SECONDS = 5.0
+_FALLBACK_REQUEST_GATE_KEY = object()
 
 
 def _session_id(value: Any) -> str:
@@ -44,6 +49,67 @@ def _ensure_request_state(owner: Any) -> None:
         owner._opencode_active_requests = {}
     if not isinstance(getattr(owner, "_opencode_process_task_refs", None), dict):
         owner._opencode_process_task_refs = {}
+
+
+async def _emit_session_status_best_effort(
+    owner: Any,
+    session_id: str,
+    status_type: str,
+) -> None:
+    """Emit bounded UI status without making request accounting depend on it."""
+
+    try:
+        await asyncio.wait_for(
+            owner._emit_opencode_session_status(session_id, status_type),
+            timeout=_SESSION_STATUS_EMIT_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Timed out emitting OpenCode session status %s for %s",
+            status_type,
+            session_id,
+        )
+    except Exception:
+        logger.warning(
+            "Failed to emit OpenCode session status %s for %s",
+            status_type,
+            session_id,
+            exc_info=True,
+        )
+
+
+def _ensure_opencode_status_heartbeat(owner: Any, session_id: str) -> None:
+    """Best-effort heartbeat setup that cannot invalidate request ownership."""
+
+    ensure = getattr(owner, "_ensure_opencode_session_status_heartbeat", None)
+    if not callable(ensure):
+        return
+    try:
+        ensure(session_id)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning(
+            "Failed to start OpenCode status heartbeat for session %s; "
+            "request ownership remains active",
+            session_id,
+            exc_info=True,
+        )
+
+
+def get_session_request_gate(owner: Any, session_id: Any) -> asyncio.Lock:
+    """Return the shared request-execution lock for one session."""
+
+    sid = _session_id(session_id) or _FALLBACK_REQUEST_GATE_KEY
+    gates = getattr(owner, "_opencode_request_gates", None)
+    if not isinstance(gates, dict):
+        gates = {}
+        owner._opencode_request_gates = gates
+    gate = gates.get(sid)
+    if not isinstance(gate, asyncio.Lock):
+        gate = asyncio.Lock()
+        gates[sid] = gate
+    return gate
 
 
 def discard_opencode_abort_session(owner: Any, session_id: Any) -> None:
@@ -225,35 +291,21 @@ async def register_opencode_process_request(
 
     next_count = current_active + 1
     owner._opencode_active_requests[sid] = next_count
-    if next_count == 1:
-        try:
-            owner._ensure_opencode_session_status_heartbeat(sid)
-        except asyncio.CancelledError:
-            if _release_opencode_process_request(owner, sid, request_task):
-                _cancel_opencode_status_heartbeat(owner, sid)
-            raise
-        except Exception:
-            logger.warning(
-                "Failed to start OpenCode status heartbeat for session %s; "
-                "request processing will continue",
-                sid,
-                exc_info=True,
-            )
-
-        try:
-            await owner._emit_opencode_session_status(sid, "busy")
-        except asyncio.CancelledError:
-            if _release_opencode_process_request(owner, sid, request_task):
-                _cancel_opencode_status_heartbeat(owner, sid)
-            raise
-        except Exception:
-            logger.warning(
-                "Failed to emit OpenCode busy status for session %s; "
-                "request processing will continue",
-                sid,
-                exc_info=True,
-            )
-    return True
+    try:
+        if next_count == 1:
+            await _emit_session_status_best_effort(owner, sid, "busy")
+            _ensure_opencode_status_heartbeat(owner, sid)
+        return True
+    except BaseException:
+        if _release_opencode_process_request(owner, sid, request_task):
+            _cancel_opencode_status_heartbeat(owner, sid)
+        else:
+            # A concurrent request may have registered while the first busy
+            # status emission was pending. Keep that surviving request's
+            # liveness heartbeat active even though the first registration
+            # was cancelled.
+            _ensure_opencode_status_heartbeat(owner, sid)
+        raise
 
 
 def _release_opencode_process_request(
@@ -324,14 +376,4 @@ async def finalize_opencode_process_request(
         return
 
     _cancel_opencode_status_heartbeat(owner, sid)
-    try:
-        await owner._emit_opencode_session_status(sid, "idle")
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        logger.warning(
-            "Failed to emit OpenCode idle status for session %s; "
-            "request ownership was still released",
-            sid,
-            exc_info=True,
-        )
+    await _emit_session_status_best_effort(owner, sid, "idle")

@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 from starlette.websockets import WebSocketDisconnect
 
-from penguin.constants import get_engine_max_iterations_default
 from penguin.core_runtime.process_lifecycle import (
     finalize_opencode_process_request,
     register_opencode_process_request,
@@ -174,7 +173,7 @@ async def test_rest_preserves_each_terminal_state(
 
 
 @pytest.mark.asyncio
-async def test_rest_uses_canonical_iteration_default_and_explicit_override(
+async def test_rest_uses_unbounded_default_and_explicit_iteration_override(
     tmp_path: Path,
 ) -> None:
     session_id = "session-iterations"
@@ -201,9 +200,7 @@ async def test_rest_uses_canonical_iteration_default_and_explicit_override(
         core=cast(Any, core),
     )
 
-    assert (
-        core.process_calls[0]["max_iterations"] == get_engine_max_iterations_default()
-    )
+    assert core.process_calls[0]["max_iterations"] is None
     assert core.process_calls[1]["max_iterations"] == 7
 
 
@@ -705,9 +702,7 @@ async def test_websocket_complete_event_uses_same_terminal_truth_shape(
     assert payload["action_count"] == 1
     assert payload["iterations"] == 2
     assert payload["continuation"]["action"] == "retry"
-    assert core.process_calls[0]["max_iterations"] == (
-        get_engine_max_iterations_default()
-    )
+    assert core.process_calls[0]["max_iterations"] is None
 
 
 @pytest.mark.asyncio

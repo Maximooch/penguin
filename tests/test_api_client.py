@@ -24,7 +24,6 @@ from penguin.api_client import (
     TaskOptions,
     create_client,
 )
-from penguin.constants import get_engine_max_iterations_default
 from penguin.core import PenguinCore
 
 
@@ -513,7 +512,7 @@ class TestPenguinClientTaskMethods:
         client._core.process.assert_called_once_with(
             input_data={"text": "Create a function"},
             context=None,
-            max_iterations=get_engine_max_iterations_default(),
+            max_iterations=None,
         )
 
     @pytest.mark.asyncio

@@ -64,10 +64,11 @@ export function createPenguinPromptSubmitGate(options?: { schedule?: PenguinProm
 export function tryStartPenguinPromptSubmit(input: {
   busy: boolean
   gate: PenguinPromptSubmitGate
+  allowWhileBusy?: boolean
   onTimeout?: () => void
   timeoutMs?: number
 }): PenguinPromptSubmitStart {
-  if (input.busy) {
+  if (input.busy && !input.allowWhileBusy) {
     return {
       ok: false,
       reason: "busy",

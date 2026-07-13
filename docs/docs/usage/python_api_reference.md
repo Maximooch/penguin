@@ -49,7 +49,7 @@ agent = PenguinAgent()
 |--------|-------------|
 | `chat(message: str, *, context: dict | None = None) -> str` | Single turn – returns assistant reply. |
 | `stream(message: str, *, context: dict | None = None) -> Iterator[str]` | Yields chunks of the assistant reply. |
-| `run_task(prompt: str, *, max_iterations: int = 5) -> dict` | Multi-step reasoning/action loop using core.run_mode. |
+| `run_task(prompt: str, *, max_iterations: int \| None = None) -> dict` | Multi-step reasoning/action loop using core.run_mode; a limit is applied only when supplied. |
 | `new_conversation() -> str` | Start fresh conversation, returns session id. |
 | `load_conversation(session_id: str) -> bool` | Load a saved session into memory. |
 
@@ -141,6 +141,35 @@ print(resp["assistant_response"])
 Key async methods you can rely on:
 * `process(input_data, *, streaming=False, stream_callback=None)`
 * `start_run_mode(name, description=None, continuous=False, time_limit=None)`
+* `run_session_goal(session_id, *, max_iterations=None, timeout_seconds=None, directory=None)`
+
+`run_session_goal()` executes an already-persisted active session goal and
+returns its updated goal state plus the RunMode result. It does not create a
+goal. Create and control the durable goal through the session-goal HTTP surface
+or TUI first.
+`directory`, when supplied, is a scope assertion. For a legacy session with no
+stored directory, the first valid explicit directory is durably bound as its
+root; after that it must resolve to the same persisted directory.
+
+```python
+result = await core.run_session_goal(
+    "session_20260709_193237_076f3c0d",
+    max_iterations=8,
+    timeout_seconds=600,
+)
+print(result["status"])
+print(result["goal"]["objective"])
+```
+
+The target must be a saved session with an active goal. When omitted,
+`max_iterations`, `timeout_seconds`, and the goal's cumulative `token_budget`
+remain `None`; Penguin supplies no local default or hard maximum. Positive
+values explicitly supplied by the caller are enforced. Usage is known only
+after a provider response, so the last billed turn can cross an explicitly
+configured threshold before the runtime refuses another turn.
+Missing state, lifecycle conflicts, and validation failures are exposed as
+typed goal exceptions at this low-level surface and as `404`, `409`, and `422`
+through HTTP.
 
 `PenguinCore` primarily handles construction, delegation, and compatibility
 methods. Runtime behavior is owned by modules under `penguin.core_runtime`,

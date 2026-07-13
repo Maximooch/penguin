@@ -17,6 +17,7 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
@@ -130,11 +131,35 @@ class SessionManager:
             
         try:
             with _safe_open(self.index_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                index = json.load(f)
+            if not isinstance(index, dict) or self._session_index_is_stale(
+                index
+            ):
+                return self._rebuild_index()
+            return index
         except Exception as e:
             logger.error(f"Error loading session index: {str(e)}")
             # Create a new index by scanning the directory
             return self._rebuild_index()
+
+    def _session_index_is_stale(self, index: Dict[str, Dict[str, Any]]) -> bool:
+        """Return whether session files contain state newer than the index."""
+
+        try:
+            index_mtime = self.index_path.stat().st_mtime_ns
+            session_paths = [
+                path
+                for path in self.base_path.glob(f"*.{self.format}")
+                if path.name != f"session_index.{self.format}"
+            ]
+            session_ids = {path.stem for path in session_paths}
+            if session_ids != set(index):
+                return True
+            return any(
+                path.stat().st_mtime_ns > index_mtime for path in session_paths
+            )
+        except OSError:
+            return True
     
     def _rebuild_index(self) -> Dict[str, Dict[str, Any]]:
         """Rebuild the session index by scanning session files."""
@@ -210,6 +235,28 @@ class SessionManager:
             value = metadata.get(key)
             if isinstance(value, str) and value.strip():
                 entry[key] = value.strip()
+        goal = metadata.get("_penguin_goal_v1")
+        if isinstance(goal, dict):
+            indexed_goal = deepcopy(goal)
+            indexed_goal["metadata"] = {}
+            last_result = indexed_goal.get("last_result")
+            if isinstance(last_result, dict):
+                indexed_goal["last_result"] = {
+                    key: deepcopy(last_result[key])
+                    for key in (
+                        "status",
+                        "completion_type",
+                        "finish_status",
+                        "iterations",
+                        "execution_time",
+                        "usage",
+                        "action_count",
+                    )
+                    if key in last_result
+                }
+            entry["_penguin_goal_v1"] = indexed_goal
+        else:
+            entry.pop("_penguin_goal_v1", None)
     
     def _auto_save_loop(self) -> None:
         """Background thread that auto-saves modified sessions."""

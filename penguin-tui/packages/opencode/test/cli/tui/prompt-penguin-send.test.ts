@@ -11,15 +11,7 @@ describe("prompt penguin send", () => {
       pending: true,
       pendingSeenBusy: true,
     }
-    const events: Array<{
-      type: string
-      properties: {
-        sessionID: string
-        status: {
-          type: string
-        }
-      }
-    }> = []
+    const events: unknown[] = []
 
     recoverPenguinPromptFailure({
       sessionID: "ses_123",
@@ -52,7 +44,6 @@ describe("prompt penguin send", () => {
     const events: Array<{
       type: string
       properties: {
-        messageID?: string
         sessionID: string
         status: {
           type: string
@@ -61,7 +52,6 @@ describe("prompt penguin send", () => {
     }> = []
 
     completePenguinPromptSuccess({
-      messageID: "msg_123",
       sessionID: "ses_123",
       clear: () => {
         state.pending = false

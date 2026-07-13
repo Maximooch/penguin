@@ -8,6 +8,7 @@
 import asyncio
 import json
 import logging
+import math
 import re
 import time
 from datetime import datetime
@@ -25,9 +26,8 @@ from penguin.tools.image_tools import ReadImageTool
 from penguin.tools.browser_harness_tools import BrowserHarnessScreenshotTool
 from penguin.tools.browser_tools import BrowserScreenshotTool, browser_manager
 from penguin.constants import (
-    DELEGATE_EXPLORE_TASK_MAX_ITERATIONS_CAP,
-    get_engine_max_iterations_default,
     DEFAULT_LARGE_FILE_THRESHOLD_BYTES,
+    DELEGATE_EXPLORE_TASK_MAX_ITERATIONS_CAP,
 )
 import os
 
@@ -2429,7 +2429,7 @@ class ActionExecutor:
         JSON body:
           - task (required): What to explore/analyze
           - directory (optional): Starting directory (default: current)
-          - max_iterations (optional): Max tool rounds (default: 10)
+          - max_iterations (optional): Explicit tool-round limit
 
         Example: <delegate_explore_task>{"task": "Explore this codebase and summarize the architecture"}</delegate_explore_task>
         """
@@ -2450,18 +2450,30 @@ class ActionExecutor:
             return "delegate_explore_task requires 'task'"
 
         start_dir = payload.get("directory", ".")
-        requested_max_iterations = payload.get("max_iterations", None)
-        if requested_max_iterations is None:
-            requested_max_iterations = get_engine_max_iterations_default()
-        try:
-            requested_max_iterations = int(requested_max_iterations)
-        except Exception:
-            requested_max_iterations = get_engine_max_iterations_default()
-
-        max_iterations = min(
-            requested_max_iterations,
-            int(DELEGATE_EXPLORE_TASK_MAX_ITERATIONS_CAP),
-        )
+        requested_max_iterations = payload.get("max_iterations")
+        max_iterations = DELEGATE_EXPLORE_TASK_MAX_ITERATIONS_CAP
+        if requested_max_iterations is not None:
+            if isinstance(requested_max_iterations, bool):
+                return "max_iterations must be a positive integer when provided"
+            if isinstance(requested_max_iterations, float) and (
+                not math.isfinite(requested_max_iterations)
+                or not requested_max_iterations.is_integer()
+            ):
+                return "max_iterations must be a positive integer when provided"
+            try:
+                max_iterations = int(requested_max_iterations)
+            except (TypeError, ValueError, OverflowError):
+                return "max_iterations must be a positive integer when provided"
+            if not isinstance(requested_max_iterations, str) and (
+                max_iterations != requested_max_iterations
+            ):
+                return "max_iterations must be a positive integer when provided"
+            if max_iterations <= 0:
+                return "max_iterations must be a positive integer when provided"
+            max_iterations = min(
+                max_iterations,
+                DELEGATE_EXPLORE_TASK_MAX_ITERATIONS_CAP,
+            )
 
         # Get request-scoped working directory for context
         execution_context = get_current_execution_context()
@@ -2606,9 +2618,16 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
 
             final_content = ""
 
-            # Mini action loop
-            for iteration in range(max_iterations):
-                _logger.info(f"[DELEGATE] Iteration {iteration + 1}/{max_iterations}")
+            # An omitted limit is intentionally unbounded. The parent run owns
+            # cancellation; explicit tool input remains an available limit.
+            iteration = 0
+            while max_iterations is None or iteration < max_iterations:
+                iteration += 1
+                _logger.info(
+                    "[DELEGATE] Iteration %s%s",
+                    iteration,
+                    f"/{max_iterations}" if max_iterations is not None else "",
+                )
 
                 response = await gateway.get_response(messages=messages)
 
@@ -2676,7 +2695,7 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
                     return f"[Haiku Explorer]:\n{content}"
 
             # Max iterations reached
-            return f"[Haiku Explorer] (max iterations reached):\n{final_content}"
+            return f"[Haiku Explorer] (configured max iterations reached):\n{final_content}"
 
         except Exception as e:
             _logger.error(f"delegate_explore_task failed: {e}", exc_info=True)

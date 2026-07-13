@@ -169,7 +169,7 @@ Process a chat message with optional conversation support, multi-modal capabilit
   "context": {"key": "value"},
   "context_files": ["path/to/file1.py", "path/to/file2.py"],
   "streaming": true,
-  "max_iterations": 5000,
+  "max_iterations": 20,
   "image_paths": ["/path/to/image.png"],
   "include_reasoning": false
 }
@@ -184,9 +184,8 @@ Process a chat message with optional conversation support, multi-modal capabilit
 - `context` (optional): Additional context dictionary
 - `context_files` (optional): Files to load as context
 - `streaming` (optional): Accepted for compatibility; REST `/chat/message` returns final payloads (use WebSocket endpoint for token streaming)
-- `max_iterations` (optional): Positive reasoning-iteration budget. The default
-  is the configured `engine.max_iterations_default` (fallback: `5000`) and is
-  shared by Engine, REST chat, and WebSocket chat.
+- `max_iterations` (optional): An explicit reasoning-iteration limit. When
+  omitted, Penguin does not impose a local iteration ceiling.
 - `image_paths` (optional): List of image paths for vision models
 - `include_reasoning` (optional): Include reasoning content in response
 
@@ -304,7 +303,7 @@ const ws = new WebSocket('ws://127.0.0.1:9000/api/v1/chat/stream');
   "session_id": "conv_123",
   "directory": "/absolute/path/to/repo",
   "include_reasoning": true,
-  "max_iterations": 5000,
+  "max_iterations": 20,
   "context_files": ["main.py"],
   "image_paths": ["/path/to/screenshot.png"]
 }
@@ -320,9 +319,10 @@ const ws = new WebSocket('ws://127.0.0.1:9000/api/v1/chat/stream');
   ```json
   {"event": "reasoning", "data": {"token": "Analyzing code structure..."}}
   ```
-- `progress`: Iteration progress updates
+- `progress`: Iteration progress updates. `max_iterations` is `null` when no
+  explicit limit was configured.
   ```json
-  {"event": "progress", "data": {"iteration": 2, "max_iterations": 5000}}
+  {"event": "progress", "data": {"iteration": 2, "max_iterations": 20}}
   ```
 - `complete`: Final response with all results
   ```json

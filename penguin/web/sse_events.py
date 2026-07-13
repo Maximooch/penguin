@@ -10,7 +10,7 @@ import asyncio
 import logging
 import threading
 from collections import deque
-from typing import TYPE_CHECKING, Any, AsyncIterator
+from typing import TYPE_CHECKING, Any, AsyncIterator, Optional
 
 from fastapi import APIRouter, Header, Query
 from fastapi.responses import StreamingResponse
@@ -64,7 +64,6 @@ def get_core_instance() -> PenguinCore:
         raise RuntimeError("Core instance not set - call set_core_instance() first")
     return _core_instance
 
-
 def get_sse_connection_history(
     core: Any | None = None,
 ) -> list[dict[str, str | float | None]]:
@@ -111,19 +110,29 @@ def _record_connection_state(
     )
 
 
+# FastAPI evaluates endpoint annotations at import time on Python 3.9, so these
+# parameters intentionally use typing.Optional rather than PEP 604 unions.
 @router.get("/api/v1/events/sse")
 async def events_sse(
-    session_id: str | None = Query(None, description="Filter to specific session"),
-    conversation_id: str | None = Query(
+    session_id: Optional[str] = Query(  # noqa
+        None, description="Filter to specific session"
+    ),
+    conversation_id: Optional[str] = Query(  # noqa
         None, description="Alias for session_id (API compatibility)"
     ),
-    agent_id: str | None = Query(None, description="Filter to specific agent"),
-    directory: str | None = Query(None, description="Workspace directory"),
-    last_event_id: str | None = Query(
+    agent_id: Optional[str] = Query(  # noqa
+        None, description="Filter to specific agent"
+    ),
+    directory: Optional[str] = Query(  # noqa
+        None, description="Workspace directory"
+    ),
+    last_event_id: Optional[str] = Query(  # noqa
         None,
         description="Replay durable ledger events after this SSE id",
     ),
-    last_event_id_header: str | None = Header(None, alias="Last-Event-ID"),
+    last_event_id_header: Optional[str] = Header(  # noqa
+        None, alias="Last-Event-ID"
+    ),
 ):
     """
     SSE stream of OpenCode-compatible events.

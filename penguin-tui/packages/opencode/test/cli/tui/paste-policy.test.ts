@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test"
+import { classifyPenguinPromptInput } from "../../../src/cli/cmd/tui/component/prompt/penguin-local-command"
 import {
   createPasteDuplicateGuard,
+  createPasteTaskQueue,
+  materializePromptText,
   normalizePastedText,
   removePastedPathReferences,
   shouldOwnPasteEvent,
@@ -10,6 +13,64 @@ import {
 describe("prompt paste policy", () => {
   test("normalizes terminal paste line endings", () => {
     expect(normalizePastedText("one\r\ntwo\rthree")).toBe("one\ntwo\nthree")
+  })
+
+  test("settles a pasted goal before materializing and classifying the submission", async () => {
+    const queue = createPasteTaskQueue()
+    const virtualText = "[Pasted ~3 lines]"
+    let inputText = ""
+    let parts: Array<{ type: string; text?: string }> = []
+    let extmarks: Array<{ id: number; start: number; end: number }> = []
+    let releasePaste!: () => void
+    const pasteReady = new Promise<void>((resolve) => {
+      releasePaste = resolve
+    })
+
+    const pasted = queue.enqueue(async () => {
+      await pasteReady
+      inputText = `${virtualText} `
+      parts = [
+        {
+          type: "text",
+          text: "/goal Ship the copy/paste flow\nwith a full objective\n--replace",
+        },
+      ]
+      extmarks = [{ id: 1, start: 0, end: virtualText.length }]
+    })
+    const classification = queue.drain().then(() =>
+      classifyPenguinPromptInput(
+        materializePromptText({
+          text: inputText,
+          parts,
+          extmarks,
+          extmarkToPartIndex: new Map([[1, 0]]),
+        }),
+      ),
+    )
+
+    releasePaste()
+    await pasted
+
+    expect(await classification).toEqual({
+      kind: "local_command",
+      command: {
+        kind: "goal_set",
+        objective: "Ship the copy/paste flow with a full objective",
+        replace: true,
+        displayCommand: "/goal Ship the copy/paste flow\nwith a full objective\n--replace",
+      },
+    })
+  })
+
+  test("materializes an empty text part by removing its virtual marker", () => {
+    expect(
+      materializePromptText({
+        text: "before [Pasted] after",
+        parts: [{ type: "text", text: "" }],
+        extmarks: [{ id: 1, start: 7, end: 15 }],
+        extmarkToPartIndex: new Map([[1, 0]]),
+      }),
+    ).toBe("before  after")
   })
 
   test("summarizes long or multiline paste unless disabled", () => {

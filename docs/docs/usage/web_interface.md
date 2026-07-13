@@ -106,6 +106,29 @@ RunMode-backed execution semantics are richer than a simple success/fail respons
 
 This page is not yet the full home for RunMode contract details, but it should not imply simpler behavior than the runtime actually has.
 
+### Session Goal Visibility
+
+The TUI's `/goal` command attaches durable state to the current saved session.
+When no session exists yet, the TUI creates one before setting the goal. The
+submitted slash command remains visible as the user turn, and goal execution
+streams assistant, reasoning, and tool parts into that same session transcript.
+
+Goal lifecycle changes are emitted as `session.goal.updated` plus the compatible
+`session.updated` event. The current objective, status, token usage, and elapsed
+time are therefore available after reconnect as well as during the live run.
+Terminal tool-only turns still produce a visible final goal result; clients do
+not have to infer completion from a `finish_task` tool row alone.
+
+`/goal <objective>` and `/goal resume` start RunMode execution without local
+limits unless the user configured them. `/goal pause` prevents another run and
+fences late completion, while
+`/goal clear` removes the durable state. Replacing unfinished state requires
+explicit confirmation or `--replace`. The `/247` slash command is an alias for
+the same controls, not the process-level `--247` continuous mode.
+
+Iteration, wall-clock, and cumulative token limits exist only when explicitly
+configured by the user. Penguin applies no hidden goal-run defaults or maximums.
+
 ### Task / Clarification Surface Truth
 
 Important constraint: browser JavaScript cannot cleanly set arbitrary custom WebSocket headers in the same way as backend clients. That means browser-facing WS auth ergonomics are still a design concern for the future UI rewrite.
@@ -309,6 +332,8 @@ hash/size without writing another artifact.
 ## Known Limitations
 
 - The legacy dashboard/static UI is not the strategic frontend path and should not be treated as a polished product surface.
+- Session goals do not yet resume automatically after process restart or an
+  explicit non-terminal partial result.
 - WebSocket auth is correct, but browser-native auth ergonomics still need a better long-term design.
 - GitHub webhook replay defense is process-local only; multi-instance deployments need shared replay state.
 - Rate limiting and per-user/per-route quotas are still future work.

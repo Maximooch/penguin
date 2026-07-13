@@ -352,7 +352,7 @@ async def test_direct_stream_incomplete_tool_call_releases_pending_state(
 
 
 @pytest.mark.asyncio
-async def test_sdk_stream_stall_returns_timeout_error(
+async def test_sdk_stream_stall_raises_typed_timeout_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
@@ -451,7 +451,7 @@ async def test_sdk_stream_close_deadline_detaches_ignored_cancellation(
 
 
 @pytest.mark.asyncio
-async def test_direct_stream_stall_returns_timeout_error(
+async def test_direct_stream_stall_raises_typed_timeout_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")

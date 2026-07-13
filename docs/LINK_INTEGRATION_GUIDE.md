@@ -62,20 +62,18 @@ class PenguinClient:
         self.conversation_id = data.get("conversation_id") or data.get("id")
         return self.conversation_id
     
-    def send_message(self, text: str, max_iterations: int = 5):
-        """Send a message and get Penguin's response."""
-        payload = {
-            "text": text,
-            "max_iterations": max_iterations
-        }
+    def send_message(self, text: str, max_iterations=None, timeout=None):
+        """Send a message; limits are opt-in rather than client defaults."""
+        payload = {"text": text}
+        if max_iterations is not None:
+            payload["max_iterations"] = max_iterations
         if self.conversation_id:
             payload["conversation_id"] = self.conversation_id
-        
-        resp = requests.post(
-            f"{self.base_url}/api/v1/chat/message",
-            json=payload,
-            timeout=90
-        )
+
+        request = {"json": payload}
+        if timeout is not None:
+            request["timeout"] = timeout
+        resp = requests.post(f"{self.base_url}/api/v1/chat/message", **request)
         return resp.json()
     
     def get_history(self):
@@ -160,8 +158,7 @@ print(f"Total messages: {len(history)}")
 POST /api/v1/chat/message
 {
   "text": "What is the capital of France?",
-  "conversation_id": "session_xyz",
-  "max_iterations": 3
+  "conversation_id": "session_xyz"
 }
 ```
 
@@ -180,8 +177,7 @@ POST /api/v1/chat/message
 ```json
 POST /api/v1/chat/message
 {
-  "text": "What does https://example.com say?",
-  "max_iterations": 5
+  "text": "What does https://example.com say?"
 }
 ```
 

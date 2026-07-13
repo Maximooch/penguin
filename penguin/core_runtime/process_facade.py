@@ -6,7 +6,6 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
-from penguin.config import MAX_TASK_ITERATIONS
 from penguin.utils.log_error import log_error
 
 from . import (
@@ -98,7 +97,7 @@ class ProcessCoreFacade:
         context: dict[str, Any] | None = None,
         conversation_id: str | None = None,
         agent_id: str | None = None,
-        max_iterations: int = MAX_TASK_ITERATIONS,
+        max_iterations: int | None = None,
         context_files: list[str] | None = None,
         streaming: bool | None = None,
         stream_callback: Callable[[str], None] | None = None,

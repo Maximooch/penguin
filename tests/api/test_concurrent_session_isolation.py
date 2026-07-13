@@ -20,6 +20,7 @@ from penguin.system.execution_context import (
     get_current_execution_context,
 )
 from penguin.tools.tool_manager import ToolManager
+from penguin.web import routes as routes_module
 from penguin.web.routes import MessageRequest, handle_chat_message, stream_chat
 
 
@@ -255,6 +256,115 @@ async def test_rest_chat_respects_streaming_flag(tmp_path: Path) -> None:
 
     assert response["response"] == "ok"
     assert seen_kwargs["streaming"] is True
+
+
+@pytest.mark.asyncio
+async def test_rest_chat_without_limit_passes_none_to_core(tmp_path: Path) -> None:
+    """An omitted chat limit must remain unbounded through the HTTP boundary."""
+    repo = tmp_path / "chat_repo_unbounded"
+    repo.mkdir()
+    seen_kwargs: dict[str, Any] = {}
+
+    class _Core:
+        def __init__(self) -> None:
+            self.runtime_config = SimpleNamespace(
+                workspace_root=str(tmp_path),
+                project_root=str(tmp_path),
+                active_root=str(tmp_path),
+            )
+            self._opencode_session_directories: dict[str, str] = {}
+
+        async def process(self, **kwargs: Any) -> dict[str, Any]:
+            seen_kwargs.update(kwargs)
+            return {"assistant_response": "ok", "action_results": []}
+
+    response = await handle_chat_message(
+        MessageRequest(
+            text="continue until the task is complete",
+            session_id="session_unbounded",
+            directory=str(repo),
+            streaming=False,
+        ),
+        core=cast(Any, _Core()),
+    )
+
+    assert response["response"] == "ok"
+    assert seen_kwargs["max_iterations"] is None
+
+
+@pytest.mark.asyncio
+async def test_rest_chat_routes_pasted_goal_through_goal_lifecycle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pasted multiline goal must not fall through to ordinary chat."""
+    repo = tmp_path / "chat_repo_goal_fallback"
+    repo.mkdir()
+    updates: list[tuple[str, Any]] = []
+    runs: list[tuple[str, Any]] = []
+
+    async def update_goal(core: Any, session_id: str, payload: Any) -> dict[str, Any]:
+        del core
+        updates.append((session_id, payload))
+        return {"id": "goal_1", "objective": payload.objective, "status": "active"}
+
+    async def run_goal(core: Any, session_id: str, payload: Any) -> dict[str, Any]:
+        del core
+        runs.append((session_id, payload))
+        return {
+            "assistant_response": "Goal complete.",
+            "action_results": [],
+            "goal": {"id": "goal_1", "status": "complete"},
+            "iterations": 4,
+            "status": "complete",
+            "usage": {"total_tokens": 12},
+        }
+
+    monkeypatch.setattr(routes_module.session_goal_service, "update_goal", update_goal)
+    monkeypatch.setattr(routes_module.session_goal_service, "run_goal", run_goal)
+
+    class _Core:
+        def __init__(self) -> None:
+            self.runtime_config = SimpleNamespace(
+                workspace_root=str(tmp_path),
+                project_root=str(tmp_path),
+                active_root=str(tmp_path),
+            )
+            self._opencode_session_directories: dict[str, str] = {}
+            self.process_calls = 0
+
+        async def process(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            self.process_calls += 1
+            return {"assistant_response": "ordinary chat", "action_results": []}
+
+    core = _Core()
+    pasted = "/goal \nShip the durable goal route\n--replace"
+    response = await handle_chat_message(
+        MessageRequest(
+            text=pasted,
+            session_id="session_goal_fallback",
+            directory=str(repo),
+            streaming=True,
+            client_message_id="msg_goal_fallback",
+            client_part_id="part_goal_fallback",
+        ),
+        core=cast(Any, core),
+    )
+
+    assert core.process_calls == 0
+    assert response["status"] == "complete"
+    assert response["response"] == "Goal complete."
+    assert updates[0][0] == "session_goal_fallback"
+    assert updates[0][1].objective == "Ship the durable goal route"
+    assert updates[0][1].replace is True
+    assert updates[0][1].display_command == pasted
+    assert updates[0][1].client_message_id == "msg_goal_fallback"
+    assert updates[0][1].client_part_id == "part_goal_fallback"
+    assert runs[0][0] == "session_goal_fallback"
+    assert runs[0][1].max_iterations is None
+    assert runs[0][1].timeout_seconds is None
+    assert runs[0][1].directory == str(repo.resolve())
 
 
 @pytest.mark.asyncio

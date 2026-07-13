@@ -1,15 +1,20 @@
-type Idle = {
-  type: "session.status"
-  properties: {
-    messageID?: string
-    sessionID: string
-    status: {
-      type: "idle"
-    }
-  }
-}
+import type {
+  EventMessagePartUpdated,
+  EventMessageRemoved,
+  EventMessageUpdated,
+  EventSessionStatus,
+  TextPart,
+  UserMessage,
+} from "@opencode-ai/sdk/v2"
 
-type Emit = (type: string, event: any) => void
+type Idle = EventSessionStatus
+type Removed = EventMessageRemoved
+type PenguinOptimisticEvent =
+  | EventMessagePartUpdated
+  | EventMessageUpdated
+  | EventSessionStatus
+
+export type PenguinOptimisticEmitter = (event: PenguinOptimisticEvent) => void
 
 type PenguinPromptPart = {
   type: string
@@ -39,15 +44,15 @@ function assertPenguinSendableModel(model: PenguinModel) {
 }
 
 export function recoverPenguinPromptFailure(input: {
+  messageID?: string
   sessionID: string
   clear: () => void
-  emit: (type: Idle["type"], event: Idle) => void
+  emit: (type: Idle["type"] | Removed["type"], event: Idle | Removed) => void
 }) {
   input.clear()
 }
 
 export function completePenguinPromptSuccess(input: {
-  messageID: string
   sessionID: string
   clear: () => void
   emit: (type: Idle["type"], event: Idle) => void
@@ -109,13 +114,13 @@ export async function createPenguinSession(input: {
   throw new Error(`Session create returned empty id (${details})`)
 }
 
-export function shouldStripPenguinVirtualPart(part: PenguinPromptPart): boolean {
+export function shouldStripPenguinVirtualPart(part: { type: string; mime?: string }): boolean {
   return part.type === "file" && typeof part.mime === "string" && part.mime.startsWith("image/")
 }
 
 export function emitPenguinOptimisticPrompt(input: {
   agentName: string
-  emit: Emit
+  emit: PenguinOptimisticEmitter
   messageID: string
   model: PenguinModel
   now?: number
@@ -136,7 +141,7 @@ export function emitPenguinOptimisticPrompt(input: {
       providerID: input.model.providerID,
       modelID: input.model.modelID,
     },
-  }
+  } satisfies UserMessage
   const part = {
     id: input.partID,
     sessionID: input.sessionID,
@@ -147,23 +152,28 @@ export function emitPenguinOptimisticPrompt(input: {
       start: now,
       end: now,
     },
-  }
+  } satisfies TextPart
 
-  input.emit("message.updated", {
+  const messageUpdated = {
     type: "message.updated",
     properties: { info: user },
-  })
-  input.emit("message.part.updated", {
+  } satisfies EventMessageUpdated
+  input.emit(messageUpdated)
+
+  const messagePartUpdated = {
     type: "message.part.updated",
     properties: { part, delta: input.text },
-  })
-  input.emit("session.status", {
+  } satisfies EventMessagePartUpdated
+  input.emit(messagePartUpdated)
+
+  const sessionStatus = {
     type: "session.status",
     properties: {
       sessionID: input.sessionID,
       status: { type: "busy" as const },
     },
-  })
+  } satisfies EventSessionStatus
+  input.emit(sessionStatus)
 
   return { user, part }
 }
@@ -594,6 +604,7 @@ export async function sendPenguinPrompt(input: {
   baseUrl: string | URL
   directory: string
   fetch: typeof fetch
+  clientPartID?: string
   messageID: string
   model: PenguinModel
   parts: PenguinPromptPart[]
@@ -632,6 +643,7 @@ export async function sendPenguinPrompt(input: {
         variant: input.variant,
         service_tier: input.serviceTier,
         client_message_id: input.messageID,
+        client_part_id: input.clientPartID,
         parts: input.parts,
       }),
       signal: deadline.controller.signal,

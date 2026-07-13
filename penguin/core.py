@@ -131,6 +131,7 @@ from .core_runtime import (
     process_facade as core_process_facade,
     prompt_facade as core_prompt_facade,
     runmode_facade as core_runmode_facade,
+    session_goal_facade as core_session_goal_facade,
     startup as core_startup,
     state_facade as core_state_facade,
     streaming_facade as core_streaming_facade,
@@ -172,6 +173,7 @@ class PenguinCore(
     core_process_facade.ProcessCoreFacade,
     core_prompt_facade.PromptCoreFacade,
     core_runmode_facade.RunModeCoreFacade,
+    core_session_goal_facade.SessionGoalCoreFacade,
     core_state_facade.StateCoreFacade,
     core_streaming_facade.StreamingCoreFacade,
     core_token_usage_facade.TokenUsageCoreFacade,
@@ -253,7 +255,7 @@ class PenguinCore(
         """Initialize PenguinCore with required components."""
         from penguin.cli.events import EventBus, EventType
         from penguin.config import WORKSPACE_PATH, RuntimeConfig
-        from penguin.engine import Engine, EngineSettings, TokenBudgetStop
+        from penguin.engine import Engine, EngineSettings
         from penguin.system.checkpoint_manager import CheckpointConfig
         from penguin.tui_adapter import PartEventAdapter
 
@@ -284,6 +286,5 @@ class PenguinCore(
             default_max_messages_per_session=DEFAULT_MAX_MESSAGES_PER_SESSION,
             engine_factory=Engine,
             engine_settings_factory=EngineSettings,
-            token_budget_stop_factory=TokenBudgetStop,
             logger=logger,
         )

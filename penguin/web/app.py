@@ -21,7 +21,6 @@ from penguin.llm.model_config import ModelConfig
 from penguin.system_prompt import SYSTEM_PROMPT
 from penguin.tools import ToolManager
 from penguin.utils.log_error import log_error
-from penguin.constants import get_engine_max_iterations_default
 from penguin.web.services.system_status import start_vcs_watcher, stop_vcs_watcher
 from penguin.web.services.provider_credentials import (
     apply_credentials_to_environment,
@@ -442,7 +441,7 @@ class PenguinAPI:
         image_path: Optional[str] = None,
         tools_enabled: bool = True,
         streaming: bool = False,
-        max_iterations: int = None,
+        max_iterations: Optional[int] = None,
         on_chunk: Optional[Callable[[str, str], Awaitable[None]]] = None,
         include_reasoning: bool = False,
     ) -> Dict[str, Any]:
@@ -457,13 +456,11 @@ class PenguinAPI:
             image_path: Optional path to an image file for vision models
             tools_enabled: Whether to enable tool use (currently respected by Engine)
             streaming: Whether to use streaming for responses
-            max_iterations: The maximum number of conversational turns (default from config).
+            max_iterations: Optional explicit conversational turn limit.
 
         Returns:
             Dictionary containing the response and any action results
         """
-        if max_iterations is None:
-            max_iterations = get_engine_max_iterations_default()
         try:
             if not self.core.engine:
                 return {
@@ -529,7 +526,7 @@ class PenguinAPI:
         message: str,
         conversation_id: Optional[str] = None,
         image_path: Optional[str] = None,
-        max_iterations: int = None,
+        max_iterations: Optional[int] = None,
     ) -> AsyncGenerator[tuple[str, str], None]:
         """Stream chat responses as (message_type, chunk) tuples."""
 
@@ -537,9 +534,6 @@ class PenguinAPI:
 
         async def _on_chunk(chunk: str, message_type: str = "assistant") -> None:
             await queue.put((message_type, chunk))
-
-        if max_iterations is None:
-            max_iterations = get_engine_max_iterations_default()
 
         async def _runner() -> None:
             try:
@@ -612,11 +606,13 @@ class PenguinAPI:
             # Switch to the conversation
             await self.core.conversation_manager.switch_conversation(conversation_id)
 
-            # Get the formatted messages
-            messages = (
-                self.core.conversation_manager.conversation.get_formatted_messages()
-            )
-            return messages
+            # History returned to a caller is human-facing; model formatting may
+            # include private runtime prompts and remains internal.
+            conversation = self.core.conversation_manager.conversation
+            get_human_history = getattr(conversation, "get_human_history", None)
+            if callable(get_human_history):
+                return get_human_history()
+            return conversation.get_history()
         except Exception as e:
             logger.error(f"Error getting conversation history: {str(e)}")
             raise
@@ -635,7 +631,7 @@ class PenguinAPI:
         try:
             run_mode = RunMode(
                 core=self.core,
-                max_iterations=max_iterations or get_engine_max_iterations_default(),
+                max_iterations=max_iterations,
             )
             return await run_mode.start(
                 name=task_description,

@@ -20,6 +20,9 @@ async def test_run_task_delegates_to_iteration_loop_and_preserves_task_metadata(
         action_executor=SimpleNamespace(),
     )
     engine.default_agent_id = "default"
+    assert engine.stop_conditions == []
+    assert engine.settings.token_budget_stop_enabled is False
+    assert engine.settings.wall_clock_stop_seconds is None
     engine._resolve_agent = AsyncMock(return_value=("default", None))
     cm = SimpleNamespace(
         conversation=SimpleNamespace(prepare_conversation=lambda *a, **k: None)
@@ -30,6 +33,7 @@ async def test_run_task_delegates_to_iteration_loop_and_preserves_task_metadata(
             "assistant_response": "done",
             "iterations": 2,
             "status": "pending_review",
+            "finish_status": "blocked",
             "action_results": [{"action": "finish_task", "status": "completed"}],
             "usage": {"total_tokens": 12},
             "execution_time": 0.5,
@@ -58,9 +62,10 @@ async def test_run_task_delegates_to_iteration_loop_and_preserves_task_metadata(
     assert config.task_metadata["name"] == "Important Task"
     assert config.task_metadata["context"] == {"project_id": "p1"}
     assert config.task_metadata["prompt"] == "Do the thing"
-    assert max_iters == engine.settings.max_iterations_default
+    assert max_iters is None
 
     assert result["status"] == "pending_review"
+    assert result["finish_status"] == "blocked"
     assert result["task"]["id"] == "task-123"
     assert result["task"]["name"] == "Important Task"
 
@@ -228,3 +233,38 @@ async def test_shared_loop_stops_after_native_tool_history_persistence_failure()
     assert result["status"] == "native_tool_history_error"
     assert result["recoverable"] is False
     assert result["error"]["code"] == "NATIVE_TOOL_HISTORY_PERSISTENCE_FAILED"
+
+
+@pytest.mark.asyncio
+async def test_run_response_without_limit_runs_until_natural_completion():
+    """An unconfigured conversational run must not require an iteration ceiling."""
+
+    engine = Engine(
+        settings=EngineSettings(),
+        conversation_manager=SimpleNamespace(),
+        api_client=SimpleNamespace(),
+        tool_manager=SimpleNamespace(),
+        action_executor=SimpleNamespace(),
+    )
+    engine.default_agent_id = "default"
+    engine._resolve_agent = AsyncMock(return_value=("default", None))
+    cm = SimpleNamespace(
+        conversation=SimpleNamespace(prepare_conversation=lambda *args, **kwargs: None),
+        core=None,
+    )
+    engine._resolve_components = MagicMock(return_value=(cm, None, None, None))
+    engine._check_stop = AsyncMock(return_value=False)
+    engine._llm_step = AsyncMock(
+        return_value={
+            "assistant_response": "done",
+            "action_results": [],
+            "usage": {"total_tokens": 3},
+        }
+    )
+    engine._save_conversation = AsyncMock()
+
+    result = await engine.run_response("Finish naturally")
+
+    assert result["status"] == "completed"
+    assert result["iterations"] == 1
+    assert result["assistant_response"] == "done"

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from penguin.system.conversation import is_human_visible_message
+
 __all__ = [
     "ConversationLoadResult",
     "create_conversation",
@@ -152,6 +154,7 @@ def session_payload(session: Any) -> dict[str, Any]:
                 "metadata": message.metadata,
             }
             for message in session.messages
+            if is_human_visible_message(message)
         ],
         "created_at": session.created_at,
         "last_active": session.last_active,

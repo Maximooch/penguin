@@ -36,7 +36,7 @@ async def test_openrouter_stream_watchdog_times_out_stalled_chunk() -> None:
     gateway = _gateway()
     started_at = asyncio.get_running_loop().time()
 
-    with pytest.raises(TimeoutError):
+    with pytest.raises((asyncio.TimeoutError, TimeoutError)):
         await gateway._next_stream_item(
             DelayedAsyncIterator(["chunk"], delay_seconds=0.05),
             wait_timeout=0.001,
@@ -51,7 +51,7 @@ async def test_openrouter_stream_watchdog_times_out_total_budget() -> None:
     gateway = _gateway()
     started_at = asyncio.get_running_loop().time() - 10.0
 
-    with pytest.raises(TimeoutError, match="total timeout"):
+    with pytest.raises((asyncio.TimeoutError, TimeoutError), match="total timeout"):
         await gateway._next_stream_item(
             DelayedAsyncIterator(["chunk"]),
             wait_timeout=1.0,
@@ -77,6 +77,22 @@ async def test_openrouter_stream_watchdog_allows_active_chunk() -> None:
     assert chunk == "chunk"
 
 
+@pytest.mark.asyncio
+async def test_openrouter_stream_watchdog_is_unbounded_without_configuration() -> None:
+    gateway = _gateway()
+    started_at = asyncio.get_running_loop().time()
+
+    chunk = await gateway._next_stream_item(
+        DelayedAsyncIterator(["chunk"], delay_seconds=0.01),
+        wait_timeout=None,
+        total_timeout=None,
+        started_at=started_at,
+        phase="test stream",
+    )
+
+    assert chunk == "chunk"
+
+
 def test_openrouter_stream_watchdog_reads_provider_timeout_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -89,13 +105,38 @@ def test_openrouter_stream_watchdog_reads_provider_timeout_env(
     assert gateway._stream_total_timeout_seconds() == 2.5
 
 
-def test_openrouter_stream_watchdog_rejects_invalid_timeout_env(
+def test_openrouter_stream_watchdog_falls_back_for_invalid_timeout_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     gateway = _gateway()
 
     monkeypatch.setenv("PENGUIN_OPENROUTER_STREAM_CHUNK_TIMEOUT_SECONDS", "-1")
     monkeypatch.setenv("PENGUIN_OPENROUTER_STREAM_TOTAL_TIMEOUT_SECONDS", "bad")
+
+    assert gateway._stream_chunk_timeout_seconds() == 75.0
+    assert gateway._stream_total_timeout_seconds() == 300.0
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_openrouter_stream_watchdog_falls_back_for_non_finite_timeout_env(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    """Configured watchdog values must be finite before reaching wait_for."""
+
+    gateway = _gateway()
+    monkeypatch.setenv("PENGUIN_OPENROUTER_STREAM_CHUNK_TIMEOUT_SECONDS", value)
+
+    assert gateway._stream_chunk_timeout_seconds() == 75.0
+
+
+def test_openrouter_stream_watchdog_has_bounded_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gateway = _gateway()
+
+    monkeypatch.delenv("PENGUIN_OPENROUTER_STREAM_CHUNK_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("PENGUIN_OPENROUTER_STREAM_TOTAL_TIMEOUT_SECONDS", raising=False)
 
     assert gateway._stream_chunk_timeout_seconds() == 75.0
     assert gateway._stream_total_timeout_seconds() == 300.0

@@ -29,6 +29,7 @@ import { useDialog } from "@tui/ui/dialog"
 import { DialogProvider as DialogProviderConnect } from "../dialog-provider"
 import { DialogSettings } from "../dialog-settings"
 import { DialogAlert } from "../../ui/dialog-alert"
+import { DialogConfirm } from "../../ui/dialog-confirm"
 import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
 import { useTextareaKeybindings } from "../textarea-keybindings"
@@ -53,18 +54,23 @@ import {
   sendPenguinPrompt,
   sendPenguinContinuation,
   shouldStripPenguinVirtualPart,
+  type PenguinOptimisticEmitter,
   type PenguinPromptTerminal,
 } from "./penguin-send"
 import { parsePenguinLocalCommand } from "./penguin-local-command"
 import {
+  emitPenguinOptimisticGoal,
   executePenguinHttpLocalCommand,
   isPenguinHttpLocalCommand,
   penguinHttpLocalCommandNeedsSession,
+  shouldEmitPenguinOptimisticGoal,
 } from "./penguin-local-command-runtime"
 import { createPenguinPromptSubmitGate, tryStartPenguinPromptSubmit } from "./penguin-submit-gate"
 import { mountPenguinTerminalHydration } from "./penguin-terminal-hydration"
 import {
   createPasteDuplicateGuard,
+  createPasteTaskQueue,
+  materializePromptText,
   normalizePastedText,
   removePastedPathReferences,
   shouldOwnPasteEvent,
@@ -114,6 +120,19 @@ export function Prompt(props: PromptProps) {
   const { theme, syntax } = useTheme()
   const kv = useKV()
   const pasteDuplicateGuard = createPasteDuplicateGuard()
+  const pasteTaskQueue = createPasteTaskQueue()
+  const emitPenguinOptimisticEvent: PenguinOptimisticEmitter = (event) => {
+    switch (event.type) {
+      case "message.updated":
+        sdk.event.emit("message.updated", event)
+        return
+      case "message.part.updated":
+        sdk.event.emit("message.part.updated", event)
+        return
+      case "session.status":
+        sdk.event.emit("session.status", event)
+    }
+  }
   const activeSessionID = createMemo(() => props.sessionID ?? sdk.sessionID ?? "")
   const status = createMemo(() => sync.data.session_status?.[activeSessionID()] ?? { type: "idle" })
   const model = createMemo(() => {
@@ -139,6 +158,7 @@ export function Prompt(props: PromptProps) {
     }
   })
   const submitGate = createPenguinPromptSubmitGate()
+  const controlSubmitGate = createPenguinPromptSubmitGate()
   let activeSubmit:
     | {
         controller: AbortController
@@ -509,7 +529,7 @@ export function Prompt(props: PromptProps) {
     }
 
     const terminalAction = getPenguinPromptContinuation(store.terminal)
-
+    // Why are these hard coded into index.tsx? need to move somewhere else
     return [
       {
         title: "Clear prompt",
@@ -1128,8 +1148,25 @@ export function Prompt(props: PromptProps) {
   async function submit() {
     if (props.disabled) return
     if (autocomplete?.visible) return
-    if (!store.prompt.input) return
-    const trimmed = store.prompt.input.trim()
+    await pasteTaskQueue.drain()
+    if (input.isDestroyed) return
+
+    const submittedPrompt: PromptInfo = {
+      input: input.plainText,
+      parts: [...store.prompt.parts],
+    }
+    if (!submittedPrompt.input) return
+
+    const inputText = materializePromptText({
+      text: submittedPrompt.input,
+      parts: submittedPrompt.parts,
+      extmarks: input.extmarks
+        .getAllForTypeId(promptPartTypeId)
+        .map(({ id, start, end }) => ({ id, start, end })),
+      extmarkToPartIndex: new Map(store.extmarkToPartIndex),
+      shouldStripVirtualPart: sdk.penguin ? shouldStripPenguinVirtualPart : undefined,
+    })
+    const trimmed = inputText.trim()
     if (trimmed === "exit" || trimmed === "quit" || trimmed === ":q") {
       exit()
       return
@@ -1162,7 +1199,7 @@ export function Prompt(props: PromptProps) {
     }
     const clearPromptState = (options?: { keepDialog?: boolean }) => {
       history.append({
-        ...store.prompt,
+        ...submittedPrompt,
         mode: currentMode,
       })
       if (!input.isDestroyed) {
@@ -1202,11 +1239,14 @@ export function Prompt(props: PromptProps) {
       return true
     }
     if (sdk.penguin && handleFastCommand()) return
+    const localCommand = sdk.penguin ? parsePenguinLocalCommand(inputText) : null
+    const allowWhileBusy = localCommand?.kind === "goal_pause" || localCommand?.kind === "goal_status"
     const submitController = sdk.penguin ? new AbortController() : undefined
     const submitStart = sdk.penguin
       ? tryStartPenguinPromptSubmit({
           busy: busy(),
-          gate: submitGate,
+          gate: allowWhileBusy ? controlSubmitGate : submitGate,
+          allowWhileBusy,
           onTimeout: () => {
             if (!submitController || activeSubmit?.controller !== submitController) return
             cancelActiveSubmit(new DOMException("Penguin prompt deadline exceeded", "TimeoutError"))
@@ -1254,7 +1294,6 @@ export function Prompt(props: PromptProps) {
       releaseSubmit?.()
     }
     let releaseInFinally = true
-    const localCommand = sdk.penguin ? parsePenguinLocalCommand(store.prompt.input) : null
     const initialDirectory = getActiveDirectory(props.sessionID ?? sdk.sessionID)
     if (submitController && activeSubmit?.controller === submitController) activeSubmit.directory = initialDirectory
     try {
@@ -1311,11 +1350,35 @@ export function Prompt(props: PromptProps) {
             kv.set("thinking_visibility", next)
             toast.show({ variant: "success", message: `Thinking ${next ? "shown" : "hidden"}` })
           } else if (isPenguinHttpLocalCommand(localCommand)) {
+            const goalPromptIDs =
+              shouldEmitPenguinOptimisticGoal(localCommand) && commandSessionID
+                ? { messageID: gen.next("msg"), partID: gen.next("part") }
+                : undefined
+            const clientMessageID =
+              goalPromptIDs && shouldEmitPenguinOptimisticGoal(localCommand) && commandSessionID
+                ? emitPenguinOptimisticGoal({
+                    command: localCommand,
+                    agentName: agent.name,
+                    emit: emitPenguinOptimisticEvent,
+                    messageID: goalPromptIDs.messageID,
+                    model: selectedModel,
+                    partID: goalPromptIDs.partID,
+                    sessionID: commandSessionID,
+                  })
+                : undefined
             const runCommand = () =>
               executePenguinHttpLocalCommand({
                 command: localCommand,
                 fetch: sdk.fetch,
                 baseUrl: sdk.url,
+                clientMessageID,
+                clientPartID: goalPromptIDs?.partID,
+                confirmGoalReplace: (objective) =>
+                  DialogConfirm.show(
+                    dialog,
+                    "Replace Session Goal?",
+                    `Replace the unfinished session goal with “${objective}”?`,
+                  ),
                 directory: initialDirectory,
                 sessionID: commandSessionID,
               })
@@ -1333,8 +1396,34 @@ export function Prompt(props: PromptProps) {
               }
               releaseInFinally = false
               void runCommand()
-                .then((result) => toast.show(result))
+                .then((result) => {
+                  if (clientMessageID && commandSessionID) {
+                    if (result.cancelled) {
+                      recoverPenguinPromptFailure({
+                        messageID: clientMessageID,
+                        sessionID: commandSessionID,
+                        clear: () => undefined,
+                        emit: sdk.event.emit,
+                      })
+                    } else {
+                      completePenguinPromptSuccess({
+                        sessionID: commandSessionID,
+                        clear: () => undefined,
+                        emit: sdk.event.emit,
+                      })
+                    }
+                  }
+                  toast.show(result)
+                })
                 .catch((error) => {
+                  if (clientMessageID && commandSessionID) {
+                    recoverPenguinPromptFailure({
+                      messageID: clientMessageID,
+                      sessionID: commandSessionID,
+                      clear: () => undefined,
+                      emit: sdk.event.emit,
+                    })
+                  }
                   toast.show({ variant: "error", message: error instanceof Error ? error.message : String(error) })
                 })
                 .finally(() => {
@@ -1371,34 +1460,11 @@ export function Prompt(props: PromptProps) {
         process.cwd()
       if (submitController && activeSubmit?.controller === submitController) activeSubmit.directory = directory
       const messageID = sdk.penguin ? gen.next("msg") : Identifier.ascending("message")
-      let inputText = store.prompt.input
-
-      // Expand pasted text inline before submitting
-      const allExtmarks = input.extmarks.getAllForTypeId(promptPartTypeId)
-      const sortedExtmarks = allExtmarks.sort((a: { start: number }, b: { start: number }) => b.start - a.start)
-
-      for (const extmark of sortedExtmarks) {
-        const partIndex = store.extmarkToPartIndex.get(extmark.id)
-        if (partIndex !== undefined) {
-          const part = store.prompt.parts[partIndex]
-          if (!part) continue
-          const before = inputText.slice(0, extmark.start)
-          const after = inputText.slice(extmark.end)
-          if (part.type === "text" && part.text) {
-            inputText = before + part.text + after
-            continue
-          }
-          const stripVirtualPart = sdk.penguin && shouldStripPenguinVirtualPart(part)
-          if (stripVirtualPart) {
-            inputText = before + after
-          }
-        }
-      }
 
       // Filter out text parts (pasted content) since they're now expanded inline.
       // Add structured file parts for manually typed @file references so the
       // backend sees the same attachment shape as autocomplete-selected files.
-      const selectedParts = store.prompt.parts.filter((part) => part.type !== "text")
+      const selectedParts = submittedPrompt.parts.filter((part) => part.type !== "text")
       const inlineFileParts = inlineFileReferenceParts({
         text: inputText,
         directory,
@@ -1407,17 +1473,18 @@ export function Prompt(props: PromptProps) {
       const nonTextParts = [...selectedParts, ...inlineFileParts]
 
       if (sdk.penguin) {
+        const clientPartID = gen.next("part")
         emitPenguinOptimisticPrompt({
           agentName: agent.name,
-          emit: (type, event) => sdk.event.emit(type as any, event as any),
+          emit: emitPenguinOptimisticEvent,
           messageID,
           model: selectedModel,
-          partID: gen.next("part"),
+          partID: clientPartID,
           sessionID,
           text: inputText,
         })
         history.append({
-          ...store.prompt,
+          ...submittedPrompt,
           mode: currentMode,
         })
         if (!input.isDestroyed) {
@@ -1452,6 +1519,7 @@ export function Prompt(props: PromptProps) {
         setStore("runStartedAt", Date.now())
         const recover = () => {
           recoverPenguinPromptFailure({
+            messageID,
             sessionID,
             clear: () => {
               setStore("pending", false)
@@ -1474,6 +1542,7 @@ export function Prompt(props: PromptProps) {
           variant,
           serviceTier,
           messageID,
+          clientPartID,
           parts: nonTextParts,
           signal: submitController?.signal,
         })
@@ -1489,7 +1558,6 @@ export function Prompt(props: PromptProps) {
               if (terminal.completed) {
                 setStore("terminal", undefined)
                 completePenguinPromptSuccess({
-                  messageID,
                   sessionID,
                   clear,
                   emit: sdk.event.emit,
@@ -1704,6 +1772,133 @@ export function Prompt(props: PromptProps) {
     return
   }
 
+  async function processPastedText(
+    normalizedText: string,
+    pasteInput: TextareaRenderable,
+  ) {
+    const isPasteInputActive = () => input === pasteInput && !pasteInput.isDestroyed
+    if (!isPasteInputActive()) return
+
+    const pastedContent = normalizedText.trim()
+    if (!pastedContent) {
+      command.trigger("prompt.paste")
+      return
+    }
+
+    // Trim only leading/trailing apostrophes from pasted file paths.
+    const filepath = pastedContent.replace(/^'+|'+$/g, "").replace(/\\ /g, " ")
+    const matches = normalizedText.match(/(?:\/|[A-Za-z]:\\)[^\n\r]*?\.(?:png|jpg|jpeg|gif|webp|bmp|svg)/gi)
+    const rawPaths = (matches ?? [])
+      .map((item) => item.replace(/^'+|'+$/g, "").trim())
+      .filter((item, index, all) => !!item && all.indexOf(item) === index)
+    const paths = (matches ?? [])
+      .map((item) =>
+        item
+          .replace(/^'+|'+$/g, "")
+          .replace(/\\ /g, " ")
+          .trim(),
+      )
+      .filter((item, index, all) => !!item && all.indexOf(item) === index)
+    const candidates = [filepath, ...rawPaths, ...paths]
+      .map((item) =>
+        item
+          .replace(/^'+|'+$/g, "")
+          .replace(/\\ /g, " ")
+          .trim(),
+      )
+      .filter((item, index, all) => !!item && all.indexOf(item) === index)
+
+    const pathLike =
+      candidates.length > 1 ||
+      filepath.startsWith("/") ||
+      filepath.startsWith("./") ||
+      filepath.startsWith("../") ||
+      filepath.startsWith("~/") ||
+      filepath.startsWith("file://") ||
+      /^[A-Za-z]:[\\/]/.test(filepath)
+
+    const cleanedTextAroundPath = (entry: string, local: string) => {
+      return removePastedPathReferences(normalizedText, [entry, local, filepath, ...rawPaths, ...paths])
+    }
+
+    for (const entry of candidates) {
+      const local = entry.startsWith("file://")
+        ? iife(() => {
+            try {
+              return decodeURIComponent(new URL(entry).pathname)
+            } catch {
+              return entry.replace(/^file:\/\//, "")
+            }
+          })
+        : entry
+      const isUrl = /^(https?):\/\//.test(local)
+      if (isUrl) continue
+      try {
+        const file = Bun.file(local)
+        const exists = await file.exists().catch(() => false)
+        if (!isPasteInputActive()) return
+        if (!exists) continue
+
+        // Handle SVG as raw text content, not as base64 image.
+        if (file.type === "image/svg+xml") {
+          const content = await file.text().catch(() => {})
+          if (!isPasteInputActive()) return
+          if (content) {
+            const cleaned = cleanedTextAroundPath(entry, local)
+            if (cleaned) {
+              input.insertText(`${cleaned} `)
+            }
+            pasteText(content, `[SVG: ${file.name ?? "image"}]`)
+            return
+          }
+        }
+        if (file.type.startsWith("image/")) {
+          const content = await file
+            .arrayBuffer()
+            .then((buffer) => Buffer.from(buffer).toString("base64"))
+            .catch(() => {})
+          if (!isPasteInputActive()) return
+          if (content) {
+            const cleaned = cleanedTextAroundPath(entry, local)
+            if (cleaned) {
+              input.insertText(`${cleaned} `)
+            }
+            await pasteImage({
+              filename: file.name,
+              mime: file.type,
+              content,
+            })
+            return
+          }
+        }
+      } catch {}
+    }
+
+    if (pathLike) {
+      // No valid image detected from a path-like paste; preserve original text.
+      if (!isPasteInputActive()) return
+      input.insertText(normalizedText)
+      return
+    }
+
+    if (shouldSummarizePaste(pastedContent, sync.data.config.experimental?.disable_paste_summary)) {
+      const lineCount = (pastedContent.match(/\n/g)?.length ?? 0) + 1
+      if (!isPasteInputActive()) return
+      pasteText(pastedContent, `[Pasted ~${lineCount} lines]`)
+      return
+    }
+
+    if (!isPasteInputActive()) return
+    input.insertText(normalizedText)
+
+    setTimeout(() => {
+      // setTimeout is a workaround and needs to be addressed properly
+      if (!input || input.isDestroyed) return
+      input.getLayoutNode().markDirty()
+      renderer.requestRender()
+    }, 0)
+  }
+
   const highlight = createMemo(() => {
     if (keybind.leader) return theme.border
     if (store.mode === "shell") return theme.primary
@@ -1914,7 +2109,7 @@ export function Prompt(props: PromptProps) {
                 }
               }}
               onSubmit={submit}
-              onPaste={async (event: PasteEvent) => {
+              onPaste={(event: PasteEvent) => {
                 if (props.disabled) {
                   event.preventDefault()
                   return
@@ -1926,127 +2121,19 @@ export function Prompt(props: PromptProps) {
                   return
                 }
 
-                if (shouldOwnPasteEvent(normalizedText)) {
-                  // OpenTUI does not await async onPaste handlers before applying
-                  // its default textarea paste. Claim the event before any file
-                  // probing awaits, then insert the intended text/content below.
-                  event.preventDefault()
-                }
+                if (!shouldOwnPasteEvent(normalizedText)) return
 
-                const pastedContent = normalizedText.trim()
-                if (!pastedContent) {
-                  command.trigger("prompt.paste")
-                  return
-                }
-
-                // trim ' from the beginning and end of the pasted content. just
-                // ' and nothing else
-                const filepath = pastedContent.replace(/^'+|'+$/g, "").replace(/\\ /g, " ")
-                const matches = normalizedText.match(/(?:\/|[A-Za-z]:\\)[^\n\r]*?\.(?:png|jpg|jpeg|gif|webp|bmp|svg)/gi)
-                const rawPaths = (matches ?? [])
-                  .map((item) => item.replace(/^'+|'+$/g, "").trim())
-                  .filter((item, index, all) => !!item && all.indexOf(item) === index)
-                const paths = (matches ?? [])
-                  .map((item) =>
-                    item
-                      .replace(/^'+|'+$/g, "")
-                      .replace(/\\ /g, " ")
-                      .trim(),
-                  )
-                  .filter((item, index, all) => !!item && all.indexOf(item) === index)
-                const candidates = [filepath, ...rawPaths, ...paths]
-                  .map((item) =>
-                    item
-                      .replace(/^'+|'+$/g, "")
-                      .replace(/\\ /g, " ")
-                      .trim(),
-                  )
-                  .filter((item, index, all) => !!item && all.indexOf(item) === index)
-
-                const pathLike =
-                  candidates.length > 1 ||
-                  filepath.startsWith("/") ||
-                  filepath.startsWith("./") ||
-                  filepath.startsWith("../") ||
-                  filepath.startsWith("~/") ||
-                  filepath.startsWith("file://") ||
-                  /^[A-Za-z]:[\\/]/.test(filepath)
-
-                const cleanedTextAroundPath = (entry: string, local: string) => {
-                  return removePastedPathReferences(normalizedText, [entry, local, filepath, ...rawPaths, ...paths])
-                }
-
-                for (const entry of candidates) {
-                  const local = entry.startsWith("file://")
-                    ? iife(() => {
-                        try {
-                          return decodeURIComponent(new URL(entry).pathname)
-                        } catch {
-                          return entry.replace(/^file:\/\//, "")
-                        }
-                      })
-                    : entry
-                  const isUrl = /^(https?):\/\//.test(local)
-                  if (isUrl) continue
-                  try {
-                    const file = Bun.file(local)
-                    const exists = await file.exists().catch(() => false)
-                    if (!exists) continue
-
-                    // Handle SVG as raw text content, not as base64 image
-                    if (file.type === "image/svg+xml") {
-                      const content = await file.text().catch(() => {})
-                      if (content) {
-                        const cleaned = cleanedTextAroundPath(entry, local)
-                        if (cleaned) {
-                          input.insertText(`${cleaned} `)
-                        }
-                        pasteText(content, `[SVG: ${file.name ?? "image"}]`)
-                        return
-                      }
-                    }
-                    if (file.type.startsWith("image/")) {
-                      const content = await file
-                        .arrayBuffer()
-                        .then((buffer) => Buffer.from(buffer).toString("base64"))
-                        .catch(() => {})
-                      if (content) {
-                        const cleaned = cleanedTextAroundPath(entry, local)
-                        if (cleaned) {
-                          input.insertText(`${cleaned} `)
-                        }
-                        await pasteImage({
-                          filename: file.name,
-                          mime: file.type,
-                          content,
-                        })
-                        return
-                      }
-                    }
-                  } catch {}
-                }
-
-                if (pathLike) {
-                  // No valid image detected from a path-like paste; preserve
-                  // original pasted text behavior.
-                  input.insertText(normalizedText)
-                  return
-                }
-
-                if (shouldSummarizePaste(pastedContent, sync.data.config.experimental?.disable_paste_summary)) {
-                  const lineCount = (pastedContent.match(/\n/g)?.length ?? 0) + 1
-                  pasteText(pastedContent, `[Pasted ~${lineCount} lines]`)
-                  return
-                }
-
-                input.insertText(normalizedText)
-
-                setTimeout(() => {
-                  // setTimeout is a workaround and needs to be addressed properly
-                  if (!input || input.isDestroyed) return
-                  input.getLayoutNode().markDirty()
-                  renderer.requestRender()
-                }, 0)
+                // OpenTUI does not await async onPaste handlers before applying
+                // its default textarea paste. Claim the event before any file
+                // probing awaits, then insert the intended text/content below.
+                event.preventDefault()
+                const pasteInput = input
+                void pasteTaskQueue
+                  .enqueue(() => processPastedText(normalizedText, pasteInput))
+                  .catch((error) => {
+                    const detail = error instanceof Error ? error.message : String(error)
+                    toast.show({ variant: "error", message: `Failed to process pasted content: ${detail}` })
+                  })
               }}
               ref={(r: TextareaRenderable) => {
                 input = r

@@ -38,6 +38,23 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def is_human_visible_message(message: Message) -> bool:
+    """Return whether a persisted message may be shown outside model context."""
+
+    category = getattr(message, "category", None)
+    category_name = getattr(category, "name", category)
+    if category is MessageCategory.INTERNAL or (
+        isinstance(category_name, str) and category_name.lower() == "internal"
+    ):
+        return False
+
+    metadata = getattr(message, "metadata", None)
+    visibility = metadata.get("visibility") if isinstance(metadata, dict) else None
+    return not (
+        isinstance(visibility, str) and visibility.strip().lower() == "internal"
+    )
+
+
 class ConversationSystem:
     """
     Manages conversation state and message preparation.
@@ -109,7 +126,12 @@ class ConversationSystem:
         """Publish one appended message without making conversation writes block."""
 
         try:
-            if MessageBus and ProtocolMessage:
+            metadata = message.metadata if isinstance(message.metadata, dict) else {}
+            is_internal_message = (
+                message.category is MessageCategory.INTERNAL
+                or metadata.get("visibility") == "internal"
+            )
+            if MessageBus and ProtocolMessage and not is_internal_message:
                 bus = MessageBus.get_instance()
                 protocol_message = ProtocolMessage(
                     sender=message.agent_id,
@@ -260,7 +282,12 @@ class ConversationSystem:
         return message
 
     def prepare_conversation(
-        self, user_input: str, image_paths: Optional[List[str]] = None
+        self,
+        user_input: str,
+        image_paths: Optional[List[str]] = None,
+        *,
+        category: Optional[MessageCategory] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         Prepare conversation with user input and optional images.
@@ -270,6 +297,8 @@ class ConversationSystem:
         Args:
             user_input: User message text
             image_paths: Optional list of paths to image files
+            category: Optional category for the inserted user message.
+            metadata: Optional metadata for the inserted user message.
         """
         # Send system prompt if not sent yet
         if not self.system_prompt_sent and self.system_prompt:
@@ -288,10 +317,15 @@ class ConversationSystem:
             content: List[Dict[str, Any]] = [{"type": "text", "text": user_input}]
             for path in image_paths:
                 content.append({"type": "image_url", "image_path": path})
-            self.add_message("user", content)
+            self.add_message("user", content, category=category, metadata=metadata)
         else:
             # Simple text content
-            self.add_message("user", user_input)
+            self.add_message(
+                "user",
+                user_input,
+                category=category,
+                metadata=metadata,
+            )
 
     def add_assistant_message(self, content: str) -> Message:
         """Add a message from the assistant."""
@@ -596,9 +630,15 @@ class ConversationSystem:
             List of messages in API-compatible format
         """
         self.session = sanitize_native_tool_session(self.session)
-        # Format for API consumption (remove extra fields)
+        return self.get_human_history()
+
+    def get_human_history(self) -> List[Dict[str, Any]]:
+        """Return API-compatible history without private runtime messages."""
+
         return [
-            {"role": msg.role, "content": msg.content} for msg in self.session.messages
+            {"role": msg.role, "content": msg.content}
+            for msg in self.session.messages
+            if is_human_visible_message(msg)
         ]
 
     def get_formatted_messages(self) -> List[Dict[str, Any]]:
@@ -619,6 +659,7 @@ class ConversationSystem:
             MessageCategory.CONTEXT: [],
             MessageCategory.DIALOG: [],
             MessageCategory.SYSTEM_OUTPUT: [],
+            MessageCategory.INTERNAL: [],
         }
 
         # Populate categories
@@ -652,7 +693,11 @@ class ConversationSystem:
             (index, message)
             for index, message in enumerate(self.session.messages)
             if message.category
-            in {MessageCategory.DIALOG, MessageCategory.SYSTEM_OUTPUT}
+            in {
+                MessageCategory.DIALOG,
+                MessageCategory.SYSTEM_OUTPUT,
+                MessageCategory.INTERNAL,
+            }
         ]
         # Category buckets must not reorder a native assistant declaration and
         # its tool results when timestamps are equal/coarse.  Original session

@@ -18,7 +18,6 @@ EngineFactory = Callable[..., Any]
 EngineSettingsFactory = Callable[..., Any]
 RuntimeConfigFactory = Callable[[dict[str, Any]], Any]
 ModelConfigFactory = Callable[..., Any]
-StopConditionFactory = Callable[[], Any]
 ToolManagerFactory = Callable[..., Any]
 SystemPromptBuilder = Callable[[str], str]
 OutputFormatter = Callable[[str], Any]
@@ -43,7 +42,6 @@ __all__ = [
     "RuntimeConfigFactory",
     "StartupProgress",
     "StartupTiming",
-    "StopConditionFactory",
     "SystemPromptBuilder",
     "ToolManagerFactory",
     "TqdmFactory",
@@ -596,7 +594,6 @@ def initialize_core_instance_state(
     default_max_messages_per_session: int,
     engine_factory: EngineFactory,
     engine_settings_factory: EngineSettingsFactory,
-    token_budget_stop_factory: StopConditionFactory,
     logger: Any,
 ) -> None:
     """Initialize all constructor-owned runtime state for ``PenguinCore``."""
@@ -649,7 +646,6 @@ def initialize_core_instance_state(
         owner,
         engine_factory=engine_factory,
         engine_settings_factory=engine_settings_factory,
-        token_budget_stop_factory=token_budget_stop_factory,
         logger=logger,
     )
     finalize_core_startup_state(
@@ -799,22 +795,20 @@ def initialize_engine_state(
     *,
     engine_factory: EngineFactory,
     engine_settings_factory: EngineSettingsFactory,
-    token_budget_stop_factory: StopConditionFactory,
     logger: Any,
 ) -> None:
-    """Initialize Engine wiring and preserve legacy fallback behavior."""
+    """Initialize Engine wiring without injecting a hidden stop condition."""
 
     try:
         streaming_pref = _resolve_engine_streaming_default(owner.model_config)
         engine_settings = engine_settings_factory(streaming_default=streaming_pref)
-        default_stops = [token_budget_stop_factory()]
         owner.engine = engine_factory(
             engine_settings,
             owner.conversation_manager,
             owner.api_client,
             owner.tool_manager,
             owner.action_executor,
-            stop_conditions=default_stops,
+            stop_conditions=[],
         )
         try:
             owner.engine.model_config = owner.model_config

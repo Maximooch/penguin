@@ -18,6 +18,7 @@ __all__ = [
     "abort_streaming_message",
     "active_part_text",
     "cancel_opencode_session_status_heartbeat",
+    "emit_opencode_assistant_error",
     "emit_opencode_session_status",
     "emit_opencode_stream_chunk",
     "emit_opencode_stream_end",
@@ -1076,6 +1077,57 @@ async def emit_opencode_stream_start(
     return message_id, part_id
 
 
+async def emit_opencode_assistant_error(
+    owner: Any,
+    message: str,
+    *,
+    error: dict[str, Any] | None = None,
+    agent_id: str | None = None,
+    model_id: str | None = None,
+    provider_id: str | None = None,
+    execution_context: Any = None,
+) -> str:
+    """Emit a persisted OpenCode assistant error without treating it as model text."""
+    context = execution_context or get_current_execution_context()
+    session_id = core_opencode_bridge.resolve_session_id(
+        execution_context=context,
+        conversation_manager=getattr(owner, "conversation_manager", None),
+    )
+    resolved_agent_id = (
+        agent_id
+        or (getattr(context, "agent_id", None) if context is not None else None)
+        or getattr(
+            getattr(owner, "conversation_manager", None), "current_agent_id", None
+        )
+        or "default"
+    )
+    error_payload = dict(error or {})
+    model_state = owner._resolve_opencode_model_state(
+        session_id=session_id,
+        model_id=model_id
+        or (
+            error_payload.get("model")
+            if isinstance(error_payload.get("model"), str)
+            else None
+        ),
+        provider_id=provider_id
+        or (
+            error_payload.get("provider")
+            if isinstance(error_payload.get("provider"), str)
+            else None
+        ),
+    )
+    adapter = owner._get_tui_adapter(session_id)
+    return await adapter.on_assistant_error(
+        message,
+        error=error_payload,
+        agent_id=resolved_agent_id,
+        model_id=model_state.get("modelID"),
+        provider_id=model_state.get("providerID"),
+        variant=model_state.get("variant"),
+    )
+
+
 async def emit_opencode_stream_chunk(
     owner: Any,
     message_id: str,
@@ -1107,7 +1159,9 @@ async def emit_opencode_user_message_with_metadata(
     content: str,
     *,
     message_id: str | None = None,
+    part_id: str | None = None,
     agent_id: str | None = None,
+    persist: bool = True,
     execution_context: Any = None,
 ) -> str:
     """Emit a user message in OpenCode format with stable message metadata."""
@@ -1121,13 +1175,20 @@ async def emit_opencode_user_message_with_metadata(
     )
     adapter = owner._get_tui_adapter(session_id)
     model_state = owner._resolve_opencode_model_state(session_id=session_id)
+    user_message_kwargs: dict[str, Any] = {
+        "message_id": message_id,
+        "agent_id": agent_id or "default",
+        "model_id": model_state.get("modelID"),
+        "provider_id": model_state.get("providerID"),
+        "variant": model_state.get("variant"),
+    }
+    if part_id is not None:
+        user_message_kwargs["part_id"] = part_id
+    if not persist:
+        user_message_kwargs["persist"] = False
     emitted_message_id = await adapter.on_user_message_with_metadata(
         content,
-        message_id=message_id,
-        agent_id=agent_id or "default",
-        model_id=model_state.get("modelID"),
-        provider_id=model_state.get("providerID"),
-        variant=model_state.get("variant"),
+        **user_message_kwargs,
     )
     state = stream_state_for(owner, session_id)
     state["active"] = False

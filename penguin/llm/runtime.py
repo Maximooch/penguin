@@ -160,8 +160,6 @@ class UnsupportedReasoningVariantError(ValueError):
             "variant": self.variant,
             "supported": list(self.supported),
         }
-
-
 _REASONING_DISABLE_VARIANTS = {"off"}
 _NATIVE_RESPONSE_COMPLETION_TOOLS = {"finish_response"}
 logger = logging.getLogger(__name__)
@@ -912,12 +910,51 @@ async def call_with_retry(
     model_config: Any = None,
     retry_sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
     retry_random: Callable[[], float] = random.random,
+    usage_callback: Optional[Callable[[Dict[str, Any]], Any]] = None,
 ) -> str:
     """Call a provider at most twice when one replay is provably safe."""
 
     streamed_assistant_chunk = False
     replayed_retry_response = False
     attempts = 0
+
+    async def _attempt(
+        *,
+        stream: Optional[bool],
+        callback: Optional[Callable[..., Any]],
+        kwargs: Dict[str, Any],
+    ) -> LLMCallResult:
+        try:
+            return await _get_response_result(
+                api_client=api_client,
+                messages=messages,
+                stream=stream,
+                stream_callback=callback,
+                extra_kwargs=kwargs,
+            )
+        finally:
+            if usage_callback is not None:
+                handler = getattr(api_client, "client_handler", None)
+                getter = getattr(handler, "get_last_usage", None)
+                try:
+                    usage = getter() if callable(getter) else {}
+                except Exception:
+                    logger.warning(
+                        "Failed to collect provider usage after an LLM attempt",
+                        exc_info=True,
+                    )
+                    usage = {}
+                try:
+                    callback_result = usage_callback(
+                        dict(usage) if isinstance(usage, dict) else {}
+                    )
+                    if inspect.isawaitable(callback_result):
+                        await callback_result
+                except Exception:
+                    logger.warning(
+                        "Failed to report provider usage after an LLM attempt",
+                        exc_info=True,
+                    )
 
     async def _tracked_stream_callback(
         chunk: str, message_type: str = "assistant"
@@ -933,16 +970,14 @@ async def call_with_retry(
             message_type,
         )
 
-    call_result = await _get_response_result(
-        api_client=api_client,
-        messages=messages,
+    call_result = await _attempt(
         stream=streaming,
-        stream_callback=(
+        callback=(
             _tracked_stream_callback
             if streaming and stream_callback
             else stream_callback
         ),
-        extra_kwargs=_provider_call_kwargs(
+        kwargs=_provider_call_kwargs(
             api_client,
             extra_kwargs,
             network_attempt_budget=2,
@@ -975,12 +1010,10 @@ async def call_with_retry(
                 "provider.retry_backoff",
                 (time.perf_counter() - retry_started) * 1000,
             )
-            call_result = await _get_response_result(
-                api_client=api_client,
-                messages=messages,
+            call_result = await _attempt(
                 stream=False,
-                stream_callback=None,
-                extra_kwargs=_provider_call_kwargs(
+                callback=None,
+                kwargs=_provider_call_kwargs(
                     api_client,
                     extra_kwargs,
                     network_attempt_budget=2 - attempts,
@@ -1040,12 +1073,10 @@ async def call_with_retry(
                 "provider.retry_backoff",
                 (time.perf_counter() - retry_started) * 1000,
             )
-            call_result = await _get_response_result(
-                api_client=api_client,
-                messages=messages,
+            call_result = await _attempt(
                 stream=False,
-                stream_callback=None,
-                extra_kwargs=_provider_call_kwargs(
+                callback=None,
+                kwargs=_provider_call_kwargs(
                     api_client,
                     extra_kwargs,
                     network_attempt_budget=2 - attempts,

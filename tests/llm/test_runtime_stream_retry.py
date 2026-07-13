@@ -50,6 +50,9 @@ class _ResultClient:
             }
         )
         result = self.results.pop(0)
+        usage_setter = getattr(self.client_handler, "set_usage", None)
+        if callable(usage_setter):
+            usage_setter(result.get("usage", {}))
         callback = result.get("callback")
         if callback and stream_callback:
             chunk, message_type = callback
@@ -74,6 +77,81 @@ def _retryable_stream_error() -> LLMError:
         provider="openai",
         model="gpt-test",
     )
+
+
+@pytest.mark.asyncio
+async def test_call_with_retry_reports_usage_for_every_provider_attempt() -> None:
+    class _UsageHandler:
+        def __init__(self) -> None:
+            self.usage: dict[str, Any] = {}
+
+        def set_usage(self, usage: dict[str, Any]) -> None:
+            self.usage = dict(usage)
+
+        def get_last_usage(self) -> dict[str, Any]:
+            return dict(self.usage)
+
+    handler = _UsageHandler()
+    client = _ResultClient(
+        [
+            {"text": "", "usage": {"total_tokens": 5}},
+            {"text": "recovered", "usage": {"total_tokens": 7}},
+        ],
+        client_handler=handler,
+    )
+    attempt_usage: list[dict[str, Any]] = []
+
+    result = await call_with_retry(
+        api_client=client,
+        messages=[{"role": "user", "content": "hi"}],
+        streaming=False,
+        stream_callback=None,
+        extra_kwargs={},
+        usage_callback=attempt_usage.append,
+    )
+
+    assert result == "recovered"
+    assert attempt_usage == [
+        {"total_tokens": 5},
+        {"total_tokens": 7},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_call_with_retry_preserves_provider_failure_when_usage_hooks_fail(
+) -> None:
+    """Best-effort usage reporting must not replace the provider exception."""
+
+    provider_error = _retryable_stream_error()
+
+    class _BrokenUsageHandler:
+        def get_last_usage(self) -> dict[str, Any]:
+            raise RuntimeError("usage unavailable")
+
+    class _FailingClient:
+        client_handler = _BrokenUsageHandler()
+
+        async def get_response_result(
+            self,
+            *_args: Any,
+            **_kwargs: Any,
+        ) -> LLMCallResult:
+            raise LLMProviderError(provider_error)
+
+    async def broken_usage_callback(_usage: dict[str, Any]) -> None:
+        raise RuntimeError("usage callback failed")
+
+    with pytest.raises(LLMProviderError) as raised:
+        await call_with_retry(
+            api_client=_FailingClient(),
+            messages=[{"role": "user", "content": "hi"}],
+            streaming=False,
+            stream_callback=None,
+            extra_kwargs={},
+            usage_callback=broken_usage_callback,
+        )
+
+    assert raised.value.error is provider_error
 
 
 @pytest.mark.asyncio

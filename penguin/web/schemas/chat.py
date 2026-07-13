@@ -86,6 +86,7 @@ class ChatMessageRequest(BaseModel):
     conversation_id: Optional[str] = None
     session_id: Optional[str] = None
     client_message_id: Optional[str] = None
+    client_part_id: Optional[str] = None
     context: Optional[dict[str, Any]] = None
     context_files: Optional[list[str]] = None
     streaming: Optional[bool] = True
