@@ -120,3 +120,72 @@ def test_create_core_primes_credentials_before_loading_config(monkeypatch) -> No
     core = web_app._create_core()
 
     assert isinstance(core, _Core)
+
+
+def test_create_core_does_not_construct_provider_when_model_is_not_configured(
+    monkeypatch,
+) -> None:
+    config_obj = SimpleNamespace(
+        model_config=SimpleNamespace(model="", provider=""),
+        to_dict=lambda: {"workspace": {"path": "/tmp/penguin"}},
+    )
+    monkeypatch.setattr(web_app, "_ensure_env_loaded", lambda: None)
+    monkeypatch.setattr(
+        web_app, "_prime_provider_credentials_environment", lambda: None
+    )
+    monkeypatch.setattr(web_app.Config, "load_config", lambda: config_obj)
+    monkeypatch.setattr(
+        web_app,
+        "APIClient",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("provider client must be lazy until a model is configured")
+        ),
+    )
+    monkeypatch.setattr(web_app, "ToolManager", lambda *_args, **_kwargs: object())
+
+    class _Core:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    monkeypatch.setattr(web_app, "PenguinCore", _Core)
+
+    core = web_app._create_core()
+
+    assert core.api_client is None
+
+
+def test_create_core_does_not_construct_remote_provider_without_credentials(
+    monkeypatch,
+) -> None:
+    config_obj = SimpleNamespace(
+        model_config=SimpleNamespace(
+            model="openai/gpt-5.2",
+            provider="openrouter",
+            api_key=None,
+        ),
+        to_dict=lambda: {"workspace": {"path": "/tmp/penguin"}},
+    )
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(web_app, "_ensure_env_loaded", lambda: None)
+    monkeypatch.setattr(
+        web_app, "_prime_provider_credentials_environment", lambda: None
+    )
+    monkeypatch.setattr(web_app.Config, "load_config", lambda: config_obj)
+    monkeypatch.setattr(
+        web_app,
+        "APIClient",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("provider client must remain lazy without credentials")
+        ),
+    )
+    monkeypatch.setattr(web_app, "ToolManager", lambda *_args, **_kwargs: object())
+
+    class _Core:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    monkeypatch.setattr(web_app, "PenguinCore", _Core)
+
+    core = web_app._create_core()
+
+    assert core.api_client is None

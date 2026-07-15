@@ -147,7 +147,7 @@ def load_config():
     # 5) Explicit override (highest single-file override)
     try:
         if os.getenv('PENGUIN_CONFIG_PATH'):
-            override_path = Path(os.getenv('PENGUIN_CONFIG_PATH'))
+            override_path = Path(os.getenv('PENGUIN_CONFIG_PATH')).expanduser()
             if override_path.exists():
                 with open(override_path) as f:
                     merged = deep_merge_dicts(merged, yaml.safe_load(f) or {})
@@ -1464,10 +1464,28 @@ class Config:
 
         # --- Determine Model Config --- #
         default_model_settings = config_data.get("model", {})
-        # ENV VARS TAKE PRECEDENCE over config.yml for container deployments
-        default_model_id = os.getenv("PENGUIN_DEFAULT_MODEL") or default_model_settings.get("default") or "anthropic/claude-3-5-sonnet-20240620"
-        default_provider = os.getenv("PENGUIN_DEFAULT_PROVIDER") or default_model_settings.get("provider") or "openrouter"
-        default_client_pref = os.getenv("PENGUIN_CLIENT_PREFERENCE") or default_model_settings.get("client_preference") or "openrouter"
+        if not isinstance(default_model_settings, dict):
+            default_model_settings = {}
+        model_explicitly_configured = bool(default_model_settings) or bool(
+            os.getenv("PENGUIN_DEFAULT_MODEL") or os.getenv("PENGUIN_DEFAULT_PROVIDER")
+        )
+        # A workspace-only config is valid. Empty model/provider values keep
+        # provider construction lazy until the user connects an AI model.
+        default_model_id = (
+            os.getenv("PENGUIN_DEFAULT_MODEL")
+            or default_model_settings.get("default")
+            or ("anthropic/claude-3-5-sonnet-20240620" if model_explicitly_configured else "")
+        )
+        default_provider = (
+            os.getenv("PENGUIN_DEFAULT_PROVIDER")
+            or default_model_settings.get("provider")
+            or ("openrouter" if model_explicitly_configured else "")
+        )
+        default_client_pref = (
+            os.getenv("PENGUIN_CLIENT_PREFERENCE")
+            or default_model_settings.get("client_preference")
+            or ("openrouter" if model_explicitly_configured else "native")
+        )
 
         model_configs_section = config_data.get("model_configs")
         if not isinstance(model_configs_section, dict):
@@ -1532,11 +1550,13 @@ class Config:
         )
 
     def to_dict(self) -> Dict[str, Any]:
-        if not self.model_config.model:
-            raise ValueError("model_name must be specified in the effective model config")
-
+        model_config = (
+            self.model_config.get_config()
+            if self.model_config is not None and self.model_config.model
+            else {}
+        )
         return {
-            "default_model_config": self.model_config.get_config(),
+            "default_model_config": model_config,
             "global_temperature": self.temperature,
             "global_max_output_tokens": self.max_output_tokens,
             "diagnostics": {

@@ -256,8 +256,8 @@ async def test_create_core_instance_builds_core_with_startup_dependencies(
     config = SimpleNamespace(
         model_config=SimpleNamespace(
             model="configured-model",
-            provider="configured-provider",
-            client_preference="openai",
+            provider="ollama",
+            client_preference="native",
         ),
         api=SimpleNamespace(base_url="https://api.example.test/v1"),
         fast_startup=True,
@@ -305,7 +305,7 @@ async def test_create_core_instance_builds_core_with_startup_dependencies(
         _Core,
         config=config,
         model="override-model",
-        provider="override-provider",
+        provider="ollama",
         workspace_path=None,
         enable_cli=False,
         show_progress=True,
@@ -330,7 +330,7 @@ async def test_create_core_instance_builds_core_with_startup_dependencies(
     assert isinstance(result, _Core)
     assert created["config"] is config
     assert created["model_config"].model == "override-model"
-    assert created["model_config"].provider == "override-provider"
+    assert created["model_config"].provider == "ollama"
     assert created["api_client"].system_prompt == "system prompt"
     assert created["tool_manager"].payload == {"config": True}
     assert created["tool_manager"].error_logger is log_error
@@ -512,9 +512,53 @@ def test_resolve_fast_startup_preserves_current_config_override_behavior() -> No
     assert not startup.resolve_fast_startup(SimpleNamespace(), False)
 
 
+def test_build_api_client_skips_remote_provider_without_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    model_config = SimpleNamespace(
+        model="openai/gpt-5.2",
+        provider="openrouter",
+        api_key=None,
+    )
+
+    client = startup.build_api_client(
+        model_config,
+        system_prompt="system prompt",
+        api_client_factory=lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("provider client must remain lazy without credentials")
+        ),
+        ensure_env_loaded=lambda: None,
+    )
+
+    assert client is None
+
+
+def test_build_api_client_allows_local_provider_without_credentials() -> None:
+    calls: list[str] = []
+    model_config = SimpleNamespace(model="qwen3-coder", provider="ollama", api_key=None)
+
+    class _Client:
+        def __init__(self, *, model_config: Any) -> None:
+            calls.append(model_config.provider)
+
+        def set_system_prompt(self, prompt: str) -> None:
+            calls.append(prompt)
+
+    client = startup.build_api_client(
+        model_config,
+        system_prompt="system prompt",
+        api_client_factory=_Client,
+        ensure_env_loaded=lambda: None,
+    )
+
+    assert isinstance(client, _Client)
+    assert calls == ["ollama", "system prompt"]
+
+
 def test_build_api_client_loads_env_then_sets_system_prompt() -> None:
     calls: list[tuple[str, Any]] = []
-    model_config = SimpleNamespace(model="gpt-5")
+    model_config = SimpleNamespace(model="gpt-5", provider="ollama")
 
     class _Client:
         def __init__(self, *, model_config: Any) -> None:

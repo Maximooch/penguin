@@ -1286,7 +1286,7 @@ def main_entry(
             console.print(
                 "[yellow]You may need to install additional dependencies:[/yellow]"
             )
-            console.print("[yellow]  pip install questionary httpx[/yellow]")
+            console.print("[yellow]  pip install questionary PyYAML rich[/yellow]")
             console.print("[yellow]Or manually create a config file.[/yellow]\n")
         elif check_first_run():
             console.print(
@@ -1730,9 +1730,9 @@ def config_setup():
         console.print(
             "[yellow]You may need to install additional dependencies:[/yellow]"
         )
-        console.print("[yellow]  pip install questionary httpx[/yellow]")
+        console.print("[yellow]  pip install questionary PyYAML rich[/yellow]")
         console.print("[yellow]Or install with setup extras:[/yellow]")
-        console.print("[yellow]  pip install penguin[setup][/yellow]")
+        console.print("[yellow]  pip install penguin-ai[/yellow]")
         raise typer.Exit(code=1)
 
     try:
@@ -1795,7 +1795,7 @@ def config_test_routing():
     if not setup_available:
         console.print(f"[red]Setup wizard not available: {setup_import_error}[/red]")
         console.print(
-            "[yellow]Install setup dependencies first: pip install questionary httpx[/yellow]"
+            "[yellow]Install setup dependencies first: pip install questionary PyYAML rich[/yellow]"
         )
         raise typer.Exit(code=1)
 

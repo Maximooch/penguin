@@ -527,6 +527,7 @@ async def test_abort_session_cancels_tasks_cleans_scoped_state_and_emits_idle() 
     )
 
     assert aborted is True
+    await asyncio.sleep(0)
     assert adapter.reasons == ["Tool execution was interrupted"]
     assert "session_1" in owner._opencode_abort_sessions
     with pytest.raises(asyncio.CancelledError):
@@ -555,6 +556,52 @@ async def test_abort_session_cancels_tasks_cleans_scoped_state_and_emits_idle() 
     assert status_event["type"] == "session.status"
     assert status_event["properties"]["sessionID"] == "session_1"
     assert status_event["properties"]["status"]["type"] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_abort_session_does_not_wait_for_slow_adapter_cleanup() -> None:
+    cleanup_started = asyncio.Event()
+    allow_cleanup = asyncio.Event()
+
+    class _SlowAbortAdapter:
+        async def abort(self, reason: str) -> bool:
+            assert reason == "Tool execution was interrupted"
+            cleanup_started.set()
+            await allow_cleanup.wait()
+            return True
+
+    async def _sleep_forever() -> None:
+        await asyncio.sleep(60)
+
+    pending_task = asyncio.create_task(_sleep_forever())
+    owner = SimpleNamespace(
+        event_bus=_EventBus(),
+        _get_tui_adapter=lambda _session_id: _SlowAbortAdapter(),
+        _stream_manager=SimpleNamespace(get_active_agents=lambda: []),
+        _opencode_abort_sessions=set(),
+        _opencode_process_tasks={"session_1": {pending_task}},
+        _opencode_stream_states={"session_1": {"active": True}},
+        _opencode_tool_parts={},
+        _opencode_tool_info={},
+    )
+
+    aborted = await asyncio.wait_for(
+        stream_events.abort_session(
+            owner,
+            "session_1",
+            logger=logging.getLogger("test.stream_events"),
+        ),
+        timeout=0.1,
+    )
+
+    assert aborted is True
+    assert pending_task.cancelled()
+    assert cleanup_started.is_set()
+    status_event = owner.event_bus.events[-1][1]
+    assert status_event["properties"]["status"]["type"] == "idle"
+
+    allow_cleanup.set()
+    await asyncio.sleep(0)
 
 
 def test_persist_finalized_message_writes_target_session_store() -> None:

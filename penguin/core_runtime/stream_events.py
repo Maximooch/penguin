@@ -399,9 +399,11 @@ async def emit_ui_event(
                         owner,
                         session_id,
                         status_type,
-                        info=data.get("data")
-                        if isinstance(data.get("data"), dict)
-                        else None,
+                        info=(
+                            data.get("data")
+                            if isinstance(data.get("data"), dict)
+                            else None
+                        ),
                     )
     except Exception as e:
         logger.error("[TUI_ADAPTER] ERROR in event_bus.emit: %s", e, exc_info=True)
@@ -428,14 +430,6 @@ async def abort_session(
 
     adapter = owner._get_tui_adapter(sid)
     adapter_abort = getattr(adapter, "abort", None)
-    if callable(adapter_abort):
-        try:
-            adapter_aborted = await adapter_abort(
-                reason="Tool execution was interrupted"
-            )
-            aborted = bool(adapter_aborted) or aborted
-        except Exception:
-            logger.warning("Failed to abort active TUI parts", exc_info=True)
 
     tasks_map = getattr(owner, "_opencode_process_tasks", None)
     if isinstance(tasks_map, dict):
@@ -494,6 +488,29 @@ async def abort_session(
             aborted = True
 
     await emit_opencode_session_status(owner, sid, "idle")
+
+    if callable(adapter_abort):
+
+        async def _cleanup_adapter() -> None:
+            try:
+                await adapter_abort(reason="Tool execution was interrupted")
+            except Exception:
+                logger.warning("Failed to abort active TUI parts", exc_info=True)
+
+        cleanup_tasks = getattr(owner, "_opencode_abort_cleanup_tasks", None)
+        if not isinstance(cleanup_tasks, set):
+            cleanup_tasks = set()
+            owner._opencode_abort_cleanup_tasks = cleanup_tasks
+        cleanup_task = asyncio.create_task(_cleanup_adapter())
+        cleanup_tasks.add(cleanup_task)
+
+        def _finish_cleanup(task: asyncio.Task[Any]) -> None:
+            cleanup_tasks.discard(task)
+            if not task.cancelled():
+                task.exception()
+
+        cleanup_task.add_done_callback(_finish_cleanup)
+
     return aborted
 
 
@@ -643,9 +660,11 @@ def finalize_streaming_message(
                     logger.warning(
                         "stream.finalize.fallback_used request=%s session=%s "
                         "conversation=%s requested_scope=%s fallback_scope=%s",
-                        execution_context.request_id
-                        if execution_context
-                        else "unknown",
+                        (
+                            execution_context.request_id
+                            if execution_context
+                            else "unknown"
+                        ),
                         resolved_session_id or "",
                         resolved_conversation_id or "",
                         resolved_stream_scope_id,
@@ -660,9 +679,11 @@ def finalize_streaming_message(
                         "stream.finalize.single_active_fallback request=%s "
                         "session=%s conversation=%s requested_scope=%s "
                         "fallback_scope=%s",
-                        execution_context.request_id
-                        if execution_context
-                        else "unknown",
+                        (
+                            execution_context.request_id
+                            if execution_context
+                            else "unknown"
+                        ),
                         resolved_session_id or "",
                         resolved_conversation_id or "",
                         resolved_stream_scope_id,

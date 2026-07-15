@@ -400,9 +400,11 @@ async def create_core_instance(
                 logger.info(
                     "STARTUP: Tool manager created in %.4fs with %s tools",
                     startup_timing.elapsed_since(tool_manager_start),
-                    len(tool_manager.tools)
-                    if hasattr(tool_manager, "tools")
-                    else "unknown",
+                    (
+                        len(tool_manager.tools)
+                        if hasattr(tool_manager, "tools")
+                        else "unknown"
+                    ),
                 )
                 progress.complete_step()
                 startup_timing.record_step("Create tool manager", logger=logger)
@@ -505,6 +507,21 @@ def build_api_client(
     """Build the startup API client after env files are available."""
 
     ensure_env_loaded()
+    provider = str(getattr(model_config, "provider", "") or "").strip().lower()
+    model = str(getattr(model_config, "model", "") or "").strip()
+    if not provider or not model:
+        return None
+
+    if provider not in {"ollama", "local"}:
+        api_key = str(getattr(model_config, "api_key", "") or "").strip()
+        credential_envs = {
+            "openai": ("OPENAI_API_KEY", "OPENAI_OAUTH_ACCESS_TOKEN"),
+            "anthropic": ("ANTHROPIC_API_KEY",),
+            "openrouter": ("OPENROUTER_API_KEY",),
+        }.get(provider, (f"{provider.upper()}_API_KEY",))
+        if not api_key and not any(os.getenv(name) for name in credential_envs):
+            return None
+
     api_client = api_client_factory(model_config=model_config)
     api_client.set_system_prompt(system_prompt)
     return api_client
