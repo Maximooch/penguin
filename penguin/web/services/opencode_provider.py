@@ -218,8 +218,7 @@ def _model_variants_payload(
     )
     if metadata_efforts:
         return {
-            effort: {"reasoning": {"effort": effort}}
-            for effort in metadata_efforts
+            effort: {"reasoning": {"effort": effort}} for effort in metadata_efforts
         }
 
     provider_value = provider_id.strip().lower()
@@ -818,9 +817,10 @@ def build_config_providers_payload(core: Any) -> dict[str, Any]:
     providers: list[dict[str, Any]] = []
     default: dict[str, str] = {}
     auth_records = get_provider_credentials()
-    refresh_scheduled = _schedule_provider_catalog_refresh(
-        auth_records
-    ) or _provider_catalog_refresh_active()
+    refresh_scheduled = (
+        _schedule_provider_catalog_refresh(auth_records)
+        or _provider_catalog_refresh_active()
+    )
     provider_models = _merge_cached_provider_catalog_models(
         config_provider_models,
         auth_records,
@@ -840,7 +840,8 @@ def build_config_providers_payload(core: Any) -> dict[str, Any]:
 
     enabled_filters, disabled_filters = _provider_filters(config_data)
 
-    provider_set = set(provider_models.keys())
+    provider_set = provider_ids(core)
+    provider_set.update(provider_models.keys())
     provider_set.update(auth_records.keys())
     provider_set.update(env_connected_provider_ids())
     if current_provider:
@@ -866,9 +867,9 @@ def build_config_providers_payload(core: Any) -> dict[str, Any]:
             source = (
                 "env"
                 if any(os.getenv(name) for name in provider_env(provider_id))
-                else "api"
-                if provider_connected(provider_id, auth_records)
-                else "custom"
+                else (
+                    "api" if provider_connected(provider_id, auth_records) else "custom"
+                )
             )
         connected = provider_connected(provider_id, auth_records)
         catalog = _provider_catalog_state(
@@ -905,9 +906,10 @@ def build_provider_list_payload(core: Any) -> dict[str, Any]:
     """Build OpenCode-compatible ``provider.list`` payload."""
     config_provider_models = collect_provider_models(core)
     auth_records = get_provider_credentials()
-    refresh_scheduled = _schedule_provider_catalog_refresh(
-        auth_records
-    ) or _provider_catalog_refresh_active()
+    refresh_scheduled = (
+        _schedule_provider_catalog_refresh(auth_records)
+        or _provider_catalog_refresh_active()
+    )
     provider_models = _merge_cached_provider_catalog_models(
         config_provider_models,
         auth_records,
@@ -934,7 +936,8 @@ def build_provider_list_payload(core: Any) -> dict[str, Any]:
         config_data = {}
     enabled_filters, disabled_filters = _provider_filters(config_data)
 
-    provider_set = set(provider_models.keys())
+    provider_set = provider_ids(core)
+    provider_set.update(provider_models.keys())
     provider_set.update(auth_records.keys())
     provider_set.update(env_connected_provider_ids())
     if current_provider:
@@ -957,9 +960,7 @@ def build_provider_list_payload(core: Any) -> dict[str, Any]:
             source = (
                 "env"
                 if any(os.getenv(name) for name in provider_env(provider_id))
-                else "api"
-                if connected_flag
-                else "custom"
+                else "api" if connected_flag else "custom"
             )
         catalog = _provider_catalog_state(
             connected=connected_flag,
