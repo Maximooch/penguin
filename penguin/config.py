@@ -27,7 +27,7 @@ def get_project_root() -> Path:
     # If running from source
     return Path(__file__).parent.parent
 
-def load_config():
+def load_config(*, _include_resolution_metadata: bool = False):
     """Load configuration by merging multiple locations with clear precedence.
 
     Precedence (lowest → highest):
@@ -67,8 +67,22 @@ def load_config():
                 base[key] = value
         return base
 
-    # 0) Start with empty config
+    # 0) Start with empty config. Track explicit model fields separately so
+    # package defaults cannot make a workspace-only config look connected.
     merged: Dict[str, Any] = {}
+    explicit_model_settings: Dict[str, Any] = {}
+
+    def merge_explicit_model_settings(data: Dict[str, Any]) -> None:
+        nonlocal explicit_model_settings
+        if "model" not in data:
+            return
+        model_settings = data.get("model")
+        if isinstance(model_settings, dict):
+            explicit_model_settings = deep_merge_dicts(
+                explicit_model_settings, model_settings
+            )
+        else:
+            explicit_model_settings = {}
 
     # 1) Package default
     package_config_path = Path(__file__).parent / "config.yml"
@@ -102,7 +116,10 @@ def load_config():
     try:
         if user_config_path.exists():
             with open(user_config_path) as f:
-                merged = deep_merge_dicts(merged, yaml.safe_load(f) or {})
+                user_config = yaml.safe_load(f) or {}
+                if isinstance(user_config, dict):
+                    merged = deep_merge_dicts(merged, user_config)
+                    merge_explicit_model_settings(user_config)
                 logger.debug(f"Loaded user config: {user_config_path}")
     except Exception as e:
         logger.warning(f"Error loading user config {user_config_path}: {e}")
@@ -131,7 +148,10 @@ def load_config():
     try:
         if project_config_path.exists():
             with open(project_config_path) as f:
-                merged = deep_merge_dicts(merged, yaml.safe_load(f) or {})
+                project_config = yaml.safe_load(f) or {}
+                if isinstance(project_config, dict):
+                    merged = deep_merge_dicts(merged, project_config)
+                    merge_explicit_model_settings(project_config)
                 logger.debug(f"Loaded project config: {project_config_path}")
     except Exception as e:
         logger.warning(f"Error loading project config {project_config_path}: {e}")
@@ -139,7 +159,10 @@ def load_config():
     try:
         if project_local_path.exists():
             with open(project_local_path) as f:
-                merged = deep_merge_dicts(merged, yaml.safe_load(f) or {})
+                project_local = yaml.safe_load(f) or {}
+                if isinstance(project_local, dict):
+                    merged = deep_merge_dicts(merged, project_local)
+                    merge_explicit_model_settings(project_local)
                 logger.debug(f"Loaded project local overrides: {project_local_path}")
     except Exception as e:
         logger.warning(f"Error loading project local settings {project_local_path}: {e}")
@@ -150,7 +173,10 @@ def load_config():
             override_path = Path(os.getenv('PENGUIN_CONFIG_PATH')).expanduser()
             if override_path.exists():
                 with open(override_path) as f:
-                    merged = deep_merge_dicts(merged, yaml.safe_load(f) or {})
+                    override_config = yaml.safe_load(f) or {}
+                    if isinstance(override_config, dict):
+                        merged = deep_merge_dicts(merged, override_config)
+                        merge_explicit_model_settings(override_config)
                     logger.debug(f"Loaded override config: {override_path}")
     except Exception as e:
         logger.warning(f"Error loading override config via PENGUIN_CONFIG_PATH: {e}")
@@ -188,6 +214,8 @@ def load_config():
         logger.debug("No config file found, using defaults")
         return {}
 
+    if _include_resolution_metadata:
+        merged["_explicit_model_settings"] = explicit_model_settings
     return merged
 
 # -------------------------
@@ -1398,7 +1426,7 @@ class Config:
 
         # Prefer the merged config resolver, unless an explicit file path was provided
         if config_path is None:
-            config_data = load_config()
+            config_data = load_config(_include_resolution_metadata=True)
         else:
             try:
                 with open(config_path) as f:
@@ -1463,24 +1491,24 @@ class Config:
         init_diagnostics(config_data)
 
         # --- Determine Model Config --- #
-        default_model_settings = config_data.get("model", {})
+        default_model_settings = config_data.pop("_explicit_model_settings", None)
+        if not isinstance(default_model_settings, dict):
+            default_model_settings = config_data.get("model", {})
         if not isinstance(default_model_settings, dict):
             default_model_settings = {}
-        model_explicitly_configured = bool(default_model_settings) or bool(
-            os.getenv("PENGUIN_DEFAULT_MODEL") or os.getenv("PENGUIN_DEFAULT_PROVIDER")
-        )
-        # A workspace-only config is valid. Empty model/provider values keep
-        # provider construction lazy until the user connects an AI model.
-        default_model_id = (
+        default_model_id = str(
             os.getenv("PENGUIN_DEFAULT_MODEL")
             or default_model_settings.get("default")
-            or ("anthropic/claude-3-5-sonnet-20240620" if model_explicitly_configured else "")
-        )
-        default_provider = (
+            or ""
+        ).strip()
+        default_provider = str(
             os.getenv("PENGUIN_DEFAULT_PROVIDER")
             or default_model_settings.get("provider")
-            or ("openrouter" if model_explicitly_configured else "")
-        )
+            or ""
+        ).strip()
+        model_explicitly_configured = bool(default_model_id or default_provider)
+        # A workspace-only or partially tuned config is valid. Missing model and
+        # provider values stay empty until the user explicitly connects one.
         default_client_pref = (
             os.getenv("PENGUIN_CLIENT_PREFERENCE")
             or default_model_settings.get("client_preference")

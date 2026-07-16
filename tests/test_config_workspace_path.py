@@ -43,6 +43,8 @@ def test_explicit_skipped_model_config_does_not_inherit_default_model(
         encoding="utf-8",
     )
     monkeypatch.setenv("PENGUIN_CONFIG_PATH", str(config_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("PENGUIN_CWD", str(tmp_path / "outside-project"))
     monkeypatch.delenv("PENGUIN_DEFAULT_MODEL", raising=False)
     monkeypatch.delenv("PENGUIN_DEFAULT_PROVIDER", raising=False)
     monkeypatch.delenv("PENGUIN_WORKSPACE", raising=False)
@@ -52,3 +54,51 @@ def test_explicit_skipped_model_config_does_not_inherit_default_model(
     assert cfg.workspace_path == workspace
     assert cfg.model_config.model == ""
     assert cfg.model_config.provider == ""
+
+
+def test_partial_model_settings_do_not_synthesize_model_or_provider(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "config.yml"
+    workspace = tmp_path / "workspace"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "workspace": {"path": str(workspace)},
+                "model": {"temperature": 0.2},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PENGUIN_CONFIG_PATH", str(config_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("PENGUIN_CWD", str(tmp_path / "outside-project"))
+    monkeypatch.delenv("PENGUIN_DEFAULT_MODEL", raising=False)
+    monkeypatch.delenv("PENGUIN_DEFAULT_PROVIDER", raising=False)
+    monkeypatch.delenv("PENGUIN_WORKSPACE", raising=False)
+
+    cfg = config_module.Config.load_config()
+
+    assert cfg.model_config.model == ""
+    assert cfg.model_config.provider == ""
+
+
+def test_provider_override_does_not_synthesize_default_model(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(
+        yaml.safe_dump({"workspace": {"path": str(tmp_path / "workspace")}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PENGUIN_CONFIG_PATH", str(config_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("PENGUIN_CWD", str(tmp_path / "outside-project"))
+    monkeypatch.delenv("PENGUIN_DEFAULT_MODEL", raising=False)
+    monkeypatch.setenv("PENGUIN_DEFAULT_PROVIDER", "anthropic")
+    monkeypatch.delenv("PENGUIN_WORKSPACE", raising=False)
+
+    cfg = config_module.Config.load_config()
+
+    assert cfg.model_config.model == ""
+    assert cfg.model_config.provider == "anthropic"

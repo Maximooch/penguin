@@ -503,6 +503,7 @@ async def abort_session(
             owner._opencode_abort_cleanup_tasks = cleanup_tasks
         cleanup_task = asyncio.create_task(_cleanup_adapter())
         cleanup_tasks.add(cleanup_task)
+        aborted = True
 
         def _finish_cleanup(task: asyncio.Task[Any]) -> None:
             cleanup_tasks.discard(task)

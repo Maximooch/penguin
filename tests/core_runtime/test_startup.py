@@ -534,6 +534,28 @@ def test_build_api_client_skips_remote_provider_without_credentials(
     assert client is None
 
 
+def test_build_api_client_rejects_whitespace_only_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "   ")
+    model_config = SimpleNamespace(
+        model="openai/gpt-5.2",
+        provider="openrouter",
+        api_key="\t",
+    )
+
+    client = startup.build_api_client(
+        model_config,
+        system_prompt="system prompt",
+        api_client_factory=lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("whitespace is not a credential")
+        ),
+        ensure_env_loaded=lambda: None,
+    )
+
+    assert client is None
+
+
 def test_build_api_client_allows_local_provider_without_credentials() -> None:
     calls: list[str] = []
     model_config = SimpleNamespace(model="qwen3-coder", provider="ollama", api_key=None)

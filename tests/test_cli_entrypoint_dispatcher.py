@@ -150,3 +150,39 @@ def test_direct_tui_entrypoint_stops_when_setup_is_cancelled(monkeypatch):
 
     assert code == 1
     assert calls == []
+
+
+def test_direct_tui_entrypoint_prints_setup_error(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(entrypoint, "_needs_tui_setup", lambda: True)
+    monkeypatch.setattr(
+        entrypoint,
+        "_run_tui_setup",
+        lambda: {"error": "workspace unavailable"},
+    )
+
+    assert entrypoint.main_tui([]) == 1
+    assert "workspace unavailable" in capsys.readouterr().err
+
+
+def test_direct_tui_entrypoint_handles_setup_exception(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(entrypoint, "_needs_tui_setup", lambda: True)
+
+    def _raise_setup_error() -> dict[str, object]:
+        raise RuntimeError("setup exploded")
+
+    monkeypatch.setattr(entrypoint, "_run_tui_setup", _raise_setup_error)
+
+    assert entrypoint.main_tui([]) == 1
+    assert "setup exploded" in capsys.readouterr().err
+
+
+def test_direct_tui_entrypoint_handles_setup_interrupt(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(entrypoint, "_needs_tui_setup", lambda: True)
+
+    def _interrupt_setup() -> dict[str, object]:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(entrypoint, "_run_tui_setup", _interrupt_setup)
+
+    assert entrypoint.main_tui([]) == 1
+    assert "interrupted" in capsys.readouterr().err.lower()

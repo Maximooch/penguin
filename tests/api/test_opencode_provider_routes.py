@@ -201,6 +201,8 @@ async def test_workspace_only_core_exposes_connectable_provider_roster(
 ) -> None:
     monkeypatch.setattr(provider_service, "get_provider_credentials", lambda: {})
     monkeypatch.setattr(provider_service, "env_connected_provider_ids", lambda: set())
+    monkeypatch.setattr(provider_service, "provider_connected", lambda *_args: False)
+    monkeypatch.setattr(provider_service, "load_config", lambda: {})
     monkeypatch.setattr(
         provider_service,
         "_schedule_provider_catalog_refresh",

@@ -126,7 +126,10 @@ def check_config_completeness() -> bool:
     Connecting an AI model and credential is optional and must not gate startup.
     """
     workspace = _load_config().get("workspace")
-    return isinstance(workspace, dict) and bool(str(workspace.get("path", "")).strip())
+    if not isinstance(workspace, dict):
+        return False
+    raw_path = str(workspace.get("path", "")).strip()
+    return bool(raw_path) and _workspace_ready(Path(raw_path).expanduser())
 
 
 def check_provider_ready(config: dict[str, Any] | None = None) -> bool:
@@ -141,14 +144,14 @@ def check_provider_ready(config: dict[str, Any] | None = None) -> bool:
     if provider in {"ollama", "local"}:
         return True
     env_names = {
-        "openai": ("OPENAI_API_KEY",),
+        "openai": ("OPENAI_API_KEY", "OPENAI_OAUTH_ACCESS_TOKEN"),
         "anthropic": ("ANTHROPIC_API_KEY",),
         "openrouter": ("OPENROUTER_API_KEY",),
         "google": ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
         "mistral": ("MISTRAL_API_KEY",),
         "deepseek": ("DEEPSEEK_API_KEY",),
     }.get(provider, ())
-    return any(os.getenv(name) for name in env_names)
+    return any(str(os.getenv(name) or "").strip() for name in env_names)
 
 
 def check_first_run() -> bool:
@@ -184,7 +187,10 @@ def _persist_api_key(provider: str, api_key: str) -> bool:
                 break
         else:
             existing.append(line)
+        env_path.touch(mode=0o600, exist_ok=True)
+        os.chmod(env_path, 0o600)
         env_path.write_text("\n".join(existing) + "\n", encoding="utf-8")
+        os.chmod(env_path, 0o600)
         os.environ[key] = api_key
         return True
     except OSError:
@@ -200,6 +206,11 @@ def save_config(config: dict[str, Any]) -> Path | None:
     except OSError as exc:
         console.print(f"[bold red]Could not save configuration:[/bold red] {exc}")
         return None
+
+
+def _workspace_ready(path: Path) -> bool:
+    """Return whether an existing workspace is a writable directory."""
+    return path.exists() and path.is_dir() and os.access(path, os.W_OK | os.X_OK)
 
 
 def _validate_workspace(value: str) -> bool | str:
@@ -333,14 +344,14 @@ async def run_setup_wizard() -> dict[str, Any]:
     }
     await _optional_model_setup(config)
 
+    try:
+        _create_workspace(workspace_path)
+    except OSError as exc:
+        return {"error": f"Could not initialize workspace: {exc}"}
     saved = save_config(config)
     if saved is None:
         return {"error": "Failed to save configuration"}
-    try:
-        _create_workspace(workspace_path)
-        mark_setup_complete()
-    except OSError as exc:
-        return {"error": f"Could not initialize workspace: {exc}"}
+    mark_setup_complete()
 
     console.print("\n[bold green]Penguin is ready.[/bold green]")
     console.print(f"Workspace: [cyan]{workspace_path}[/cyan]")

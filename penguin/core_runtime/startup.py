@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, MutableMapping
 
+from penguin.core_runtime.model_runtime import provider_credential_available
+
 ActionExecutorFactory = Callable[..., Any]
 ApiClientFactory = Callable[..., Any]
 CheckpointConfigFactory = Callable[..., Any]
@@ -512,15 +514,8 @@ def build_api_client(
     if not provider or not model:
         return None
 
-    if provider not in {"ollama", "local"}:
-        api_key = str(getattr(model_config, "api_key", "") or "").strip()
-        credential_envs = {
-            "openai": ("OPENAI_API_KEY", "OPENAI_OAUTH_ACCESS_TOKEN"),
-            "anthropic": ("ANTHROPIC_API_KEY",),
-            "openrouter": ("OPENROUTER_API_KEY",),
-        }.get(provider, (f"{provider.upper()}_API_KEY",))
-        if not api_key and not any(os.getenv(name) for name in credential_envs):
-            return None
+    if not provider_credential_available(model_config):
+        return None
 
     api_client = api_client_factory(model_config=model_config)
     api_client.set_system_prompt(system_prompt)

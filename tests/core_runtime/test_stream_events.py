@@ -604,6 +604,38 @@ async def test_abort_session_does_not_wait_for_slow_adapter_cleanup() -> None:
     await asyncio.sleep(0)
 
 
+@pytest.mark.asyncio
+async def test_abort_session_accepts_adapter_only_cleanup() -> None:
+    cleanup_started = asyncio.Event()
+
+    class _Adapter:
+        async def abort(self, reason: str) -> bool:
+            assert reason == "Tool execution was interrupted"
+            cleanup_started.set()
+            return True
+
+    owner = SimpleNamespace(
+        event_bus=_EventBus(),
+        _get_tui_adapter=lambda _session_id: _Adapter(),
+        _stream_manager=SimpleNamespace(get_active_agents=lambda: []),
+        _opencode_abort_sessions=set(),
+        _opencode_process_tasks={},
+        _opencode_stream_states={},
+        _opencode_tool_parts={},
+        _opencode_tool_info={},
+    )
+
+    aborted = await stream_events.abort_session(
+        owner,
+        "session_1",
+        logger=logging.getLogger("test.stream_events"),
+    )
+
+    assert aborted is True
+    await asyncio.sleep(0)
+    assert cleanup_started.is_set()
+
+
 def test_persist_finalized_message_writes_target_session_store() -> None:
     trace_messages: list[tuple[str, tuple[Any, ...]]] = []
     persisted_messages: list[Any] = []

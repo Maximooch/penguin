@@ -31,7 +31,7 @@ LinkConfigFactory = Callable[..., Any]
 LiteLLMLoader = Callable[[str], Any]
 
 
-def _provider_credential_available(model_config: ModelConfig) -> bool:
+def provider_credential_available(model_config: ModelConfig) -> bool:
     """Return whether a configured provider can be initialized for a request."""
     provider = str(getattr(model_config, "provider", "") or "").strip().lower()
     if provider in {"ollama", "local"}:
@@ -313,7 +313,7 @@ async def resolve_request_runtime(
     else:
         new_model_config = copy.deepcopy(owner.model_config)
 
-    if not _provider_credential_available(new_model_config):
+    if not provider_credential_available(new_model_config):
         raise ValueError(_missing_provider_credential_message(new_model_config))
 
     api_client = api_client_factory(model_config=new_model_config)
@@ -611,6 +611,7 @@ __all__ = [
     "ensure_litellm_runtime_state",
     "list_available_models",
     "load_model_for_core",
+    "provider_credential_available",
     "refresh_api_client",
     "resolve_model_provider",
     "resolve_request_runtime",
