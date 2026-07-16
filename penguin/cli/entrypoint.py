@@ -139,10 +139,12 @@ def main_tui(argv: Sequence[str] | None = None) -> int:
             print(f"Setup failed: {exc}", file=sys.stderr)
             return 1
         if not _setup_succeeded(result):
-            print(
-                f"Setup error: {result.get('error', 'Unknown setup error')}",
-                file=sys.stderr,
+            error = (
+                result.get("error", "Unknown setup error")
+                if isinstance(result, dict)
+                else "Unknown setup error"
             )
+            print(f"Setup error: {error}", file=sys.stderr)
             return 1
 
     from .opencode_launcher import main as launcher_main

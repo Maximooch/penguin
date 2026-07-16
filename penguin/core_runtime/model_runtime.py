@@ -42,6 +42,7 @@ def provider_credential_available(model_config: ModelConfig) -> bool:
         "openai": ("OPENAI_API_KEY", "OPENAI_OAUTH_ACCESS_TOKEN"),
         "anthropic": ("ANTHROPIC_API_KEY",),
         "openrouter": ("OPENROUTER_API_KEY",),
+        "google": ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
     }.get(provider, (f"{provider.upper()}_API_KEY",) if provider else ())
     return any(str(os.getenv(name) or "").strip() for name in credential_envs)
 

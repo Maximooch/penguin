@@ -527,11 +527,13 @@ async def test_abort_session_cancels_tasks_cleans_scoped_state_and_emits_idle() 
     )
 
     assert aborted is True
-    await asyncio.sleep(0)
-    assert adapter.reasons == ["Tool execution was interrupted"]
-    assert "session_1" in owner._opencode_abort_sessions
     with pytest.raises(asyncio.CancelledError):
         await pending_task
+    cleanup_tasks = owner._opencode_abort_cleanup_tasks
+    await asyncio.wait_for(asyncio.gather(*cleanup_tasks), timeout=0.1)
+    assert not cleanup_tasks
+    assert adapter.reasons == ["Tool execution was interrupted"]
+    assert "session_1" in owner._opencode_abort_sessions
 
     assert owner._opencode_stream_states["session_1"]["active"] is False
     assert owner._opencode_stream_states["session_1"]["stream_id"] is None
@@ -595,13 +597,16 @@ async def test_abort_session_does_not_wait_for_slow_adapter_cleanup() -> None:
     )
 
     assert aborted is True
-    assert pending_task.cancelled()
-    assert cleanup_started.is_set()
+    with pytest.raises(asyncio.CancelledError):
+        await pending_task
+    await asyncio.wait_for(cleanup_started.wait(), timeout=0.1)
     status_event = owner.event_bus.events[-1][1]
     assert status_event["properties"]["status"]["type"] == "idle"
 
     allow_cleanup.set()
-    await asyncio.sleep(0)
+    cleanup_tasks = owner._opencode_abort_cleanup_tasks
+    await asyncio.wait_for(asyncio.gather(*cleanup_tasks), timeout=0.1)
+    assert not cleanup_tasks
 
 
 @pytest.mark.asyncio
@@ -632,8 +637,10 @@ async def test_abort_session_accepts_adapter_only_cleanup() -> None:
     )
 
     assert aborted is True
-    await asyncio.sleep(0)
-    assert cleanup_started.is_set()
+    await asyncio.wait_for(cleanup_started.wait(), timeout=0.1)
+    cleanup_tasks = owner._opencode_abort_cleanup_tasks
+    await asyncio.wait_for(asyncio.gather(*cleanup_tasks), timeout=0.1)
+    assert not cleanup_tasks
 
 
 def test_persist_finalized_message_writes_target_session_store() -> None:

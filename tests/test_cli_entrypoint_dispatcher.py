@@ -186,3 +186,13 @@ def test_direct_tui_entrypoint_handles_setup_interrupt(monkeypatch, capsys) -> N
 
     assert entrypoint.main_tui([]) == 1
     assert "interrupted" in capsys.readouterr().err.lower()
+
+
+def test_direct_tui_entrypoint_handles_non_mapping_setup_result(
+    monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(entrypoint, "_needs_tui_setup", lambda: True)
+    monkeypatch.setattr(entrypoint, "_run_tui_setup", lambda: None)
+
+    assert entrypoint.main_tui([]) == 1
+    assert "Unknown setup error" in capsys.readouterr().err

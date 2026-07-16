@@ -556,6 +556,38 @@ def test_build_api_client_rejects_whitespace_only_credentials(
     assert client is None
 
 
+@pytest.mark.parametrize("credential_name", ["GOOGLE_API_KEY", "GEMINI_API_KEY"])
+def test_build_api_client_accepts_google_credential_aliases(
+    monkeypatch: pytest.MonkeyPatch, credential_name: str
+) -> None:
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv(credential_name, "google-key")
+    calls: list[str] = []
+    model_config = SimpleNamespace(
+        model="gemini-2.5-pro",
+        provider="google",
+        api_key=None,
+    )
+
+    class _Client:
+        def __init__(self, *, model_config: Any) -> None:
+            calls.append(model_config.provider)
+
+        def set_system_prompt(self, prompt: str) -> None:
+            calls.append(prompt)
+
+    client = startup.build_api_client(
+        model_config,
+        system_prompt="system prompt",
+        api_client_factory=_Client,
+        ensure_env_loaded=lambda: None,
+    )
+
+    assert isinstance(client, _Client)
+    assert calls == ["google", "system prompt"]
+
+
 def test_build_api_client_allows_local_provider_without_credentials() -> None:
     calls: list[str] = []
     model_config = SimpleNamespace(model="qwen3-coder", provider="ollama", api_key=None)

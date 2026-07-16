@@ -456,6 +456,43 @@ async def test_resolve_request_runtime_requires_selected_provider_credential(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("credential_name", ["GOOGLE_API_KEY", "GEMINI_API_KEY"])
+async def test_resolve_request_runtime_accepts_google_credential_aliases(
+    monkeypatch: pytest.MonkeyPatch, credential_name: str
+) -> None:
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv(credential_name, "google-key")
+    model_config = ModelConfig(model="gemini-2.5-pro", provider="google")
+
+    class FakeAPIClient:
+        def __init__(self, *, model_config: ModelConfig) -> None:
+            self.model_config = model_config
+            self.system_prompt = ""
+
+        def set_system_prompt(self, prompt: str) -> None:
+            self.system_prompt = prompt
+
+    owner = SimpleNamespace(
+        model_config=model_config,
+        system_prompt="system",
+        get_current_model=lambda: {
+            "model": "gemini-2.5-pro",
+            "provider": "google",
+        },
+    )
+
+    resolved, api_client = await resolve_request_runtime(
+        owner,
+        None,
+        api_client_factory=FakeAPIClient,
+    )
+
+    assert resolved.provider == "google"
+    assert api_client.system_prompt == "system"
+
+
+@pytest.mark.asyncio
 async def test_resolve_request_runtime_reuses_current_model_without_mutation() -> None:
     model_config = ModelConfig(model="gpt-4o", provider="openai", api_key="test-key")
     model_config.temperature = 0.1
