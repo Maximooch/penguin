@@ -490,27 +490,22 @@ async def abort_session(
     await emit_opencode_session_status(owner, sid, "idle")
 
     if callable(adapter_abort):
+        cleanup_tasks = getattr(owner, "_opencode_abort_cleanup_tasks", None)
+        if not isinstance(cleanup_tasks, set):
+            cleanup_tasks = set()
+            owner._opencode_abort_cleanup_tasks = cleanup_tasks
 
         async def _cleanup_adapter() -> None:
             try:
                 await adapter_abort(reason="Tool execution was interrupted")
             except Exception:
                 logger.warning("Failed to abort active TUI parts", exc_info=True)
+            finally:
+                cleanup_tasks.discard(asyncio.current_task())
 
-        cleanup_tasks = getattr(owner, "_opencode_abort_cleanup_tasks", None)
-        if not isinstance(cleanup_tasks, set):
-            cleanup_tasks = set()
-            owner._opencode_abort_cleanup_tasks = cleanup_tasks
         cleanup_task = asyncio.create_task(_cleanup_adapter())
         cleanup_tasks.add(cleanup_task)
         aborted = True
-
-        def _finish_cleanup(task: asyncio.Task[Any]) -> None:
-            cleanup_tasks.discard(task)
-            if not task.cancelled():
-                task.exception()
-
-        cleanup_task.add_done_callback(_finish_cleanup)
 
     return aborted
 
