@@ -11,9 +11,18 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from penguin.prompt.profiles import (
-    ModeProfile,
-    get_mode_profile,
-    normalize_prompt_mode,
+    PromptPreset,
+    get_quality_overlay,
+    get_work_mode_profile,
+    normalize_quality_overlays,
+    normalize_work_mode,
+    resolve_prompt_preset,
+)
+from penguin.prompt.soul import (
+    MINIMAL_PENGUIN_SOUL,
+    PENGUIN_SOUL,
+    get_personality_section,
+    normalize_personality_profile,
 )
 from penguin.prompt_actions import get_runtime_tool_protocol
 
@@ -21,37 +30,22 @@ __all__ = [
     "CORE_ENGINEERING_DISCIPLINE",
     "CORE_IDENTITY",
     "GIT_ATTRIBUTION_GUIDANCE",
+    "OPERATING_CONTRACT",
+    "PENGUIN_SOUL",
     "RUNTIME_CONTRACT",
     "VOICE_AND_COUNSEL",
     "PromptBuilder",
     "build_system_prompt",
     "get_builder",
+    "list_output_styles",
     "set_output_formatting",
     "set_permission_context_from_config",
 ]
 
 
-CORE_IDENTITY = """You are Penguin, a software engineering agent working in a
-user-controlled workspace. Be direct, evidence-backed, and respectful of the
-existing codebase and its conventions."""
-
-
-VOICE_AND_COUNSEL = """## Voice and counsel
-
-Use a direct, warm, and occasionally wry voice. When it adds clarity, rapport,
-or a useful reframe, you may intersperse a brief italic public aside. It may be
-humorous or lightly sarcastic; aim the joke at the problem, a brittle system,
-or yourself—not the user. Keep every aside task-grounded and
-decision-relevant. Do not narrate private reasoning or use asides as filler.
-
-Genuinely work and advise toward the user's stated success and best interests,
-not merely the most agreeable answer. For planning and consequential choices,
-seek root causes and leverage points; challenge unsupported assumptions and
-identify evidence-backed blind spots, rationalizations, opportunity cost, and
-concrete next moves. Do not accept excuses in place of an honest constraint,
-decision, or action. Be candid and respectful: no shame, contempt, generic
-motivation, or manufactured conflict. Keep ordinary execution requests
-execution-focused unless a strategic issue materially affects their outcome."""
+# Deprecated section names retained for integrations importing them directly.
+CORE_IDENTITY = MINIMAL_PENGUIN_SOUL
+VOICE_AND_COUNSEL = PENGUIN_SOUL
 
 
 CORE_ENGINEERING_DISCIPLINE = """## Engineering discipline
@@ -78,7 +72,7 @@ with the narrowest meaningful check, then broaden validation when risk warrants
 it."""
 
 
-RUNTIME_CONTRACT = """## Runtime and completion
+OPERATING_CONTRACT = """## Operating contract
 
 Follow user instructions, repository guidance, and runtime permission policy.
 Use only tools and capabilities actually available in the current session.
@@ -94,6 +88,9 @@ user. Do not create planning files, documentation, commits, branches, or
 checkpoints merely as ceremony. Call `finish_task` only when the stated
 acceptance evidence supports `done`; otherwise use truthful partial or blocked
 status."""
+
+
+RUNTIME_CONTRACT = OPERATING_CONTRACT
 
 
 SKILL_AND_DELEGATION_GUIDANCE = """## Skills and delegation
@@ -122,8 +119,7 @@ _OUTPUT_STYLE_GUIDANCE = {
     "steps_final": """## Response style
 
 Keep progress updates concrete and brief. Lead the final response with the
-outcome, then provide verification and material caveats. Do not simulate
-internal dialogue or expose private chain-of-thought. For non-trivial work,
+outcome, then provide verification and material caveats. For non-trivial work,
 make the quality trace legible: what changed, what was reused or avoided, what
 was verified, and any remaining limitation—omitting headings that add no value.""",
     "plain": """## Response style
@@ -135,6 +131,11 @@ process narration or simulated internal dialogue.""",
 Use clear, structured output when the user asks for machine-readable results.
 Otherwise lead with the outcome, evidence, and material caveats. Do not expose
 private chain-of-thought.""",
+    "explanatory": """## Response style
+
+Explain the answer in cohesive prose at the user's apparent level. Lead with
+the conclusion, then provide the reasoning, examples, and tradeoffs needed to
+make it understandable and actionable.""",
 }
 
 
@@ -145,11 +146,20 @@ def _normalize_output_style(style: str | None) -> str:
     return normalized if normalized in _OUTPUT_STYLE_GUIDANCE else "steps_final"
 
 
+def list_output_styles() -> list[str]:
+    """Return response styles suitable for configuration or a selector."""
+
+    return list(_OUTPUT_STYLE_GUIDANCE)
+
+
 @dataclass
 class PromptBuilder:
-    """Compose the core policy with one explicit task-mode overlay."""
+    """Compose orthogonal prompt layers into one deterministic system prompt."""
 
     output_style: str = "steps_final"
+    personality_profile: str = "penguin"
+    personality_overlay: str = ""
+    quality_overlays: tuple[str, ...] = ()
     permission_section: str = ""
     _legacy_components: dict[str, Any] = field(default_factory=dict)
 
@@ -191,26 +201,60 @@ class PromptBuilder:
 
         self.output_style = _normalize_output_style(style)
 
+    def set_personality(self, profile: str, *, overlay: str = "") -> None:
+        """Set the built-in Soul profile and optional user-owned preferences."""
+
+        self.personality_profile = normalize_personality_profile(profile)
+        self.personality_overlay = str(overlay).strip()
+
+    def set_quality_overlays(self, overlays: list[str] | tuple[str, ...]) -> None:
+        """Set optional quality disciplines without changing task intent."""
+
+        self.quality_overlays = normalize_quality_overlays(overlays)
+
     def build(
         self,
         mode: str = "direct",
         *,
+        work_mode: str | None = None,
         output_style: str | None = None,
+        personality_profile: str | None = None,
+        personality_overlay: str | None = None,
+        quality_overlays: list[str] | tuple[str, ...] | None = None,
         git_attribution_prompt: bool = True,
         **_kwargs: Any,
     ) -> str:
         """Build a deterministic prompt for one supported mode."""
 
-        canonical_mode = normalize_prompt_mode(mode)
-        profile = get_mode_profile(canonical_mode)
+        preset = self._resolve_preset(mode=mode, work_mode=work_mode)
+        profile = get_work_mode_profile(preset.work_mode)
         selected_output_style = _normalize_output_style(
-            self.output_style if output_style is None else output_style
+            output_style or preset.output_style or self.output_style
+        )
+        selected_personality = normalize_personality_profile(
+            personality_profile
+            or preset.personality_profile
+            or self.personality_profile
+        )
+        selected_personality_overlay = (
+            self.personality_overlay
+            if personality_overlay is None
+            else str(personality_overlay).strip()
+        )
+        selected_quality_overlays = normalize_quality_overlays(
+            (
+                *self.quality_overlays,
+                *preset.quality_overlays,
+                *(quality_overlays or ()),
+            )
         )
         sections = [
-            CORE_IDENTITY,
-            VOICE_AND_COUNSEL,
+            get_personality_section(
+                selected_personality,
+                overlay=selected_personality_overlay,
+            ),
             CORE_ENGINEERING_DISCIPLINE,
-            RUNTIME_CONTRACT,
+            OPERATING_CONTRACT,
             SKILL_AND_DELEGATION_GUIDANCE,
         ]
         if self.permission_section:
@@ -219,7 +263,11 @@ class PromptBuilder:
             sections.append(GIT_ATTRIBUTION_GUIDANCE)
         sections.extend(
             [
-                self._profile_guidance(profile),
+                profile.guidance,
+                *(
+                    get_quality_overlay(name).guidance
+                    for name in selected_quality_overlays
+                ),
                 _OUTPUT_STYLE_GUIDANCE[selected_output_style],
                 get_runtime_tool_protocol(),
             ]
@@ -227,10 +275,12 @@ class PromptBuilder:
         return "\n\n".join(section.strip() for section in sections if section.strip())
 
     @staticmethod
-    def _profile_guidance(profile: ModeProfile) -> str:
-        """Return one profile overlay, keeping mode logic out of the base policy."""
+    def _resolve_preset(*, mode: str, work_mode: str | None) -> PromptPreset:
+        """Resolve legacy presets unless an explicit work mode was supplied."""
 
-        return profile.guidance
+        if work_mode is not None:
+            return PromptPreset(work_mode=normalize_work_mode(work_mode))
+        return resolve_prompt_preset(mode)
 
 
 _builder = PromptBuilder()
@@ -245,7 +295,11 @@ def get_builder() -> PromptBuilder:
 def build_system_prompt(
     mode: str = "direct",
     *,
+    work_mode: str | None = None,
     output_style: str | None = None,
+    personality_profile: str | None = None,
+    personality_overlay: str | None = None,
+    quality_overlays: list[str] | tuple[str, ...] | None = None,
     git_attribution_prompt: bool = True,
     **kwargs: Any,
 ) -> str:
@@ -253,7 +307,11 @@ def build_system_prompt(
 
     return _builder.build(
         mode=mode,
+        work_mode=work_mode,
         output_style=output_style,
+        personality_profile=personality_profile,
+        personality_overlay=personality_overlay,
+        quality_overlays=quality_overlays,
         git_attribution_prompt=git_attribution_prompt,
         **kwargs,
     )

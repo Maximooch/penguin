@@ -1,23 +1,54 @@
-"""Prompt-mode profiles used by Penguin's canonical prompt renderer."""
+"""Work-mode presets and orthogonal quality overlays for prompt composition."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Iterable, Literal
 
 __all__ = [
+    "LEGACY_PROMPT_PRESETS",
     "MODE_PROFILES",
+    "QUALITY_OVERLAYS",
+    "WORK_MODE_PROFILES",
+    "CapabilityProfile",
     "ModeProfile",
     "PromptMode",
+    "PromptPreset",
+    "QualityOverlay",
+    "QualityOverlayProfile",
+    "WorkMode",
+    "WorkModeProfile",
     "get_mode_description",
     "get_mode_profile",
+    "get_quality_overlay",
+    "get_work_mode_description",
+    "get_work_mode_profile",
     "list_available_modes",
+    "list_available_work_modes",
+    "list_quality_overlays",
     "normalize_prompt_mode",
+    "normalize_quality_overlays",
+    "normalize_work_mode",
+    "resolve_prompt_preset",
 ]
+
+CapabilityProfile = Literal["full", "read_only", "no_tools"]
+
+
+class WorkMode(str, Enum):
+    """Task intent for the current turn or session."""
+
+    BUILD = "build"
+    PLAN = "plan"
+    REVIEW = "review"
+    RESEARCH = "research"
+    CHAT = "chat"
+    TEST = "test"
 
 
 class PromptMode(str, Enum):
-    """Supported task-oriented prompt modes."""
+    """Deprecated preset names retained for source compatibility."""
 
     DIRECT = "direct"
     BENCH_MINIMAL = "bench_minimal"
@@ -32,193 +63,296 @@ class PromptMode(str, Enum):
     COMPLEXITY_REVIEW = "complexity_review"
 
 
+class QualityOverlay(str, Enum):
+    """Optional discipline applied without changing task intent."""
+
+    PRODUCT = "product"
+    RIGOROUS = "rigorous"
+    COMPLEXITY_REVIEW = "complexity_review"
+
+
 @dataclass(frozen=True)
-class ModeProfile:
-    """A focused prompt overlay for one kind of work."""
+class WorkModeProfile:
+    """Prompt guidance and recommended runtime capability for one work mode."""
 
     name: str
     description: str
     guidance: str
-    personality_level: str = "minimal"
-    verbosity: str = "normal"
-    reasoning_depth: str = "normal"
-    completion_phrases: bool = True
+    capability_profile: CapabilityProfile
+    user_visible: bool = True
 
 
-MODE_PROFILES: dict[str, ModeProfile] = {
-    PromptMode.DIRECT.value: ModeProfile(
-        name=PromptMode.DIRECT.value,
-        description="Lean default for direct, evidence-backed engineering work.",
-        guidance="""## Direct work
+@dataclass(frozen=True)
+class QualityOverlayProfile:
+    """Focused quality policy that composes with a work mode."""
 
-Work directly on the request. Inspect only the context needed to make a sound
-decision, then act. Keep progress updates factual and brief.""",
-        reasoning_depth="fast",
+    name: str
+    description: str
+    guidance: str
+
+
+@dataclass(frozen=True)
+class PromptPreset:
+    """Compatibility mapping from an old prompt mode to orthogonal settings."""
+
+    work_mode: str
+    output_style: str | None = None
+    personality_profile: str | None = None
+    quality_overlays: tuple[str, ...] = ()
+
+
+WORK_MODE_PROFILES: dict[str, WorkModeProfile] = {
+    WorkMode.BUILD.value: WorkModeProfile(
+        name=WorkMode.BUILD.value,
+        description="Implement and verify changes in the user's workspace.",
+        capability_profile="full",
+        guidance="""## Build mode
+
+Trace the affected behavior before editing. Prefer a root-cause fix, keep the
+change focused, and run risk-proportional verification before claiming
+completion.""",
     ),
-    PromptMode.BENCH_MINIMAL.value: ModeProfile(
-        name=PromptMode.BENCH_MINIMAL.value,
-        description=(
-            "Minimal compatibility mode that retains core safety and completion rules."
-        ),
-        guidance="""## Minimal mode
+    WorkMode.PLAN.value: WorkModeProfile(
+        name=WorkMode.PLAN.value,
+        description="Develop an actionable plan without changing the workspace.",
+        capability_profile="read_only",
+        guidance="""## Plan mode
 
-Use the smallest amount of explanation and process needed to complete the
-request safely. Do not omit permission checks, verification appropriate to the
-change, or truthful completion status.""",
-        personality_level="none",
-        verbosity="minimal",
-        reasoning_depth="fast",
+Understand the relevant system and decisions before proposing work. Produce a
+specific, ordered plan with dependencies, risks, and acceptance evidence. Do
+not implement changes unless the user asks to move from planning to building.""",
     ),
-    PromptMode.TERSE.value: ModeProfile(
-        name=PromptMode.TERSE.value,
-        description="Concise responses without reducing engineering rigor.",
-        guidance="""## Terse response style
-
-Prefer short, outcome-first responses. Keep only the evidence and caveats the
-user needs to make a decision.""",
-        personality_level="none",
-        verbosity="minimal",
-        reasoning_depth="fast",
-    ),
-    PromptMode.EXPLAIN.value: ModeProfile(
-        name=PromptMode.EXPLAIN.value,
-        description="Educational mode that explains observable evidence and tradeoffs.",
-        guidance="""## Explain mode
-
-Explain decisions through observable evidence, tradeoffs, and examples when
-helpful. Do not expose private chain-of-thought or simulate internal dialogue.""",
-        verbosity="detailed",
-    ),
-    PromptMode.REVIEW.value: ModeProfile(
-        name=PromptMode.REVIEW.value,
-        description="Correctness, security, performance, and maintainability review.",
+    WorkMode.REVIEW.value: WorkModeProfile(
+        name=WorkMode.REVIEW.value,
+        description="Review existing work without applying fixes.",
+        capability_profile="read_only",
         guidance="""## Review mode
 
 Review for correctness, security, performance, maintainability, and missing
-verification. State each finding with location, impact, and evidence. Do not
-apply changes unless the user asks for a fix.""",
-        verbosity="detailed",
+verification. State each actionable finding with location, impact, and
+evidence. Do not apply changes unless the user asks for a fix.""",
     ),
-    PromptMode.IMPLEMENT.value: ModeProfile(
-        name=PromptMode.IMPLEMENT.value,
-        description=(
-            "Focused implementation with root-cause fixes and risk-proportional "
-            "verification."
-        ),
-        guidance="""## Implementation mode
-
-Trace the affected behavior before editing. Prefer a root-cause fix over a
-symptom patch, keep the change focused, and run the narrowest meaningful
-verification before claiming completion.""",
-    ),
-    PromptMode.TEST.value: ModeProfile(
-        name=PromptMode.TEST.value,
-        description=(
-            "Testing and validation focused on behavior, regressions, and failure "
-            "paths."
-        ),
-        guidance="""## Test mode
-
-Derive checks from the required behavior and its failure paths. Prefer
-deterministic, focused tests first; broaden only when the changed risk warrants
-it. A green command is evidence, not a substitute for checking the requirement.""",
-    ),
-    PromptMode.RESEARCH.value: ModeProfile(
-        name=PromptMode.RESEARCH.value,
-        description=(
-            "Evidence-oriented investigation without arbitrary exploration quotas."
-        ),
+    WorkMode.RESEARCH.value: WorkModeProfile(
+        name=WorkMode.RESEARCH.value,
+        description="Investigate and synthesize primary evidence.",
+        capability_profile="read_only",
         guidance="""## Research mode
 
 Gather enough primary evidence to answer the question or identify what remains
 unknown. Cite sources when useful, distinguish fact from inference, and stop
 when additional inspection would not change the decision.""",
-        verbosity="detailed",
-        reasoning_depth="deep",
     ),
-    PromptMode.PRODUCT.value: ModeProfile(
-        name=PromptMode.PRODUCT.value,
-        description=(
-            "User-facing product work with complete interaction states and visual "
-            "validation."
-        ),
-        guidance="""## Product quality mode
+    WorkMode.CHAT.value: WorkModeProfile(
+        name=WorkMode.CHAT.value,
+        description="Discuss, explain, and advise without taking actions.",
+        capability_profile="no_tools",
+        guidance="""## Chat mode
 
-For user-facing changes, trace the real user journey and reuse the existing
-design system before adding UI primitives or state. Cover relevant loading,
-empty, error, success, keyboard, and responsive states. Perform visual or
-interactive verification when the surface and available tools make it useful;
-do not invent UI polish outside the requested product scope.""",
-        reasoning_depth="deep",
+Respond directly from the available conversation. Explain, advise, or clarify
+without claiming to inspect files, call tools, or change external state.""",
     ),
-    PromptMode.RIGOROUS.value: ModeProfile(
-        name=PromptMode.RIGOROUS.value,
-        description=(
-            "High-assurance work for durable state, trust boundaries, concurrency, "
-            "and runtime behavior."
-        ),
-        guidance="""## Rigorous systems mode
+    WorkMode.TEST.value: WorkModeProfile(
+        name=WorkMode.TEST.value,
+        description="Design and run focused behavioral verification.",
+        capability_profile="full",
+        user_visible=False,
+        guidance="""## Test mode
 
-Before changing persistence, authorization, concurrency, provider/runtime, or
-destructive behavior, identify the source of truth, invariant, expected failure
-path, and recovery behavior. Make any resource bound explicit, local to its
-owner, and configurable when it affects user-visible work. Never introduce an
-implicit task token, iteration, or wall-clock stop.""",
-        reasoning_depth="deep",
-    ),
-    PromptMode.COMPLEXITY_REVIEW.value: ModeProfile(
-        name=PromptMode.COMPLEXITY_REVIEW.value,
-        description="Ponytail-inspired review that hunts unnecessary complexity only.",
-        guidance="""## Complexity review mode
-
-Review only for unnecessary complexity. For each finding, give one concise line
-with location, tag (`delete`, `stdlib`, `native`, `yagni`, or `shrink`), what to
-remove, and what replaces it. Do not flag safety checks, validation, error
-handling, accessibility, or meaningful verification as bloat. If there is
-nothing to cut, say `Lean already. Ship.`""",
-        verbosity="minimal",
+Derive checks from required behavior and failure paths. Prefer deterministic,
+focused tests first; broaden only when risk warrants it. A green command is
+evidence, not a substitute for checking the requirement.""",
     ),
 }
 
 
-_MODE_ALIASES = {
-    "lean": PromptMode.DIRECT.value,
-    "pony_tail": PromptMode.COMPLEXITY_REVIEW.value,
-    "ponytail": PromptMode.COMPLEXITY_REVIEW.value,
-    "production": PromptMode.PRODUCT.value,
-    "safety": PromptMode.RIGOROUS.value,
+QUALITY_OVERLAYS: dict[str, QualityOverlayProfile] = {
+    QualityOverlay.PRODUCT.value: QualityOverlayProfile(
+        name=QualityOverlay.PRODUCT.value,
+        description="Complete, polished user-facing product behavior.",
+        guidance="""## Product quality overlay
+
+Trace the real user journey and reuse the existing design system. Cover the
+relevant loading, empty, error, success, keyboard, accessibility, and
+responsive states. Perform visual or interactive verification when useful.""",
+    ),
+    QualityOverlay.RIGOROUS.value: QualityOverlayProfile(
+        name=QualityOverlay.RIGOROUS.value,
+        description="High assurance for state, trust, concurrency, and runtime work.",
+        guidance="""## Rigorous systems overlay
+
+Identify the source of truth, invariant, failure path, and recovery behavior
+before changing persistence, authorization, concurrency, provider/runtime, or
+destructive behavior. Make resource bounds explicit and user-configurable when
+they affect user-visible work.""",
+    ),
+    QualityOverlay.COMPLEXITY_REVIEW.value: QualityOverlayProfile(
+        name=QualityOverlay.COMPLEXITY_REVIEW.value,
+        description="Ponytail-inspired review for unnecessary complexity.",
+        guidance="""## Complexity review overlay
+
+For each complexity finding, give one concise line with location, tag
+(`delete`, `stdlib`, `native`, `yagni`, or `shrink`), what to remove, and what
+replaces it. Do not call safety, validation, accessibility, or meaningful
+verification bloat. If there is nothing to cut, say `Lean already. Ship.`""",
+    ),
 }
 
 
-def normalize_prompt_mode(mode: str | PromptMode) -> str:
-    """Return a canonical prompt mode or raise a clear configuration error."""
+LEGACY_PROMPT_PRESETS: dict[str, PromptPreset] = {
+    "direct": PromptPreset(work_mode=WorkMode.BUILD.value),
+    "bench_minimal": PromptPreset(
+        work_mode=WorkMode.BUILD.value,
+        output_style="plain",
+        personality_profile="minimal",
+    ),
+    "terse": PromptPreset(
+        work_mode=WorkMode.BUILD.value,
+        output_style="plain",
+        personality_profile="minimal",
+    ),
+    "explain": PromptPreset(work_mode=WorkMode.CHAT.value, output_style="explanatory"),
+    "implement": PromptPreset(work_mode=WorkMode.BUILD.value),
+    "product": PromptPreset(
+        work_mode=WorkMode.BUILD.value,
+        quality_overlays=(QualityOverlay.PRODUCT.value,),
+    ),
+    "rigorous": PromptPreset(
+        work_mode=WorkMode.BUILD.value,
+        quality_overlays=(QualityOverlay.RIGOROUS.value,),
+    ),
+    "complexity_review": PromptPreset(
+        work_mode=WorkMode.REVIEW.value,
+        output_style="plain",
+        quality_overlays=(QualityOverlay.COMPLEXITY_REVIEW.value,),
+    ),
+}
 
-    raw_mode = mode.value if isinstance(mode, PromptMode) else str(mode)
-    normalized = raw_mode.strip().lower().replace("-", "_")
-    normalized = _MODE_ALIASES.get(normalized, normalized)
-    if normalized in MODE_PROFILES:
+_PROMPT_PRESET_ALIASES = {
+    "lean": "direct",
+    "pony_tail": "complexity_review",
+    "ponytail": "complexity_review",
+    "production": "product",
+    "safety": "rigorous",
+}
+
+
+def _normalize_name(value: object) -> str:
+    return str(value).strip().lower().replace("-", "_")
+
+
+def normalize_work_mode(mode: str | WorkMode) -> str:
+    """Return a canonical work-mode name."""
+
+    raw_mode = mode.value if isinstance(mode, WorkMode) else mode
+    normalized = _normalize_name(raw_mode)
+    if normalized in WORK_MODE_PROFILES:
         return normalized
+    available = ", ".join(list_available_work_modes(include_internal=True))
+    raise ValueError(f"Unknown work mode {raw_mode!r}. Available: {available}")
 
+
+def resolve_prompt_preset(value: str | WorkMode | PromptMode) -> PromptPreset:
+    """Resolve a work mode or legacy prompt-mode name into explicit settings."""
+
+    raw_value = value.value if isinstance(value, (WorkMode, PromptMode)) else value
+    normalized = _normalize_name(raw_value)
+    normalized = _PROMPT_PRESET_ALIASES.get(normalized, normalized)
+    if normalized in WORK_MODE_PROFILES:
+        return PromptPreset(work_mode=normalized)
+    preset = LEGACY_PROMPT_PRESETS.get(normalized)
+    if preset is not None:
+        return preset
     available = ", ".join(list_available_modes())
-    raise ValueError(f"Unknown prompt mode {raw_mode!r}. Available modes: {available}")
+    raise ValueError(f"Unknown prompt preset {raw_value!r}. Available: {available}")
 
 
-def get_mode_profile(mode: str | PromptMode) -> ModeProfile:
-    """Return the requested profile, falling back to the direct profile."""
+def normalize_quality_overlays(
+    values: Iterable[str | QualityOverlay],
+) -> tuple[str, ...]:
+    """Validate and deduplicate quality overlays while preserving order."""
 
-    try:
-        return MODE_PROFILES[normalize_prompt_mode(mode)]
-    except ValueError:
-        return MODE_PROFILES[PromptMode.DIRECT.value]
+    normalized: list[str] = []
+    for value in values:
+        raw_value = value.value if isinstance(value, QualityOverlay) else value
+        name = _normalize_name(raw_value)
+        if name not in QUALITY_OVERLAYS:
+            available = ", ".join(QUALITY_OVERLAYS)
+            raise ValueError(
+                f"Unknown quality overlay {raw_value!r}. Available: {available}"
+            )
+        if name not in normalized:
+            normalized.append(name)
+    return tuple(normalized)
+
+
+def get_work_mode_profile(mode: str | WorkMode) -> WorkModeProfile:
+    """Return the profile for one canonical work mode."""
+
+    return WORK_MODE_PROFILES[normalize_work_mode(mode)]
+
+
+def get_quality_overlay(
+    overlay: str | QualityOverlay,
+) -> QualityOverlayProfile:
+    """Return one validated quality overlay."""
+
+    return QUALITY_OVERLAYS[normalize_quality_overlays((overlay,))[0]]
+
+
+def list_available_work_modes(*, include_internal: bool = False) -> list[str]:
+    """Return work modes suitable for configuration or a user-facing selector."""
+
+    return [
+        name
+        for name, profile in WORK_MODE_PROFILES.items()
+        if include_internal or profile.user_visible
+    ]
+
+
+def list_quality_overlays() -> list[str]:
+    """Return optional quality disciplines suitable for a configuration UI."""
+
+    return list(QUALITY_OVERLAYS)
+
+
+def get_work_mode_description(mode: str | WorkMode) -> str:
+    """Return a user-facing work-mode description."""
+
+    return get_work_mode_profile(mode).description
+
+
+# Compatibility names for integrations importing the old prompt-mode API.
+ModeProfile = WorkModeProfile
+MODE_PROFILES = WORK_MODE_PROFILES
+
+
+def normalize_prompt_mode(mode: str | WorkMode | PromptMode) -> str:
+    """Normalize an old prompt mode without discarding its preset semantics."""
+
+    raw_mode = mode.value if isinstance(mode, (WorkMode, PromptMode)) else mode
+    normalized = _normalize_name(raw_mode)
+    normalized = _PROMPT_PRESET_ALIASES.get(normalized, normalized)
+    resolve_prompt_preset(normalized)
+    return normalized
+
+
+def get_mode_profile(mode: str | WorkMode | PromptMode) -> WorkModeProfile:
+    """Compatibility wrapper returning the preset's work-mode profile."""
+
+    return get_work_mode_profile(resolve_prompt_preset(mode).work_mode)
 
 
 def list_available_modes() -> list[str]:
-    """Return canonical prompt mode names suitable for configuration or CLI use."""
+    """Return work modes plus supported legacy preset names."""
 
-    return list(MODE_PROFILES)
+    names = list_available_work_modes(include_internal=True)
+    for name in LEGACY_PROMPT_PRESETS:
+        if name not in names:
+            names.append(name)
+    return names
 
 
-def get_mode_description(mode: str | PromptMode) -> str:
-    """Return the user-facing description for a prompt mode."""
+def get_mode_description(mode: str | WorkMode | PromptMode) -> str:
+    """Compatibility wrapper for the resolved work-mode description."""
 
     return get_mode_profile(mode).description

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from importlib import import_module
 from types import SimpleNamespace
 
 from penguin.core import PenguinCore
@@ -144,6 +145,44 @@ def test_prompt_and_output_style_getters_default_when_missing() -> None:
 
     assert prompt_settings.get_prompt_mode(owner) == "direct"
     assert prompt_settings.get_output_style(owner) == "steps_final"
+    assert prompt_settings.get_work_mode(owner) == "build"
+
+
+def test_set_work_mode_preserves_configured_prompt_layers() -> None:
+    calls: list[dict[str, object]] = []
+    owner = SimpleNamespace(
+        output_style="plain",
+        personality_profile="minimal",
+        personality_overlay="Prefer concrete examples.",
+        quality_overlays=("rigorous",),
+        conversation_manager=_ConversationManager(),
+    )
+
+    def render(**kwargs: object) -> str:
+        calls.append(kwargs)
+        return "composed"
+
+    result = prompt_settings.set_work_mode(
+        owner,
+        " Review ",
+        get_system_prompt=render,
+        normalize_work_mode=lambda mode: mode.strip().lower(),
+        logger=logging.getLogger(__name__),
+    )
+
+    assert result == "Work mode set to 'review'."
+    assert owner.work_mode == "review"
+    assert owner.prompt_mode == "review"
+    assert calls == [
+        {
+            "work_mode": "review",
+            "output_style": "plain",
+            "git_attribution_prompt": True,
+            "personality_profile": "minimal",
+            "personality_overlay": "Prefer concrete examples.",
+            "quality_overlays": ("rigorous",),
+        }
+    ]
 
 
 def test_set_core_system_prompt_updates_api_client_and_conversation() -> None:
@@ -204,7 +243,8 @@ def test_core_prompt_setting_shims_delegate_to_runtime(monkeypatch) -> None:
     facade_globals = PenguinCore.set_prompt_mode.__globals__
 
     monkeypatch.setitem(facade_globals, "get_system_prompt", _prompt)
-    monkeypatch.setattr("penguin.prompt.builder.set_output_formatting", formats.append)
+    prompt_builder = import_module("penguin.prompt.builder")
+    monkeypatch.setattr(prompt_builder, "set_output_formatting", formats.append)
 
     core.api_client = SimpleNamespace(set_system_prompt=formats.append)
     assert core.set_prompt_mode("TEST") == "Prompt mode set to 'test'."

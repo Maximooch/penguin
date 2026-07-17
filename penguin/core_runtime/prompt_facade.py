@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import logging
 
-from penguin.system_prompt import get_system_prompt, normalize_prompt_mode
+from penguin.system_prompt import (
+    get_system_prompt,
+    normalize_prompt_mode,
+    normalize_work_mode,
+)
 
 from . import prompt_settings as core_prompt_settings
 
@@ -29,6 +33,22 @@ class PromptCoreFacade:
     def get_prompt_mode(self) -> str:
         """Return current prompt mode name."""
         return core_prompt_settings.get_prompt_mode(self)
+
+    def set_work_mode(self, mode: str) -> str:
+        """Set task intent without changing personality or response style."""
+
+        return core_prompt_settings.set_work_mode(
+            self,
+            mode,
+            get_system_prompt=get_system_prompt,
+            normalize_work_mode=normalize_work_mode,
+            logger=logger,
+        )
+
+    def get_work_mode(self) -> str:
+        """Return the current task-intent mode."""
+
+        return core_prompt_settings.get_work_mode(self)
 
     def set_output_style(self, style: str) -> str:
         """Set output formatting style and rebuild system prompt."""

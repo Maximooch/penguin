@@ -59,31 +59,49 @@ curl -X POST http://127.0.0.1:9000/api/v1/system/config/execution-mode \
 
 See [Runtime Configuration API](api_reference/api_server.md#runtime-configuration-management) for full API documentation.
 
-## Prompt Modes
+## Prompt Composition
 
-Penguin renders one focused system prompt per task mode instead of applying one
-large workflow manual to every turn. Configure the default in `config.yml` or
-switch it for the active session with `/mode set <mode>`.
+Penguin composes its system prompt from independent layers rather than treating
+personality, task intent, permissions, and response formatting as one “mode”:
+
+1. **Penguin Soul** — stable identity, character, and strategic counsel.
+2. **Operating contract** — permissions, truthful completion, and runtime rules.
+3. **Work mode** — the current intent: build, plan, review, research, or chat.
+4. **Quality overlays** — optional product, rigorous-systems, or complexity focus.
+5. **Response style** — presentation only; it does not change task intent.
+
+Runtime capabilities remain separate and enforceable. Prompt text may describe
+a recommended capability profile, but it cannot grant tools or permissions.
 
 ```yaml
 prompt:
-  mode: direct
+  work_mode: build
+  personality:
+    profile: penguin
+    # Optional user-owned preferences stored in local configuration.
+    overlay: ""
+  quality_overlays: []
 ```
 
-| Mode | Use it for |
-| --- | --- |
-| `direct` | Lean default: smallest excellent change, evidence, and explicit completion. |
-| `implement` / `test` / `research` / `review` | Focused implementation, validation, investigation, or normal quality review. |
-| `product` | User-facing work requiring complete interaction states and appropriate visual verification. |
-| `rigorous` | Persistence, permissions, concurrency, provider/runtime behavior, and destructive operations. |
-| `complexity_review` | Ponytail-inspired delete-list review for unnecessary complexity only; it does not replace correctness review. |
-| `terse`, `explain`, `bench_minimal` | Response-shape variants that retain the runtime and completion contract. |
+| Work mode | Use it for | Recommended capability |
+| --- | --- | --- |
+| `build` | Implement and verify workspace changes. | `full` |
+| `plan` | Produce an actionable plan without modifying the workspace. | `read_only` |
+| `review` | Find actionable issues without applying fixes. | `read_only` |
+| `research` | Gather and synthesize primary evidence. | `read_only` |
+| `chat` | Explain and advise from available conversation context. | `no_tools` |
 
-`lean` aliases `direct`; `ponytail` aliases `complexity_review`. Unknown modes
-are rejected rather than silently claiming a mode that was not rendered.
+Quality overlays do not create new task modes. `product` asks for complete
+user-facing states, `rigorous` strengthens systems/invariant analysis, and
+`complexity_review` performs a Ponytail-inspired delete-list review.
 
-Prompt modes do not create default execution limits. An unconfigured goal still
-continues until completion, interruption, required input, or a real
+The old `prompt.mode` names remain supported as compatibility presets. For
+example, `product` maps to work mode `build` plus the product overlay, while
+`terse` maps to build mode plus minimal personality and plain response style.
+New configuration should use the orthogonal fields above.
+
+Prompt settings do not create default execution limits. An unconfigured goal
+still continues until completion, interruption, required input, or a real
 external/runtime failure. Configured token, iteration, and time limits remain
 explicit runtime contracts.
 
@@ -373,7 +391,7 @@ Penguin’s assistant reply style is configurable and separate from the CLI’s 
 
 ```yaml
 output:
-  # One of: steps_final (default) | plain | json_guided
+  # One of: steps_final (default) | plain | json_guided | explanatory
   prompt_style: steps_final
 ```
 
@@ -381,13 +399,14 @@ Styles:
 - steps_final: Keeps the “Plan / Steps” collapsible details block and a clear “Final” section.
 - plain: Concise, well-structured answers without a collapsible steps block.
 - json_guided: Assistant includes a concise JSON summary for structure (e.g., fields like type, answer, next_steps), and places larger code snippets in fenced code blocks.
+- explanatory: Cohesive educational prose with the conclusion, reasoning, examples, and tradeoffs.
 
 Note: This controls the assistant’s reply style. It does not change the CLI non-interactive output, which is controlled by `--output-format` (see below).
 
 ### TUI Commands
 
 - `/output style get` — show the current style
-- `/output style set steps_final|plain|json_guided` — change the style at runtime
+- `/output style set steps_final|plain|json_guided|explanatory` — change the style at runtime
 
 To persist as default:
 

@@ -35,6 +35,22 @@ tools:
   allow_file_operations: true
   allow_code_execution: true
 
+# Prompt composition keeps task intent, personality, response shape, and
+# optional quality disciplines independent. Capability profiles are enforced
+# by the runtime and are not configured through prompt text.
+prompt:
+  work_mode: build # build | plan | review | research | chat
+  personality:
+    profile: penguin # penguin | minimal
+    # Optional local preferences appended after Penguin's built-in Soul.
+    overlay: ""
+  # Optional: product | rigorous | complexity_review
+  quality_overlays: []
+
+output:
+  # steps_final | plain | json_guided | explanatory
+  prompt_style: steps_final
+
 # Controls only whether Penguin is prompted to add its co-author trailer when
 # it creates a commit. It does not configure Git identity or enforce commits.
 git:
