@@ -74,6 +74,9 @@ async def process_with_retry(
     trace_log_info: Callable[..., None],
     log_error_fn: Callable[..., None],
     retry_sleep: Callable[[float], Awaitable[None]] | None = None,
+    tools_enabled: bool = True,
+    allowed_tool_names: list[str] | None = None,
+    include_web_search: bool = True,
 ) -> dict[str, Any] | BaseException:
     """Process a user request with the public retry policy applied."""
     retrying = _process_retrying(sleep=retry_sleep)
@@ -91,6 +94,9 @@ async def process_with_retry(
         multi_step=multi_step,
         api_client_override=api_client_override,
         model_config_override=model_config_override,
+        tools_enabled=tools_enabled,
+        allowed_tool_names=allowed_tool_names,
+        include_web_search=include_web_search,
         log=log,
         trace_log_info=trace_log_info,
         log_error_fn=log_error_fn,
@@ -114,6 +120,9 @@ async def process(
     log: logging.Logger,
     trace_log_info: Callable[..., None],
     log_error_fn: Callable[..., None],
+    tools_enabled: bool = True,
+    allowed_tool_names: list[str] | None = None,
+    include_web_search: bool = True,
 ) -> dict[str, Any]:
     """Process a user request through PenguinCore-owned collaborators."""
 
@@ -235,6 +244,9 @@ async def process(
                 agent_id=agent_id,
                 api_client_override=api_client_override,
                 model_config_override=model_config_override,
+                tools_enabled=tools_enabled,
+                allowed_tool_names=allowed_tool_names,
+                include_web_search=include_web_search,
                 conversation_manager=conversation_manager,
                 execution_context=execution_context,
                 request_session_id=request_session_id,

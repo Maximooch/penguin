@@ -31,6 +31,8 @@ from .model_config import ModelConfig
 from .provider_registry import ProviderRegistry
 from .provider_transform import apply_model_config_transforms, build_llm_error
 from penguin.constants import get_default_max_history_tokens
+from penguin.execution_profiles import resolve_profile_system_context
+from penguin.system.execution_context import get_current_execution_context
 from penguin.utils.callbacks import adapt_stream_callback
 from .adapters import get_adapter  # Keep for native preference
 from .litellm_support import load_litellm_gateway_class, load_litellm_module
@@ -384,6 +386,28 @@ class APIClient:
         # if self.model_config.use_assistants_api and hasattr(self.client_handler, 'assistant_manager'):
         #     self.client_handler.assistant_manager.update_system_prompt(prompt)
 
+    def _system_prompt_for_current_request(self) -> Optional[str]:
+        """Return a request-scoped system prompt without mutating this client.
+
+        ``APIClient`` instances are shared by concurrent sessions. The
+        execution profile therefore lives in the ``ContextVar``-backed request
+        context rather than on ``self``. Agent turns deliberately fall back to
+        the configured full prompt, while chat/research turns receive their
+        compact profile context only for this provider payload.
+        """
+
+        execution_context = get_current_execution_context()
+        profile_name = (
+            execution_context.execution_profile if execution_context else None
+        )
+        try:
+            profile_context = resolve_profile_system_context(profile_name)
+        except ValueError:
+            # Request routes validate profiles. Keep direct legacy callers on
+            # the normal prompt if they supply an invalid context value.
+            profile_context = None
+        return profile_context or self.system_prompt
+
     def _prepare_messages_with_system_prompt(
         self, messages: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
@@ -391,16 +415,23 @@ class APIClient:
         Inject the system prompt while preserving other system‑role
         messages (e.g. action results, iteration markers).
         """
-        if not self.system_prompt:
+        request_system_prompt = self._system_prompt_for_current_request()
+        if not request_system_prompt:
             return messages[:]  # nothing to do
 
         processed = []
         prompt_already_present = False
+        configured_system_prompt = self.system_prompt
 
         for msg in messages:
             if msg.get("role") == "system":
-                if msg.get("content") == self.system_prompt:
-                    # Drop existing duplicate of the global prompt
+                content = msg.get("content")
+                if (
+                    content == request_system_prompt
+                    or content == configured_system_prompt
+                ):
+                    # Drop the persisted full prompt (or a duplicate compact
+                    # prompt) before inserting the request-specific prompt.
                     prompt_already_present = True
                 else:
                     # KEEP other system messages (action results, etc.)
@@ -410,11 +441,16 @@ class APIClient:
 
         # Ensure the global system prompt is in slot‑0
         if not prompt_already_present:
-            processed.insert(0, {"role": "system", "content": self.system_prompt})
+            processed.insert(0, {"role": "system", "content": request_system_prompt})
         else:
             # If some other message grabbed index‑0, still enforce the prompt first
-            if processed and processed[0].get("content") != self.system_prompt:
-                processed.insert(0, {"role": "system", "content": self.system_prompt})
+            if (
+                not processed
+                or processed[0].get("content") != request_system_prompt
+            ):
+                processed.insert(
+                    0, {"role": "system", "content": request_system_prompt}
+                )
 
         return processed
 

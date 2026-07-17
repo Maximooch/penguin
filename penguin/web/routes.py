@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, NoReturn, Optional
+from typing import Any, Dict, List, Literal, NoReturn, Optional
 from fastapi import (
     APIRouter,
     Depends,
@@ -57,6 +57,10 @@ from penguin.core_runtime.session_goals import (
 )
 from penguin.system.execution_context import ExecutionContext, execution_context_scope, normalize_directory
 from penguin import __version__
+from penguin.execution_profiles import (
+    resolve_execution_profile,
+    resolve_profile_tools_enabled,
+)
 from penguin.utils.events import EventBus as UtilsEventBus
 from penguin.cli.events import EventBus as CLIEventBus, EventType
 from penguin.web.health import get_health_monitor
@@ -539,6 +543,7 @@ def _build_execution_context(
     agent_id: Optional[str],
     agent_mode: Optional[str],
     directory: Optional[str],
+    execution_profile: Optional[str] = None,
 ) -> ExecutionContext:
     """Create request-scoped execution context for concurrent web sessions."""
     path_info = get_path_info(core, directory=directory, session_id=session_id)
@@ -548,6 +553,7 @@ def _build_execution_context(
         conversation_id=conversation_id,
         agent_id=agent_id,
         agent_mode=agent_mode,
+        execution_profile=execution_profile,
         directory=effective_directory,
         project_root=effective_directory,
         workspace_root=effective_directory,
@@ -1025,6 +1031,8 @@ class MessageRequest(BaseModel):
     max_iterations: Optional[int] = None
     image_paths: Optional[List[str]] = None  # Multiple images supported (max 10)
     include_reasoning: Optional[bool] = False
+    execution_profile: Optional[Literal["agent", "chat", "research"]] = None
+    tools_enabled: Optional[bool] = None
     agent_id: Optional[str] = None
     agent_mode: Optional[str] = None
     directory: Optional[str] = None
@@ -4059,16 +4067,22 @@ async def handle_chat_message(
             if image_path not in image_paths:
                 image_paths.append(image_path)
 
+        execution_profile = resolve_execution_profile(request.execution_profile)
+        tools_enabled = resolve_profile_tools_enabled(
+            execution_profile,
+            request.tools_enabled,
+        )
         execution_context = _build_execution_context(
             core,
             session_id=effective_session_id,
             conversation_id=effective_session_id,
             agent_id=request.agent_id,
             agent_mode=resolved_agent_mode,
+            execution_profile=execution_profile.name,
             directory=bound_directory or request.directory,
         )
         _request_log_debug(
-            "chat.trace.start request=%s session=%s agent=%s mode=%s dir=%s model=%s streaming=%s client_msg=%s prompt=%r",
+            "chat.trace.start request=%s session=%s agent=%s mode=%s dir=%s model=%s request_streaming=%s client_msg=%s prompt=%r",
             execution_context.request_id or "unknown",
             request_session_id or "unknown",
             request.agent_id or "default",
@@ -4155,6 +4169,14 @@ async def handle_chat_message(
             )
 
         include_reasoning = _resolve_include_reasoning(request.include_reasoning)
+        _request_log_info(
+            "chat.execution_profile request=%s session=%s profile=%s tools=%s reasoning=%s",
+            execution_context.request_id or "unknown",
+            request_session_id or "unknown",
+            execution_profile.name,
+            tools_enabled,
+            include_reasoning,
+        )
 
         # If reasoning is requested, capture reasoning chunks via a local callback
         reasoning_buf: List[str] = []
@@ -4171,6 +4193,19 @@ async def handle_chat_message(
                     reasoning_buf.append(chunk)
 
             stream_cb = _rest_stream_cb
+
+        # The REST request may deliberately be non-streaming while Penguin
+        # streams internally to collect reasoning/runtime events. Keep the
+        # two dimensions separate in traces so a false outer flag is never
+        # mistaken for a non-streaming model invocation.
+        _request_log_info(
+            "chat.trace.streaming_mode request=%s session=%s request_streaming=%s effective_streaming=%s forced_for_reasoning=%s",
+            execution_context.request_id or "unknown",
+            request_session_id or "unknown",
+            bool(request.streaming),
+            effective_streaming,
+            include_reasoning and not bool(request.streaming),
+        )
 
         try:
             reasoning_variant_snapshot = _apply_reasoning_variant_override(
@@ -4279,6 +4314,13 @@ async def handle_chat_message(
                     stream_callback=stream_cb,
                     api_client_override=request_api_client,
                     model_config_override=request_model_config,
+                    tools_enabled=tools_enabled,
+                    allowed_tool_names=(
+                        list(execution_profile.allowed_tool_names)
+                        if execution_profile.allowed_tool_names is not None
+                        else None
+                    ),
+                    include_web_search=execution_profile.include_web_search,
                 )
                 process_ms = (time.perf_counter() - process_started) * 1000
             _request_log_debug(
@@ -4547,6 +4589,17 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
             include_reasoning = _resolve_include_reasoning(
                 data.get("include_reasoning")
             )
+            execution_profile = resolve_execution_profile(
+                data.get("execution_profile")
+                if isinstance(data.get("execution_profile"), str)
+                else None
+            )
+            tools_enabled = resolve_profile_tools_enabled(
+                execution_profile,
+                data.get("tools_enabled")
+                if isinstance(data.get("tools_enabled"), bool)
+                else None,
+            )
             variant = data.get("variant")
             service_tier = data.get("service_tier")
             model = data.get("model")
@@ -4579,6 +4632,7 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
                 conversation_id=effective_session_id,
                 agent_id=agent_id,
                 agent_mode=resolved_agent_mode,
+                execution_profile=execution_profile.name,
                 directory=bound_directory or directory,
             )
 
@@ -4806,6 +4860,13 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
                                 stream_callback=per_request_stream_callback,
                                 api_client_override=request_api_client,
                                 model_config_override=request_model_config,
+                                tools_enabled=tools_enabled,
+                                allowed_tool_names=(
+                                    list(execution_profile.allowed_tool_names)
+                                    if execution_profile.allowed_tool_names is not None
+                                    else None
+                                ),
+                                include_web_search=execution_profile.include_web_search,
                             )
                         )
 

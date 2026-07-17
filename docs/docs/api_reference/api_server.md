@@ -170,6 +170,8 @@ Process a chat message with optional conversation support, multi-modal capabilit
   "context_files": ["path/to/file1.py", "path/to/file2.py"],
   "streaming": true,
   "max_iterations": 20,
+  "execution_profile": "research",
+  "tools_enabled": true,
   "image_paths": ["/path/to/image.png"],
   "include_reasoning": false
 }
@@ -186,6 +188,12 @@ Process a chat message with optional conversation support, multi-modal capabilit
 - `streaming` (optional): Accepted for compatibility; REST `/chat/message` returns final payloads (use WebSocket endpoint for token streaming)
 - `max_iterations` (optional): An explicit reasoning-iteration limit. When
   omitted, Penguin does not impose a local iteration ceiling.
+- `execution_profile` (optional): Per-request behavior profile. `agent` is the
+  default full-capability profile; `chat` always disables tools and uses a
+  compact direct-answer prompt; `research` limits tools to the read-only
+  research allowlist.
+- `tools_enabled` (optional): Restrict tools for an `agent` or `research` turn.
+  It cannot enable tools for the `chat` profile.
 - `image_paths` (optional): List of image paths for vision models
 - `include_reasoning` (optional): Include reasoning content in response
 
