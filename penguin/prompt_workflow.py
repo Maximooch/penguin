@@ -134,21 +134,24 @@ RALPH_PERSISTENCE = """
 You are part of an iterative loop. Each turn is fresh context. This is a feature, not a bug.
 
 **How to work with persistence:**
-1. **Write state to files** - specs/, IMPLEMENTATION_PLAN.md, AGENTS.md
-2. **Commit frequently (IN A SEPARATE BRANCH)** - git history becomes your memory
-3. **Read your own work** - start each turn by checking what exists
-4. **Tuning like a guitar** - when something goes wrong, adjust and continue
+1. **Persist state deliberately** - write only the context that must survive a
+   restart or materially helps the user.
+2. **Read existing work first** - resume from durable evidence, not assumptions.
+3. **Tune from failures** - when something goes wrong, diagnose, adjust, and
+   continue when the task remains actionable.
 
-**Context Compaction Strategy:**
-- Keep specs in `specs/` directory (one file per JTBD)
-- Use `AGENTS.md` for operational constraints (~60 lines max)
-- Use `IMPLEMENTATION_PLAN.md` for prioritized task lists
-- Externalize knowledge to files, not prompts
+**Context Strategy:**
+- Reuse existing project context before creating new artifacts.
+- Create plans, journals, or specifications only when their persistence has a
+  clear task value.
+- Do not commit or create a branch unless the user or repository policy asks.
 
 **Signs & Gates (Backpressure):**
-- Tests must pass before continuing
-- Lint/type checks validate quality
-- Human checkpoints for major decisions
+- Run the narrowest relevant verification before declaring completion.
+- Treat known failing tests, lint, and type checks as evidence to diagnose, not
+  a reason to misreport success.
+- Request human input for material product or design decisions that the task
+  does not settle.
 - Use failures as signals, not blockers
 """
 
@@ -166,7 +169,7 @@ Write minimal code to satisfy ONE acceptance criterion.
 - Use <edit_file> for exact replacements or <apply_patch> for contextual hunks
 - Keep changes atomic and focused
 - Match existing code style
-- Commit with descriptive message (see Git Commits below)
+- Commit only when the user or repository policy requests it
 
 ### 2. Test
 Write/run tests appropriate to the language/framework.
@@ -183,8 +186,8 @@ Actually RUN the feature as a user would.
 ### 4. Validate
 Check against acceptance criteria.
 - If not met, diagnose why and return to Implement
-- Update IMPLEMENTATION_PLAN.md with status
-- Document blockers in AGENTS.md or specs/
+- Update an existing durable plan only when it remains useful for the task
+- Record a blocker only when it must survive the current session or be shared
 """
 
 # =============================================================================
@@ -201,9 +204,8 @@ INVESTIGATION_WORKFLOW = """
 2. **Turn N+1:** System shows results
 3. **Turn N+2:** You analyze and continue or respond
 
-**Minimum 5-12 tool calls** for analysis tasks before responding.
-
-**Build understanding from evidence, not assumptions.**
+Use as many focused tool calls as the decision requires—no quota. Build
+understanding from evidence, not assumptions.
 """
 
 # =============================================================================
@@ -213,23 +215,9 @@ INVESTIGATION_WORKFLOW = """
 EXECUTION_WORKFLOW = """
 ## Execution Strategy
 
-**One action per response, then wait for result.**
-
-Correct (Incremental):
-```
-<execute>Create folder<execute>
-```
-[Wait for result]
-```
-<execute>Create main.py<execute>
-```
-
-Wrong (Batch - Do not do this):
-```
-<execute>Create folder<execute>
-<execute>Create main.py<execute>
-<execute>Create tests<execute>
-```
+Choose tool batching from dependency and risk, not a fixed turn pattern.
+Dependent or mutating work remains serial; independent, read-only inspection
+may be batched when it improves the decision.
 
 **Ordered native-tool batching:** When native tools expose `ordered_tool_batch`,
 use it for dependent or mutating sequences that must run serially. Do not use
@@ -365,7 +353,8 @@ LARGE_CODEBASE = """
 - Build mental map using README files and documentation
 
 ### Mapping Strategy
-Create `context/CODEBASE_MAP.md` to track discoveries:
+Create a durable codebase map only when the task will resume or its discoveries
+need to be shared beyond the current investigation:
 ```markdown
 # Codebase Map
 
@@ -591,18 +580,10 @@ make no further tool calls.**
 
 WORKFLOW_GUIDE = "\n\n".join(
     [
-        JOURNAL_247,
         RALPH_PERSISTENCE,
         ITUV_WORKFLOW,
         INVESTIGATION_WORKFLOW,
         EXECUTION_WORKFLOW,
-        TOOL_RESULTS,
-        GIT_COMMITS,
-        DOCS_CACHE,
-        CONTEXT_MANAGEMENT,
-        LARGE_CODEBASE,
-        CODE_FORMATTING,
-        TODO_WORKFLOW,
         SKILLS_WORKFLOW,
         COMPLETION_GUIDE,
     ]
