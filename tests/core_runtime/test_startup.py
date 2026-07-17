@@ -1302,6 +1302,7 @@ def test_initialize_prompt_and_output_state_prefers_typed_output_config() -> Non
         *,
         output_style: str | None = None,
         git_attribution_prompt: bool = True,
+        **_kwargs: object,
     ) -> str:
         prompt_calls.append((mode, output_style, git_attribution_prompt))
         return f"prompt:{mode}:{output_style}"
@@ -1326,6 +1327,7 @@ def test_initialize_prompt_and_output_state_prefers_typed_output_config() -> Non
 
     assert owner.show_tool_results is False
     assert owner.prompt_mode == "test"
+    assert owner.work_mode == "test"
     assert owner.git_attribution_prompt is True
     assert owner.output_style == "json_guided"
     assert owner.system_prompt == "prompt:test:json_guided"
@@ -1351,6 +1353,7 @@ def test_initialize_prompt_and_output_state_uses_raw_output_fallbacks() -> None:
 
     assert owner.show_tool_results is False
     assert owner.prompt_mode == "review"
+    assert owner.work_mode == "review"
     assert owner.git_attribution_prompt is True
     assert owner.output_style == "plain"
     assert owner.system_prompt == "prompt:review"
@@ -1384,6 +1387,58 @@ def test_initialize_prompt_and_output_state_can_disable_git_attribution() -> Non
     assert owner.git_attribution_prompt is False
     assert owner.system_prompt == "prompt:review:False"
     assert prompt_calls == [("review", False)]
+
+
+def test_initialize_prompt_state_composes_new_orthogonal_settings() -> None:
+    prompt_calls: list[dict[str, object]] = []
+    owner = SimpleNamespace(config=SimpleNamespace(output=None))
+
+    def render_prompt(mode: str, **kwargs: object) -> str:
+        prompt_calls.append({"mode": mode, **kwargs})
+        return "composed"
+
+    startup.initialize_prompt_and_output_state(
+        owner,
+        {
+            "prompt": {
+                "work_mode": "review",
+                "personality": {
+                    "profile": "minimal",
+                    "overlay": "Prefer short examples.",
+                },
+                "quality_overlays": ["rigorous"],
+            }
+        },
+        get_system_prompt=render_prompt,
+        fallback_system_prompt="fallback",
+        set_output_formatting=lambda _style: None,
+    )
+
+    assert owner.prompt_mode == "review"
+    assert owner.work_mode == "review"
+    assert owner.personality_profile == "minimal"
+    assert owner.personality_overlay == "Prefer short examples."
+    assert owner.quality_overlays == ("rigorous",)
+    assert prompt_calls[0]["work_mode"] == "review"
+    assert prompt_calls[0]["personality_profile"] == "minimal"
+    assert prompt_calls[0]["quality_overlays"] == ("rigorous",)
+
+
+def test_initialize_prompt_state_preserves_legacy_preset_response_style() -> None:
+    owner = SimpleNamespace(config=SimpleNamespace(output=None))
+
+    startup.initialize_prompt_and_output_state(
+        owner,
+        {"prompt": {"mode": "terse"}},
+        get_system_prompt=lambda _mode, **kwargs: str(kwargs),
+        fallback_system_prompt="fallback",
+        set_output_formatting=lambda _style: None,
+    )
+
+    assert owner.prompt_mode == "terse"
+    assert owner.work_mode == "build"
+    assert owner.personality_profile == "minimal"
+    assert owner.output_style == "plain"
 
 
 def test_initialize_prompt_and_output_state_falls_back_on_prompt_failures() -> None:

@@ -870,17 +870,27 @@ def initialize_prompt_and_output_state(
 
     output_config = getattr(owner.config, "output", None)
     owner.show_tool_results = _resolve_show_tool_results(output_config, raw_config)
-    owner.prompt_mode = _resolve_prompt_mode(raw_config)
+    prompt_settings = _resolve_prompt_settings(raw_config)
+    owner.prompt_mode = prompt_settings["preset"]
+    owner.work_mode = prompt_settings["work_mode"]
+    owner.personality_profile = prompt_settings["personality_profile"]
+    owner.personality_overlay = prompt_settings["personality_overlay"]
+    owner.quality_overlays = prompt_settings["quality_overlays"]
     owner.git_attribution_prompt = _resolve_git_attribution_prompt(raw_config)
     owner.output_style = _apply_output_style(
         output_config,
         raw_config,
+        preset_style=prompt_settings["output_style"],
         set_output_formatting=set_output_formatting,
     )
     try:
         owner.system_prompt = get_system_prompt(
             owner.prompt_mode,
+            work_mode=owner.work_mode,
             output_style=owner.output_style,
+            personality_profile=owner.personality_profile,
+            personality_overlay=owner.personality_overlay,
+            quality_overlays=owner.quality_overlays,
             git_attribution_prompt=owner.git_attribution_prompt,
         )
     except Exception:
@@ -926,6 +936,63 @@ def _resolve_prompt_mode(raw_config: Any) -> str:
         return "direct"
 
 
+def _resolve_prompt_settings(raw_config: Any) -> dict[str, Any]:
+    """Resolve new orthogonal prompt settings with legacy ``prompt.mode`` support."""
+
+    try:
+        prompt_config = raw_config.get("prompt", {})
+        if not isinstance(prompt_config, dict):
+            prompt_config = {}
+    except Exception:
+        prompt_config = {}
+
+    from penguin.prompt.profiles import (
+        normalize_quality_overlays,
+        normalize_work_mode,
+        resolve_prompt_preset,
+    )
+    from penguin.prompt.soul import normalize_personality_profile
+
+    legacy_mode = _resolve_prompt_mode(raw_config)
+    legacy_preset = resolve_prompt_preset(legacy_mode)
+    configured_work_mode = prompt_config.get("work_mode")
+    try:
+        work_mode = normalize_work_mode(
+            str(configured_work_mode or legacy_preset.work_mode)
+        )
+    except ValueError:
+        work_mode = legacy_preset.work_mode
+
+    personality = prompt_config.get("personality", {})
+    if not isinstance(personality, dict):
+        personality = {}
+    try:
+        personality_profile = normalize_personality_profile(
+            personality.get("profile") or legacy_preset.personality_profile
+        )
+    except ValueError:
+        personality_profile = "penguin"
+
+    configured_overlays = prompt_config.get("quality_overlays", ())
+    if not isinstance(configured_overlays, (list, tuple)):
+        configured_overlays = ()
+    try:
+        quality_overlays = normalize_quality_overlays(
+            (*legacy_preset.quality_overlays, *configured_overlays)
+        )
+    except ValueError:
+        quality_overlays = legacy_preset.quality_overlays
+
+    return {
+        "preset": work_mode if configured_work_mode else legacy_mode,
+        "work_mode": work_mode,
+        "personality_profile": personality_profile,
+        "personality_overlay": str(personality.get("overlay") or "").strip(),
+        "quality_overlays": quality_overlays,
+        "output_style": legacy_preset.output_style,
+    }
+
+
 def _resolve_git_attribution_prompt(raw_config: Any) -> bool:
     """Return whether Git attribution guidance belongs in the active prompt."""
 
@@ -949,11 +1016,19 @@ def _apply_output_style(
     output_config: Any,
     raw_config: Any,
     *,
+    preset_style: str | None = None,
     set_output_formatting: OutputFormatter | None,
 ) -> str:
     try:
         formatter = set_output_formatting or _load_output_formatter()
-        if output_config and getattr(output_config, "prompt_style", None):
+        raw_output = (
+            raw_config.get("output", {}) if isinstance(raw_config, dict) else {}
+        )
+        if preset_style and not (
+            isinstance(raw_output, dict) and "prompt_style" in raw_output
+        ):
+            prompt_style = preset_style
+        elif output_config and getattr(output_config, "prompt_style", None):
             prompt_style = str(output_config.prompt_style).strip().lower()
         else:
             prompt_style = (

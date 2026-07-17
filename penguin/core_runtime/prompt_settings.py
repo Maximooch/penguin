@@ -8,9 +8,11 @@ __all__ = [
     "get_git_attribution_prompt",
     "get_output_style",
     "get_prompt_mode",
+    "get_work_mode",
     "set_core_system_prompt",
     "set_output_style",
     "set_prompt_mode",
+    "set_work_mode",
 ]
 
 PromptBuilder = Callable[..., str]
@@ -35,9 +37,16 @@ def set_prompt_mode(
             mode_normalized,
             output_style=get_output_style(owner),
             git_attribution_prompt=get_git_attribution_prompt(owner),
+            **_configured_prompt_overlays(owner),
         )
         set_core_system_prompt(owner, prompt)
         owner.prompt_mode = mode_normalized
+        try:
+            from penguin.prompt.profiles import resolve_prompt_preset
+
+            owner.work_mode = resolve_prompt_preset(mode_normalized).work_mode
+        except (ImportError, ValueError):
+            pass
         return f"Prompt mode set to '{mode_normalized}'."
     except Exception as exc:
         message = f"Failed to set prompt mode '{mode}': {exc}"
@@ -51,6 +60,43 @@ def get_prompt_mode(owner: Any) -> str:
         return getattr(owner, "prompt_mode", "direct")
     except Exception:
         return "direct"
+
+
+def set_work_mode(
+    owner: Any,
+    mode: str,
+    *,
+    get_system_prompt: PromptBuilder,
+    normalize_work_mode: PromptModeNormalizer,
+    logger: Any,
+) -> str:
+    """Set task intent independently from personality and response style."""
+
+    try:
+        work_mode = normalize_work_mode(str(mode).strip().lower())
+        prompt = get_system_prompt(
+            work_mode=work_mode,
+            output_style=get_output_style(owner),
+            git_attribution_prompt=get_git_attribution_prompt(owner),
+            **_configured_prompt_overlays(owner),
+        )
+        set_core_system_prompt(owner, prompt)
+        owner.work_mode = work_mode
+        owner.prompt_mode = work_mode
+        return f"Work mode set to '{work_mode}'."
+    except Exception as exc:
+        message = f"Failed to set work mode '{mode}': {exc}"
+        logger.warning(message)
+        return message
+
+
+def get_work_mode(owner: Any) -> str:
+    """Return the current task-intent mode from a core-like owner."""
+
+    try:
+        return getattr(owner, "work_mode", "build")
+    except Exception:
+        return "build"
 
 
 def get_git_attribution_prompt(owner: Any) -> bool:
@@ -92,6 +138,7 @@ def set_output_style(
                 owner.prompt_mode,
                 output_style=style_normalized,
                 git_attribution_prompt=get_git_attribution_prompt(owner),
+                **_configured_prompt_overlays(owner),
             )
             set_core_system_prompt(owner, prompt)
         except Exception:
@@ -109,3 +156,13 @@ def get_output_style(owner: Any) -> str:
         return getattr(owner, "output_style", "steps_final")
     except Exception:
         return "steps_final"
+
+
+def _configured_prompt_overlays(owner: Any) -> dict[str, Any]:
+    """Return only explicitly initialized composition settings."""
+
+    values: dict[str, Any] = {}
+    for name in ("personality_profile", "personality_overlay", "quality_overlays"):
+        if hasattr(owner, name):
+            values[name] = getattr(owner, name)
+    return values

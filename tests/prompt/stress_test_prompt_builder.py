@@ -12,7 +12,7 @@ from penguin.system_prompt import get_system_prompt
 def main() -> int:
     modes = list_available_modes()
     invariants = "## Engineering discipline"
-    runtime_contract = "## Runtime and completion"
+    runtime_contract = "## Operating contract"
 
     # Collect per-mode stats
     stats = {

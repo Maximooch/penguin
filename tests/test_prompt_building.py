@@ -13,7 +13,7 @@ def test_prompt_mode_builds_with_compact_runtime_contract(mode: str) -> None:
     prompt = get_system_prompt(mode)
 
     assert "You are Penguin" in prompt
-    assert "## Runtime and completion" in prompt
+    assert "## Operating contract" in prompt
     assert "## Tool Invocation Protocol" in prompt
     assert "### finish_task" in prompt
 
@@ -21,17 +21,16 @@ def test_prompt_mode_builds_with_compact_runtime_contract(mode: str) -> None:
 def test_product_mode_requires_complete_user_facing_states() -> None:
     prompt = get_system_prompt("product")
 
-    assert "loading,\nempty, error, success, keyboard, and responsive states" in prompt
-    assert "reuse the existing\ndesign system" in prompt
+    assert "## Product quality overlay" in prompt
+    assert "loading, empty, error, success, keyboard, accessibility, and" in prompt
+    assert "reuse the existing design system" in prompt
 
 
 def test_rigorous_mode_prohibits_hidden_goal_stops() -> None:
     prompt = get_system_prompt("rigorous")
 
-    assert (
-        "Never introduce an\nimplicit task token, iteration, or wall-clock stop."
-        in prompt
-    )
+    assert "## Rigorous systems overlay" in prompt
+    assert "Do not invent a deadline, token budget, iteration cap" in prompt
 
 
 def test_git_attribution_prompt_is_enabled_by_default() -> None:

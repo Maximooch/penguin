@@ -35,7 +35,7 @@ def main() -> int:
     # Core invariants expected in every supported mode.
     core_needles = [
         "## Engineering discipline",
-        "## Runtime and completion",
+        "## Operating contract",
         "## Tool Invocation Protocol",
         "### finish_task",
     ]
