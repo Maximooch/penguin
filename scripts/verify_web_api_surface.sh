@@ -3,11 +3,12 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKSPACE="${PENGUIN_SURFACE_WORKSPACE:-$ROOT_DIR/tmp_workspace/web_surface_verification}"
-PREFERRED_PORT="${PENGUIN_SURFACE_PORT:-9000}"
-PORT=""
-BASE_URL=""
+PORT="8080"
+BASE_URL="http://127.0.0.1:${PORT}"
 SERVER_LOG="${PENGUIN_SURFACE_SERVER_LOG:-$WORKSPACE/penguin-web.log}"
 FIXTURE_JSON="${WORKSPACE}.fixture.json"
+RUNTIME_BASE="$(dirname "$WORKSPACE")"
+RUNTIME_ID="$(basename "$WORKSPACE")"
 
 mkdir -p "$WORKSPACE"
 
@@ -18,26 +19,6 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
-
-choose_port() {
-  python - "$PREFERRED_PORT" <<'PY'
-import socket
-import sys
-
-preferred = int(sys.argv[1])
-candidates = [preferred] + list(range(max(9000, preferred + 1), max(9000, preferred + 40)))
-for port in candidates:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        try:
-            sock.bind(("0.0.0.0", port))
-        except OSError:
-            continue
-        print(port)
-        break
-else:
-    raise SystemExit("no free port found in verification range")
-PY
-}
 
 read_fixture_value() {
   python - "$FIXTURE_JSON" "$1" <<'PY'
@@ -62,11 +43,11 @@ RICH_TASK_ID="$(read_fixture_value tasks.rich_payload)"
 PENDING_REVIEW_TASK_ID="$(read_fixture_value tasks.pending_review)"
 ACTIVE_TASK_ID="$(read_fixture_value tasks.active)"
 
-PORT="$(choose_port)"
-BASE_URL="http://127.0.0.1:${PORT}"
-
-echo "[2/8] Starting penguin-web on port $PORT"
-PENGUIN_WORKSPACE="$WORKSPACE" PORT="$PORT" uv run penguin-web >"$SERVER_LOG" 2>&1 &
+echo "[2/8] Starting isolated penguin-web on port $PORT"
+PENGUIN_AUTH_ENABLED=false uv run python \
+  "$ROOT_DIR/scripts/run_runtime_reliability_server.py" \
+  --base-directory "$RUNTIME_BASE" \
+  --run-id "$RUNTIME_ID" >"$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 
 echo "[3/8] Waiting for Penguin health endpoint"

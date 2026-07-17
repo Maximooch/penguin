@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 from typing import Any, Iterable, cast
 
-from penguin.llm.contracts import FinishReason
 from penguin.llm.adapters.anthropic import AnthropicAdapter
 from penguin.llm.adapters.openai import OpenAIAdapter
 from penguin.llm.adapters.openai_compatible import OpenAICompatibleAdapter
+from penguin.llm.contracts import FinishReason
 from penguin.llm.model_config import ModelConfig
 from penguin.llm.openrouter_gateway import OpenRouterGateway
 
@@ -21,6 +21,7 @@ class OpenAIStreamEvent:
     item: Any = None
     item_id: str = ""
     error: Any = None
+    response: Any = None
 
 
 class OpenAIResponse:
@@ -43,7 +44,14 @@ class OpenAIResponseStream:
         events: Iterable[OpenAIStreamEvent],
         final_response: OpenAIResponse,
     ) -> None:
-        self._events = list(events)
+        self._events = [
+            replace(event, response=final_response)
+            if isinstance(event, OpenAIStreamEvent)
+            and event.type == "response.completed"
+            and event.response is None
+            else event
+            for event in events
+        ]
         self._final_response = final_response
         self._idx = 0
 
@@ -449,11 +457,11 @@ def build_openrouter_handler(
             *,
             base_url: str,
             api_key: str,
-            timeout: float | None,
+            max_retries: int,
         ) -> None:
             self.base_url = base_url
             self.api_key = api_key
-            self.timeout = timeout
+            self.max_retries = max_retries
             self.chat = SimpleNamespace(
                 completions=OpenRouterCompletionsStub(
                     stream_response=stream_response,

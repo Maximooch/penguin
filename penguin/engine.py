@@ -9,19 +9,19 @@ stop‑conditions).  It receives pre‑constructed managers from PenguinCore so 
 remains test‑friendly and avoids hidden globals.
 """
 
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-import json
-import os
-import uuid
 import asyncio
 import copy
-from contextlib import contextmanager
-from contextvars import ContextVar, Token
-from pathlib import Path
-from penguin.constants import UI_ASYNC_SLEEP_SECONDS
+import json
+import logging
+import os
 import re
 import time
+import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar, Token
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 # Removed unused: import multiprocessing as mp
 from typing import (
@@ -35,16 +35,9 @@ from typing import (
     Sequence,
     Tuple,
 )
-from penguin.utils.errors import LLMEmptyResponseError
 
-from penguin.system.conversation_manager import ConversationManager  # type: ignore
-from penguin.utils.parser import (  # type: ignore
-    ActionExecutor,
-    ActionType,
-    CodeActAction,
-    parse_action,
-)
-from penguin.system.state import MessageCategory  # type: ignore
+from penguin.config import TASK_COMPLETION_PHRASE  # Add this import
+from penguin.constants import UI_ASYNC_SLEEP_SECONDS
 from penguin.llm.api_client import APIClient  # type: ignore
 from penguin.llm.contracts import LLMProviderError
 from penguin.llm.runtime import (
@@ -55,6 +48,10 @@ from penguin.llm.runtime import (
     handler_has_pending_tool_call,
     prepare_responses_tool_kwargs,
 )
+from penguin.system.conversation_manager import ConversationManager  # type: ignore
+from penguin.system.execution_context import get_current_execution_context
+from penguin.system.state import MessageCategory  # type: ignore
+from penguin.system_prompt import build_active_turn_envelope
 from penguin.tools import ToolManager  # type: ignore
 from penguin.tools.runtime import (
     DEFAULT_TOOL_MODEL_OUTPUT_MAX_CHARS,
@@ -64,16 +61,22 @@ from penguin.tools.runtime import (
     execute_tool_calls_ordered,
     image_artifacts_from_action_result,
     legacy_action_result_from_tool_result,
-    tool_call_with_schedule_metadata,
     tool_call_record_from_tool_call,
+    tool_call_with_schedule_metadata,
     tool_calls_from_codeact_actions,
     tool_result_record_from_tool_result,
     tool_results_loop_identity,
 )
-from penguin.config import TASK_COMPLETION_PHRASE  # Add this import
-from penguin.system.execution_context import get_current_execution_context
-
-import logging
+from penguin.utils.errors import (
+    LLMEmptyResponseError,
+    NativeToolHistoryPersistenceError,
+)
+from penguin.utils.parser import (  # type: ignore
+    ActionExecutor,
+    ActionType,
+    CodeActAction,
+    parse_action,
+)
 
 # MessageBus for inter-agent communication (optional import)
 try:
@@ -1411,14 +1414,18 @@ class Engine:
             logger.warning(
                 f"[WALLET_GUARD] Breaking {mode}: model is echoing tool results as text"
             )
-            return True, "implicit_completion" if mode == "task" else None
+            return True, "tool_result_echo"
 
         # Check for repeated/looping responses
         if loop_state.check_repeated(last_response):
             logger.warning(
                 f"[WALLET_GUARD] Breaking {mode}: response repeated {loop_state.repeat_count} times"
             )
-            return True, "implicit_completion" if mode == "task" else None
+            return True, (
+                "repeated_empty_response"
+                if not stripped_response
+                else "repeated_response"
+            )
 
         # Check for empty/trivial responses
         # Tool-bearing turns with assistant text still reset the trivial counter.
@@ -1450,7 +1457,7 @@ class Engine:
             logger.warning(
                 f"[WALLET_GUARD] Breaking {mode}: {loop_state.empty_response_count} consecutive trivial responses"
             )
-            return True, "implicit_completion" if mode == "task" else None
+            return True, "repeated_empty_response"
 
         return False, None
 
@@ -1642,6 +1649,7 @@ class Engine:
         all_action_results = []
         cumulative_usage: Dict[str, Any] = {}
         completion_status = config.default_completion_status
+        terminal_error: Optional[Dict[str, Any]] = None
         finish_status: str | None = None
         finish_summary: str | None = None
         provider_error: dict[str, Any] | None = None
@@ -1905,6 +1913,26 @@ class Engine:
                         else "iterations_exceeded"
                     )
 
+        except NativeToolHistoryPersistenceError as e:
+            logger.error("Native tool history persistence failed: %s", e)
+            completion_status = "native_tool_history_error"
+            terminal_error = e.to_dict()
+            if config.message_callback:
+                await config.message_callback(str(e), "error")
+
+            if config.enable_events and config.task_metadata:
+                await self._publish_task_event(
+                    "FAILED",
+                    config.task_metadata,
+                    {
+                        "error": str(e),
+                        "recoverable": False,
+                        "code": e.code,
+                        "iteration": self.current_iteration,
+                        "max_iterations": max_iterations,
+                    },
+                )
+
         except LLMEmptyResponseError as e:
             cumulative_usage = _accumulate_usage(
                 cumulative_usage,
@@ -1912,6 +1940,11 @@ class Engine:
             )
             logger.warning(f"LLM returned empty response during {config.mode}: {e}")
             completion_status = "llm_empty_response_error"
+            terminal_error = {
+                "code": "llm_empty_response",
+                "message": str(e),
+                "suggested_action": "Resume from the durable conversation state.",
+            }
             if config.message_callback:
                 await config.message_callback(f"LLM Empty Response: {str(e)}", "error")
 
@@ -1966,7 +1999,7 @@ class Engine:
                     },
                 )
 
-        return {
+        result = {
             "assistant_response": last_response,
             "iterations": self.current_iteration,
             "action_results": all_action_results,
@@ -1982,6 +2015,13 @@ class Engine:
             ),
             "execution_time": (datetime.utcnow() - self.start_time).total_seconds(),
         }
+        if completion_status == "llm_empty_response_error":
+            result["recoverable"] = True
+            result["error"] = terminal_error
+        elif completion_status == "native_tool_history_error":
+            result["recoverable"] = False
+            result["error"] = terminal_error
+        return result
 
     def _check_termination_signal(
         self,
@@ -2235,6 +2275,7 @@ class Engine:
 
                 # Check for external stop conditions
                 if await self._check_stop():
+                    final_status = "stopped"
                     break
 
                 # NOTE: Pre-iteration finalize removed - post-iteration finalize (after _llm_step) handles cleanup
@@ -2342,12 +2383,9 @@ class Engine:
                         )
                     break
 
-            # Determine final status
-            if (
-                final_status == "completed"
-                and max_iters is not None
-                and self.current_iteration >= max_iters
-            ):
+            else:
+                # Only natural loop exhaustion is max-iterations. Completion
+                # on iteration ``max_iters`` exits through ``break`` above.
                 final_status = "max_iterations"
 
             return {
@@ -2356,6 +2394,38 @@ class Engine:
                 "action_results": all_action_results,
                 "usage": latest_usage,
                 "status": final_status,
+                "execution_time": (datetime.utcnow() - self.start_time).total_seconds(),
+            }
+
+        except NativeToolHistoryPersistenceError as e:
+            logger.error(
+                "Native tool history persistence failed in run_response: %s", e
+            )
+            return {
+                "assistant_response": last_response,
+                "iterations": self.current_iteration,
+                "action_results": all_action_results,
+                "usage": latest_usage,
+                "status": "native_tool_history_error",
+                "recoverable": False,
+                "error": e.to_dict(),
+                "execution_time": (datetime.utcnow() - self.start_time).total_seconds(),
+            }
+
+        except LLMEmptyResponseError as e:
+            logger.warning("LLM returned empty response in run_response: %s", e)
+            return {
+                "assistant_response": last_response,
+                "iterations": self.current_iteration,
+                "action_results": all_action_results,
+                "usage": latest_usage,
+                "status": "llm_empty_response_error",
+                "recoverable": True,
+                "error": {
+                    "code": "llm_empty_response",
+                    "message": str(e),
+                    "suggested_action": ("Resume from the durable conversation state."),
+                },
                 "execution_time": (datetime.utcnow() - self.start_time).total_seconds(),
             }
 
@@ -2930,6 +3000,8 @@ class Engine:
         api_client: APIClient,
         tool_manager,
         cm: ConversationManager,
+        *,
+        assistant_message_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Handle Responses API tool_call if one was triggered.
 
@@ -2945,6 +3017,7 @@ class Engine:
             api_client,
             tool_manager,
             cm,
+            assistant_message_id=assistant_message_id,
         )
         return results[0] if results else None
 
@@ -3023,6 +3096,8 @@ class Engine:
         api_client: APIClient,
         tool_manager,
         cm: ConversationManager,
+        *,
+        assistant_message_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Handle all pending Responses API tool calls.
 
@@ -3034,24 +3109,28 @@ class Engine:
         Returns:
             Action result dicts for executed tools.
         """
-        return await execute_pending_tool_calls(
-            api_client=api_client,
-            tool_manager=tool_manager,
-            persist_tool_call_record=lambda tool_call: self._persist_tool_call_record(
+        batch_persister = self._native_tool_batch_persister(
+            cm,
+            assistant_message_id=assistant_message_id,
+        )
+        kwargs: Dict[str, Any] = {
+            "api_client": api_client,
+            "tool_manager": tool_manager,
+            "persist_tool_call_record": lambda tool_call: self._persist_tool_call_record(
                 cm,
                 tool_call,
             ),
-            persist_tool_result_record=lambda tool_call,
+            "persist_tool_result_record": lambda tool_call,
             tool_result: self._persist_tool_result_record(
                 cm,
                 tool_call,
                 tool_result,
             ),
-            execution_policy=self._tool_execution_policy(
+            "execution_policy": self._tool_execution_policy(
                 cm,
                 catch_exceptions=True,
             ),
-            persist_action_result=lambda action_result,
+            "persist_action_result": lambda action_result,
             tool_context: cm.add_action_result(
                 action_type=action_result["action"],
                 result=action_result["result"],
@@ -3059,23 +3138,98 @@ class Engine:
                 tool_call_id=tool_context.get("tool_call_id"),
                 tool_arguments=tool_context.get("tool_arguments"),
             ),
-            emit_action_start=(
+            "emit_action_start": (
                 (lambda payload: cm.core.emit_ui_event("action", payload))
                 if hasattr(cm, "core") and cm.core
                 else None
             ),
-            emit_action_result=(
+            "emit_action_result": (
                 (lambda payload: cm.core.emit_ui_event("action_result", payload))
                 if hasattr(cm, "core") and cm.core
                 else None
             ),
-            emit_tool_timeline=lambda action_result: self._emit_tool_event(
+            "emit_tool_timeline": lambda action_result: self._emit_tool_event(
                 cm, action_result
             ),
-            persist_image_artifacts=lambda action_result: (
+            "persist_image_artifacts": lambda action_result: (
                 self._persist_tool_image_artifacts(cm, action_result)
             ),
-        )
+        }
+        if batch_persister is not None:
+            kwargs["persist_native_tool_batch"] = batch_persister
+        return await execute_pending_tool_calls(**kwargs)
+
+    @staticmethod
+    def _conversation_message_ids(cm: ConversationManager) -> set[str]:
+        """Return current canonical message ids without making transcript guesses."""
+
+        conversation = getattr(cm, "conversation", None)
+        session = getattr(conversation, "session", None)
+        messages = getattr(session, "messages", None)
+        if not isinstance(messages, list):
+            return set()
+        return {
+            str(getattr(message, "id", "") or "").strip()
+            for message in messages
+            if str(getattr(message, "id", "") or "").strip()
+        }
+
+    def _new_current_turn_assistant_message_id(
+        self,
+        cm: ConversationManager,
+        *,
+        pre_finalize_message_ids: set[str],
+    ) -> Optional[str]:
+        """Return only an assistant appended by this LLM turn's finalization."""
+
+        conversation = getattr(cm, "conversation", None)
+        session = getattr(conversation, "session", None)
+        messages = getattr(session, "messages", None)
+        if not isinstance(messages, list) or not messages:
+            return None
+        tail = messages[-1]
+        message_id = str(getattr(tail, "id", "") or "").strip()
+        if (
+            getattr(tail, "role", None) == "assistant"
+            and message_id
+            and message_id not in pre_finalize_message_ids
+        ):
+            return message_id
+        return None
+
+    @staticmethod
+    def _native_tool_batch_persister(
+        cm: ConversationManager,
+        *,
+        assistant_message_id: Optional[str],
+    ) -> Optional[Callable[[List[ToolCall], List[Dict[str, Any]]], bool]]:
+        """Build the atomic-native-history hook when the conversation supports it."""
+
+        conversation = getattr(cm, "conversation", None)
+        appender = getattr(conversation, "append_native_tool_batch", None)
+        if not callable(appender):
+            return None
+
+        def _persist(
+            tool_calls: List[ToolCall],
+            action_results: List[Dict[str, Any]],
+        ) -> bool:
+            appended = appender(
+                tool_calls=tool_calls,
+                action_results=action_results,
+                assistant_message_id=assistant_message_id,
+                # Runtime already persisted detailed tool records before this
+                # callback.  This path only creates one model-visible batch.
+                persist_tool_records=False,
+            )
+            if not appended:
+                raise NativeToolHistoryPersistenceError(
+                    [tool_call.id for tool_call in tool_calls],
+                    reason="Conversation rejected the complete native tool batch.",
+                )
+            return True
+
+        return _persist
 
     def _persist_record(
         self,
@@ -3554,38 +3708,70 @@ class Engine:
         self,
         messages: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
-        """Append a plan-mode system notice for the current request context."""
+        """Append the compact active-turn envelope and any plan guard."""
         execution_context = get_current_execution_context()
-        if execution_context is None:
-            return messages
-
-        raw_mode = execution_context.agent_mode
+        raw_mode = (
+            execution_context.agent_mode
+            if execution_context is not None
+            else getattr(self, "prompt_mode", None)
+        )
         mode = raw_mode.strip().lower() if isinstance(raw_mode, str) else None
-        if mode != "plan":
-            return messages
+        mode = mode or "direct"
+        mode = {"build": "implement", "plan": "review"}.get(mode, mode)
 
-        marker = "[PENGUIN_AGENT_MODE_PLAN]"
+        plan_marker = "[PENGUIN_AGENT_MODE_PLAN]"
+        envelope_marker = "[PENGUIN_ACTIVE_TURN]"
+        has_plan_notice = False
+        has_envelope = False
         for message in messages:
             if not isinstance(message, dict):
                 continue
             if message.get("role") != "system":
                 continue
             content = message.get("content")
-            if isinstance(content, str) and marker in content:
-                return messages
+            if isinstance(content, str):
+                has_plan_notice = has_plan_notice or plan_marker in content
+                has_envelope = has_envelope or envelope_marker in content
 
-        notice = (
-            f"{marker} Plan mode is active for this session. You must stay read-only "
-            "and avoid mutating operations. Do not attempt file writes, destructive "
-            "shell commands, or process execution intended to modify state. "
-            "If implementation is required, provide a plan and request build mode."
-        )
-        logger.info(
-            "agent.mode.notice_applied mode=plan session=%s agent=%s",
-            execution_context.session_id,
-            execution_context.agent_id,
-        )
-        return [*messages, {"role": "system", "content": notice}]
+        additions: list[dict[str, str]] = []
+        if raw_mode and raw_mode.strip().lower() == "plan" and not has_plan_notice:
+            additions.append(
+                {
+                    "role": "system",
+                    "content": (
+                        f"{plan_marker} Plan mode is active for this session. You must stay "
+                        "read-only and avoid mutating operations. Do not attempt file "
+                        "writes, destructive shell commands, or process execution intended "
+                        "to modify state. If implementation is required, provide a plan "
+                        "and request build mode."
+                    ),
+                }
+            )
+            logger.info(
+                "agent.mode.notice_applied mode=plan session=%s agent=%s",
+                getattr(execution_context, "session_id", None),
+                getattr(execution_context, "agent_id", None),
+            )
+
+        if not has_envelope:
+            active_task = ""
+            for message in reversed(messages):
+                if message.get("role") != "user":
+                    continue
+                content = message.get("content")
+                if isinstance(content, str):
+                    active_task = content
+                break
+            additions.append(
+                {
+                    "role": "system",
+                    "content": build_active_turn_envelope(
+                        mode=mode,
+                        active_task=active_task,
+                    ),
+                }
+            )
+        return [*messages, *additions] if additions else messages
 
     async def _llm_step(
         self,
@@ -3687,7 +3873,7 @@ class Engine:
                 len(assistant_response or ""),
                 self._handler_has_pending_tool_call(api_client),
             )
-        except LLMProviderError:
+        except (LLMProviderError, LLMEmptyResponseError):
             self._abort_streaming_response(
                 cm,
                 streaming,
@@ -3702,6 +3888,7 @@ class Engine:
         # preamble text is attached to the current assistant turn before the
         # tool result is persisted against it.
         finalize_started = time.perf_counter()
+        pre_finalize_message_ids = self._conversation_message_ids(cm)
         assistant_response = await self._finalize_streaming_response(
             cm,
             assistant_response,
@@ -3721,10 +3908,15 @@ class Engine:
 
         # Step 4: Handle Responses API tool_calls if they were triggered
         responses_tools_started = time.perf_counter()
+        native_tool_assistant_message_id = self._new_current_turn_assistant_message_id(
+            cm,
+            pre_finalize_message_ids=pre_finalize_message_ids,
+        )
         responses_action_results = await self._handle_responses_tool_calls(
             api_client,
             tool_manager,
             cm,
+            assistant_message_id=native_tool_assistant_message_id,
         )
         _trace_log_info(
             "engine.llm_step.responses_tools_done request=%s session=%s agent=%s "

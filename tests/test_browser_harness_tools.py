@@ -864,11 +864,12 @@ async def test_execute_pending_tool_calls_promotes_image_artifact_callback():
     class FakeHandler:
         def get_and_clear_pending_tool_calls(self):
             return [
-                {
-                    "name": "browser_harness_screenshot",
-                    "arguments": "{}",
-                    "id": "call_1",
-                }
+                    {
+                        "name": "browser_harness_screenshot",
+                        "arguments": "{}",
+                        "id": "call_1",
+                        "call_id": "call_1",
+                    }
             ]
 
     class FakeApiClient:

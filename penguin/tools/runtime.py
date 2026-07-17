@@ -9,10 +9,12 @@ from __future__ import annotations
 
 # Keep Optional/Union annotations for Python 3.9 compatibility.
 # ruff: noqa: UP007
+import asyncio
 import hashlib
 import inspect
 import json
 import logging
+import os
 import shlex
 import time
 import uuid
@@ -21,6 +23,10 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, Optional, Union, cast
 
 from penguin.system.execution_context import get_current_execution_context
+from penguin.system.runtime_diagnostics import (
+    mark_runtime_progress,
+    record_runtime_duration,
+)
 from penguin.utils.parser import CodeActAction, parse_action
 
 logger = logging.getLogger(__name__)
@@ -40,6 +46,8 @@ ToolResource = str
 TOOL_RECORD_OUTPUT_PREVIEW_CHARS = 500
 TOOL_RECORD_ARGUMENT_PREVIEW_CHARS = 500
 DEFAULT_TOOL_MODEL_OUTPUT_MAX_CHARS = 24_000
+DEFAULT_TOOL_ARTIFACT_MAX_BYTES = 512 * 1024 * 1024
+DEFAULT_TOOL_ARTIFACT_MAX_FILES = 2_048
 ORDERED_TOOL_BATCH_NAME = "ordered_tool_batch"
 ORDERED_TOOL_BATCH_REJECTED_NAMES = frozenset(
     {
@@ -250,6 +258,7 @@ class ToolExecutionPolicy:
     max_output_chars: Optional[int] = None
     artifact_dir: Optional[Union[str, Path]] = None
     truncation_direction: Literal["head", "tail", "middle"] = "tail"
+    allow_parallel: bool = True
 
 
 @dataclass(frozen=True)
@@ -488,13 +497,17 @@ def prepare_model_visible_tool_output(
         )
 
     artifact_path: Optional[str] = None
+    artifact_reason: Optional[str] = None
     safe_id = _safe_artifact_id(artifact_id, output_hash)
     if artifact_dir is not None:
         directory = Path(artifact_dir)
         directory.mkdir(parents=True, exist_ok=True)
-        path = directory / f"tool-output-{safe_id}.txt"
-        path.write_text(full_output, encoding="utf-8")
-        artifact_path = str(path)
+        if _artifact_quota_allows(directory, byte_count):
+            path = directory / f"tool-output-{safe_id}.txt"
+            path.write_text(full_output, encoding="utf-8")
+            artifact_path = str(path)
+        else:
+            artifact_reason = "artifact_quota_exceeded"
 
     effective_max = max(int(max_chars), 0)
     notice_parts = [
@@ -505,6 +518,8 @@ def prepare_model_visible_tool_output(
     ]
     if artifact_path:
         notice_parts.append(f"artifact={artifact_path}")
+    elif artifact_reason:
+        notice_parts.append(f"artifact=not_saved reason={artifact_reason}")
     notice = "\n\n[" + " ".join(notice_parts) + "]"
     preview_budget = max(effective_max - len(notice), 0)
     preview = _truncate_output_preview(
@@ -529,6 +544,37 @@ def prepare_model_visible_tool_output(
         artifact_id=safe_id,
         max_chars=max_chars,
     )
+
+
+def _artifact_quota_allows(directory: Path, additional_bytes: int) -> bool:
+    """Apply a non-destructive file/byte admission limit to tool artifacts."""
+
+    max_bytes = _nonnegative_env_int(
+        "PENGUIN_TOOL_ARTIFACT_MAX_BYTES",
+        DEFAULT_TOOL_ARTIFACT_MAX_BYTES,
+    )
+    max_files = _nonnegative_env_int(
+        "PENGUIN_TOOL_ARTIFACT_MAX_FILES",
+        DEFAULT_TOOL_ARTIFACT_MAX_FILES,
+    )
+    existing_files = list(directory.glob("tool-output-*.txt"))
+    if len(existing_files) >= max_files:
+        return False
+    existing_bytes = 0
+    for path in existing_files:
+        try:
+            existing_bytes += path.stat().st_size
+        except OSError:
+            continue
+    return existing_bytes + max(0, int(additional_bytes)) <= max_bytes
+
+
+def _nonnegative_env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    try:
+        return max(0, int(raw)) if raw is not None else default
+    except (TypeError, ValueError):
+        return default
 
 
 def _stable_json(value: Any) -> str:
@@ -760,7 +806,9 @@ def _ordered_child_name(item: dict[str, Any]) -> tuple[str, Optional[str]]:
     return name, None
 
 
-def _ordered_child_arguments(item: dict[str, Any]) -> tuple[dict[str, Any], Optional[str]]:
+def _ordered_child_arguments(
+    item: dict[str, Any],
+) -> tuple[dict[str, Any], Optional[str]]:
     """Return one child argument object from a batch item or an error string."""
 
     sentinel = object()
@@ -915,9 +963,7 @@ def ordered_tool_batch_result_from_results(
     child_summaries: list[dict[str, Any]] = []
     for index, result in enumerate(child_results):
         duration_ms = max((result.ended_at - result.started_at) * 1000, 0.0)
-        source_call = (
-            plan.tool_calls[index] if index < len(plan.tool_calls) else None
-        )
+        source_call = plan.tool_calls[index] if index < len(plan.tool_calls) else None
         child_summaries.append(
             {
                 "call_id": result.call_id,
@@ -936,7 +982,9 @@ def ordered_tool_batch_result_from_results(
                 ),
             }
         )
-    failed = [summary for summary in child_summaries if summary["status"] != "completed"]
+    failed = [
+        summary for summary in child_summaries if summary["status"] != "completed"
+    ]
     status: ToolResultStatus = "error" if failed else "completed"
     completed_count = len(child_summaries) - len(failed)
     output_lines = [
@@ -1026,7 +1074,10 @@ def tool_call_with_schedule_metadata(
     inferred_resources = infer_tool_resources(tool_call)
     mutates_state = metadata.get("mutates_state", tool_call.mutates_state)
     requires_approval = metadata.get("requires_approval", tool_call.requires_approval)
-    parallel_safe = metadata.get("parallel_safe", tool_call.parallel_safe)
+    parallel_safe = metadata.get(
+        "parallel_safe",
+        tool_call.parallel_safe or inferred_effect == "read",
+    )
     long_running = metadata.get("long_running", tool_call.long_running)
     streams_output = metadata.get("streams_output", tool_call.streams_output)
     if inferred_effect == "read" and not metadata:
@@ -1430,6 +1481,34 @@ async def execute_tool_calls_serially(
     results: list[ToolResult] = []
     selected_calls = select_ordered_tool_calls_for_policy(tool_calls, active_policy)
     parallel_decision = parallel_schedule_decision(selected_calls)
+    if (
+        active_policy.allow_parallel
+        and not active_policy.stop_on_error
+        and len(selected_calls) > 1
+        and parallel_decision.allowed
+    ):
+        logger.info(
+            "tool.batch.schedule mode=parallel count=%s reason=%s",
+            len(selected_calls),
+            parallel_decision.reason,
+        )
+        started = time.perf_counter()
+        child_policy = replace(active_policy, max_calls=None, allow_parallel=False)
+        parallel_results = await asyncio.gather(
+            *(
+                execute_tool_calls_serially(
+                    [tool_call],
+                    execute_call,
+                    policy=child_policy,
+                )
+                for tool_call in selected_calls
+            )
+        )
+        record_runtime_duration(
+            "tool.schedule",
+            (time.perf_counter() - started) * 1000,
+        )
+        return [result for batch in parallel_results for result in batch]
     if selected_calls:
         logger.info(
             "tool.batch.schedule mode=ordered count=%s parallel_allowed=%s reason=%s "
@@ -1463,6 +1542,8 @@ async def execute_tool_calls_serially(
                 output = await output
             ended_at = time.time()
             duration_ms = (time.perf_counter() - started_perf) * 1000
+            record_runtime_duration("tool.execution", duration_ms)
+            mark_runtime_progress("tool")
             if isinstance(output, ToolResult):
                 result = tool_result_with_model_output_policy(
                     output,
@@ -1541,6 +1622,8 @@ async def execute_tool_calls_serially(
                 break
         except Exception as exc:
             duration_ms = (time.perf_counter() - started_perf) * 1000
+            record_runtime_duration("tool.execution", duration_ms)
+            mark_runtime_progress("tool")
             logger.warning(
                 "tool.exec.error request=%s session=%s call_id=%s tool=%s "
                 "source=%s duration_ms=%.2f args_chars=%s error=%s",
@@ -1589,7 +1672,12 @@ async def execute_tool_calls_ordered(
 ) -> list[ToolResult]:
     """Execute a dependent multi-tool batch in deterministic serial order."""
 
-    return await execute_tool_calls_serially(tool_calls, execute_call, policy=policy)
+    ordered_policy = replace(policy or ToolExecutionPolicy(), allow_parallel=False)
+    return await execute_tool_calls_serially(
+        tool_calls,
+        execute_call,
+        policy=ordered_policy,
+    )
 
 
 def tool_call_from_responses_info(tool_info: dict[str, Any]) -> Optional[ToolCall]:
@@ -1842,6 +1930,8 @@ def legacy_action_result_from_tool_result(tool_result: ToolResult) -> dict[str, 
 
 
 __all__ = [
+    "DEFAULT_TOOL_ARTIFACT_MAX_BYTES",
+    "DEFAULT_TOOL_ARTIFACT_MAX_FILES",
     "ToolArguments",
     "DEFAULT_TOOL_MODEL_OUTPUT_MAX_CHARS",
     "ToolEffect",

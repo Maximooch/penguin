@@ -25,7 +25,10 @@ from penguin.system.execution_context import get_current_execution_context
 from penguin.tools.image_tools import ReadImageTool
 from penguin.tools.browser_harness_tools import BrowserHarnessScreenshotTool
 from penguin.tools.browser_tools import BrowserScreenshotTool, browser_manager
-from penguin.constants import DEFAULT_LARGE_FILE_THRESHOLD_BYTES
+from penguin.constants import (
+    DEFAULT_LARGE_FILE_THRESHOLD_BYTES,
+    DELEGATE_EXPLORE_TASK_MAX_ITERATIONS_CAP,
+)
 import os
 
 logger = logging.getLogger(__name__)
@@ -2448,7 +2451,7 @@ class ActionExecutor:
 
         start_dir = payload.get("directory", ".")
         requested_max_iterations = payload.get("max_iterations")
-        max_iterations: int | None = None
+        max_iterations = DELEGATE_EXPLORE_TASK_MAX_ITERATIONS_CAP
         if requested_max_iterations is not None:
             if isinstance(requested_max_iterations, bool):
                 return "max_iterations must be a positive integer when provided"
@@ -2467,6 +2470,10 @@ class ActionExecutor:
                 return "max_iterations must be a positive integer when provided"
             if max_iterations <= 0:
                 return "max_iterations must be a positive integer when provided"
+            max_iterations = min(
+                max_iterations,
+                DELEGATE_EXPLORE_TASK_MAX_ITERATIONS_CAP,
+            )
 
         # Get request-scoped working directory for context
         execution_context = get_current_execution_context()

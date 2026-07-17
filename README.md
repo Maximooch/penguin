@@ -79,6 +79,30 @@ export PENGUIN_WEB_LOG_FILE="/path/to/logs.txt"
 export PENGUIN_WEB_LOG_ENABLED=false
 ```
 
+For local development and verification, keep the primary runtime on port `9000`
+untouched and start the isolated test server on `127.0.0.1:8080`:
+
+```bash
+uv run python scripts/run_runtime_reliability_server.py
+```
+
+The runner creates a unique test workspace, isolates mutable runtime stores, and
+refuses to replace an existing process on port `8080`. Use `--debug` for reload mode
+or `--describe` to inspect the resolved paths without starting a server.
+
+For a repeatable fresh-session and large-persisted-session timing baseline without a
+live provider or network listener, run:
+
+```bash
+uv run python scripts/benchmark_runtime_reliability.py \
+  --base-directory /tmp/penguin-runtime-baselines
+```
+
+The harness uses the same isolated test-role storage contract, calls the production
+chat handler directly, and records provider, tool, context, session, ledger, and
+end-to-end stages. Its JSON output states the remaining gap to a full PenguinCore and
+HTTP-socket benchmark.
+
 ## What You Get
 
 - Coding workflow tools: file reads/writes/diffs, shell commands, test execution, search,
@@ -116,6 +140,13 @@ Penguin exposes the same runtime through several surfaces:
   Goal control and run operations use explicit `404`, `409`, and `422` responses
   for missing state, lifecycle conflicts, and invalid input.
 - `GET /api/v1/events/sse` streams OpenCode-compatible events and now includes session-scoped clarification status visibility for web clients.
+- REST and WebSocket chat return explicit terminal truth (`completed`, `state`,
+  `terminal_reason`, partial output, recovery/cancellation details, and
+  iteration/action counts). A 2xx/`complete` transport envelope is not treated
+  as Penguin success unless `completed` is true.
+- Recoverable chat stops offer Retry/Resume only through a server-generated,
+  durably persisted one-shot continuation. Clients do not guess or
+  automatically send a plain-text `resume` turn.
 - `PenguinAPI.run_task(...)` and `PenguinAPI.resume_with_clarification(...)` are aligned with the web route behavior so programmatic callers see the same lifecycle truth.
 
 These surfaces are still under active audit, but the current direction is explicit: web/API consumers should receive the same task/clarification truth that the backend runtime uses internally.

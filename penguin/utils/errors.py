@@ -19,6 +19,7 @@ class LLMEmptyResponseError(Exception):
     - Model refusing to respond
     - Network/timeout issues
     """
+
     pass
 
 
@@ -31,7 +32,7 @@ class PenguinError(Exception):
         code: str = "PENGUIN_ERROR",
         recoverable: bool = True,
         suggested_action: str = "retry",
-        details: Optional[Dict[str, Any]] = None
+        details: Optional[Dict[str, Any]] = None,
     ):
         super().__init__(message)
         self.code = code
@@ -46,37 +47,40 @@ class PenguinError(Exception):
             "message": str(self),
             "recoverable": self.recoverable,
             "suggested_action": self.suggested_action,
-            "details": self.details
+            "details": self.details,
         }
 
 
 # Specific error types for better categorization
 class ContextWindowExceededError(PenguinError):
     """Context window exceeded."""
+
     def __init__(self, message: str, **kwargs):
         super().__init__(
             message,
             code="CONTEXT_WINDOW_EXCEEDED",
             recoverable=True,
             suggested_action="start_new_conversation",
-            **kwargs
+            **kwargs,
         )
 
 
 class ResourceExhaustedError(PenguinError):
     """System resources exhausted."""
+
     def __init__(self, message: str, **kwargs):
         super().__init__(
             message,
             code="RESOURCE_EXHAUSTED",
             recoverable=True,
             suggested_action="retry_later",
-            **kwargs
+            **kwargs,
         )
 
 
 class AgentNotFoundError(PenguinError):
     """Agent not found."""
+
     def __init__(self, agent_id: str, **kwargs):
         super().__init__(
             f"Agent '{agent_id}' not found",
@@ -84,19 +88,43 @@ class AgentNotFoundError(PenguinError):
             recoverable=False,
             suggested_action="check_agent_id",
             details={"agent_id": agent_id},
-            **kwargs
+            **kwargs,
         )
 
 
 class TaskExecutionError(PenguinError):
     """Task execution failed."""
+
     def __init__(self, message: str, **kwargs):
         super().__init__(
             message,
             code="TASK_EXECUTION_ERROR",
             recoverable=True,
             suggested_action="retry_or_modify_task",
-            **kwargs
+            **kwargs,
+        )
+
+
+class NativeToolHistoryPersistenceError(PenguinError):
+    """Raised when an executed native tool batch cannot be replayed safely."""
+
+    def __init__(
+        self,
+        tool_call_ids: list[str],
+        *,
+        reason: Optional[str] = None,
+    ):
+        detail = reason or "The complete tool declaration/results batch was rejected."
+        super().__init__(
+            "A native tool ran, but Penguin could not persist its complete "
+            "provider replay history safely.",
+            code="NATIVE_TOOL_HISTORY_PERSISTENCE_FAILED",
+            recoverable=False,
+            suggested_action=(
+                "Inspect durable tool records before resuming; do not automatically "
+                "retry the tool call."
+            ),
+            details={"tool_call_ids": list(tool_call_ids), "reason": detail},
         )
 
 

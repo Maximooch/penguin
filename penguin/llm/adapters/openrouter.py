@@ -1,20 +1,21 @@
-import os
-import logging
 import asyncio
-import json
 import math
-import time
-from typing import List, Dict, Optional, Any, Union, Callable, AsyncIterator, NoReturn
 
 # --- Added Imports for Vision Handling ---
 import base64
+import inspect
 import io
-from PIL import Image as PILImage  # Use alias for PIL Image # type: ignore
-# --- End Added Imports ---
+import json
+import logging
+import os
+import time
+from typing import Any, AsyncIterator, Callable, Dict, List, NoReturn, Optional, Union
 
+# --- End Added Imports ---
 import httpx  # type: ignore
 import tiktoken  # type: ignore
-from openai import AsyncOpenAI, APIError  # type: ignore
+from openai import APIError, AsyncOpenAI  # type: ignore
+from PIL import Image as PILImage  # Use alias for PIL Image # type: ignore
 
 # Connection pooling for parallel LLM calls
 from penguin.llm.api_client import ConnectionPoolManager
@@ -33,6 +34,7 @@ from penguin.llm.provider_transform import (
     extract_retry_after_seconds,
     normalize_finish_reason,
 )
+from penguin.system.native_tool_history import sanitize_native_tool_messages
 
 from ..model_config import ModelConfig
 
@@ -145,7 +147,8 @@ class OpenRouterGateway:
             self.client = AsyncOpenAI(
                 base_url=self.base_url,
                 api_key=api_key,
-                timeout=None,
+                # The runtime owns retry budgeting across provider transports.
+                max_retries=0,
             )
             self.logger.info(
                 f"OpenRouterGateway initialized for model: {model_config.model} at {self.base_url}"
@@ -186,45 +189,54 @@ class OpenRouterGateway:
 
         return "openrouter"
 
-    def _stream_timeout_seconds(self, env_name: str) -> Optional[float]:
-        """Return an explicitly configured positive streaming timeout.
+    def _stream_timeout_seconds(self, env_name: str, default: float) -> float:
+        """Read a finite positive stream timeout, falling back to ``default``."""
 
-        A missing or invalid setting intentionally leaves the stream unbounded.
-        Long-running agent work must not acquire a Penguin-local provider timeout
-        merely because an operator did not configure one.
-        """
         raw_value = os.getenv(env_name)
         if not isinstance(raw_value, str) or not raw_value.strip():
-            return None
+            return default
         try:
             parsed = float(raw_value.strip())
         except Exception:
             self.logger.warning(
-                "Invalid %s=%r; disabling OpenRouter stream watchdog",
+                "Invalid %s=%r; using default timeout %ss",
                 env_name,
                 raw_value,
+                default,
             )
-            return None
+            return default
         if not math.isfinite(parsed) or parsed <= 0:
             self.logger.warning(
-                "Non-finite or non-positive %s=%r; "
-                "disabling OpenRouter stream watchdog",
+                "Non-finite or non-positive %s=%r; using default timeout %ss",
                 env_name,
                 raw_value,
+                default,
             )
-            return None
+            return default
         return parsed
 
-    def _stream_chunk_timeout_seconds(self) -> Optional[float]:
-        """Return the explicitly configured maximum wait for one stream chunk."""
+    def _stream_chunk_timeout_seconds(self) -> float:
+        """Return the maximum wait for one stream chunk."""
+
         return self._stream_timeout_seconds(
-            "PENGUIN_OPENROUTER_STREAM_CHUNK_TIMEOUT_SECONDS"
+            "PENGUIN_OPENROUTER_STREAM_CHUNK_TIMEOUT_SECONDS",
+            75.0,
         )
 
-    def _stream_total_timeout_seconds(self) -> Optional[float]:
-        """Return the explicitly configured maximum duration for one stream."""
+    def _stream_total_timeout_seconds(self) -> float:
+        """Return the maximum duration for one stream."""
+
         return self._stream_timeout_seconds(
-            "PENGUIN_OPENROUTER_STREAM_TOTAL_TIMEOUT_SECONDS"
+            "PENGUIN_OPENROUTER_STREAM_TOTAL_TIMEOUT_SECONDS",
+            300.0,
+        )
+
+    def _stream_close_timeout_seconds(self) -> float:
+        """Return the finite cleanup budget after a stream timeout."""
+
+        return self._stream_timeout_seconds(
+            "PENGUIN_OPENROUTER_STREAM_CLOSE_TIMEOUT_SECONDS",
+            2.0,
         )
 
     async def _next_stream_item(
@@ -257,6 +269,65 @@ class OpenRouterGateway:
             iterator.__anext__(),
             timeout=min(configured_timeouts),
         )
+
+    async def _close_sdk_stream(self, stream: Any) -> None:
+        """Best-effort close for a timed-out OpenAI-compatible SDK stream."""
+
+        def consume_late_close_result(task: asyncio.Future[Any]) -> None:
+            """Observe a detached close task without leaking task warnings."""
+
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                self.logger.debug(
+                    "Late timed-out OpenRouter stream close failed",
+                    exc_info=True,
+                )
+
+        for method_name in ("aclose", "close"):
+            closer = getattr(stream, method_name, None)
+            if not callable(closer):
+                continue
+            try:
+                result = closer()
+                if inspect.isawaitable(result):
+                    close_task = asyncio.ensure_future(result)
+                    close_timeout = self._stream_close_timeout_seconds()
+                    done, _ = await asyncio.wait(
+                        {close_task},
+                        timeout=close_timeout,
+                    )
+                    if close_task in done:
+                        consume_late_close_result(close_task)
+                        return
+
+                    close_task.cancel()
+                    done, _ = await asyncio.wait(
+                        {close_task},
+                        timeout=close_timeout,
+                    )
+                    if close_task in done:
+                        consume_late_close_result(close_task)
+                    else:
+                        self.logger.warning(
+                            "Timed-out OpenRouter stream close ignored cancellation "
+                            "for %.3fs; detaching cleanup task",
+                            close_timeout,
+                        )
+                        close_task.add_done_callback(consume_late_close_result)
+            except asyncio.CancelledError:
+                if "close_task" in locals() and not close_task.done():
+                    close_task.cancel()
+                    close_task.add_done_callback(consume_late_close_result)
+                raise
+            except Exception:
+                self.logger.debug(
+                    "Failed to close timed-out OpenRouter SDK stream",
+                    exc_info=True,
+                )
+            return
 
     def _to_dict(self, value: Any) -> Dict[str, Any]:
         if isinstance(value, dict):
@@ -571,6 +642,12 @@ class OpenRouterGateway:
         category: Any = None,
         retryable: Optional[bool] = None,
     ) -> None:
+        resolved_provider_data = dict(provider_data or {})
+        partial_tool_call = bool(
+            self.has_pending_tool_call() or getattr(self, "_tool_call_accs", {})
+        )
+        if partial_tool_call:
+            resolved_provider_data.setdefault("partial_tool_call", True)
         error = build_llm_error(
             message=message,
             provider="openrouter",
@@ -578,7 +655,7 @@ class OpenRouterGateway:
             status_code=status_code,
             retry_after_seconds=retry_after_seconds,
             finish_reason=finish_reason,
-            provider_data=provider_data,
+            provider_data=resolved_provider_data,
             category=category,
             retryable=retryable,
         )
@@ -593,8 +670,14 @@ class OpenRouterGateway:
             finish_reason=error.finish_reason or self.get_last_finish_reason(),
             error=error,
         )
+        if partial_tool_call:
+            self._pending_tool_calls = []
+            self._last_tool_call = None
+            self._tool_call_acc = {"name": None, "arguments": ""}
+            self._tool_call_accs = {}
 
     def _record_stream_incomplete(self, output_state: str) -> str:
+        partial_tool_call = output_state == "tool_call" or self.has_pending_tool_call()
         message = (
             "OpenRouter stream ended before finish_reason "
             f"(output_state={output_state})"
@@ -604,6 +687,7 @@ class OpenRouterGateway:
             finish_reason=FinishReason.ERROR,
             category=ErrorCategory.NETWORK,
             retryable=True,
+            provider_data={"partial_tool_call": partial_tool_call},
         )
         self._set_last_finish_reason(FinishReason.ERROR)
         self._clear_pending_tool_state()
@@ -889,6 +973,8 @@ class OpenRouterGateway:
             if isinstance(header_value, str) and header_value.strip():
                 request_headers[header_name] = header_value.strip()
 
+        # This is a bounded read-only usage lookup after an already-sent
+        # completion, not a second model-completion replay.
         endpoint = f"{self.base_url}/generation"
         for attempt in (1, 2):
             try:
@@ -1141,8 +1227,9 @@ class OpenRouterGateway:
         """
         try:
             # Import here to avoid circular imports
-            from penguin.utils.parser import ActionType
             import re
+
+            from penguin.utils.parser import ActionType
 
             # Generate pattern from ActionType enum (exactly like parser.py does)
             action_tag_pattern = "|".join(
@@ -1168,6 +1255,11 @@ class OpenRouterGateway:
         Preserve valid tool continuity for OpenRouter while repairing obviously
         malformed tool context that can trigger SDK validation errors.
         """
+        messages = [
+            message
+            for message in sanitize_native_tool_messages(messages)
+            if isinstance(message, dict)
+        ]
         reformatted_messages = []
         available_tool_call_ids: set[str] = set()
 
@@ -1282,42 +1374,15 @@ class OpenRouterGateway:
                     }
                     available_tool_call_ids.discard(tool_call_id)
                 elif tool_call_id:
-                    synthesized_tool_call = _tool_call_from_tool_message(message)
-                    if synthesized_tool_call:
-                        self.logger.debug(
-                            "Synthesizing assistant tool_call for orphaned OpenRouter tool message"
-                        )
-                        reformatted_messages.append(
-                            {
-                                "role": "assistant",
-                                "content": "",
-                                "tool_calls": [synthesized_tool_call],
-                            }
-                        )
-                        reformatted_message = {
-                            "role": "tool",
-                            "tool_call_id": tool_call_id,
-                            "content": message.get("content", ""),
-                        }
-                    else:
-                        self.logger.debug(
-                            "Flattening orphaned tool message without replay metadata"
-                        )
-                        reformatted_message = {
-                            "role": "user",
-                            "content": message.get("content", ""),
-                        }
+                    self.logger.debug(
+                        "Dropping orphaned OpenRouter tool message from provider replay"
+                    )
+                    continue
                 else:
                     self.logger.debug(
-                        "Flattening malformed tool message without tool_call_id"
+                        "Dropping malformed tool message without tool_call_id"
                     )
-                    reformatted_message = {
-                        "role": "user",
-                        "content": message.get("content", ""),
-                    }
-                    for key, value in message.items():
-                        if key not in ["role", "content", "tool_call_id"]:
-                            reformatted_message[key] = value
+                    continue
 
             reformatted_messages.append(reformatted_message)
 
@@ -1541,12 +1606,27 @@ class OpenRouterGateway:
                             total_timeout_seconds,
                             exc,
                         )
-                        self._raise_stream_timeout(
-                            exc,
-                            phase="OpenRouter SDK stream",
-                            chunk_timeout_seconds=chunk_timeout_seconds,
-                            total_timeout_seconds=total_timeout_seconds,
+                        await self._close_sdk_stream(completion_iter)
+                        if completion_iter is not completion:
+                            await self._close_sdk_stream(completion)
+                        self._set_last_finish_reason(FinishReason.ERROR)
+                        self._record_error(
+                            message=(
+                                "OpenRouter SDK stream stalled for "
+                                f"{self.model_config.model}: {exc}"
+                            ),
+                            finish_reason=FinishReason.ERROR,
+                            category=ErrorCategory.TIMEOUT,
+                            retryable=True,
+                            provider_data={
+                                "stage": "sdk_stream_timeout",
+                                "partial_output": _gateway_accumulated_content,
+                            },
                         )
+                        error = self.get_last_error()
+                        if error is None:  # pragma: no cover - defensive guard
+                            raise RuntimeError("OpenRouter timeout was not recorded")
+                        raise LLMProviderError(error)
 
                     self._update_request_lifecycle(
                         status=ProviderRequestStatus.STREAMING,
@@ -2122,30 +2202,66 @@ class OpenRouterGateway:
                         client, url, headers, direct_params, stream_callback
                     )
 
+        except httpx.TimeoutException as exc:
+            if isinstance(exc, httpx.ConnectTimeout):
+                stage = "direct_connect_timeout"
+            elif isinstance(exc, httpx.ReadTimeout):
+                stage = "direct_read_timeout"
+            else:
+                stage = "direct_transport_timeout"
+            self.logger.error(
+                "OpenRouter direct request timed out model=%s stage=%s",
+                self.model_config.model,
+                stage,
+            )
+            self._set_last_finish_reason(FinishReason.ERROR)
+            self._record_error(
+                message=(
+                    "OpenRouter direct request timed out for "
+                    f"{self.model_config.model} ({stage})"
+                ),
+                finish_reason=FinishReason.ERROR,
+                category=ErrorCategory.TIMEOUT,
+                retryable=True,
+                provider_data={
+                    "stage": stage,
+                    "transport": "direct",
+                    "stream": bool(use_streaming),
+                    "partial_output": "",
+                },
+            )
+            error = self.get_last_error()
+            if error is None:  # pragma: no cover - defensive guard
+                raise RuntimeError("OpenRouter direct timeout was not recorded")
+            raise LLMProviderError(error) from exc
         except LLMProviderError:
             raise
-        except httpx.ReadTimeout:
-            self.logger.error(f"Request timed out for model {self.model_config.model}")
-            self._record_error(
-                message=f"Request timed out for {self.model_config.model}",
-            )
-            return f"[Error: Request timed out. Model {self.model_config.model} may be cold-starting or experiencing high load. Try again in a moment.]"
-        except httpx.ConnectTimeout:
-            self.logger.error(
-                f"Connection timed out for model {self.model_config.model}"
-            )
-            self._record_error(
-                message="Connection timed out communicating with OpenRouter",
-            )
-            return "[Error: Connection timed out. OpenRouter may be experiencing issues. Try again later.]"
         except Exception as e:
             self.logger.error(f"Direct API call failed: {e}", exc_info=True)
-            # Check for timeout-related errors in the exception
+            # Proxies and pool wrappers sometimes erase the original httpx
+            # timeout type. Preserve the same typed retry contract when their
+            # wrapper text still identifies the failure as a timeout.
             if "timeout" in str(e).lower():
+                self._set_last_finish_reason(FinishReason.ERROR)
                 self._record_error(
-                    message=f"Request timed out for {self.model_config.model}",
+                    message=(
+                        "OpenRouter direct request timed out for "
+                        f"{self.model_config.model} (direct_wrapped_timeout): {e}"
+                    ),
+                    finish_reason=FinishReason.ERROR,
+                    category=ErrorCategory.TIMEOUT,
+                    retryable=True,
+                    provider_data={
+                        "stage": "direct_wrapped_timeout",
+                        "transport": "direct",
+                        "stream": bool(use_streaming),
+                        "partial_output": "",
+                    },
                 )
-                return f"[Error: Request timed out for {self.model_config.model}. The model may need time to warm up. Try again.]"
+                error = self.get_last_error()
+                if error is None:  # pragma: no cover - defensive guard
+                    raise RuntimeError("OpenRouter wrapped timeout was not recorded")
+                raise LLMProviderError(error) from e
             self._record_error(
                 message=f"Direct API call failed - {str(e)}",
             )
@@ -2215,12 +2331,27 @@ class OpenRouterGateway:
                         total_timeout_seconds,
                         exc,
                     )
-                    self._raise_stream_timeout(
-                        exc,
-                        phase="OpenRouter direct stream",
-                        chunk_timeout_seconds=chunk_timeout_seconds,
-                        total_timeout_seconds=total_timeout_seconds,
+                    await self._close_sdk_stream(line_iter)
+                    if line_iter is not response:
+                        await self._close_sdk_stream(response)
+                    self._set_last_finish_reason(FinishReason.ERROR)
+                    self._record_error(
+                        message=(
+                            "OpenRouter direct stream stalled for "
+                            f"{self.model_config.model}: {exc}"
+                        ),
+                        finish_reason=FinishReason.ERROR,
+                        category=ErrorCategory.TIMEOUT,
+                        retryable=True,
+                        provider_data={
+                            "stage": "direct_stream_timeout",
+                            "partial_output": full_content,
+                        },
                     )
+                    error = self.get_last_error()
+                    if error is None:  # pragma: no cover - defensive guard
+                        raise RuntimeError("OpenRouter direct timeout was not recorded")
+                    raise LLMProviderError(error)
 
                 if not line.strip():
                     continue

@@ -201,7 +201,8 @@ INVESTIGATION_WORKFLOW = """
 2. **Turn N+1:** System shows results
 3. **Turn N+2:** You analyze and continue or respond
 
-**Minimum 5-12 tool calls** for analysis tasks before responding.
+Use enough inspection to answer accurately, but stop once the evidence is
+sufficient. Do not call tools to satisfy a fixed-count quota.
 
 **Build understanding from evidence, not assumptions.**
 """
@@ -213,23 +214,9 @@ INVESTIGATION_WORKFLOW = """
 EXECUTION_WORKFLOW = """
 ## Execution Strategy
 
-**One action per response, then wait for result.**
-
-Correct (Incremental):
-```
-<execute>Create folder<execute>
-```
-[Wait for result]
-```
-<execute>Create main.py<execute>
-```
-
-Wrong (Batch - Do not do this):
-```
-<execute>Create folder<execute>
-<execute>Create main.py<execute>
-<execute>Create tests<execute>
-```
+Batch independent, read-only inspection when it reduces latency. Keep file
+mutation, Git, process control, installs, tests, and other order-dependent
+operations serialized. Verify after the smallest coherent implementation.
 
 **Ordered native-tool batching:** When native tools expose `ordered_tool_batch`,
 use it for dependent or mutating sequences that must run serially. Do not use
@@ -609,6 +596,57 @@ WORKFLOW_GUIDE = "\n\n".join(
 )
 
 
-def get_workflow_guide() -> str:
-    """Get the complete workflow documentation."""
-    return WORKFLOW_GUIDE
+MODE_WORKFLOW_GUIDANCE = {
+    "direct": """
+## Direct Mode
+
+Answer or act proportionately to the request. Inspect only what is needed,
+make a safe change when asked, verify the result, and stop when complete.
+""",
+    "implement": """
+## Implement Mode
+
+Implementation is the default priority: trace the real path, make the smallest
+coherent change, run proportionate verification, and report the outcome. Do
+not expand a simple fix into an investigation project.
+""",
+    "review": """
+## Review Mode
+
+Inspect the requested scope and report evidence-backed correctness, regressions,
+and missing tests. Do not modify files unless the user explicitly asks for a fix.
+""",
+    "explain": """
+## Explain Mode
+
+Teach the requested concept with the minimum repository inspection needed for
+accuracy. Prefer a clear answer and a small example over speculative changes.
+""",
+}
+
+
+def get_workflow_guide(mode: str | None = None) -> str:
+    """Return the compact workflow for a mode, or legacy guide on request."""
+
+    if mode is None or str(mode).strip().lower() in {"compatibility", "legacy"}:
+        return WORKFLOW_GUIDE
+    normalized = str(mode).strip().lower()
+    normalized = {"build": "implement", "plan": "review"}.get(
+        normalized,
+        normalized,
+    )
+    mode_guidance = MODE_WORKFLOW_GUIDANCE.get(
+        normalized,
+        MODE_WORKFLOW_GUIDANCE["direct"],
+    )
+    return "\n\n".join(
+        [
+            ITUV_WORKFLOW,
+            EXECUTION_WORKFLOW,
+            TOOL_RESULTS,
+            CONTEXT_MANAGEMENT,
+            SKILLS_WORKFLOW,
+            COMPLETION_GUIDE,
+            mode_guidance,
+        ]
+    )

@@ -4,7 +4,7 @@ import { createGlobalEmitter } from "@solid-primitives/event-bus"
 import { batch, createEffect, createSignal, onCleanup, onMount } from "solid-js"
 import { useRoute } from "./route"
 import { getPenguinAuthHeaders } from "./penguin-auth"
-import { cleanPenguinEvent, streamPenguinEvents } from "./penguin-event-stream"
+import { cleanPenguinEvent, isPenguinProgressEvent, streamPenguinEvents } from "./penguin-event-stream"
 
 export type EventSource = {
   on: (handler: (event: Event) => void) => () => void
@@ -51,12 +51,16 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     let timer: Timer | undefined
     let last = 0
     let streamAbort: AbortController | undefined
+    const lastEventIds = new Map<string, string>()
     const auth = { denied: false }
     const [stream, setStream] = createSignal<{
       lastEventAt?: number
+      lastProgressAt?: number
       status: "idle" | "connecting" | "connected" | "reconnecting" | "denied"
+      tracksProgress: boolean
     }>({
       status: penguin ? "connecting" : "idle",
+      tracksProgress: penguin,
     })
 
     const flush = () => {
@@ -76,10 +80,35 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     const handleEvent = (event: Event) => {
       const now = Date.now()
       if (penguin) {
-        setStream({
+        const activeSessionID = sessionID()
+        const eventId =
+          "id" in event && typeof event.id === "string" ? event.id : undefined
+        const delivery =
+          "properties" in event &&
+          event.properties &&
+          typeof event.properties === "object" &&
+          "_penguin_delivery" in event.properties
+            ? event.properties._penguin_delivery
+            : undefined
+        const isPendingDelivery =
+          delivery &&
+          typeof delivery === "object" &&
+          "durability" in delivery &&
+          delivery.durability === "pending"
+        if (
+          activeSessionID &&
+          eventId &&
+          !isPendingDelivery &&
+          !event.type.startsWith("server.")
+        ) {
+          lastEventIds.set(activeSessionID, eventId)
+        }
+        setStream((current) => ({
           lastEventAt: now,
+          lastProgressAt: isPenguinProgressEvent(event) ? now : current.lastProgressAt,
           status: "connected",
-        })
+          tracksProgress: true,
+        }))
       }
       queue.push(penguin ? cleanPenguinEvent(event) : event)
       const elapsed = now - last
@@ -100,7 +129,9 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       const currentStreamAbort = streamAbort
       setStream((current) => ({
         lastEventAt: current.lastEventAt,
+        lastProgressAt: current.lastProgressAt,
         status: current.lastEventAt ? "reconnecting" : "connecting",
+        tracksProgress: current.tracksProgress,
       }))
 
       await streamPenguinEvents<Event>({
@@ -108,19 +139,24 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
         directory: props.directory,
         fetch: request,
         sessionID: activeSessionID,
+        lastEventId: activeSessionID ? lastEventIds.get(activeSessionID) : undefined,
         signal: currentStreamAbort.signal,
         isCurrentSession: () => sessionID() === activeSessionID,
         onOpen: () => {
           setStream((current) => ({
             lastEventAt: current.lastEventAt,
+            lastProgressAt: current.lastProgressAt,
             status: "connected",
+            tracksProgress: current.tracksProgress,
           }))
         },
         onUnauthorized: () => {
           auth.denied = true
           setStream((current) => ({
             lastEventAt: current.lastEventAt,
+            lastProgressAt: current.lastProgressAt,
             status: "denied",
+            tracksProgress: current.tracksProgress,
           }))
           console.error("Penguin SSE unauthorized; restart the TUI to refresh local auth")
         },
@@ -155,7 +191,9 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
           if (abort.signal.aborted || auth.denied) break
           setStream((current) => ({
             lastEventAt: current.lastEventAt,
+            lastProgressAt: current.lastProgressAt,
             status: "reconnecting",
+            tracksProgress: current.tracksProgress,
           }))
           await wait(250)
         }

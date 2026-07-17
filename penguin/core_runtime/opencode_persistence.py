@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from penguin.system.execution_context import get_current_execution_context
+from penguin.system.runtime_diagnostics import record_runtime_duration
 
 from . import (
     opencode_bridge as core_opencode_bridge,
@@ -95,6 +97,7 @@ async def persist_opencode_event(
             model_state=model_state,
         )
 
+    transcript_started = time.perf_counter()
     result = core_opencode_transcript.apply_transcript_event(
         metadata=metadata,
         event_type=event_type,
@@ -102,13 +105,22 @@ async def persist_opencode_event(
         session_id=session_id,
         assistant_info_factory=assistant_info_factory,
     )
+    record_runtime_duration(
+        "transcript.update",
+        (time.perf_counter() - transcript_started) * 1000,
+    )
     if not result.mark_modified:
         return
 
     try:
         manager.mark_session_modified(session_id)
         if result.should_save:
+            save_started = time.perf_counter()
             manager.save_session(session)
+            record_runtime_duration(
+                "transcript.session_save",
+                (time.perf_counter() - save_started) * 1000,
+            )
     except Exception:
         logger.warning("Unable to persist OpenCode transcript event", exc_info=True)
 

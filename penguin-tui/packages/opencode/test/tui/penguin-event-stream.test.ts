@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import {
   cleanPenguinEvent,
   cleanPenguinText,
+  isPenguinProgressEvent,
   parsePenguinSSEEvent,
   type PenguinStreamEvent,
   streamPenguinEvents,
@@ -65,6 +66,33 @@ describe("Penguin event stream", () => {
     expect(parsePenguinSSEEvent("data: not-json\n\n")).toBeUndefined()
   })
 
+  test("does not count busy status heartbeats as real progress", () => {
+    expect(
+      isPenguinProgressEvent({
+        type: "session.status",
+        properties: {
+          sessionID: "ses_1",
+          status: { type: "busy" },
+        },
+      }),
+    ).toBe(false)
+    expect(
+      isPenguinProgressEvent({
+        type: "message.part.updated",
+        properties: { delta: "hello" },
+      }),
+    ).toBe(true)
+    expect(
+      isPenguinProgressEvent({
+        type: "session.status",
+        properties: {
+          sessionID: "ses_1",
+          status: { type: "idle" },
+        },
+      }),
+    ).toBe(true)
+  })
+
   test("preserves the SSE id when the event body omits it", () => {
     expect(
       parsePenguinSSEEvent(
@@ -104,7 +132,7 @@ describe("Penguin event stream", () => {
     }) as typeof fetch
 
     await streamPenguinEvents({
-      baseUrl: "http://127.0.0.1:9000",
+      baseUrl: "http://127.0.0.1:8080",
       directory: "/tmp/project",
       fetch: fetcher,
       onEvent: (event) => events.push(event),
@@ -119,13 +147,33 @@ describe("Penguin event stream", () => {
     expect(events).toEqual([payload])
   })
 
+  test("sends the durable cursor on reconnect", async () => {
+    let requestHeaders: HeadersInit | undefined
+    const fetcher = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestHeaders = init?.headers
+      return streamResponse("")
+    }) as typeof fetch
+
+    await streamPenguinEvents({
+      baseUrl: "http://127.0.0.1:8080",
+      fetch: fetcher,
+      lastEventId: "evt:session:ses_1:00000007",
+      onEvent: () => {},
+      signal: new AbortController().signal,
+    })
+
+    expect(new Headers(requestHeaders).get("Last-Event-ID")).toBe(
+      "evt:session:ses_1:00000007",
+    )
+  })
+
   test("reports unauthorized streams without emitting events", async () => {
     const events: PenguinStreamEvent[] = []
     let unauthorized = false
     const fetcher = (async () => streamResponse("", 401)) as unknown as typeof fetch
 
     await streamPenguinEvents({
-      baseUrl: "http://127.0.0.1:9000",
+      baseUrl: "http://127.0.0.1:8080",
       fetch: fetcher,
       onEvent: (event) => events.push(event),
       onUnauthorized: () => {

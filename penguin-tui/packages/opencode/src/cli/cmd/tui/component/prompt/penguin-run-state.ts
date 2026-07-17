@@ -4,7 +4,9 @@ export type PenguinRunStateType = "idle" | "pending" | "running" | "reconnecting
 
 export type PenguinStreamInfo = {
   lastEventAt?: number
+  lastProgressAt?: number
   status?: "idle" | "connecting" | "connected" | "reconnecting" | "denied"
+  tracksProgress?: boolean
 }
 
 type SessionStatus = {
@@ -35,6 +37,7 @@ type TimedPart = {
 export type PenguinRunState = {
   elapsedMs: number
   lastEventAgeMs?: number
+  lastProgressAgeMs?: number
   startedAt?: number
   type: PenguinRunStateType
 }
@@ -96,23 +99,29 @@ export function derivePenguinRunState(input: {
   const elapsedMs = Math.max(0, input.now - startedAt)
   const lastEventAgeMs =
     input.stream?.lastEventAt === undefined ? undefined : Math.max(0, input.now - input.stream.lastEventAt)
+  const recordedProgressAt = input.stream?.tracksProgress ? input.stream.lastProgressAt : input.stream?.lastEventAt
+  const progressAt =
+    recordedProgressAt !== undefined && recordedProgressAt >= startedAt ? recordedProgressAt : undefined
+  const lastProgressAgeMs = progressAt === undefined ? undefined : Math.max(0, input.now - progressAt)
 
   if (input.stream?.status === "reconnecting" || input.stream?.status === "connecting") {
     return {
       elapsedMs,
       lastEventAgeMs,
+      lastProgressAgeMs,
       startedAt,
       type: "reconnecting",
     }
   }
 
   const staleAfterMs = input.staleAfterMs ?? DEFAULT_PENGUIN_STALE_MS
-  const staleWithoutEvents = input.stream?.lastEventAt === undefined && elapsedMs >= staleAfterMs
-  const staleSinceLastEvent = lastEventAgeMs !== undefined && lastEventAgeMs >= staleAfterMs
-  if (staleWithoutEvents || staleSinceLastEvent || input.stream?.status === "denied") {
+  const staleWithoutProgress = progressAt === undefined && elapsedMs >= staleAfterMs
+  const staleSinceProgress = lastProgressAgeMs !== undefined && lastProgressAgeMs >= staleAfterMs
+  if (staleWithoutProgress || staleSinceProgress || input.stream?.status === "denied") {
     return {
       elapsedMs,
       lastEventAgeMs,
+      lastProgressAgeMs,
       startedAt,
       type: "stale",
     }
@@ -121,6 +130,7 @@ export function derivePenguinRunState(input: {
   return {
     elapsedMs,
     lastEventAgeMs,
+    lastProgressAgeMs,
     startedAt,
     type: input.pending && !statusBusy && !assistantOpen ? "pending" : "running",
   }

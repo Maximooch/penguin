@@ -16,10 +16,12 @@ class SDKClient:
         api_key: str,
         base_url: str | None = None,
         default_headers: dict[str, str] | None = None,
+        max_retries: int = 0,
     ) -> None:
         self.api_key = api_key
         self.base_url = base_url
         self.default_headers = default_headers
+        self.max_retries = max_retries
 
 
 class FakeResponse:

@@ -4,9 +4,17 @@ import asyncio
 import inspect
 import json
 import logging
+import math
+import os
+import random
 import time
+from concurrent.futures import Future
+from dataclasses import replace
+from queue import Queue
+from threading import BoundedSemaphore, Lock, Thread
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
+from penguin.system.runtime_diagnostics import record_runtime_duration
 from penguin.tools.runtime import (
     ORDERED_TOOL_BATCH_NAME,
     OrderedToolBatchPlan,
@@ -14,6 +22,7 @@ from penguin.tools.runtime import (
     ToolExecutionPolicy,
     ToolResult,
     execute_tool_calls_ordered,
+    execute_tool_calls_serially,
     legacy_action_result_from_tool_result,
     ordered_tool_batch_preflight_error_result,
     ordered_tool_batch_result_from_results,
@@ -21,7 +30,10 @@ from penguin.tools.runtime import (
     tool_call_from_responses_info,
     tool_call_with_schedule_metadata,
 )
-from penguin.utils.errors import LLMEmptyResponseError
+from penguin.utils.errors import (
+    LLMEmptyResponseError,
+    NativeToolHistoryPersistenceError,
+)
 
 from .contracts import (
     ErrorCategory,
@@ -52,7 +64,69 @@ _REASONING_EFFORT_VARIANTS = {
     "xhigh",
     "ultra",
 }
+_PROVIDER_RETRY_BASE_SECONDS = 0.25
+_PROVIDER_RETRY_MAX_SECONDS = 5.0
+_PROVIDER_RETRY_JITTER_FRACTION = 0.20
+_RUNTIME_STREAM_CALLBACK_TIMEOUT_SECONDS = 30.0
 _REASONING_MAX_VARIANTS = {"max"}
+
+
+class _RuntimeDaemonCallbackExecutor:
+    """Run at most one synchronous UI callback without owning the loop executor.
+
+    A callback can block forever. The worker is deliberately daemon-owned rather
+    than ``asyncio``'s default executor, whose shutdown is awaited by
+    ``asyncio.run``. One outstanding callback consumes the fixed capacity; later
+    updates are intentionally dropped until it returns.
+    """
+
+    def __init__(self) -> None:
+        self._work_queue: Queue = Queue()
+        self._capacity = BoundedSemaphore(1)
+        self._lock = Lock()
+        self._worker: Optional[Thread] = None
+
+    def submit(
+        self,
+        callback: Callable[..., Any],
+        args: tuple[Any, ...],
+    ) -> Optional[Future[Any]]:
+        """Submit one callback or reject it when the bounded worker is busy."""
+
+        if not self._capacity.acquire(blocking=False):
+            return None
+        future: Future[Any] = Future()
+        try:
+            with self._lock:
+                if self._worker is None or not self._worker.is_alive():
+                    self._worker = Thread(
+                        target=self._run,
+                        name="penguin-runtime-callback",
+                        daemon=True,
+                    )
+                    self._worker.start()
+                self._work_queue.put((callback, args, future))
+        except Exception:
+            self._capacity.release()
+            raise
+        return future
+
+    def _run(self) -> None:
+        """Process accepted callbacks without participating in executor shutdown."""
+
+        while True:
+            callback, args, future = self._work_queue.get()
+            try:
+                if not future.set_running_or_notify_cancel():
+                    continue
+                future.set_result(callback(*args))
+            except BaseException as exc:
+                future.set_exception(exc)
+            finally:
+                self._capacity.release()
+
+
+_RUNTIME_SYNC_CALLBACK_EXECUTOR = _RuntimeDaemonCallbackExecutor()
 
 
 class UnsupportedReasoningVariantError(ValueError):
@@ -234,6 +308,17 @@ async def _get_response_result(
             **extra_kwargs,
         )
         if isinstance(result, LLMCallResult):
+            if result.succeeded and _is_provider_error_response(result.text):
+                legacy_error = LLMError(
+                    message=result.text,
+                    category=ErrorCategory.RUNTIME,
+                    retryable=False,
+                )
+                return replace(
+                    result,
+                    status=LLMCallStatus.FATAL_ERROR,
+                    error=legacy_error,
+                )
             return result
 
     text = await api_client.get_response(
@@ -244,8 +329,24 @@ async def _get_response_result(
     )
     result = _get_last_call_result(api_client)
     if result is not None:
+        if result.succeeded and _is_provider_error_response(result.text):
+            return replace(
+                result,
+                status=LLMCallStatus.FATAL_ERROR,
+                error=LLMError(
+                    message=result.text,
+                    category=ErrorCategory.RUNTIME,
+                    retryable=False,
+                ),
+            )
         return result
     provider_error = _get_last_provider_error(api_client)
+    if provider_error is None and _is_provider_error_response(str(text or "")):
+        provider_error = LLMError(
+            message=str(text),
+            category=ErrorCategory.RUNTIME,
+            retryable=False,
+        )
     return LLMCallResult(
         text=str(text or ""),
         status=(
@@ -259,6 +360,49 @@ async def _get_response_result(
     )
 
 
+def _result_network_attempts(
+    result: Optional[LLMCallResult],
+    provider_error: Optional[LLMError],
+) -> int:
+    """Return physical sends consumed by one logical provider call."""
+
+    candidates: List[Any] = []
+    if isinstance(result, LLMCallResult):
+        candidates.append(result.provider_data.get("network_attempts"))
+        if result.error is not None:
+            candidates.append(result.error.provider_data.get("network_attempts"))
+    if provider_error is not None:
+        candidates.append(provider_error.provider_data.get("network_attempts"))
+    for raw_value in candidates:
+        try:
+            value = int(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return min(2, value)
+    return 1
+
+
+def _provider_supports_network_attempt_budget(api_client: Any) -> bool:
+    handler = getattr(api_client, "client_handler", None)
+    return bool(getattr(handler, "supports_runtime_network_attempt_budget", False))
+
+
+def _provider_call_kwargs(
+    api_client: Any,
+    extra_kwargs: Dict[str, Any],
+    *,
+    network_attempt_budget: int,
+) -> Dict[str, Any]:
+    resolved = dict(extra_kwargs)
+    if _provider_supports_network_attempt_budget(api_client):
+        resolved["_penguin_network_attempt_budget"] = max(
+            1,
+            min(2, network_attempt_budget),
+        )
+    return resolved
+
+
 def _call_result_failed(result: Optional[LLMCallResult]) -> bool:
     return isinstance(result, LLMCallResult) and result.status in {
         LLMCallStatus.RETRYABLE_ERROR,
@@ -270,6 +414,9 @@ def _call_result_failed(result: Optional[LLMCallResult]) -> bool:
 def _raise_provider_failure(
     result: Optional[LLMCallResult],
     provider_error: Optional[LLMError],
+    *,
+    retry_exhausted: bool = False,
+    attempts: int = 1,
 ) -> None:
     error = (
         result.error
@@ -282,6 +429,26 @@ def _raise_provider_failure(
             category=ErrorCategory.UNKNOWN,
             retryable=False,
         )
+    retry_after_exceeds_ceiling = _retry_after_exceeds_ceiling(error)
+    if retry_exhausted or retry_after_exceeds_ceiling:
+        error_payload = error.to_dict()
+        provider_data = dict(error_payload.get("provider_data") or {})
+        if retry_exhausted:
+            provider_data.update(
+                {
+                    "automatic_retry_exhausted": True,
+                    "attempts": max(1, attempts),
+                }
+            )
+        if retry_after_exceeds_ceiling:
+            provider_data.update(
+                {
+                    "automatic_retry_skipped": "retry_after_exceeds_ceiling",
+                    "retry_wait_ceiling_seconds": _provider_retry_max_seconds(),
+                }
+            )
+        error_payload["provider_data"] = provider_data
+        error = LLMError.from_dict(error_payload)
     raise LLMProviderError(error)
 
 
@@ -289,7 +456,7 @@ def _is_provider_error_response(response: Optional[str]) -> bool:
     if not isinstance(response, str):
         return False
     stripped = response.strip()
-    return stripped.startswith("[Error:") or stripped.startswith("Error:")
+    return stripped.startswith(("[Error:", "Error:", "[Model finished"))
 
 
 def should_retry_provider_failure(
@@ -303,11 +470,185 @@ def should_retry_provider_failure(
 
     if provider_error is None or not provider_error.retryable:
         return False
+    if _retry_after_exceeds_ceiling(provider_error):
+        return False
+    provider_data = provider_error.provider_data
+    if provider_data.get("partial_tool_call"):
+        return False
+    partial_output = provider_data.get("partial_output")
+    if isinstance(partial_output, str) and partial_output:
+        return False
     if streamed_assistant_chunk or pending_tool_call:
         return False
     if response and response.strip() and not _is_provider_error_response(response):
         return False
     return True
+
+
+def _positive_float_from_env(name: str, default: float) -> float:
+    """Return one non-negative runtime tuning value."""
+
+    try:
+        value = float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return value if math.isfinite(value) and value >= 0 else default
+
+
+def _provider_retry_max_seconds() -> float:
+    """Return the longest provider-directed delay Penguin will wait inline."""
+
+    base = _positive_float_from_env(
+        "PENGUIN_PROVIDER_RETRY_BASE_SECONDS",
+        _PROVIDER_RETRY_BASE_SECONDS,
+    )
+    return max(
+        base,
+        _positive_float_from_env(
+            "PENGUIN_PROVIDER_RETRY_MAX_SECONDS",
+            _PROVIDER_RETRY_MAX_SECONDS,
+        ),
+    )
+
+
+def _retry_after_seconds(provider_error: Optional[LLMError]) -> Optional[float]:
+    """Return a finite provider retry minimum when one is available."""
+
+    if provider_error is None or provider_error.retry_after_seconds is None:
+        return None
+    try:
+        value = float(provider_error.retry_after_seconds)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) and value >= 0 else None
+
+
+def _retry_after_exceeds_ceiling(provider_error: Optional[LLMError]) -> bool:
+    """Return whether respecting Retry-After would exceed the inline wait budget."""
+
+    retry_after = _retry_after_seconds(provider_error)
+    return retry_after is not None and retry_after > _provider_retry_max_seconds()
+
+
+def _provider_retry_delay_seconds(
+    provider_error: Optional[LLMError],
+    *,
+    random_value: float,
+) -> float:
+    """Return retry delay without ever shortening a provider minimum."""
+
+    base = _positive_float_from_env(
+        "PENGUIN_PROVIDER_RETRY_BASE_SECONDS",
+        _PROVIDER_RETRY_BASE_SECONDS,
+    )
+    maximum = _provider_retry_max_seconds()
+    jitter_fraction = min(
+        1.0,
+        _positive_float_from_env(
+            "PENGUIN_PROVIDER_RETRY_JITTER_FRACTION",
+            _PROVIDER_RETRY_JITTER_FRACTION,
+        ),
+    )
+    retry_after = _retry_after_seconds(provider_error)
+    if retry_after is not None:
+        # Retry-After is a minimum imposed by the provider. Do not jitter it and
+        # never cap it to an earlier retry. The caller surfaces values above the
+        # configured inline wait ceiling instead of violating the minimum.
+        return max(base, retry_after)
+
+    if not math.isfinite(random_value):
+        random_value = 0.5
+    centered_random = min(1.0, max(0.0, random_value)) * 2.0 - 1.0
+    delay = base * (1.0 + centered_random * jitter_fraction)
+    return min(maximum, max(0.0, delay))
+
+
+def _runtime_stream_callback_timeout_seconds() -> float:
+    value = _positive_float_from_env(
+        "PENGUIN_STREAM_CALLBACK_TIMEOUT_SECONDS",
+        _RUNTIME_STREAM_CALLBACK_TIMEOUT_SECONDS,
+    )
+    return value if value > 0 else _RUNTIME_STREAM_CALLBACK_TIMEOUT_SECONDS
+
+
+def _runtime_callback_args(
+    callback: Callable[..., Any],
+    chunk: str,
+    message_type: str,
+) -> tuple[Any, ...]:
+    try:
+        arity = len(inspect.signature(callback).parameters)
+    except (TypeError, ValueError):
+        arity = 2
+    return (chunk, message_type) if arity >= 2 else (chunk,)
+
+
+def _observe_timed_out_callback(task: "asyncio.Future[Any]") -> None:
+    """Consume a detached callback task's late exception without blocking."""
+
+    if task.cancelled():
+        return
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        return
+    except Exception:
+        logger.debug("Runtime callback failed after its timeout", exc_info=True)
+
+
+async def _invoke_runtime_callback(
+    callback: Callable[..., Any],
+    *args: Any,
+    callback_name: str = "Runtime callback",
+) -> None:
+    """Invoke a best-effort callback without letting it block core progress."""
+
+    timeout = _runtime_stream_callback_timeout_seconds()
+    is_async = asyncio.iscoroutinefunction(callback) or asyncio.iscoroutinefunction(
+        getattr(callback, "__call__", None)
+    )
+    try:
+        if is_async:
+            result = callback(*args)
+        else:
+            submitted = _RUNTIME_SYNC_CALLBACK_EXECUTOR.submit(callback, args)
+            if submitted is None:
+                logger.warning(
+                    "%s dropped because its bounded daemon worker is busy",
+                    callback_name,
+                )
+                return
+            submitted_future = asyncio.wrap_future(submitted)
+            completed, _ = await asyncio.wait({submitted_future}, timeout=timeout)
+            if not completed:
+                logger.error("%s exceeded %.3fs", callback_name, timeout)
+                return
+            result = submitted_future.result()
+        if inspect.isawaitable(result):
+            callback_task = asyncio.ensure_future(result)
+            completed, _ = await asyncio.wait({callback_task}, timeout=timeout)
+            if not completed:
+                callback_task.cancel()
+                callback_task.add_done_callback(_observe_timed_out_callback)
+                logger.error("%s exceeded %.3fs", callback_name, timeout)
+                return
+            callback_task.result()
+    except Exception:
+        logger.exception("%s failed", callback_name)
+
+
+async def _invoke_runtime_stream_callback(
+    callback: Callable[..., Any],
+    chunk: str,
+    message_type: str,
+) -> None:
+    """Invoke stream callbacks with legacy one-argument compatibility."""
+
+    await _invoke_runtime_callback(
+        callback,
+        *_runtime_callback_args(callback, chunk, message_type),
+        callback_name="Runtime stream callback",
+    )
 
 
 def _get_tool_payload(
@@ -567,12 +908,15 @@ async def call_with_retry(
     stream_callback: Optional[Callable[..., Any]],
     extra_kwargs: Dict[str, Any],
     model_config: Any = None,
+    retry_sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
+    retry_random: Callable[[], float] = random.random,
     usage_callback: Optional[Callable[[Dict[str, Any]], Any]] = None,
 ) -> str:
-    """Call provider once, retrying one time for empty non-tool responses."""
+    """Call a provider at most twice when one replay is provably safe."""
 
     streamed_assistant_chunk = False
     replayed_retry_response = False
+    attempts = 0
 
     async def _attempt(
         *,
@@ -620,13 +964,11 @@ async def call_with_retry(
             streamed_assistant_chunk = True
         if stream_callback is None:
             return
-        if asyncio.iscoroutinefunction(stream_callback):
-            await stream_callback(chunk, message_type)
-            return
-        try:
-            stream_callback(chunk, message_type)
-        except TypeError:
-            stream_callback(chunk)
+        await _invoke_runtime_stream_callback(
+            stream_callback,
+            chunk,
+            message_type,
+        )
 
     call_result = await _attempt(
         stream=streaming,
@@ -635,27 +977,58 @@ async def call_with_retry(
             if streaming and stream_callback
             else stream_callback
         ),
-        kwargs=extra_kwargs,
+        kwargs=_provider_call_kwargs(
+            api_client,
+            extra_kwargs,
+            network_attempt_budget=2,
+        ),
     )
     assistant_response = call_result.text
 
-    pending_tool_call = handler_has_pending_tool_call(api_client)
+    pending_tool_call = bool(
+        call_result.pending_tool_call or handler_has_pending_tool_call(api_client)
+    )
+    streamed_attempt_output = bool(
+        streamed_assistant_chunk or call_result.streamed_assistant_chunks
+    )
     provider_error = call_result.error or _get_last_provider_error(api_client)
+    attempts = _result_network_attempts(call_result, provider_error)
     if _call_result_failed(call_result):
-        if should_retry_provider_failure(
+        if attempts < 2 and should_retry_provider_failure(
             provider_error=provider_error,
             response=assistant_response,
-            streamed_assistant_chunk=streamed_assistant_chunk,
+            streamed_assistant_chunk=streamed_attempt_output,
             pending_tool_call=pending_tool_call,
         ):
+            retry_delay = _provider_retry_delay_seconds(
+                provider_error,
+                random_value=retry_random(),
+            )
+            retry_started = time.perf_counter()
+            await retry_sleep(retry_delay)
+            record_runtime_duration(
+                "provider.retry_backoff",
+                (time.perf_counter() - retry_started) * 1000,
+            )
             call_result = await _attempt(
                 stream=False,
                 callback=None,
-                kwargs=dict(extra_kwargs),
+                kwargs=_provider_call_kwargs(
+                    api_client,
+                    extra_kwargs,
+                    network_attempt_budget=2 - attempts,
+                ),
             )
             assistant_response = call_result.text
         else:
-            _raise_provider_failure(call_result, provider_error)
+            _raise_provider_failure(
+                call_result,
+                provider_error,
+                retry_exhausted=attempts >= 2 and bool(provider_error.retryable)
+                if provider_error is not None
+                else False,
+                attempts=attempts,
+            )
         if (
             streaming
             and stream_callback
@@ -665,37 +1038,83 @@ async def call_with_retry(
         ):
             await _tracked_stream_callback(assistant_response, "assistant")
             replayed_retry_response = True
-        pending_tool_call = handler_has_pending_tool_call(api_client)
+        pending_tool_call = bool(
+            call_result.pending_tool_call or handler_has_pending_tool_call(api_client)
+        )
+        streamed_attempt_output = bool(
+            streamed_assistant_chunk or call_result.streamed_assistant_chunks
+        )
         provider_error = call_result.error or _get_last_provider_error(api_client)
+        attempts = min(
+            2,
+            attempts + _result_network_attempts(call_result, provider_error),
+        )
         if _call_result_failed(call_result):
-            _raise_provider_failure(call_result, provider_error)
+            _raise_provider_failure(
+                call_result,
+                provider_error,
+                retry_exhausted=True,
+                attempts=attempts,
+            )
 
     if not assistant_response or not assistant_response.strip():
-        if streamed_assistant_chunk:
+        if streamed_attempt_output:
             return assistant_response or ""
         if pending_tool_call:
             return assistant_response or ""
-        call_result = await _attempt(
-            stream=False,
-            callback=None,
-            kwargs=dict(extra_kwargs),
-        )
-        assistant_response = call_result.text
-        if (
-            streaming
-            and stream_callback
-            and assistant_response
-            and assistant_response.strip()
-            and call_result.succeeded
-        ):
-            await _tracked_stream_callback(assistant_response, "assistant")
-            replayed_retry_response = True
-        pending_tool_call = handler_has_pending_tool_call(api_client)
-        provider_error = call_result.error or _get_last_provider_error(api_client)
-        if _call_result_failed(call_result):
-            _raise_provider_failure(call_result, provider_error)
+        if attempts < 2:
+            retry_delay = _provider_retry_delay_seconds(
+                provider_error,
+                random_value=retry_random(),
+            )
+            retry_started = time.perf_counter()
+            await retry_sleep(retry_delay)
+            record_runtime_duration(
+                "provider.retry_backoff",
+                (time.perf_counter() - retry_started) * 1000,
+            )
+            call_result = await _attempt(
+                stream=False,
+                callback=None,
+                kwargs=_provider_call_kwargs(
+                    api_client,
+                    extra_kwargs,
+                    network_attempt_budget=2 - attempts,
+                ),
+            )
+            assistant_response = call_result.text
+            if (
+                streaming
+                and stream_callback
+                and assistant_response
+                and assistant_response.strip()
+                and call_result.succeeded
+            ):
+                await _tracked_stream_callback(assistant_response, "assistant")
+                replayed_retry_response = True
+            pending_tool_call = bool(
+                call_result.pending_tool_call
+                or handler_has_pending_tool_call(api_client)
+            )
+            streamed_attempt_output = bool(
+                streamed_assistant_chunk or call_result.streamed_assistant_chunks
+            )
+            provider_error = call_result.error or _get_last_provider_error(api_client)
+            attempts = min(
+                2,
+                attempts + _result_network_attempts(call_result, provider_error),
+            )
+            if _call_result_failed(call_result):
+                _raise_provider_failure(
+                    call_result,
+                    provider_error,
+                    retry_exhausted=True,
+                    attempts=attempts,
+                )
 
     if not assistant_response or not assistant_response.strip():
+        if streamed_attempt_output:
+            return assistant_response or ""
         if pending_tool_call:
             return assistant_response or ""
         diagnostics = build_empty_response_diagnostics(
@@ -731,6 +1150,9 @@ async def execute_pending_tool_call(
     emit_action_start: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     emit_action_result: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     emit_tool_timeline: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+    persist_native_tool_batch: Optional[
+        Callable[[List[ToolCall], List[Dict[str, Any]]], bool]
+    ] = None,
 ) -> Optional[Dict[str, Any]]:
     """Execute a pending provider-captured tool call using generic hooks."""
 
@@ -744,6 +1166,7 @@ async def execute_pending_tool_call(
         emit_action_start=emit_action_start,
         emit_action_result=emit_action_result,
         emit_tool_timeline=emit_tool_timeline,
+        persist_native_tool_batch=persist_native_tool_batch,
     )
     return results[0] if results else None
 
@@ -794,6 +1217,48 @@ async def _get_and_clear_pending_tool_infos(api_client: Any) -> List[Dict[str, A
     return [tool_info] if isinstance(tool_info, dict) else []
 
 
+def _provider_tool_call_id(tool_info: Dict[str, Any]) -> str:
+    """Return the provider-issued id required to execute a native tool call."""
+
+    for key in ("call_id", "tool_call_id", "item_id"):
+        call_id = str(tool_info.get(key) or "").strip()
+        if call_id:
+            return call_id
+    return ""
+
+
+def _has_unique_provider_tool_call_ids(tool_infos: List[Dict[str, Any]]) -> bool:
+    """Reject malformed provider tool batches before they can cause side effects."""
+
+    call_ids = [_provider_tool_call_id(tool_info) for tool_info in tool_infos]
+    if not call_ids or any(not call_id for call_id in call_ids):
+        logger.warning(
+            "Rejected pending native tool batch without provider call ids: count=%s",
+            len(tool_infos),
+        )
+        return False
+    if len(call_ids) != len(set(call_ids)):
+        logger.warning(
+            "Rejected pending native tool batch with duplicate provider call ids: ids=%s",
+            call_ids,
+        )
+        return False
+    return True
+
+
+def _persist_best_effort_tool_record(
+    callback: Callable[..., None],
+    *args: Any,
+    record_name: str,
+) -> None:
+    """Keep diagnostic record failures from interrupting model-visible history."""
+
+    try:
+        callback(*args)
+    except Exception:
+        logger.exception("Failed to persist %s", record_name)
+
+
 async def _execute_ordered_batch_parent(
     *,
     parent_call: ToolCall,
@@ -835,11 +1300,16 @@ async def _execute_ordered_batch_parent(
 
     if persist_tool_call_record is not None:
         for child_call in child_calls:
-            persist_tool_call_record(child_call)
+            _persist_best_effort_tool_record(
+                persist_tool_call_record,
+                child_call,
+                record_name="ordered native tool-call record",
+            )
 
     if emit_action_start is not None:
         for child_call in child_calls:
-            await emit_action_start(
+            await _invoke_runtime_callback(
+                emit_action_start,
                 {
                     "id": child_call.id,
                     "type": child_call.name,
@@ -854,8 +1324,9 @@ async def _execute_ordered_batch_parent(
                         "source": "ordered_tool_batch_child",
                         "parent_tool_call_id": parent_call.id,
                     },
-                }
-    )
+                },
+                callback_name="Runtime tool action-start callback",
+            )
 
     def _execute_child(child_call: ToolCall) -> Any:
         child_args = (
@@ -882,7 +1353,12 @@ async def _execute_ordered_batch_parent(
 
     for child_call, child_result in zip(child_calls, child_results):
         if persist_tool_result_record is not None:
-            persist_tool_result_record(child_call, child_result)
+            _persist_best_effort_tool_record(
+                persist_tool_result_record,
+                child_call,
+                child_result,
+                record_name="ordered native tool-result record",
+            )
         legacy_child_result = legacy_action_result_from_tool_result(child_result)
         child_metadata = {
             **event_metadata,
@@ -890,22 +1366,26 @@ async def _execute_ordered_batch_parent(
             "parent_tool_call_id": parent_call.id,
         }
         if emit_action_result is not None:
-            await emit_action_result(
+            await _invoke_runtime_callback(
+                emit_action_result,
                 {
                     "id": child_call.id,
                     "status": legacy_child_result["status"],
                     "result": legacy_child_result["result"],
                     "action": legacy_child_result["action"],
                     "metadata": child_metadata,
-                }
+                },
+                callback_name="Runtime tool action-result callback",
             )
         if emit_tool_timeline is not None:
-            await emit_tool_timeline(
+            await _invoke_runtime_callback(
+                emit_tool_timeline,
                 {
                     **legacy_child_result,
                     "tool_call_id": child_call.id,
                     "metadata": child_metadata,
-                }
+                },
+                callback_name="Runtime tool timeline callback",
             )
 
     return ordered_tool_batch_result_from_results(parent_call, plan, child_results)
@@ -923,10 +1403,15 @@ async def execute_pending_tool_calls(
     emit_action_result: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     emit_tool_timeline: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     persist_image_artifacts: Optional[Callable[[Dict[str, Any]], None]] = None,
+    persist_native_tool_batch: Optional[
+        Callable[[List[ToolCall], List[Dict[str, Any]]], bool]
+    ] = None,
 ) -> List[Dict[str, Any]]:
     """Execute all pending provider-captured tool calls using generic hooks."""
 
     tool_infos = await _get_and_clear_pending_tool_infos(api_client)
+    if tool_infos and not _has_unique_provider_tool_call_ids(tool_infos):
+        return []
     metadata_getter = getattr(tool_manager, "get_tool_runtime_metadata", None)
     tool_calls = [
         tool_call_with_schedule_metadata(
@@ -953,7 +1438,15 @@ async def execute_pending_tool_calls(
 
     if persist_tool_call_record is not None:
         for tool_call in tool_calls:
-            persist_tool_call_record(tool_call)
+            _persist_best_effort_tool_record(
+                persist_tool_call_record,
+                tool_call,
+                record_name="native tool-call record",
+            )
+    record_runtime_duration(
+        "tool.queue",
+        (time.perf_counter() - batch_started) * 1000,
+    )
 
     parsed_args_by_id: Dict[str, Dict[str, Any]] = {}
     raw_args_by_id: Dict[str, str] = {}
@@ -991,14 +1484,16 @@ async def execute_pending_tool_calls(
 
     if emit_action_start is not None:
         for tool_call in visible_tool_calls:
-            await emit_action_start(
+            await _invoke_runtime_callback(
+                emit_action_start,
                 {
                     "id": tool_call.id,
                     "type": tool_call.name,
                     "action": tool_call.name,
                     "params": raw_args_by_id.get(tool_call.id, ""),
                     "metadata": event_metadata,
-                }
+                },
+                callback_name="Runtime tool action-start callback",
             )
 
     try:
@@ -1029,7 +1524,8 @@ async def execute_pending_tool_calls(
                 parsed_args_by_id.get(current_tool_call.id, {}),
             )
 
-        scheduler_results = await execute_tool_calls_ordered(
+        schedule_started = time.perf_counter()
+        scheduler_results = await execute_tool_calls_serially(
             tool_calls,
             _execute_scheduled_tool_call,
             policy=ToolExecutionPolicy(
@@ -1045,6 +1541,10 @@ async def execute_pending_tool_calls(
                 truncation_direction=base_policy.truncation_direction,
             ),
         )
+        record_runtime_duration(
+            "tool.batch.schedule",
+            (time.perf_counter() - schedule_started) * 1000,
+        )
         if not scheduler_results:
             logger.info(
                 "llm.tool_batch.done provider=%s model=%s count=%s results=0 "
@@ -1055,7 +1555,11 @@ async def execute_pending_tool_calls(
                 (time.perf_counter() - batch_started) * 1000,
             )
             return []
+        persistence_started = time.perf_counter()
         action_results: List[Dict[str, Any]] = []
+        native_batch_calls: List[ToolCall] = []
+        native_batch_results: List[Dict[str, Any]] = []
+        image_artifact_results: List[Dict[str, Any]] = []
         for tool_result in scheduler_results:
             source_tool_call = next(
                 (
@@ -1068,7 +1572,12 @@ async def execute_pending_tool_calls(
             if source_tool_call is None:
                 continue
             if persist_tool_result_record is not None:
-                persist_tool_result_record(source_tool_call, tool_result)
+                _persist_best_effort_tool_record(
+                    persist_tool_result_record,
+                    source_tool_call,
+                    tool_result,
+                    record_name="native tool-result record",
+                )
             suppress_ui_artifacts = source_tool_call.name == "finish_response"
             raw_args_text = raw_args_by_id.get(source_tool_call.id, "")
             tool_call_id = source_tool_call.id
@@ -1082,31 +1591,79 @@ async def execute_pending_tool_calls(
                 "output_hash": tool_result.output_hash,
             }
             if not suppress_ui_artifacts:
-                persist_action_result(
-                    legacy_action_result,
-                    {
-                        "tool_call_id": tool_call_id,
-                        "tool_arguments": runtime_action_result["tool_arguments"],
-                    },
-                )
+                if persist_native_tool_batch is None:
+                    persist_action_result(
+                        legacy_action_result,
+                        {
+                            "tool_call_id": tool_call_id,
+                            "tool_arguments": runtime_action_result["tool_arguments"],
+                        },
+                    )
+                else:
+                    native_batch_calls.append(source_tool_call)
+                    native_batch_results.append(runtime_action_result)
                 if persist_image_artifacts is not None:
-                    persist_image_artifacts(runtime_action_result)
+                    if persist_native_tool_batch is None:
+                        persist_image_artifacts(runtime_action_result)
+                    else:
+                        # Image artifacts append ordinary messages.  Defer them
+                        # until the native declaration/results batch is complete
+                        # so they cannot interleave with provider replay state.
+                        image_artifact_results.append(runtime_action_result)
 
             if emit_action_result is not None and not suppress_ui_artifacts:
-                await emit_action_result(
+                await _invoke_runtime_callback(
+                    emit_action_result,
                     {
                         "id": tool_call_id,
                         "status": legacy_action_result["status"],
                         "result": legacy_action_result["result"],
                         "action": legacy_action_result["action"],
                         "metadata": event_metadata,
-                    }
+                    },
+                    callback_name="Runtime tool action-result callback",
                 )
             if emit_tool_timeline is not None and not suppress_ui_artifacts:
-                await emit_tool_timeline(legacy_action_result)
+                await _invoke_runtime_callback(
+                    emit_tool_timeline,
+                    legacy_action_result,
+                    callback_name="Runtime tool timeline callback",
+                )
             action_results.append(
                 legacy_action_result if suppress_ui_artifacts else runtime_action_result
             )
+        record_runtime_duration(
+            "tool.persistence",
+            (time.perf_counter() - persistence_started) * 1000,
+        )
+        if native_batch_calls and persist_native_tool_batch is not None:
+            try:
+                persisted = persist_native_tool_batch(
+                    native_batch_calls,
+                    native_batch_results,
+                )
+            except NativeToolHistoryPersistenceError:
+                raise
+            except Exception as exc:
+                # Fail closed: the durable tool records remain available for
+                # diagnostics, but do not fall back to per-result native
+                # writes that could leave an interleaved transcript.
+                logger.exception("Failed to persist complete native tool batch")
+                raise NativeToolHistoryPersistenceError(
+                    [tool_call.id for tool_call in native_batch_calls],
+                    reason=str(exc),
+                ) from exc
+            if not persisted:
+                raise NativeToolHistoryPersistenceError(
+                    [tool_call.id for tool_call in native_batch_calls],
+                    reason="The native batch callback did not confirm persistence.",
+                )
+        if persist_image_artifacts is not None:
+            for runtime_action_result in image_artifact_results:
+                try:
+                    persist_image_artifacts(runtime_action_result)
+                except Exception:
+                    logger.exception("Failed to persist deferred tool image artifact")
         logger.info(
             "llm.tool_batch.done provider=%s model=%s count=%s results=%s "
             "duration_ms=%.2f statuses=%s",
@@ -1118,6 +1675,16 @@ async def execute_pending_tool_calls(
             [result.status for result in scheduler_results],
         )
         return action_results
+    except NativeToolHistoryPersistenceError:
+        logger.error(
+            "llm.tool_batch.native_history_failure provider=%s model=%s count=%s "
+            "duration_ms=%.2f",
+            getattr(getattr(api_client, "model_config", None), "provider", None),
+            getattr(getattr(api_client, "model_config", None), "model", None),
+            len(tool_calls),
+            (time.perf_counter() - batch_started) * 1000,
+        )
+        raise
     except Exception as exc:
         logger.warning(
             "llm.tool_batch.error provider=%s model=%s count=%s duration_ms=%.2f "
@@ -1130,16 +1697,23 @@ async def execute_pending_tool_calls(
         )
         if emit_action_result is not None:
             for tool_call in visible_tool_calls:
-                await emit_action_result(
+                await _invoke_runtime_callback(
+                    emit_action_result,
                     {
                         "id": tool_call.id,
                         "status": "error",
                         "result": f"Error executing action {tool_call.name}: {exc}",
                         "action": tool_call.name,
                         "metadata": event_metadata,
-                    }
+                    },
+                    callback_name="Runtime tool action-result callback",
                 )
         return []
+    finally:
+        record_runtime_duration(
+            "tool.batch",
+            (time.perf_counter() - batch_started) * 1000,
+        )
 
 
 def resolve_reasoning_payload(model_config: Any) -> Optional[Dict[str, Any]]:
@@ -1286,9 +1860,7 @@ def apply_reasoning_variant_override(
     provider_id = str(getattr(model_config, "provider", "") or "").strip().lower()
     model_id = str(getattr(model_config, "model", "") or "").strip()
 
-    raw_metadata_variants = getattr(
-        model_config, "supported_reasoning_levels", None
-    )
+    raw_metadata_variants = getattr(model_config, "supported_reasoning_levels", None)
     metadata_variants = reasoning_efforts_from_metadata(raw_metadata_variants)
     capability_variants = reasoning_efforts_from_metadata(supported_efforts)
     capability_declared = supported_efforts is not None

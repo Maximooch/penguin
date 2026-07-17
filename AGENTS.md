@@ -14,12 +14,15 @@ Commands
 - Full repo tests (legacy/misc): python run_all_tests.py ; python misc/run_all_memory_tests.py
 - Build wheel/sdist: python -m build
 - Publish (manual): twine upload dist/*
-- Dev web server: HOST=127.0.0.1 PORT=8080 uv run penguin-web
-- Dev web server with reload: HOST=127.0.0.1 PORT=8080 DEBUG=true uv run penguin-web
+- Isolated dev/test web server: `uv run python scripts/run_runtime_reliability_server.py`
+- Isolated dev/test server with reload: `uv run python scripts/run_runtime_reliability_server.py --debug`
+- Hermetic fresh/large runtime baseline: `uv run python scripts/benchmark_runtime_reliability.py --base-directory /tmp/penguin-runtime-baselines`
 - TUI against dev web server: uv run penguin --url http://127.0.0.1:8080 --no-web-autostart
-- If port `9000` is already occupied by a running Penguin backend/TUI session, use a different non-reserved local port for testing or verification, e.g. `8080` or `9010`.
-- Per `docs/docs/usage/web_interface.md`, port `9000` is the documented/default Penguin web server port, so treat it as the primary runtime port and avoid stealing it for ad hoc verification when a real backend is already running.
-- Current runtime truth: `penguin-web` host/port selection is reliably controlled by env vars (`HOST` / `PORT`). Do not assume `penguin-web --host ... --port ...` works until that path is explicitly fixed and verified.
+- Port `9000` is the primary/production runtime. Never start, stop, or repurpose it for ad hoc verification.
+- Port `8080` is reserved for testing. The supported runner creates a unique workspace and isolates logs, conversations, checkpoints, artifacts, credentials/caches, backups, and the runtime-event ledger.
+- If `8080` is occupied, inspect its owner. Do not kill it unless it is demonstrably this worktree's disposable test server; the supported runner fails rather than replacing it.
+- Raw `HOST=127.0.0.1 PORT=8080 uv run penguin-web` intentionally fails closed unless every required mutable path is isolated. Prefer the supported runner.
+- `penguin-web --host ... --port ...` and `HOST` / `PORT` both select the bind address, but bind-port separation alone is not runtime-storage isolation.
 - `penguin-web` writes one rotating `.txt` server log per run to `{PENGUIN_WORKSPACE:-~/penguin_workspace}/server-logs/penguin-web-<timestamp>-<pid>.txt` by default. Use `PENGUIN_WEB_LOG_DIR` to move the directory, `PENGUIN_WEB_LOG_FILE` to force a single file, or `PENGUIN_WEB_LOG_ENABLED=false` to disable.
 
 Style and Conventions

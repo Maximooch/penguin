@@ -1,10 +1,12 @@
 import asyncio
 import base64
+import hashlib
 import io
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Optional, Callable, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import httpx
 
@@ -16,6 +18,10 @@ import httpx
 # from litellm import acompletion, completion, token_counter, cost_per_token, completion_cost
 from PIL import Image  # type: ignore
 
+from penguin.constants import get_default_max_history_tokens
+from penguin.utils.callbacks import adapt_stream_callback
+
+from .adapters import get_adapter  # Keep for native preference
 from .contracts import (
     ErrorCategory,
     LLMCallResult,
@@ -27,13 +33,12 @@ from .contracts import (
     LLMRequestLifecycle,
     ProviderRequestStatus,
 )
+from .litellm_support import load_litellm_gateway_class, load_litellm_module
 from .model_config import ModelConfig
+from .prompt_cache import build_prompt_cache_key
 from .provider_registry import ProviderRegistry
 from .provider_transform import apply_model_config_transforms, build_llm_error
-from penguin.constants import get_default_max_history_tokens
-from penguin.utils.callbacks import adapt_stream_callback
-from .adapters import get_adapter  # Keep for native preference
-from .litellm_support import load_litellm_gateway_class, load_litellm_module
+
 # Lazy import gateways to avoid import overhead
 # from .litellm_gateway import LiteLLMGateway
 # from .openrouter_gateway import OpenRouterGateway
@@ -296,10 +301,13 @@ class APIClient:
         self.model_config = model_config
         self._canonicalize_native_model_id()
         self.system_prompt = None
+        self._system_prompt_fingerprint: Optional[str] = None
         self.logger = logging.getLogger(__name__)
         self.client_handler = None  # Will be set based on preference
         self._last_error: Optional[LLMError] = None
         self._last_response_result: Optional[LLMCallResult] = None
+        self._last_prompt_cache_key: Optional[str] = None
+        self._last_request_accounting: Dict[str, Any] = {}
         self._base_url = base_url
         self._extra_headers = dict(extra_headers or {})
         self.provider_registry = ProviderRegistry(
@@ -375,6 +383,9 @@ class APIClient:
     def set_system_prompt(self, prompt: str) -> None:
         """Set the system prompt."""
         self.system_prompt = prompt
+        self._system_prompt_fingerprint = hashlib.sha256(
+            str(prompt).encode("utf-8")
+        ).hexdigest()
         # TODO: How to pass system prompt?
         # Native adapters might have specific methods.
         # LiteLLM expects it in the messages list.
@@ -517,6 +528,11 @@ class APIClient:
             return None
         return self._last_response_result
 
+    def get_last_request_accounting(self) -> Dict[str, Any]:
+        """Return privacy-safe size and usage boundaries for the last request."""
+
+        return dict(getattr(self, "_last_request_accounting", {}))
+
     def _handler_has_pending_tool_call(self) -> bool:
         handler = getattr(self, "client_handler", None)
         getter = getattr(handler, "has_pending_tool_call", None)
@@ -528,12 +544,80 @@ class APIClient:
             self.logger.debug("Failed to inspect handler pending tool call")
             return False
 
+    def _with_prompt_cache_key(
+        self,
+        kwargs: Dict[str, Any],
+        *,
+        session_id: str | None = None,
+    ) -> Dict[str, Any]:
+        """Attach OpenAI cache affinity without leaking raw session ids."""
+
+        resolved = dict(kwargs)
+        provider = str(getattr(self.model_config, "provider", "") or "").lower()
+        if provider not in {"openai", "openai_compatible"}:
+            self._last_prompt_cache_key = None
+            return resolved
+        if session_id is None:
+            try:
+                from penguin.system.execution_context import (
+                    get_current_execution_context,
+                )
+
+                context = get_current_execution_context()
+                session_id = (
+                    context.session_id or context.conversation_id
+                    if context is not None
+                    else None
+                )
+            except Exception:
+                session_id = None
+        variant = resolved.get("variant") or resolved.get("reasoning_effort")
+        previous_key = getattr(self, "_last_prompt_cache_key", None)
+        key = build_prompt_cache_key(
+            session_id=session_id,
+            provider=provider,
+            model=getattr(self.model_config, "model", None),
+            variant=str(variant) if variant is not None else None,
+        )
+        self._last_prompt_cache_key = key
+        if previous_key and previous_key != key:
+            self.logger.info(
+                "llm.prompt_cache.boundary provider=%s model=%s reason=variant_or_session_changed",
+                provider,
+                getattr(self.model_config, "model", None),
+            )
+        if key is not None:
+            resolved.setdefault("prompt_cache_key", key)
+        return resolved
+
+    def _handler_network_attempt_count(self) -> int:
+        """Return physical sends reported by the active provider handler."""
+
+        handler = getattr(self, "client_handler", None)
+        getter = getattr(handler, "get_last_network_attempt_count", None)
+        if not callable(getter):
+            return 0
+        try:
+            return max(0, int(getter() or 0))
+        except Exception:
+            self.logger.debug("Failed to inspect handler network attempts")
+            return 0
+
+    @staticmethod
+    def _is_legacy_error_text(text: Optional[str]) -> bool:
+        """Return whether text uses Penguin's legacy provider-error sentinel."""
+
+        if not isinstance(text, str):
+            return False
+        return text.lstrip().startswith(("[Error:", "Error:", "[Model finished"))
+
     def _build_response_result(
         self,
         *,
         text: Optional[str],
         error: Optional[LLMError] = None,
         provider_data: Optional[Dict[str, Any]] = None,
+        streamed_assistant_chunks: bool = False,
     ) -> LLMCallResult:
         lifecycle = self.get_last_request_lifecycle()
         completed_event_seen = (
@@ -543,6 +627,36 @@ class APIClient:
         resolved_error = error
         if resolved_error is None and isinstance(lifecycle, LLMRequestLifecycle):
             resolved_error = lifecycle.error
+        if resolved_error is None and self._is_legacy_error_text(text):
+            resolved_error = build_llm_error(
+                message=str(text),
+                provider=getattr(self.model_config, "provider", None),
+                model=getattr(self.model_config, "model", None),
+                category=ErrorCategory.RUNTIME,
+                retryable=False,
+            )
+
+        resolved_provider_data = dict(provider_data or {})
+        prompt_cache_key = getattr(self, "_last_prompt_cache_key", None)
+        if prompt_cache_key:
+            resolved_provider_data.setdefault(
+                "prompt_cache_key", prompt_cache_key
+            )
+        request_accounting = getattr(self, "_last_request_accounting", {})
+        if request_accounting:
+            resolved_provider_data.setdefault(
+                "request_accounting", dict(request_accounting)
+            )
+        if resolved_error is not None:
+            network_attempts = resolved_error.provider_data.get("network_attempts")
+            if network_attempts is not None:
+                resolved_provider_data.setdefault("network_attempts", network_attempts)
+        handler_network_attempts = self._handler_network_attempt_count()
+        if handler_network_attempts > 0:
+            resolved_provider_data.setdefault(
+                "network_attempts",
+                handler_network_attempts,
+            )
 
         if isinstance(lifecycle, LLMRequestLifecycle) and (
             lifecycle.status == ProviderRequestStatus.CANCELLED
@@ -568,8 +682,15 @@ class APIClient:
             error=resolved_error,
             lifecycle=lifecycle,
             completed_event_seen=completed_event_seen,
-            pending_tool_call=self._handler_has_pending_tool_call(),
-            provider_data=dict(provider_data or {}),
+            streamed_assistant_chunks=streamed_assistant_chunks,
+            pending_tool_call=bool(
+                self._handler_has_pending_tool_call()
+                or (
+                    resolved_error is not None
+                    and resolved_error.provider_data.get("partial_tool_call")
+                )
+            ),
+            provider_data=resolved_provider_data,
         )
 
     def get_provider_capabilities(self) -> LLMProviderCapabilities:
@@ -622,6 +743,7 @@ class APIClient:
             stream if stream is not None else self.model_config.streaming_enabled
         )
         prepared_messages = self._prepare_messages_with_system_prompt(messages)
+        kwargs = self._with_prompt_cache_key(kwargs)
         preparer = getattr(self.client_handler, "prepare_request", None)
         if not callable(preparer):
             raise RuntimeError(
@@ -739,6 +861,7 @@ class APIClient:
         use_streaming = (
             stream if stream is not None else self.model_config.streaming_enabled
         )
+        streamed_assistant_chunks = False
         prepared_messages = self._prepare_messages_with_system_prompt(messages)
         estimated_input_tokens: Optional[int] = None
 
@@ -755,6 +878,8 @@ class APIClient:
         except Exception:
             request_id_ctx = None
             session_id_ctx = None
+
+        kwargs = self._with_prompt_cache_key(kwargs, session_id=session_id_ctx)
 
         request_id_api = request_id_ctx or os.urandom(4).hex()
         self._last_error = None
@@ -807,6 +932,55 @@ class APIClient:
             )
         # >>>------------------------------------------- >>>
 
+        system_chars = sum(
+            len(str(message.get("content") or ""))
+            for message in prepared_messages
+            if message.get("role") == "system"
+        )
+        message_chars = sum(
+            len(str(message.get("content") or "")) for message in prepared_messages
+        )
+        tool_schemas = kwargs.get("tools")
+        tool_schema_chars = len(
+            json.dumps(tool_schemas, default=str, separators=(",", ":"))
+        ) if tool_schemas is not None else 0
+        provider_framing_chars = max(
+            0,
+            len(json.dumps(prepared_messages, default=str, separators=(",", ":")))
+            - message_chars,
+        )
+        self._last_request_accounting = {
+            "message_count": len(prepared_messages),
+            "system_chars": system_chars,
+            "message_chars": message_chars,
+            "tool_schema_count": len(tool_schemas)
+            if isinstance(tool_schemas, list)
+            else 0,
+            "tool_schema_chars": tool_schema_chars,
+            "provider_framing_chars": provider_framing_chars,
+            "estimated_input_tokens": estimated_input_tokens,
+            "max_output_tokens": max_output_tokens,
+            "prompt_cache_key": self._last_prompt_cache_key,
+            "prompt_fingerprint": getattr(
+                self, "_system_prompt_fingerprint", None
+            ),
+        }
+        self.logger.info(
+            "request.accounting request=%s session=%s messages=%s system_chars=%s "
+            "message_chars=%s tool_schemas=%s tool_schema_chars=%s "
+            "provider_framing_chars=%s estimated_input_tokens=%s cache_affinity=%s",
+            request_id_api,
+            session_id_ctx,
+            len(prepared_messages),
+            system_chars,
+            message_chars,
+            self._last_request_accounting["tool_schema_count"],
+            tool_schema_chars,
+            provider_framing_chars,
+            estimated_input_tokens,
+            bool(self._last_prompt_cache_key),
+        )
+
         try:
             # --- Ideal Flow (Enforce Interface - See Step 2) ---
             if not hasattr(self.client_handler, "get_response"):
@@ -831,9 +1005,22 @@ class APIClient:
                 return response_text
 
             # Normalize callback to async (chunk, message_type) signature
-            effective_callback = (
+            adapted_callback = (
                 adapt_stream_callback(stream_callback) if use_streaming else None
             )
+            if adapted_callback is not None:
+
+                async def effective_callback(
+                    chunk: str,
+                    message_type: str = "assistant",
+                ) -> None:
+                    nonlocal streamed_assistant_chunks
+                    if chunk and message_type == "assistant":
+                        streamed_assistant_chunks = True
+                    await adapted_callback(chunk, message_type)
+
+            else:
+                effective_callback = None
             self.logger.debug(
                 f"[APIClient:{request_id_api}] Calling {type(self.client_handler).__name__}.get_response. Streaming: {use_streaming}. Callback: {effective_callback is not None}"
             )
@@ -897,28 +1084,35 @@ class APIClient:
                 ) and response_text.lstrip().startswith(
                     ("[Error:", "Error:", "[Model finished")
                 )
-                if is_error_like or not str(response_text or "").strip():
-                    diag_id = (
-                        self._extract_diagnostic_id(response_text or "")
-                        or self._extract_diagnostic_id(handler_error.message)
-                        or f"llm_{os.urandom(5).hex()}"
-                    )
-                    formatted_error = self._format_user_error_message(
-                        error=handler_error,
-                        diag_id=diag_id,
-                    )
-                    self._last_response_result = self._build_response_result(
-                        text=formatted_error,
-                        error=handler_error,
-                    )
-                    return formatted_error
-                self._last_response_result = self._build_response_result(
-                    text=response_text,
-                    error=handler_error,
+                diag_id = (
+                    self._extract_diagnostic_id(response_text or "")
+                    or self._extract_diagnostic_id(handler_error.message)
+                    or f"llm_{os.urandom(5).hex()}"
                 )
+                formatted_error = self._format_user_error_message(
+                    error=handler_error,
+                    diag_id=diag_id,
+                )
+                partial_output = handler_error.provider_data.get("partial_output")
+                typed_text = (
+                    response_text
+                    if not is_error_like and str(response_text or "").strip()
+                    else partial_output
+                    if isinstance(partial_output, str) and partial_output
+                    else formatted_error
+                )
+                self._last_response_result = self._build_response_result(
+                    text=typed_text,
+                    error=handler_error,
+                    streamed_assistant_chunks=streamed_assistant_chunks,
+                )
+                # Legacy string callers cannot distinguish partial output from a
+                # successful response. Keep the partial only on the typed result.
+                return formatted_error
             else:
                 self._last_response_result = self._build_response_result(
                     text=response_text,
+                    streamed_assistant_chunks=streamed_assistant_chunks,
                 )
 
             # If streaming, the callback handled output. Return minimal response.
@@ -954,6 +1148,7 @@ class APIClient:
             if self._last_response_result is None:
                 self._last_response_result = self._build_response_result(
                     text=response_text,
+                    streamed_assistant_chunks=streamed_assistant_chunks,
                 )
             return response_text
             # --- End Ideal Flow ---
@@ -981,10 +1176,19 @@ class APIClient:
                 error=error_payload,
                 diag_id=diag_id,
             )
-            self._last_response_result = self._build_response_result(
-                text=formatted_error,
-                error=error_payload,
+            partial_output = error_payload.provider_data.get("partial_output")
+            result_text = (
+                partial_output
+                if isinstance(partial_output, str) and partial_output
+                else formatted_error
             )
+            self._last_response_result = self._build_response_result(
+                text=result_text,
+                error=error_payload,
+                streamed_assistant_chunks=streamed_assistant_chunks,
+            )
+            # Legacy callers receive an unmistakable failure string; typed
+            # callers recover the partial output from _last_response_result.
             return formatted_error
 
     async def get_response_result(

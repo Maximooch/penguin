@@ -7,6 +7,19 @@ import logging
 import traceback
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
+_SUCCESSFUL_STREAM_TERMINAL_STATUSES = frozenset(
+    {
+        "completed",
+        "implicit_completion",
+        "ok",
+        "pending_review",
+        "succeeded",
+        "success",
+    }
+)
+
 __all__ = [
     "discard_opencode_abort_session",
     "emit_process_user_message",
@@ -34,6 +47,8 @@ def _ensure_request_state(owner: Any) -> None:
         owner._opencode_process_tasks = {}
     if not isinstance(getattr(owner, "_opencode_active_requests", None), dict):
         owner._opencode_active_requests = {}
+    if not isinstance(getattr(owner, "_opencode_process_task_refs", None), dict):
+        owner._opencode_process_task_refs = {}
 
 
 async def _emit_session_status_best_effort(
@@ -58,6 +73,25 @@ async def _emit_session_status_best_effort(
         logger.warning(
             "Failed to emit OpenCode session status %s for %s",
             status_type,
+            session_id,
+            exc_info=True,
+        )
+
+
+def _ensure_opencode_status_heartbeat(owner: Any, session_id: str) -> None:
+    """Best-effort heartbeat setup that cannot invalidate request ownership."""
+
+    ensure = getattr(owner, "_ensure_opencode_session_status_heartbeat", None)
+    if not callable(ensure):
+        return
+    try:
+        ensure(session_id)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning(
+            "Failed to start OpenCode status heartbeat for session %s; "
+            "request ownership remains active",
             session_id,
             exc_info=True,
         )
@@ -89,13 +123,17 @@ def discard_opencode_abort_session(owner: Any, session_id: Any) -> None:
 
 
 def handle_process_cancelled(owner: Any, session_id: Any) -> dict[str, Any]:
-    """Clear abort state and return the public aborted process payload."""
+    """Return truthful cancellation state while finalization retains ownership."""
 
-    discard_opencode_abort_session(owner, session_id)
+    sid = _session_id(session_id)
+    abort_sessions = getattr(owner, "_opencode_abort_sessions", None)
+    aborted = bool(sid and isinstance(abort_sessions, set) and sid in abort_sessions)
     return {
         "assistant_response": "",
         "action_results": [],
-        "aborted": True,
+        "status": "aborted" if aborted else "cancelled",
+        "aborted": aborted,
+        "cancelled": not aborted,
     }
 
 
@@ -170,6 +208,12 @@ def _should_emit_assistant_event(response: Any, *, streaming: bool | None) -> bo
         return False
     if not streaming:
         return True
+    status = response.get("status")
+    if isinstance(status, str) and status.strip():
+        if status.strip().lower() not in _SUCCESSFUL_STREAM_TERMINAL_STATUSES:
+            return True
+    if response.get("error"):
+        return True
     stripped = assistant_message.lstrip()
     return stripped.startswith("[Error:") or stripped.startswith("[Note:")
 
@@ -227,52 +271,91 @@ async def register_opencode_process_request(
     if not sid:
         return False
 
-    owner._opencode_abort_sessions.discard(sid)
     if request_task is None:
         return False
+
+    current_active = owner._opencode_active_requests.get(sid, 0)
+    if current_active == 0:
+        owner._opencode_abort_sessions.discard(sid)
 
     tasks = owner._opencode_process_tasks.get(sid)
     if not isinstance(tasks, set):
         tasks = set()
         owner._opencode_process_tasks[sid] = tasks
     tasks.add(request_task)
+    refs = owner._opencode_process_task_refs.get(sid)
+    if not isinstance(refs, dict):
+        refs = {}
+        owner._opencode_process_task_refs[sid] = refs
+    refs[request_task] = int(refs.get(request_task, 0)) + 1
 
-    previous_count = owner._opencode_active_requests.get(sid, 0)
-    next_count = previous_count + 1
+    next_count = current_active + 1
     owner._opencode_active_requests[sid] = next_count
     try:
         if next_count == 1:
             await _emit_session_status_best_effort(owner, sid, "busy")
-            owner._ensure_opencode_session_status_heartbeat(sid)
+            _ensure_opencode_status_heartbeat(owner, sid)
         return True
     except BaseException:
-        tasks.discard(request_task)
-        if not tasks:
-            owner._opencode_process_tasks.pop(sid, None)
-        current_count = owner._opencode_active_requests.get(sid, 0)
-        remaining_count = max(current_count - 1, 0)
-        if remaining_count > 0:
-            owner._opencode_active_requests[sid] = remaining_count
-            try:
-                owner._ensure_opencode_session_status_heartbeat(sid)
-            except Exception:
-                logger.warning(
-                    "Failed to preserve heartbeat during request rollback for %s",
-                    sid,
-                    exc_info=True,
-                )
+        if _release_opencode_process_request(owner, sid, request_task):
+            _cancel_opencode_status_heartbeat(owner, sid)
         else:
-            owner._opencode_active_requests.pop(sid, None)
-        if remaining_count == 0:
-            try:
-                owner._cancel_opencode_session_status_heartbeat(sid)
-            except Exception:
-                logger.debug(
-                    "Failed to cancel heartbeat during request rollback for %s",
-                    sid,
-                    exc_info=True,
-                )
+            # A concurrent request may have registered while the first busy
+            # status emission was pending. Keep that surviving request's
+            # liveness heartbeat active even though the first registration
+            # was cancelled.
+            _ensure_opencode_status_heartbeat(owner, sid)
         raise
+
+
+def _release_opencode_process_request(
+    owner: Any,
+    session_id: str,
+    request_task: asyncio.Task[Any] | None,
+) -> bool:
+    """Release in-memory request ownership and report whether the session idled."""
+
+    tasks = owner._opencode_process_tasks.get(session_id)
+    refs = owner._opencode_process_task_refs.get(session_id)
+    if isinstance(refs, dict) and request_task is not None:
+        remaining_refs = max(0, int(refs.get(request_task, 1)) - 1)
+        if remaining_refs:
+            refs[request_task] = remaining_refs
+        else:
+            refs.pop(request_task, None)
+            if isinstance(tasks, set):
+                tasks.discard(request_task)
+        if not refs:
+            owner._opencode_process_task_refs.pop(session_id, None)
+    elif isinstance(tasks, set) and request_task is not None:
+        tasks.discard(request_task)
+    if isinstance(tasks, set) and not tasks:
+        owner._opencode_process_tasks.pop(session_id, None)
+
+    current_count = owner._opencode_active_requests.get(session_id, 0)
+    if current_count > 1:
+        owner._opencode_active_requests[session_id] = current_count - 1
+        return False
+
+    owner._opencode_active_requests.pop(session_id, None)
+    owner._opencode_abort_sessions.discard(session_id)
+    return True
+
+
+def _cancel_opencode_status_heartbeat(owner: Any, session_id: str) -> None:
+    """Best-effort status-heartbeat cancellation after ownership is released."""
+
+    try:
+        owner._cancel_opencode_session_status_heartbeat(session_id)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning(
+            "Failed to stop OpenCode status heartbeat for session %s; "
+            "request ownership was still released",
+            session_id,
+            exc_info=True,
+        )
 
 
 async def finalize_opencode_process_request(
@@ -289,25 +372,8 @@ async def finalize_opencode_process_request(
         return
     _ensure_request_state(owner)
 
-    tasks = owner._opencode_process_tasks.get(sid)
-    if isinstance(tasks, set) and request_task is not None:
-        tasks.discard(request_task)
-        if not tasks:
-            owner._opencode_process_tasks.pop(sid, None)
-
-    current_count = owner._opencode_active_requests.get(sid, 0)
-    if current_count > 1:
-        owner._opencode_active_requests[sid] = current_count - 1
+    if not _release_opencode_process_request(owner, sid, request_task):
         return
 
-    owner._opencode_active_requests.pop(sid, None)
-    owner._opencode_abort_sessions.discard(sid)
-    try:
-        owner._cancel_opencode_session_status_heartbeat(sid)
-    except Exception:
-        logger.warning(
-            "Failed to cancel OpenCode session heartbeat for %s",
-            sid,
-            exc_info=True,
-        )
+    _cancel_opencode_status_heartbeat(owner, sid)
     await _emit_session_status_best_effort(owner, sid, "idle")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import pytest
@@ -345,6 +346,47 @@ async def test_serial_scheduler_executes_calls_in_order() -> None:
         "out:read_file",
         "out:execute_command",
     ]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_parallelizes_independent_read_only_calls() -> None:
+    calls = [
+        ToolCall(
+            id="read_one",
+            name="read_file",
+            arguments={"path": "one"},
+            source="responses",
+            mutates_state=False,
+            parallel_safe=True,
+            requires_approval=False,
+            effect="read",
+        ),
+        ToolCall(
+            id="read_two",
+            name="read_file",
+            arguments={"path": "two"},
+            source="responses",
+            mutates_state=False,
+            parallel_safe=True,
+            requires_approval=False,
+            effect="read",
+        ),
+    ]
+    started: list[str] = []
+
+    release = asyncio.Event()
+
+    async def _execute(tool_call: ToolCall) -> str:
+        started.append(tool_call.id)
+        if len(started) == 2:
+            release.set()
+        await asyncio.wait_for(release.wait(), timeout=0.5)
+        return tool_call.id
+
+    results = await execute_tool_calls_serially(calls, _execute)
+
+    assert started == ["read_one", "read_two"]
+    assert [result.output for result in results] == ["read_one", "read_two"]
 
 
 @pytest.mark.asyncio

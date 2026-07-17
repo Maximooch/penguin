@@ -16,6 +16,7 @@ from collections import defaultdict
 # from utils.log_error import log_error
 # from .core.support import create_folder, create_file, write_to_file, read_file, list_files, encode_image_to_base64, find_file
 from penguin.config import config, WORKSPACE_PATH
+from penguin.constants import DELEGATE_EXPLORE_TASK_MAX_ITERATIONS_CAP
 from penguin.system.execution_context import get_current_execution_context_dict
 from penguin.utils.path_utils import get_allowed_roots, get_default_write_root
 from penguin.memory.summary_notes import SummaryNotes
@@ -7199,7 +7200,7 @@ class ToolManager:
 
         start_dir = tool_input.get("directory", ".")
         requested_max = tool_input.get("max_iterations")
-        max_iterations: int | None = None
+        max_iterations = DELEGATE_EXPLORE_TASK_MAX_ITERATIONS_CAP
         if requested_max is not None:
             if isinstance(requested_max, bool):
                 return json.dumps(
@@ -7227,6 +7228,10 @@ class ToolManager:
                 return json.dumps(
                     {"error": "max_iterations must be a positive integer when provided"}
                 )
+            max_iterations = min(
+                max_iterations,
+                DELEGATE_EXPLORE_TASK_MAX_ITERATIONS_CAP,
+            )
 
         cwd = os.getcwd()
 

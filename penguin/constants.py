@@ -43,6 +43,13 @@ DEFAULT_LARGE_FILE_THRESHOLD_BYTES = int(
     os.getenv("PENGUIN_LARGE_FILE_THRESHOLD_BYTES", "100000")
 )
 
+# Helper reasoning loops must remain bounded even when a primary /goal run has
+# no overall iteration ceiling. This prevents one delegated provider loop from
+# holding its parent request forever.
+DELEGATE_EXPLORE_TASK_MAX_ITERATIONS_CAP = int(
+    os.getenv("PENGUIN_DELEGATE_EXPLORE_MAX_ITERATIONS", "100")
+)
+
 # Web/API server defaults
 DEFAULT_WEB_PORT = int(os.getenv("PENGUIN_WEB_PORT", "9000"))
 

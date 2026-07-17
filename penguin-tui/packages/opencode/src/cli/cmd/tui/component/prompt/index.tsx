@@ -37,16 +37,25 @@ import { exitSession } from "../../util/exit"
 import { DEFAULT_PENGUIN_STALE_MS, derivePenguinRunState } from "./penguin-run-state"
 import { applyPenguinFastCommand } from "./penguin-fast-command"
 import {
+  DEFAULT_PENGUIN_PROMPT_TIMEOUT_MS,
+  abortPenguinSession,
   completePenguinPromptSuccess,
   createPenguinSession,
   emitPenguinOptimisticPrompt,
   formatPenguinPromptFailure,
+  formatPenguinPromptTerminalDetails,
+  formatPenguinPromptTerminal,
+  getPenguinPromptContinuation,
   isPenguinSyntheticModel,
+  isPenguinTerminalInterruptible,
+  parsePenguinPromptTerminal,
   recoverPenguinPromptFailure,
   resolveSessionID,
   sendPenguinPrompt,
+  sendPenguinContinuation,
   shouldStripPenguinVirtualPart,
   type PenguinOptimisticEmitter,
+  type PenguinPromptTerminal,
 } from "./penguin-send"
 import { parsePenguinLocalCommand } from "./penguin-local-command"
 import {
@@ -57,6 +66,7 @@ import {
   shouldEmitPenguinOptimisticGoal,
 } from "./penguin-local-command-runtime"
 import { createPenguinPromptSubmitGate, tryStartPenguinPromptSubmit } from "./penguin-submit-gate"
+import { mountPenguinTerminalHydration } from "./penguin-terminal-hydration"
 import {
   createPasteDuplicateGuard,
   createPasteTaskQueue,
@@ -149,6 +159,33 @@ export function Prompt(props: PromptProps) {
   })
   const submitGate = createPenguinPromptSubmitGate()
   const controlSubmitGate = createPenguinPromptSubmitGate()
+  let activeSubmit:
+    | {
+        controller: AbortController
+        directory?: string
+        release: () => void
+        sessionID?: string
+      }
+    | undefined
+
+  function cancelActiveSubmit(reason: DOMException): boolean {
+    const active = activeSubmit
+    if (!active) return false
+    invalidatePenguinTerminalHydration()
+    activeSubmit = undefined
+    active.controller.abort(reason)
+    active.release()
+    const sessionID = active.sessionID ?? props.sessionID ?? sdk.sessionID
+    if (sessionID) {
+      void abortPenguinSession({
+        baseUrl: sdk.url,
+        directory: active.directory ?? sdk.directory,
+        fetch: sdk.fetch,
+        sessionID,
+      })
+    }
+    return true
+  }
 
   function promptModelWarning() {
     toast.show({
@@ -216,6 +253,7 @@ export function Prompt(props: PromptProps) {
     pendingSeenBusy: boolean
     placeholder: number
     runStartedAt?: number
+    terminal?: PenguinPromptTerminal
   }>({
     placeholder: Math.floor(Math.random() * PLACEHOLDERS.length),
     prompt: {
@@ -229,6 +267,22 @@ export function Prompt(props: PromptProps) {
     pendingSeenBusy: false,
   })
   const [agentMode, setAgentMode] = createSignal<"build" | "plan">("build")
+  const [terminalHydrationEpoch, setTerminalHydrationEpoch] = createSignal(0)
+
+  function invalidatePenguinTerminalHydration() {
+    setTerminalHydrationEpoch((epoch) => epoch + 1)
+  }
+
+  mountPenguinTerminalHydration({
+    active: () => sdk.penguin,
+    baseUrl: sdk.url,
+    directory: (sessionID) => sync.session.get(sessionID)?.directory ?? sdk.directory,
+    epoch: terminalHydrationEpoch,
+    fetch: sdk.fetch,
+    locallyActive: () => store.pending || !!activeSubmit,
+    onTerminal: (terminal) => setStore("terminal", terminal),
+    sessionID: activeSessionID,
+  })
 
   createEffect(() => {
     if (!props.sessionID) return
@@ -284,7 +338,11 @@ export function Prompt(props: PromptProps) {
     }),
   )
 
-  const busy = createMemo(() => (sdk.penguin ? runState().type !== "idle" : status().type !== "idle"))
+  const busy = createMemo(() => {
+    if (!sdk.penguin) return status().type !== "idle"
+    if (store.terminal && !store.terminal.completed) return false
+    return runState().type !== "idle"
+  })
 
   createEffect(() => {
     if (!sdk.penguin) return
@@ -304,6 +362,100 @@ export function Prompt(props: PromptProps) {
       setStore("runStartedAt", undefined)
     }
   })
+
+  async function runPenguinContinuation(terminal: PenguinPromptTerminal) {
+    const continuation = getPenguinPromptContinuation(terminal)
+    if (!continuation) {
+      toast.show({
+        variant: "error",
+        message: "This terminal state does not include a valid continuation action.",
+      })
+      return
+    }
+
+    const controller = new AbortController()
+    const sessionID =
+      typeof continuation.request.session_id === "string" ? continuation.request.session_id : activeSessionID()
+    const start = tryStartPenguinPromptSubmit({
+      busy: false,
+      gate: submitGate,
+      onTimeout: () => {
+        if (activeSubmit?.controller !== controller) return
+        cancelActiveSubmit(new DOMException("Penguin continuation deadline exceeded", "TimeoutError"))
+        setStore("pending", false)
+        setStore("pendingSeenBusy", false)
+        setStore("runStartedAt", undefined)
+        const timeout = parsePenguinPromptTerminal({
+          status: "client_timeout",
+          state: "failed",
+          terminal_reason: "request_deadline_exceeded",
+          completed: false,
+          recoverable: true,
+        })
+        setStore("terminal", timeout)
+        toast.show({
+          variant: "error",
+          message: formatPenguinPromptTerminal(timeout),
+        })
+      },
+      timeoutMs: DEFAULT_PENGUIN_PROMPT_TIMEOUT_MS,
+    })
+    if (!start.ok) return
+
+    activeSubmit = {
+      controller,
+      directory: sync.session.get(sessionID)?.directory ?? sdk.directory,
+      release: start.release,
+      sessionID,
+    }
+    invalidatePenguinTerminalHydration()
+    setStore("terminal", undefined)
+    setStore("pending", true)
+    setStore("pendingSeenBusy", false)
+    setStore("runStartedAt", Date.now())
+
+    try {
+      const result = await sendPenguinContinuation({
+        baseUrl: sdk.url,
+        fetch: sdk.fetch,
+        signal: controller.signal,
+        terminal,
+      })
+      if (activeSubmit?.controller !== controller) return
+      setStore("pending", false)
+      setStore("pendingSeenBusy", false)
+      setStore("runStartedAt", undefined)
+
+      if (result.ok) {
+        setStore("terminal", result.terminal.completed ? undefined : result.terminal)
+        if (!result.terminal.completed) {
+          toast.show({
+            variant: result.terminal.recoverable ? "warning" : "error",
+            message: formatPenguinPromptTerminal(result.terminal),
+          })
+        }
+        return
+      }
+      if (result.aborted && controller.signal.aborted) return
+
+      const failed = parsePenguinPromptTerminal({
+        status: "continuation_request_failed",
+        state: "failed",
+        terminal_reason: "continuation_request_failed",
+        completed: false,
+        recoverable: false,
+        error: result.error,
+      })
+      setStore("terminal", failed)
+      toast.show({
+        variant: "error",
+        message: formatPenguinPromptFailure(result),
+      })
+    } finally {
+      if (activeSubmit?.controller === controller) activeSubmit = undefined
+      start.release()
+    }
+  }
 
   // Initialize agent/model/variant from session info first, then last user message fallback.
   let syncedAgentSessionID: string | undefined
@@ -376,6 +528,7 @@ export function Prompt(props: PromptProps) {
       renderer.requestRender()
     }
 
+    const terminalAction = getPenguinPromptContinuation(store.terminal)
     // Why are these hard coded into index.tsx? need to move somewhere else
     return [
       {
@@ -399,6 +552,22 @@ export function Prompt(props: PromptProps) {
           if (!input.focused) return
           submit()
           dialog.clear()
+        },
+      },
+      {
+        title: terminalAction ? `${terminalAction.label} Penguin run` : "Continue Penguin run",
+        description: store.terminal
+          ? `Explicitly continue the terminal state: ${store.terminal.terminalReason ?? store.terminal.status}`
+          : "Continue a recoverable Penguin terminal state",
+        value: "penguin.terminal.continue",
+        category: "Session",
+        suggested: !!terminalAction,
+        enabled: sdk.penguin && !!terminalAction,
+        onSelect: (dialog) => {
+          const current = store.terminal
+          if (!current || !getPenguinPromptContinuation(current)) return
+          dialog.clear()
+          void runPenguinContinuation(current)
         },
       },
       {
@@ -669,8 +838,10 @@ export function Prompt(props: PromptProps) {
         value: "session.interrupt",
         keybind: "session_interrupt",
         category: "Session",
-        hidden: true,
-        enabled: sdk.penguin ? !!props.sessionID && busy() : status().type !== "idle",
+        hidden: !sdk.penguin,
+        enabled: sdk.penguin
+          ? !!props.sessionID && (busy() || isPenguinTerminalInterruptible(store.terminal))
+          : status().type !== "idle",
         onSelect: (dialog) => {
           if (autocomplete.visible) return
           if (!input.focused && !sdk.penguin) return
@@ -682,12 +853,17 @@ export function Prompt(props: PromptProps) {
           if (!props.sessionID) return
 
           if (sdk.penguin) {
-            sdk.client.session.abort({
-              sessionID: props.sessionID,
-            })
+            const cancelled = cancelActiveSubmit(new DOMException("Prompt interrupted", "AbortError"))
+            if (!cancelled) {
+              sdk.client.session.abort({
+                sessionID: props.sessionID,
+              })
+            }
             setStore("pending", false)
             setStore("pendingSeenBusy", false)
             setStore("runStartedAt", undefined)
+            invalidatePenguinTerminalHydration()
+            setStore("terminal", undefined)
             setStore("interrupt", 0)
             dialog.clear()
             return
@@ -1065,11 +1241,32 @@ export function Prompt(props: PromptProps) {
     if (sdk.penguin && handleFastCommand()) return
     const localCommand = sdk.penguin ? parsePenguinLocalCommand(inputText) : null
     const allowWhileBusy = localCommand?.kind === "goal_pause" || localCommand?.kind === "goal_status"
+    const submitController = sdk.penguin ? new AbortController() : undefined
     const submitStart = sdk.penguin
       ? tryStartPenguinPromptSubmit({
           busy: busy(),
           gate: allowWhileBusy ? controlSubmitGate : submitGate,
           allowWhileBusy,
+          onTimeout: () => {
+            if (!submitController || activeSubmit?.controller !== submitController) return
+            cancelActiveSubmit(new DOMException("Penguin prompt deadline exceeded", "TimeoutError"))
+            setStore("pending", false)
+            setStore("pendingSeenBusy", false)
+            setStore("runStartedAt", undefined)
+            const terminal = parsePenguinPromptTerminal({
+              status: "client_timeout",
+              state: "failed",
+              terminal_reason: "request_deadline_exceeded",
+              completed: false,
+              recoverable: true,
+            })
+            setStore("terminal", terminal)
+            toast.show({
+              variant: "error",
+              message: formatPenguinPromptTerminal(terminal),
+            })
+          },
+          timeoutMs: DEFAULT_PENGUIN_PROMPT_TIMEOUT_MS,
         })
       : undefined
     if (sdk.penguin && submitStart?.ok === false) {
@@ -1083,8 +1280,22 @@ export function Prompt(props: PromptProps) {
       return
     }
     const releaseSubmit = submitStart?.ok ? submitStart.release : undefined
+    if (submitController && releaseSubmit) {
+      activeSubmit = {
+        controller: submitController,
+        release: releaseSubmit,
+        sessionID: props.sessionID ?? sdk.sessionID,
+      }
+      invalidatePenguinTerminalHydration()
+      setStore("terminal", undefined)
+    }
+    const finishSubmit = () => {
+      if (submitController && activeSubmit?.controller === submitController) activeSubmit = undefined
+      releaseSubmit?.()
+    }
     let releaseInFinally = true
     const initialDirectory = getActiveDirectory(props.sessionID ?? sdk.sessionID)
+    if (submitController && activeSubmit?.controller === submitController) activeSubmit.directory = initialDirectory
     try {
       const ensureSessionID = async () => {
         return await iife(async () => {
@@ -1098,6 +1309,7 @@ export function Prompt(props: PromptProps) {
               directory: initialDirectory,
               fetch: sdk.fetch,
               model: selectedModel,
+              signal: submitController?.signal,
               variant,
             })
           }
@@ -1108,6 +1320,7 @@ export function Prompt(props: PromptProps) {
             throw new Error("Session create returned empty id")
           })
         }).catch((e) => {
+          if (submitController?.signal.aborted) return undefined
           const msg = e instanceof Error ? e.message : String(e)
           toast.show({
             variant: "error",
@@ -1217,7 +1430,7 @@ export function Prompt(props: PromptProps) {
                   setStore("pending", false)
                   setStore("pendingSeenBusy", false)
                   setStore("runStartedAt", undefined)
-                  releaseSubmit?.()
+                  finishSubmit()
                 })
               return
             }
@@ -1236,6 +1449,7 @@ export function Prompt(props: PromptProps) {
 
       const sessionID = await ensureSessionID()
       if (!sessionID) return
+      if (submitController && activeSubmit?.controller === submitController) activeSubmit.sessionID = sessionID
       const shouldNavigate = sdk.penguin && !props.sessionID
       if (input.isDestroyed) return
       const directory =
@@ -1244,6 +1458,7 @@ export function Prompt(props: PromptProps) {
         sync.data.path.directory ||
         sdk.directory ||
         process.cwd()
+      if (submitController && activeSubmit?.controller === submitController) activeSubmit.directory = directory
       const messageID = sdk.penguin ? gen.next("msg") : Identifier.ascending("message")
 
       // Filter out text parts (pasted content) since they're now expanded inline.
@@ -1329,28 +1544,60 @@ export function Prompt(props: PromptProps) {
           messageID,
           clientPartID,
           parts: nonTextParts,
+          signal: submitController?.signal,
         })
           .then((result) => {
+            if (submitController && activeSubmit?.controller !== submitController) return
             if (result.ok) {
-              completePenguinPromptSuccess({
+              const terminal = result.terminal
+              const clear = () => {
+                setStore("pending", false)
+                setStore("pendingSeenBusy", false)
+                setStore("runStartedAt", undefined)
+              }
+              if (terminal.completed) {
+                setStore("terminal", undefined)
+                completePenguinPromptSuccess({
+                  sessionID,
+                  clear,
+                  emit: sdk.event.emit,
+                })
+                return
+              }
+              recoverPenguinPromptFailure({
                 sessionID,
-                clear: () => {
-                  setStore("pending", false)
-                  setStore("pendingSeenBusy", false)
-                  setStore("runStartedAt", undefined)
-                },
+                clear,
                 emit: sdk.event.emit,
+              })
+              setStore("terminal", terminal)
+              toast.show({
+                variant: terminal.recoverable ? "warning" : "error",
+                message: formatPenguinPromptTerminal(terminal),
               })
               return
             }
             recover()
+            if (result.aborted && submitController?.signal.aborted) return
+            if (typeof result.status === "number") {
+              setStore(
+                "terminal",
+                parsePenguinPromptTerminal({
+                  status: "request_rejected",
+                  state: "failed",
+                  terminal_reason: `http_${result.status}`,
+                  completed: false,
+                  recoverable: false,
+                  error: result.error,
+                }),
+              )
+            }
             toast.show({
               variant: "error",
               message: formatPenguinPromptFailure(result),
             })
           })
           .finally(() => {
-            releaseSubmit?.()
+            finishSubmit()
           })
         return
       }
@@ -1443,7 +1690,7 @@ export function Prompt(props: PromptProps) {
         }, 50)
       input.clear()
     } finally {
-      if (releaseInFinally) releaseSubmit?.()
+      if (releaseInFinally) finishSubmit()
     }
   }
   const exit = useExit()
@@ -1686,7 +1933,9 @@ export function Prompt(props: PromptProps) {
   })
 
   const runStatusText = createMemo(() => {
-    if (!sdk.penguin || status().type === "retry") return ""
+    if (!sdk.penguin) return ""
+    if (store.terminal && !store.terminal.completed) return formatPenguinPromptTerminalDetails(store.terminal)
+    if (status().type === "retry") return ""
     const state = runState()
     if (state.type === "idle") return ""
 
@@ -1694,8 +1943,8 @@ export function Prompt(props: PromptProps) {
     if (state.type === "pending") return `starting · ${elapsed}`
     if (state.type === "reconnecting") return `reconnecting · ${elapsed}`
     if (state.type === "stale") {
-      const age = formatDuration(Math.floor((state.lastEventAgeMs ?? state.elapsedMs) / 1000))
-      return `still running · ${age ? `no events ${age}` : "no events"} · ${elapsed}`
+      const age = formatDuration(Math.floor((state.lastProgressAgeMs ?? state.elapsedMs) / 1000))
+      return `still running · ${age ? `no progress ${age}` : "no progress"} · ${elapsed} · Esc interrupt`
     }
     return `running · ${elapsed}`
   })
@@ -1786,16 +2035,21 @@ export function Prompt(props: PromptProps) {
                   return
                 }
                 if (sdk.penguin && props.sessionID && (keybind.match("session_interrupt", e) || e.name === "escape")) {
-                  const active = busy()
+                  const active = busy() || isPenguinTerminalInterruptible(store.terminal)
                   if (active) {
-                    sdk.client.session
-                      .abort({
-                        sessionID: props.sessionID,
-                      })
-                      .catch(() => {})
+                    const cancelled = cancelActiveSubmit(new DOMException("Prompt interrupted", "AbortError"))
+                    if (!cancelled) {
+                      sdk.client.session
+                        .abort({
+                          sessionID: props.sessionID,
+                        })
+                        .catch(() => {})
+                    }
                     setStore("pending", false)
                     setStore("pendingSeenBusy", false)
                     setStore("runStartedAt", undefined)
+                    invalidatePenguinTerminalHydration()
+                    setStore("terminal", undefined)
                     setStore("interrupt", 0)
                     e.preventDefault()
                     return

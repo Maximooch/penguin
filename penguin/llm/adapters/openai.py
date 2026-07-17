@@ -5,14 +5,33 @@ import base64
 import io
 import json
 import logging
+import math
 import os
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union, cast
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from typing import (
+    Any,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Tuple,
+    Union,
+    cast,
+)
 
 import httpx  # type: ignore
 import tiktoken  # type: ignore
 from openai import AsyncOpenAI  # type: ignore
 
+from penguin.system.native_tool_history import sanitize_native_tool_messages
+from penguin.system.runtime_diagnostics import (
+    mark_runtime_progress,
+    record_runtime_duration,
+)
 from penguin.web.services.provider_auth import (
     ProviderOAuthError,
     refresh_provider_oauth,
@@ -29,8 +48,8 @@ from ..contracts import (
     FinishReason,
     LLMError,
     LLMPreparedRequest,
-    LLMProviderError,
     LLMProviderCapabilities,
+    LLMProviderError,
     LLMRequestLifecycle,
     LLMUsage,
     ProviderRequestStatus,
@@ -77,6 +96,44 @@ _OPENAI_CODEX_TRACE_HEADER_KEYS = (
     "cf-ray",
     "x-amzn-trace-id",
 )
+_OPENAI_CODEX_CONNECT_TIMEOUT_SECONDS = 30.0
+_OPENAI_CODEX_HEADER_TIMEOUT_SECONDS = 45.0
+_OPENAI_CODEX_IDLE_TIMEOUT_SECONDS = 120.0
+_OPENAI_CODEX_TOTAL_TIMEOUT_SECONDS = 900.0
+_OPENAI_STREAM_CALLBACK_TIMEOUT_SECONDS = 30.0
+_OPENAI_STREAM_CLEANUP_TIMEOUT_SECONDS = 2.0
+_OPENAI_PARTIAL_OUTPUT_MAX_CHARS = 65_536
+
+
+@dataclass(frozen=True)
+class _CodexWatchdogConfig:
+    """Bound every phase of one Codex HTTP/SSE attempt."""
+
+    connect_seconds: float
+    header_seconds: float
+    idle_seconds: float
+    total_seconds: float
+    callback_seconds: float
+    cleanup_seconds: float
+
+
+class _CodexWatchdogTimeout(TimeoutError):
+    """Internal timeout carrying a stable provider lifecycle stage."""
+
+    def __init__(self, stage: str, timeout_seconds: float) -> None:
+        super().__init__(f"{stage} after {timeout_seconds:.3f}s")
+        self.stage = stage
+        self.timeout_seconds = timeout_seconds
+
+
+def _positive_timeout_from_env(name: str, default: float) -> float:
+    """Read one positive timeout, falling back on invalid/disabled values."""
+
+    try:
+        value = float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return value if math.isfinite(value) and value > 0 else default
 
 
 def _oauth_trace_flags(record: Dict[str, Any] | None) -> Dict[str, bool]:
@@ -101,6 +158,8 @@ class OpenAIAdapter(BaseAdapter):
     ``client_preference == 'native'`` and ``provider == 'openai'``.
     """
 
+    supports_runtime_network_attempt_budget = True
+
     def __init__(self, model_config: ModelConfig):
         self.model_config = model_config
         api_key = (
@@ -124,6 +183,7 @@ class OpenAIAdapter(BaseAdapter):
             api_key=api_key,
             base_url=model_config.api_base or None,
             default_headers=default_headers or None,
+            max_retries=0,
         )
         self._last_usage: Dict[str, Any] = {}
         self._last_error: Optional[LLMError] = None
@@ -131,6 +191,9 @@ class OpenAIAdapter(BaseAdapter):
         self._last_reasoning = ""
         self._last_reasoning_debug: Dict[str, Any] = {}
         self._last_request_lifecycle: Optional[LLMRequestLifecycle] = None
+        self._network_attempts = 0
+        self._network_attempt_budget = 2
+        self._attempt_partial_output = ""
         self._reset_tool_call_state()
 
     @property
@@ -150,10 +213,39 @@ class OpenAIAdapter(BaseAdapter):
 
     def has_pending_tool_call(self) -> bool:
         """Return whether a structured Responses tool call is waiting to run."""
-        return bool(self._pending_tool_calls) or (
-            isinstance(self._last_tool_call, dict)
-            and bool(self._last_tool_call.get("name"))
+        return (
+            bool(self._pending_tool_calls)
+            or (
+                isinstance(self._last_tool_call, dict)
+                and bool(self._last_tool_call.get("name"))
+            )
+            or any(
+                bool(
+                    accumulator.get("name")
+                    or accumulator.get("call_id")
+                    or accumulator.get("item_id")
+                    or accumulator.get("arguments")
+                )
+                for accumulator in self._tool_call_acc_by_item.values()
+                if isinstance(accumulator, dict)
+            )
         )
+
+    def get_last_network_attempt_count(self) -> int:
+        """Return physical provider sends made by the latest logical call."""
+
+        return max(0, int(getattr(self, "_network_attempts", 0) or 0))
+
+    def _record_network_attempt(self) -> None:
+        """Record one physical provider send within the runtime-owned budget."""
+
+        attempts = self.get_last_network_attempt_count()
+        budget = max(1, int(getattr(self, "_network_attempt_budget", 2) or 2))
+        if attempts >= budget:
+            raise RuntimeError(
+                f"OpenAI network attempt budget exhausted ({attempts}/{budget})"
+            )
+        self._network_attempts = attempts + 1
 
     def get_and_clear_last_tool_call(self) -> Optional[Dict[str, Any]]:
         """Return the latest structured tool call and clear adapter state."""
@@ -230,16 +322,89 @@ class OpenAIAdapter(BaseAdapter):
             return message.strip()
         return str(detail_payload)[:500]
 
+    def _responses_stream_error_taxonomy(
+        self,
+        event: Any,
+    ) -> tuple[ErrorCategory, bool]:
+        """Classify a Responses SSE error before deciding whether replay is safe."""
+
+        root = self._to_dict(event)
+        candidates: List[str] = []
+        pending: List[Any] = [root]
+        visited = 0
+        while pending and visited < 8:
+            visited += 1
+            payload = pending.pop(0)
+            if not isinstance(payload, dict):
+                payload = self._to_dict(payload)
+            if not isinstance(payload, dict):
+                continue
+            for key in ("type", "code", "message", "status"):
+                value = payload.get(key)
+                if value is not None:
+                    candidates.append(str(value).strip().lower())
+            for key in ("error", "response"):
+                nested = payload.get(key)
+                if nested is not None:
+                    pending.append(nested)
+
+        detail = " ".join(value for value in candidates if value)
+        if any(
+            token in detail
+            for token in (
+                "authentication",
+                "invalid_api_key",
+                "permission_denied",
+                "unauthorized",
+            )
+        ):
+            return ErrorCategory.AUTH, False
+        if any(
+            token in detail
+            for token in (
+                "invalid_request",
+                "bad_request",
+                "context_length",
+                "unsupported",
+                "not_found",
+            )
+        ):
+            return ErrorCategory.BAD_REQUEST, False
+        if any(token in detail for token in ("rate_limit", "too_many_requests")):
+            return ErrorCategory.RATE_LIMIT, True
+        if any(token in detail for token in ("timeout", "timed_out")):
+            return ErrorCategory.TIMEOUT, True
+        if any(
+            token in detail
+            for token in ("server_error", "api_error", "overloaded", "unavailable")
+        ):
+            return ErrorCategory.PROVIDER_UNAVAILABLE, True
+        if any(token in detail for token in ("connection", "network")):
+            return ErrorCategory.NETWORK, True
+        # Unknown event errors are not provably safe to replay.
+        return ErrorCategory.RUNTIME, False
+
     def _raise_responses_stream_error(self, event: Any) -> None:
         detail = self._responses_stream_error_detail(event)
+        category, retryable = self._responses_stream_error_taxonomy(event)
+        partial_tool_call = self.has_pending_tool_call()
         error = build_llm_error(
             message=detail,
             provider=self.provider,
             model=getattr(self.model_config, "model", None),
+            category=category,
+            retryable=retryable,
             finish_reason=FinishReason.ERROR,
+            provider_data={
+                "network_attempts": self.get_last_network_attempt_count(),
+                "partial_output": str(self._attempt_partial_output or ""),
+                "partial_tool_call": partial_tool_call,
+            },
         )
         self._set_last_finish_reason(FinishReason.ERROR)
         self._set_last_error(error)
+        if partial_tool_call:
+            self._reset_tool_call_state()
         self._update_request_lifecycle(
             status=ProviderRequestStatus.FAILED,
             finish_reason=FinishReason.ERROR,
@@ -247,7 +412,13 @@ class OpenAIAdapter(BaseAdapter):
         )
         raise LLMProviderError(error)
 
-    def _raise_responses_stream_incomplete(self, output_state: str) -> None:
+    def _raise_responses_stream_incomplete(
+        self,
+        output_state: str,
+        *,
+        partial_output: str = "",
+    ) -> None:
+        partial_tool_call = output_state == "tool_call" or self.has_pending_tool_call()
         detail = (
             "OpenAI Responses stream ended before response.completed "
             f"(output_state={output_state})"
@@ -259,10 +430,16 @@ class OpenAIAdapter(BaseAdapter):
             category=ErrorCategory.NETWORK,
             retryable=True,
             finish_reason=FinishReason.ERROR,
+            provider_data={
+                "stage": "stream_incomplete",
+                "partial_output": str(partial_output or ""),
+                "partial_tool_call": partial_tool_call,
+                "network_attempts": self.get_last_network_attempt_count(),
+            },
         )
         self._set_last_finish_reason(FinishReason.ERROR)
         self._set_last_error(error)
-        if output_state == "tool_call":
+        if partial_tool_call:
             self._reset_tool_call_state()
         self._update_request_lifecycle(
             status=ProviderRequestStatus.DISCONNECTED,
@@ -270,6 +447,49 @@ class OpenAIAdapter(BaseAdapter):
             error=error,
         )
         raise LLMProviderError(error)
+
+    def _raise_responses_transport_error(
+        self,
+        error: Exception,
+        *,
+        stage: str,
+        partial_output: str = "",
+    ) -> None:
+        """Raise one typed native Responses transport failure with replay facts."""
+
+        partial_tool_call = self.has_pending_tool_call()
+        category = (
+            ErrorCategory.TIMEOUT
+            if "timeout" in stage
+            or isinstance(error, (TimeoutError, httpx.TimeoutException))
+            else ErrorCategory.NETWORK
+        )
+        llm_error = build_llm_error(
+            message=f"OpenAI Responses {stage}: {error}",
+            provider=self.provider,
+            model=getattr(self.model_config, "model", None),
+            category=category,
+            retryable=True,
+            finish_reason=FinishReason.ERROR,
+            provider_data={
+                "stage": stage,
+                "partial_output": str(partial_output or ""),
+                "partial_tool_call": partial_tool_call,
+                "network_attempts": self.get_last_network_attempt_count(),
+            },
+        )
+        self._set_last_error(llm_error)
+        self._set_last_finish_reason(FinishReason.ERROR)
+        if partial_tool_call:
+            self._reset_tool_call_state()
+        self._update_request_lifecycle(
+            status=ProviderRequestStatus.DISCONNECTED,
+            event_type=stage,
+            finish_reason=FinishReason.ERROR,
+            error=llm_error,
+            provider_data=llm_error.provider_data,
+        )
+        raise LLMProviderError(llm_error) from error
 
     def _append_reasoning(self, reasoning_text: str) -> None:
         if reasoning_text:
@@ -596,6 +816,7 @@ class OpenAIAdapter(BaseAdapter):
             model=str(getattr(self.model_config, "model", "") or ""),
             native_tools=True,
             streaming=bool(getattr(self.model_config, "streaming_enabled", True)),
+            prompt_cache=True,
             reasoning=bool(
                 getattr(self.model_config, "reasoning_enabled", False)
                 or self.model_config.get_reasoning_config()
@@ -634,6 +855,7 @@ class OpenAIAdapter(BaseAdapter):
         tools: Optional[List[Dict[str, Any]]],
         tool_choice: Optional[Union[str, Dict[str, Any]]],
         service_tier: Optional[str],
+        prompt_cache_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Build the native Responses API request body."""
 
@@ -676,6 +898,8 @@ class OpenAIAdapter(BaseAdapter):
             request_params["tool_choice"] = tool_choice
         if service_tier:
             request_params["service_tier"] = service_tier
+        if prompt_cache_key:
+            request_params["prompt_cache_key"] = prompt_cache_key
 
         try:
             uses_effort_style = bool(self.model_config._uses_effort_style())
@@ -699,7 +923,6 @@ class OpenAIAdapter(BaseAdapter):
         legacy_max_tokens = kwargs.pop("max_tokens", None)
         if max_output_tokens is None and legacy_max_tokens is not None:
             max_output_tokens = legacy_max_tokens
-
         processed_messages = await self._process_messages_for_vision(messages)
         reasoning_config = self._prepare_reasoning_config(
             self.model_config.get_reasoning_config(),
@@ -716,6 +939,7 @@ class OpenAIAdapter(BaseAdapter):
         tools = normalize_openai_responses_tools(kwargs.get("tools"))
         tool_choice = normalize_openai_responses_tool_choice(kwargs.get("tool_choice"))
         service_tier = self._get_service_tier()
+        prompt_cache_key = kwargs.get("prompt_cache_key")
 
         oauth_record = self._peek_oauth_record_for_prepare()
         if oauth_record is not None:
@@ -763,6 +987,7 @@ class OpenAIAdapter(BaseAdapter):
             tools=tools,
             tool_choice=tool_choice,
             service_tier=service_tier,
+            prompt_cache_key=prompt_cache_key,
         )
         return LLMPreparedRequest(
             provider=self.provider,
@@ -804,6 +1029,13 @@ class OpenAIAdapter(BaseAdapter):
         if max_output_tokens is None and legacy_max_tokens is not None:
             max_output_tokens = legacy_max_tokens
 
+        raw_attempt_budget = kwargs.pop("_penguin_network_attempt_budget", 2)
+        try:
+            self._network_attempt_budget = max(1, min(2, int(raw_attempt_budget)))
+        except (TypeError, ValueError):
+            self._network_attempt_budget = 2
+        self._network_attempts = 0
+        self._attempt_partial_output = ""
         self._reset_tool_call_state()
         self._reset_response_state()
 
@@ -825,6 +1057,7 @@ class OpenAIAdapter(BaseAdapter):
         tools = normalize_openai_responses_tools(kwargs.get("tools"))
         tool_choice = normalize_openai_responses_tool_choice(kwargs.get("tool_choice"))
         service_tier = self._get_service_tier()
+        prompt_cache_key = kwargs.get("prompt_cache_key")
 
         oauth_record = await self._resolve_oauth_record_for_request()
         if oauth_record is not None:
@@ -880,6 +1113,7 @@ class OpenAIAdapter(BaseAdapter):
             tools=tools,
             tool_choice=tool_choice,
             service_tier=service_tier,
+            prompt_cache_key=prompt_cache_key,
         )
 
         self._start_request_lifecycle(
@@ -907,7 +1141,25 @@ class OpenAIAdapter(BaseAdapter):
             except LLMProviderError:
                 raise
             except Exception as e:
-                logger.warning(f"SDK streaming failed, falling back to HTTP SSE: {e}")
+                partial_output = str(self._attempt_partial_output or "")
+                partial_tool_call = self.has_pending_tool_call()
+                can_fallback = (
+                    not partial_output
+                    and not partial_tool_call
+                    and self.get_last_network_attempt_count()
+                    < self._network_attempt_budget
+                )
+                if not can_fallback:
+                    self._raise_responses_transport_error(
+                        e,
+                        stage="sdk_stream_transport",
+                        partial_output=partial_output,
+                    )
+                logger.warning(
+                    "SDK streaming failed before output; using the one bounded "
+                    "HTTP fallback: %s",
+                    e,
+                )
                 result = await self._stream_with_http(request_params, stream_callback)
                 self._update_request_lifecycle(
                     status=ProviderRequestStatus.COMPLETED,
@@ -917,13 +1169,26 @@ class OpenAIAdapter(BaseAdapter):
 
         # Non-streaming
         try:
-            resp = await self.client.responses.create(**request_params)
+            self._record_network_attempt()
+            watchdog = self._codex_watchdog_config()
+            resp = await asyncio.wait_for(
+                self.client.responses.create(**request_params),
+                timeout=watchdog.total_seconds,
+            )
+        except asyncio.TimeoutError as exc:
+            self._raise_responses_transport_error(
+                exc,
+                stage="request_total_timeout",
+            )
         except Exception as exc:
             error = build_llm_error(
                 message=str(exc),
                 provider=self.provider,
                 model=getattr(self.model_config, "model", None),
                 finish_reason=FinishReason.ERROR,
+                provider_data={
+                    "network_attempts": self.get_last_network_attempt_count(),
+                },
             )
             self._set_last_error(error)
             self._update_request_lifecycle(
@@ -986,6 +1251,7 @@ class OpenAIAdapter(BaseAdapter):
                 return resp
             return str(resp)
         except asyncio.CancelledError:
+            self._reset_tool_call_state()
             error = build_llm_error(
                 message="OpenAI request was cancelled",
                 provider=self.provider,
@@ -1144,10 +1410,406 @@ class OpenAIAdapter(BaseAdapter):
                 trace[key] = value.strip()
         return trace
 
-    def _codex_http_timeout(self) -> httpx.Timeout:
-        """Use bounded setup timeouts without a fixed active-stream read cap."""
+    def _codex_watchdog_config(self) -> _CodexWatchdogConfig:
+        """Resolve bounded Codex attempt phases from operator overrides."""
 
-        return httpx.Timeout(connect=30.0, read=None, write=60.0, pool=30.0)
+        return _CodexWatchdogConfig(
+            connect_seconds=_positive_timeout_from_env(
+                "PENGUIN_CODEX_CONNECT_TIMEOUT_SECONDS",
+                _OPENAI_CODEX_CONNECT_TIMEOUT_SECONDS,
+            ),
+            header_seconds=_positive_timeout_from_env(
+                "PENGUIN_CODEX_HEADER_TIMEOUT_SECONDS",
+                _OPENAI_CODEX_HEADER_TIMEOUT_SECONDS,
+            ),
+            idle_seconds=_positive_timeout_from_env(
+                "PENGUIN_CODEX_IDLE_TIMEOUT_SECONDS",
+                _OPENAI_CODEX_IDLE_TIMEOUT_SECONDS,
+            ),
+            total_seconds=_positive_timeout_from_env(
+                "PENGUIN_CODEX_TOTAL_TIMEOUT_SECONDS",
+                _OPENAI_CODEX_TOTAL_TIMEOUT_SECONDS,
+            ),
+            callback_seconds=_positive_timeout_from_env(
+                "PENGUIN_STREAM_CALLBACK_TIMEOUT_SECONDS",
+                _OPENAI_STREAM_CALLBACK_TIMEOUT_SECONDS,
+            ),
+            cleanup_seconds=_positive_timeout_from_env(
+                "PENGUIN_STREAM_CLEANUP_TIMEOUT_SECONDS",
+                _OPENAI_STREAM_CLEANUP_TIMEOUT_SECONDS,
+            ),
+        )
+
+    def _codex_http_timeout(self) -> httpx.Timeout:
+        """Use finite connect/read/write/pool limits beneath explicit watchdogs."""
+
+        watchdog = self._codex_watchdog_config()
+        return httpx.Timeout(
+            connect=watchdog.connect_seconds,
+            read=watchdog.idle_seconds,
+            write=min(60.0, watchdog.total_seconds),
+            pool=watchdog.connect_seconds,
+        )
+
+    def _codex_total_remaining(
+        self,
+        *,
+        started: float,
+        watchdog: _CodexWatchdogConfig,
+    ) -> float:
+        """Return remaining seconds in this attempt's absolute deadline."""
+
+        return watchdog.total_seconds - (time.monotonic() - started)
+
+    async def _await_with_codex_total_deadline(
+        self,
+        operation: Awaitable[Any],
+        *,
+        started: float,
+        watchdog: _CodexWatchdogConfig,
+    ) -> Any:
+        """Await one attempt phase without extending the absolute deadline."""
+
+        remaining = self._codex_total_remaining(
+            started=started,
+            watchdog=watchdog,
+        )
+        if remaining <= 0:
+            close = getattr(operation, "close", None)
+            if callable(close):
+                close()
+            raise _CodexWatchdogTimeout(
+                "stream_total_timeout",
+                watchdog.total_seconds,
+            )
+        try:
+            return await asyncio.wait_for(operation, timeout=remaining)
+        except asyncio.TimeoutError as exc:
+            raise _CodexWatchdogTimeout(
+                "stream_total_timeout",
+                watchdog.total_seconds,
+            ) from exc
+
+    async def _exit_codex_context(
+        self,
+        context: Any,
+        exc_type: Any,
+        exc: BaseException | None,
+        traceback: Any,
+        *,
+        started: float,
+        watchdog: _CodexWatchdogConfig,
+    ) -> bool:
+        """Close one context within a short cleanup-only deadline."""
+
+        cleanup_task = asyncio.ensure_future(
+            context.__aexit__(exc_type, exc, traceback)
+        )
+        del started
+
+        def consume_cleanup_result(task: asyncio.Future[Any]) -> None:
+            """Retrieve a late cleanup result without leaking task warnings."""
+
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.debug("Late OpenAI stream cleanup failed", exc_info=True)
+
+        async def cancel_and_drain_cleanup() -> None:
+            """Request cancellation and observe it for one finite interval."""
+
+            cleanup_task.cancel()
+            done, _ = await asyncio.wait(
+                {cleanup_task},
+                timeout=watchdog.cleanup_seconds,
+            )
+            if cleanup_task in done:
+                consume_cleanup_result(cleanup_task)
+                return
+            logger.error(
+                "OpenAI stream cleanup ignored cancellation for %.3fs",
+                watchdog.cleanup_seconds,
+            )
+            cleanup_task.add_done_callback(consume_cleanup_result)
+
+        try:
+            done, _ = await asyncio.wait(
+                {cleanup_task},
+                timeout=watchdog.cleanup_seconds,
+            )
+            if cleanup_task in done:
+                return bool(cleanup_task.result())
+            await cancel_and_drain_cleanup()
+            raise _CodexWatchdogTimeout(
+                "stream_cleanup_timeout",
+                watchdog.cleanup_seconds,
+            )
+        except asyncio.CancelledError:
+            await cancel_and_drain_cleanup()
+            raise
+
+    @asynccontextmanager
+    async def _codex_client_context(
+        self,
+        *,
+        started: float,
+        watchdog: _CodexWatchdogConfig,
+    ) -> AsyncIterator[httpx.AsyncClient]:
+        """Enter and close the HTTP client within the absolute deadline."""
+
+        context = httpx.AsyncClient(timeout=self._codex_http_timeout())
+        client = await self._await_with_codex_total_deadline(
+            context.__aenter__(),
+            started=started,
+            watchdog=watchdog,
+        )
+        try:
+            yield client
+        except BaseException as exc:
+            try:
+                suppress_error = await self._exit_codex_context(
+                    context,
+                    type(exc),
+                    exc,
+                    exc.__traceback__,
+                    started=started,
+                    watchdog=watchdog,
+                )
+            except _CodexWatchdogTimeout:
+                raise exc
+            if not suppress_error:
+                raise
+        else:
+            await self._exit_codex_context(
+                context,
+                None,
+                None,
+                None,
+                started=started,
+                watchdog=watchdog,
+            )
+
+    @asynccontextmanager
+    async def _codex_stream_context(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        headers: Dict[str, str],
+        payload: Dict[str, Any],
+        started: float,
+        watchdog: _CodexWatchdogConfig,
+    ) -> AsyncIterator[httpx.Response]:
+        """Enter an HTTP stream with explicit header and total-attempt bounds."""
+
+        context = client.stream(
+            "POST",
+            _OPENAI_CODEX_RESPONSES_URL,
+            headers=headers,
+            json=payload,
+        )
+        remaining = self._codex_total_remaining(
+            started=started,
+            watchdog=watchdog,
+        )
+        if remaining <= 0:
+            raise _CodexWatchdogTimeout(
+                "stream_total_timeout",
+                watchdog.total_seconds,
+            )
+        enter_timeout = min(watchdog.header_seconds, remaining)
+        try:
+            response = await asyncio.wait_for(
+                context.__aenter__(),
+                timeout=enter_timeout,
+            )
+        except asyncio.TimeoutError as exc:
+            stage = (
+                "stream_total_timeout"
+                if remaining <= watchdog.header_seconds
+                else "stream_header_timeout"
+            )
+            timeout_seconds = (
+                watchdog.total_seconds
+                if stage == "stream_total_timeout"
+                else watchdog.header_seconds
+            )
+            raise _CodexWatchdogTimeout(stage, timeout_seconds) from exc
+
+        try:
+            yield response
+        except BaseException as exc:
+            try:
+                suppress_error = await self._exit_codex_context(
+                    context,
+                    type(exc),
+                    exc,
+                    exc.__traceback__,
+                    started=started,
+                    watchdog=watchdog,
+                )
+            except _CodexWatchdogTimeout:
+                raise exc
+            if not suppress_error:
+                raise
+        else:
+            await self._exit_codex_context(
+                context,
+                None,
+                None,
+                None,
+                started=started,
+                watchdog=watchdog,
+            )
+
+    @asynccontextmanager
+    async def _bounded_openai_stream_context(
+        self,
+        context: Any,
+        *,
+        started: float,
+        watchdog: _CodexWatchdogConfig,
+    ) -> AsyncIterator[Any]:
+        """Enter an existing SDK/HTTP stream with header and cleanup bounds."""
+
+        remaining = self._codex_total_remaining(
+            started=started,
+            watchdog=watchdog,
+        )
+        if remaining <= 0:
+            raise _CodexWatchdogTimeout(
+                "stream_total_timeout",
+                watchdog.total_seconds,
+            )
+        enter_timeout = min(watchdog.header_seconds, remaining)
+        try:
+            stream = await asyncio.wait_for(
+                context.__aenter__(),
+                timeout=enter_timeout,
+            )
+        except asyncio.TimeoutError as exc:
+            stage = (
+                "stream_total_timeout"
+                if remaining <= watchdog.header_seconds
+                else "stream_header_timeout"
+            )
+            raise _CodexWatchdogTimeout(
+                stage,
+                watchdog.total_seconds
+                if stage == "stream_total_timeout"
+                else watchdog.header_seconds,
+            ) from exc
+
+        try:
+            yield stream
+        except BaseException as exc:
+            try:
+                suppress_error = await self._exit_codex_context(
+                    context,
+                    type(exc),
+                    exc,
+                    exc.__traceback__,
+                    started=started,
+                    watchdog=watchdog,
+                )
+            except _CodexWatchdogTimeout:
+                raise exc
+            if not suppress_error:
+                raise
+        else:
+            await self._exit_codex_context(
+                context,
+                None,
+                None,
+                None,
+                started=started,
+                watchdog=watchdog,
+            )
+
+    async def _iter_openai_stream_with_watchdog(
+        self,
+        iterator: Any,
+        *,
+        started: float,
+        watchdog: _CodexWatchdogConfig,
+    ) -> AsyncIterator[Any]:
+        """Iterate SDK/HTTP stream items under idle and total deadlines."""
+
+        async_iterator = iterator.__aiter__()
+        while True:
+            remaining = self._codex_total_remaining(
+                started=started,
+                watchdog=watchdog,
+            )
+            if remaining <= 0:
+                raise _CodexWatchdogTimeout(
+                    "stream_total_timeout",
+                    watchdog.total_seconds,
+                )
+            wait_seconds = min(watchdog.idle_seconds, remaining)
+            try:
+                item = await asyncio.wait_for(
+                    async_iterator.__anext__(),
+                    timeout=wait_seconds,
+                )
+            except StopAsyncIteration:
+                return
+            except asyncio.TimeoutError as exc:
+                stage = (
+                    "stream_total_timeout"
+                    if remaining <= watchdog.idle_seconds
+                    else "stream_idle_timeout"
+                )
+                raise _CodexWatchdogTimeout(
+                    stage,
+                    watchdog.total_seconds
+                    if stage == "stream_total_timeout"
+                    else watchdog.idle_seconds,
+                ) from exc
+            yield item
+
+    async def _iter_codex_lines_with_watchdog(
+        self,
+        response: httpx.Response,
+        *,
+        started: float,
+        watchdog: _CodexWatchdogConfig,
+    ) -> AsyncIterator[str]:
+        """Yield stream lines while enforcing chunk-idle and total deadlines."""
+
+        iterator = response.aiter_lines().__aiter__()
+        while True:
+            remaining = self._codex_total_remaining(
+                started=started,
+                watchdog=watchdog,
+            )
+            if remaining <= 0:
+                raise _CodexWatchdogTimeout(
+                    "stream_total_timeout",
+                    watchdog.total_seconds,
+                )
+            wait_seconds = min(watchdog.idle_seconds, remaining)
+            try:
+                line = await asyncio.wait_for(
+                    iterator.__anext__(),
+                    timeout=wait_seconds,
+                )
+            except StopAsyncIteration:
+                return
+            except asyncio.TimeoutError as exc:
+                stage = (
+                    "stream_total_timeout"
+                    if remaining <= watchdog.idle_seconds
+                    else "stream_idle_timeout"
+                )
+                timeout_seconds = (
+                    watchdog.total_seconds
+                    if stage == "stream_total_timeout"
+                    else watchdog.idle_seconds
+                )
+                raise _CodexWatchdogTimeout(stage, timeout_seconds) from exc
+            yield line
 
     def _codex_payload_hash(self, payload: Dict[str, Any]) -> str:
         return stable_payload_hash(payload)
@@ -1331,32 +1993,16 @@ class OpenAIAdapter(BaseAdapter):
     ) -> List[Dict[str, Any]]:
         items: List[Dict[str, Any]] = []
         seen_function_call_ids: set[str] = set()
-        for message in messages:
+        for message in sanitize_native_tool_messages(messages):
+            if not isinstance(message, dict):
+                continue
             raw_role = str(message.get("role", "user") or "user")
             role = self._normalize_codex_role(raw_role)
 
             if raw_role.strip().lower() == "tool":
                 tool_call_id = str(message.get("tool_call_id") or "").strip()
                 output_text = self._extract_codex_text_content(message.get("content"))
-                tool_name = str(message.get("name") or "").strip()
-                tool_arguments = (
-                    str(message.get("tool_arguments") or "{}").strip() or "{}"
-                )
-                if (
-                    tool_call_id
-                    and tool_call_id not in seen_function_call_ids
-                    and tool_name
-                ):
-                    items.append(
-                        {
-                            "type": "function_call",
-                            "call_id": tool_call_id,
-                            "name": tool_name,
-                            "arguments": tool_arguments,
-                        }
-                    )
-                    seen_function_call_ids.add(tool_call_id)
-                if tool_call_id and output_text:
+                if tool_call_id in seen_function_call_ids:
                     items.append(
                         {
                             "type": "function_call_output",
@@ -1366,6 +2012,7 @@ class OpenAIAdapter(BaseAdapter):
                     )
                 continue
 
+            function_call_items: List[Dict[str, Any]] = []
             tool_calls = message.get("tool_calls")
             if role == "assistant" and isinstance(tool_calls, list):
                 for tool_call in tool_calls:
@@ -1378,7 +2025,7 @@ class OpenAIAdapter(BaseAdapter):
                     name = str(function_payload.get("name") or "").strip()
                     arguments = function_payload.get("arguments") or "{}"
                     if call_id and name:
-                        items.append(
+                        function_call_items.append(
                             {
                                 "type": "function_call",
                                 "call_id": call_id,
@@ -1386,7 +2033,6 @@ class OpenAIAdapter(BaseAdapter):
                                 "arguments": str(arguments),
                             }
                         )
-                        seen_function_call_ids.add(call_id)
 
             text_part_type = self._codex_text_part_type_for_role(role)
             content = message.get("content", "")
@@ -1445,55 +2091,92 @@ class OpenAIAdapter(BaseAdapter):
 
             if parts:
                 items.append({"type": "message", "role": role, "content": parts})
+            # Responses input requires calls to sit immediately beside their
+            # corresponding output items.  Keep assistant prose before the
+            # call batch rather than accidentally inserting it between calls
+            # and tool outputs.
+            if function_call_items:
+                items.extend(function_call_items)
+                seen_function_call_ids.update(
+                    str(item["call_id"]) for item in function_call_items
+                )
 
         return self._sanitize_codex_input_items(items)
 
     def _sanitize_codex_input_items(
         self, items: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
-        """Drop malformed replay items that Codex rejects.
+        """Keep only immediate, complete Codex function-call/output batches."""
 
-        Older transcripts can contain duplicate function-call records or function
-        calls whose tool outputs were truncated away. Keep only function calls
-        that have a matching output later in the replay stream, and drop orphaned
-        outputs that no longer have a call.
-        """
-
-        output_call_ids = {
-            str(item.get("call_id") or "").strip()
-            for item in items
-            if item.get("type") == "function_call_output"
-            and str(item.get("call_id") or "").strip()
-        }
-
-        kept_function_calls: set[str] = set()
+        seen_function_call_ids: set[str] = set()
         sanitized: List[Dict[str, Any]] = []
         dropped_function_calls = 0
         dropped_outputs = 0
-
-        for item in items:
+        index = 0
+        while index < len(items):
+            item = items[index]
             item_type = str(item.get("type") or "").strip()
-            call_id = str(item.get("call_id") or "").strip()
-
             if item_type == "function_call":
-                if not call_id or call_id not in output_call_ids:
-                    dropped_function_calls += 1
-                    continue
-                if call_id in kept_function_calls:
-                    dropped_function_calls += 1
-                    continue
-                kept_function_calls.add(call_id)
-                sanitized.append(item)
+                call_items: List[Dict[str, Any]] = []
+                call_ids: List[str] = []
+                batch_is_valid = True
+                while index < len(items):
+                    call_item = items[index]
+                    if str(call_item.get("type") or "").strip() != "function_call":
+                        break
+                    call_id = str(call_item.get("call_id") or "").strip()
+                    name = str(call_item.get("name") or "").strip()
+                    if (
+                        not call_id
+                        or not name
+                        or call_id in seen_function_call_ids
+                        or call_id in call_ids
+                    ):
+                        batch_is_valid = False
+                    call_items.append(call_item)
+                    call_ids.append(call_id)
+                    index += 1
+
+                output_items: List[Dict[str, Any]] = []
+                output_ids: List[str] = []
+                while index < len(items):
+                    output_item = items[index]
+                    if (
+                        str(output_item.get("type") or "").strip()
+                        != "function_call_output"
+                    ):
+                        break
+                    output_items.append(output_item)
+                    output_ids.append(str(output_item.get("call_id") or "").strip())
+                    index += 1
+
+                if (
+                    not call_items
+                    or len(output_items) != len(call_items)
+                    or any(not call_id for call_id in output_ids)
+                    or len(output_ids) != len(set(output_ids))
+                    or set(output_ids) != set(call_ids)
+                ):
+                    batch_is_valid = False
+
+                if batch_is_valid:
+                    sanitized.extend(call_items)
+                    sanitized.extend(output_items)
+                    seen_function_call_ids.update(call_ids)
+                else:
+                    dropped_function_calls += len(call_items)
+                    dropped_outputs += len(output_items)
                 continue
 
             if item_type == "function_call_output":
-                if not call_id or call_id not in kept_function_calls:
-                    dropped_outputs += 1
-                    continue
-                sanitized.append(item)
+                # Outputs that do not immediately follow their declaration
+                # batch are never safe to replay.
+                dropped_outputs += 1
+                index += 1
                 continue
 
             sanitized.append(item)
+            index += 1
 
         if dropped_function_calls or dropped_outputs:
             logger.warning(
@@ -1653,6 +2336,7 @@ class OpenAIAdapter(BaseAdapter):
             model_id=model_id,
             model_fallback=model_fallback,
             diag_id=diag_id,
+            requested_stream=stream,
         )
 
     async def _request_codex_oauth(
@@ -1664,7 +2348,9 @@ class OpenAIAdapter(BaseAdapter):
         model_fallback: bool,
         diag_id: str,
     ) -> str:
+        self._record_network_attempt()
         started = time.monotonic()
+        watchdog = self._codex_watchdog_config()
         response: httpx.Response | None = None
         if self._last_request_lifecycle is None:
             self._start_request_lifecycle(
@@ -1675,14 +2361,37 @@ class OpenAIAdapter(BaseAdapter):
                 transport="http",
                 model_fallback=model_fallback,
             )
-        self._update_request_lifecycle(status=ProviderRequestStatus.RUNNING)
+        self._update_request_lifecycle(
+            status=ProviderRequestStatus.RUNNING,
+            provider_data={
+                "requested_stream": False,
+                "transport_stream": False,
+            },
+        )
         try:
-            async with httpx.AsyncClient(timeout=self._codex_http_timeout()) as client:
-                response = await client.post(
-                    _OPENAI_CODEX_RESPONSES_URL,
-                    headers=headers,
-                    json=payload,
+            async with self._codex_client_context(
+                started=started,
+                watchdog=watchdog,
+            ) as client:
+                response = await self._await_with_codex_total_deadline(
+                    client.post(
+                        _OPENAI_CODEX_RESPONSES_URL,
+                        headers=headers,
+                        json=payload,
+                    ),
+                    started=started,
+                    watchdog=watchdog,
                 )
+        except _CodexWatchdogTimeout as exc:
+            self._raise_codex_transport_error(
+                error=exc,
+                payload=payload,
+                model_id=model_id,
+                model_fallback=model_fallback,
+                stage="request_total_timeout",
+                diag_id=diag_id,
+                watchdog=watchdog,
+            )
         except httpx.TimeoutException as exc:
             self._raise_codex_transport_error(
                 error=exc,
@@ -1691,6 +2400,7 @@ class OpenAIAdapter(BaseAdapter):
                 model_fallback=model_fallback,
                 stage="request_timeout",
                 diag_id=diag_id,
+                watchdog=watchdog,
             )
         except httpx.HTTPError as exc:
             self._raise_codex_transport_error(
@@ -1700,6 +2410,7 @@ class OpenAIAdapter(BaseAdapter):
                 model_fallback=model_fallback,
                 stage="request_transport",
                 diag_id=diag_id,
+                watchdog=watchdog,
             )
 
         if response is None:
@@ -1710,6 +2421,7 @@ class OpenAIAdapter(BaseAdapter):
                 model_fallback=model_fallback,
                 stage="request_response",
                 diag_id=diag_id,
+                watchdog=watchdog,
             )
         assert response is not None
 
@@ -1801,7 +2513,9 @@ class OpenAIAdapter(BaseAdapter):
         model_id: str,
         model_fallback: bool,
         diag_id: str,
+        requested_stream: bool = True,
     ) -> str:
+        self._record_network_attempt()
         stream_payload = dict(payload)
         stream_payload["stream"] = True
 
@@ -1809,6 +2523,7 @@ class OpenAIAdapter(BaseAdapter):
         completed_text = ""
         accumulated_reasoning = ""
         started = time.monotonic()
+        watchdog = self._codex_watchdog_config()
         event_counts: Dict[str, int] = {}
         first_event_ms: Optional[int] = None
         first_text_ms: Optional[int] = None
@@ -1822,6 +2537,8 @@ class OpenAIAdapter(BaseAdapter):
         tool_arg_chars = 0
         tool_arg_chars_by_item: Dict[str, int] = {}
         response: httpx.Response | None = None
+        stream_entered_at: float | None = None
+        setup_recorded = False
         saw_done_marker = False
         saw_completed_event = False
         self._start_request_lifecycle(
@@ -1832,17 +2549,38 @@ class OpenAIAdapter(BaseAdapter):
             transport="sse",
             model_fallback=model_fallback,
         )
-        self._update_request_lifecycle(status=ProviderRequestStatus.RUNNING)
+        self._update_request_lifecycle(
+            status=ProviderRequestStatus.RUNNING,
+            provider_data={
+                "requested_stream": bool(requested_stream),
+                "transport_stream": True,
+            },
+        )
         try:
-            async with httpx.AsyncClient(timeout=self._codex_http_timeout()) as client:
-                async with client.stream(
-                    "POST",
-                    _OPENAI_CODEX_RESPONSES_URL,
+            async with self._codex_client_context(
+                started=started,
+                watchdog=watchdog,
+            ) as client:
+                async with self._codex_stream_context(
+                    client,
                     headers=headers,
-                    json=stream_payload,
+                    payload=stream_payload,
+                    started=started,
+                    watchdog=watchdog,
                 ) as response:
+                    stream_entered_at = time.monotonic()
+                    record_runtime_duration(
+                        "provider.setup",
+                        (stream_entered_at - started) * 1000,
+                    )
+                    setup_recorded = True
                     if response.status_code >= 400:
-                        response_text = (await response.aread()).decode(
+                        response_body = await self._await_with_codex_total_deadline(
+                            response.aread(),
+                            started=started,
+                            watchdog=watchdog,
+                        )
+                        response_text = response_body.decode(
                             "utf-8",
                             errors="replace",
                         )
@@ -1864,7 +2602,11 @@ class OpenAIAdapter(BaseAdapter):
                             ),
                         )
 
-                    async for line in response.aiter_lines():
+                    async for line in self._iter_codex_lines_with_watchdog(
+                        response,
+                        started=started,
+                        watchdog=watchdog,
+                    ):
                         if not line or not line.strip():
                             continue
                         if not line.startswith("data: "):
@@ -1892,6 +2634,11 @@ class OpenAIAdapter(BaseAdapter):
                         event_elapsed_ms = int((event_now - started) * 1000)
                         if first_event_ms is None:
                             first_event_ms = event_elapsed_ms
+                            record_runtime_duration(
+                                "provider.wait_first_event",
+                                (event_now - (stream_entered_at or started)) * 1000,
+                            )
+                        mark_runtime_progress("provider")
                         if last_event_at is not None:
                             max_event_gap_ms = max(
                                 max_event_gap_ms,
@@ -1927,6 +2674,9 @@ class OpenAIAdapter(BaseAdapter):
                                 else data
                             )
                             detail = json.dumps(detail_payload, default=str)[:500]
+                            error_category, retryable = (
+                                self._responses_stream_error_taxonomy(data)
+                            )
                             self._raise_codex_transport_error(
                                 error=RuntimeError(detail),
                                 payload=stream_payload,
@@ -1934,6 +2684,12 @@ class OpenAIAdapter(BaseAdapter):
                                 model_fallback=model_fallback,
                                 stage="stream_event_error",
                                 diag_id=diag_id,
+                                partial_output=completed_text
+                                or "".join(accumulated_content),
+                                partial_tool_call=self.has_pending_tool_call(),
+                                watchdog=watchdog,
+                                error_category=error_category,
+                                retryable=retryable,
                             )
 
                         if self._capture_responses_tool_event(data):
@@ -1957,6 +2713,8 @@ class OpenAIAdapter(BaseAdapter):
                                         stream_callback,
                                         str(delta),
                                         "assistant",
+                                        deadline=started + watchdog.total_seconds,
+                                        total_timeout_seconds=watchdog.total_seconds,
                                     )
                             continue
 
@@ -2001,13 +2759,18 @@ class OpenAIAdapter(BaseAdapter):
                                             stream_callback,
                                             reasoning_text,
                                             "reasoning",
+                                            deadline=started + watchdog.total_seconds,
+                                            total_timeout_seconds=watchdog.total_seconds,
                                         )
                             extracted = self._extract_text_from_response_object(
                                 response_obj
                             )
                             if extracted:
                                 completed_text = extracted
-                            continue
+                            # response.completed is the Responses API terminal
+                            # event. Some transports omit the optional [DONE]
+                            # sentinel or leave the connection open afterward.
+                            break
 
                         reasoning_delta = (
                             self._extract_reasoning_delta_from_sse_payload(data)
@@ -2026,8 +2789,28 @@ class OpenAIAdapter(BaseAdapter):
                                 stream_callback,
                                 reasoning_delta,
                                 "reasoning",
+                                deadline=started + watchdog.total_seconds,
+                                total_timeout_seconds=watchdog.total_seconds,
                             )
+        except _CodexWatchdogTimeout as exc:
+            partial_tool_call = self.has_pending_tool_call()
+            if partial_tool_call:
+                self._reset_tool_call_state()
+            self._raise_codex_transport_error(
+                error=exc,
+                payload=stream_payload,
+                model_id=model_id,
+                model_fallback=model_fallback,
+                stage=exc.stage,
+                diag_id=diag_id,
+                partial_output=completed_text or "".join(accumulated_content),
+                partial_tool_call=partial_tool_call,
+                watchdog=watchdog,
+            )
         except httpx.TimeoutException as exc:
+            partial_tool_call = self.has_pending_tool_call()
+            if partial_tool_call:
+                self._reset_tool_call_state()
             self._raise_codex_transport_error(
                 error=exc,
                 payload=stream_payload,
@@ -2035,8 +2818,14 @@ class OpenAIAdapter(BaseAdapter):
                 model_fallback=model_fallback,
                 stage="stream_timeout",
                 diag_id=diag_id,
+                partial_output=completed_text or "".join(accumulated_content),
+                partial_tool_call=partial_tool_call,
+                watchdog=watchdog,
             )
         except httpx.HTTPError as exc:
+            partial_tool_call = self.has_pending_tool_call()
+            if partial_tool_call:
+                self._reset_tool_call_state()
             self._raise_codex_transport_error(
                 error=exc,
                 payload=stream_payload,
@@ -2044,7 +2833,22 @@ class OpenAIAdapter(BaseAdapter):
                 model_fallback=model_fallback,
                 stage="stream_transport",
                 diag_id=diag_id,
+                partial_output=completed_text or "".join(accumulated_content),
+                partial_tool_call=partial_tool_call,
+                watchdog=watchdog,
             )
+        finally:
+            finished_at = time.monotonic()
+            if not setup_recorded:
+                record_runtime_duration(
+                    "provider.setup",
+                    (finished_at - started) * 1000,
+                )
+            if stream_entered_at is not None:
+                record_runtime_duration(
+                    "provider.stream",
+                    (finished_at - stream_entered_at) * 1000,
+                )
 
         if response is None:
             self._raise_codex_transport_error(
@@ -2054,6 +2858,9 @@ class OpenAIAdapter(BaseAdapter):
                 model_fallback=model_fallback,
                 stage="stream_response",
                 diag_id=diag_id,
+                partial_output=completed_text or "".join(accumulated_content),
+                partial_tool_call=self.has_pending_tool_call(),
+                watchdog=watchdog,
             )
         assert response is not None
 
@@ -2099,6 +2906,9 @@ class OpenAIAdapter(BaseAdapter):
                 model_fallback=model_fallback,
                 stage="stream_incomplete",
                 diag_id=diag_id,
+                partial_output=completed_text or "".join(accumulated_content),
+                partial_tool_call=pending_tool_call,
+                watchdog=watchdog,
             )
 
         latency_ms = int((time.monotonic() - started) * 1000)
@@ -2186,11 +2996,26 @@ class OpenAIAdapter(BaseAdapter):
                 finish_reason=self.get_last_finish_reason(),
             )
             if not accumulated_content and stream_callback:
-                await self._safe_invoke_callback(
-                    stream_callback,
-                    completed_text,
-                    "assistant",
-                )
+                try:
+                    await self._safe_invoke_callback(
+                        stream_callback,
+                        completed_text,
+                        "assistant",
+                        deadline=started + watchdog.total_seconds,
+                        total_timeout_seconds=watchdog.total_seconds,
+                    )
+                except _CodexWatchdogTimeout as exc:
+                    self._raise_codex_transport_error(
+                        error=exc,
+                        payload=stream_payload,
+                        model_id=model_id,
+                        model_fallback=model_fallback,
+                        stage=exc.stage,
+                        diag_id=diag_id,
+                        partial_output=completed_text,
+                        partial_tool_call=pending_tool_call,
+                        watchdog=watchdog,
+                    )
             return completed_text
 
         if not pending_tool_call:
@@ -2311,6 +3136,7 @@ class OpenAIAdapter(BaseAdapter):
                 "stage": stage,
                 "model_fallback": model_fallback,
                 "detail": detail,
+                "network_attempts": self.get_last_network_attempt_count(),
             },
         )
         self._set_last_error(llm_error)
@@ -2341,7 +3167,36 @@ class OpenAIAdapter(BaseAdapter):
         model_fallback: bool,
         stage: str,
         diag_id: str,
+        partial_output: str | None = None,
+        partial_tool_call: bool = False,
+        watchdog: _CodexWatchdogConfig | None = None,
+        error_category: ErrorCategory | str | None = None,
+        retryable: bool | None = None,
     ) -> None:
+        if partial_tool_call:
+            self._reset_tool_call_state()
+        raw_partial_output = str(partial_output or "")
+        preserved_partial_output = raw_partial_output[:_OPENAI_PARTIAL_OUTPUT_MAX_CHARS]
+        provider_data: Dict[str, Any] = {
+            "diag_id": diag_id,
+            "stage": stage,
+            "model_fallback": model_fallback,
+            "partial_output": preserved_partial_output,
+            "partial_output_chars": len(raw_partial_output),
+            "partial_output_truncated": (
+                len(raw_partial_output) > len(preserved_partial_output)
+            ),
+            "partial_tool_call": bool(partial_tool_call),
+            "network_attempts": self.get_last_network_attempt_count(),
+        }
+        if watchdog is not None:
+            provider_data["watchdog"] = {
+                "connect_seconds": watchdog.connect_seconds,
+                "header_seconds": watchdog.header_seconds,
+                "idle_seconds": watchdog.idle_seconds,
+                "total_seconds": watchdog.total_seconds,
+                "cleanup_seconds": watchdog.cleanup_seconds,
+            }
         input_payload = payload.get("input")
         input_is_list = isinstance(input_payload, list)
         input_items = len(input_payload) if isinstance(input_payload, list) else 0
@@ -2359,21 +3214,19 @@ class OpenAIAdapter(BaseAdapter):
             f"store={store_flag}, error_type={type(error).__name__}) detail={error}"
         )
         _log_error(error_message, exc_info=True)
-        error_category = "network"
-        if "timeout" in stage.lower() or isinstance(error, httpx.TimeoutException):
-            error_category = "timeout"
+        resolved_error_category: ErrorCategory | str = error_category or "network"
+        if error_category is None and (
+            "timeout" in stage.lower() or isinstance(error, httpx.TimeoutException)
+        ):
+            resolved_error_category = "timeout"
         llm_error = build_llm_error(
             message=error_message,
             provider=self.provider,
             model=model_id,
-            category=error_category,
+            category=resolved_error_category,
             finish_reason=FinishReason.ERROR,
-            retryable=True,
-            provider_data={
-                "diag_id": diag_id,
-                "stage": stage,
-                "model_fallback": model_fallback,
-            },
+            retryable=True if retryable is None else retryable,
+            provider_data=provider_data,
         )
         self._set_last_error(llm_error)
         stream_disconnect_stages = {
@@ -2381,6 +3234,10 @@ class OpenAIAdapter(BaseAdapter):
             "stream_response",
             "stream_timeout",
             "stream_transport",
+            "stream_header_timeout",
+            "stream_idle_timeout",
+            "stream_total_timeout",
+            "stream_cleanup_timeout",
         }
         lifecycle_status = (
             ProviderRequestStatus.DISCONNECTED
@@ -2392,6 +3249,7 @@ class OpenAIAdapter(BaseAdapter):
             event_type=stage,
             finish_reason=FinishReason.ERROR,
             error=llm_error,
+            provider_data=provider_data,
         )
         self._finalize_reasoning_debug_snapshot(
             status="error",
@@ -2413,7 +3271,9 @@ class OpenAIAdapter(BaseAdapter):
         items conform to expected shapes.
         """
         normalized: List[Dict[str, Any]] = []
-        for m in messages:
+        for m in sanitize_native_tool_messages(messages):
+            if not isinstance(m, dict):
+                continue
             role = m.get("role", "user")
             content = m.get("content", "")
             if isinstance(content, list):
@@ -2577,13 +3437,25 @@ class OpenAIAdapter(BaseAdapter):
         stream_callback: Optional[Callable[[str], None]],
     ) -> str:
         """Stream using the official OpenAI SDK responses.stream API."""
+        self._record_network_attempt()
         accumulated_content: List[str] = []
         accumulated_reasoning = ""
+        completed_text = ""
         saw_completed_event = False
+        started = time.monotonic()
+        watchdog = self._codex_watchdog_config()
         try:
-            # Async streaming context
-            async with self.client.responses.stream(**request_params) as stream:  # type: ignore[attr-defined]
-                async for event in stream:
+            context = self.client.responses.stream(**request_params)  # type: ignore[attr-defined]
+            async with self._bounded_openai_stream_context(
+                context,
+                started=started,
+                watchdog=watchdog,
+            ) as stream:
+                async for event in self._iter_openai_stream_with_watchdog(
+                    stream,
+                    started=started,
+                    watchdog=watchdog,
+                ):
                     tool_call = self._capture_responses_tool_event(event)
                     if tool_call and self._interrupt_on_tool_call():
                         self._set_last_finish_reason(FinishReason.TOOL_CALLS)
@@ -2602,14 +3474,39 @@ class OpenAIAdapter(BaseAdapter):
                         self._raise_responses_stream_error(event)
                     if etype == "response.completed":
                         saw_completed_event = True
-                        continue
+                        response_payload = getattr(event, "response", None)
+                        self._set_last_usage(getattr(response_payload, "usage", None))
+                        final_reasoning = self._extract_reasoning_from_response_object(
+                            response_payload
+                        )
+                        if final_reasoning and not accumulated_reasoning.strip():
+                            accumulated_reasoning += final_reasoning
+                            self._append_reasoning(final_reasoning)
+                            if stream_callback:
+                                await self._safe_invoke_callback(
+                                    stream_callback,
+                                    final_reasoning,
+                                    "reasoning",
+                                    deadline=started + watchdog.total_seconds,
+                                    total_timeout_seconds=watchdog.total_seconds,
+                                )
+                        completed_text = (
+                            self._extract_text_from_response_object(response_payload)
+                            or ""
+                        )
+                        break
                     if etype == "response.output_text.delta":
                         delta = getattr(event, "delta", "")
                         if delta:
                             accumulated_content.append(delta)
+                            self._attempt_partial_output = "".join(accumulated_content)
                             if stream_callback:
                                 await self._safe_invoke_callback(
-                                    stream_callback, delta, "assistant"
+                                    stream_callback,
+                                    delta,
+                                    "assistant",
+                                    deadline=started + watchdog.total_seconds,
+                                    total_timeout_seconds=watchdog.total_seconds,
                                 )
                     else:
                         reasoning_delta = self._extract_reasoning_delta_from_sdk_event(
@@ -2629,6 +3526,8 @@ class OpenAIAdapter(BaseAdapter):
                                 stream_callback,
                                 reasoning_delta,
                                 "reasoning",
+                                deadline=started + watchdog.total_seconds,
+                                total_timeout_seconds=watchdog.total_seconds,
                             )
                 if not saw_completed_event:
                     output_state = (
@@ -2638,49 +3537,40 @@ class OpenAIAdapter(BaseAdapter):
                         if accumulated_content
                         else "empty"
                     )
-                    self._raise_responses_stream_incomplete(output_state)
-                final = await stream.get_final_response()
-                self._update_request_lifecycle(
-                    status=ProviderRequestStatus.STREAMING,
-                    provider_response_id=getattr(final, "id", None),
-                )
-                self._set_last_usage(getattr(final, "usage", None))
-                final_reasoning = self._extract_reasoning_from_response_object(final)
-                if final_reasoning and not accumulated_reasoning.strip():
-                    accumulated_reasoning += final_reasoning
-                    self._append_reasoning(final_reasoning)
-                    if stream_callback:
-                        await self._safe_invoke_callback(
-                            stream_callback,
-                            final_reasoning,
-                            "reasoning",
-                        )
-                tool_calls = self._extract_function_calls_from_response_object(final)
-                if tool_calls:
-                    for tool_call in tool_calls:
-                        self._remember_tool_call(tool_call)
-                    self._set_last_finish_reason(FinishReason.TOOL_CALLS)
-                    if self._interrupt_on_tool_call():
-                        return "".join(accumulated_content)
-                elif not self.has_pending_tool_call():
-                    self._set_last_finish_reason(FinishReason.STOP)
-                else:
-                    self._set_last_finish_reason(FinishReason.TOOL_CALLS)
-                # Prefer SDK's convenience property if present
-                final_text = getattr(final, "output_text", None)
-                if isinstance(final_text, str) and final_text:
-                    if not accumulated_content and stream_callback:
-                        await self._safe_invoke_callback(
-                            stream_callback, final_text, "assistant"
-                        )
-                    return final_text
+                    self._raise_responses_stream_incomplete(
+                        output_state,
+                        partial_output="".join(accumulated_content),
+                    )
+        except _CodexWatchdogTimeout as exc:
+            self._raise_responses_transport_error(
+                exc,
+                stage=exc.stage,
+                partial_output="".join(accumulated_content),
+            )
         except AttributeError:
             # Older SDK without responses.stream async support
             raise
-        except Exception:
-            raise
-        # Fallback to accumulated content
-        return "".join(accumulated_content)
+
+        pending_tool_call = self.has_pending_tool_call()
+        self._set_last_finish_reason(
+            FinishReason.TOOL_CALLS if pending_tool_call else FinishReason.STOP
+        )
+        if completed_text and not accumulated_content and stream_callback:
+            try:
+                await self._safe_invoke_callback(
+                    stream_callback,
+                    completed_text,
+                    "assistant",
+                    deadline=started + watchdog.total_seconds,
+                    total_timeout_seconds=watchdog.total_seconds,
+                )
+            except _CodexWatchdogTimeout as exc:
+                self._raise_responses_transport_error(
+                    exc,
+                    stage=exc.stage,
+                    partial_output=completed_text,
+                )
+        return completed_text or "".join(accumulated_content)
 
     async def _stream_with_http(
         self,
@@ -2688,6 +3578,7 @@ class OpenAIAdapter(BaseAdapter):
         stream_callback: Optional[Callable[[str], None]],
     ) -> str:
         """HTTP SSE streaming fallback for the Responses API."""
+        self._record_network_attempt()
         headers = {
             "Authorization": f"Bearer {self.client.api_key}",
             "Content-Type": "application/json",
@@ -2704,81 +3595,129 @@ class OpenAIAdapter(BaseAdapter):
         accumulated_content: List[str] = []
         completed_text = ""
         saw_completed_event = False
+        started = time.monotonic()
+        watchdog = self._codex_watchdog_config()
 
-        # Use connection pool for efficient parallel LLM calls
-        pool = ConnectionPoolManager.get_instance()
-        http = await pool.get_client(base_url_str.rstrip("/"))
-        async with http.stream("POST", url, headers=headers, json=payload) as resp:
-            if resp.status_code != 200:
-                text = (await resp.aread()).decode()
-                error = build_llm_error(
-                    message=f"Responses SSE failed {resp.status_code}: {text}",
-                    provider=self.provider,
-                    model=self.model_config.model,
-                    status_code=resp.status_code,
-                    retry_after_seconds=extract_retry_after_seconds(resp.headers),
-                )
-                self._set_last_error(error)
-                raise LLMProviderError(error)
-            async for line in resp.aiter_lines():
-                if not line or not line.strip():
-                    continue
-                if not line.startswith("data: "):
-                    continue
-                data_str = line[6:]
-                if data_str.strip() == "[DONE]":
-                    break
-                try:
-                    data = json.loads(data_str)
-                    tool_call = self._capture_responses_tool_event(data)
-                    if tool_call and self._interrupt_on_tool_call():
-                        self._set_last_finish_reason(FinishReason.TOOL_CALLS)
+        try:
+            # Pool acquisition is part of the physical attempt and must not sit
+            # outside its absolute deadline.
+            pool = ConnectionPoolManager.get_instance()
+            http = await self._await_with_codex_total_deadline(
+                pool.get_client(base_url_str.rstrip("/")),
+                started=started,
+                watchdog=watchdog,
+            )
+            context = http.stream("POST", url, headers=headers, json=payload)
+            async with self._bounded_openai_stream_context(
+                context,
+                started=started,
+                watchdog=watchdog,
+            ) as resp:
+                if resp.status_code != 200:
+                    body = await self._await_with_codex_total_deadline(
+                        resp.aread(),
+                        started=started,
+                        watchdog=watchdog,
+                    )
+                    text = body.decode("utf-8", errors="replace")
+                    error = build_llm_error(
+                        message=f"Responses SSE failed {resp.status_code}: {text}",
+                        provider=self.provider,
+                        model=self.model_config.model,
+                        status_code=resp.status_code,
+                        retry_after_seconds=extract_retry_after_seconds(resp.headers),
+                        provider_data={
+                            "network_attempts": self.get_last_network_attempt_count(),
+                        },
+                    )
+                    self._set_last_error(error)
+                    raise LLMProviderError(error)
+                async for line in self._iter_openai_stream_with_watchdog(
+                    resp.aiter_lines(),
+                    started=started,
+                    watchdog=watchdog,
+                ):
+                    if not line or not line.strip():
+                        continue
+                    if not line.startswith("data: "):
+                        continue
+                    data_str = line[6:]
+                    if data_str.strip() == "[DONE]":
+                        break
+                    try:
+                        data = json.loads(data_str)
+                        tool_call = self._capture_responses_tool_event(data)
+                        if tool_call and self._interrupt_on_tool_call():
+                            self._set_last_finish_reason(FinishReason.TOOL_CALLS)
 
-                    etype = data.get("type")
-                    if etype in {"error", "response.failed", "response.error"}:
-                        self._raise_responses_stream_error(data)
-                    if etype == "response.output_text.delta":
-                        delta = data.get("delta", "")
-                        if delta:
-                            accumulated_content.append(delta)
-                            if stream_callback:
+                        etype = data.get("type")
+                        if etype in {"error", "response.failed", "response.error"}:
+                            self._raise_responses_stream_error(data)
+                        if etype == "response.output_text.delta":
+                            delta = data.get("delta", "")
+                            if delta:
+                                accumulated_content.append(delta)
+                                self._attempt_partial_output = "".join(
+                                    accumulated_content
+                                )
+                                if stream_callback:
+                                    await self._safe_invoke_callback(
+                                        stream_callback,
+                                        delta,
+                                        "assistant",
+                                        deadline=started + watchdog.total_seconds,
+                                        total_timeout_seconds=watchdog.total_seconds,
+                                    )
+                        elif etype == "response.output_text.done":
+                            done_text = data.get("text", "")
+                            if isinstance(done_text, str) and done_text:
+                                completed_text = done_text
+                        elif etype == "response.completed":
+                            saw_completed_event = True
+                            response_obj = data.get("response")
+                            if isinstance(response_obj, dict):
+                                self._set_last_usage(response_obj.get("usage"))
+                                self._append_reasoning(
+                                    self._extract_reasoning_from_response_object(
+                                        response_obj
+                                    )
+                                )
+                            extracted = self._extract_text_from_response_object(
+                                response_obj
+                            )
+                            if extracted:
+                                completed_text = extracted
+                            break
+                        else:
+                            reasoning_delta = (
+                                self._extract_reasoning_delta_from_sse_payload(data)
+                            )
+                            if reasoning_delta:
+                                self._append_reasoning(reasoning_delta)
+                            if reasoning_delta and stream_callback:
                                 await self._safe_invoke_callback(
-                                    stream_callback, delta, "assistant"
+                                    stream_callback,
+                                    reasoning_delta,
+                                    "reasoning",
+                                    deadline=started + watchdog.total_seconds,
+                                    total_timeout_seconds=watchdog.total_seconds,
                                 )
-                    elif etype == "response.output_text.done":
-                        done_text = data.get("text", "")
-                        if isinstance(done_text, str) and done_text:
-                            completed_text = done_text
-                    elif etype == "response.completed":
-                        saw_completed_event = True
-                        response_obj = data.get("response")
-                        if isinstance(response_obj, dict):
-                            self._set_last_usage(response_obj.get("usage"))
-                            self._append_reasoning(
-                                self._extract_reasoning_from_response_object(
-                                    response_obj
-                                )
-                            )
-                        extracted = self._extract_text_from_response_object(
-                            response_obj
-                        )
-                        if extracted:
-                            completed_text = extracted
-                    else:
-                        reasoning_delta = (
-                            self._extract_reasoning_delta_from_sse_payload(data)
-                        )
-                        if reasoning_delta:
-                            self._append_reasoning(reasoning_delta)
-                        if reasoning_delta and stream_callback:
-                            await self._safe_invoke_callback(
-                                stream_callback,
-                                reasoning_delta,
-                                "reasoning",
-                            )
-                except Exception:
-                    # Skip malformed lines
-                    continue
+                    except LLMProviderError:
+                        raise
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        continue
+        except _CodexWatchdogTimeout as exc:
+            self._raise_responses_transport_error(
+                exc,
+                stage=exc.stage,
+                partial_output=completed_text or "".join(accumulated_content),
+            )
+        except httpx.HTTPError as exc:
+            self._raise_responses_transport_error(
+                exc,
+                stage="stream_transport",
+                partial_output=completed_text or "".join(accumulated_content),
+            )
         pending_tool_call = self.has_pending_tool_call()
         if not saw_completed_event:
             output_state = (
@@ -2788,7 +3727,10 @@ class OpenAIAdapter(BaseAdapter):
                 if completed_text or accumulated_content
                 else "empty"
             )
-            self._raise_responses_stream_incomplete(output_state)
+            self._raise_responses_stream_incomplete(
+                output_state,
+                partial_output=completed_text or "".join(accumulated_content),
+            )
         if pending_tool_call:
             self._set_last_finish_reason(FinishReason.TOOL_CALLS)
             if self._interrupt_on_tool_call():
@@ -2797,9 +3739,20 @@ class OpenAIAdapter(BaseAdapter):
             if not pending_tool_call:
                 self._set_last_finish_reason(FinishReason.STOP)
             if not accumulated_content and stream_callback:
-                await self._safe_invoke_callback(
-                    stream_callback, completed_text, "assistant"
-                )
+                try:
+                    await self._safe_invoke_callback(
+                        stream_callback,
+                        completed_text,
+                        "assistant",
+                        deadline=started + watchdog.total_seconds,
+                        total_timeout_seconds=watchdog.total_seconds,
+                    )
+                except _CodexWatchdogTimeout as exc:
+                    self._raise_responses_transport_error(
+                        exc,
+                        stage=exc.stage,
+                        partial_output=completed_text,
+                    )
             return completed_text
         if not pending_tool_call:
             self._set_last_finish_reason(FinishReason.STOP)
@@ -2810,8 +3763,24 @@ class OpenAIAdapter(BaseAdapter):
         cb: Callable[..., Any],
         chunk: str,
         message_type: str,
+        *,
+        deadline: float | None = None,
+        total_timeout_seconds: float | None = None,
     ) -> None:
         """Invoke provided callback safely with support for legacy signatures."""
+        callback_started_at = time.monotonic()
+        callback_completed = False
+        callback_timeout = self._codex_watchdog_config().callback_seconds
+        total_deadline_is_limit = False
+        if deadline is not None:
+            remaining = deadline - callback_started_at
+            if remaining <= 0:
+                raise _CodexWatchdogTimeout(
+                    "stream_total_timeout",
+                    float(total_timeout_seconds or 0.0),
+                )
+            total_deadline_is_limit = remaining <= callback_timeout
+            callback_timeout = min(callback_timeout, remaining)
         try:
             import inspect
 
@@ -2819,9 +3788,15 @@ class OpenAIAdapter(BaseAdapter):
                 params = list(inspect.signature(cb).parameters.keys())
                 callback = cast(Callable[..., Any], cb)
                 if len(params) >= 2:
-                    await callback(chunk, message_type)
+                    await asyncio.wait_for(
+                        callback(chunk, message_type),
+                        timeout=callback_timeout,
+                    )
                 else:
-                    await callback(chunk)
+                    await asyncio.wait_for(
+                        callback(chunk),
+                        timeout=callback_timeout,
+                    )
             else:
                 loop = asyncio.get_event_loop()
                 params = []
@@ -2832,17 +3807,38 @@ class OpenAIAdapter(BaseAdapter):
                 except Exception:
                     params = []
                 if len(params) >= 2:
-                    await loop.run_in_executor(
-                        None,
-                        lambda: cast(Callable[..., Any], cb)(chunk, message_type),
+                    await asyncio.wait_for(
+                        loop.run_in_executor(
+                            None,
+                            lambda: cast(Callable[..., Any], cb)(chunk, message_type),
+                        ),
+                        timeout=callback_timeout,
                     )
                 else:
-                    await loop.run_in_executor(
-                        None,
-                        lambda: cast(Callable[..., Any], cb)(chunk),
+                    await asyncio.wait_for(
+                        loop.run_in_executor(
+                            None,
+                            lambda: cast(Callable[..., Any], cb)(chunk),
+                        ),
+                        timeout=callback_timeout,
                     )
+            callback_completed = True
+        except asyncio.TimeoutError as exc:
+            if total_deadline_is_limit:
+                raise _CodexWatchdogTimeout(
+                    "stream_total_timeout",
+                    float(total_timeout_seconds or callback_timeout),
+                ) from exc
+            logger.error("Stream callback exceeded %.3fs", callback_timeout)
         except Exception as e:
             logger.error(f"Error in stream callback: {e}")
+        finally:
+            record_runtime_duration(
+                "stream.callback",
+                (time.monotonic() - callback_started_at) * 1000,
+            )
+        if callback_completed:
+            mark_runtime_progress("ui")
 
     def _prepare_reasoning_config(
         self,

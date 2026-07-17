@@ -11,6 +11,7 @@ export type PenguinEventStreamOptions<T extends PenguinStreamEvent = PenguinStre
   directory?: string
   fetch: typeof fetch
   isCurrentSession?: (sessionID?: string) => boolean
+  lastEventId?: string
   onEvent: (event: T) => void
   onOpen?: () => void
   onUnauthorized?: () => void
@@ -41,6 +42,16 @@ export function cleanPenguinEvent<T extends PenguinStreamEvent>(event: T): T {
 
 export function cleanPenguinText(value: string): string {
   return value.replace(/<\/?finish_response\b[^>]*>?/g, "")
+}
+
+export function isPenguinProgressEvent(event: PenguinStreamEvent): boolean {
+  const type = event.type.toLowerCase()
+  if (type.includes("heartbeat") || type === "ping" || type === "keepalive") return false
+  if (event.type !== "session.status") return true
+
+  const status = event.properties.status
+  if (!status || typeof status !== "object") return true
+  return (status as { type?: unknown }).type !== "busy"
 }
 
 export function parsePenguinSSEEvent<T extends PenguinStreamEvent = PenguinStreamEvent>(input: string): T | undefined {
@@ -78,6 +89,7 @@ export async function streamPenguinEvents<T extends PenguinStreamEvent = Penguin
     signal: options.signal,
     headers: {
       Accept: "text/event-stream",
+      ...(options.lastEventId ? { "Last-Event-ID": options.lastEventId } : {}),
     },
   })
 

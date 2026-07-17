@@ -105,7 +105,7 @@ def test_openrouter_stream_watchdog_reads_provider_timeout_env(
     assert gateway._stream_total_timeout_seconds() == 2.5
 
 
-def test_openrouter_stream_watchdog_rejects_invalid_timeout_env(
+def test_openrouter_stream_watchdog_falls_back_for_invalid_timeout_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     gateway = _gateway()
@@ -113,12 +113,12 @@ def test_openrouter_stream_watchdog_rejects_invalid_timeout_env(
     monkeypatch.setenv("PENGUIN_OPENROUTER_STREAM_CHUNK_TIMEOUT_SECONDS", "-1")
     monkeypatch.setenv("PENGUIN_OPENROUTER_STREAM_TOTAL_TIMEOUT_SECONDS", "bad")
 
-    assert gateway._stream_chunk_timeout_seconds() is None
-    assert gateway._stream_total_timeout_seconds() is None
+    assert gateway._stream_chunk_timeout_seconds() == 75.0
+    assert gateway._stream_total_timeout_seconds() == 300.0
 
 
 @pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
-def test_openrouter_stream_watchdog_rejects_non_finite_timeout_env(
+def test_openrouter_stream_watchdog_falls_back_for_non_finite_timeout_env(
     monkeypatch: pytest.MonkeyPatch,
     value: str,
 ) -> None:
@@ -127,10 +127,10 @@ def test_openrouter_stream_watchdog_rejects_non_finite_timeout_env(
     gateway = _gateway()
     monkeypatch.setenv("PENGUIN_OPENROUTER_STREAM_CHUNK_TIMEOUT_SECONDS", value)
 
-    assert gateway._stream_chunk_timeout_seconds() is None
+    assert gateway._stream_chunk_timeout_seconds() == 75.0
 
 
-def test_openrouter_stream_watchdog_has_no_default_timeout(
+def test_openrouter_stream_watchdog_has_bounded_defaults(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     gateway = _gateway()
@@ -138,5 +138,5 @@ def test_openrouter_stream_watchdog_has_no_default_timeout(
     monkeypatch.delenv("PENGUIN_OPENROUTER_STREAM_CHUNK_TIMEOUT_SECONDS", raising=False)
     monkeypatch.delenv("PENGUIN_OPENROUTER_STREAM_TOTAL_TIMEOUT_SECONDS", raising=False)
 
-    assert gateway._stream_chunk_timeout_seconds() is None
-    assert gateway._stream_total_timeout_seconds() is None
+    assert gateway._stream_chunk_timeout_seconds() == 75.0
+    assert gateway._stream_total_timeout_seconds() == 300.0

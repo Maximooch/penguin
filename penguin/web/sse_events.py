@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from collections import deque
 from typing import TYPE_CHECKING, Any, AsyncIterator, Optional
 
 from fastapi import APIRouter, Header, Query
 from fastapi.responses import StreamingResponse
 
+from penguin.system.runtime_diagnostics import ConnectionHistory
 from penguin.system.runtime_events import opencode_payload_from_runtime_event
 from penguin.web.services.opencode_events import (
     GLOBAL_STATUS_EVENTS,
@@ -40,6 +42,9 @@ _SSE_QUEUE_MAX_EVENTS = 1000
 _SSE_REPLAY_PAGE_SIZE = 1000
 _SSE_KEEPALIVE_TIMEOUT_SECONDS = 300.0
 _SSE_DEDUPE_MAX_EVENTS = 1000
+_SSE_CONNECTION_HISTORY_MAX_ENTRIES = 64
+_SSE_CONNECTION_HISTORY_ATTR = "_sse_connection_history_v1"
+_SSE_CONNECTION_HISTORY_LOCK = threading.RLock()
 
 # Global reference to core instance (set by app.py)
 _core_instance: PenguinCore | None = None
@@ -49,6 +54,7 @@ def set_core_instance(core: PenguinCore):
     """Set the core instance for dependency injection."""
     global _core_instance
     _core_instance = core
+    _get_or_create_connection_history(core)
     _install_runtime_event_ledger_recorder(core)
 
 
@@ -57,6 +63,52 @@ def get_core_instance() -> PenguinCore:
     if _core_instance is None:
         raise RuntimeError("Core instance not set - call set_core_instance() first")
     return _core_instance
+
+def get_sse_connection_history(
+    core: Any | None = None,
+) -> list[dict[str, str | float | None]]:
+    """Return a bounded, content-free SSE lifecycle snapshot.
+
+    The snapshot deliberately excludes cursor values, session identifiers,
+    directories, URLs, payloads, and exception text so a later debug route can
+    expose it without disclosing conversation content or credentials.
+    """
+
+    owner = core if core is not None else get_core_instance()
+    return _get_or_create_connection_history(owner).snapshot()
+
+
+def _get_or_create_connection_history(core: Any) -> ConnectionHistory:
+    """Return the per-core connection history, creating it exactly once."""
+
+    history = getattr(core, _SSE_CONNECTION_HISTORY_ATTR, None)
+    if isinstance(history, ConnectionHistory):
+        return history
+
+    with _SSE_CONNECTION_HISTORY_LOCK:
+        history = getattr(core, _SSE_CONNECTION_HISTORY_ATTR, None)
+        if not isinstance(history, ConnectionHistory):
+            history = ConnectionHistory(
+                max_entries=_SSE_CONNECTION_HISTORY_MAX_ENTRIES,
+            )
+            setattr(core, _SSE_CONNECTION_HISTORY_ATTR, history)
+        return history
+
+
+def _record_connection_state(
+    core: Any,
+    state: str,
+    *,
+    reason_code: str | None = None,
+) -> None:
+    """Record one privacy-safe SSE connection state transition."""
+
+    _get_or_create_connection_history(core).record(
+        state,
+        transport="sse",
+        reason_code=reason_code,
+    )
+
 
 # FastAPI evaluates endpoint annotations at import time on Python 3.9, so these
 # parameters intentionally use typing.Optional rather than PEP 604 unions.
@@ -91,6 +143,7 @@ async def events_sse(
     - directory: Workspace directory (for context)
     """
     core = get_core_instance()
+    _record_connection_state(core, "attempt")
 
     # Use conversation_id if session_id not provided (API compatibility)
     effective_session_id = session_id or conversation_id
@@ -122,6 +175,7 @@ async def events_sse(
         queued_live_event_ids: set[str] = set()
         delivered_event_ids: set[str] = set()
         delivered_event_order: deque[str] = deque()
+        live_status_seen = False
         event_order = 0
 
         def mark_delivered(event_id: object) -> None:
@@ -234,6 +288,7 @@ async def events_sse(
 
         def event_handler(event_type: str, data: Any):
             """Handler for EventBus events."""
+            nonlocal live_status_seen
             # Only handle opencode_event type
             if event_type != "opencode_event":
                 return
@@ -249,6 +304,12 @@ async def events_sse(
             if not event_allowed(normalized):
                 return
 
+            if normalized.get("type") == "session.status":
+                live_status_seen = True
+
+            delivery_properties = dict(normalized.get("properties") or {})
+            delivery_properties["_penguin_delivery"] = {"durability": "pending"}
+            normalized["properties"] = delivery_properties
             normalized_id = normalized.get("id")
             if isinstance(normalized_id, str) and normalized_id in delivered_event_ids:
                 return
@@ -267,6 +328,7 @@ async def events_sse(
         # Subscribe to events
         core.event_bus.subscribe("opencode_event", event_handler)
 
+        close_reason = "generator_closed"
         try:
             # Send initial server.connected event
             connected_event = {
@@ -277,35 +339,73 @@ async def events_sse(
                     "directory": directory,
                 },
             }
-            normalized_connected = next_event(connected_event)
-            if normalized_connected:
-                yield sse_event_frame(normalized_connected)
+            if connected_event:
+                _record_connection_state(core, "connected")
+                _record_connection_state(
+                    core,
+                    "replay_requested" if effective_last_event_id else "replay_skipped",
+                    reason_code=(
+                        "cursor_present" if effective_last_event_id else "no_cursor"
+                    ),
+                )
+                # Control frames are never ledger rows and must not advance a
+                # reconnect cursor or consume a runtime-event sequence.
+                yield sse_event_frame(connected_event, include_id=False)
 
             if effective_last_event_id:
                 replay_cursor = effective_last_event_id
+                replayed_any = False
                 while True:
-                    replay = await asyncio.to_thread(
-                        _replay_events_after,
-                        core,
-                        replay_cursor,
-                        limit=_SSE_REPLAY_PAGE_SIZE,
-                        session_id=effective_session_id,
-                        agent_id=effective_agent_id,
-                        directory=effective_directory,
-                    )
-                    if not replay.found:
-                        gap_event = next_event(
-                            _replay_gap_event(
-                                replay_cursor,
-                                oldest_event_id=replay.oldest_event_id,
-                                newest_event_id=replay.newest_event_id,
-                            )
+                    try:
+                        replay = await asyncio.to_thread(
+                            _replay_events_after,
+                            core,
+                            replay_cursor,
+                            limit=_SSE_REPLAY_PAGE_SIZE,
+                            session_id=effective_session_id,
+                            agent_id=effective_agent_id,
+                            directory=effective_directory,
                         )
-                        if gap_event and event_allowed(gap_event):
-                            yield sse_event_frame(gap_event)
+                    except Exception:
+                        _record_connection_state(
+                            core,
+                            "replay_failed",
+                            reason_code="ledger_read_error",
+                        )
+                        raise
+                    if not replay.found:
+                        _record_connection_state(
+                            core,
+                            "replay_gap",
+                            reason_code="cursor_not_available",
+                        )
+                        gap_event = _replay_gap_event(
+                            replay_cursor,
+                            oldest_event_id=replay.oldest_event_id,
+                            newest_event_id=replay.newest_event_id,
+                            session_id=effective_session_id,
+                            agent_id=effective_agent_id,
+                            directory=effective_directory,
+                        )
+                        if event_allowed(gap_event):
+                            yield sse_event_frame(gap_event, include_id=False)
                         break
                     if not replay.events:
+                        _record_connection_state(
+                            core,
+                            "replay_complete",
+                            reason_code=(
+                                "events_replayed" if replayed_any else "no_new_events"
+                            ),
+                        )
                         break
+                    if not replayed_any:
+                        _record_connection_state(
+                            core,
+                            "replay_started",
+                            reason_code="cursor_found",
+                        )
+                    replayed_any = True
                     for runtime_event in replay.events:
                         event = opencode_payload_from_runtime_event(runtime_event)
                         event_id = event.get("id")
@@ -323,8 +423,44 @@ async def events_sse(
                         len(replay.events) < _SSE_REPLAY_PAGE_SIZE
                         or not isinstance(next_cursor, str)
                     ):
+                        _record_connection_state(
+                            core,
+                            "replay_complete",
+                            reason_code="events_replayed",
+                        )
                         break
                     replay_cursor = next_cursor
+
+            # Reconcile the canonical session status after replay. A status
+            # event queued while replay was running wins over this snapshot,
+            # preventing stale hydration from replacing newer live state.
+            if effective_session_id and not live_status_seen:
+                status_event = await _canonical_session_status_event(
+                    core,
+                    effective_session_id,
+                    agent_id=effective_agent_id,
+                    directory=effective_directory,
+                )
+                if status_event is not None:
+                    _record_connection_state(
+                        core,
+                        "status_reconciled",
+                        reason_code="canonical_session_status",
+                    )
+                    yield sse_event_frame(status_event, include_id=False)
+
+            if effective_last_event_id:
+                yield sse_event_frame(
+                    {
+                        "type": "server.replay_complete",
+                        "properties": {
+                            "sessionID": effective_session_id,
+                            "agentID": effective_agent_id,
+                            "directory": effective_directory,
+                        },
+                    },
+                    include_id=False,
+                )
 
             # Stream events
             while True:
@@ -338,6 +474,9 @@ async def events_sse(
                     if isinstance(event_id, str):
                         queued_live_event_ids.discard(event_id)
                         mark_delivered(event_id)
+                    # Live events are admitted asynchronously. The pending
+                    # marker keeps clients from advancing a durable cursor until
+                    # the same event is replayed from SQLite after commit.
                     yield sse_event_frame(event)
                 except asyncio.TimeoutError:
                     # Send keepalive comment
@@ -345,8 +484,16 @@ async def events_sse(
 
         except asyncio.CancelledError:
             # Client disconnected
-            pass
+            close_reason = "client_cancelled"
+        except Exception:
+            close_reason = "stream_error"
+            raise
         finally:
+            _record_connection_state(
+                core,
+                "disconnected",
+                reason_code=close_reason,
+            )
             # Always unsubscribe
             try:
                 core.event_bus.unsubscribe("opencode_event", event_handler)
@@ -415,6 +562,9 @@ def _replay_gap_event(
     *,
     oldest_event_id: str | None = None,
     newest_event_id: str | None = None,
+    session_id: str | None = None,
+    agent_id: str | None = None,
+    directory: str | None = None,
 ) -> dict[str, Any]:
     return {
         "type": "server.replay_gap",
@@ -423,6 +573,39 @@ def _replay_gap_event(
             "oldestEventID": oldest_event_id,
             "newestEventID": newest_event_id,
             "reason": "last_event_id_not_available",
+            "sessionID": session_id,
+            "agentID": agent_id,
+            "directory": directory,
+        },
+    }
+
+
+async def _canonical_session_status_event(
+    core: Any,
+    session_id: str,
+    *,
+    agent_id: str | None,
+    directory: str | None,
+) -> dict[str, Any] | None:
+    """Build an id-less status snapshot for reconnect reconciliation."""
+
+    try:
+        from penguin.web.services.session_view import list_session_statuses
+
+        statuses = await asyncio.to_thread(list_session_statuses, core)
+    except Exception:
+        logger.debug("Failed to hydrate canonical SSE session status", exc_info=True)
+        return None
+    status = statuses.get(session_id) if isinstance(statuses, dict) else None
+    if not isinstance(status, dict):
+        return None
+    return {
+        "type": "session.status",
+        "properties": {
+            "sessionID": session_id,
+            "status": dict(status),
+            "agentID": agent_id,
+            "directory": directory,
         },
     }
 

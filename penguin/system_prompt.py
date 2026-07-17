@@ -5,8 +5,11 @@ Combines: Codex clarity + Ralph iteration + Karpathy principles + Penguin safety
 """
 
 import datetime
+import hashlib
+import json
 import os
 import platform
+import threading
 from dataclasses import dataclass
 
 # Import tool and workflow guides
@@ -157,22 +160,30 @@ Use `**Title Case**` for organization. Bullet with `- `. Monospace for paths/com
 # MODE DETECTION
 # =============================================================================
 
-MODE_GUIDANCE = """**Task Types:**
+MODE_GUIDANCE = """**Task routing:** Choose the smallest mode that matches the
+request. Inspect enough to be accurate, act proportionately, and stop when the
+objective is genuinely complete. Native tool schemas and repository safety
+rules remain authoritative."""
 
-**Exploration** (analyze, understand, research):
-- Execute tools first, respond once with complete findings
-- Build understanding from evidence, not assumptions
-- Minimum 5-12 tool calls before concluding
-
-**Implementation** (implement, fix, create, refactor):
-- Acknowledge critical changes as you make them
-- One logical action at a time (batch only simple, related ops)
-- Verify with tests when available
-
-**Conversation** (questions, brainstorming):
-- Natural, friendly tone
-- Skip heavy formatting for simple answers
-"""
+MODE_INSTRUCTIONS = {
+    "direct": """
+**Direct mode:** Answer or act proportionately. Use the minimum inspection needed
+for confidence, make requested changes promptly, verify, and stop.
+""",
+    "implement": """
+**Implement mode:** Trace the production path, make the smallest coherent patch,
+run proportionate tests, and report the result. Do not impose an investigation
+quota or serialize independent read-only inspection.
+""",
+    "review": """
+**Review mode:** Inspect the requested scope and report concrete findings with
+severity and evidence. Do not edit unless the user explicitly requests fixes.
+""",
+    "explain": """
+**Explain mode:** Teach the requested concept clearly using only the repository
+evidence needed to avoid guessing. Avoid speculative edits and unnecessary tools.
+""",
+}
 
 
 # =============================================================================
@@ -245,9 +256,19 @@ class PromptBuilder:
         self.components = PromptComponents(**kwargs)
 
     def build(self, mode: str = "direct") -> str:
-        """Build system prompt."""
+        """Build a mode-aware system prompt."""
         if not self.components:
             raise ValueError("Components not loaded.")
+
+        normalized_mode = str(mode).strip().lower()
+        normalized_mode = {"build": "implement", "plan": "review"}.get(
+            normalized_mode,
+            normalized_mode,
+        )
+        mode_instructions = MODE_INSTRUCTIONS.get(
+            normalized_mode,
+            MODE_INSTRUCTIONS["direct"],
+        )
 
         sections = [
             self.components.base_prompt,
@@ -255,6 +276,7 @@ class PromptBuilder:
             self.components.ralph_mindset,
             self.components.response_patterns,
             self.components.mode_guidance,
+            mode_instructions,
             self.components.safety_rules,
             self.components.tool_guide,
         ]
@@ -264,6 +286,7 @@ class PromptBuilder:
 
 # Global instance
 _builder = PromptBuilder()
+_PROMPT_BUILDER_LOCK = threading.RLock()
 
 
 def get_builder() -> PromptBuilder:
@@ -273,16 +296,17 @@ def get_builder() -> PromptBuilder:
 
 def build_system_prompt(mode: str = "direct", tool_guide: str = "") -> str:
     """Build complete system prompt."""
-    _builder.load_components(
-        base_prompt=BASE_PROMPT,
-        karpathy_guidelines=KARPATHY_GUIDELINES,
-        ralph_mindset=RALPH_MINDSET,
-        response_patterns=RESPONSE_PATTERNS,
-        mode_guidance=MODE_GUIDANCE,
-        safety_rules=SAFETY_RULES,
-        tool_guide=tool_guide,
-    )
-    return _builder.build(mode=mode)
+    with _PROMPT_BUILDER_LOCK:
+        _builder.load_components(
+            base_prompt=BASE_PROMPT,
+            karpathy_guidelines=KARPATHY_GUIDELINES,
+            ralph_mindset=RALPH_MINDSET,
+            response_patterns=RESPONSE_PATTERNS,
+            mode_guidance=MODE_GUIDANCE,
+            safety_rules=SAFETY_RULES,
+            tool_guide=tool_guide,
+        )
+        return _builder.build(mode=mode)
 
 
 # Default system prompt (without tools - add those separately)
@@ -295,19 +319,80 @@ SYSTEM_PROMPT_CORE = build_system_prompt()
 
 def get_system_prompt(mode: str = "direct") -> str:
     """Get the complete system prompt with all components."""
-    tool_guide = get_tool_guide()
-    workflow_guide = get_workflow_guide()
+    tool_guide = get_tool_guide(mode)
+    workflow_guide = get_workflow_guide(mode)
 
-    _builder.load_components(
-        base_prompt=BASE_PROMPT,
-        karpathy_guidelines=KARPATHY_GUIDELINES,
-        ralph_mindset=RALPH_MINDSET,
-        response_patterns=RESPONSE_PATTERNS,
-        mode_guidance=MODE_GUIDANCE,
-        safety_rules=SAFETY_RULES,
-        tool_guide=tool_guide + "\n\n" + workflow_guide,
+    with _PROMPT_BUILDER_LOCK:
+        _builder.load_components(
+            base_prompt=BASE_PROMPT,
+            karpathy_guidelines=KARPATHY_GUIDELINES,
+            ralph_mindset=RALPH_MINDSET,
+            response_patterns=RESPONSE_PATTERNS,
+            mode_guidance=MODE_GUIDANCE,
+            safety_rules=SAFETY_RULES,
+            tool_guide=tool_guide + "\n\n" + workflow_guide,
+        )
+        return _builder.build(mode=mode)
+
+
+def build_active_turn_envelope(
+    *,
+    mode: str,
+    active_task: str = "",
+    continuation: str | None = None,
+    terminal_reason: str | None = None,
+    tool_state: str | None = None,
+) -> str:
+    """Build a compact dynamic envelope without selecting conversation history."""
+
+    normalized_mode = str(mode or "direct").strip().lower()
+    normalized_mode = {"build": "implement", "plan": "review"}.get(
+        normalized_mode,
+        normalized_mode,
     )
-    return _builder.build(mode=mode)
+    payload = {
+        "mode": normalized_mode,
+        "active_task": str(active_task or "")[:1_000],
+        "continuation": continuation,
+        "terminal_reason": terminal_reason,
+        "tool_state": tool_state,
+    }
+    compact = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return f"[PENGUIN_ACTIVE_TURN]{compact}[/PENGUIN_ACTIVE_TURN]"
+
+
+def prompt_metrics(mode: str = "direct") -> dict[str, object]:
+    """Return section sizes and a fingerprint for prompt/cache diagnostics."""
+
+    tool_guide = get_tool_guide(mode)
+    workflow_guide = get_workflow_guide(mode)
+    sections = {
+        "base": BASE_PROMPT,
+        "behavior": KARPATHY_GUIDELINES + RALPH_MINDSET + RESPONSE_PATTERNS,
+        "mode": MODE_GUIDANCE + MODE_INSTRUCTIONS.get(
+            str(mode).strip().lower(), MODE_INSTRUCTIONS["direct"]
+        ),
+        "safety": SAFETY_RULES,
+        "tools": tool_guide,
+        "workflow": workflow_guide,
+    }
+    section_metrics = {
+        name: {
+            "chars": len(value),
+            "estimated_tokens": max(1, len(value) // 4),
+        }
+        for name, value in sections.items()
+    }
+    fingerprint = hashlib.sha256(
+        "\n".join(f"{name}:{sections[name]}" for name in sections).encode("utf-8")
+    ).hexdigest()
+    return {
+        "mode": mode,
+        "sections": section_metrics,
+        "total_chars": sum(len(value) for value in sections.values()),
+        "estimated_tokens": max(1, sum(len(value) for value in sections.values()) // 4),
+        "fingerprint": fingerprint,
+    }
 
 
 # Full system prompt with all components assembled

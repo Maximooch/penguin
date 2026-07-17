@@ -14,6 +14,7 @@ from penguin.web.services.opencode_events import (
     extract_event_directory,
     extract_event_session,
     normalize_opencode_event,
+    record_opencode_event,
     schedule_opencode_event,
     sse_event_frame,
 )
@@ -199,6 +200,50 @@ def test_sse_event_frame_includes_sse_id_and_json_data():
     assert frame.endswith("\n\n")
     data_line = next(line for line in frame.splitlines() if line.startswith("data: "))
     assert json.loads(data_line.removeprefix("data: ")) == event
+
+
+def test_sse_control_frame_can_omit_cursor_id():
+    frame = sse_event_frame(
+        {"type": "server.replay_complete", "properties": {}},
+        include_id=False,
+    )
+
+    assert not frame.startswith("id:")
+    assert '"type": "server.replay_complete"' in frame
+
+
+def test_record_opencode_event_coalesces_unchanged_busy_heartbeats(monkeypatch):
+    reset_runtime_event_sequences()
+    recorded: list[dict[str, object]] = []
+
+    class Ledger:
+        def enqueue(self, event):
+            recorded.append(dict(event))
+            return True
+
+    monkeypatch.setattr(
+        "penguin.system.runtime_event_ledger.get_runtime_event_ledger",
+        lambda _core: Ledger(),
+    )
+    core = SimpleNamespace()
+
+    for status in ("busy", "busy", "idle", "busy"):
+        record_opencode_event(
+            core,
+            {
+                "type": "session.status",
+                "properties": {
+                    "sessionID": "ses_1",
+                    "status": {"type": status},
+                },
+            },
+        )
+
+    assert [event["payload"]["status"]["type"] for event in recorded] == [
+        "busy",
+        "idle",
+        "busy",
+    ]
 
 
 @pytest.mark.asyncio

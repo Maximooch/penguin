@@ -1,0 +1,496 @@
+{
+  "cases": {
+    "fresh": {
+      "action_count": 1,
+      "diagnostics": {
+        "derived": {
+          "tool_batch_ms": 0.799,
+          "tool_execution_ms": 0.104,
+          "tool_orchestration_ms": 0.695
+        },
+        "events": [
+          {
+            "kind": "duration",
+            "monotonic_ms": 450966815.268,
+            "name": "request.preprocess"
+          },
+          {
+            "kind": "progress",
+            "monotonic_ms": 450966815.297,
+            "name": "runtime"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450966815.725,
+            "name": "request.gate_wait"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450966816.236,
+            "name": "context.process_session"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450966816.485,
+            "name": "provider.setup"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450966816.577,
+            "name": "provider.wait_first_event"
+          },
+          {
+            "kind": "progress",
+            "monotonic_ms": 450966816.586,
+            "name": "provider"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450966816.593,
+            "name": "provider.stream"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450966817.221,
+            "name": "tool.execution"
+          },
+          {
+            "kind": "progress",
+            "monotonic_ms": 450966817.237,
+            "name": "tool"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450966817.616,
+            "name": "tool.batch"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450966824.075,
+            "name": "session.save"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450966829.8,
+            "name": "ledger.serialize"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450966842.301,
+            "name": "ledger.connection"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450966852.676,
+            "name": "ledger.schema"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450966852.78,
+            "name": "ledger.insert"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450966864.748,
+            "name": "ledger.cleanup"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450966864.773,
+            "name": "ledger.commit"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450966864.809,
+            "name": "request.process"
+          },
+          {
+            "kind": "progress",
+            "monotonic_ms": 450966864.815,
+            "name": "runtime"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450966865.166,
+            "name": "request.end_to_end"
+          }
+        ],
+        "progress_age_ms": {
+          "provider": 48.604,
+          "runtime": 0.375,
+          "tool": 47.953,
+          "ui": null
+        },
+        "request_age_ms": 49.984,
+        "request_id": "f3d70761-77f4-45f1-846a-e2bf7173e635",
+        "session_id": null,
+        "stages": {
+          "context.process_session": {
+            "count": 1,
+            "last_ms": 0.201,
+            "max_ms": 0.201,
+            "total_ms": 0.201
+          },
+          "ledger.cleanup": {
+            "count": 1,
+            "last_ms": 11.922,
+            "max_ms": 11.922,
+            "total_ms": 11.922
+          },
+          "ledger.commit": {
+            "count": 1,
+            "last_ms": 0.001,
+            "max_ms": 0.001,
+            "total_ms": 0.001
+          },
+          "ledger.connection": {
+            "count": 1,
+            "last_ms": 12.419,
+            "max_ms": 12.419,
+            "total_ms": 12.419
+          },
+          "ledger.insert": {
+            "count": 1,
+            "last_ms": 0.084,
+            "max_ms": 0.084,
+            "total_ms": 0.084
+          },
+          "ledger.schema": {
+            "count": 1,
+            "last_ms": 10.333,
+            "max_ms": 10.333,
+            "total_ms": 10.333
+          },
+          "ledger.serialize": {
+            "count": 1,
+            "last_ms": 0.02,
+            "max_ms": 0.02,
+            "total_ms": 0.02
+          },
+          "provider.setup": {
+            "count": 1,
+            "last_ms": 0.16,
+            "max_ms": 0.16,
+            "total_ms": 0.16
+          },
+          "provider.stream": {
+            "count": 1,
+            "last_ms": 0.0,
+            "max_ms": 0.0,
+            "total_ms": 0.0
+          },
+          "provider.wait_first_event": {
+            "count": 1,
+            "last_ms": 0.065,
+            "max_ms": 0.065,
+            "total_ms": 0.065
+          },
+          "request.end_to_end": {
+            "count": 1,
+            "last_ms": 308.747,
+            "max_ms": 308.747,
+            "total_ms": 308.747
+          },
+          "request.gate_wait": {
+            "count": 1,
+            "last_ms": 0.03,
+            "max_ms": 0.03,
+            "total_ms": 0.03
+          },
+          "request.preprocess": {
+            "count": 1,
+            "last_ms": 258.825,
+            "max_ms": 258.825,
+            "total_ms": 258.825
+          },
+          "request.process": {
+            "count": 1,
+            "last_ms": 49.056,
+            "max_ms": 49.056,
+            "total_ms": 49.056
+          },
+          "session.save": {
+            "count": 1,
+            "last_ms": 6.277,
+            "max_ms": 6.277,
+            "total_ms": 6.277
+          },
+          "tool.batch": {
+            "count": 1,
+            "last_ms": 0.799,
+            "max_ms": 0.799,
+            "total_ms": 0.799
+          },
+          "tool.execution": {
+            "count": 1,
+            "last_ms": 0.104,
+            "max_ms": 0.104,
+            "total_ms": 0.104
+          }
+        },
+        "terminal_status": "completed"
+      },
+      "message_count_after": 2,
+      "response_chars": 31,
+      "session_bytes_after": 954,
+      "status": "completed",
+      "storage_bytes_after": 328462,
+      "storage_bytes_before": 266045,
+      "storage_delta_bytes": 62417
+    },
+    "large_persisted": {
+      "action_count": 1,
+      "diagnostics": {
+        "derived": {
+          "tool_batch_ms": 0.752,
+          "tool_execution_ms": 0.079,
+          "tool_orchestration_ms": 0.673
+        },
+        "events": [
+          {
+            "kind": "duration",
+            "monotonic_ms": 450967224.432,
+            "name": "request.preprocess"
+          },
+          {
+            "kind": "progress",
+            "monotonic_ms": 450967224.455,
+            "name": "runtime"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450967224.755,
+            "name": "request.gate_wait"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450967233.143,
+            "name": "context.process_session"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450967233.334,
+            "name": "provider.setup"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450967233.529,
+            "name": "provider.wait_first_event"
+          },
+          {
+            "kind": "progress",
+            "monotonic_ms": 450967233.535,
+            "name": "provider"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450967233.594,
+            "name": "provider.stream"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450967234.285,
+            "name": "tool.execution"
+          },
+          {
+            "kind": "progress",
+            "monotonic_ms": 450967234.297,
+            "name": "tool"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450967234.77,
+            "name": "tool.batch"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450967256.714,
+            "name": "session.save"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450967257.238,
+            "name": "ledger.serialize"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450967257.45,
+            "name": "ledger.connection"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450967257.507,
+            "name": "ledger.schema"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450967257.684,
+            "name": "ledger.insert"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450967257.693,
+            "name": "ledger.cleanup"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450967259.248,
+            "name": "ledger.commit"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450967259.298,
+            "name": "request.process"
+          },
+          {
+            "kind": "progress",
+            "monotonic_ms": 450967259.303,
+            "name": "runtime"
+          },
+          {
+            "kind": "duration",
+            "monotonic_ms": 450967259.406,
+            "name": "request.end_to_end"
+          }
+        ],
+        "progress_age_ms": {
+          "provider": 25.887,
+          "runtime": 0.119,
+          "tool": 25.125,
+          "ui": null
+        },
+        "request_age_ms": 35.059,
+        "request_id": "ffe752ad-0633-418f-ac03-f9c53063f853",
+        "session_id": null,
+        "stages": {
+          "context.process_session": {
+            "count": 1,
+            "last_ms": 8.139,
+            "max_ms": 8.139,
+            "total_ms": 8.139
+          },
+          "ledger.cleanup": {
+            "count": 1,
+            "last_ms": 0.003,
+            "max_ms": 0.003,
+            "total_ms": 0.003
+          },
+          "ledger.commit": {
+            "count": 1,
+            "last_ms": 1.534,
+            "max_ms": 1.534,
+            "total_ms": 1.534
+          },
+          "ledger.connection": {
+            "count": 1,
+            "last_ms": 0.182,
+            "max_ms": 0.182,
+            "total_ms": 0.182
+          },
+          "ledger.insert": {
+            "count": 1,
+            "last_ms": 0.166,
+            "max_ms": 0.166,
+            "total_ms": 0.166
+          },
+          "ledger.schema": {
+            "count": 1,
+            "last_ms": 0.005,
+            "max_ms": 0.005,
+            "total_ms": 0.005
+          },
+          "ledger.serialize": {
+            "count": 1,
+            "last_ms": 0.024,
+            "max_ms": 0.024,
+            "total_ms": 0.024
+          },
+          "provider.setup": {
+            "count": 1,
+            "last_ms": 0.127,
+            "max_ms": 0.127,
+            "total_ms": 0.127
+          },
+          "provider.stream": {
+            "count": 1,
+            "last_ms": 0.0,
+            "max_ms": 0.0,
+            "total_ms": 0.0
+          },
+          "provider.wait_first_event": {
+            "count": 1,
+            "last_ms": 0.165,
+            "max_ms": 0.165,
+            "total_ms": 0.165
+          },
+          "request.end_to_end": {
+            "count": 1,
+            "last_ms": 366.647,
+            "max_ms": 366.647,
+            "total_ms": 366.647
+          },
+          "request.gate_wait": {
+            "count": 1,
+            "last_ms": 0.033,
+            "max_ms": 0.033,
+            "total_ms": 0.033
+          },
+          "request.preprocess": {
+            "count": 1,
+            "last_ms": 331.634,
+            "max_ms": 331.634,
+            "total_ms": 331.634
+          },
+          "request.process": {
+            "count": 1,
+            "last_ms": 34.523,
+            "max_ms": 34.523,
+            "total_ms": 34.523
+          },
+          "session.save": {
+            "count": 1,
+            "last_ms": 21.84,
+            "max_ms": 21.84,
+            "total_ms": 21.84
+          },
+          "tool.batch": {
+            "count": 1,
+            "last_ms": 0.752,
+            "max_ms": 0.752,
+            "total_ms": 0.752
+          },
+          "tool.execution": {
+            "count": 1,
+            "last_ms": 0.079,
+            "max_ms": 0.079,
+            "total_ms": 0.079
+          }
+        },
+        "terminal_status": "completed"
+      },
+      "message_count_after": 202,
+      "response_chars": 31,
+      "session_bytes_after": 266270,
+      "status": "completed",
+      "storage_bytes_after": 615364,
+      "storage_bytes_before": 328462,
+      "storage_delta_bytes": 286902
+    }
+  },
+  "harness": "runtime-reliability-deterministic-local-v1",
+  "host": "127.0.0.1",
+  "live_provider": false,
+  "network_server_started": false,
+  "platform": "macOS-15.7.3-arm64-arm-64bit",
+  "port": 8080,
+  "provider": "deterministic-local",
+  "python": "3.12.8",
+  "remaining_uncertainty": [
+    "The harness calls the production REST handler directly and does not include HTTP socket overhead.",
+    "It uses real local components behind a minimal core, not the full PenguinCore/Engine reasoning loop.",
+    "Provider timings are deterministic local scheduling costs, not live-provider latency.",
+    "Phase 1 and Phase 2 fault, watchdog, reconnect, and queued-writer paths are not present yet."
+  ],
+  "schema_version": 1,
+  "server_role": "test"
+}

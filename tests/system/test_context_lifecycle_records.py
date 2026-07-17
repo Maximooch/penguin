@@ -1,9 +1,69 @@
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    import pytest
 
 from penguin.system.context_window import ContextWindowManager
 from penguin.system.state import Message, MessageCategory, Session
+
+
+def test_context_snapshot_omits_message_content_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Ordinary INFO telemetry contains sizes and categories, not prompts."""
+
+    sentinel = "CWM-PRIVATE-CONTENT-NEVER-LOG"
+    monkeypatch.delenv("PENGUIN_LOG_CONTEXT_PREVIEWS", raising=False)
+    cwm = ContextWindowManager(token_counter=lambda content: len(str(content)))
+    session = Session(
+        messages=[
+            Message(
+                role="user",
+                content=sentinel,
+                category=MessageCategory.DIALOG,
+                tokens=len(sentinel),
+            )
+        ]
+    )
+
+    with caplog.at_level("INFO", logger="penguin.system.context_window"):
+        cwm.process_session(session)
+
+    encoded = "\n".join(record.getMessage() for record in caplog.records)
+    assert "cwm.snapshot" in encoded
+    assert sentinel not in encoded
+    assert "'chars':" in encoded
+
+
+def test_context_snapshot_preview_requires_explicit_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Operators can deliberately opt into bounded context previews."""
+
+    sentinel = "CWM-EXPLICIT-PREVIEW"
+    monkeypatch.setenv("PENGUIN_LOG_CONTEXT_PREVIEWS", "true")
+    cwm = ContextWindowManager(token_counter=lambda content: len(str(content)))
+    session = Session(
+        messages=[
+            Message(
+                role="user",
+                content=sentinel,
+                category=MessageCategory.DIALOG,
+                tokens=len(sentinel),
+            )
+        ]
+    )
+
+    with caplog.at_level("INFO", logger="penguin.system.context_window"):
+        cwm.process_session(session)
+
+    assert sentinel in "\n".join(record.getMessage() for record in caplog.records)
 
 
 def test_context_window_trim_preserves_llm_request_lifecycle_records() -> None:

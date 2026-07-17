@@ -55,7 +55,7 @@ def test_clean_conversation_preserves_valid_assistant_tool_calls() -> None:
     ]
 
 
-def test_clean_conversation_synthesizes_call_for_orphaned_tool_result() -> None:
+def test_clean_conversation_drops_orphaned_tool_result() -> None:
     gateway = _gateway()
 
     messages = [
@@ -71,27 +71,7 @@ def test_clean_conversation_synthesizes_call_for_orphaned_tool_result() -> None:
 
     cleaned = gateway._clean_conversation_format(messages)
 
-    assert cleaned == [
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "id": "call_patch_123",
-                    "type": "function",
-                    "function": {
-                        "name": "patch_files",
-                        "arguments": '{"path":"a.ts"}',
-                    },
-                }
-            ],
-        },
-        {
-            "role": "tool",
-            "tool_call_id": "call_patch_123",
-            "content": '{"error":"permission_denied"}',
-        }
-    ]
+    assert cleaned == []
 
 
 def test_clean_conversation_flattens_orphaned_assistant_tool_calls() -> None:
@@ -163,11 +143,7 @@ def test_clean_conversation_flattens_duplicate_assistant_tool_call_ids() -> None
         {
             "role": "assistant",
             "content": "Running two operations.",
-        },
-        {
-            "role": "user",
-            "content": "# README",
-        },
+        }
     ]
 
 
@@ -189,14 +165,4 @@ def test_clean_conversation_only_flattens_malformed_tool_messages() -> None:
 
     cleaned = gateway._clean_conversation_format(messages)
 
-    assert cleaned == [
-        {
-            "role": "user",
-            "content": "tool result without id",
-            "name": "patch_files",
-        },
-        {
-            "role": "assistant",
-            "content": "I should keep going",
-        },
-    ]
+    assert cleaned == [{"role": "assistant", "content": "I should keep going"}]

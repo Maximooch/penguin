@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Optional
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from penguin.engine import Engine, LoopState
 from penguin.llm.runtime import execute_pending_tool_call, execute_pending_tool_calls
-from penguin.tools.runtime import ORDERED_TOOL_BATCH_NAME, ToolExecutionPolicy
+from penguin.tools.runtime import ORDERED_TOOL_BATCH_NAME, ToolCall, ToolExecutionPolicy
+from penguin.utils.errors import NativeToolHistoryPersistenceError
 
 
 def test_prepare_responses_tools_enables_openai_native_tools() -> None:
@@ -332,9 +334,250 @@ async def test_multiple_pending_responses_tool_calls_execute_serially() -> None:
     assert [item["id"] for item in started] == ["call_pwd", "call_ls"]
     assert [item["id"] for item in completed] == ["call_pwd", "call_ls"]
     assert [item["action"] for item in timeline] == ["execute", "execute"]
-    assert [
-        item["tool_context"]["tool_call_id"] for item in persisted
-    ] == ["call_pwd", "call_ls"]
+    assert [item["tool_context"]["tool_call_id"] for item in persisted] == [
+        "call_pwd",
+        "call_ls",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pending_native_tools_persist_one_complete_batch() -> None:
+    """The native transcript hook receives all results after execution finishes."""
+
+    class _Handler:
+        def get_and_clear_pending_tool_calls(self) -> list[dict[str, str]]:
+            return [
+                {
+                    "name": "execute",
+                    "arguments": '{"command":"pwd"}',
+                    "call_id": "call_pwd",
+                },
+                {
+                    "name": "execute",
+                    "arguments": '{"command":"ls"}',
+                    "call_id": "call_ls",
+                },
+            ]
+
+    individual_persists: list[dict[str, object]] = []
+    native_batches: list[tuple[list[object], list[dict[str, object]]]] = []
+
+    def _persist_individual(
+        action_result: dict[str, object],
+        tool_context: dict[str, object],
+    ) -> None:
+        individual_persists.append(
+            {"action_result": action_result, "tool_context": tool_context}
+        )
+
+    def _persist_batch(calls: list[object], results: list[dict[str, object]]) -> bool:
+        native_batches.append((calls, results))
+        return True
+
+    results = await execute_pending_tool_calls(
+        api_client=SimpleNamespace(
+            client_handler=_Handler(),
+            model_config=SimpleNamespace(provider="openai", model="gpt-5.5"),
+        ),
+        tool_manager=SimpleNamespace(
+            execute_tool=lambda _name, args: f"ran {args['command']}"
+        ),
+        persist_action_result=_persist_individual,
+        persist_native_tool_batch=_persist_batch,
+    )
+
+    assert individual_persists == []
+    assert len(native_batches) == 1
+    calls, batch_results = native_batches[0]
+    assert [getattr(call, "id") for call in calls] == ["call_pwd", "call_ls"]
+    assert [result["tool_call_id"] for result in batch_results] == [
+        "call_pwd",
+        "call_ls",
+    ]
+    assert [result["tool_call_id"] for result in results] == ["call_pwd", "call_ls"]
+
+
+@pytest.mark.asyncio
+async def test_native_tool_history_persists_despite_failed_or_stalled_ui_callbacks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Best-effort UI notifications cannot interrupt the durable native batch."""
+
+    monkeypatch.setenv("PENGUIN_STREAM_CALLBACK_TIMEOUT_SECONDS", "0.02")
+
+    class _Handler:
+        def get_and_clear_pending_tool_calls(self) -> list[dict[str, str]]:
+            return [
+                {
+                    "name": "execute",
+                    "arguments": '{"command":"pwd"}',
+                    "call_id": "call_pwd",
+                }
+            ]
+
+    executed: list[dict[str, object]] = []
+    native_batches: list[tuple[list[object], list[dict[str, object]]]] = []
+    start_entered = asyncio.Event()
+
+    async def _stalled_start(_payload: dict[str, object]) -> None:
+        start_entered.set()
+        await asyncio.Event().wait()
+
+    async def _failing_result(_payload: dict[str, object]) -> None:
+        raise RuntimeError("websocket disconnected")
+
+    def _persist_batch(calls: list[object], results: list[dict[str, object]]) -> bool:
+        native_batches.append((calls, results))
+        return True
+
+    results = await asyncio.wait_for(
+        execute_pending_tool_calls(
+            api_client=SimpleNamespace(
+                client_handler=_Handler(),
+                model_config=SimpleNamespace(provider="openai", model="gpt-5.5"),
+            ),
+            tool_manager=SimpleNamespace(
+                execute_tool=lambda _name, args: executed.append(dict(args))
+                or "ran pwd"
+            ),
+            persist_action_result=lambda *_args: None,
+            persist_native_tool_batch=_persist_batch,
+            emit_action_start=_stalled_start,
+            emit_action_result=_failing_result,
+            emit_tool_timeline=_failing_result,
+        ),
+        timeout=0.5,
+    )
+
+    assert start_entered.is_set()
+    assert executed == [{"command": "pwd"}]
+    assert [result["tool_call_id"] for result in results] == ["call_pwd"]
+    assert len(native_batches) == 1
+
+
+@pytest.mark.asyncio
+async def test_native_tool_history_rejection_is_terminal_after_execution() -> None:
+    """Do not continue an LLM loop when a completed native batch is missing."""
+
+    class _Handler:
+        def get_and_clear_pending_tool_calls(self) -> list[dict[str, str]]:
+            return [
+                {
+                    "name": "execute",
+                    "arguments": '{"command":"pwd"}',
+                    "call_id": "call_pwd",
+                }
+            ]
+
+    executed: list[dict[str, object]] = []
+
+    with pytest.raises(NativeToolHistoryPersistenceError) as raised:
+        await execute_pending_tool_calls(
+            api_client=SimpleNamespace(
+                client_handler=_Handler(),
+                model_config=SimpleNamespace(provider="openai", model="gpt-5.5"),
+            ),
+            tool_manager=SimpleNamespace(
+                execute_tool=lambda _name, args: executed.append(dict(args))
+                or "ran pwd"
+            ),
+            persist_action_result=lambda *_args: None,
+            persist_native_tool_batch=lambda _calls, _results: False,
+        )
+
+    assert executed == [{"command": "pwd"}]
+    assert raised.value.recoverable is False
+    assert raised.value.details["tool_call_ids"] == ["call_pwd"]
+
+
+def test_engine_native_batch_persister_rejects_empty_conversation_append() -> None:
+    """An append rejection cannot look like a successfully persisted batch."""
+
+    appender = MagicMock(return_value=[])
+    cm = SimpleNamespace(
+        conversation=SimpleNamespace(append_native_tool_batch=appender)
+    )
+    persister = Engine._native_tool_batch_persister(
+        cm,
+        assistant_message_id="msg_current",
+    )
+
+    assert persister is not None
+    with pytest.raises(NativeToolHistoryPersistenceError):
+        persister(
+            [
+                ToolCall(
+                    id="call_pwd",
+                    name="execute",
+                    arguments={"command": "pwd"},
+                    source="responses",
+                )
+            ],
+            [{"tool_call_id": "call_pwd", "result": "/tmp", "status": "completed"}],
+        )
+
+    appender.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "pending_calls",
+    [
+        [
+            {
+                "name": "execute",
+                "arguments": '{"command":"first"}',
+                "call_id": "call_duplicate",
+            },
+            {
+                "name": "execute",
+                "arguments": '{"command":"second"}',
+                "call_id": "call_duplicate",
+            },
+        ],
+        [
+            {
+                "name": "execute",
+                "arguments": '{"command":"danger"}',
+            }
+        ],
+    ],
+)
+async def test_pending_native_tools_reject_invalid_provider_ids_before_execution(
+    pending_calls: list[dict[str, str]],
+) -> None:
+    """Never execute a malformed native batch with ambiguous call identity."""
+
+    class _Handler:
+        def get_and_clear_pending_tool_calls(self) -> list[dict[str, str]]:
+            return pending_calls
+
+    executed: list[dict[str, object]] = []
+    persisted: list[dict[str, object]] = []
+    native_batches: list[tuple[list[object], list[dict[str, object]]]] = []
+
+    def _execute_tool(_name: str, args: dict[str, object]) -> str:
+        executed.append(dict(args))
+        return "must not run"
+
+    results = await execute_pending_tool_calls(
+        api_client=SimpleNamespace(
+            client_handler=_Handler(),
+            model_config=SimpleNamespace(provider="openai", model="gpt-5.5"),
+        ),
+        tool_manager=SimpleNamespace(execute_tool=_execute_tool),
+        persist_action_result=lambda action_result, tool_context: persisted.append(
+            {"action_result": action_result, "tool_context": tool_context}
+        ),
+        persist_native_tool_batch=lambda calls, results: native_batches.append(
+            (calls, results)
+        ),
+    )
+
+    assert results == []
+    assert executed == []
+    assert persisted == []
+    assert native_batches == []
 
 
 @pytest.mark.asyncio
@@ -561,7 +804,9 @@ async def test_pending_responses_tool_call_preserves_dict_arguments() -> None:
 
 
 @pytest.mark.asyncio
-async def test_pending_responses_tool_calls_keep_successes_when_later_call_errors() -> None:
+async def test_pending_responses_tool_calls_keep_successes_when_later_call_errors() -> (
+    None
+):
     class _Handler:
         def __init__(self) -> None:
             self._tool_calls = [
@@ -696,7 +941,9 @@ async def test_pending_responses_tool_calls_honor_stop_on_error_policy() -> None
 
 def test_wallet_guard_does_not_break_on_tool_only_empty_iteration() -> None:
     engine = Engine.__new__(Engine)
-    engine._default_run_state = SimpleNamespace(current_agent_id="default")
+    engine._default_run_state = SimpleNamespace(
+        current_agent_id="default", current_iteration=1
+    )
     loop_state = LoopState(empty_response_count=2)
     engine._get_loop_state = lambda: loop_state  # type: ignore[method-assign]
 
@@ -751,6 +998,70 @@ def test_wallet_guard_breaks_on_repeated_empty_tool_only_iterations() -> None:
     assert status == "repeated_empty_tool_only_iterations"
     assert loop_state.empty_tool_only_count == 3
     assert loop_state.repeated_tool_only_count == 3
+
+
+def test_wallet_guard_reports_repeated_text_as_stalled() -> None:
+    engine = Engine.__new__(Engine)
+    engine._default_run_state = SimpleNamespace(current_agent_id="default")
+    loop_state = LoopState()
+    engine._get_loop_state = lambda: loop_state  # type: ignore[method-assign]
+
+    action_results = [{"action": "read_file", "result": "same", "status": "completed"}]
+    for _ in range(2):
+        assert Engine._check_wallet_guard_termination(
+            engine,
+            last_response="same response long enough",
+            iteration_results=action_results,
+            mode="response",
+        ) == (False, None)
+
+    assert Engine._check_wallet_guard_termination(
+        engine,
+        last_response="same response long enough",
+        iteration_results=action_results,
+        mode="response",
+    ) == (True, "repeated_response")
+
+
+def test_wallet_guard_reports_repeated_empty_response_as_stalled() -> None:
+    engine = Engine.__new__(Engine)
+    engine._default_run_state = SimpleNamespace(
+        current_agent_id="default", current_iteration=1
+    )
+    loop_state = LoopState()
+    engine._get_loop_state = lambda: loop_state  # type: ignore[method-assign]
+
+    for _ in range(2):
+        assert Engine._check_wallet_guard_termination(
+            engine,
+            last_response="",
+            iteration_results=[],
+            mode="response",
+        ) == (False, None)
+
+    assert Engine._check_wallet_guard_termination(
+        engine,
+        last_response="",
+        iteration_results=[],
+        mode="response",
+    ) == (True, "repeated_empty_response")
+
+
+def test_wallet_guard_reports_tool_result_echo_as_stalled() -> None:
+    engine = Engine.__new__(Engine)
+    engine._default_run_state = SimpleNamespace(
+        current_agent_id="default", current_iteration=1
+    )
+    engine._get_loop_state = lambda: LoopState()  # type: ignore[method-assign]
+
+    assert Engine._check_wallet_guard_termination(
+        engine,
+        last_response="[Tool Result] stale output",
+        iteration_results=[
+            {"action": "read_file", "result": "same", "status": "completed"}
+        ],
+        mode="response",
+    ) == (True, "tool_result_echo")
 
 
 def test_wallet_guard_keeps_short_empty_tool_only_chain_when_results_change() -> None:

@@ -1,3 +1,17 @@
 """Typed request and response schemas for Penguin's web API."""
 
-__all__: list[str] = []
+from .chat import ChatContinuationRequest, ChatMessageRequest, ChatTerminalResponse
+from .session_goal import (
+    SessionGoalRunRequest,
+    SessionGoalUpdateRequest,
+    SessionGoalUserStatus,
+)
+
+__all__ = [
+    "ChatContinuationRequest",
+    "ChatMessageRequest",
+    "ChatTerminalResponse",
+    "SessionGoalRunRequest",
+    "SessionGoalUpdateRequest",
+    "SessionGoalUserStatus",
+]

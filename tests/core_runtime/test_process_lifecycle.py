@@ -116,6 +116,31 @@ async def test_register_second_request_does_not_emit_duplicate_busy() -> None:
 
 
 @pytest.mark.asyncio
+async def test_register_busy_cancellation_rolls_back_request_ownership(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner = _Owner()
+    request_task = asyncio.current_task()
+    assert request_task is not None
+
+    async def cancel_busy(_session_id: str, _status_type: str) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(owner, "_emit_opencode_session_status", cancel_busy)
+
+    with pytest.raises(asyncio.CancelledError):
+        await process_lifecycle.register_opencode_process_request(
+            owner,
+            "session_1",
+            request_task,
+        )
+
+    assert owner._opencode_process_tasks == {}
+    assert owner._opencode_active_requests == {}
+    assert owner.heartbeat_events == [("cancel", "session_1")]
+
+
+@pytest.mark.asyncio
 async def test_cancelled_busy_status_emission_rolls_back_request_accounting() -> None:
     owner = _Owner()
     blocked = asyncio.Event()
@@ -251,6 +276,48 @@ async def test_finalize_only_emits_idle_after_last_active_request() -> None:
 
 
 @pytest.mark.asyncio
+async def test_nested_ownership_keeps_task_until_outer_release() -> None:
+    owner = _Owner()
+    task = asyncio.current_task()
+    assert task is not None
+
+    await process_lifecycle.register_opencode_process_request(
+        owner,
+        "session_1",
+        task,
+    )
+    await process_lifecycle.register_opencode_process_request(
+        owner,
+        "session_1",
+        task,
+    )
+    await process_lifecycle.finalize_opencode_process_request(
+        owner,
+        "session_1",
+        task,
+        request_tracked=True,
+    )
+
+    assert owner._opencode_process_tasks == {"session_1": {task}}
+    assert owner._opencode_active_requests == {"session_1": 1}
+    assert owner.status_events == [("session_1", "busy")]
+
+    await process_lifecycle.finalize_opencode_process_request(
+        owner,
+        "session_1",
+        task,
+        request_tracked=True,
+    )
+
+    assert owner._opencode_process_tasks == {}
+    assert owner._opencode_active_requests == {}
+    assert owner.status_events == [
+        ("session_1", "busy"),
+        ("session_1", "idle"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_finalize_does_not_wedge_on_hung_idle_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -346,9 +413,28 @@ def test_discard_abort_session_ignores_blank_session_and_repairs_state() -> None
     assert owner._opencode_active_requests == {}
 
 
-def test_handle_process_cancelled_clears_abort_marker_and_returns_payload() -> None:
+def test_handle_process_cancelled_preserves_abort_marker_and_returns_aborted() -> None:
     owner = SimpleNamespace(
         _opencode_abort_sessions={"session_1"},
+        _opencode_process_tasks={},
+        _opencode_active_requests={},
+    )
+
+    payload = process_lifecycle.handle_process_cancelled(owner, "session_1")
+
+    assert owner._opencode_abort_sessions == {"session_1"}
+    assert payload == {
+        "assistant_response": "",
+        "action_results": [],
+        "status": "aborted",
+        "aborted": True,
+        "cancelled": False,
+    }
+
+
+def test_handle_process_cancelled_identifies_transport_cancellation() -> None:
+    owner = SimpleNamespace(
+        _opencode_abort_sessions=set(),
         _opencode_process_tasks={},
         _opencode_active_requests={},
     )
@@ -359,7 +445,9 @@ def test_handle_process_cancelled_clears_abort_marker_and_returns_payload() -> N
     assert payload == {
         "assistant_response": "",
         "action_results": [],
-        "aborted": True,
+        "status": "cancelled",
+        "aborted": False,
+        "cancelled": True,
     }
 
 
@@ -527,8 +615,14 @@ async def test_finalize_process_response_saves_and_emits_non_streaming_message()
     assert token_calls[0][2] is response
 
 
+@pytest.mark.parametrize(
+    "status",
+    ["completed", "implicit_completion", "pending_review"],
+)
 @pytest.mark.asyncio
-async def test_finalize_process_response_suppresses_normal_streaming_message() -> None:
+async def test_finalize_process_response_suppresses_successful_streaming_message(
+    status: str,
+) -> None:
     owner = _Owner()
     conversation_manager = SimpleNamespace(save=lambda: None)
 
@@ -538,7 +632,10 @@ async def test_finalize_process_response_suppresses_normal_streaming_message() -
     await process_lifecycle.finalize_process_response(
         owner,
         conversation_manager,
-        {"assistant_response": "Streamed through chunks"},
+        {
+            "assistant_response": "Streamed through chunks",
+            "status": status,
+        },
         "session-1",
         streaming=True,
         agent_id=None,
@@ -548,6 +645,46 @@ async def test_finalize_process_response_suppresses_normal_streaming_message() -
     )
 
     assert owner.ui_events == [("token_update", {"total": 3})]
+
+
+@pytest.mark.asyncio
+async def test_finalize_process_response_emits_streaming_terminal_failure() -> None:
+    owner = _Owner()
+    conversation_manager = SimpleNamespace(save=lambda: None)
+    response = {
+        "assistant_response": "Provider error occurred: stream timed out",
+        "status": "provider_recoverable_error",
+        "recoverable": True,
+        "error": {"code": "stream_idle_timeout"},
+    }
+
+    async def collect_token_usage(*_args: object, **_kwargs: object) -> dict[str, int]:
+        return {"total": 3}
+
+    await process_lifecycle.finalize_process_response(
+        owner,
+        conversation_manager,
+        response,
+        "session-1",
+        streaming=True,
+        agent_id=None,
+        collect_token_usage=collect_token_usage,
+        message_category="dialog",
+        log=SimpleNamespace(debug=lambda *args, **kwargs: None),
+    )
+
+    assert owner.ui_events == [
+        (
+            "message",
+            {
+                "role": "assistant",
+                "content": "Provider error occurred: stream timed out",
+                "category": "dialog",
+                "metadata": {},
+            },
+        ),
+        ("token_update", {"total": 3}),
+    ]
 
 
 @pytest.mark.parametrize(

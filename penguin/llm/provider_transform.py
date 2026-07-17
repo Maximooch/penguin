@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Union
 
 from .contracts import ErrorCategory, FinishReason, LLMError
@@ -154,7 +155,7 @@ def extract_retry_after_seconds(source: Any) -> Optional[float]:
                 value = float(raw_text)
             except Exception:
                 continue
-            if value >= 0:
+            if math.isfinite(value) and value >= 0:
                 return value
     return None
 

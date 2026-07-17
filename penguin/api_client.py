@@ -323,13 +323,18 @@ class PenguinClient:
             for cp in checkpoints
         ]
 
-    async def cleanup_checkpoints(self) -> int:
-        """Clean up old checkpoints according to retention policy.
-        
-        Returns:
-            Number of checkpoints cleaned up
-        """
-        return await self.core.cleanup_old_checkpoints()
+    async def cleanup_checkpoints(
+        self,
+        *,
+        execute: bool = False,
+        confirmation: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Plan checkpoint cleanup or execute an explicitly confirmed plan."""
+
+        return await self.core.cleanup_old_checkpoints(
+            execute=execute,
+            confirmation=confirmation,
+        )
 
     # Model Management Methods
     # ------------------------------------------------------------------

@@ -1,0 +1,42 @@
+{
+  "phase": "phase1",
+  "branch": "fix/runtime-reliability-recovery",
+  "status": "passed",
+  "scope": [
+    "checkpoint worker admission, offload, retry, retention, and recovery",
+    "typed provider watchdogs, bounded replay, and lifecycle release",
+    "REST/WebSocket terminal truth, continuation leases, and TUI liveness",
+    "native tool-call/tool-result adjacency and fail-closed replay"
+  ],
+  "verification": [
+    {
+      "command": "uv run pytest -q tests/system/test_native_tool_adjacency.py tests/test_conversation_tool_call_ids.py tests/test_engine_responses_tool_action_results.py tests/test_engine_responses_tool_calls.py tests/test_engine_run_task_thin_wrapper.py tests/test_engine_initialization.py tests/system/test_context_lifecycle_records.py tests/system/test_context_borrowing_integration.py tests/system/test_context_autoload.py",
+      "result": "86 passed"
+    },
+    {
+      "command": "uv run pytest -q tests/llm/test_openrouter_usage_recovery.py tests/llm/test_provider_sdk_retry_budget.py tests/llm/test_openrouter_base_url_isolation.py tests/llm/test_provider_contract_matrix.py tests/llm/test_runtime_stream_retry.py tests/llm/test_anthropic_stream_callback_contract.py tests/llm/test_openai_codex_watchdogs.py tests/llm/test_openrouter_tool_continuity.py tests/llm/test_openai_oauth_subscription_flow.py tests/test_openai_adapter_streaming.py",
+      "result": "178 passed"
+    },
+    {
+      "command": "uv run pytest -q tests/system/test_checkpoint_worker_reliability.py tests/system/test_checkpoint_admission.py tests/system/test_checkpoint_cleanup_plan.py tests/system/test_session_save_sync.py tests/web/test_web_app_lifespan.py tests/web/test_chat_schemas.py tests/web/test_chat_terminal.py tests/web/test_chat_terminal_state.py tests/api/test_chat_terminal_contract.py tests/web/test_request_gate.py tests/core_runtime/test_process_lifecycle.py tests/core_runtime/test_process_runtime.py",
+      "result": "155 passed"
+    },
+    {
+      "command": "bun test test/tui/penguin-send.test.ts test/tui/penguin-run-state.test.ts test/tui/penguin-event-stream.test.ts test/tui/penguin-submit-gate.test.ts test/cli/tui/prompt-penguin-send.test.ts test/cli/tui/penguin-terminal-hydration.test.ts && bun run typecheck",
+      "result": "51 passed; tsgo --noEmit passed"
+    },
+    {
+      "command": "uv run ruff check --select E9,F,I <new Phase 1 Python files>",
+      "result": "All checks passed"
+    },
+    {
+      "command": "python -m compileall -q penguin tests; git diff --check",
+      "result": "Passed; compileall emitted only a pre-existing cli.py invalid-escape warning"
+    }
+  ],
+  "notes": [
+    "No live provider or production port 9000 was used.",
+    "The native-adjacency exception is limited to preserving complete provider replay units; CWM v2 budgeting, slimming, summarization, retrieval, and compaction remain deferred.",
+    "Repository-wide Ruff still reports pre-existing violations outside the touched Phase 1 surface; the touched new-file E9/F/I gate is clean."
+  ]
+}

@@ -439,17 +439,18 @@ ProtocolMessage (system/message_bus.py):
 ```
 WORKSPACE_PATH/                    # Configurable via PENGUIN_WORKSPACE env var
   ├── conversations/               # Session and message storage
-  │   ├── default/
-  │   │   ├── {session_id}/
-  │   │   │   ├── messages.json
-  │   │   │   ├── metadata.json
-  │   │   │   └── checkpoints/
-  │   │   └── current.json
-  │   └── {agent_id}/
-  │       └── {session_id}/
+  │   ├── {session_id}.json         # Canonical persisted session
+  │   ├── {session_id}.json.backup  # Recovery copy when present
+  │   ├── session_index.json        # Session discovery metadata
+  │   └── tool-results/             # Full outputs referenced by bounded records
   ├── checkpoints/                 # Checkpoint storage (managed by CheckpointManager)
+  │   ├── checkpoint_index.json
+  │   ├── cp_*.json.gz
+  │   └── archive/                  # Confirmed cleanup archive, never default cleanup
+  ├── runtime_events/
+  │   └── runtime_events.db         # Redacted durable SSE replay ledger
   ├── memory_db/                   # Memory storage
-  ├── logs/                        # Log files
+  ├── server-logs/                  # Rotating penguin-web logs
   └── context/                     # Context files
 
 Project Root/                      # Project-level configuration
@@ -458,6 +459,19 @@ Project Root/                      # Project-level configuration
       ├── settings.local.yml       # Local settings (gitignored)
       └── projects.db              # Task/project database
 ```
+
+### Runtime storage roles
+
+Port separation is not storage isolation. Port `9000` is the primary runtime, while
+port `8080` is reserved for test servers. The supported test runner
+(`scripts/run_runtime_reliability_server.py`) assigns one unique test workspace and
+keeps the ledger, logs, conversations, checkpoints, tool artifacts, local-auth cache,
+provider credentials, and XDG cache/config paths beneath it. Startup acquires
+workspace and ledger leases and fails closed if another live backend owns them.
+
+The hermetic baseline runner (`scripts/benchmark_runtime_reliability.py`) installs the
+same 8080 test-role environment before importing configuration. It uses a deterministic
+local provider and does not start a network listener.
 
 ### Context Window Management
 
@@ -638,6 +652,16 @@ The web/API surface is intentionally being brought back into alignment with back
   session-scoped usage with `scope="session"` or fail explicitly for missing
   sessions/agent scopes. Clients must not render transcript-specific context
   horizon lines from runtime/global telemetry.
+- Chat transport success and Penguin completion are separate. REST
+  `/api/v1/chat/message` and WebSocket `/api/v1/chat/stream` expose the same
+  terminal fields: `status`, `terminal_reason`, `state`, `completed`,
+  `recoverable`, partial output, iteration/action counts, cancellation truth,
+  error details, and any durable continuation action. A 2xx response or a
+  WebSocket `complete` envelope means the transport finished; clients must read
+  `completed` to decide whether Penguin finished the turn.
+- Chat work is serialized by a bounded per-session gate across REST and
+  WebSocket. Queued work is abort-visible, and an expired gate wait returns
+  `request_gate_timeout` rather than waiting forever.
 
 This matters because a technically working route that hides clarification, phase truth, or non-terminal outcomes is still a broken interface. The surface has to tell the same truth as the runtime or users end up debugging documentation-shaped lies.
 
@@ -650,6 +674,14 @@ The current TUI architecture is split across the Python runtime and the `penguin
 - In a source checkout, the launcher prefers local `penguin-tui/packages/opencode` sources.
 - Outside a source checkout, the launcher resolves or downloads a cached sidecar binary under `~/.cache/penguin/tui`.
 - The launcher talks to `penguin-web`, auto-starting a local server at `http://127.0.0.1:9000` when needed unless an explicit `--url` or `PENGUIN_WEB_URL` override is provided.
+- The TUI parses the terminal chat body instead of treating every 2xx response
+  as success. Request existence, SSE receipt, and genuine provider/tool/runtime
+  progress have separate timestamps; periodic busy heartbeats do not reset the
+  no-progress timer.
+- A stalled run remains interruptible. Retry/Resume is offered only when the
+  server returns a successfully persisted one-shot continuation containing the
+  exact session, request, generation, previous status, and action. The TUI does
+  not infer or automatically send a plain-text `resume` turn.
 
 This matters because the TUI is no longer a Python widget tree embedded inside the runtime. It is a separate frontend path backed by the same Penguin web/core services.
 
@@ -701,25 +733,38 @@ This matters because the TUI is no longer a Python widget tree embedded inside t
 
 ### Engine Loop Termination
 
-The engine's `run_response` and `run_task` methods use explicit termination signals:
+`engine.max_iterations_default` is the single configured default iteration
+budget (fallback `5000`) for Engine, REST chat, and WebSocket chat. An explicit
+positive request value overrides it. Reaching the budget is a non-completed
+`max_iterations`/`iterations_exceeded` result; completing on the final allowed
+iteration remains completion and is not rewritten as exhaustion.
 
-**run_response (Conversational Mode):**
-- Terminates ONLY when `finish_response` tool is called
-- `finish_response` is a pure terminator; final answer content must be normal assistant text, not tool parameters or summaries
-- Max iterations (default 5000) as safety limit
-- NO implicit termination on empty action results
+**run_response (conversational mode):**
+- Normal assistant text with no tool calls completes the response.
+- The legacy `finish_response` action also completes it.
+- Tool-only turns continue so the model can consume tool results.
+- Repeated empty/tool-only results, repeated output, tool-result echo, and
+  repeated empty output stop with explicit stalled reasons rather than fake
+  completion.
 
-**run_task (Autonomous Mode):**
-- Terminates ONLY when `finish_task` tool is called
-- Task marked for human review (not auto-completed)
-- Phrase-based completion detection is deprecated
+**run_task (autonomous mode):**
+- `finish_task` produces `pending_review`; configured completion phrases remain
+  compatibility signals.
+- Natural task output can end with `implicit_completion`.
+- Genuine budget exhaustion is `iterations_exceeded`.
 
-**Important:** The LLM must explicitly call termination tools. This prevents premature loop exit when the LLM is processing tool results and needs to continue.
+Max-iteration, stalled, aborted, cancelled, and recoverable-provider results may
+offer an explicit continuation only after Penguin persists a durable terminal
+generation. The continuation is consumed once and stale/tampered generations
+are rejected.
 
 ### Message Loop Reliability
 
 The message loop treats provider attempts and local tool execution as separate reliability boundaries:
 - Retry paths preserve the original provider request options, including tools, instructions, and other request kwargs.
+- The provider runtime owns the single bounded safe replay. PenguinCore does not
+  replay the whole process turn because user-message insertion, tools, and
+  persistence may already have produced side effects.
 - Abort and stream events resolve explicit session/conversation IDs first, then execution context, then stream-scope fallback, so session-scoped aborts remain routable.
 - Tool-call failures are represented as structured results or diagnostic metadata instead of silent disappearance.
 - Context snapshot diagnostics avoid prompt-content previews by default to reduce log volume and accidental prompt leakage.
@@ -736,15 +781,18 @@ The message loop treats provider attempts and local tool execution as separate r
 
 ### 2. Token Optimization
 
-- Intelligent context trimming
+- Category-priority and recency-based context trimming
 - Category-based budgets
-- Compression of old messages
 - Selective tool result inclusion
 - Model-specific routing
 
+The current context-window manager does not summarize or compact old messages.
+Summarization, retrieval, compaction, and elastic final-packet budgeting are deferred
+to the separate CWM v2 follow-up.
+
 ### 3. Concurrent Processing
 
-- Parallel tool execution
+- Ordered serial tool execution (safe parallel read scheduling is not active yet)
 - Async API calls
 - Background indexing
 - Stream processing
