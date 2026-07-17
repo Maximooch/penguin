@@ -32,6 +32,7 @@ from .api_client import APIClient
 from .adapters import get_adapter
 from .litellm_support import load_litellm_gateway_class
 from .provider_registry import ProviderRegistry
+from .providers.link.context import LinkInferenceContext
 
 if TYPE_CHECKING:
     from .model_config import ModelConfig
@@ -166,6 +167,7 @@ class LLMClient:
         self,
         model_config: "ModelConfig",
         config: Optional[LLMClientConfig] = None,
+        link_context: Optional[LinkInferenceContext] = None,
     ):
         """Initialize LLM client with optional Link configuration.
 
@@ -175,6 +177,7 @@ class LLMClient:
         """
         self.model_config = model_config
         self._config = config or LLMClientConfig.from_env()
+        self._link_context = link_context
         self._config_lock = threading.RLock()
         self._api_client: Optional[APIClient] = None
         self._api_client_lock = threading.RLock()
@@ -299,6 +302,7 @@ class LLMClient:
                 self.model_config,
                 base_url=base_url,
                 extra_headers=link_headers,
+                link_context=self._link_context,
             )
             return self._api_client
 
@@ -316,6 +320,7 @@ class LLMClient:
                 self.model_config,
                 base_url=base_url,
                 extra_headers=link_headers,
+                link_context=self._link_context,
             )
             return self._gateway
 

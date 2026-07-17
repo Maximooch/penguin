@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Optional
+from typing import TYPE_CHECKING, Any, Callable
 
 from .model_config import ModelConfig
 from .provider_transform import (
@@ -10,6 +10,9 @@ from .provider_transform import (
     is_openai_compatible_provider,
     normalize_client_preference,
 )
+
+if TYPE_CHECKING:
+    from .providers.link.context import LinkInferenceContext
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +25,9 @@ LiteLLMGatewayLoader = Callable[[str], Any]
 class ProviderContext:
     """Transport/runtime context passed into provider resolution."""
 
-    base_url: Optional[str] = None
-    extra_headers: Dict[str, str] = field(default_factory=dict)
+    base_url: str | None = None
+    extra_headers: dict[str, str] = field(default_factory=dict)
+    link_context: LinkInferenceContext | None = None
 
 
 class ProviderRegistry:
@@ -47,8 +51,9 @@ class ProviderRegistry:
         self,
         model_config: ModelConfig,
         *,
-        base_url: Optional[str] = None,
-        extra_headers: Optional[Dict[str, str]] = None,
+        base_url: str | None = None,
+        extra_headers: dict[str, str] | None = None,
+        link_context: LinkInferenceContext | None = None,
     ) -> Any:
         """Create a handler for the requested provider/runtime path."""
 
@@ -56,10 +61,13 @@ class ProviderRegistry:
         context = ProviderContext(
             base_url=base_url,
             extra_headers=dict(extra_headers or {}),
+            link_context=link_context,
         )
         preference = normalize_client_preference(prepared.client_preference)
 
-        if preference == "openrouter":
+        if preference == "link":
+            handler = self._create_link_handler(prepared, context)
+        elif preference == "openrouter":
             handler = self._create_openrouter_handler(prepared, context)
         elif preference == "litellm":
             handler = self._create_litellm_handler(prepared, context)
@@ -68,11 +76,30 @@ class ProviderRegistry:
         else:
             raise ValueError(
                 "Invalid client_preference: "
-                f"{prepared.client_preference}. Must be 'native', 'litellm', or 'openrouter'."
+                f"{prepared.client_preference}. Must be 'native', 'litellm', "
+                "'openrouter', or 'link'."
             )
 
         self._apply_extra_headers(handler, context.extra_headers)
         return handler
+
+    def _create_link_handler(
+        self,
+        model_config: ModelConfig,
+        context: ProviderContext,
+    ) -> Any:
+        from .providers.link import LinkProvider, LinkProviderConfig
+
+        if context.link_context is None:
+            raise ValueError(
+                "client_preference='link' requires immutable Link inference context"
+            )
+        config = LinkProviderConfig.from_env(base_url=context.base_url)
+        return LinkProvider(
+            model_config=model_config,
+            context=context.link_context,
+            config=config,
+        )
 
     def _create_openrouter_handler(
         self,
@@ -118,7 +145,7 @@ class ProviderRegistry:
     def _apply_extra_headers(
         self,
         handler: Any,
-        extra_headers: Dict[str, str],
+        extra_headers: dict[str, str],
     ) -> None:
         """Best-effort header injection for transport-aware wrappers like Link."""
 

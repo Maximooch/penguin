@@ -174,6 +174,40 @@ async def test_chat_message_model_load_failure_surfaces_reason(
 
 
 @pytest.mark.asyncio
+async def test_chat_message_rejects_cross_user_subscription_authority(
+    tmp_path: Path,
+) -> None:
+    core = _Core(tmp_path)
+    request = MessageRequest(
+        text="hello",
+        model="gpt-5.4",
+        directory=str(tmp_path),
+        external_subscription_execution={
+            "protocol_version": 1,
+            "owner_user_id": "user-a",
+            "user_id": "user-b",
+            "requested_model_id": "gpt-5.4",
+            "agent_runtime": "penguin",
+            "provider": "openai",
+            "inference_transport": "codex_responses_compat",
+            "execution_source": "local_penguin",
+            "provider_state_owner": "user_owned",
+            "credential_custodian": "local_penguin",
+            "settlement_mode": "subscription_quota",
+            "usage_authority": "local_runtime_observed",
+            "integration_support": "ecosystem_compatible",
+            "allow_fallback_to_link_gateway": False,
+        },
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await handle_chat_message(request=request, core=cast(Any, core))
+
+    assert exc.value.status_code == 400
+    assert "owning Link user" in str(exc.value.detail)
+
+
+@pytest.mark.asyncio
 async def test_config_providers_and_auth_methods(tmp_path: Path) -> None:
     core = _Core(tmp_path)
     typed_core = cast(Any, core)
