@@ -7,7 +7,7 @@ Penguin TUI while preserving explicit routes for headless CLI workflows.
 from __future__ import annotations
 
 import sys
-from typing import Sequence
+from typing import Any, Sequence
 
 _FORCE_TUI_ALIASES = {"tui", "ptui"}
 _FORCE_CLI_ALIASES = {"cli", "headless"}
@@ -125,10 +125,49 @@ def main_cli(argv: Sequence[str] | None = None) -> int:
 
 
 def main_tui(argv: Sequence[str] | None = None) -> int:
-    """Run the Penguin TUI launcher directly."""
+    """Run workspace onboarding when needed, then launch the Penguin TUI."""
+    if _needs_tui_setup():
+        try:
+            result: dict[str, Any] = _run_tui_setup()
+        except KeyboardInterrupt:
+            print(
+                "Setup interrupted. Run 'penguin config setup' when ready.",
+                file=sys.stderr,
+            )
+            return 1
+        except Exception as exc:
+            print(f"Setup failed: {exc}", file=sys.stderr)
+            return 1
+        if not _setup_succeeded(result):
+            error = (
+                result.get("error", "Unknown setup error")
+                if isinstance(result, dict)
+                else "Unknown setup error"
+            )
+            print(f"Setup error: {error}", file=sys.stderr)
+            return 1
+
     from .opencode_launcher import main as launcher_main
 
     return _to_exit_code(launcher_main(_normalize_argv(argv)))
+
+
+def _needs_tui_setup() -> bool:
+    """Return whether workspace onboarding must run before the TUI."""
+    from penguin.setup import check_first_run
+
+    return bool(check_first_run())
+
+
+def _run_tui_setup() -> dict[str, Any]:
+    """Run first-time workspace onboarding synchronously."""
+    from penguin.setup import run_setup_wizard_sync
+
+    return run_setup_wizard_sync()
+
+
+def _setup_succeeded(result: dict[str, Any]) -> bool:
+    return isinstance(result, dict) and not result.get("error")
 
 
 def main(argv: Sequence[str] | None = None) -> int:

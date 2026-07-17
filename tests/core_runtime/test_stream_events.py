@@ -527,10 +527,13 @@ async def test_abort_session_cancels_tasks_cleans_scoped_state_and_emits_idle() 
     )
 
     assert aborted is True
-    assert adapter.reasons == ["Tool execution was interrupted"]
-    assert "session_1" in owner._opencode_abort_sessions
     with pytest.raises(asyncio.CancelledError):
         await pending_task
+    cleanup_tasks = owner._opencode_abort_cleanup_tasks
+    await asyncio.wait_for(asyncio.gather(*cleanup_tasks), timeout=0.1)
+    assert not cleanup_tasks
+    assert adapter.reasons == ["Tool execution was interrupted"]
+    assert "session_1" in owner._opencode_abort_sessions
 
     assert owner._opencode_stream_states["session_1"]["active"] is False
     assert owner._opencode_stream_states["session_1"]["stream_id"] is None
@@ -555,6 +558,89 @@ async def test_abort_session_cancels_tasks_cleans_scoped_state_and_emits_idle() 
     assert status_event["type"] == "session.status"
     assert status_event["properties"]["sessionID"] == "session_1"
     assert status_event["properties"]["status"]["type"] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_abort_session_does_not_wait_for_slow_adapter_cleanup() -> None:
+    cleanup_started = asyncio.Event()
+    allow_cleanup = asyncio.Event()
+
+    class _SlowAbortAdapter:
+        async def abort(self, reason: str) -> bool:
+            assert reason == "Tool execution was interrupted"
+            cleanup_started.set()
+            await allow_cleanup.wait()
+            return True
+
+    async def _sleep_forever() -> None:
+        await asyncio.sleep(60)
+
+    pending_task = asyncio.create_task(_sleep_forever())
+    owner = SimpleNamespace(
+        event_bus=_EventBus(),
+        _get_tui_adapter=lambda _session_id: _SlowAbortAdapter(),
+        _stream_manager=SimpleNamespace(get_active_agents=lambda: []),
+        _opencode_abort_sessions=set(),
+        _opencode_process_tasks={"session_1": {pending_task}},
+        _opencode_stream_states={"session_1": {"active": True}},
+        _opencode_tool_parts={},
+        _opencode_tool_info={},
+    )
+
+    aborted = await asyncio.wait_for(
+        stream_events.abort_session(
+            owner,
+            "session_1",
+            logger=logging.getLogger("test.stream_events"),
+        ),
+        timeout=0.1,
+    )
+
+    assert aborted is True
+    with pytest.raises(asyncio.CancelledError):
+        await pending_task
+    await asyncio.wait_for(cleanup_started.wait(), timeout=0.1)
+    status_event = owner.event_bus.events[-1][1]
+    assert status_event["properties"]["status"]["type"] == "idle"
+
+    allow_cleanup.set()
+    cleanup_tasks = owner._opencode_abort_cleanup_tasks
+    await asyncio.wait_for(asyncio.gather(*cleanup_tasks), timeout=0.1)
+    assert not cleanup_tasks
+
+
+@pytest.mark.asyncio
+async def test_abort_session_accepts_adapter_only_cleanup() -> None:
+    cleanup_started = asyncio.Event()
+
+    class _Adapter:
+        async def abort(self, reason: str) -> bool:
+            assert reason == "Tool execution was interrupted"
+            cleanup_started.set()
+            return True
+
+    owner = SimpleNamespace(
+        event_bus=_EventBus(),
+        _get_tui_adapter=lambda _session_id: _Adapter(),
+        _stream_manager=SimpleNamespace(get_active_agents=lambda: []),
+        _opencode_abort_sessions=set(),
+        _opencode_process_tasks={},
+        _opencode_stream_states={},
+        _opencode_tool_parts={},
+        _opencode_tool_info={},
+    )
+
+    aborted = await stream_events.abort_session(
+        owner,
+        "session_1",
+        logger=logging.getLogger("test.stream_events"),
+    )
+
+    assert aborted is True
+    await asyncio.wait_for(cleanup_started.wait(), timeout=0.1)
+    cleanup_tasks = owner._opencode_abort_cleanup_tasks
+    await asyncio.wait_for(asyncio.gather(*cleanup_tasks), timeout=0.1)
+    assert not cleanup_tasks
 
 
 def test_persist_finalized_message_writes_target_session_store() -> None:

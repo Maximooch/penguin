@@ -328,9 +328,7 @@ def apply_cached_codex_model_metadata(model_config: Any) -> None:
         model_id = model_id.split("/", 1)[1]
     auth_record = get_provider_credentials().get("openai")
     metadata = (
-        codex_oauth_cached_provider_models(auth_record)
-        .get("openai", {})
-        .get(model_id)
+        codex_oauth_cached_provider_models(auth_record).get("openai", {}).get(model_id)
     )
     if not isinstance(metadata, dict):
         return
@@ -505,9 +503,7 @@ def codex_oauth_provider_models(
         if default_reasoning_level:
             conf["default_reasoning_level"] = default_reasoning_level
         if isinstance(item.get("supports_reasoning_summaries"), bool):
-            conf["supports_reasoning_summaries"] = item[
-                "supports_reasoning_summaries"
-            ]
+            conf["supports_reasoning_summaries"] = item["supports_reasoning_summaries"]
         if isinstance(priority, int):
             conf["priority"] = priority
         discovered[model_id] = conf
@@ -680,8 +676,13 @@ def collect_provider_models(core: Any) -> dict[str, dict[str, dict[str, Any]]]:
 
 
 def provider_ids(core: Any) -> set[str]:
-    """Return provider ids currently relevant for runtime."""
-    ids = set(collect_provider_models(core).keys())
+    """Return provider ids available for connection or relevant to runtime."""
+    # Provider discovery must not depend on already having credentials or a
+    # configured model; otherwise a workspace-only first run has no providers
+    # to connect to. Metadata is the stable baseline, while config/runtime/env
+    # sources add custom providers and active aliases.
+    ids = set(_PROVIDER_METADATA.keys())
+    ids.update(collect_provider_models(core).keys())
     current_model = (
         core.get_current_model() if hasattr(core, "get_current_model") else None
     )

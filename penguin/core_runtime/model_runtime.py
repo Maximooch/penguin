@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import os
 from typing import Any, Awaitable, Callable, Mapping, Optional
 
 from penguin.llm.model_config import (
@@ -28,6 +29,38 @@ LLMClientFactory = Callable[[ModelConfig, Any], Any]
 LLMClientConfigFactory = Callable[..., Any]
 LinkConfigFactory = Callable[..., Any]
 LiteLLMLoader = Callable[[str], Any]
+
+
+def provider_credential_available(model_config: ModelConfig) -> bool:
+    """Return whether a configured provider can be initialized for a request."""
+    provider = str(getattr(model_config, "provider", "") or "").strip().lower()
+    if provider in {"ollama", "local"}:
+        return True
+    if str(getattr(model_config, "api_key", "") or "").strip():
+        return True
+    credential_envs = {
+        "openai": ("OPENAI_API_KEY", "OPENAI_OAUTH_ACCESS_TOKEN"),
+        "anthropic": ("ANTHROPIC_API_KEY",),
+        "openrouter": ("OPENROUTER_API_KEY",),
+        "google": ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
+    }.get(provider, (f"{provider.upper()}_API_KEY",) if provider else ())
+    return any(str(os.getenv(name) or "").strip() for name in credential_envs)
+
+
+def _missing_provider_credential_message(model_config: ModelConfig) -> str:
+    provider = str(getattr(model_config, "provider", "") or "").strip().lower()
+    env_name = {
+        "openai": "OPENAI_API_KEY (or OpenAI OAuth)",
+        "anthropic": "ANTHROPIC_API_KEY",
+        "openrouter": "OPENROUTER_API_KEY",
+    }.get(
+        provider, f"{provider.upper()}_API_KEY" if provider else "provider credential"
+    )
+    return (
+        f"Connect a credential for {provider or 'the selected provider'} before "
+        f"sending a prompt. Set {env_name}, run 'penguin config setup', or choose "
+        "Connect provider in the TUI command palette."
+    )
 
 
 def _coerce_optional_int(value: Any) -> int | None:
@@ -270,10 +303,19 @@ async def resolve_request_runtime(
     )
 
     requested_model = model_id.strip() if isinstance(model_id, str) else ""
+    if not requested_model and not (current_raw and current_provider):
+        raise ValueError(
+            "Connect an AI model before sending a prompt. "
+            "Run 'penguin config setup' or choose Connect provider in the "
+            "TUI command palette."
+        )
     if requested_model and requested_model not in {current_raw, current_qualified}:
         new_model_config, _ = await owner._build_model_config_for_model(requested_model)
     else:
         new_model_config = copy.deepcopy(owner.model_config)
+
+    if not provider_credential_available(new_model_config):
+        raise ValueError(_missing_provider_credential_message(new_model_config))
 
     api_client = api_client_factory(model_config=new_model_config)
     api_client.set_system_prompt(owner.system_prompt)
@@ -570,6 +612,7 @@ __all__ = [
     "ensure_litellm_runtime_state",
     "list_available_models",
     "load_model_for_core",
+    "provider_credential_available",
     "refresh_api_client",
     "resolve_model_provider",
     "resolve_request_runtime",

@@ -160,7 +160,7 @@ def test_current_model_payload_uses_explicit_output_token_name() -> None:
 
 
 def test_refresh_api_client_propagates_to_runtime_components() -> None:
-    model_config = ModelConfig(model="gpt-4o", provider="openai")
+    model_config = ModelConfig(model="gpt-4o", provider="openai", api_key="test-key")
     context_window = SimpleNamespace()
     conversation_manager = SimpleNamespace(context_window=context_window)
     engine = SimpleNamespace()
@@ -415,8 +415,86 @@ def test_apply_new_model_config_propagates_budget_and_model_config() -> None:
 
 
 @pytest.mark.asyncio
+async def test_resolve_request_runtime_requires_connected_model() -> None:
+    owner = SimpleNamespace(
+        model_config=ModelConfig(model="", provider=""),
+        system_prompt="system",
+        get_current_model=lambda: {"model": "", "provider": ""},
+    )
+
+    with pytest.raises(ValueError, match="Connect an AI model"):
+        await resolve_request_runtime(
+            owner,
+            None,
+            api_client_factory=lambda **_kwargs: None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_resolve_request_runtime_requires_selected_provider_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    owner = SimpleNamespace(
+        model_config=ModelConfig(
+            model="openai/gpt-5.2",
+            provider="openrouter",
+        ),
+        system_prompt="system",
+        get_current_model=lambda: {
+            "model": "openai/gpt-5.2",
+            "provider": "openrouter",
+        },
+    )
+
+    with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
+        await resolve_request_runtime(
+            owner,
+            None,
+            api_client_factory=lambda **_kwargs: None,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("credential_name", ["GOOGLE_API_KEY", "GEMINI_API_KEY"])
+async def test_resolve_request_runtime_accepts_google_credential_aliases(
+    monkeypatch: pytest.MonkeyPatch, credential_name: str
+) -> None:
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv(credential_name, "google-key")
+    model_config = ModelConfig(model="gemini-2.5-pro", provider="google")
+
+    class FakeAPIClient:
+        def __init__(self, *, model_config: ModelConfig) -> None:
+            self.model_config = model_config
+            self.system_prompt = ""
+
+        def set_system_prompt(self, prompt: str) -> None:
+            self.system_prompt = prompt
+
+    owner = SimpleNamespace(
+        model_config=model_config,
+        system_prompt="system",
+        get_current_model=lambda: {
+            "model": "gemini-2.5-pro",
+            "provider": "google",
+        },
+    )
+
+    resolved, api_client = await resolve_request_runtime(
+        owner,
+        None,
+        api_client_factory=FakeAPIClient,
+    )
+
+    assert resolved.provider == "google"
+    assert api_client.system_prompt == "system"
+
+
+@pytest.mark.asyncio
 async def test_resolve_request_runtime_reuses_current_model_without_mutation() -> None:
-    model_config = ModelConfig(model="gpt-4o", provider="openai")
+    model_config = ModelConfig(model="gpt-4o", provider="openai", api_key="test-key")
     model_config.temperature = 0.1
     built_models: list[str] = []
 
@@ -455,7 +533,7 @@ async def test_resolve_request_runtime_reuses_current_model_without_mutation() -
 
 @pytest.mark.asyncio
 async def test_resolve_request_runtime_builds_requested_override() -> None:
-    requested = ModelConfig(model="gpt-5", provider="openai")
+    requested = ModelConfig(model="gpt-5", provider="openai", api_key="test-key")
     built_models: list[str] = []
 
     class FakeAPIClient:

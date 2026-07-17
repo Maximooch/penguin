@@ -15,6 +15,7 @@ from typing import Optional, Dict, Any, List, AsyncGenerator, Callable, Awaitabl
 from penguin import __version__
 from penguin.config import config, Config, _ensure_env_loaded
 from penguin.core import PenguinCore
+from penguin.core_runtime import startup as core_startup
 from penguin.run_mode import RunMode
 from penguin.llm.api_client import APIClient, ConnectionPoolManager
 from penguin.llm.model_config import ModelConfig
@@ -82,9 +83,14 @@ def _create_core() -> PenguinCore:
         config_obj = Config.load_config()
         model_config = config_obj.model_config
 
-        # Initialize components using live Config-derived model_config
-        api_client = APIClient(model_config=model_config)
-        api_client.set_system_prompt(SYSTEM_PROMPT)
+        # A workspace-only onboarding is valid. Defer provider construction until
+        # a model/provider has actually been configured.
+        api_client = core_startup.build_api_client(
+            model_config,
+            system_prompt=SYSTEM_PROMPT,
+            api_client_factory=APIClient,
+            ensure_env_loaded=_ensure_env_loaded,
+        )
         # Pass a stable dict derived from live Config
         config_dict = config_obj.to_dict() if hasattr(config_obj, "to_dict") else {}
         tool_manager = ToolManager(config_dict, log_error)
@@ -338,6 +344,7 @@ def create_app() -> "FastAPI":
             if authorize_path.exists():
                 return FileResponse(str(authorize_path), headers=NO_CACHE_HEADERS)
             return {"message": "Authorization UI not found."}
+
     else:
 
         @app.get("/")
@@ -639,15 +646,15 @@ class PenguinAPI:
             return {
                 "status": "healthy",
                 "core_initialized": self.core is not None,
-                "api_client_ready": self.core.api_client is not None
-                if self.core
-                else False,
-                "tool_manager_ready": self.core.tool_manager is not None
-                if self.core
-                else False,
-                "conversation_manager_ready": self.core.conversation_manager is not None
-                if self.core
-                else False,
+                "api_client_ready": (
+                    self.core.api_client is not None if self.core else False
+                ),
+                "tool_manager_ready": (
+                    self.core.tool_manager is not None if self.core else False
+                ),
+                "conversation_manager_ready": (
+                    self.core.conversation_manager is not None if self.core else False
+                ),
             }
         except Exception as e:
             return {"status": "unhealthy", "error": str(e)}

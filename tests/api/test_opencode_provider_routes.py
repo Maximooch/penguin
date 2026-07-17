@@ -195,6 +195,38 @@ async def test_config_providers_and_auth_methods(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_workspace_only_core_exposes_connectable_provider_roster(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(provider_service, "get_provider_credentials", lambda: {})
+    monkeypatch.setattr(provider_service, "env_connected_provider_ids", lambda: set())
+    monkeypatch.setattr(provider_service, "provider_connected", lambda *_args: False)
+    monkeypatch.setattr(provider_service, "load_config", lambda: {})
+    monkeypatch.setattr(
+        provider_service,
+        "_schedule_provider_catalog_refresh",
+        lambda *_args, **_kwargs: False,
+    )
+
+    core = _Core(tmp_path)
+    core.config.model_configs = {}
+    core._current_model = {"provider": "", "model": ""}
+    typed_core = cast(Any, core)
+
+    config_payload = await opencode_config_providers(core=typed_core)
+    provider_payload = await opencode_provider_list(core=typed_core)
+
+    config_ids = {item["id"] for item in config_payload["providers"]}
+    provider_ids = {item["id"] for item in provider_payload["all"]}
+    expected = {"openai", "anthropic", "openrouter", "google", "ollama"}
+
+    assert expected <= config_ids
+    assert expected <= provider_ids
+    assert provider_payload["connected"] == []
+
+
+@pytest.mark.asyncio
 async def test_config_payload_canonicalizes_unqualified_current_model(
     tmp_path: Path,
 ) -> None:

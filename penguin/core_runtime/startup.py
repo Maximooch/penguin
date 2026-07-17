@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, MutableMapping
 
+from penguin.core_runtime.model_runtime import provider_credential_available
+
 ActionExecutorFactory = Callable[..., Any]
 ApiClientFactory = Callable[..., Any]
 CheckpointConfigFactory = Callable[..., Any]
@@ -400,9 +402,11 @@ async def create_core_instance(
                 logger.info(
                     "STARTUP: Tool manager created in %.4fs with %s tools",
                     startup_timing.elapsed_since(tool_manager_start),
-                    len(tool_manager.tools)
-                    if hasattr(tool_manager, "tools")
-                    else "unknown",
+                    (
+                        len(tool_manager.tools)
+                        if hasattr(tool_manager, "tools")
+                        else "unknown"
+                    ),
                 )
                 progress.complete_step()
                 startup_timing.record_step("Create tool manager", logger=logger)
@@ -505,6 +509,14 @@ def build_api_client(
     """Build the startup API client after env files are available."""
 
     ensure_env_loaded()
+    provider = str(getattr(model_config, "provider", "") or "").strip().lower()
+    model = str(getattr(model_config, "model", "") or "").strip()
+    if not provider or not model:
+        return None
+
+    if not provider_credential_available(model_config):
+        return None
+
     api_client = api_client_factory(model_config=model_config)
     api_client.set_system_prompt(system_prompt)
     return api_client
