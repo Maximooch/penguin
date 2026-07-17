@@ -65,6 +65,15 @@ from penguin.web.services.configuration import (
 )
 from penguin.web.services.command_registry import list_opencode_commands
 from penguin.web.services.notification_settings import notification_settings_payload
+from penguin.web.services.external_subscription import (
+    ExternalSubscriptionExecutionRequest,
+    build_external_subscription_capabilities,
+    validate_external_subscription_execution,
+)
+from penguin.web.services.link_inference import (
+    LinkExecutionRequest,
+    resolve_link_inference_runtime,
+)
 from penguin.web.services.opencode_events import schedule_opencode_event
 from penguin.system.runtime_events import wrap_opencode_event
 from penguin.web.services.conversations import (
@@ -1030,6 +1039,10 @@ class MessageRequest(BaseModel):
     variant: Optional[str] = None
     service_tier: Optional[str] = None
     parts: Optional[List[Dict[str, Any]]] = None
+    link_execution: Optional[LinkExecutionRequest] = None
+    external_subscription_execution: Optional[
+        ExternalSubscriptionExecutionRequest
+    ] = None
 
 
 _REASONING_EFFORT_VARIANTS = {
@@ -3569,6 +3582,13 @@ async def api_config_providers(core: PenguinCore = Depends(get_core)):
     return await opencode_config_providers(core=core)
 
 
+@router.get("/api/v1/link/capabilities")
+async def api_link_capabilities() -> dict[str, Any]:
+    """Return versioned Link capabilities without provider credentials."""
+
+    return build_external_subscription_capabilities()
+
+
 @router.get("/api/v1/provider")
 async def api_provider_list(core: PenguinCore = Depends(get_core)):
     """Alias for OpenCode-compatible provider list endpoint."""
@@ -4067,10 +4087,40 @@ async def handle_chat_message(
             request.model.strip() if isinstance(request.model, str) else ""
         )
         try:
-            (
-                request_model_config,
-                request_api_client,
-            ) = await _resolve_request_runtime_for_model(core, requested_model or None)
+            if (
+                request.link_execution is not None
+                and request.external_subscription_execution is not None
+            ):
+                raise ValueError(
+                    "Link-managed and external-subscription execution are mutually exclusive."
+                )
+            if request.link_execution is not None:
+                (
+                    request_model_config,
+                    request_api_client,
+                ) = resolve_link_inference_runtime(
+                    core,
+                    request.link_execution,
+                    requested_model or None,
+                )
+            elif request.external_subscription_execution is not None:
+                validate_external_subscription_execution(
+                    request.external_subscription_execution,
+                    requested_model or None,
+                )
+                (
+                    request_model_config,
+                    request_api_client,
+                ) = await _resolve_request_runtime_for_model(
+                    core, requested_model or None
+                )
+            else:
+                (
+                    request_model_config,
+                    request_api_client,
+                ) = await _resolve_request_runtime_for_model(
+                    core, requested_model or None
+                )
         except Exception as exc:
             detail = str(exc) or f"Failed to resolve model runtime '{requested_model}'"
             raise HTTPException(status_code=400, detail=detail) from exc
@@ -4274,13 +4324,23 @@ async def handle_chat_message(
             )
 
         # Build response
-        if request_session_id:
+        if (
+            request_session_id
+            and request.link_execution is None
+            and request.external_subscription_execution is None
+        ):
             _queue_session_title_refresh(
                 core,
                 request_session_id,
                 provider_id=getattr(request_model_config, "provider", None),
                 model_id=getattr(request_model_config, "model", None),
                 fallback_text=request.text if isinstance(request.text, str) else None,
+            )
+        elif request_session_id:
+            _title_log_info(
+                "session.title.auto_refresh session=%s "
+                "status=skip_link_routed_internal_work",
+                request_session_id,
             )
 
         resp: Dict[str, Any] = {
@@ -4293,6 +4353,12 @@ async def handle_chat_message(
             resp["recoverable"] = bool(process_result.get("recoverable"))
         if isinstance(process_result.get("error"), dict):
             resp["error"] = process_result.get("error")
+        if isinstance(process_result.get("usage"), dict):
+            resp["usage"] = process_result.get("usage")
+        if request.external_subscription_execution is not None:
+            resp["execution"] = (
+                request.external_subscription_execution.public_result()
+            )
         reasoning_text = "".join(reasoning_buf) if include_reasoning else ""
         reasoning_note = _build_reasoning_visibility_note(
             include_reasoning=include_reasoning,
