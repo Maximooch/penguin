@@ -14,7 +14,7 @@ OPENAI_COMPATIBLE_PROVIDER_ALIASES = {
     "openai-compatible",
     "openai_compat",
 }
-VALID_CLIENT_PREFERENCES = {"native", "litellm", "openrouter"}
+VALID_CLIENT_PREFERENCES = {"native", "litellm", "openrouter", "link"}
 
 
 def normalize_provider_name(provider: str) -> str:

@@ -4,6 +4,7 @@ from typing import Any
 
 from penguin.llm.model_config import ModelConfig
 from penguin.llm.provider_registry import ProviderRegistry
+from penguin.llm.providers.link import LinkInferenceContext, LinkProvider
 
 
 def _unused_litellm_loader(feature: str) -> Any:
@@ -96,3 +97,38 @@ def test_provider_registry_routes_openrouter_gateway_with_context(
         "base_url": "http://localhost:3001/api/v1",
         "extra_headers": {"X-Link-User-Id": "user-123"},
     }
+
+
+def test_provider_registry_routes_link_to_first_class_provider(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("LINK_INFERENCE_SERVICE_TOKEN", "link-service-secret")
+    registry = ProviderRegistry(
+        native_adapter_factory=lambda *_args: (_ for _ in ()).throw(
+            AssertionError("native adapter must not be used for Link")
+        ),
+        litellm_gateway_loader=_unused_litellm_loader,
+    )
+    config = ModelConfig(
+        model="openai/gpt-5.4-nano",
+        provider="openrouter",
+        client_preference="link",
+        max_output_tokens=256,
+    )
+    context = LinkInferenceContext(
+        workspace_id="workspace-1",
+        user_id="user-1",
+        session_id="session-1",
+        agent_id="agent-1",
+        run_id="run-1",
+        requested_model_id=config.model,
+    )
+
+    handler = registry.create_handler(
+        config,
+        base_url="http://link.test/api/v1",
+        link_context=context,
+    )
+
+    assert isinstance(handler, LinkProvider)
+    assert handler.context == context

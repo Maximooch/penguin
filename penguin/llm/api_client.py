@@ -29,6 +29,7 @@ from .contracts import (
 )
 from .model_config import ModelConfig
 from .provider_registry import ProviderRegistry
+from .providers.link.context import LinkInferenceContext
 from .provider_transform import apply_model_config_transforms, build_llm_error
 from penguin.constants import get_default_max_history_tokens
 from penguin.utils.callbacks import adapt_stream_callback
@@ -285,6 +286,7 @@ class APIClient:
         *,
         base_url: Optional[str] = None,
         extra_headers: Optional[Dict[str, str]] = None,
+        link_context: Optional[LinkInferenceContext] = None,
     ):
         """
         Initialize the APIClient.
@@ -302,6 +304,7 @@ class APIClient:
         self._last_response_result: Optional[LLMCallResult] = None
         self._base_url = base_url
         self._extra_headers = dict(extra_headers or {})
+        self._link_context = link_context
         self.provider_registry = ProviderRegistry(
             native_adapter_factory=get_adapter,
             litellm_gateway_loader=load_litellm_gateway_class,
@@ -319,6 +322,7 @@ class APIClient:
                 model_config,
                 base_url=self._base_url,
                 extra_headers=self._extra_headers,
+                link_context=self._link_context,
             )
             self.logger.info(
                 "Using %s for %s (provider=%s, preference=%s)",
