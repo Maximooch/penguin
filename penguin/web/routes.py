@@ -4108,11 +4108,23 @@ async def handle_chat_message(
                     request.external_subscription_execution,
                     requested_model or None,
                 )
+                # The Link capability contract intentionally advertises
+                # provider-local Codex model ids. Penguin's generic runtime
+                # resolver requires a provider-qualified id when the model is
+                # discovered dynamically rather than declared in config.
+                subscription_runtime_model = (
+                    requested_model
+                    if "/" in requested_model
+                    else (
+                        f"{request.external_subscription_execution.provider}/"
+                        f"{requested_model}"
+                    )
+                )
                 (
                     request_model_config,
                     request_api_client,
                 ) = await _resolve_request_runtime_for_model(
-                    core, requested_model or None
+                    core, subscription_runtime_model
                 )
             else:
                 (

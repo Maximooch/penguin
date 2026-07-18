@@ -208,6 +208,66 @@ async def test_chat_message_rejects_cross_user_subscription_authority(
 
 
 @pytest.mark.asyncio
+async def test_chat_message_resolves_subscription_model_through_openai(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolved_models: list[str | None] = []
+
+    class _SubscriptionCore(_Core):
+        async def resolve_request_runtime(
+            self, model_id: str | None
+        ) -> tuple[Any, Any]:
+            resolved_models.append(model_id)
+            return (
+                SimpleNamespace(provider="openai", model="gpt-5.6-luna"),
+                SimpleNamespace(),
+            )
+
+        async def process(self, **_kwargs: Any) -> dict[str, Any]:
+            return {
+                "assistant_response": "hello from the subscription",
+                "action_results": [],
+            }
+
+    monkeypatch.setattr(
+        routes_module,
+        "validate_external_subscription_execution",
+        lambda _execution, _model: None,
+    )
+    request = MessageRequest(
+        text="hello",
+        model="gpt-5.6-luna",
+        directory=str(tmp_path),
+        streaming=False,
+        external_subscription_execution={
+            "protocol_version": 1,
+            "owner_user_id": "user-a",
+            "user_id": "user-a",
+            "requested_model_id": "gpt-5.6-luna",
+            "agent_runtime": "penguin",
+            "provider": "openai",
+            "inference_transport": "codex_responses_compat",
+            "execution_source": "local_penguin",
+            "provider_state_owner": "user_owned",
+            "credential_custodian": "local_penguin",
+            "settlement_mode": "subscription_quota",
+            "usage_authority": "local_runtime_observed",
+            "integration_support": "ecosystem_compatible",
+            "allow_fallback_to_link_gateway": False,
+        },
+    )
+
+    response = await handle_chat_message(
+        request=request,
+        core=cast(Any, _SubscriptionCore(tmp_path)),
+    )
+
+    assert response["response"] == "hello from the subscription"
+    assert resolved_models == ["openai/gpt-5.6-luna"]
+
+
+@pytest.mark.asyncio
 async def test_config_providers_and_auth_methods(tmp_path: Path) -> None:
     core = _Core(tmp_path)
     typed_core = cast(Any, core)
