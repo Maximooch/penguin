@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from penguin.web import routes as routes_module
 from penguin.web.routes import (
@@ -22,6 +23,7 @@ from penguin.web.routes import (
     api_config_providers,
     api_config_update,
     api_instance_dispose,
+    api_link_capabilities,
     api_provider_auth,
     api_provider_list,
     api_provider_oauth_authorize,
@@ -46,6 +48,17 @@ from penguin.web.services.opencode_provider import get_provider_auth_records
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+def _api_request(*, api_key: str) -> Request:
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/v1/chat/message",
+            "headers": [(b"x-api-key", api_key.encode())],
+        }
+    )
 
 
 class _Core:
@@ -176,7 +189,9 @@ async def test_chat_message_model_load_failure_surfaces_reason(
 @pytest.mark.asyncio
 async def test_chat_message_rejects_cross_user_subscription_authority(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("LINK_API_KEY", "link-service-secret")
     core = _Core(tmp_path)
     request = MessageRequest(
         text="hello",
@@ -201,10 +216,73 @@ async def test_chat_message_rejects_cross_user_subscription_authority(
     )
 
     with pytest.raises(HTTPException) as exc:
-        await handle_chat_message(request=request, core=cast(Any, core))
+        await handle_chat_message(
+            request=request,
+            core=cast(Any, core),
+            http_request=_api_request(api_key="link-service-secret"),
+        )
 
     assert exc.value.status_code == 400
     assert "owning Link user" in str(exc.value.detail)
+
+
+def test_chat_message_rejects_link_authority_from_ordinary_api_client(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LINK_API_KEY", "link-service-secret")
+    monkeypatch.setenv("PENGUIN_API_KEYS", "ordinary-client-secret")
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    previous_core = getattr(routes_module.router, "core", None)
+    routes_module.router.core = _Core(tmp_path)
+    payload = {
+        "text": "hello",
+        "model": "openai/gpt-5.4-nano",
+        "link_execution": {
+            "workspace_id": "workspace-1",
+            "user_id": "user-1",
+            "session_id": "session-1",
+            "agent_id": "agent-1",
+            "run_id": "run-1",
+            "requested_model_id": "openai/gpt-5.4-nano",
+            "execution_source": "link_gateway",
+            "provider_state_owner": "link_managed",
+            "settlement_mode": "debit_link_credits",
+            "allow_fallback_to_link_gateway": False,
+        },
+    }
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/chat/message",
+                headers={"X-API-Key": "ordinary-client-secret"},
+                json=payload,
+            )
+    finally:
+        routes_module.router.core = previous_core
+
+    assert response.status_code == 403
+    assert (
+        response.json()["detail"]
+        == "Link execution requires the dedicated Link service credential."
+    )
+
+
+@pytest.mark.asyncio
+async def test_link_capabilities_reject_ordinary_api_clients(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LINK_API_KEY", "link-service-secret")
+    monkeypatch.setenv("PENGUIN_API_KEYS", "ordinary-client-secret")
+
+    with pytest.raises(HTTPException) as raised:
+        await api_link_capabilities(
+            http_request=_api_request(api_key="ordinary-client-secret")
+        )
+
+    assert raised.value.status_code == 403
 
 
 @pytest.mark.asyncio
@@ -212,6 +290,7 @@ async def test_chat_message_resolves_subscription_model_through_openai(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("LINK_API_KEY", "link-service-secret")
     resolved_models: list[str | None] = []
 
     class _SubscriptionCore(_Core):
@@ -261,6 +340,7 @@ async def test_chat_message_resolves_subscription_model_through_openai(
     response = await handle_chat_message(
         request=request,
         core=cast(Any, _SubscriptionCore(tmp_path)),
+        http_request=_api_request(api_key="link-service-secret"),
     )
 
     assert response["response"] == "hello from the subscription"

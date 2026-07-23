@@ -288,6 +288,15 @@ class LLMClient:
 
             return headers
 
+    def _reject_legacy_link_proxy(self) -> None:
+        """Prevent Link execution through a generic provider/base-URL path."""
+
+        if self._config.is_link_proxy or self._config.link.is_configured:
+            raise ValueError(
+                "Legacy Link proxy routing is disabled. Link-managed execution "
+                "must use the first-class LinkProvider with request-scoped context."
+            )
+
     def _get_api_client(self) -> APIClient:
         """Get or create the shared APIClient with current Link-aware config."""
         with self._api_client_lock:
@@ -295,6 +304,7 @@ class LLMClient:
                 return self._api_client
 
             with self._config_lock:
+                self._reject_legacy_link_proxy()
                 base_url = self._config.base_url
                 link_headers = self.get_link_headers()
 
@@ -313,6 +323,7 @@ class LLMClient:
                 return self._gateway
 
             with self._config_lock:
+                self._reject_legacy_link_proxy()
                 base_url = self._config.base_url
                 link_headers = self.get_link_headers()
 

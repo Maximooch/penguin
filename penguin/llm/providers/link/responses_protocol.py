@@ -25,15 +25,12 @@ def build_responses_body(
     for message in messages:
         role = str(message.get("role") or "user")
         content = message.get("content")
-        if not isinstance(content, str):
-            raise ValueError(
-                "Link-managed inference supports text messages only until "
-                "multimodal metering is enabled."
-            )
         if role == "system":
+            _require_text_content(content)
             instructions.append(content)
             continue
         if role == "tool":
+            _require_text_content(content)
             call_id = str(message.get("tool_call_id") or "").strip()
             if not call_id:
                 raise ValueError("Tool results sent through Link require tool_call_id.")
@@ -47,34 +44,54 @@ def build_responses_body(
             continue
         if role not in {"user", "assistant"}:
             raise ValueError(f"Unsupported Link Responses message role: {role}")
-        items.append(
-            {
-                "role": role,
-                "content": [
-                    {
-                        "type": "input_text" if role == "user" else "output_text",
-                        "text": content,
-                    }
-                ],
-            }
-        )
+        if role == "user":
+            _require_text_content(content)
+            items.append(_message_item(role, content))
+            continue
+
+        assistant_has_output = False
+        if isinstance(content, str):
+            items.append(_message_item(role, content))
+            assistant_has_output = True
+        elif content is not None:
+            _require_text_content(content)
 
         tool_calls = message.get("tool_calls")
-        if role == "assistant" and isinstance(tool_calls, list):
+        if isinstance(tool_calls, list):
             for tool_call in tool_calls:
-                function = (
-                    tool_call.get("function") if isinstance(tool_call, dict) else None
-                )
+                if not isinstance(tool_call, dict):
+                    raise ValueError(
+                        "Assistant tool calls sent through Link are invalid."
+                    )
+                function = tool_call.get("function")
                 if not isinstance(function, dict):
-                    continue
+                    raise ValueError(
+                        "Assistant tool calls sent through Link are invalid."
+                    )
+                call_id = str(tool_call.get("id") or "").strip()
+                name = str(function.get("name") or "").strip()
+                if not call_id or not name:
+                    raise ValueError(
+                        "Assistant tool calls sent through Link require an id and name."
+                    )
+                arguments = function.get("arguments")
+                if arguments is not None and not isinstance(arguments, str):
+                    raise ValueError(
+                        "Assistant tool-call arguments sent through Link must be text."
+                    )
                 items.append(
                     {
                         "type": "function_call",
-                        "call_id": str(tool_call.get("id") or ""),
-                        "name": str(function.get("name") or ""),
-                        "arguments": str(function.get("arguments") or "{}"),
+                        "call_id": call_id,
+                        "name": name,
+                        "arguments": arguments or "{}",
                     }
                 )
+                assistant_has_output = True
+        if not assistant_has_output:
+            raise ValueError(
+                "Assistant history sent through Link requires text or tool calls."
+            )
 
     body: dict[str, Any] = {
         "model": model,
@@ -93,6 +110,26 @@ def build_responses_body(
     if reasoning is not None:
         body["reasoning"] = reasoning
     return body
+
+
+def _require_text_content(content: Any) -> None:
+    if not isinstance(content, str):
+        raise ValueError(
+            "Link-managed inference supports text messages only until "
+            "multimodal metering is enabled."
+        )
+
+
+def _message_item(role: str, content: str) -> dict[str, Any]:
+    return {
+        "role": role,
+        "content": [
+            {
+                "type": "input_text" if role == "user" else "output_text",
+                "text": content,
+            }
+        ],
+    }
 
 
 def parse_responses_body(

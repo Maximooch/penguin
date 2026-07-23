@@ -214,6 +214,27 @@ class LinkProvider:
                 payload = response.json()
                 if not isinstance(payload, dict):
                     raise ValueError("Link returned a non-object inference response.")
+                if protocol == "responses":
+                    response_status = str(payload.get("status") or "completed")
+                    if response_status != "completed":
+                        event_type = f"response.{response_status}"
+                        raise LLMProviderError(
+                            build_llm_error(
+                                message=_responses_stream_error_message(
+                                    event_type,
+                                    payload,
+                                    payload,
+                                ),
+                                provider="link",
+                                model=str(self.model_config.model),
+                                category=ErrorCategory.RUNTIME,
+                                retryable=False,
+                                provider_data={
+                                    "dispatch_outcome": "terminal_failure",
+                                    "response_status": response_status,
+                                },
+                            )
+                        )
                 result = self._parse_buffered(protocol, payload)
                 self._capture_response_headers(response.headers)
 
@@ -416,6 +437,7 @@ class LinkProvider:
         usage = LLMUsage()
         finish = FinishReason.UNKNOWN
         response_id: str | None = None
+        terminal_event_seen = False
         async with client.stream(
             "POST",
             f"{self.config.base_url}/{route}",
@@ -482,6 +504,30 @@ class LinkProvider:
                             }
                     elif event_type == "response.completed":
                         finish = FinishReason.STOP
+                        terminal_event_seen = True
+                    elif event_type in {
+                        "response.failed",
+                        "response.incomplete",
+                        "response.error",
+                        "error",
+                    }:
+                        raise LLMProviderError(
+                            build_llm_error(
+                                message=_responses_stream_error_message(
+                                    event_type,
+                                    event,
+                                    response_payload,
+                                ),
+                                provider="link",
+                                model=str(self.model_config.model),
+                                category=ErrorCategory.RUNTIME,
+                                retryable=False,
+                                provider_data={
+                                    "dispatch_outcome": "terminal_failure",
+                                    "stream_event": event_type,
+                                },
+                            )
+                        )
                 else:
                     response_id = response_id or _optional_str(event.get("id"))
                     if isinstance(event.get("usage"), dict):
@@ -524,6 +570,25 @@ class LinkProvider:
                     )
                     if candidate_finish != FinishReason.UNKNOWN:
                         finish = candidate_finish
+                        terminal_event_seen = True
+
+        if not terminal_event_seen:
+            raise LLMProviderError(
+                build_llm_error(
+                    message=(
+                        "Link inference stream ended without a protocol terminal "
+                        "event; the provider outcome is uncertain."
+                    ),
+                    provider="link",
+                    model=str(self.model_config.model),
+                    category=ErrorCategory.NETWORK,
+                    retryable=False,
+                    provider_data={
+                        "dispatch_outcome": "uncertain",
+                        "protocol": protocol,
+                    },
+                )
+            )
 
         normalized_tools = [
             LLMToolCall(
@@ -535,8 +600,6 @@ class LinkProvider:
         ]
         if normalized_tools:
             finish = FinishReason.TOOL_CALLS
-        elif finish == FinishReason.UNKNOWN:
-            finish = FinishReason.STOP
         return (
             "".join(text_parts),
             "".join(reasoning_parts),
@@ -601,9 +664,33 @@ class LinkProvider:
                 self._last_provider_data[key] = value
 
 
-async def _emit(
-    callback: StreamCallback | None, text: str, message_type: str
-) -> None:
+def _responses_stream_error_message(
+    event_type: str,
+    event: dict[str, Any],
+    response: Any,
+) -> str:
+    """Extract a stable diagnostic from a terminal Responses failure event."""
+
+    candidates: list[Any] = [event.get("message"), event.get("error")]
+    if isinstance(response, dict):
+        candidates.extend(
+            [
+                response.get("error"),
+                response.get("incomplete_details"),
+                response.get("status_details"),
+            ]
+        )
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+        if isinstance(candidate, dict):
+            message = candidate.get("message") or candidate.get("reason")
+            if isinstance(message, str) and message.strip():
+                return message.strip()
+    return f"Link inference stream ended with {event_type}."
+
+
+async def _emit(callback: StreamCallback | None, text: str, message_type: str) -> None:
     if callback is None or not text:
         return
     result = callback(text, message_type)
