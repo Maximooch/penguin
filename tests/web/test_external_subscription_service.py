@@ -68,6 +68,25 @@ def test_capability_reports_oauth_models_without_credentials(monkeypatch) -> Non
     assert "account-secret" not in serialized
 
 
+def test_public_execution_result_supports_pydantic_1(monkeypatch) -> None:
+    if hasattr(service.ExternalSubscriptionExecutionRequest, "model_dump"):
+        monkeypatch.setattr(
+            service.ExternalSubscriptionExecutionRequest,
+            "model_dump",
+            None,
+        )
+    monkeypatch.setattr(
+        service.ExternalSubscriptionExecutionRequest,
+        "dict",
+        lambda self: dict(self.__dict__),
+    )
+
+    result = _execution().public_result()
+
+    assert result["owner_user_id"] == "user-a"
+    assert result["settlement_mode"] == "subscription_quota"
+
+
 def test_execution_rejects_cross_user_subscription(monkeypatch) -> None:
     monkeypatch.setattr(
         service,
@@ -82,7 +101,40 @@ def test_execution_rejects_cross_user_subscription(monkeypatch) -> None:
         )
 
 
+def test_execution_requires_a_penguin_owned_link_user_binding(monkeypatch) -> None:
+    monkeypatch.delenv("PENGUIN_LINK_SUBSCRIPTION_OWNER_USER_ID", raising=False)
+    monkeypatch.setattr(
+        service,
+        "get_provider_credentials",
+        lambda: {"openai": {"type": "oauth", "access": "secret"}},
+    )
+
+    with pytest.raises(ValueError, match="not paired with a Link user"):
+        service.validate_external_subscription_execution(
+            _execution(),
+            "gpt-5.4",
+        )
+
+
+def test_execution_rejects_a_different_user_than_the_runtime_binding(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("PENGUIN_LINK_SUBSCRIPTION_OWNER_USER_ID", "user-b")
+    monkeypatch.setattr(
+        service,
+        "get_provider_credentials",
+        lambda: {"openai": {"type": "oauth", "access": "secret"}},
+    )
+
+    with pytest.raises(ValueError, match="does not own this Penguin runtime"):
+        service.validate_external_subscription_execution(
+            _execution(),
+            "gpt-5.4",
+        )
+
+
 def test_execution_requires_local_oauth_and_exact_model(monkeypatch) -> None:
+    monkeypatch.setenv("PENGUIN_LINK_SUBSCRIPTION_OWNER_USER_ID", "user-a")
     monkeypatch.setattr(
         service,
         "get_provider_credentials",

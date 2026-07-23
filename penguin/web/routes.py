@@ -118,6 +118,7 @@ from penguin.web.services.token_usage import get_token_usage_payload
 from penguin.web.middleware.auth import (
     AuthenticationError,
     AuthConfig,
+    authenticate_link_service_request,
     authenticate_local_session_token,
     build_session_cookie_settings,
     create_session_token,
@@ -3583,9 +3584,10 @@ async def api_config_providers(core: PenguinCore = Depends(get_core)):
 
 
 @router.get("/api/v1/link/capabilities")
-async def api_link_capabilities() -> dict[str, Any]:
+async def api_link_capabilities(http_request: Request) -> dict[str, Any]:
     """Return versioned Link capabilities without provider credentials."""
 
+    authenticate_link_service_request(http_request)
     return build_external_subscription_capabilities()
 
 
@@ -3938,9 +3940,22 @@ async def discover_models(core: PenguinCore = Depends(get_core)):
 
 @router.post("/api/v1/chat/message")
 async def handle_chat_message(
-    request: MessageRequest, core: PenguinCore = Depends(get_core)
+    request: MessageRequest,
+    core: PenguinCore = Depends(get_core),
+    http_request: Request = None,
 ):
     """Process a chat message, with optional conversation support."""
+    if (
+        request.link_execution is not None
+        or request.external_subscription_execution is not None
+    ):
+        if http_request is None:
+            raise HTTPException(
+                status_code=403,
+                detail="Link execution requires an authenticated HTTP request.",
+            )
+        authenticate_link_service_request(http_request)
+
     temp_image_files: List[str] = []
     request_session_id: Optional[str] = None
     request_task: Optional[asyncio.Task[Any]] = None

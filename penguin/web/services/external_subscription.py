@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, Literal
 
 from pydantic import BaseModel
@@ -10,6 +11,7 @@ from penguin.web.services.provider_catalog import codex_oauth_provider_models
 from penguin.web.services.provider_credentials import get_provider_credentials
 
 EXTERNAL_SUBSCRIPTION_PROTOCOL_VERSION = 1
+LINK_SUBSCRIPTION_OWNER_ENV = "PENGUIN_LINK_SUBSCRIPTION_OWNER_USER_ID"
 
 
 class ExternalSubscriptionExecutionRequest(BaseModel):
@@ -33,7 +35,10 @@ class ExternalSubscriptionExecutionRequest(BaseModel):
     def public_result(self) -> dict[str, Any]:
         """Return execution facts without credentials or local auth records."""
 
-        return self.model_dump()
+        model_dump = getattr(self, "model_dump", None)
+        if callable(model_dump):
+            return model_dump()
+        return self.dict()
 
 
 def build_external_subscription_capabilities() -> dict[str, Any]:
@@ -94,6 +99,17 @@ def validate_external_subscription_execution(
 
     if execution.owner_user_id != execution.user_id:
         raise ValueError("A personal subscription can only serve its owning Link user.")
+    bound_owner_user_id = os.getenv(LINK_SUBSCRIPTION_OWNER_ENV, "").strip()
+    if not bound_owner_user_id:
+        raise ValueError(
+            "This Penguin runtime is not paired with a Link user for personal "
+            "subscription execution."
+        )
+    if execution.user_id != bound_owner_user_id:
+        raise ValueError(
+            "The requested Link user does not own this Penguin runtime's "
+            "personal subscription binding."
+        )
     selected = str(requested_model or "").strip()
     if not selected or selected != execution.requested_model_id:
         raise ValueError(

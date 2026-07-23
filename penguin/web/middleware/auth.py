@@ -99,11 +99,6 @@ class AuthConfig:
         if api_keys_str:
             keys.update(k.strip() for k in api_keys_str.split(",") if k.strip())
 
-        # Load Link API key if present
-        link_key = os.getenv("LINK_API_KEY")
-        if link_key:
-            keys.add(link_key.strip())
-
         return keys
 
     def _load_public_endpoints(self) -> set:
@@ -458,6 +453,34 @@ def validate_api_key(api_key: str, config: AuthConfig) -> bool:
     return any(secrets.compare_digest(api_key, key) for key in config.api_keys)
 
 
+def authenticate_link_service_request(
+    request: Request,
+    config: Optional[AuthConfig] = None,
+) -> dict[str, Any]:
+    """Authenticate a request as Link's dedicated internal service identity."""
+
+    auth_config = config or AuthConfig()
+    expected = str(auth_config.link_api_key or "").strip()
+    if not expected:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Link service authentication is not configured in Penguin.",
+        )
+
+    candidate = extract_api_key(request) or extract_bearer_token(request) or ""
+    if not secrets.compare_digest(candidate, expected):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Link execution requires the dedicated Link service credential.",
+        )
+
+    return {
+        "method": "link_service",
+        "subject": "link",
+        "metadata": {"service": "link"},
+    }
+
+
 def validate_startup_token(
     token: str, config: AuthConfig, connection: Any = None
 ) -> bool:
@@ -632,6 +655,15 @@ def authenticate_connection(
 
     api_key = extract_api_key(connection)
     if api_key:
+        if auth_config.link_api_key and secrets.compare_digest(
+            api_key,
+            auth_config.link_api_key,
+        ):
+            return {
+                "method": "link_service",
+                "subject": "link",
+                "metadata": {"service": "link"},
+            }
         if validate_api_key(api_key, auth_config):
             return {
                 "method": "api_key",
