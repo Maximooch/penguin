@@ -271,6 +271,29 @@ def test_chat_message_rejects_link_authority_from_ordinary_api_client(
 
 
 @pytest.mark.asyncio
+async def test_link_service_credential_cannot_run_chat_without_execution_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LINK_API_KEY", "link-service-secret")
+    http_request = _api_request(api_key="link-service-secret")
+    http_request.state.auth_method = "link_service"
+
+    with pytest.raises(HTTPException) as raised:
+        await handle_chat_message(
+            request=MessageRequest(text="ordinary chat"),
+            core=cast(Any, _Core(tmp_path)),
+            http_request=http_request,
+        )
+
+    assert raised.value.status_code == 403
+    assert raised.value.detail == (
+        "The Link execution credential requires a Link-managed or "
+        "personal-subscription execution descriptor."
+    )
+
+
+@pytest.mark.asyncio
 async def test_link_capabilities_reject_ordinary_api_clients(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
