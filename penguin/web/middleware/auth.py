@@ -40,6 +40,15 @@ _DYNAMIC_PATH_SEGMENT = re.compile(
     r"^(?:[0-9]+|[0-9a-fA-F-]{8,}|session_[A-Za-z0-9_:-]+|msg_[A-Za-z0-9_:-]+|task_[A-Za-z0-9_:-]+)$"
 )
 _SEEN_AUTH_FAILURES: "OrderedDict[tuple[str, str], None]" = OrderedDict()
+LINK_SERVICE_HTTP_SCOPE = frozenset(
+    {
+        ("GET", "/api/v1/link/capabilities"),
+        ("POST", "/api/v1/chat/message"),
+    }
+)
+LINK_SERVICE_FORBIDDEN_DETAIL = (
+    "The Link execution credential is not authorized for this endpoint."
+)
 
 # Security scheme for Bearer token
 security = HTTPBearer(auto_error=False)
@@ -64,7 +73,12 @@ class AuthConfig:
         self.jwt_expiration_hours = int(os.getenv("PENGUIN_JWT_EXPIRATION_HOURS", "24"))
 
         # Link-specific configuration
-        self.link_api_key = os.getenv("LINK_API_KEY")
+        self.link_api_key = os.getenv("LINK_API_KEY", "").strip() or None
+        if self.link_api_key and self.link_api_key in self.api_keys:
+            raise ValueError(
+                "LINK_API_KEY must not also appear in PENGUIN_API_KEYS; "
+                "configure distinct credentials."
+            )
         self.link_auth_required = (
             os.getenv("PENGUIN_LINK_AUTH_REQUIRED", "false").lower() == "true"
         )
@@ -569,6 +583,16 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
                 },
             )
 
+        if (
+            auth_result["method"] == "link_service"
+            and (request.method.upper(), request.url.path)
+            not in LINK_SERVICE_HTTP_SCOPE
+        ):
+            return JSONResponse(
+                status_code=status.HTTP_403_FORBIDDEN,
+                content={"detail": LINK_SERVICE_FORBIDDEN_DETAIL},
+            )
+
         # Add auth info to request state
         request.state.authenticated = True
         request.state.auth_method = auth_result["method"]
@@ -718,6 +742,12 @@ async def require_websocket_auth(
             code=status.WS_1008_POLICY_VIOLATION,
             reason=build_unauthorized_message(auth_config),
         ) from exc
+
+    if auth_result["method"] == "link_service":
+        raise WebSocketException(
+            code=status.WS_1008_POLICY_VIOLATION,
+            reason=LINK_SERVICE_FORBIDDEN_DETAIL,
+        )
 
     websocket.state.authenticated = True
     websocket.state.auth_method = auth_result["method"]

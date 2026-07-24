@@ -155,6 +155,12 @@ def _rehydrate_provider_credentials(core: PenguinCore) -> None:
 
 def create_app() -> "FastAPI":
     """Create and configure the FastAPI application."""
+    # AuthenticationMiddleware reads its key material during construction.
+    # Load the persistent user environment before importing and instantiating
+    # AuthConfig so a normal `penguin-web` restart retains dedicated service
+    # credentials such as LINK_API_KEY.
+    _ensure_env_loaded()
+
     try:
         from fastapi import FastAPI
         from fastapi.responses import FileResponse

@@ -54,7 +54,11 @@ from penguin.core_runtime.session_goals import (
     GoalPersistenceError,
     GoalValidationError,
 )
-from penguin.system.execution_context import ExecutionContext, execution_context_scope, normalize_directory
+from penguin.system.execution_context import (
+    ExecutionContext,
+    execution_context_scope,
+    normalize_directory,
+)
 from penguin import __version__
 from penguin.utils.events import EventBus as UtilsEventBus
 from penguin.cli.events import EventBus as CLIEventBus, EventType
@@ -1041,9 +1045,9 @@ class MessageRequest(BaseModel):
     service_tier: Optional[str] = None
     parts: Optional[List[Dict[str, Any]]] = None
     link_execution: Optional[LinkExecutionRequest] = None
-    external_subscription_execution: Optional[
-        ExternalSubscriptionExecutionRequest
-    ] = None
+    external_subscription_execution: Optional[ExternalSubscriptionExecutionRequest] = (
+        None
+    )
 
 
 _REASONING_EFFORT_VARIANTS = {
@@ -3945,10 +3949,23 @@ async def handle_chat_message(
     http_request: Request = None,
 ):
     """Process a chat message, with optional conversation support."""
-    if (
+    has_link_execution_authority = (
         request.link_execution is not None
         or request.external_subscription_execution is not None
-    ):
+    )
+    is_link_service = bool(
+        http_request is not None
+        and getattr(http_request.state, "auth_method", None) == "link_service"
+    )
+    if is_link_service and not has_link_execution_authority:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "The Link execution credential requires a Link-managed or "
+                "personal-subscription execution descriptor."
+            ),
+        )
+    if has_link_execution_authority:
         if http_request is None:
             raise HTTPException(
                 status_code=403,
@@ -4383,9 +4400,7 @@ async def handle_chat_message(
         if isinstance(process_result.get("usage"), dict):
             resp["usage"] = process_result.get("usage")
         if request.external_subscription_execution is not None:
-            resp["execution"] = (
-                request.external_subscription_execution.public_result()
-            )
+            resp["execution"] = request.external_subscription_execution.public_result()
         reasoning_text = "".join(reasoning_buf) if include_reasoning else ""
         reasoning_note = _build_reasoning_visibility_note(
             include_reasoning=include_reasoning,
@@ -4830,8 +4845,7 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
                     _request_log_info(
                         "chat.stream.service_tier.request session=%s model=%s service_tier=%s",
                         effective_session_id or "unknown",
-                        getattr(request_model_config, "model", None)
-                        or requested_model,
+                        getattr(request_model_config, "model", None) or requested_model,
                         service_tier_override,
                     )
                 reasoning_variant_snapshot = _apply_reasoning_variant_override(
@@ -5277,6 +5291,7 @@ async def get_project(project_id: str, core: PenguinCore = Depends(get_core)):
 # @router.put("/api/v1/projects/{project_id}")
 # async def update_project(...):
 
+
 @router.delete("/api/v1/projects/{project_id}")
 async def delete_project(project_id: str, core: PenguinCore = Depends(get_core)):
     """Delete a project and its tasks."""
@@ -5361,6 +5376,7 @@ async def get_task(task_id: str, core: PenguinCore = Depends(get_core)):
 # @router.put("/api/v1/tasks/{task_id}")
 # async def update_task(...):
 
+
 @router.delete("/api/v1/tasks/{task_id}")
 async def delete_task(task_id: str, core: PenguinCore = Depends(get_core)):
     """Delete a task by ID."""
@@ -5396,9 +5412,9 @@ async def resume_task_clarification(
         project = None
         if task.project_id and hasattr(core.project_manager, "get_project_async"):
             project = await core.project_manager.get_project_async(task.project_id)
-        resolved_directory = normalize_directory(request.directory) or normalize_directory(
-            getattr(project, "workspace_path", None)
-        )
+        resolved_directory = normalize_directory(
+            request.directory
+        ) or normalize_directory(getattr(project, "workspace_path", None))
         execution_context = ExecutionContext(
             session_id=request.session_id,
             conversation_id=request.session_id,
@@ -5539,9 +5555,9 @@ async def execute_task_from_project(
                 if asyncio.iscoroutine(project_candidate)
                 else project_candidate
             )
-        resolved_directory = normalize_directory(payload.directory) or normalize_directory(
-            getattr(project, "workspace_path", None)
-        )
+        resolved_directory = normalize_directory(
+            payload.directory
+        ) or normalize_directory(getattr(project, "workspace_path", None))
         execution_context = ExecutionContext(
             session_id=payload.session_id,
             conversation_id=payload.session_id,
@@ -6286,9 +6302,7 @@ async def session_goal_run(
 
 
 @router.delete("/session/{session_id}/goal")
-async def session_goal_clear(
-    session_id: str, core: PenguinCore = Depends(get_core)
-):
+async def session_goal_clear(session_id: str, core: PenguinCore = Depends(get_core)):
     """Clear the persisted session goal."""
     try:
         await session_goal_service.clear_goal(core, session_id)

@@ -6,6 +6,7 @@ import os
 from types import SimpleNamespace
 
 from penguin.web import app as web_app
+from penguin.web.middleware import auth as web_auth
 
 
 def test_rehydrate_provider_credentials_applies_all_valid_records(monkeypatch) -> None:
@@ -120,3 +121,28 @@ def test_create_core_primes_credentials_before_loading_config(monkeypatch) -> No
     core = web_app._create_core()
 
     assert isinstance(core, _Core)
+
+
+def test_create_app_loads_user_env_before_auth_config(monkeypatch) -> None:
+    startup_order: list[str] = []
+
+    def _load_env() -> None:
+        startup_order.append("env")
+
+    class _AuthConfig:
+        def __init__(self) -> None:
+            startup_order.append("auth")
+            assert startup_order == ["env", "auth"]
+
+    monkeypatch.setattr(web_app, "_ensure_env_loaded", _load_env)
+    monkeypatch.setattr(web_auth, "AuthConfig", _AuthConfig)
+    monkeypatch.setattr(web_app, "get_or_create_core", lambda: SimpleNamespace())
+    monkeypatch.setattr(
+        web_app,
+        "_rehydrate_provider_credentials",
+        lambda _core: None,
+    )
+
+    web_app.create_app()
+
+    assert startup_order == ["env", "auth"]
