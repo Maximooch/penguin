@@ -56,7 +56,7 @@ class ModelConfig:
 
     model: str
     provider: str
-    client_preference: Literal["native", "litellm", "openrouter"] = "openrouter"
+    client_preference: Literal["native", "litellm", "openrouter", "link"] = "openrouter"
     api_base: Optional[str] = None
     api_key: Optional[str] = None
     api_version: Optional[str] = None
