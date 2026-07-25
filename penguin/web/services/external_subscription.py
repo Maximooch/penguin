@@ -9,6 +9,10 @@ from pydantic import BaseModel
 
 from penguin.web.services.provider_catalog import codex_oauth_provider_models
 from penguin.web.services.provider_credentials import get_provider_credentials
+from penguin.web.services.reasoning_variants import (
+    reasoning_effort_from_metadata,
+    reasoning_efforts_from_metadata,
+)
 
 EXTERNAL_SUBSCRIPTION_PROTOCOL_VERSION = 1
 LINK_SUBSCRIPTION_OWNER_ENV = "PENGUIN_LINK_SUBSCRIPTION_OWNER_USER_ID"
@@ -132,7 +136,12 @@ def validate_external_subscription_execution(
 
 
 def _model_capability(model_id: str, config: dict[str, Any]) -> dict[str, Any]:
-    supported_reasoning = config.get("supported_reasoning_levels")
+    reasoning_efforts = reasoning_efforts_from_metadata(
+        config.get("supported_reasoning_levels")
+    )
+    default_reasoning_effort = reasoning_effort_from_metadata(
+        config.get("default_reasoning_level")
+    )
     return {
         "id": model_id,
         "name": str(config.get("name") or config.get("model") or model_id),
@@ -140,13 +149,12 @@ def _model_capability(model_id: str, config: dict[str, Any]) -> dict[str, Any]:
             config.get("max_context_window_tokens") or config.get("context_window")
         ),
         "max_output_tokens": _positive_int(config.get("max_output_tokens")),
-        "reasoning": bool(
-            config.get("reasoning_enabled")
-            or (
-                isinstance(supported_reasoning, (list, tuple))
-                and bool(supported_reasoning)
-            )
-        ),
+        "reasoning": bool(config.get("reasoning_enabled") or reasoning_efforts),
+        "reasoning_efforts": list(reasoning_efforts),
+        "default_reasoning_effort": default_reasoning_effort,
+        # The ChatGPT-backed Codex transport accepts OpenAI's priority service
+        # tier. Link presents that exact transport capability as Fast mode.
+        "service_tiers": ["priority"],
         "vision": bool(config.get("vision_enabled")),
         "tools": True,
     }

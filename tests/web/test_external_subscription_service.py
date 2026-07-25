@@ -49,6 +49,13 @@ def test_capability_reports_oauth_models_without_credentials(monkeypatch) -> Non
                     "context_window": 200_000,
                     "max_output_tokens": 32_000,
                     "reasoning_enabled": True,
+                    "supported_reasoning_levels": [
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                    ],
+                    "default_reasoning_level": "medium",
                     "vision_enabled": True,
                     "source": "codex",
                 }
@@ -61,7 +68,11 @@ def test_capability_reports_oauth_models_without_credentials(monkeypatch) -> Non
     assert payload["protocol_version"] == 1
     subscription = payload["subscriptions"][0]
     assert subscription["authenticated"] is True
-    assert subscription["models"][0]["id"] == "gpt-5.4"
+    model = subscription["models"][0]
+    assert model["id"] == "gpt-5.4"
+    assert model["reasoning_efforts"] == ["low", "medium", "high", "xhigh"]
+    assert model["default_reasoning_effort"] == "medium"
+    assert model["service_tiers"] == ["priority"]
     serialized = repr(payload)
     assert "secret-access" not in serialized
     assert "secret-refresh" not in serialized
