@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from penguin.web import routes as routes_module
 from penguin.web.routes import (
@@ -22,6 +23,7 @@ from penguin.web.routes import (
     api_config_providers,
     api_config_update,
     api_instance_dispose,
+    api_link_capabilities,
     api_provider_auth,
     api_provider_list,
     api_provider_oauth_authorize,
@@ -46,6 +48,17 @@ from penguin.web.services.opencode_provider import get_provider_auth_records
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+def _api_request(*, api_key: str) -> Request:
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/v1/chat/message",
+            "headers": [(b"x-api-key", api_key.encode())],
+        }
+    )
 
 
 class _Core:
@@ -171,6 +184,190 @@ async def test_chat_message_model_load_failure_surfaces_reason(
         exc.value.detail
     )
     assert "Native anthropic model lookup failed" in str(exc.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_chat_message_rejects_cross_user_subscription_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LINK_API_KEY", "link-service-secret")
+    core = _Core(tmp_path)
+    request = MessageRequest(
+        text="hello",
+        model="gpt-5.4",
+        directory=str(tmp_path),
+        external_subscription_execution={
+            "protocol_version": 1,
+            "owner_user_id": "user-a",
+            "user_id": "user-b",
+            "requested_model_id": "gpt-5.4",
+            "agent_runtime": "penguin",
+            "provider": "openai",
+            "inference_transport": "codex_responses_compat",
+            "execution_source": "local_penguin",
+            "provider_state_owner": "user_owned",
+            "credential_custodian": "local_penguin",
+            "settlement_mode": "subscription_quota",
+            "usage_authority": "local_runtime_observed",
+            "integration_support": "ecosystem_compatible",
+            "allow_fallback_to_link_gateway": False,
+        },
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await handle_chat_message(
+            request=request,
+            core=cast(Any, core),
+            http_request=_api_request(api_key="link-service-secret"),
+        )
+
+    assert exc.value.status_code == 400
+    assert "owning Link user" in str(exc.value.detail)
+
+
+def test_chat_message_rejects_link_authority_from_ordinary_api_client(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LINK_API_KEY", "link-service-secret")
+    monkeypatch.setenv("PENGUIN_API_KEYS", "ordinary-client-secret")
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    previous_core = getattr(routes_module.router, "core", None)
+    routes_module.router.core = _Core(tmp_path)
+    payload = {
+        "text": "hello",
+        "model": "openai/gpt-5.4-nano",
+        "link_execution": {
+            "workspace_id": "workspace-1",
+            "user_id": "user-1",
+            "session_id": "session-1",
+            "agent_id": "agent-1",
+            "run_id": "run-1",
+            "requested_model_id": "openai/gpt-5.4-nano",
+            "execution_source": "link_gateway",
+            "provider_state_owner": "link_managed",
+            "settlement_mode": "debit_link_credits",
+            "allow_fallback_to_link_gateway": False,
+        },
+    }
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/chat/message",
+                headers={"X-API-Key": "ordinary-client-secret"},
+                json=payload,
+            )
+    finally:
+        routes_module.router.core = previous_core
+
+    assert response.status_code == 403
+    assert (
+        response.json()["detail"]
+        == "Link execution requires the dedicated Link service credential."
+    )
+
+
+@pytest.mark.asyncio
+async def test_link_service_credential_cannot_run_chat_without_execution_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LINK_API_KEY", "link-service-secret")
+    http_request = _api_request(api_key="link-service-secret")
+    http_request.state.auth_method = "link_service"
+
+    with pytest.raises(HTTPException) as raised:
+        await handle_chat_message(
+            request=MessageRequest(text="ordinary chat"),
+            core=cast(Any, _Core(tmp_path)),
+            http_request=http_request,
+        )
+
+    assert raised.value.status_code == 403
+    assert raised.value.detail == (
+        "The Link execution credential requires a Link-managed or "
+        "personal-subscription execution descriptor."
+    )
+
+
+@pytest.mark.asyncio
+async def test_link_capabilities_reject_ordinary_api_clients(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LINK_API_KEY", "link-service-secret")
+    monkeypatch.setenv("PENGUIN_API_KEYS", "ordinary-client-secret")
+
+    with pytest.raises(HTTPException) as raised:
+        await api_link_capabilities(
+            http_request=_api_request(api_key="ordinary-client-secret")
+        )
+
+    assert raised.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_chat_message_resolves_subscription_model_through_openai(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LINK_API_KEY", "link-service-secret")
+    resolved_models: list[str | None] = []
+
+    class _SubscriptionCore(_Core):
+        async def resolve_request_runtime(
+            self, model_id: str | None
+        ) -> tuple[Any, Any]:
+            resolved_models.append(model_id)
+            return (
+                SimpleNamespace(provider="openai", model="gpt-5.6-luna"),
+                SimpleNamespace(),
+            )
+
+        async def process(self, **_kwargs: Any) -> dict[str, Any]:
+            return {
+                "assistant_response": "hello from the subscription",
+                "action_results": [],
+            }
+
+    monkeypatch.setattr(
+        routes_module,
+        "validate_external_subscription_execution",
+        lambda _execution, _model: None,
+    )
+    request = MessageRequest(
+        text="hello",
+        model="gpt-5.6-luna",
+        directory=str(tmp_path),
+        streaming=False,
+        external_subscription_execution={
+            "protocol_version": 1,
+            "owner_user_id": "user-a",
+            "user_id": "user-a",
+            "requested_model_id": "gpt-5.6-luna",
+            "agent_runtime": "penguin",
+            "provider": "openai",
+            "inference_transport": "codex_responses_compat",
+            "execution_source": "local_penguin",
+            "provider_state_owner": "user_owned",
+            "credential_custodian": "local_penguin",
+            "settlement_mode": "subscription_quota",
+            "usage_authority": "local_runtime_observed",
+            "integration_support": "ecosystem_compatible",
+            "allow_fallback_to_link_gateway": False,
+        },
+    )
+
+    response = await handle_chat_message(
+        request=request,
+        core=cast(Any, _SubscriptionCore(tmp_path)),
+        http_request=_api_request(api_key="link-service-secret"),
+    )
+
+    assert response["response"] == "hello from the subscription"
+    assert resolved_models == ["openai/gpt-5.6-luna"]
 
 
 @pytest.mark.asyncio

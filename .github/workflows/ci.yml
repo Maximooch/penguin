@@ -9,6 +9,57 @@ permissions:
   contents: read
 
 jobs:
+  link-provider-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python-version: "3.9"
+            pydantic-spec: "pydantic==1.10.24"
+          - python-version: "3.12"
+            pydantic-spec: "pydantic>=2,<3"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install Penguin development dependencies
+        run: python -m pip install -e '.[dev]' '${{ matrix.pydantic-spec }}'
+      - name: Check Link provider and authority modules
+        run: |
+          ruff check \
+            penguin/llm/providers/link \
+            penguin/web/services/external_subscription.py \
+            penguin/web/services/link_inference.py \
+            tests/llm/test_link_provider.py \
+            tests/llm/test_link_runtime_contract.py \
+            tests/web/test_external_subscription_service.py \
+            tests/web/test_link_execution_authority.py
+          ruff format --check \
+            penguin/llm/providers/link \
+            penguin/web/services/external_subscription.py \
+            penguin/web/services/link_inference.py \
+            tests/llm/test_link_provider.py \
+            tests/llm/test_link_runtime_contract.py \
+            tests/web/test_external_subscription_service.py \
+            tests/web/test_link_execution_authority.py
+      - name: Run Link provider and Pydantic compatibility contracts
+        run: |
+          pytest -q \
+            tests/llm/test_link_provider.py \
+            tests/llm/test_link_runtime_contract.py \
+            tests/llm/test_provider_registry.py \
+            tests/web/test_link_inference_service.py \
+            tests/web/test_external_subscription_service.py \
+            tests/web/test_link_execution_authority.py \
+            tests/api/test_opencode_provider_routes.py::test_chat_message_rejects_cross_user_subscription_authority \
+            tests/api/test_opencode_provider_routes.py::test_chat_message_rejects_link_authority_from_ordinary_api_client \
+            tests/api/test_opencode_provider_routes.py::test_link_capabilities_reject_ordinary_api_clients \
+            tests/api/test_opencode_provider_routes.py::test_chat_message_resolves_subscription_model_through_openai
+
   python-goal-contract:
     runs-on: ubuntu-latest
     timeout-minutes: 20

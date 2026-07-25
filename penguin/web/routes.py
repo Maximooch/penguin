@@ -55,7 +55,11 @@ from penguin.core_runtime.session_goals import (
     GoalPersistenceError,
     GoalValidationError,
 )
-from penguin.system.execution_context import ExecutionContext, execution_context_scope, normalize_directory
+from penguin.system.execution_context import (
+    ExecutionContext,
+    execution_context_scope,
+    normalize_directory,
+)
 from penguin import __version__
 from penguin.utils.events import EventBus as UtilsEventBus
 from penguin.cli.events import EventBus as CLIEventBus, EventType
@@ -66,6 +70,15 @@ from penguin.web.services.configuration import (
 )
 from penguin.web.services.command_registry import list_opencode_commands
 from penguin.web.services.notification_settings import notification_settings_payload
+from penguin.web.services.external_subscription import (
+    ExternalSubscriptionExecutionRequest,
+    build_external_subscription_capabilities,
+    validate_external_subscription_execution,
+)
+from penguin.web.services.link_inference import (
+    LinkExecutionRequest,
+    resolve_link_inference_runtime,
+)
 from penguin.web.services.opencode_events import schedule_opencode_event
 from penguin.system.runtime_events import wrap_opencode_event
 from penguin.web.services.conversations import (
@@ -110,6 +123,7 @@ from penguin.web.services.token_usage import get_token_usage_payload
 from penguin.web.middleware.auth import (
     AuthenticationError,
     AuthConfig,
+    authenticate_link_service_request,
     authenticate_local_session_token,
     build_session_cookie_settings,
     create_session_token,
@@ -1032,6 +1046,10 @@ class MessageRequest(BaseModel):
     variant: Optional[str] = None
     service_tier: Optional[str] = None
     parts: Optional[List[Dict[str, Any]]] = None
+    link_execution: Optional[LinkExecutionRequest] = None
+    external_subscription_execution: Optional[ExternalSubscriptionExecutionRequest] = (
+        None
+    )
 
 
 _REASONING_EFFORT_VARIANTS = {
@@ -3586,6 +3604,14 @@ async def api_config_providers(core: PenguinCore = Depends(get_core)):
     return await opencode_config_providers(core=core)
 
 
+@router.get("/api/v1/link/capabilities")
+async def api_link_capabilities(http_request: Request) -> dict[str, Any]:
+    """Return versioned Link capabilities without provider credentials."""
+
+    authenticate_link_service_request(http_request)
+    return build_external_subscription_capabilities()
+
+
 @router.get("/api/v1/provider")
 async def api_provider_list(core: PenguinCore = Depends(get_core)):
     """Alias for OpenCode-compatible provider list endpoint."""
@@ -3935,9 +3961,35 @@ async def discover_models(core: PenguinCore = Depends(get_core)):
 
 @router.post("/api/v1/chat/message")
 async def handle_chat_message(
-    request: MessageRequest, core: PenguinCore = Depends(get_core)
+    request: MessageRequest,
+    core: PenguinCore = Depends(get_core),
+    http_request: Request = None,
 ):
     """Process a chat message, with optional conversation support."""
+    has_link_execution_authority = (
+        request.link_execution is not None
+        or request.external_subscription_execution is not None
+    )
+    is_link_service = bool(
+        http_request is not None
+        and getattr(http_request.state, "auth_method", None) == "link_service"
+    )
+    if is_link_service and not has_link_execution_authority:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "The Link execution credential requires a Link-managed or "
+                "personal-subscription execution descriptor."
+            ),
+        )
+    if has_link_execution_authority:
+        if http_request is None:
+            raise HTTPException(
+                status_code=403,
+                detail="Link execution requires an authenticated HTTP request.",
+            )
+        authenticate_link_service_request(http_request)
+
     temp_image_files: List[str] = []
     request_session_id: Optional[str] = None
     request_task: Optional[asyncio.Task[Any]] = None
@@ -4084,10 +4136,52 @@ async def handle_chat_message(
             request.model.strip() if isinstance(request.model, str) else ""
         )
         try:
-            (
-                request_model_config,
-                request_api_client,
-            ) = await _resolve_request_runtime_for_model(core, requested_model or None)
+            if (
+                request.link_execution is not None
+                and request.external_subscription_execution is not None
+            ):
+                raise ValueError(
+                    "Link-managed and external-subscription execution are mutually exclusive."
+                )
+            if request.link_execution is not None:
+                (
+                    request_model_config,
+                    request_api_client,
+                ) = resolve_link_inference_runtime(
+                    core,
+                    request.link_execution,
+                    requested_model or None,
+                )
+            elif request.external_subscription_execution is not None:
+                validate_external_subscription_execution(
+                    request.external_subscription_execution,
+                    requested_model or None,
+                )
+                # The Link capability contract intentionally advertises
+                # provider-local Codex model ids. Penguin's generic runtime
+                # resolver requires a provider-qualified id when the model is
+                # discovered dynamically rather than declared in config.
+                subscription_runtime_model = (
+                    requested_model
+                    if "/" in requested_model
+                    else (
+                        f"{request.external_subscription_execution.provider}/"
+                        f"{requested_model}"
+                    )
+                )
+                (
+                    request_model_config,
+                    request_api_client,
+                ) = await _resolve_request_runtime_for_model(
+                    core, subscription_runtime_model
+                )
+            else:
+                (
+                    request_model_config,
+                    request_api_client,
+                ) = await _resolve_request_runtime_for_model(
+                    core, requested_model or None
+                )
         except Exception as exc:
             detail = str(exc) or f"Failed to resolve model runtime '{requested_model}'"
             raise HTTPException(status_code=400, detail=detail) from exc
@@ -4295,13 +4389,23 @@ async def handle_chat_message(
             )
 
         # Build response
-        if request_session_id:
+        if (
+            request_session_id
+            and request.link_execution is None
+            and request.external_subscription_execution is None
+        ):
             _queue_session_title_refresh(
                 core,
                 request_session_id,
                 provider_id=getattr(request_model_config, "provider", None),
                 model_id=getattr(request_model_config, "model", None),
                 fallback_text=request.text if isinstance(request.text, str) else None,
+            )
+        elif request_session_id:
+            _title_log_info(
+                "session.title.auto_refresh session=%s "
+                "status=skip_link_routed_internal_work",
+                request_session_id,
             )
 
         resp: Dict[str, Any] = {
@@ -4314,6 +4418,10 @@ async def handle_chat_message(
             resp["recoverable"] = bool(process_result.get("recoverable"))
         if isinstance(process_result.get("error"), dict):
             resp["error"] = process_result.get("error")
+        if isinstance(process_result.get("usage"), dict):
+            resp["usage"] = process_result.get("usage")
+        if request.external_subscription_execution is not None:
+            resp["execution"] = request.external_subscription_execution.public_result()
         reasoning_text = "".join(reasoning_buf) if include_reasoning else ""
         reasoning_note = _build_reasoning_visibility_note(
             include_reasoning=include_reasoning,
@@ -4758,8 +4866,7 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
                     _request_log_info(
                         "chat.stream.service_tier.request session=%s model=%s service_tier=%s",
                         effective_session_id or "unknown",
-                        getattr(request_model_config, "model", None)
-                        or requested_model,
+                        getattr(request_model_config, "model", None) or requested_model,
                         service_tier_override,
                     )
                 reasoning_variant_snapshot = _apply_reasoning_variant_override(
@@ -5211,6 +5318,7 @@ async def get_project(project_id: str, core: PenguinCore = Depends(get_core)):
 # @router.put("/api/v1/projects/{project_id}")
 # async def update_project(...):
 
+
 @router.delete("/api/v1/projects/{project_id}")
 async def delete_project(project_id: str, core: PenguinCore = Depends(get_core)):
     """Delete a project and its tasks."""
@@ -5295,6 +5403,7 @@ async def get_task(task_id: str, core: PenguinCore = Depends(get_core)):
 # @router.put("/api/v1/tasks/{task_id}")
 # async def update_task(...):
 
+
 @router.delete("/api/v1/tasks/{task_id}")
 async def delete_task(task_id: str, core: PenguinCore = Depends(get_core)):
     """Delete a task by ID."""
@@ -5330,9 +5439,9 @@ async def resume_task_clarification(
         project = None
         if task.project_id and hasattr(core.project_manager, "get_project_async"):
             project = await core.project_manager.get_project_async(task.project_id)
-        resolved_directory = normalize_directory(request.directory) or normalize_directory(
-            getattr(project, "workspace_path", None)
-        )
+        resolved_directory = normalize_directory(
+            request.directory
+        ) or normalize_directory(getattr(project, "workspace_path", None))
         execution_context = ExecutionContext(
             session_id=request.session_id,
             conversation_id=request.session_id,
@@ -5473,9 +5582,9 @@ async def execute_task_from_project(
                 if asyncio.iscoroutine(project_candidate)
                 else project_candidate
             )
-        resolved_directory = normalize_directory(payload.directory) or normalize_directory(
-            getattr(project, "workspace_path", None)
-        )
+        resolved_directory = normalize_directory(
+            payload.directory
+        ) or normalize_directory(getattr(project, "workspace_path", None))
         execution_context = ExecutionContext(
             session_id=payload.session_id,
             conversation_id=payload.session_id,
@@ -6228,9 +6337,7 @@ async def session_goal_run(
 
 
 @router.delete("/session/{session_id}/goal")
-async def session_goal_clear(
-    session_id: str, core: PenguinCore = Depends(get_core)
-):
+async def session_goal_clear(session_id: str, core: PenguinCore = Depends(get_core)):
     """Clear the persisted session goal."""
     try:
         await session_goal_service.clear_goal(core, session_id)

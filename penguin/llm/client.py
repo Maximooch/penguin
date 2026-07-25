@@ -32,6 +32,7 @@ from .api_client import APIClient
 from .adapters import get_adapter
 from .litellm_support import load_litellm_gateway_class
 from .provider_registry import ProviderRegistry
+from .providers.link.context import LinkInferenceContext
 
 if TYPE_CHECKING:
     from .model_config import ModelConfig
@@ -166,6 +167,7 @@ class LLMClient:
         self,
         model_config: "ModelConfig",
         config: Optional[LLMClientConfig] = None,
+        link_context: Optional[LinkInferenceContext] = None,
     ):
         """Initialize LLM client with optional Link configuration.
 
@@ -175,6 +177,7 @@ class LLMClient:
         """
         self.model_config = model_config
         self._config = config or LLMClientConfig.from_env()
+        self._link_context = link_context
         self._config_lock = threading.RLock()
         self._api_client: Optional[APIClient] = None
         self._api_client_lock = threading.RLock()
@@ -285,6 +288,15 @@ class LLMClient:
 
             return headers
 
+    def _reject_legacy_link_proxy(self) -> None:
+        """Prevent Link execution through a generic provider/base-URL path."""
+
+        if self._config.is_link_proxy or self._config.link.is_configured:
+            raise ValueError(
+                "Legacy Link proxy routing is disabled. Link-managed execution "
+                "must use the first-class LinkProvider with request-scoped context."
+            )
+
     def _get_api_client(self) -> APIClient:
         """Get or create the shared APIClient with current Link-aware config."""
         with self._api_client_lock:
@@ -292,6 +304,7 @@ class LLMClient:
                 return self._api_client
 
             with self._config_lock:
+                self._reject_legacy_link_proxy()
                 base_url = self._config.base_url
                 link_headers = self.get_link_headers()
 
@@ -299,6 +312,7 @@ class LLMClient:
                 self.model_config,
                 base_url=base_url,
                 extra_headers=link_headers,
+                link_context=self._link_context,
             )
             return self._api_client
 
@@ -309,6 +323,7 @@ class LLMClient:
                 return self._gateway
 
             with self._config_lock:
+                self._reject_legacy_link_proxy()
                 base_url = self._config.base_url
                 link_headers = self.get_link_headers()
 
@@ -316,6 +331,7 @@ class LLMClient:
                 self.model_config,
                 base_url=base_url,
                 extra_headers=link_headers,
+                link_context=self._link_context,
             )
             return self._gateway
 
