@@ -6,7 +6,7 @@ import os
 from dataclasses import replace
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, PositiveInt
 
 from penguin.llm.api_client import APIClient
 from penguin.llm.model_config import ModelConfig
@@ -18,10 +18,15 @@ class LinkExecutionRequest(BaseModel):
 
     workspace_id: str
     user_id: str
-    session_id: str
-    agent_id: str
+    # Omitted together for transient Link conversations that have no durable
+    # Link session/agent-instance identity.
+    session_id: str | None = None
+    agent_id: str | None = None
     run_id: str
     requested_model_id: str
+    # Optional for rolling compatibility with Link versions that predate the
+    # explicit per-invocation spend bound.
+    max_output_tokens: PositiveInt | None = None
     execution_source: Literal["link_gateway"]
     provider_state_owner: Literal["link_managed"]
     settlement_mode: Literal["debit_link_credits"]
@@ -45,14 +50,32 @@ def resolve_link_inference_runtime(
     if not isinstance(current, ModelConfig):
         raise ValueError("Penguin has no base model configuration for this request.")
 
+    max_output_tokens = (
+        int(execution.max_output_tokens)
+        if execution.max_output_tokens is not None
+        else current.max_output_tokens
+    )
     model_config = replace(
         current,
         model=execution.requested_model_id,
         provider="link",
         client_preference="link",
         api_base=None,
-        api_key=None,
+        api_key="",
+        api_version=None,
         use_responses_api=True,
+        use_assistants_api=False,
+        max_output_tokens=max_output_tokens,
+        max_context_window_tokens=None,
+        max_history_tokens=None,
+        vision_enabled=None,
+        service_tier=None,
+        reasoning_enabled=None,
+        reasoning_effort=None,
+        reasoning_max_tokens=None,
+        reasoning_exclude=False,
+        supports_reasoning=None,
+        supported_reasoning_levels=None,
     )
     context = LinkInferenceContext(
         workspace_id=execution.workspace_id,
