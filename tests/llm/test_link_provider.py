@@ -7,7 +7,11 @@ from typing import TYPE_CHECKING, Any, cast
 import httpx
 import pytest
 
-from penguin.llm.contracts import LLMProviderError, ProviderRequestStatus
+from penguin.llm.contracts import (
+    FinishReason,
+    LLMProviderError,
+    ProviderRequestStatus,
+)
 from penguin.llm.model_config import ModelConfig
 from penguin.llm.providers.link import (
     LinkInferenceContext,
@@ -58,6 +62,31 @@ def _provider(
         config=config,
         http_client=client,
     )
+
+
+def test_transient_context_omits_persisted_identity_headers() -> None:
+    context = LinkInferenceContext(
+        workspace_id="workspace-1",
+        user_id="user-1",
+        run_id="run-1",
+        requested_model_id="openai/gpt-5.4-nano",
+    )
+
+    headers = context.headers("request-1")
+
+    assert "X-Link-Session-Id" not in headers
+    assert "X-Link-Agent-Id" not in headers
+
+
+def test_context_rejects_one_sided_persisted_identity() -> None:
+    with pytest.raises(ValueError, match="supplied together"):
+        LinkInferenceContext(
+            workspace_id="workspace-1",
+            user_id="user-1",
+            session_id="session-1",
+            run_id="run-1",
+            requested_model_id="openai/gpt-5.4-nano",
+        )
 
 
 @pytest.mark.asyncio
@@ -114,6 +143,82 @@ async def test_responses_request_has_attribution_without_provider_key() -> None:
     assert provider.get_last_request_lifecycle().status == (
         ProviderRequestStatus.COMPLETED
     )
+
+
+@pytest.mark.asyncio
+async def test_responses_request_omits_provider_hosted_web_search() -> None:
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "id": "response-1",
+                "status": "completed",
+                "output_text": "ok",
+                "usage": {},
+            },
+        )
+
+    provider = _provider(handler)
+    result = await provider.get_response(
+        [{"role": "user", "content": "hi"}],
+        tools=[
+            {
+                "type": "function",
+                "name": "read_file",
+                "description": "Read a file.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            {"type": "web_search"},
+        ],
+    )
+
+    assert result == "ok"
+    assert captured["tools"] == [
+        {
+            "type": "function",
+            "name": "read_file",
+            "description": "Read a file.",
+            "parameters": {"type": "object", "properties": {}},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_responses_request_replays_assistant_history_as_output_item() -> None:
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "id": "response-2",
+                "status": "completed",
+                "output_text": "goodbye",
+                "usage": {},
+            },
+        )
+
+    provider = _provider(handler)
+    result = await provider.get_response(
+        [
+            {"role": "user", "content": "Reply with exactly: hello"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "content": "Reply with exactly: goodbye"},
+        ],
+    )
+
+    assert result == "goodbye"
+    assert captured["input"][1] == {
+        "type": "message",
+        "id": "msg_link_history_1",
+        "status": "completed",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": "hello"}],
+    }
 
 
 @pytest.mark.asyncio
@@ -324,6 +429,80 @@ async def test_ambiguous_disconnect_is_not_retryable() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stream_http_error_reads_link_error_body_before_reporting() -> None:
+    class ErrorStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield json.dumps(
+                {
+                    "error": {
+                        "message": "The selected model rejected this request.",
+                        "code": "model_request_rejected",
+                    }
+                }
+            ).encode()
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            stream=ErrorStream(),
+            headers={
+                "content-type": "application/json",
+                "x-link-dispatch-state": "not_started",
+            },
+        )
+
+    provider = _provider(handler)
+    with pytest.raises(
+        LLMProviderError,
+        match="The selected model rejected this request.",
+    ) as raised:
+        await provider.get_response(
+            [{"role": "user", "content": "hi"}],
+            stream=True,
+        )
+
+    assert raised.value.error.status_code == 400
+    assert raised.value.error.provider_data["dispatch_state"] == "not_started"
+    assert provider.get_last_request_lifecycle().status == ProviderRequestStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_stream_rate_limit_is_retryable_before_any_output() -> None:
+    class ErrorStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield json.dumps(
+                {
+                    "error": {
+                        "message": "Rate limit exceeded. Please try again later.",
+                        "code": "rate_limit_exceeded",
+                    }
+                }
+            ).encode()
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429,
+            stream=ErrorStream(),
+            headers={
+                "content-type": "application/json",
+                "retry-after": "17",
+                "x-link-dispatch-state": "provider_rejected",
+            },
+        )
+
+    provider = _provider(handler)
+    with pytest.raises(LLMProviderError, match="Rate limit exceeded") as raised:
+        await provider.get_response(
+            [{"role": "user", "content": "hi"}],
+            stream=True,
+        )
+
+    assert raised.value.error.retryable is True
+    assert raised.value.error.retry_after_seconds == 17
+    assert raised.value.error.provider_data["dispatch_state"] == "provider_rejected"
+
+
+@pytest.mark.asyncio
 async def test_stream_eof_before_terminal_event_is_uncertain_and_not_retryable() -> (
     None
 ):
@@ -366,9 +545,9 @@ async def test_stream_eof_before_terminal_event_is_uncertain_and_not_retryable()
         (
             {
                 "type": "response.incomplete",
-                "response": {"incomplete_details": {"reason": "max_output_tokens"}},
+                "response": {"incomplete_details": {"reason": "content_filter"}},
             },
-            "max_output_tokens",
+            "content_filter",
         ),
         ({"type": "error", "message": "explicit stream error"}, "stream error"),
     ],
@@ -415,7 +594,59 @@ async def test_invalid_link_response_is_terminal_and_not_retryable() -> None:
 
 
 @pytest.mark.asyncio
-async def test_buffered_incomplete_response_is_not_reported_as_completed() -> None:
+async def test_stream_output_limit_incomplete_returns_persistable_partial_text() -> (
+    None
+):
+    events = [
+        {"type": "response.output_text.delta", "delta": "partial"},
+        {
+            "type": "response.incomplete",
+            "response": {
+                "id": "response-incomplete",
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "usage": {
+                    "input_tokens": 8,
+                    "output_tokens": 128,
+                    "total_tokens": 136,
+                },
+            },
+        },
+    ]
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text="".join(f"data: {json.dumps(event)}\n\n" for event in events),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    streamed: list[tuple[str, str]] = []
+
+    async def callback(text: str, message_type: str) -> None:
+        streamed.append((text, message_type))
+
+    provider = _provider(handler)
+    result = await provider.get_response(
+        [{"role": "user", "content": "hi"}],
+        stream=True,
+        stream_callback=callback,
+    )
+
+    assert result == "partial"
+    assert streamed == [("partial", "assistant")]
+    assert provider.get_last_finish_reason() is FinishReason.LENGTH
+    assert provider.get_last_usage()["output_tokens"] == 128
+    assert provider.get_last_error() is None
+    lifecycle = provider.get_last_request_lifecycle()
+    assert lifecycle.status is ProviderRequestStatus.COMPLETED
+    assert lifecycle.finish_reason is FinishReason.LENGTH
+
+
+@pytest.mark.asyncio
+async def test_buffered_output_limit_incomplete_returns_persistable_partial_text() -> (
+    None
+):
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
@@ -428,10 +659,36 @@ async def test_buffered_incomplete_response_is_not_reported_as_completed() -> No
         )
 
     provider = _provider(handler)
-    with pytest.raises(LLMProviderError, match="max_output_tokens"):
+    result = await provider.get_response([{"role": "user", "content": "hi"}])
+
+    assert result == "partial"
+    assert provider.get_last_finish_reason() is FinishReason.LENGTH
+    assert provider.get_last_error() is None
+    lifecycle = provider.get_last_request_lifecycle()
+    assert lifecycle.status is ProviderRequestStatus.COMPLETED
+    assert lifecycle.finish_reason is FinishReason.LENGTH
+
+
+@pytest.mark.asyncio
+async def test_buffered_incomplete_for_other_reason_remains_terminal() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "id": "response-incomplete",
+                "status": "incomplete",
+                "output_text": "filtered partial",
+                "incomplete_details": {"reason": "content_filter"},
+            },
+        )
+
+    provider = _provider(handler)
+    with pytest.raises(LLMProviderError, match="content_filter"):
         await provider.get_response([{"role": "user", "content": "hi"}])
 
-    assert provider.get_last_request_lifecycle().status == ProviderRequestStatus.FAILED
+    assert provider.get_last_request_lifecycle().status is (
+        ProviderRequestStatus.FAILED
+    )
 
 
 @pytest.mark.asyncio

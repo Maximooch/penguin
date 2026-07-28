@@ -216,7 +216,11 @@ class LinkProvider:
                     raise ValueError("Link returned a non-object inference response.")
                 if protocol == "responses":
                     response_status = str(payload.get("status") or "completed")
-                    if response_status != "completed":
+                    output_limit_incomplete = (
+                        response_status == "incomplete"
+                        and _responses_incomplete_reason(payload) == "max_output_tokens"
+                    )
+                    if response_status != "completed" and not output_limit_incomplete:
                         event_type = f"response.{response_status}"
                         raise LLMProviderError(
                             build_llm_error(
@@ -378,6 +382,15 @@ class LinkProvider:
             unsupported = ", ".join(sorted(kwargs))
             raise ValueError(f"Unsupported Link inference options: {unsupported}")
         if self.config.protocol == "responses":
+            function_tools = (
+                [
+                    tool
+                    for tool in tools
+                    if isinstance(tool, dict) and tool.get("type") == "function"
+                ]
+                if isinstance(tools, list)
+                else tools
+            )
             return (
                 "responses",
                 "responses",
@@ -387,7 +400,7 @@ class LinkProvider:
                     max_output_tokens=maximum,
                     temperature=temperature,
                     stream=stream,
-                    tools=tools,
+                    tools=function_tools,
                     tool_choice=tool_choice,
                     reasoning=reasoning,
                 ),
@@ -504,6 +517,13 @@ class LinkProvider:
                             }
                     elif event_type == "response.completed":
                         finish = FinishReason.STOP
+                        terminal_event_seen = True
+                    elif (
+                        event_type == "response.incomplete"
+                        and _responses_incomplete_reason(response_payload)
+                        == "max_output_tokens"
+                    ):
+                        finish = FinishReason.LENGTH
                         terminal_event_seen = True
                     elif event_type in {
                         "response.failed",
@@ -623,17 +643,22 @@ class LinkProvider:
     ) -> None:
         if response.is_success:
             return
+        # ``httpx.AsyncClient.stream`` does not buffer response content.
+        # Read Link's error body before inspecting JSON/text so the original
+        # broker error is preserved instead of being masked by ResponseNotRead.
+        raw_content = await response.aread()
         try:
-            payload = response.json()
+            payload = json.loads(raw_content)
         except Exception:
             payload = {}
         error_payload = payload.get("error") if isinstance(payload, dict) else None
         error_payload = error_payload if isinstance(error_payload, dict) else {}
+        fallback_detail = raw_content.decode(errors="replace").strip()
         detail = str(
-            error_payload.get("message") or response.text or response.reason_phrase
+            error_payload.get("message") or fallback_detail or response.reason_phrase
         )
         dispatch_state = response.headers.get("x-link-dispatch-state", "unknown")
-        retryable = bool(
+        retryable = response.status_code == 429 or bool(
             response.status_code >= 500 and dispatch_state == "not_started"
         )
         error = build_llm_error(
@@ -688,6 +713,21 @@ def _responses_stream_error_message(
             if isinstance(message, str) and message.strip():
                 return message.strip()
     return f"Link inference stream ended with {event_type}."
+
+
+def _responses_incomplete_reason(response: Any) -> str | None:
+    """Return the normalized Responses incomplete reason, when present."""
+
+    if not isinstance(response, dict):
+        return None
+    details = response.get("incomplete_details")
+    if not isinstance(details, dict):
+        return None
+    reason = details.get("reason")
+    if not isinstance(reason, str):
+        return None
+    normalized = reason.strip().lower()
+    return normalized or None
 
 
 async def _emit(callback: StreamCallback | None, text: str, message_type: str) -> None:

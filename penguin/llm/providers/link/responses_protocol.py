@@ -22,7 +22,7 @@ def build_responses_body(
 
     instructions: list[str] = []
     items: list[dict[str, Any]] = []
-    for message in messages:
+    for message_index, message in enumerate(messages):
         role = str(message.get("role") or "user")
         content = message.get("content")
         if role == "system":
@@ -51,7 +51,7 @@ def build_responses_body(
 
         assistant_has_output = False
         if isinstance(content, str):
-            items.append(_message_item(role, content))
+            items.append(_assistant_message_item(content, message_index))
             assistant_has_output = True
         elif content is not None:
             _require_text_content(content)
@@ -132,6 +132,16 @@ def _message_item(role: str, content: str) -> dict[str, Any]:
     }
 
 
+def _assistant_message_item(content: str, message_index: int) -> dict[str, Any]:
+    return {
+        "type": "message",
+        "id": f"msg_link_history_{message_index}",
+        "status": "completed",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": content}],
+    }
+
+
 def parse_responses_body(
     payload: dict[str, Any],
 ) -> tuple[str, str, list[LLMToolCall], LLMUsage, FinishReason, dict[str, Any]]:
@@ -174,10 +184,27 @@ def parse_responses_body(
 
     usage = normalize_responses_usage(payload.get("usage"))
     status = str(payload.get("status") or "completed")
+    incomplete_details = payload.get("incomplete_details")
+    raw_incomplete_reason = (
+        incomplete_details.get("reason")
+        if isinstance(incomplete_details, dict)
+        else None
+    )
+    incomplete_reason = (
+        raw_incomplete_reason.strip().lower()
+        if isinstance(raw_incomplete_reason, str) and raw_incomplete_reason.strip()
+        else None
+    )
     finish = (
         FinishReason.TOOL_CALLS
         if tool_calls
-        else (FinishReason.STOP if status == "completed" else FinishReason.UNKNOWN)
+        else (
+            FinishReason.STOP
+            if status == "completed"
+            else FinishReason.LENGTH
+            if status == "incomplete" and incomplete_reason == "max_output_tokens"
+            else FinishReason.UNKNOWN
+        )
     )
     return (
         "".join(text_parts),
@@ -185,7 +212,11 @@ def parse_responses_body(
         tool_calls,
         usage,
         finish,
-        {"response_id": payload.get("id"), "status": status},
+        {
+            "response_id": payload.get("id"),
+            "status": status,
+            "incomplete_reason": incomplete_reason,
+        },
     )
 
 
