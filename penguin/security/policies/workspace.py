@@ -222,12 +222,19 @@ class WorkspaceBoundaryPolicy(PolicyEngine):
         """
         context = context or {}
 
+        requested_mode = context.get("permission_mode")
+        mode = {
+            "read_only": PermissionMode.READ_ONLY,
+            "workspace": PermissionMode.WORKSPACE,
+            "full_access": PermissionMode.FULL,
+        }.get(requested_mode, self._mode)
+
         # FULL mode allows everything (but we still log)
-        if self._mode == PermissionMode.FULL:
+        if mode == PermissionMode.FULL:
             return PermissionResult.ALLOW, "FULL mode - all operations allowed"
 
         # READ_ONLY mode denies all non-read operations
-        if self._mode == PermissionMode.READ_ONLY:
+        if mode == PermissionMode.READ_ONLY:
             if not Operation.is_read_only(operation):
                 # Special case: allow safe execute commands (grep, find, cat, etc.)
                 if operation == Operation.PROCESS_EXECUTE:

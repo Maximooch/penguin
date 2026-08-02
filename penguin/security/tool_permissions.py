@@ -353,7 +353,12 @@ def check_tool_permission(
     operations = get_tool_operations(tool_name)
 
     if not operations:
-        # Unknown tools - allow but log
+        permission_mode = (context or {}).get("permission_mode")
+        if permission_mode == "read_only":
+            return PermissionResult.DENY, "Unknown tools are denied in read-only mode"
+        if isinstance((context or {}).get("approval_policy"), dict):
+            return PermissionResult.ASK, "Unknown tool requires approval"
+        # Legacy callers without a request policy retain the existing behavior.
         logger.debug(f"Tool '{tool_name}' not in permission map, allowing by default")
         return PermissionResult.ALLOW, "Unknown tool - allowed by default"
 
@@ -361,6 +366,12 @@ def check_tool_permission(
     resource = resources[0] if resources else None
     ctx = dict(context or {})
     ctx["tool_name"] = tool_name
+
+    request_result = _check_request_approval_policy(operations, resources, ctx)
+    if request_result is not None:
+        result, reason = request_result
+        if result != PermissionResult.ALLOW:
+            return result, reason
 
     # Check agent-specific policy first (if agent_id in context)
     agent_id = ctx.get("agent_id")
@@ -407,6 +418,79 @@ def check_tool_permission(
         return PermissionResult.ASK, ctx["_agent_ask"]
 
     return PermissionResult.ALLOW, "All operations allowed"
+
+
+_READ_OPERATIONS = {
+    Operation.FILESYSTEM_READ,
+    Operation.FILESYSTEM_LIST,
+    Operation.GIT_READ,
+    Operation.MEMORY_READ,
+}
+
+_ACTION_FOR_OPERATION = {
+    Operation.FILESYSTEM_WRITE: "fileWrite",
+    Operation.FILESYSTEM_MKDIR: "fileWrite",
+    Operation.FILESYSTEM_DELETE: "fileDelete",
+    Operation.PROCESS_EXECUTE: "shell",
+    Operation.PROCESS_SPAWN: "shell",
+    Operation.PROCESS_KILL: "shell",
+    Operation.NETWORK_FETCH: "network",
+    Operation.NETWORK_POST: "network",
+    Operation.NETWORK_LISTEN: "network",
+    Operation.GIT_WRITE: "shell",
+    Operation.GIT_PUSH: "gitPush",
+    Operation.GIT_FORCE: "gitPush",
+    Operation.MEMORY_WRITE: "fileWrite",
+    Operation.MEMORY_DELETE: "fileDelete",
+}
+
+_ALLOW_LIST_FOR_ACTION = {
+    "shell": "shellCommands",
+    "fileWrite": "writablePaths",
+    "fileDelete": "writablePaths",
+    "gitPush": "gitRemotes",
+    "network": "networkHosts",
+    "secrets": "secretNames",
+}
+
+
+def _check_request_approval_policy(
+    operations: list[Operation],
+    resources: list[str],
+    context: dict[str, Any],
+) -> Optional[tuple[PermissionResult, str]]:
+    """Apply Link's immutable per-turn policy before Penguin's local policy."""
+    policy = context.get("approval_policy")
+    if not isinstance(policy, dict):
+        return None
+
+    targets = resources or [str(context.get("tool_name") or "unknown")]
+    allow_lists = policy.get("allowLists")
+    if not isinstance(allow_lists, dict):
+        allow_lists = {}
+
+    for operation in operations:
+        if operation in _READ_OPERATIONS:
+            continue
+        action = _ACTION_FOR_OPERATION.get(operation)
+        if action is None:
+            return (
+                PermissionResult.ASK,
+                f"Unclassified operation '{operation.value}' requires approval",
+            )
+        decision = policy.get(action, "ask")
+        if decision == "deny":
+            return PermissionResult.DENY, f"Policy denies '{action}'"
+        if decision != "allow":
+            return PermissionResult.ASK, f"Policy requires approval for '{action}'"
+
+        allowed_values = allow_lists.get(_ALLOW_LIST_FOR_ACTION[action], [])
+        if isinstance(allowed_values, list) and allowed_values:
+            normalized = {str(value).strip() for value in allowed_values}
+            if any(str(target).strip() not in normalized for target in targets):
+                return PermissionResult.ASK, f"'{action}' target is not allow-listed"
+
+    return PermissionResult.ALLOW, "Request policy allows all operations"
 
 
 def _check_agent_permission(
