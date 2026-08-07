@@ -2451,13 +2451,14 @@ def _validate_agent_id(agent_id: str) -> None:
 class AgentSpawnRequest(BaseModel):
     id: str
     parent: Optional[str] = None
-    model_config_id: str
+    model_config_id: Optional[str] = None
     persona: Optional[str] = None
     system_prompt: Optional[str] = None
     share_session: bool = False
     share_context_window: bool = False
     shared_cw_max_tokens: Optional[int] = None
     model_overrides: Optional[Dict[str, Any]] = None
+    model_output_max_tokens: Optional[int] = None
     default_tools: Optional[List[str]] = None
     activate: bool = False
     initial_prompt: Optional[str] = None
@@ -2850,10 +2851,15 @@ async def create_agent(req: AgentSpawnRequest, core: PenguinCore = Depends(get_c
             core.create_sub_agent(
                 req.id,
                 parent_agent_id=parent,
+                persona=req.persona,
                 system_prompt=req.system_prompt,
                 share_session=bool(req.share_session),
                 share_context_window=bool(req.share_context_window),
                 shared_context_window_max_tokens=req.shared_cw_max_tokens,
+                model_config_id=req.model_config_id,
+                model_overrides=req.model_overrides,
+                model_output_max_tokens=req.model_output_max_tokens,
+                default_tools=req.default_tools,
             )
         else:
             core.ensure_agent_conversation(req.id, system_prompt=req.system_prompt)
@@ -2899,6 +2905,8 @@ async def create_agent(req: AgentSpawnRequest, core: PenguinCore = Depends(get_c
         return core.get_agent_profile(req.id) or {"id": req.id}
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"create_agent error: {e}")
         raise HTTPException(status_code=500, detail="Failed to create agent")

@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from penguin.config import AgentModelSettings, AgentPersonaConfig
 from penguin.core_runtime.agent_lifecycle import (
     create_agent_conversation,
     create_sub_agent,
@@ -32,6 +33,7 @@ from penguin.core_runtime.agent_lifecycle import (
     smoke_check_agents,
     unregister_agent,
 )
+from penguin.llm.model_config import ModelConfig
 from penguin.system.execution_context import (
     ExecutionContext,
     execution_context_scope,
@@ -729,6 +731,275 @@ def test_create_sub_agent_creates_child_and_ensures_conversation() -> None:
     ]
     assert ensure_calls == [("child", True)]
     assert conversation.system_prompts == ["child-system"]
+
+
+def test_create_sub_agent_registers_selected_model_and_effective_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_model = ModelConfig(
+        model="openai/gpt-5.5",
+        provider="openai",
+        client_preference="native",
+        max_output_tokens=12000,
+    )
+    flash_config = {
+        "model": "deepseek/deepseek-v4-flash",
+        "provider": "openrouter",
+        "client_preference": "openrouter",
+        "max_output_tokens": 8000,
+    }
+
+    class Conversation:
+        def __init__(self) -> None:
+            self.session = SimpleNamespace(id="child-session", metadata={})
+            self.system_prompts: list[str] = []
+            self.save_calls = 0
+
+        def set_system_prompt(self, prompt: str) -> None:
+            self.system_prompts.append(prompt)
+
+        def save(self) -> None:
+            self.save_calls += 1
+
+    conversation = Conversation()
+    context_window = SimpleNamespace(
+        model_config=parent_model,
+        max_context_window_tokens=parent_model.max_context_window_tokens,
+    )
+
+    class ConversationManager:
+        def __init__(self) -> None:
+            self.agent_context_windows = {"child": context_window}
+            self.create_calls: list[dict[str, Any]] = []
+            self.removed: list[str] = []
+
+        def create_sub_agent(self, agent_id: str, **kwargs: Any) -> None:
+            self.create_calls.append({"agent_id": agent_id, **kwargs})
+
+        def get_agent_conversation(
+            self, agent_id: str, create_if_missing: bool = True
+        ) -> Conversation:
+            assert agent_id == "child"
+            return conversation
+
+        def remove_agent(self, agent_id: str) -> bool:
+            self.removed.append(agent_id)
+            return True
+
+    class StubAPIClient:
+        def __init__(self, model_config: ModelConfig) -> None:
+            self.model_config = model_config
+            self.system_prompt: str | None = None
+
+        def set_system_prompt(self, prompt: str) -> None:
+            self.system_prompt = prompt
+
+    engine = SimpleNamespace(
+        get_agent=lambda agent_id: None,
+        register_calls=[],
+        register_agent=lambda **kwargs: engine.register_calls.append(kwargs),
+        unregister_agent=lambda agent_id: None,
+    )
+    conversation_manager = ConversationManager()
+    core = SimpleNamespace(
+        config=SimpleNamespace(
+            agent_personas={}, model_configs={"subagent-fast": flash_config}
+        ),
+        model_config=parent_model,
+        system_prompt="parent system",
+        conversation_manager=conversation_manager,
+        engine=engine,
+        tool_manager=SimpleNamespace(),
+        project_manager=SimpleNamespace(),
+        emit_ui_event=lambda *args, **kwargs: None,
+        _agent_api_clients={},
+        _agent_model_overrides={},
+        _agent_tool_defaults={},
+    )
+    monkeypatch.setattr("penguin.core_runtime.agent_lifecycle.APIClient", StubAPIClient)
+
+    create_sub_agent(
+        core,
+        "child",
+        parent_agent_id="default",
+        share_session=False,
+        share_context_window=False,
+        model_config_id="subagent-fast",
+        model_overrides={"temperature": 0.15},
+        model_output_max_tokens=4096,
+        default_tools=["read_file"],
+    )
+
+    child_client = engine.register_calls[0]["api_client"]
+    assert child_client is core._agent_api_clients["child"]
+    assert child_client.model_config.model == "deepseek/deepseek-v4-flash"
+    assert child_client.model_config.provider == "openrouter"
+    assert child_client.model_config.client_preference == "openrouter"
+    assert child_client.model_config.temperature == 0.15
+    assert child_client.model_config.max_output_tokens == 4096
+    assert core._agent_model_overrides["child"] is child_client.model_config
+    assert core._agent_tool_defaults["child"] == ("read_file",)
+    assert context_window.model_config is child_client.model_config
+    assert conversation.session.metadata["model"]["model"] == (
+        "deepseek/deepseek-v4-flash"
+    )
+    assert conversation.session.metadata["default_tools"] == ["read_file"]
+    assert conversation_manager.removed == []
+
+
+def test_create_sub_agent_inherits_parent_model_when_selection_is_blank(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    global_model = ModelConfig(model="global-model", provider="openrouter")
+    parent_model = ModelConfig(
+        model="openai/gpt-5.6-luna",
+        provider="openrouter",
+        client_preference="openrouter",
+        max_output_tokens=6000,
+    )
+    conversation = SimpleNamespace(
+        session=SimpleNamespace(id="shared", metadata={}),
+        save=lambda: None,
+    )
+    manager = SimpleNamespace(
+        create_sub_agent=lambda *args, **kwargs: None,
+        get_agent_conversation=lambda *args, **kwargs: conversation,
+        agent_context_windows={},
+        remove_agent=lambda agent_id: True,
+    )
+
+    class StubAPIClient:
+        def __init__(self, model_config: ModelConfig) -> None:
+            self.model_config = model_config
+
+        def set_system_prompt(self, prompt: str) -> None:
+            pass
+
+    registered: list[dict[str, Any]] = []
+    engine = SimpleNamespace(
+        get_agent=lambda agent_id: SimpleNamespace(
+            api_client=SimpleNamespace(model_config=parent_model)
+        ),
+        register_agent=lambda **kwargs: registered.append(kwargs),
+        unregister_agent=lambda agent_id: None,
+    )
+    core = SimpleNamespace(
+        config=SimpleNamespace(agent_personas={}, model_configs={}),
+        model_config=global_model,
+        system_prompt="system",
+        conversation_manager=manager,
+        engine=engine,
+        tool_manager=SimpleNamespace(),
+        project_manager=SimpleNamespace(),
+        emit_ui_event=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr("penguin.core_runtime.agent_lifecycle.APIClient", StubAPIClient)
+
+    create_sub_agent(core, "child", parent_agent_id="parent")
+
+    effective = registered[0]["api_client"].model_config
+    assert effective is not parent_model
+    assert effective.model == "openai/gpt-5.6-luna"
+    assert effective.max_output_tokens == 6000
+
+
+def test_create_sub_agent_rejects_invalid_selection_before_graph_mutation() -> None:
+    parent_model = ModelConfig(model="parent", provider="openrouter")
+    create_calls: list[str] = []
+    core = SimpleNamespace(
+        config=SimpleNamespace(agent_personas={}, model_configs={}),
+        model_config=parent_model,
+        conversation_manager=SimpleNamespace(
+            create_sub_agent=lambda agent_id, **kwargs: create_calls.append(agent_id)
+        ),
+        engine=None,
+    )
+
+    with pytest.raises(ValueError, match="Unknown model_config_id"):
+        create_sub_agent(
+            core,
+            "child",
+            parent_agent_id="parent",
+            model_config_id="missing",
+        )
+
+    assert create_calls == []
+
+
+def test_create_sub_agent_applies_persona_then_explicit_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_model = ModelConfig(model="parent", provider="openrouter")
+    persona = AgentPersonaConfig(
+        name="flash-worker",
+        system_prompt="persona system",
+        model=AgentModelSettings(id="flash", temperature=0.4),
+        default_tools=["read_file"],
+        model_output_max_tokens=5000,
+    )
+    conversation = SimpleNamespace(
+        session=SimpleNamespace(id="child", metadata={}),
+        system_prompts=[],
+        set_system_prompt=lambda prompt: conversation.system_prompts.append(prompt),
+        save=lambda: None,
+    )
+    manager = SimpleNamespace(
+        create_sub_agent=lambda *args, **kwargs: None,
+        get_agent_conversation=lambda *args, **kwargs: conversation,
+        agent_context_windows={},
+        remove_agent=lambda agent_id: True,
+    )
+
+    class StubAPIClient:
+        def __init__(self, model_config: ModelConfig) -> None:
+            self.model_config = model_config
+
+        def set_system_prompt(self, prompt: str) -> None:
+            self.system_prompt = prompt
+
+    registered: list[dict[str, Any]] = []
+    core = SimpleNamespace(
+        config=SimpleNamespace(
+            agent_personas={"flash-worker": persona},
+            model_configs={
+                "flash": {
+                    "model": "deepseek/deepseek-v4-flash",
+                    "provider": "openrouter",
+                    "client_preference": "openrouter",
+                }
+            },
+        ),
+        model_config=parent_model,
+        system_prompt="parent system",
+        conversation_manager=manager,
+        engine=SimpleNamespace(
+            get_agent=lambda agent_id: None,
+            register_agent=lambda **kwargs: registered.append(kwargs),
+            unregister_agent=lambda agent_id: None,
+        ),
+        tool_manager=SimpleNamespace(),
+        project_manager=SimpleNamespace(),
+        emit_ui_event=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr("penguin.core_runtime.agent_lifecycle.APIClient", StubAPIClient)
+
+    create_sub_agent(
+        core,
+        "child",
+        parent_agent_id="parent",
+        persona="flash-worker",
+        share_session=False,
+        model_overrides={"temperature": 0.1},
+        model_output_max_tokens=3000,
+    )
+
+    effective = registered[0]["api_client"].model_config
+    assert effective.model == "deepseek/deepseek-v4-flash"
+    assert effective.temperature == 0.1
+    assert effective.max_output_tokens == 3000
+    assert conversation.system_prompts == ["persona system"]
+    assert conversation.session.metadata["persona"] == "flash-worker"
+    assert conversation.session.metadata["default_tools"] == ["read_file"]
 
 
 def test_delete_agent_conversation_removes_engine_agent_and_resets_active() -> None:

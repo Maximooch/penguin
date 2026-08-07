@@ -520,7 +520,9 @@ class PenguinClient:
     ) -> None:
         """Register a sub-agent bound to a parent agent."""
         if shared_context_window_max_tokens is None:
-            shared_context_window_max_tokens = kwargs.get("shared_cw_max_tokens")
+            shared_context_window_max_tokens = kwargs.pop("shared_cw_max_tokens", None)
+        else:
+            kwargs.pop("shared_cw_max_tokens", None)
 
         self.core.create_sub_agent(
             agent_id,
@@ -529,6 +531,7 @@ class PenguinClient:
             share_session=share_session,
             share_context_window=share_context_window,
             shared_context_window_max_tokens=shared_context_window_max_tokens,
+            **kwargs,
         )
         if activate:
             self.core.set_active_agent(agent_id)

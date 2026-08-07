@@ -372,21 +372,241 @@ def create_sub_agent(
     agent_id: str,
     *,
     parent_agent_id: str,
+    persona: str | None = None,
     system_prompt: str | None = None,
     share_session: bool = True,
     share_context_window: bool = True,
     shared_context_window_max_tokens: int | None = None,
+    model_config_id: str | None = None,
+    model_overrides: dict[str, Any] | None = None,
+    model_output_max_tokens: int | None = None,
+    default_tools: list[str] | None = None,
 ) -> None:
-    """Create a child agent and ensure its conversation exists."""
+    """Create and register a child agent with its effective runtime model.
 
-    core.conversation_manager.create_sub_agent(
-        agent_id,
-        parent_agent_id=parent_agent_id,
-        share_session=share_session,
-        share_context_window=share_context_window,
-        shared_context_window_max_tokens=shared_context_window_max_tokens,
+    Model precedence is explicit spawn overrides, selected model config,
+    persona settings, the parent's effective model, then the core default.
+    Resolution and API-client construction happen before relationship mutation
+    so invalid admission requests cannot leave a half-created child behind.
+    """
+
+    from penguin.agent.persona_runtime import (
+        model_config_for_agent_settings,
+        model_config_metadata,
     )
-    ensure_agent_conversation(core, agent_id, system_prompt=system_prompt)
+    from penguin.config import AgentModelSettings
+
+    config = getattr(core, "config", None)
+    base_model_config = getattr(core, "model_config", None)
+    if config is None or base_model_config is None:
+        if any(
+            value is not None
+            for value in (
+                persona,
+                model_config_id,
+                model_overrides,
+                model_output_max_tokens,
+                default_tools,
+            )
+        ):
+            raise ValueError(
+                "Sub-agent runtime configuration requires core config and model_config"
+            )
+        core.conversation_manager.create_sub_agent(
+            agent_id,
+            parent_agent_id=parent_agent_id,
+            share_session=share_session,
+            share_context_window=share_context_window,
+            shared_context_window_max_tokens=shared_context_window_max_tokens,
+        )
+        ensure_agent_conversation(core, agent_id, system_prompt=system_prompt)
+        return
+
+    personas = getattr(config, "agent_personas", {}) or {}
+    persona_config = None
+    if persona is not None:
+        persona = persona.strip()
+        if not persona or persona not in personas:
+            raise ValueError(f"Unknown agent persona '{persona}'")
+        persona_config = personas[persona]
+
+    model_configs = getattr(config, "model_configs", {}) or {}
+    if model_config_id is not None:
+        model_config_id = model_config_id.strip()
+        if not model_config_id:
+            raise ValueError("model_config_id must be non-empty")
+        if model_config_id not in model_configs:
+            raise ValueError(f"Unknown model_config_id '{model_config_id}'")
+
+    parent_model_config = None
+    agent_models = getattr(core, "_agent_model_overrides", None)
+    if isinstance(agent_models, dict):
+        parent_model_config = agent_models.get(parent_agent_id)
+    if parent_model_config is None and getattr(core, "engine", None):
+        parent_engine_agent = core.engine.get_agent(parent_agent_id)
+        parent_api_client = getattr(parent_engine_agent, "api_client", None)
+        parent_model_config = getattr(parent_api_client, "model_config", None)
+    if parent_model_config is None:
+        parent_model_config = base_model_config
+
+    settings_payload: dict[str, Any] = {}
+    persona_model = getattr(persona_config, "model", None)
+    if persona_model is not None:
+        settings_payload.update(persona_model.to_dict())
+    if model_config_id is not None:
+        settings_payload = {"id": model_config_id}
+    if model_overrides is not None:
+        if not isinstance(model_overrides, dict):
+            raise ValueError("model_overrides must be a mapping")
+        settings_payload.update(model_overrides)
+
+    resolved_output_tokens = model_output_max_tokens
+    if resolved_output_tokens is None and persona_config is not None:
+        resolved_output_tokens = getattr(
+            persona_config, "model_output_max_tokens", None
+        )
+    if resolved_output_tokens is not None:
+        if int(resolved_output_tokens) <= 0:
+            raise ValueError("model_output_max_tokens must be positive")
+        settings_payload["max_output_tokens"] = int(resolved_output_tokens)
+
+    agent_settings = (
+        AgentModelSettings.from_dict(settings_payload) if settings_payload else None
+    )
+    agent_model_config = model_config_for_agent_settings(
+        agent_settings,
+        model_configs=model_configs,
+        current_model_config=parent_model_config,
+    )
+
+    resolved_system_prompt = system_prompt
+    if resolved_system_prompt is None and persona_config is not None:
+        resolved_system_prompt = getattr(persona_config, "system_prompt", None)
+    resolved_tools = default_tools
+    if resolved_tools is None and persona_config is not None:
+        resolved_tools = list(getattr(persona_config, "default_tools", None) or [])
+    resolved_tools = list(resolved_tools or [])
+
+    # Construct the provider client before mutating the conversation graph.
+    api_client = APIClient(model_config=agent_model_config)
+    api_client.set_system_prompt(
+        resolved_system_prompt or getattr(core, "system_prompt", "")
+    )
+
+    created = False
+    engine_registered = False
+    try:
+        core.conversation_manager.create_sub_agent(
+            agent_id,
+            parent_agent_id=parent_agent_id,
+            share_session=share_session,
+            share_context_window=share_context_window,
+            shared_context_window_max_tokens=shared_context_window_max_tokens,
+        )
+        created = True
+
+        conv = core.conversation_manager.get_agent_conversation(
+            agent_id, create_if_missing=True
+        )
+        if resolved_system_prompt and conv and not share_session:
+            conv.set_system_prompt(resolved_system_prompt)
+
+        session = getattr(conv, "session", None)
+        metadata = getattr(session, "metadata", None)
+        if isinstance(metadata, dict):
+            effective_metadata: dict[str, Any]
+            if share_session:
+                profiles = metadata.setdefault("agent_profiles", {})
+                if not isinstance(profiles, dict):
+                    profiles = {}
+                    metadata["agent_profiles"] = profiles
+                effective_metadata = profiles.setdefault(agent_id, {})
+            else:
+                effective_metadata = metadata
+            if persona_config is not None:
+                effective_metadata["persona"] = persona_config.name
+                if getattr(persona_config, "description", None):
+                    effective_metadata["persona_description"] = (
+                        persona_config.description
+                    )
+            effective_metadata["model"] = model_config_metadata(agent_model_config)
+            effective_metadata["default_tools"] = resolved_tools
+            try:
+                conv._modified = True
+                conv.save()
+            except Exception:
+                logger.debug(
+                    "Failed to persist runtime metadata for sub-agent '%s'",
+                    agent_id,
+                    exc_info=True,
+                )
+
+        context_windows = getattr(
+            core.conversation_manager, "agent_context_windows", {}
+        )
+        if (
+            not share_context_window
+            and isinstance(context_windows, dict)
+            and agent_id in context_windows
+        ):
+            context_window = context_windows[agent_id]
+            context_window.model_config = agent_model_config
+            max_context_tokens = getattr(
+                agent_model_config, "max_context_window_tokens", None
+            )
+            if max_context_tokens is not None:
+                context_window.max_context_window_tokens = max_context_tokens
+
+        if not hasattr(core, "_agent_api_clients"):
+            core._agent_api_clients = {}
+        if not hasattr(core, "_agent_model_overrides"):
+            core._agent_model_overrides = {}
+        if not hasattr(core, "_agent_tool_defaults"):
+            core._agent_tool_defaults = {}
+        core._agent_api_clients[agent_id] = api_client
+        core._agent_model_overrides[agent_id] = agent_model_config
+        core._agent_tool_defaults[agent_id] = tuple(resolved_tools)
+
+        if getattr(core, "engine", None):
+            action_executor = ActionExecutor(
+                core.tool_manager,
+                core.project_manager,
+                conv,
+                ui_event_callback=core.emit_ui_event,
+            )
+            core.engine.register_agent(
+                agent_id=agent_id,
+                conversation_manager=core.conversation_manager,
+                api_client=api_client,
+                tool_manager=core.tool_manager,
+                action_executor=action_executor,
+            )
+            engine_registered = True
+    except Exception:
+        if engine_registered and getattr(core, "engine", None):
+            try:
+                core.engine.unregister_agent(agent_id)
+            except Exception:
+                logger.debug(
+                    "Failed to roll back Engine child registration", exc_info=True
+                )
+        for attr in (
+            "_agent_api_clients",
+            "_agent_model_overrides",
+            "_agent_tool_defaults",
+        ):
+            registry = getattr(core, attr, None)
+            if isinstance(registry, dict):
+                registry.pop(agent_id, None)
+        if created:
+            try:
+                core.conversation_manager.remove_agent(agent_id)
+            except Exception:
+                logger.exception(
+                    "Failed to roll back conversation state for sub-agent '%s'",
+                    agent_id,
+                )
+        raise
 
 
 def unregister_agent(

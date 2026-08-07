@@ -13,14 +13,14 @@ Tests the sub-agent tool schemas and basic functionality:
 - sync_context
 """
 
-import pytest
 import asyncio
 import json
 from typing import Any, Dict, List, Optional
 from unittest.mock import AsyncMock, MagicMock
 
-from penguin.core import PenguinCore
+import pytest
 
+from penguin.core import PenguinCore
 
 # =============================================================================
 # FIXTURES
@@ -244,6 +244,44 @@ class TestToolHandlerMethods:
         """Test _execute_sync_context method exists."""
         assert hasattr(tool_manager, "_execute_sync_context")
         assert callable(tool_manager._execute_sync_context)
+
+
+@pytest.mark.asyncio
+async def test_spawn_sub_agent_forwards_runtime_model_selection(tool_manager):
+    core = MagicMock()
+    core.create_sub_agent = MagicMock()
+    core.publish_sub_agent_session_created = AsyncMock(
+        return_value={"id": "session_child", "title": "Child Session"}
+    )
+    tool_manager.set_core(core)
+
+    result = await tool_manager._execute_spawn_sub_agent(
+        {
+            "id": "flash-worker",
+            "parent": "default",
+            "persona": "researcher",
+            "system_prompt": "Investigate carefully.",
+            "model_config_id": "subagent-fast",
+            "model_overrides": {"temperature": 0.1},
+            "model_output_max_tokens": 4096,
+            "default_tools": ["read_file", "grep_search"],
+        }
+    )
+
+    assert json.loads(result)["status"] == "ok"
+    core.create_sub_agent.assert_called_once_with(
+        "flash-worker",
+        parent_agent_id="default",
+        share_session=False,
+        share_context_window=False,
+        shared_context_window_max_tokens=None,
+        persona="researcher",
+        system_prompt="Investigate carefully.",
+        model_config_id="subagent-fast",
+        model_overrides={"temperature": 0.1},
+        model_output_max_tokens=4096,
+        default_tools=["read_file", "grep_search"],
+    )
 
 
 @pytest.mark.asyncio

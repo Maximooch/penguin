@@ -31,10 +31,10 @@
 - MessageBus sends now acknowledge actual delivery instead of unconditionally
   reporting success.
 
-### 2026-08-07 model-selection audit
+### 2026-08-07 model-selection audit and follow-up implementation
 
-Per-child model selection is exposed publicly but is not wired through the
-current creation boundary:
+The audit found that per-child model selection was exposed publicly but was not
+wired through the creation boundary:
 
 - **Native/ActionXML schema mismatch:** `spawn_sub_agent` accepts and forwards
   `persona`, `model_config_id`, `model_overrides`,
@@ -48,23 +48,38 @@ current creation boundary:
   therefore require a selection that has no effect while the child inherits
   the existing/default runtime model.
 
-This is not just an API-shape defect: a child needs its resolved model config,
-child-specific `APIClient`, Engine registration, context-window limits, and
-persisted model metadata installed as one operation. Unknown model/persona IDs
-must fail before session or parent-child state is mutated. The fix belongs in
-the transactional admission service below rather than as separate native and
-HTTP patches.
+The follow-up implementation now:
+
+- accepts the full model/persona/tool selection surface at the core lifecycle
+  boundary and through the Python client facade;
+- resolves the effective model with explicit overrides taking precedence over
+  a selected model config, then persona settings, the parent's effective model,
+  and finally the core default;
+- constructs and registers a child-specific `APIClient`, updates isolated
+  context-window model limits, and persists effective model/tool metadata;
+- forwards the same fields through native/ActionXML tool dispatch and HTTP;
+- reports invalid HTTP selections as client errors and validates unknown
+  model/persona IDs before relationship mutation; and
+- rolls back child conversation, runtime registries, and Engine registration
+  when admission fails after mutation begins.
+
+Focused tests cover native-tool and HTTP forwarding, child API-client model
+selection, parent inheritance, persona/override precedence, metadata, and
+pre-mutation rejection. Live provider verification and consolidation of every
+creation path into a single admission service remain open below.
 
 ### Remaining implementation order
 
 1. Move request serialization to the core boundary and key it by the resolved
    conversation resource.
-2. Replace native, ActionXML, and HTTP creation with one transactional admission
-   service and rollback contract. It must normalize and validate `persona`,
-   `model_config_id`, `model_overrides`, `model_output_max_tokens`, and tool
-   defaults; resolve the effective child model before mutation; install the
-   child-specific API client/Engine/context-window state; and persist the
-   effective model metadata consistently across every entry point.
+2. Complete consolidation of native, ActionXML, and HTTP creation behind one
+   transactional admission service and rollback contract. Core lifecycle
+   admission now normalizes and validates `persona`, `model_config_id`,
+   `model_overrides`, `model_output_max_tokens`, and tool defaults; resolves the
+   effective child model before mutation; installs child-specific API client,
+   Engine, and context-window state; and persists effective metadata. Remaining
+   work is to remove fallback/direct creation paths and prove the same contract
+   through live provider execution across every entry point.
 3. Add explicit child iteration/wall-clock budgets and complete pause/resume,
    cancellation, run-ID, and terminal-state semantics.
 4. Add dry-run persisted-data repair for already-corrupted session indexes.

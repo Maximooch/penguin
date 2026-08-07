@@ -130,23 +130,38 @@ class AgentLifecycleCoreFacade:
         agent_id: str,
         *,
         parent_agent_id: str,
+        persona: str | None = None,
         system_prompt: str | None = None,
         share_session: bool = True,
         share_context_window: bool = True,
         shared_context_window_max_tokens: int | None = None,
+        model_config_id: str | None = None,
+        model_overrides: dict[str, Any] | None = None,
+        model_output_max_tokens: int | None = None,
+        default_tools: list[str] | None = None,
         **kwargs: Any,
     ) -> None:
         """Create a sub-agent linked to a parent agent."""
-        del kwargs
-        core_agent_lifecycle.create_sub_agent(
-            self,
-            agent_id,
-            parent_agent_id=parent_agent_id,
-            system_prompt=system_prompt,
-            share_session=share_session,
-            share_context_window=share_context_window,
-            shared_context_window_max_tokens=shared_context_window_max_tokens,
+        if shared_context_window_max_tokens is None:
+            shared_context_window_max_tokens = kwargs.pop("shared_cw_max_tokens", None)
+        lifecycle_kwargs: dict[str, Any] = {
+            "parent_agent_id": parent_agent_id,
+            "system_prompt": system_prompt,
+            "share_session": share_session,
+            "share_context_window": share_context_window,
+            "shared_context_window_max_tokens": shared_context_window_max_tokens,
+        }
+        optional_values = {
+            "persona": persona,
+            "model_config_id": model_config_id,
+            "model_overrides": model_overrides,
+            "model_output_max_tokens": model_output_max_tokens,
+            "default_tools": default_tools,
+        }
+        lifecycle_kwargs.update(
+            {key: value for key, value in optional_values.items() if value is not None}
         )
+        core_agent_lifecycle.create_sub_agent(self, agent_id, **lifecycle_kwargs)
 
     async def publish_sub_agent_session_created(
         self,
