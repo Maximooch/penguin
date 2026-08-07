@@ -3,10 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
+
+from rich.panel import Panel
+
+if TYPE_CHECKING:
+    from penguin.cli.run_dispatch import DirectPromptOutcome
 
 __all__ = [
     "RunModeCompletion",
     "classify_runmode_completion",
+    "render_direct_prompt",
     "render_runmode_completion",
 ]
 
@@ -60,3 +69,55 @@ def render_runmode_completion(console: object, completion: RunModeCompletion) ->
         printer(f"[green]Run mode finished.[/green] {completion.message}")
     else:
         printer("[green]Run mode finished.[/green]")
+
+
+def render_direct_prompt(
+    console: Any,
+    outcome: DirectPromptOutcome,
+    *,
+    stdout_print: Callable[[str], None] = print,
+) -> None:
+    """Render a structured direct-prompt outcome."""
+
+    if outcome.error:
+        if outcome.output_format == "text":
+            console.print(f"[yellow]{outcome.error}[/yellow]")
+        else:
+            stdout_print(
+                json.dumps(
+                    {
+                        "error": outcome.error,
+                        "assistant_response": "",
+                        "action_results": [],
+                    }
+                )
+            )
+        return
+
+    response = outcome.response or {}
+    if outcome.output_format in {"json", "stream-json"}:
+        stdout_print(json.dumps(response, indent=2))
+        return
+
+    assistant_response = response.get("assistant_response", "")
+    if assistant_response:
+        console.print(assistant_response)
+    for index, result in enumerate(response.get("action_results", [])):
+        if index == 0 and assistant_response:
+            console.print("")
+        panel_content = (
+            "[bold cyan]Action:[/bold cyan] "
+            f"{result.get('action', result.get('action_name', 'Unknown'))}\n"
+            "[bold cyan]Status:[/bold cyan] "
+            f"{result.get('status', 'unknown')}\n"
+            "[bold cyan]Result:[/bold cyan]\n"
+            f"{result.get('result', result.get('output', 'N/A'))}"
+        )
+        console.print(
+            Panel(
+                panel_content,
+                title=f"Action Result {index + 1}",
+                padding=1,
+                border_style="yellow",
+            )
+        )

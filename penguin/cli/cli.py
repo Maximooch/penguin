@@ -254,12 +254,14 @@ from penguin.cli.model_runtime import (
     project_reasoning_config as _project_reasoning_config,
     resolve_reasoning_config as _resolve_cli_reasoning_config,
 )
-from penguin.cli.output_policy import render_runmode_completion
+from penguin.cli.output_policy import render_direct_prompt, render_runmode_completion
 from penguin.cli.presentation import print_ascii_banner as _print_ascii_banner
 from penguin.cli.run_dispatch import (
     DispatchMode,
     DispatchRequest,
+    execute_direct_prompt,
     execute_run_mode,
+    resolve_session,
     select_dispatch_mode,
 )
 from penguin.config import (
@@ -465,119 +467,29 @@ async def _initialize_core_components_globally(
     _command_registry.set_core(_core)
 
 
-async def _run_penguin_direct_prompt(prompt_text: str, output_format: str):
+async def _run_penguin_direct_prompt(prompt_text: str, output_format: str) -> None:
+    """Compatibility facade for extracted direct-prompt execution."""
     global _core
     if not _core:
-        logger.error("Core not initialized for direct prompt execution.")
-        # Attempt to initialize if called directly without main_entry doing it
         await _initialize_core_components_globally()
-        if not _core:
-            console.print("[red]Error: Core components failed to initialize.[/red]")
-            raise typer.Exit(code=1)
-
-    actual_prompt = ""
-    if prompt_text == "-":
-        if not sys.stdin.isatty():
-            actual_prompt = sys.stdin.read().strip()
-            logger.info("Reading prompt from stdin for direct execution.")
-        else:
-            logger.warning(
-                "Prompt specified as '-' but stdin is a TTY. No input read for direct prompt."
-            )
-            if output_format == "text":
-                console.print(
-                    "[yellow]Warning: Prompt was '-' but no data piped from stdin.[/yellow]"
-                )
-            elif output_format in ["json", "stream-json"]:
-                print(
-                    json.dumps(
-                        {
-                            "error": "Prompt was '-' but no data piped from stdin.",
-                            "assistant_response": "",
-                            "action_results": [],
-                        }
-                    )
-                )
-            return
-    else:
-        actual_prompt = prompt_text
-
-    if not actual_prompt:
-        logger.info("No prompt provided for direct execution.")
-        if output_format == "text":
-            console.print("[yellow]No prompt provided.[/yellow]")
-        elif output_format in ["json", "stream-json"]:
-            print(
-                json.dumps(
-                    {
-                        "error": "No prompt provided",
-                        "assistant_response": "",
-                        "action_results": [],
-                    }
-                )
-            )
-        return
-
-    logger.info(
-        f"Processing direct prompt (output format: {output_format}): '{actual_prompt[:100]}...'"
-    )
-
-    # Non-interactive implies not using the Rich-based streaming UI from PenguinCLI.
-    # `core.process` with `streaming=False` will get the full response.
-    # For `stream-json`, `core.process` would need to support yielding JSON chunks.
-    # For now, `stream-json` will output the full response as a single JSON object.
-
-    # TODO: Implement actual streaming for "stream-json" output format.
-    # This might involve modifying `_core.process` or having a separate streaming method
-    # that yields structured event data (init, user_message, assistant_chunk, tool_call, etc.).
-    if output_format == "stream-json":
-        # Placeholder for future actual streaming implementation
-        # For now, it will behave like "json"
-        logger.info(
-            "stream-json output format selected; will output full JSON for now. True streaming TODO."
-        )
-        # Example of initial messages for true stream-json:
-        # session_id_for_stream = _core.conversation_manager.get_current_session_id() # Needs method in ConversationManager
-        # print(json.dumps({"type": "system", "subtype": "init", "session_id": "placeholder_session_id"}))
-        # print(json.dumps({"type": "user", "message": {"content": actual_prompt}, "session_id": "placeholder_session_id"}))
-        pass
-
-    response = await _core.process(
-        {"text": actual_prompt},
-        streaming=False,  # For non-interactive, we process fully then format output.
-        # If output_format is stream-json, core.process would need to handle that.
-    )
-
-    if output_format == "text":
-        assistant_response_text = response.get("assistant_response", "")
-        if assistant_response_text:  # Only print if there's something
-            console.print(assistant_response_text)
-
-        action_results = response.get("action_results", [])
-        if action_results:
-            for i, res in enumerate(action_results):
-                if i == 0 and assistant_response_text:
-                    console.print("")
-                panel_content = (
-                    f"[bold cyan]Action:[/bold cyan] {res.get('action', res.get('action_name', 'Unknown'))}\n"
-                    f"[bold cyan]Status:[/bold cyan] {res.get('status', 'unknown')}\n"
-                    f"[bold cyan]Result:[/bold cyan]\n{res.get('result', res.get('output', 'N/A'))}"
-                )
-                console.print(
-                    Panel(
-                        panel_content,
-                        title=f"Action Result {i + 1}",
-                        padding=1,
-                        border_style="yellow",
-                    )
-                )
-    elif output_format == "json" or output_format == "stream-json":
-        print(json.dumps(response, indent=2))
-    else:
-        console.print(
-            f"[red]Error: Unknown output format '{output_format}'. Valid options are 'text', 'json', 'stream-json'.[/red]"
-        )
+    if not _core:
+        console.print("[red]Error: Core components failed to initialize.[/red]")
         raise typer.Exit(code=1)
+
+    try:
+        stdin_is_tty = sys.stdin.isatty()
+        stdin_text = None if stdin_is_tty else sys.stdin.read()
+        outcome = await execute_direct_prompt(
+            _core,
+            prompt_text=prompt_text,
+            output_format=output_format,
+            stdin_text=stdin_text,
+            stdin_is_tty=stdin_is_tty,
+        )
+    except ValueError as exc:
+        console.print(f"[red]Error: {exc}[/red]")
+        raise typer.Exit(code=1)
+    render_direct_prompt(console, outcome)
 
 
 async def _get_skill_manager_for_cli(workspace: Optional[Path] = None):
@@ -1271,56 +1183,32 @@ async def _handle_session_management(
     prompt: Optional[str] = None,
     output_format: str = "text",
 ) -> None:
-    """
-    Handle session management flags by loading the appropriate conversation.
-
-    Args:
-        continue_last: Whether to continue the last session
-        resume_session: Session ID to resume
-        prompt: Optional prompt to run after loading session
-        output_format: Output format (text, json, etc.)
-    """
-    global _core
-
+    """Compatibility facade for extracted session resolution."""
     if not _core:
-        logger.error("Core not initialized for session management.")
         console.print("[red]Error: Core not initialized[/red]")
         return
 
-    # Resume specific session
-    if resume_session:
-        try:
-            _core.load_conversation(resume_session)
-            console.print(f"[green]Resumed session: {resume_session}[/green]")
-        except Exception as e:
-            console.print(f"[red]Error resuming session: {e}[/red]")
-            return
+    try:
+        resolution = resolve_session(
+            _core,
+            continue_last=continue_last,
+            resume_session=resume_session,
+        )
+    except Exception as exc:
+        console.print(f"[red]Error resolving session: {exc}[/red]")
+        return
 
-    # Continue last session
-    elif continue_last:
-        try:
-            # Get most recent checkpoint
-            checkpoints = _core.list_checkpoints()
-            checkpoint_list = checkpoints.get("checkpoints", [])
+    if resolution.kind == "resumed":
+        console.print(f"[green]Resumed session: {resolution.session_id}[/green]")
+    elif resolution.kind == "continued":
+        console.print(f"[green]Continued last session: {resolution.session_id}[/green]")
+    elif resolution.kind == "fresh":
+        console.print("[yellow]No previous session found. Starting fresh.[/yellow]")
 
-            if checkpoint_list:
-                last_checkpoint = checkpoint_list[0]["id"]
-                _core.load_conversation(last_checkpoint)
-                console.print(f"[green]Continued last session: {last_checkpoint}[/green]")
-            else:
-                console.print("[yellow]No previous session found. Starting fresh.[/yellow]")
-        except Exception as e:
-            console.print(f"[red]Error continuing last session: {e}[/red]")
-            return
-
-    # Run prompt if provided
     if prompt:
-        # Use direct prompt mode for non-interactive execution
         await _run_penguin_direct_prompt(prompt, output_format)
     else:
-        # Enter interactive mode
-        cli = PenguinCLI(_core)
-        await cli.chat_loop()
+        await PenguinCLI(_core).chat_loop()
 
 
 

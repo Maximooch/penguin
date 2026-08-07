@@ -9,9 +9,13 @@ from typing import Any
 from penguin.cli.output_policy import RunModeCompletion, classify_runmode_completion
 
 __all__ = [
+    "DirectPromptOutcome",
     "DispatchMode",
     "DispatchRequest",
+    "SessionResolution",
+    "execute_direct_prompt",
     "execute_run_mode",
+    "resolve_session",
     "select_dispatch_mode",
 ]
 
@@ -39,6 +43,23 @@ class DispatchRequest:
     invoked_subcommand: str | None
 
 
+@dataclass(frozen=True)
+class DirectPromptOutcome:
+    """Structured result from one non-interactive prompt."""
+
+    output_format: str
+    response: dict[str, Any] | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class SessionResolution:
+    """Result of resolving a continue/resume request."""
+
+    kind: str
+    session_id: str | None = None
+
+
 def select_dispatch_mode(request: DispatchRequest) -> DispatchMode:
     """Select one mode using the CLI's documented precedence contract."""
 
@@ -53,6 +74,59 @@ def select_dispatch_mode(request: DispatchRequest) -> DispatchMode:
     if request.invoked_subcommand is None:
         return DispatchMode.INTERACTIVE
     return DispatchMode.SUBCOMMAND
+
+
+async def execute_direct_prompt(
+    core: Any,
+    *,
+    prompt_text: str,
+    output_format: str,
+    stdin_text: str | None = None,
+    stdin_is_tty: bool = True,
+) -> DirectPromptOutcome:
+    """Execute a direct prompt without terminal rendering side effects."""
+
+    normalized_format = output_format.lower()
+    if normalized_format not in {"text", "json", "stream-json"}:
+        raise ValueError(
+            f"Unknown output format '{output_format}'. Valid options are "
+            "'text', 'json', 'stream-json'."
+        )
+    if prompt_text == "-":
+        if stdin_is_tty:
+            return DirectPromptOutcome(
+                normalized_format,
+                error="Prompt was '-' but no data piped from stdin.",
+            )
+        actual_prompt = (stdin_text or "").strip()
+    else:
+        actual_prompt = prompt_text.strip()
+    if not actual_prompt:
+        return DirectPromptOutcome(normalized_format, error="No prompt provided")
+
+    response = await core.process({"text": actual_prompt}, streaming=False)
+    return DirectPromptOutcome(normalized_format, response=response)
+
+
+def resolve_session(
+    core: Any,
+    *,
+    continue_last: bool,
+    resume_session: str | None,
+) -> SessionResolution:
+    """Load a requested session and return its resolution truth."""
+
+    if resume_session:
+        core.load_conversation(resume_session)
+        return SessionResolution("resumed", resume_session)
+    if continue_last:
+        checkpoints = core.list_checkpoints().get("checkpoints", [])
+        if checkpoints:
+            session_id = str(checkpoints[0]["id"])
+            core.load_conversation(session_id)
+            return SessionResolution("continued", session_id)
+        return SessionResolution("fresh")
+    return SessionResolution("unchanged")
 
 
 async def execute_run_mode(
