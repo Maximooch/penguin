@@ -161,15 +161,35 @@ def _find_git_push_args(command: str) -> list[str] | None:
                 end += 1
             return tokens[cursor + 1 : end]
 
-    for token in tokens:
-        if (
-            token != command
-            and "git" in token
-            and any(char.isspace() for char in token)
-        ):
-            nested_args = _find_git_push_args(token)
-            if nested_args is not None:
-                return nested_args
+    shell_executables = {"bash", "dash", "ksh", "sh", "zsh"}
+    shell_options_with_value = {"-O", "+O", "--init-file", "--rcfile"}
+    for index, token in enumerate(tokens):
+        if Path(token).name not in shell_executables:
+            continue
+
+        cursor = index + 1
+        while cursor < len(tokens):
+            option = tokens[cursor]
+            if (
+                option in separators
+                or option == "--"
+                or not option.startswith(("-", "+"))
+            ):
+                break
+            if option in shell_options_with_value:
+                cursor += 2
+                continue
+            if (
+                option.startswith("-")
+                and not option.startswith("--")
+                and "c" in option[1:]
+            ):
+                if cursor + 1 < len(tokens):
+                    nested_args = _find_git_push_args(tokens[cursor + 1])
+                    if nested_args is not None:
+                        return nested_args
+                break
+            cursor += 1
     return None
 
 

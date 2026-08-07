@@ -331,6 +331,33 @@ def test_link_git_push_classifier_uses_the_git_subcommand(tmp_path: Path) -> Non
     assert result == PermissionResult.ALLOW
 
 
+def test_link_git_push_classifier_ignores_quoted_data(tmp_path: Path) -> None:
+    policy = _policy("allow")
+    policy["gitPush"] = "deny"
+    context = {
+        "permission_mode": "workspace",
+        "approval_policy": policy,
+        "directory": str(tmp_path),
+    }
+
+    for command in (
+        "git commit -m 'do not git push yet'",
+        "git grep 'git push'",
+        "git config example.value 'documentation for git push'",
+        "git config alias.deploy 'git push origin main'",
+        "echo 'git push origin main'",
+        "bash --norc 'git push origin main'",
+    ):
+        result, _reason = check_tool_permission(
+            "execute_command",
+            {"command": command},
+            _enforcer(tmp_path),
+            context,
+        )
+
+        assert result == PermissionResult.ALLOW, command
+
+
 def test_link_git_push_deny_covers_nested_and_persistent_shells(
     tmp_path: Path,
 ) -> None:
@@ -343,7 +370,13 @@ def test_link_git_push_deny_covers_nested_and_persistent_shells(
     }
 
     for tool_name, tool_input in (
+        ("execute_command", {"command": "sh -c 'git push origin main'"}),
         ("execute_command", {"command": "bash -c 'git push origin main'"}),
+        (
+            "execute_command",
+            {"command": "bash --noprofile -lc 'git push origin main'"},
+        ),
+        ("execute_command", {"command": "zsh -lc 'git push origin main'"}),
         ("process_start", {"command": "git push origin main"}),
         ("process_write_stdin", {"process_id": "proc-1", "text": "git push\n"}),
     ):
