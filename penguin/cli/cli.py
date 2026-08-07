@@ -224,6 +224,12 @@ else:
 
 from penguin._version import __version__
 from penguin.cli.bootstrap import bootstrap_cli
+from penguin.cli.command_services import (
+    AmbiguousProjectError,
+    ProjectNotFoundError,
+    parse_task_status,
+    resolve_project_identifier,
+)
 from penguin.cli.environment import (
     preconfigure_cli_environment,
     set_cli_workspace_path,
@@ -233,6 +239,8 @@ from penguin.cli.model_runtime import (
     project_reasoning_config as _project_reasoning_config,
     resolve_reasoning_config as _resolve_cli_reasoning_config,
 )
+from penguin.cli.output_policy import classify_runmode_completion
+from penguin.cli.run_dispatch import DispatchMode, DispatchRequest, select_dispatch_mode
 from penguin.config import (
     DEFAULT_MODEL,
     DEFAULT_PROVIDER,
@@ -1215,31 +1223,30 @@ def main_entry(
         ctx.obj = ctx.obj or {}
         ctx.obj["project"] = project
 
-        # Check for priority flags in order of precedence:
-        # 1. Task execution (--run)
-        if run_task is not None:
+        dispatch_mode = select_dispatch_mode(
+            DispatchRequest(
+                run_task=run_task,
+                continue_last=continue_last,
+                resume_session=resume_session,
+                prompt=prompt,
+                continuous=continuous,
+                invoked_subcommand=ctx.invoked_subcommand,
+            )
+        )
+        if dispatch_mode is DispatchMode.RUN_MODE:
             await _handle_run_mode(run_task, continuous, time_limit, task_description)
-        # 2. Session management (--continue/--resume)
-        elif continue_last or resume_session:
-            # We'll always go into interactive mode for session management
+        elif dispatch_mode is DispatchMode.SESSION:
             if prompt is not None:
-                # Combine -p with -c/--resume
                 await _handle_session_management(
                     continue_last, resume_session, prompt, output_format
                 )
             else:
-                # Just go into interactive mode with loaded session
                 await _handle_session_management(continue_last, resume_session)
-        # 3. Direct prompt (-p/--prompt)
-        elif prompt is not None:
-            # Standard non-interactive mode if -p or --prompt was used
+        elif dispatch_mode is DispatchMode.DIRECT_PROMPT:
             await _run_penguin_direct_prompt(prompt, output_format)
-        # 4. Continuous mode without task (just --247)
-        elif continuous:
+        elif dispatch_mode is DispatchMode.CONTINUOUS:
             await _handle_run_mode(None, continuous, time_limit, task_description)
-        # 5. Default: interactive chat session
-        elif ctx.invoked_subcommand is None:
-            # No subcommand invoked, default to interactive chat
+        elif dispatch_mode is DispatchMode.INTERACTIVE:
             await _run_interactive_chat()
         # Else: a subcommand was invoked (e.g., `penguin chat`, `penguin profile`).
         # Typer will handle calling the subcommand.
@@ -1441,26 +1448,23 @@ async def _handle_run_mode(
                 ui_update_callback_for_cli=ui_update_callback,
             )
 
-        status_summary = getattr(_core, "current_runmode_status_summary", "") or ""
-        status_summary_lower = status_summary.lower()
-
-        if "clarification" in status_summary_lower or "awaiting input" in status_summary_lower:
+        completion = classify_runmode_completion(
+            getattr(_core, "current_runmode_status_summary", "")
+        )
+        if completion.kind == "waiting_input":
             console.print(
-                f"[yellow]Run mode is waiting for clarification/input.[/yellow] {status_summary}"
+                f"[yellow]Run mode is waiting for clarification/input.[/yellow] {completion.message}"
             )
-        elif (
-            "time limit" in status_summary_lower
-            or "time_limit" in status_summary_lower
-        ):
-            console.print(f"[yellow]Run mode stopped due to time limit.[/yellow] {status_summary}")
-        elif (
-            "idle" in status_summary_lower
-            or "no ready task" in status_summary_lower
-            or "no ready work remained" in status_summary_lower
-        ):
-            console.print(f"[yellow]Run mode stopped because no ready work remained.[/yellow] {status_summary}")
-        elif status_summary:
-            console.print(f"[green]Run mode finished.[/green] {status_summary}")
+        elif completion.kind == "time_limit":
+            console.print(
+                f"[yellow]Run mode stopped due to time limit.[/yellow] {completion.message}"
+            )
+        elif completion.kind == "idle":
+            console.print(
+                f"[yellow]Run mode stopped because no ready work remained.[/yellow] {completion.message}"
+            )
+        elif completion.message:
+            console.print(f"[green]Run mode finished.[/green] {completion.message}")
         else:
             console.print("[green]Run mode finished.[/green]")
 
@@ -2903,26 +2907,18 @@ def _resolve_project_identifier_or_exit(project_identifier: str):
     """Resolve a project by exact ID or unique exact name, failing honestly otherwise."""
     assert _core is not None and _core.project_manager is not None
 
-    project = _core.project_manager.get_project(project_identifier)
-    if project:
-        return project
-
-    exact_name_match = _core.project_manager.get_project_by_name(project_identifier)
-    if exact_name_match:
-        return exact_name_match
-
-    projects = _core.project_manager.list_projects()
-    matching_by_name = [p for p in projects if p.name == project_identifier]
-    if len(matching_by_name) > 1:
+    try:
+        return resolve_project_identifier(_core.project_manager, project_identifier)
+    except AmbiguousProjectError:
         console.print(
             f"[red]Ambiguous project name '{project_identifier}'. Use the project ID instead.[/red]"
         )
         raise typer.Exit(code=1)
-
-    console.print(
-        f"[red]Project '{project_identifier}' was not found by exact ID or exact name.[/red]"
-    )
-    raise typer.Exit(code=1)
+    except ProjectNotFoundError:
+        console.print(
+            f"[red]Project '{project_identifier}' was not found by exact ID or exact name.[/red]"
+        )
+        raise typer.Exit(code=1)
 
 
 async def _delete_project_and_tasks_async(project_id: str) -> None:
@@ -3220,10 +3216,8 @@ def task_list(
             status_filter = None
             if status:
                 from penguin.project.models import TaskStatus
-
                 try:
-                    normalized_status = status.strip().lower()
-                    status_filter = TaskStatus(normalized_status)
+                    status_filter = parse_task_status(status)
                 except ValueError:
                     valid_options = ", ".join(task_status.value for task_status in TaskStatus)
                     console.print(
