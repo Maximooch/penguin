@@ -129,6 +129,14 @@ def _find_git_push_args(command: str) -> list[str] | None:
         return None
 
     separators = {"&&", "||", ";", "|"}
+    global_options_with_value = {
+        "-C",
+        "-c",
+        "--config-env",
+        "--git-dir",
+        "--namespace",
+        "--work-tree",
+    }
     for index, token in enumerate(tokens):
         if Path(token).name != "git":
             continue
@@ -136,12 +144,13 @@ def _find_git_push_args(command: str) -> list[str] | None:
         cursor = index + 1
         while cursor < len(tokens):
             token = tokens[cursor]
-            if token in {"-C", "-c", "--git-dir", "--work-tree", "--namespace"}:
+            if token in global_options_with_value:
                 cursor += 2
                 continue
-            if token.startswith(
-                ("-C", "-c", "--git-dir=", "--work-tree=", "--namespace=")
-            ):
+            if token == "--":
+                cursor += 1
+                break
+            if token.startswith("-"):
                 cursor += 1
                 continue
             break

@@ -285,6 +285,52 @@ def test_link_git_push_deny_dominates_shell_approval(
     assert result == PermissionResult.DENY
 
 
+def test_link_git_push_deny_handles_git_global_options(tmp_path: Path) -> None:
+    policy = _policy("allow")
+    policy["gitPush"] = "deny"
+    context = {
+        "permission_mode": "workspace",
+        "approval_policy": policy,
+        "directory": str(tmp_path),
+    }
+
+    for command in (
+        "git --no-pager push origin main",
+        "git -P push origin main",
+        "git --no-optional-locks push origin main",
+        "git --literal-pathspecs push origin main",
+        "git --config-env=http.extraHeader=HDR push origin main",
+        "git --git-dir .git push origin main",
+        "git -c core.askPass=true push origin main",
+    ):
+        result, _reason = check_tool_permission(
+            "execute_command",
+            {"command": command},
+            _enforcer(tmp_path),
+            context,
+        )
+
+        assert result == PermissionResult.DENY, command
+
+
+def test_link_git_push_classifier_uses_the_git_subcommand(tmp_path: Path) -> None:
+    policy = _policy("allow")
+    policy["gitPush"] = "deny"
+
+    result, _reason = check_tool_permission(
+        "execute_command",
+        {"command": "git config alias.example push"},
+        _enforcer(tmp_path),
+        {
+            "permission_mode": "workspace",
+            "approval_policy": policy,
+            "directory": str(tmp_path),
+        },
+    )
+
+    assert result == PermissionResult.ALLOW
+
+
 def test_link_git_push_deny_covers_nested_and_persistent_shells(
     tmp_path: Path,
 ) -> None:
