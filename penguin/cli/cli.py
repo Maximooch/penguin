@@ -226,9 +226,17 @@ from penguin._version import __version__
 from penguin.cli.bootstrap import bootstrap_cli
 from penguin.cli.command_services import (
     AmbiguousProjectError,
+    InvalidTaskStateError,
     ProjectNotFoundError,
+    TaskMutationError,
+    TaskNotFoundError,
+    complete_task as complete_task_service,
+    create_task as create_task_service,
+    delete_task as delete_task_service,
+    list_tasks as list_tasks_service,
     parse_task_status,
     resolve_project_identifier,
+    start_task as start_task_service,
 )
 from penguin.cli.environment import (
     preconfigure_cli_environment,
@@ -3141,10 +3149,11 @@ def task_create(
             raise typer.Exit(code=1)
 
         try:
-            task = await _core.project_manager.create_task_async(
-                title=title,
-                description=description or title,
+            task = await create_task_service(
+                _core.project_manager,
                 project_id=project_id,
+                title=title,
+                description=description,
                 parent_task_id=parent_task_id,
                 priority=priority,
             )
@@ -3184,22 +3193,20 @@ def task_list(
             raise typer.Exit(code=1)
 
         try:
-            # Parse status filter
-            status_filter = None
-            if status:
+            try:
+                tasks = await list_tasks_service(
+                    _core.project_manager,
+                    project_id=project_id,
+                    status=status,
+                )
+            except ValueError:
                 from penguin.project.models import TaskStatus
-                try:
-                    status_filter = parse_task_status(status)
-                except ValueError:
-                    valid_options = ", ".join(task_status.value for task_status in TaskStatus)
-                    console.print(
-                        f"[red]Invalid status: {status}. Valid options: {valid_options}[/red]"
-                    )
-                    raise typer.Exit(code=1)
 
-            tasks = await _core.project_manager.list_tasks_async(
-                project_id=project_id, status=status_filter
-            )
+                valid_options = ", ".join(item.value for item in TaskStatus)
+                console.print(
+                    f"[red]Invalid status: {status}. Valid options: {valid_options}[/red]"
+                )
+                raise typer.Exit(code=1)
 
             if not tasks:
                 filter_desc = ""
@@ -3255,24 +3262,16 @@ def task_start(task_id: str = typer.Argument(..., help="Task ID to start")):
             raise typer.Exit(code=1)
 
         try:
-            from penguin.project.models import TaskStatus
-
-            task = await _core.project_manager.get_task_async(task_id)
-            if not task:
+            try:
+                task, updated_task = await start_task_service(
+                    _core.project_manager, task_id
+                )
+            except TaskNotFoundError:
                 console.print(f"[red]Error: Task with ID '{task_id}' not found[/red]")
                 raise typer.Exit(code=1)
-
-            # Use update_task_status method for status changes
-            success = _core.project_manager.update_task_status(
-                task_id,
-                TaskStatus.ACTIVE,  # ProjectManager uses ACTIVE instead of RUNNING
-            )
-            if not success:
+            except TaskMutationError:
                 console.print("[red]Failed to start task[/red]")
                 raise typer.Exit(code=1)
-
-            # Get updated task
-            updated_task = await _core.project_manager.get_task_async(task_id)
 
             console.print(f"[green]✓ Task '{task.title}' moved to active state[/green]")
             console.print(f"  Status: {updated_task.status.value}")
@@ -3296,25 +3295,24 @@ def task_complete(task_id: str = typer.Argument(..., help="Task ID to complete")
             raise typer.Exit(code=1)
 
         try:
-            from penguin.project.models import TaskStatus
-
-            task = await _core.project_manager.get_task_async(task_id)
-            if not task:
+            try:
+                task, updated_task, already_completed = await complete_task_service(
+                    _core.project_manager, task_id
+                )
+            except TaskNotFoundError:
                 console.print(f"[red]Error: Task with ID '{task_id}' not found[/red]")
                 raise typer.Exit(code=1)
-
-            if task.status == TaskStatus.COMPLETED:
-                updated_task = task
-                console.print(f"[yellow]Task '{task.title}' is already completed[/yellow]")
-            elif task.status == TaskStatus.PENDING_REVIEW:
-                task.approve("cli", notes="Approved via CLI")
-                _core.project_manager.storage.update_task(task)
-                updated_task = await _core.project_manager.get_task_async(task_id)
-            else:
+            except InvalidTaskStateError:
                 console.print(
                     "[red]Task must be in pending_review before it can be approved[/red]"
                 )
                 raise typer.Exit(code=1)
+            except TaskMutationError:
+                console.print("[red]Failed to approve task[/red]")
+                raise typer.Exit(code=1)
+
+            if already_completed:
+                console.print(f"[yellow]Task '{task.title}' is already completed[/yellow]")
 
             console.print(f"[green]✓ Task '{task.title}' approved[/green]")
             console.print(f"  Status: {updated_task.status.value}")
@@ -3358,9 +3356,9 @@ def task_delete(
                     console.print("[yellow]Operation cancelled[/yellow]")
                     return
 
-            # Note: Need to add delete_task_async method to ProjectManager
-            success = _core.project_manager.storage.delete_task(task_id)
-            if not success:
+            try:
+                await delete_task_service(_core.project_manager, task_id)
+            except TaskMutationError:
                 console.print("[red]Failed to delete task[/red]")
                 raise typer.Exit(code=1)
             console.print(f"[green]✓ Task '{task.title}' deleted successfully[/green]")
