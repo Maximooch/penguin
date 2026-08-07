@@ -227,15 +227,21 @@ from penguin.cli.bootstrap import bootstrap_cli
 from penguin.cli.command_services import (
     AmbiguousProjectError,
     InvalidTaskStateError,
+    NoProjectTasksError,
+    NoReadyProjectTasksError,
+    ProjectMutationError,
     ProjectNotFoundError,
     TaskMutationError,
     TaskNotFoundError,
     complete_task as complete_task_service,
     create_task as create_task_service,
     delete_task as delete_task_service,
+    delete_project_and_tasks,
+    list_project_summaries,
     list_tasks as list_tasks_service,
     parse_task_status,
     resolve_project_identifier,
+    prepare_project_start,
     start_task as start_task_service,
 )
 from penguin.cli.environment import (
@@ -2838,9 +2844,11 @@ def project_list():
             raise typer.Exit(code=1)
 
         try:
-            projects = await _core.project_manager.list_projects_async()
+            project_summaries = await list_project_summaries(
+                _core.project_manager
+            )
 
-            if not projects:
+            if not project_summaries:
                 console.print(
                     "[yellow]No projects found. Create one with 'penguin project create <name>'[/yellow]"
                 )
@@ -2855,18 +2863,13 @@ def project_list():
             table.add_column("Tasks", style="yellow")
             table.add_column("Created", style="dim")
 
-            for project in projects:
-                # Get task count for this project
-                project_tasks = await _core.project_manager.list_tasks_async(
-                    project_id=project.id
-                )
-                task_count = len(project_tasks)
-
+            for summary in project_summaries:
+                project = summary.project
                 table.add_row(
                     project.id[:8],
                     project.name,
                     project.status,  # Project status is a string, not an enum
-                    str(task_count),
+                    str(summary.task_count),
                     project.created_at[:16]
                     if project.created_at
                     else "Unknown",  # created_at is ISO string, take first 16 chars (YYYY-MM-DD HH:MM)
@@ -2905,10 +2908,7 @@ async def _delete_project_and_tasks_async(project_id: str) -> None:
     """Delete a project and all of its tasks for honest rollback/cleanup paths."""
     assert _core is not None and _core.project_manager is not None
 
-    tasks = await _core.project_manager.list_tasks_async(project_id=project_id)
-    for task in tasks:
-        _core.project_manager.storage.delete_task(task.id)
-    _core.project_manager.storage.delete_project(project_id)
+    await delete_project_and_tasks(_core.project_manager, project_id)
 
 @project_app.command("delete")
 def project_delete(
@@ -2945,9 +2945,9 @@ def project_delete(
                     console.print("[yellow]Operation cancelled[/yellow]")
                     return
 
-            # Note: Need to add delete_project_async method to ProjectManager
-            success = _core.project_manager.storage.delete_project(project_id)
-            if not success:
+            try:
+                await delete_project_and_tasks(_core.project_manager, project_id)
+            except ProjectMutationError:
                 console.print("[red]Failed to delete project[/red]")
                 raise typer.Exit(code=1)
             console.print(
@@ -2984,21 +2984,33 @@ def project_start(
             console.print("[red]Error: Project manager not available[/red]")
             raise typer.Exit(code=1)
 
-        project = _resolve_project_identifier_or_exit(project_identifier)
-        tasks = await _core.project_manager.list_tasks_async(project_id=project.id)
-        if not tasks:
+        try:
+            plan = await prepare_project_start(
+                _core.project_manager, project_identifier
+            )
+        except AmbiguousProjectError:
             console.print(
-                f"[red]Project '{project.name}' has no tasks. Initialize or import a Blueprint first.[/red]"
+                f"[red]Ambiguous project name '{project_identifier}'. Use the project ID instead.[/red]"
+            )
+            raise typer.Exit(code=1)
+        except ProjectNotFoundError:
+            console.print(
+                f"[red]Project '{project_identifier}' was not found by exact ID or exact name.[/red]"
+            )
+            raise typer.Exit(code=1)
+        except NoProjectTasksError as exc:
+            console.print(
+                f"[red]Project '{exc.args[0]}' has no tasks. Initialize or import a Blueprint first.[/red]"
+            )
+            raise typer.Exit(code=1)
+        except NoReadyProjectTasksError as exc:
+            console.print(
+                f"[red]Project '{exc.args[0]}' has no ready tasks to execute.[/red]"
             )
             raise typer.Exit(code=1)
 
-        ready_tasks = await _core.project_manager.get_ready_tasks_async(project.id)
-        if not ready_tasks:
-            console.print(
-                f"[red]Project '{project.name}' has no ready tasks to execute.[/red]"
-            )
-            raise typer.Exit(code=1)
-
+        project = plan.project
+        ready_tasks = plan.ready_tasks
         console.print(f"[bold blue]Starting project:[/bold blue] {project.name} ({project.id})")
         console.print(f"  Mode: {'continuous' if continuous else 'single-selection'}")
         console.print(f"  Ready tasks: {len(ready_tasks)}")

@@ -8,14 +8,19 @@ import pytest
 from penguin.cli.command_services import (
     AmbiguousProjectError,
     InvalidTaskStateError,
+    NoProjectTasksError,
+    NoReadyProjectTasksError,
     ProjectNotFoundError,
     TaskMutationError,
     complete_task,
     create_task,
     delete_task,
+    delete_project_and_tasks,
+    list_project_summaries,
     list_tasks,
     parse_task_status,
     resolve_project_identifier,
+    prepare_project_start,
     start_task,
 )
 from penguin.project.models import TaskStatus
@@ -70,9 +75,7 @@ async def test_task_service_crud_and_status_projection() -> None:
         )
         is created
     )
-    assert await list_tasks(manager, project_id="project", status="ACTIVE") == [
-        created
-    ]
+    assert await list_tasks(manager, project_id="project", status="ACTIVE") == [created]
     assert manager.create_task_async.await_args.kwargs["description"] == "Title"
     assert manager.list_tasks_async.await_args.kwargs["status"] is TaskStatus.ACTIVE
 
@@ -121,3 +124,62 @@ async def test_start_task_reports_failed_persistence() -> None:
     manager.get_task_async = AsyncMock(return_value=failed)
     with pytest.raises(InvalidTaskStateError):
         await complete_task(manager, "task")
+
+
+@pytest.mark.asyncio
+async def test_project_services_count_concurrently_and_prepare_start() -> None:
+    project = SimpleNamespace(id="project", name="Demo")
+    task = SimpleNamespace(id="task", title="Ready")
+    manager = SimpleNamespace(
+        get_project=Mock(return_value=project),
+        get_project_by_name=Mock(return_value=None),
+        list_projects=Mock(return_value=[project]),
+        list_projects_async=AsyncMock(return_value=[project]),
+        list_tasks_async=AsyncMock(return_value=[task]),
+        get_ready_tasks_async=AsyncMock(return_value=[task]),
+    )
+
+    summaries = await list_project_summaries(manager)
+    plan = await prepare_project_start(manager, "project")
+
+    assert summaries[0].project is project
+    assert summaries[0].task_count == 1
+    assert plan.project is project
+    assert plan.ready_tasks == [task]
+
+
+@pytest.mark.asyncio
+async def test_project_start_plan_rejects_empty_and_unready_projects() -> None:
+    project = SimpleNamespace(id="project", name="Demo")
+    manager = SimpleNamespace(
+        get_project=Mock(return_value=project),
+        get_project_by_name=Mock(return_value=None),
+        list_projects=Mock(return_value=[project]),
+        list_tasks_async=AsyncMock(return_value=[]),
+        get_ready_tasks_async=AsyncMock(return_value=[]),
+    )
+
+    with pytest.raises(NoProjectTasksError):
+        await prepare_project_start(manager, "project")
+    manager.list_tasks_async.return_value = [SimpleNamespace(id="task")]
+    with pytest.raises(NoReadyProjectTasksError):
+        await prepare_project_start(manager, "project")
+
+
+@pytest.mark.asyncio
+async def test_project_delete_cascades_tasks_before_project() -> None:
+    calls: list[str] = []
+    storage = SimpleNamespace(
+        delete_task=lambda task_id: calls.append(f"task:{task_id}") or True,
+        delete_project=lambda project_id: calls.append(f"project:{project_id}") or True,
+    )
+    manager = SimpleNamespace(
+        storage=storage,
+        list_tasks_async=AsyncMock(
+            return_value=[SimpleNamespace(id="one"), SimpleNamespace(id="two")]
+        ),
+    )
+
+    await delete_project_and_tasks(manager, "project")
+
+    assert calls == ["task:one", "task:two", "project:project"]
