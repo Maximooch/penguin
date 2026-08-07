@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-__all__ = ["RunModeCompletion", "classify_runmode_completion"]
+__all__ = [
+    "RunModeCompletion",
+    "classify_runmode_completion",
+    "render_runmode_completion",
+]
 
 
 @dataclass(frozen=True)
@@ -32,3 +36,27 @@ def classify_runmode_completion(status_summary: str | None) -> RunModeCompletion
     if summary:
         return RunModeCompletion("finished", summary)
     return RunModeCompletion("finished", "")
+
+
+def render_runmode_completion(console: object, completion: RunModeCompletion) -> None:
+    """Render a classified completion through a Rich-compatible console."""
+
+    printer = getattr(console, "print")
+    if completion.kind == "waiting_input":
+        printer(
+            "[yellow]Run mode is waiting for clarification/input.[/yellow] "
+            f"{completion.message}"
+        )
+    elif completion.kind == "time_limit":
+        printer(
+            f"[yellow]Run mode stopped due to time limit.[/yellow] {completion.message}"
+        )
+    elif completion.kind == "idle":
+        printer(
+            "[yellow]Run mode stopped because no ready work remained.[/yellow] "
+            f"{completion.message}"
+        )
+    elif completion.message:
+        printer(f"[green]Run mode finished.[/green] {completion.message}")
+    else:
+        printer("[green]Run mode finished.[/green]")

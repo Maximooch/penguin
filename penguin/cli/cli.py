@@ -254,9 +254,14 @@ from penguin.cli.model_runtime import (
     project_reasoning_config as _project_reasoning_config,
     resolve_reasoning_config as _resolve_cli_reasoning_config,
 )
-from penguin.cli.output_policy import classify_runmode_completion
+from penguin.cli.output_policy import render_runmode_completion
 from penguin.cli.presentation import print_ascii_banner as _print_ascii_banner
-from penguin.cli.run_dispatch import DispatchMode, DispatchRequest, select_dispatch_mode
+from penguin.cli.run_dispatch import (
+    DispatchMode,
+    DispatchRequest,
+    execute_run_mode,
+    select_dispatch_mode,
+)
 from penguin.config import (
     DEFAULT_MODEL,
     DEFAULT_PROVIDER,
@@ -1326,17 +1331,7 @@ async def _handle_run_mode(
     time_limit: Optional[int] = None,
     description: Optional[str] = None,
 ) -> None:
-    """
-    Handle run mode execution with specified task and options.
-
-    Args:
-        task_name: Name of the task to run
-        continuous: Whether to run in continuous mode
-        time_limit: Optional time limit in minutes
-        description: Optional description for the task
-    """
-    global _core
-
+    """Compatibility facade for the extracted RunMode dispatch service."""
     if not _core:
         logger.error("Core not initialized for run mode.")
         console.print(
@@ -1345,118 +1340,25 @@ async def _handle_run_mode(
         raise typer.Exit(code=1)
 
     try:
-        logger.info(
-            f"Starting run mode: task={task_name}, continuous={continuous}, time_limit={time_limit}"
+        completion = await execute_run_mode(
+            _core,
+            console,
+            task_name=task_name,
+            continuous=continuous,
+            time_limit=time_limit,
+            description=description,
         )
-
-        stream_started = False
-
-        async def runmode_stream_callback(chunk: str, message_type: str = "assistant") -> None:
-            """Stream RunMode chunks directly to the console in headless mode."""
-            nonlocal stream_started
-
-            if chunk == "" and stream_started:
-                # Final signal – terminate the current line cleanly
-                console.print("")
-                stream_started = False
-                return
-
-            if not chunk:
-                return
-
-            if not stream_started:
-                # Provide a visual separator before streaming begins
-                console.print("")
-                stream_started = True
-
-            style = "dim" if message_type == "reasoning" else "white"
-            console.print(
-                chunk,
-                style=style,
-                end="",
-                highlight=False,
-                soft_wrap=True,
-            )
-            try:
-                console.file.flush()
-            except Exception:
-                pass
-
-        # Configure UI update callback (placeholder for future enhancements)
-        async def ui_update_callback() -> None:
-            """Handle UI updates during run mode."""
-            pass
-
-        # Use core.start_run_mode to execute the task
-        if continuous:
-            console.print(
-                f"[bold blue]Starting continuous mode{' for task: ' + task_name if task_name else ''}[/bold blue]"
-            )
-            if time_limit:
-                console.print(f"[blue]Time limit: {time_limit} minutes[/blue]")
-            console.print("[blue]Press Ctrl+C to stop execution gracefully[/blue]")
-
-            try:
-                # For continuous mode, we use the same method but with continuous=True
-                await _core.start_run_mode(
-                    name=task_name,
-                    description=description,
-                    continuous=True,
-                    time_limit=time_limit,
-                    stream_callback_for_cli=runmode_stream_callback,
-                    ui_update_callback_for_cli=ui_update_callback,
-                )
-            except KeyboardInterrupt:
-                console.print(
-                    "\n[yellow]Keyboard interrupt received. Gracefully shutting down...[/yellow]"
-                )
-                # Core should handle the graceful shutdown internally
-        else:
-            # For single task execution
-            if not task_name:
-                console.print(
-                    "[yellow]No task specified for run mode. Use --run <task_name> to specify a task.[/yellow]"
-                )
-                raise typer.Exit(code=1)
-
-            console.print(f"[bold blue]Running task: {task_name}[/bold blue]")
-            if description:
-                console.print(f"[blue]Description: {description}[/blue]")
-            if time_limit:
-                console.print(f"[blue]Time limit: {time_limit} minutes[/blue]")
-
-            await _core.start_run_mode(
-                name=task_name,
-                description=description,
-                continuous=False,
-                time_limit=time_limit,
-                stream_callback_for_cli=runmode_stream_callback,
-                ui_update_callback_for_cli=ui_update_callback,
-            )
-
-        completion = classify_runmode_completion(
-            getattr(_core, "current_runmode_status_summary", "")
+        render_runmode_completion(console, completion)
+    except ValueError as exc:
+        console.print(f"[yellow]{exc}[/yellow]")
+        raise typer.Exit(code=1)
+    except KeyboardInterrupt:
+        console.print(
+            "\\n[yellow]Keyboard interrupt received. Gracefully shutting down...[/yellow]"
         )
-        if completion.kind == "waiting_input":
-            console.print(
-                f"[yellow]Run mode is waiting for clarification/input.[/yellow] {completion.message}"
-            )
-        elif completion.kind == "time_limit":
-            console.print(
-                f"[yellow]Run mode stopped due to time limit.[/yellow] {completion.message}"
-            )
-        elif completion.kind == "idle":
-            console.print(
-                f"[yellow]Run mode stopped because no ready work remained.[/yellow] {completion.message}"
-            )
-        elif completion.message:
-            console.print(f"[green]Run mode finished.[/green] {completion.message}")
-        else:
-            console.print("[green]Run mode finished.[/green]")
-
-    except Exception as e:
-        logger.error(f"Error in run mode execution: {e}", exc_info=True)
-        console.print(f"[red]Error running task: {e!s}[/red]")
+    except Exception as exc:
+        logger.error("Error in run mode execution: %s", exc, exc_info=True)
+        console.print(f"[red]Error running task: {exc!s}[/red]")
         console.print(traceback.format_exc())
 
 
