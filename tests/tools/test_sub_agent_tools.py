@@ -510,16 +510,12 @@ class TestWaitForAgentsExecution:
         self,
         tool_manager,
         mock_async_core,
-        monkeypatch: pytest.MonkeyPatch,
     ):
         """wait_for_agents should complete when polling background task status."""
         from penguin.multi.executor import AgentExecutor
 
         executor = AgentExecutor(mock_async_core, max_concurrent=2)
-        monkeypatch.setattr(
-            "penguin.multi.executor.get_executor",
-            lambda _core=None: executor,
-        )
+        tool_manager._agent_executor = executor
 
         await executor.spawn_agent("wait-loop-agent", "quick task")
 
@@ -543,7 +539,6 @@ class TestWaitForAgentsExecution:
         self,
         tool_manager,
         mock_async_core,
-        monkeypatch: pytest.MonkeyPatch,
     ):
         """wait_for_agents should timeout cleanly with partial status payload."""
         from penguin.multi.executor import AgentExecutor
@@ -557,10 +552,7 @@ class TestWaitForAgentsExecution:
 
         mock_async_core.process = AsyncMock(side_effect=_slow_process)
         executor = AgentExecutor(mock_async_core, max_concurrent=1)
-        monkeypatch.setattr(
-            "penguin.multi.executor.get_executor",
-            lambda _core=None: executor,
-        )
+        tool_manager._agent_executor = executor
 
         await executor.spawn_agent("wait-timeout-agent", "slow task")
 

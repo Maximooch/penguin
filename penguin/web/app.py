@@ -189,8 +189,9 @@ def create_app() -> "FastAPI":
     async def lifespan(app: "FastAPI"):
         # Startup
         logger.info("Penguin web application starting up...")
+        core = get_or_create_core()
         try:
-            start_vcs_watcher(get_or_create_core())
+            start_vcs_watcher(core)
         except Exception:
             logger.debug("Unable to start VCS watcher", exc_info=True)
         yield
@@ -200,6 +201,16 @@ def create_app() -> "FastAPI":
             await stop_vcs_watcher()
         except Exception:
             logger.debug("Unable to stop VCS watcher", exc_info=True)
+        try:
+            shutdown_agents = getattr(
+                getattr(core, "tool_manager", None),
+                "shutdown_background_agents",
+                None,
+            )
+            if callable(shutdown_agents):
+                await shutdown_agents()
+        except Exception:
+            logger.warning("Unable to stop background agents", exc_info=True)
         try:
             pool = ConnectionPoolManager.get_instance()
             await pool.close_all()

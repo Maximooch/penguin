@@ -1,15 +1,15 @@
 """Background agent execution for parallel multi-agent workflows.
 
 This module provides the AgentExecutor class for running multiple agents
-concurrently using asyncio.TaskGroup.
+concurrently on one owning event loop.
 """
 
 import asyncio
 import logging
 import os
-from typing import Any, Callable, Coroutine, Dict, List, Optional, Set, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +41,8 @@ class AgentTask:
 class AgentExecutor:
     """Executes multiple agents in parallel with concurrency control.
 
-    This class manages background agent execution using asyncio.TaskGroup
-    for Python 3.11+ compatible parallel task management.
+    This class owns background tasks and bounds concurrent child execution
+    with an asyncio semaphore.
 
     Usage:
         executor = AgentExecutor(core, max_concurrent=5)
@@ -227,10 +227,15 @@ class AgentExecutor:
         if not agent_task or not agent_task.task:
             return None
 
-        try:
-            await asyncio.wait_for(agent_task.task, timeout=timeout)
-        except asyncio.TimeoutError:
-            raise
+        if timeout is None:
+            await agent_task.task
+        else:
+            done, _pending = await asyncio.wait(
+                {agent_task.task},
+                timeout=timeout,
+            )
+            if not done:
+                raise asyncio.TimeoutError
 
         return agent_task.result
 
@@ -258,10 +263,12 @@ class AgentExecutor:
                 tasks.append(agent_task.task)
 
         if tasks:
-            await asyncio.wait_for(
-                asyncio.gather(*tasks, return_exceptions=True),
-                timeout=timeout,
-            )
+            if timeout is None:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            else:
+                _done, pending = await asyncio.wait(tasks, timeout=timeout)
+                if pending:
+                    raise asyncio.TimeoutError
 
         return {aid: self._tasks[aid].result for aid in agent_ids if aid in self._tasks}
 
@@ -315,6 +322,10 @@ class AgentExecutor:
             return False
 
         agent_task.task.cancel()
+        try:
+            await agent_task.task
+        except asyncio.CancelledError:
+            pass
         agent_task.state = AgentState.CANCELLED
         return True
 
@@ -328,6 +339,23 @@ class AgentExecutor:
         for agent_id in list(self._tasks.keys()):
             if await self.cancel(agent_id):
                 cancelled += 1
+        return cancelled
+
+    async def shutdown(self) -> int:
+        """Cancel and await every unfinished background agent.
+
+        Returns:
+            Number of tasks cancelled during shutdown.
+        """
+
+        cancelled = await self.cancel_all()
+        unfinished = [
+            agent_task.task
+            for agent_task in self._tasks.values()
+            if agent_task.task is not None and not agent_task.task.done()
+        ]
+        if unfinished:
+            await asyncio.gather(*unfinished, return_exceptions=True)
         return cancelled
 
     def pause(self, agent_id: str) -> bool:

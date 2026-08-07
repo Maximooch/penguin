@@ -553,6 +553,7 @@ def _build_execution_context(
     agent_id: Optional[str],
     agent_mode: Optional[str],
     directory: Optional[str],
+    subagents_enabled: Optional[bool] = None,
 ) -> ExecutionContext:
     """Create request-scoped execution context for concurrent web sessions."""
     path_info = get_path_info(core, directory=directory, session_id=session_id)
@@ -566,6 +567,7 @@ def _build_execution_context(
         project_root=effective_directory,
         workspace_root=effective_directory,
         request_id=str(uuid.uuid4()),
+        subagents_enabled=subagents_enabled,
     )
 
 
@@ -1050,6 +1052,7 @@ class MessageRequest(BaseModel):
     external_subscription_execution: Optional[ExternalSubscriptionExecutionRequest] = (
         None
     )
+    subagents_enabled: Optional[bool] = None
 
 
 _REASONING_EFFORT_VARIANTS = {
@@ -4118,6 +4121,7 @@ async def handle_chat_message(
             agent_id=request.agent_id,
             agent_mode=resolved_agent_mode,
             directory=bound_directory or request.directory,
+            subagents_enabled=request.subagents_enabled,
         )
         _request_log_debug(
             "chat.trace.start request=%s session=%s agent=%s mode=%s dir=%s model=%s streaming=%s client_msg=%s prompt=%r",

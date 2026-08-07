@@ -369,6 +369,14 @@ class TestWaitOperations:
         with pytest.raises(asyncio.TimeoutError):
             await executor.wait_for("timeout-agent", timeout=0.1)
 
+        status = executor.get_status("timeout-agent")
+        assert status is not None
+        assert status["state"] in {
+            AgentState.PENDING.value,
+            AgentState.RUNNING.value,
+        }
+        await executor.cancel("timeout-agent")
+
 
 # =============================================================================
 # CONCURRENCY CONTROL TESTS

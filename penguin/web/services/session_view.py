@@ -600,7 +600,7 @@ def _build_index_session_info(
         payload["agent_mode"] = agent_mode
 
     parent_id = _metadata_string(metadata, "parentID", "parent_id", "continued_from")
-    if parent_id:
+    if parent_id and parent_id != session_id:
         payload["parentID"] = parent_id
     agent_id = _metadata_string(metadata, "agent_id", "agentID")
     if agent_id:
@@ -861,7 +861,11 @@ def _build_session_info(core: Any, session: Any, manager: Any) -> dict[str, Any]
             or metadata.get("parent_id")
             or metadata.get("continued_from")
         )
-        if isinstance(parent_id, str) and parent_id.strip():
+        if (
+            isinstance(parent_id, str)
+            and parent_id.strip()
+            and parent_id.strip() != str(session.id)
+        ):
             payload["parentID"] = parent_id.strip()
 
         agent_id = metadata.get("agent_id") or metadata.get("agentID")

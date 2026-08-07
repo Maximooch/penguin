@@ -91,6 +91,32 @@ _NATIVE_RESPONSE_COMPLETION_TOOLS = {"finish_response"}
 logger = logging.getLogger(__name__)
 
 
+async def _execute_tool_with_manager(
+    tool_manager: Any,
+    tool_name: str,
+    tool_arguments: Dict[str, Any],
+) -> Any:
+    """Execute a tool through the manager's async contract when available.
+
+    Args:
+        tool_manager: Tool manager exposed by the active Penguin runtime.
+        tool_name: Canonical tool name supplied by the provider.
+        tool_arguments: Parsed provider tool arguments.
+
+    Returns:
+        The completed tool result.
+    """
+
+    async_dispatch = getattr(tool_manager, "execute_tool_async", None)
+    if callable(async_dispatch):
+        result = async_dispatch(tool_name, tool_arguments)
+    else:
+        result = tool_manager.execute_tool(tool_name, tool_arguments)
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
 def _tool_arguments_chars(arguments: Any) -> int:
     """Return a bounded-diagnostic argument size in characters."""
 
@@ -857,11 +883,15 @@ async def _execute_ordered_batch_parent(
                 }
     )
 
-    def _execute_child(child_call: ToolCall) -> Any:
+    async def _execute_child(child_call: ToolCall) -> Any:
         child_args = (
             child_call.arguments if isinstance(child_call.arguments, dict) else {}
         )
-        return tool_manager.execute_tool(child_call.name, child_args)
+        return await _execute_tool_with_manager(
+            tool_manager,
+            child_call.name,
+            child_args,
+        )
 
     child_results = await execute_tool_calls_ordered(
         child_calls,
@@ -1024,7 +1054,8 @@ async def execute_pending_tool_calls(
                     emit_tool_timeline=emit_tool_timeline,
                     event_metadata=event_metadata,
                 )
-            return tool_manager.execute_tool(
+            return await _execute_tool_with_manager(
+                tool_manager,
                 current_tool_call.name,
                 parsed_args_by_id.get(current_tool_call.id, {}),
             )

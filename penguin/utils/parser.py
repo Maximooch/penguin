@@ -18,6 +18,11 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, Callable, Awaitable
 import base64
 from penguin.local_task.manager import ProjectManager
+from penguin.multi.policy import (
+    SUBAGENT_TOOL_NAMES,
+    disabled_subagent_result,
+    subagents_enabled,
+)
 from penguin.tools import ToolManager
 from penguin.utils.process_manager import ProcessManager
 from penguin.system.conversation import MessageCategory
@@ -1630,6 +1635,11 @@ class ActionExecutor:
 
         action_id = str(uuid.uuid4())[:8]
         handler_params = self._prepare_action_params(action, action_id)
+        if (
+            action.action_type.value in SUBAGENT_TOOL_NAMES
+            and not subagents_enabled()
+        ):
+            return json.dumps(disabled_subagent_result(action.action_type.value))
 
         # --------------------------------------------------
         # Emit *start* UI event

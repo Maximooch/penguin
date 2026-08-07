@@ -375,7 +375,6 @@ async def test_wait_for_agents_uses_async_tool_handler() -> None:
 
 @pytest.mark.asyncio
 async def test_wait_for_agents_action_path_completes_background_agent(
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from penguin.multi.executor import AgentExecutor
     from penguin.tools.tool_manager import ToolManager
@@ -390,15 +389,11 @@ async def test_wait_for_agents_action_path_completes_background_agent(
 
     core.process = AsyncMock(side_effect=_mock_process)
     executor_runner = AgentExecutor(core, max_concurrent=1)
-    monkeypatch.setattr(
-        "penguin.multi.executor.get_executor",
-        lambda _core=None: executor_runner,
-    )
-
     tool_manager = ToolManager(
         config={"diagnostics": {"enabled": False}},
         log_error_func=lambda *_args, **_kwargs: None,
     )
+    tool_manager._agent_executor = executor_runner
     action_executor = ActionExecutor(
         tool_manager=tool_manager,
         task_manager=cast(Any, SimpleNamespace()),

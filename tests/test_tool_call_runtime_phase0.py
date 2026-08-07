@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
@@ -155,6 +156,44 @@ async def test_responses_tool_call_execution_preserves_provider_identity() -> No
             "status": "completed",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_responses_tool_call_prefers_async_tool_dispatch() -> None:
+    """Provider-native tools must stay on the owning event loop."""
+
+    class _AsyncToolManager:
+        async def execute_tool_async(
+            self,
+            tool_name: str,
+            tool_args: dict[str, Any],
+        ) -> str:
+            await asyncio.sleep(0)
+            return f"async:{tool_name}:{tool_args['path']}"
+
+        def execute_tool(self, tool_name: str, tool_args: dict[str, Any]) -> str:
+            raise AssertionError(
+                f"sync dispatch used for {tool_name} with {tool_args}"
+            )
+
+    result = await execute_pending_tool_call(
+        api_client=SimpleNamespace(
+            model_config=SimpleNamespace(provider="openai", model="gpt-5.5"),
+            client_handler=SimpleNamespace(
+                get_and_clear_last_tool_call=lambda: {
+                    "call_id": "call_async_123",
+                    "name": "read_file",
+                    "arguments": '{"path":"README.md"}',
+                }
+            ),
+        ),
+        tool_manager=_AsyncToolManager(),
+        persist_action_result=lambda _action_result, _tool_context: None,
+    )
+
+    assert result is not None
+    assert result["status"] == "completed"
+    assert result["result"] == "async:read_file:README.md"
 
 
 def test_loop_state_detects_repeated_empty_tool_only_results() -> None:
