@@ -86,20 +86,15 @@ Maintainer Notes:
 """
 
 import asyncio
-import datetime
 import io
 
 # Removed mock imports - using real RunMode implementation now
-import json  # For JSON output
 import logging
 import os
-import platform
-import re
-import signal
 import sys
 import traceback
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar, Union
+from typing import Any, Dict, Optional, Tuple, TypeVar, Union
 
 # Ensure UTF-8 encoding for stdout/stderr to prevent emoji encoding issues
 # This is especially important on Windows and some terminal environments
@@ -209,42 +204,10 @@ else:
     # Standard imports without timing
     import typer  # type: ignore
     from rich.console import Console as RichConsole  # type: ignore
-    from rich.markdown import Markdown  # type: ignore
-    from rich.panel import Panel  # type: ignore
-    from rich.progress import Progress, SpinnerColumn, TextColumn  # type: ignore
-    from rich.syntax import Syntax  # type: ignore
-    from rich.live import Live  # type: ignore
-    from rich.text import Text  # type: ignore
-    import rich  # type: ignore
-    from prompt_toolkit import PromptSession  # type: ignore
-    from prompt_toolkit.key_binding import KeyBindings  # type: ignore
-    from prompt_toolkit.keys import Keys  # type: ignore
-    from prompt_toolkit.styles import Style  # type: ignore
-    from prompt_toolkit.formatted_text import HTML  # type: ignore
 
 from penguin._version import __version__
 from penguin.cli.agent_commands import bind_agent_commands
 from penguin.cli.bootstrap import bootstrap_cli
-from penguin.cli.command_services import (
-    AmbiguousProjectError,
-    InvalidTaskStateError,
-    NoProjectTasksError,
-    NoReadyProjectTasksError,
-    ProjectMutationError,
-    ProjectNotFoundError,
-    TaskMutationError,
-    TaskNotFoundError,
-    complete_task as complete_task_service,
-    create_task as create_task_service,
-    delete_task as delete_task_service,
-    delete_project_and_tasks,
-    list_project_summaries,
-    list_tasks as list_tasks_service,
-    parse_task_status,
-    resolve_project_identifier,
-    prepare_project_start,
-    start_task as start_task_service,
-)
 from penguin.cli.config_commands import bind_config_commands
 from penguin.cli.coordination_commands import bind_coordination_commands
 from penguin.cli.diagnostic_commands import bind_diagnostic_commands
@@ -252,16 +215,18 @@ from penguin.cli.environment import (
     preconfigure_cli_environment,
     set_cli_workspace_path,
 )
+from penguin.cli.events import EventBus  # noqa: F401 - compatibility export
 from penguin.cli.extension_commands import bind_extension_commands
 from penguin.cli.interface import PenguinInterface
 from penguin.cli.interactive import PenguinCLI
 from penguin.cli.model_runtime import (
-    project_reasoning_config as _project_reasoning_config,
-    resolve_reasoning_config as _resolve_cli_reasoning_config,
+    project_reasoning_config as _project_reasoning_config,  # noqa: F401
+    resolve_reasoning_config as _resolve_cli_reasoning_config,  # noqa: F401
 )
 from penguin.cli.output_policy import render_direct_prompt, render_runmode_completion
 from penguin.cli.presentation import print_ascii_banner as _print_ascii_banner
 from penguin.cli.project_commands import bind_project_commands
+from penguin.cli.renderer import UnifiedRenderer  # noqa: F401 - compatibility export
 from penguin.cli.run_dispatch import (
     DispatchMode,
     DispatchRequest,
@@ -270,28 +235,14 @@ from penguin.cli.run_dispatch import (
     resolve_session,
     select_dispatch_mode,
 )
-from penguin.config import (
-    DEFAULT_MODEL,
-    DEFAULT_PROVIDER,
-    GITHUB_REPOSITORY,
-    WORKSPACE_PATH,
-    Config,  # Import Config type for type hinting
-    config as penguin_config_global,
-    _ensure_env_loaded,  # Lazy env loading for startup performance
+from penguin.cli.streaming_display import (  # noqa: F401 - compatibility export
+    StreamingDisplay,
 )
+from penguin.config import WORKSPACE_PATH, Config
 from penguin.core import PenguinCore
 from penguin.llm.api_client import APIClient
 from penguin.llm.model_config import ModelConfig
-from penguin.project.spec_parser import parse_project_specification_from_markdown
-from penguin.project.task_executor import ProjectTaskExecutor
-from penguin.project.validation_manager import ValidationManager
-from penguin.project.workflow_orchestrator import WorkflowOrchestrator
-from penguin.run_mode import RunMode  # We will mock this but need the type for spec
-from penguin.system.state import MessageCategory, parse_iso_datetime
-from penguin.system.conversation_menu import ConversationMenu, ConversationSummary
-from penguin.system_prompt import SYSTEM_PROMPT
 from penguin.tools import ToolManager
-from penguin.utils.log_error import log_error
 from penguin.utils.logs import setup_logger
 
 # Default to a quieter root logger unless explicitly overridden
@@ -303,21 +254,13 @@ except Exception:
 
 # Import unified command system
 from penguin.cli.commands import CommandRegistry
-from penguin.cli.typer_bridge import TyperBridge, integrate_with_existing_app
-from penguin.cli.renderer import UnifiedRenderer, RenderStyle
-from penguin.cli.streaming_display import StreamingDisplay
-from penguin.cli.event_manager import EventManager
-from penguin.cli.events import EventBus, EventType
-from penguin.cli.session_manager import SessionManager
-from penguin.cli.display_manager import DisplayManager
-from penguin.cli.streaming_manager import StreamingManager
+from penguin.cli.typer_bridge import integrate_with_existing_app
 
 try:
     # Prefer relative import to support repo and installed layouts
     from ..multi.coordinator import MultiAgentCoordinator  # type: ignore
 except Exception:
     MultiAgentCoordinator = None  # type: ignore
-from penguin.project.git_manager import GitManager
 
 # Add better import error handling for setup functions
 setup_available = True
