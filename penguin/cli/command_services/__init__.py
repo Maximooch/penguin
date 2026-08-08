@@ -2,14 +2,44 @@
 
 from penguin.cli.command_services.project import (
     AmbiguousProjectError,
+    NoProjectTasksError,
+    NoReadyProjectTasksError,
+    ProjectMutationError,
     ProjectNotFoundError,
+    delete_project_and_tasks,
+    list_project_summaries,
+    prepare_project_start,
     resolve_project_identifier,
 )
-from penguin.cli.command_services.task import parse_task_status
+from penguin.cli.command_services.task import (
+    InvalidTaskStateError,
+    TaskMutationError,
+    TaskNotFoundError,
+    complete_task,
+    create_task,
+    delete_task,
+    list_tasks,
+    parse_task_status,
+    start_task,
+)
 
 __all__ = [
     "AmbiguousProjectError",
+    "InvalidTaskStateError",
+    "NoProjectTasksError",
+    "NoReadyProjectTasksError",
+    "ProjectMutationError",
     "ProjectNotFoundError",
+    "TaskMutationError",
+    "TaskNotFoundError",
+    "complete_task",
+    "create_task",
+    "delete_task",
+    "delete_project_and_tasks",
+    "list_project_summaries",
+    "list_tasks",
     "parse_task_status",
     "resolve_project_identifier",
+    "prepare_project_start",
+    "start_task",
 ]
