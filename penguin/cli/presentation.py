@@ -9,15 +9,15 @@ __all__ = ["CLI_PANEL_PADDING", "print_ascii_banner"]
 CLI_PANEL_PADDING = None
 
 PENGUIN_ASCII_BANNER = r"""
-ooooooooo.                                                 o8o              
-`888   `Y88.                                               `"'              
- 888   .d88'  .ooooo.  ooo. .oo.    .oooooooo oooo  oooo  oooo  ooo. .oo.   
- 888ooo88P'  d88' `88b `888P"Y88b  888' `88b  `888  `888  `888  `888P"Y88b  
- 888         888ooo888  888   888  888   888   888   888   888   888   888  
- 888         888    .o  888   888  `88bod8P'   888   888   888   888   888  
-o888o        `Y8bod8P' o888o o888o `8oooooo.   `V88V"V8P' o888o o888o o888o 
-                                   d"     YD                                
-                                   "Y88888P'                                
+ooooooooo.                                                 o8o
+`888   `Y88.                                               `"'
+ 888   .d88'  .ooooo.  ooo. .oo.    .oooooooo oooo  oooo  oooo  ooo. .oo.
+ 888ooo88P'  d88' `88b `888P"Y88b  888' `88b  `888  `888  `888  `888P"Y88b
+ 888         888ooo888  888   888  888   888   888   888   888   888   888
+ 888         888    .o  888   888  `88bod8P'   888   888   888   888   888
+o888o        `Y8bod8P' o888o o888o `8oooooo.   `V88V"V8P' o888o o888o o888o
+                                   d"     YD
+                                   "Y88888P'
           """
 
 _banner_printed = False

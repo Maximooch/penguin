@@ -440,7 +440,7 @@ class PenguinCLI:
 
         welcome_message = """
 
-Welcome to Penguin! 
+Welcome to Penguin!
 
 **Quick commands**
 - `/help` — Command list
