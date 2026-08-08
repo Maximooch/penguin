@@ -7,18 +7,20 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from penguin.cli.environment import set_cli_workspace_path
 from penguin.cli.interface import PenguinInterface
 from penguin.cli.model_runtime import build_cli_model_config
-from penguin.config import Config, WORKSPACE_PATH, _ensure_env_loaded
+from penguin.config import WORKSPACE_PATH, Config, _ensure_env_loaded
 from penguin.core import PenguinCore
 from penguin.llm.api_client import APIClient
-from penguin.llm.model_config import ModelConfig
 from penguin.system_prompt import SYSTEM_PROMPT
 from penguin.tools import ToolManager
 from penguin.utils.log_error import log_error
+
+if TYPE_CHECKING:
+    from penguin.llm.model_config import ModelConfig
 
 __all__ = ["BootstrapDependencies", "BootstrapResult", "bootstrap_cli"]
 
