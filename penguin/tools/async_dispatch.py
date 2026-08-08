@@ -139,20 +139,13 @@ class AsyncToolDispatcher:
                 file_root,
             )
 
-            if manager._permission_enabled:
-                permission, _reason = manager.check_tool_permission(
-                    canonical_name,
-                    normalized_input,
-                    effective_context,
-                )
-                permission_value = getattr(permission, "value", permission)
-                if permission_value in {"deny", "ask"}:
-                    return await asyncio.to_thread(
-                        manager.execute_tool,
-                        requested_name,
-                        normalized_input,
-                        effective_context,
-                    )
+            permission_response = manager._permission_response(
+                canonical_name,
+                normalized_input,
+                effective_context,
+            )
+            if permission_response is not None:
+                return permission_response
 
             diagnostic_input = manager._redact_tool_input_for_diagnostics(
                 canonical_name,

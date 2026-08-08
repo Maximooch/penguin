@@ -1002,6 +1002,48 @@ def test_create_sub_agent_applies_persona_then_explicit_overrides(
     assert conversation.session.metadata["default_tools"] == ["read_file"]
 
 
+def test_create_sub_agent_rolls_back_when_runtime_metadata_cannot_persist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A child must not be admitted with runtime configuration only in memory."""
+
+    parent_model = ModelConfig(model="parent", provider="openrouter")
+    original_metadata = {"existing": "parent metadata"}
+    conversation = SimpleNamespace(
+        session=SimpleNamespace(id="shared", metadata=dict(original_metadata)),
+        save=lambda: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    removed: list[str] = []
+    manager = SimpleNamespace(
+        create_sub_agent=lambda *args, **kwargs: None,
+        get_agent_conversation=lambda *args, **kwargs: conversation,
+        agent_context_windows={},
+        remove_agent=lambda agent_id: removed.append(agent_id) or True,
+    )
+
+    class StubAPIClient:
+        def __init__(self, model_config: ModelConfig) -> None:
+            self.model_config = model_config
+
+        def set_system_prompt(self, prompt: str) -> None:
+            self.system_prompt = prompt
+
+    core = SimpleNamespace(
+        config=SimpleNamespace(agent_personas={}, model_configs={}),
+        model_config=parent_model,
+        system_prompt="parent system",
+        conversation_manager=manager,
+        engine=None,
+    )
+    monkeypatch.setattr("penguin.core_runtime.agent_lifecycle.APIClient", StubAPIClient)
+
+    with pytest.raises(OSError, match="disk full"):
+        create_sub_agent(core, "child", parent_agent_id="parent")
+
+    assert removed == ["child"]
+    assert conversation.session.metadata == original_metadata
+
+
 def test_delete_agent_conversation_removes_engine_agent_and_resets_active() -> None:
     calls: list[tuple[str, str]] = []
     conversation_manager = SimpleNamespace(

@@ -144,6 +144,30 @@ async def test_spawn_sub_agent_emits_session_created(
 
 
 @pytest.mark.asyncio
+async def test_spawn_sub_agent_rejects_invalid_token_limit_before_creation() -> None:
+    """ActionXML admission must not coerce malformed limits to no override."""
+
+    core = _Core("session_child_invalid")
+    executor = ActionExecutor(
+        tool_manager=cast(Any, SimpleNamespace()),
+        task_manager=cast(Any, SimpleNamespace()),
+        conversation_system=SimpleNamespace(core=core, current_agent_id="default"),
+    )
+
+    result = await executor._spawn_sub_agent(
+        json.dumps(
+            {
+                "id": "invalid-limit",
+                "shared_context_window_max_tokens": "many",
+            }
+        )
+    )
+
+    assert "shared_context_window_max_tokens must be a positive integer" in result
+    assert core.created == []
+
+
+@pytest.mark.asyncio
 async def test_spawn_sub_agent_action_result_emits_task_card_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

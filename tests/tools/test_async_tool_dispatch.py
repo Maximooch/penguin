@@ -9,6 +9,8 @@ from typing import Any
 
 import pytest
 
+from penguin.security.approval import get_approval_manager
+from penguin.security.permission_engine import PermissionResult
 from penguin.system.execution_context import ExecutionContext, execution_context_scope
 from penguin.tools.tool_manager import ToolManager
 from penguin.utils.parser import ActionExecutor, ActionType, CodeActAction
@@ -285,6 +287,148 @@ async def test_foreground_child_failure_is_returned_as_a_tool_error() -> None:
         "session_id": "session_failed_child",
         "details": "provider failed before output",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("child_result", "expected_error", "expected_details"),
+    [
+        (
+            {"status": "error", "error": "provider rejected request"},
+            "child_execution_failed",
+            "provider rejected request",
+        ),
+        (
+            {"status": "ok", "aborted": True},
+            "child_execution_aborted",
+            "Child execution was aborted",
+        ),
+    ],
+)
+async def test_foreground_child_terminal_payload_is_not_reported_as_ok(
+    child_result: dict[str, Any],
+    expected_error: str,
+    expected_details: str,
+) -> None:
+    """Returned terminal state is authoritative even when no exception is raised."""
+
+    class _Core:
+        def create_sub_agent(self, agent_id: str, **kwargs: Any) -> None:
+            del agent_id, kwargs
+
+        async def publish_sub_agent_session_created(
+            self,
+            agent_id: str,
+            **kwargs: Any,
+        ) -> dict[str, str]:
+            del agent_id, kwargs
+            return {"id": "session_terminal_child"}
+
+        async def run_agent_prompt_in_session(
+            self,
+            agent_id: str,
+            prompt: str,
+            **kwargs: Any,
+        ) -> dict[str, Any]:
+            del agent_id, prompt, kwargs
+            return child_result
+
+    manager = ToolManager(
+        {"diagnostics": {"enabled": False}},
+        lambda _error, _context: None,
+    )
+    manager.set_core(_Core())
+
+    raw_result = await manager.execute_tool_async(
+        "spawn_sub_agent",
+        {
+            "id": "terminal-child",
+            "initial_prompt": "Return a terminal payload.",
+            "background": False,
+        },
+    )
+
+    result = json.loads(raw_result)
+    assert result["error"] == expected_error
+    assert result["details"] == expected_details
+    assert result["agent_id"] == "terminal-child"
+    assert result["session_id"] == "session_terminal_child"
+
+
+@pytest.mark.asyncio
+async def test_preapproved_async_tool_stays_on_callers_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Approval must not redirect coroutine execution through the sync API."""
+
+    caller_loop = asyncio.get_running_loop()
+    observed_loop: asyncio.AbstractEventLoop | None = None
+    approval_manager = get_approval_manager()
+    approval_manager.reset()
+    approval_manager.pre_approve(
+        "tool.spawn_sub_agent",
+        session_id="session_approved",
+    )
+
+    manager = ToolManager(
+        {"diagnostics": {"enabled": False}},
+        lambda _error, _context: None,
+    )
+    manager._permission_enabled = True
+    monkeypatch.setattr(
+        manager,
+        "check_tool_permission",
+        lambda *_args, **_kwargs: (PermissionResult.ASK, "approval required"),
+    )
+
+    async def _spawn(_tool_input: dict[str, Any]) -> str:
+        nonlocal observed_loop
+        observed_loop = asyncio.get_running_loop()
+        return json.dumps({"status": "ok"})
+
+    monkeypatch.setattr(manager, "_execute_spawn_sub_agent", _spawn)
+
+    try:
+        raw_result = await manager.execute_tool_async(
+            "spawn_sub_agent",
+            {"id": "approved-child"},
+            {"session_id": "session_approved"},
+        )
+    finally:
+        approval_manager.reset()
+
+    assert json.loads(raw_result)["status"] == "ok"
+    assert observed_loop is caller_loop
+
+
+@pytest.mark.asyncio
+async def test_invalid_model_overrides_are_rejected_before_spawn() -> None:
+    """Malformed optional configuration must not be silently discarded."""
+
+    class _Core:
+        def __init__(self) -> None:
+            self.created = False
+
+        def create_sub_agent(self, agent_id: str, **kwargs: Any) -> None:
+            del agent_id, kwargs
+            self.created = True
+
+    core = _Core()
+    manager = ToolManager(
+        {"diagnostics": {"enabled": False}},
+        lambda _error, _context: None,
+    )
+    manager.set_core(core)
+
+    raw_result = await manager.execute_tool_async(
+        "spawn_sub_agent",
+        {"id": "invalid-config", "model_overrides": ["not", "a", "mapping"]},
+    )
+
+    result = json.loads(raw_result)
+    assert result["error"] == "invalid_spawn_request"
+    assert "model_overrides must be an object" in result["details"]
+    assert core.created is False
 
 
 @pytest.mark.asyncio

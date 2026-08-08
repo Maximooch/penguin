@@ -9,7 +9,17 @@ import logging
 import os
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
+
+__all__ = [
+    "AgentExecutionOutcome",
+    "AgentExecutor",
+    "AgentState",
+    "AgentTask",
+    "classify_agent_result",
+    "get_executor",
+    "set_executor",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +33,40 @@ class AgentState(Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+
+@dataclass(frozen=True)
+class AgentExecutionOutcome:
+    """Normalized terminal state derived from an agent execution payload."""
+
+    state: AgentState
+    error: Optional[str] = None
+
+
+def classify_agent_result(result: Any) -> AgentExecutionOutcome:
+    """Classify returned agent data without relying on exceptions alone."""
+
+    if not isinstance(result, Mapping):
+        return AgentExecutionOutcome(AgentState.COMPLETED)
+
+    status = str(result.get("status", "")).strip().lower()
+    if bool(result.get("aborted")) or status in {
+        "aborted",
+        "cancelled",
+        "canceled",
+    }:
+        details = result.get("error") or result.get("message")
+        return AgentExecutionOutcome(
+            AgentState.CANCELLED,
+            str(details) if details else "Child execution was aborted",
+        )
+
+    error = result.get("error")
+    if error or status in {"error", "failed", "failure"}:
+        details = error or result.get("message") or "Child execution failed"
+        return AgentExecutionOutcome(AgentState.FAILED, str(details))
+
+    return AgentExecutionOutcome(AgentState.COMPLETED)
 
 
 @dataclass
@@ -190,11 +234,17 @@ class AgentExecutor:
                 elif hasattr(self._core, "chat"):
                     result = await self._core.chat(agent_task.prompt)
                 else:
-                    result = f"Core does not have process or chat method"
+                    result = "Core does not have process or chat method"
 
+                outcome = classify_agent_result(result)
                 agent_task.result = str(result) if result else ""
-                agent_task.state = AgentState.COMPLETED
-                logger.info(f"Agent '{agent_task.agent_id}' completed")
+                agent_task.state = outcome.state
+                agent_task.error = outcome.error
+                logger.info(
+                    "Agent '%s' finished with state %s",
+                    agent_task.agent_id,
+                    outcome.state.value,
+                )
 
         except asyncio.CancelledError:
             agent_task.state = AgentState.CANCELLED
@@ -359,7 +409,10 @@ class AgentExecutor:
         return cancelled
 
     def pause(self, agent_id: str) -> bool:
-        """Pause an agent (marks as paused, actual pause depends on agent implementation).
+        """Pause an agent.
+
+        This marks the task as paused; actual execution control depends on the
+        agent implementation.
 
         Args:
             agent_id: The agent to pause

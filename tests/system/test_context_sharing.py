@@ -208,6 +208,29 @@ class TestSubAgentSessionLinkage:
         assert parent_conversation.session.metadata == metadata_before
         assert parent_conversation.session.metadata.get("parentID") is None
 
+    def test_linkage_failure_leaves_no_discoverable_child(self, cm, monkeypatch):
+        """Admission must roll back every registry if final linkage fails."""
+
+        def _fail_linkage(*_args, **_kwargs):
+            raise ValueError("invalid child lineage")
+
+        monkeypatch.setattr(cm, "_link_sub_agent_session_metadata", _fail_linkage)
+
+        with pytest.raises(ValueError, match="invalid child lineage"):
+            cm.create_sub_agent(
+                "ghost-child",
+                parent_agent_id="default",
+                share_session=False,
+                share_context_window=False,
+            )
+
+        assert "ghost-child" not in cm.agent_sessions
+        assert "ghost-child" not in cm.agent_session_managers
+        assert "ghost-child" not in cm.agent_checkpoint_managers
+        assert "ghost-child" not in cm.agent_context_windows
+        assert "ghost-child" not in cm.sub_agent_parent
+        assert "ghost-child" not in cm.parent_sub_agents.get("default", [])
+
 
 # =============================================================================
 # GET_CONTEXT_WINDOW_STATS TESTS

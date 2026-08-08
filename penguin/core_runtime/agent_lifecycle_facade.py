@@ -144,6 +144,9 @@ class AgentLifecycleCoreFacade:
         """Create a sub-agent linked to a parent agent."""
         if shared_context_window_max_tokens is None:
             shared_context_window_max_tokens = kwargs.pop("shared_cw_max_tokens", None)
+        if kwargs:
+            unknown = ", ".join(sorted(kwargs))
+            raise TypeError(f"Unknown create_sub_agent options: {unknown}")
         lifecycle_kwargs: dict[str, Any] = {
             "parent_agent_id": parent_agent_id,
             "system_prompt": system_prompt,

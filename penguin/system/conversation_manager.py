@@ -442,11 +442,12 @@ class ConversationManager:
         try:
             child_conv.save()
         except Exception:
-            logger.debug(
+            logger.error(
                 "Failed to persist sub-agent session linkage metadata for '%s'",
                 agent_id,
                 exc_info=True,
             )
+            raise
 
     def create_sub_agent(
         self,
@@ -463,6 +464,15 @@ class ConversationManager:
             raise ValueError("A sub-agent cannot be its own parent")
         if agent_id in self.sub_agent_parent:
             raise ValueError(f"Sub-agent '{agent_id}' already exists")
+
+        registries = (
+            self.agent_sessions,
+            self.agent_session_managers,
+            self.agent_checkpoint_managers,
+            self.agent_context_windows,
+        )
+        missing = object()
+        previous_entries = [registry.get(agent_id, missing) for registry in registries]
 
         self._ensure_agent(parent_agent_id)
 
@@ -543,12 +553,6 @@ class ConversationManager:
             except Exception as e:
                 logger.warning(f"Failed partial context share to '{agent_id}': {e}")
 
-        # Track relationships
-        self.sub_agent_parent[agent_id] = parent_agent_id
-        subs = self.parent_sub_agents.setdefault(parent_agent_id, [])
-        if agent_id not in subs:
-            subs.append(agent_id)
-
         # Ensure conversation metadata reflects agent_id
         try:
             conv = self.agent_sessions[agent_id]
@@ -557,11 +561,31 @@ class ConversationManager:
             pass
 
         if not share_session:
-            self._link_sub_agent_session_metadata(
-                agent_id,
-                parent_agent_id,
-                overwrite_parent_id=True,
-            )
+            try:
+                self._link_sub_agent_session_metadata(
+                    agent_id,
+                    parent_agent_id,
+                    overwrite_parent_id=True,
+                )
+            except Exception:
+                for registry, previous in zip(registries, previous_entries):
+                    if previous is missing:
+                        registry.pop(agent_id, None)
+                    else:
+                        registry[agent_id] = previous
+                self.sub_agent_parent.pop(agent_id, None)
+                siblings = self.parent_sub_agents.get(parent_agent_id)
+                if siblings and agent_id in siblings:
+                    siblings.remove(agent_id)
+                    if not siblings:
+                        self.parent_sub_agents.pop(parent_agent_id, None)
+                raise
+
+        # Publish the relationship only after the child session is valid.
+        self.sub_agent_parent[agent_id] = parent_agent_id
+        subs = self.parent_sub_agents.setdefault(parent_agent_id, [])
+        if agent_id not in subs:
+            subs.append(agent_id)
 
     def save_all(self) -> int:
         """Save all agent conversations. Returns count of successful saves."""

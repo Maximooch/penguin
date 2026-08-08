@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import os
 from typing import Any
@@ -395,6 +396,31 @@ def create_sub_agent(
         model_config_metadata,
     )
     from penguin.config import AgentModelSettings
+    from penguin.multi.admission import validate_spawn_request
+
+    admission_payload = {
+        "id": agent_id,
+        "parent": parent_agent_id,
+        "share_session": share_session,
+        "share_context_window": share_context_window,
+    }
+    optional_admission_values = {
+        "persona": persona,
+        "system_prompt": system_prompt,
+        "shared_context_window_max_tokens": shared_context_window_max_tokens,
+        "model_config_id": model_config_id,
+        "model_overrides": model_overrides,
+        "model_output_max_tokens": model_output_max_tokens,
+        "default_tools": default_tools,
+    }
+    admission_payload.update(
+        {
+            key: value
+            for key, value in optional_admission_values.items()
+            if value is not None
+        }
+    )
+    validate_spawn_request(admission_payload)
 
     config = getattr(core, "config", None)
     base_model_config = getattr(core, "model_config", None)
@@ -494,7 +520,8 @@ def create_sub_agent(
     )
 
     created = False
-    engine_registered = False
+    metadata: dict[str, Any] | None = None
+    metadata_snapshot: dict[str, Any] | None = None
     try:
         core.conversation_manager.create_sub_agent(
             agent_id,
@@ -514,6 +541,7 @@ def create_sub_agent(
         session = getattr(conv, "session", None)
         metadata = getattr(session, "metadata", None)
         if isinstance(metadata, dict):
+            metadata_snapshot = copy.deepcopy(metadata)
             effective_metadata: dict[str, Any]
             if share_session:
                 profiles = metadata.setdefault("agent_profiles", {})
@@ -531,15 +559,8 @@ def create_sub_agent(
                     )
             effective_metadata["model"] = model_config_metadata(agent_model_config)
             effective_metadata["default_tools"] = resolved_tools
-            try:
-                conv._modified = True
-                conv.save()
-            except Exception:
-                logger.debug(
-                    "Failed to persist runtime metadata for sub-agent '%s'",
-                    agent_id,
-                    exc_info=True,
-                )
+            conv._modified = True
+            conv.save()
 
         context_windows = getattr(
             core.conversation_manager, "agent_context_windows", {}
@@ -581,15 +602,17 @@ def create_sub_agent(
                 tool_manager=core.tool_manager,
                 action_executor=action_executor,
             )
-            engine_registered = True
     except Exception:
-        if engine_registered and getattr(core, "engine", None):
+        if created and getattr(core, "engine", None):
             try:
                 core.engine.unregister_agent(agent_id)
             except Exception:
                 logger.debug(
                     "Failed to roll back Engine child registration", exc_info=True
                 )
+        if metadata is not None and metadata_snapshot is not None:
+            metadata.clear()
+            metadata.update(metadata_snapshot)
         for attr in (
             "_agent_api_clients",
             "_agent_model_overrides",
