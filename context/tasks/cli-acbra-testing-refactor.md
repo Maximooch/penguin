@@ -607,6 +607,44 @@ For each slice:
       critical and deterministic.
 - [ ] Record residual risks and the next slice.
 
+## Implementation Evidence (August 7, 2026)
+
+The campaign has completed all eight structural slices on the
+`codex/cli-acbra` stack.
+
+- `penguin/cli/cli.py` fell from 5,213 lines to 1,045 lines while retaining the
+  package entry point and compatibility exports covered by integration tests.
+- Model selection and reasoning provenance now live in `model_runtime.py`.
+- Atomic dependency construction now lives in `bootstrap.py`, with environment
+  mutation isolated in `environment.py`.
+- Direct-prompt, session, and RunMode policy now live in `run_dispatch.py` and
+  `output_policy.py`.
+- The interactive terminal lifecycle now lives in `interactive.py`.
+- Project/task business decisions live behind `command_services/`; Typer
+  registration for project/task, agent, config/permissions, skills/MCP,
+  coordination, and diagnostics lives in focused command-binding modules.
+- Metadata-only command help returns without provider construction.
+- Explicit reasoning enablement, effort, and token-budget provenance survive
+  CLI projection independently, and model overrides recompute target-model
+  capabilities.
+
+Verification evidence:
+
+- CLI-focused suite: 134 passed.
+- Repository `tests/`: 2,375 passed, 3 skipped, 113 deselected; four unrelated
+  existing failures remain in web goal routing, core credential setup, core
+  abort behavior, and a multi-agent setup test.
+- `misc/tests` remains blocked during collection by the stale import
+  `penguin.penguin.tools.core.old_memory_search`.
+- Wheel and sdist build successfully.
+- Installed-wheel smoke passes for `penguin --help`, `penguin config --help`,
+  `penguin project --help`, and `penguin agent --help` in an isolated `uvx`
+  environment.
+
+Residual work is intentionally moved to
+`context/tasks/post-cli-acbra-config-and-capability-plan.md`; it should not be
+folded back into this extraction stack.
+
 ## Definition Of Done
 
 Short term:

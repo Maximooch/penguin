@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
-from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from rich.panel import Panel
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from penguin.cli.run_dispatch import DirectPromptOutcome
 
 __all__ = [
