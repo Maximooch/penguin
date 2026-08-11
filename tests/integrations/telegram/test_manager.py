@@ -105,6 +105,13 @@ class FakeBot:
         return SimpleNamespace(message_id=kwargs["message_id"])
 
 
+def _callback_data(markup: Any) -> str:
+    keyboard = getattr(markup, "inline_keyboard", None)
+    if keyboard is not None:
+        return str(keyboard[0][0].callback_data)
+    return str(markup[0][0]["data"])
+
+
 class PollingBot(FakeBot):
     """Fake Bot API boundary that inspects state before the next long poll."""
 
@@ -2135,7 +2142,7 @@ async def test_group_approval_hides_details_and_rejects_wrong_sender(
         )
         assert "notes.txt" not in prompt["text"]
         assert "test approval" not in prompt["text"]
-        callback_data = prompt["reply_markup"].inline_keyboard[0][0].callback_data
+        callback_data = _callback_data(prompt["reply_markup"])
 
         def callback_update(update_id: int, sender_id: int) -> dict[str, Any]:
             return {
@@ -2441,8 +2448,7 @@ async def test_approval_callback_resumes_once_and_duplicate_is_inert(
         prompt = next(
             item for item in bot.messages if "Tool approval required" in item["text"]
         )
-        markup = prompt["reply_markup"]
-        callback_data = markup.inline_keyboard[0][0].callback_data
+        callback_data = _callback_data(prompt["reply_markup"])
         callback_message = {
             "message_id": 50,
             "chat": {"id": 42, "type": "private"},

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import secrets
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
@@ -21,7 +21,7 @@ __all__ = ["build_telegram_router"]
 class PairingCreateRequest(BaseModel):
     """Operator request for a short-lived pairing code."""
 
-    expected_user_id: str | None = None
+    expected_user_id: Optional[str] = None
     ttl_seconds: int = Field(default=3600, ge=60, le=3600)
 
 
