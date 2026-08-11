@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from penguin.multi.policy import (
@@ -12,6 +13,7 @@ from penguin.multi.policy import (
     disabled_subagent_result,
     subagents_enabled,
 )
+from penguin.security.approval import ApprovalStatus, get_approval_manager
 from penguin.utils.profiling import profile_operation
 
 if TYPE_CHECKING:
@@ -105,6 +107,124 @@ class AsyncToolDispatcher:
         }
         return tool_map[tool_name]()
 
+    @staticmethod
+    def _approval_wait_settings(
+        context: dict[str, Any],
+    ) -> tuple[bool, float | None]:
+        """Read the opt-in resumable approval settings from a request context."""
+        policy = context.get("approval_policy")
+        if (
+            not isinstance(policy, dict)
+            or policy.get("wait_for_resolution") is not True
+        ):
+            return False, None
+
+        raw_timeout = policy.get("timeout_seconds")
+        if raw_timeout is None:
+            return True, None
+        if isinstance(raw_timeout, bool):
+            return True, 0.0
+        try:
+            timeout = float(raw_timeout)
+        except (TypeError, ValueError):
+            return True, 0.0
+        if not math.isfinite(timeout):
+            return True, 0.0
+        return True, max(timeout, 0.0)
+
+    @staticmethod
+    def _pending_approval_id(
+        permission_response: str | dict[str, Any],
+    ) -> str | None:
+        """Extract a pending approval ID from a permission response."""
+        payload: Any = permission_response
+        if isinstance(permission_response, str):
+            try:
+                payload = json.loads(permission_response)
+            except json.JSONDecodeError:
+                return None
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("status") != "pending_approval":
+            return None
+        request_id = payload.get("approval_id")
+        return request_id if isinstance(request_id, str) and request_id else None
+
+    @staticmethod
+    def _approval_failure_response(
+        request_id: str,
+        status: ApprovalStatus | None,
+        tool_name: str,
+    ) -> str:
+        """Build a stable terminal response for a non-approved request."""
+        status_value = status.value if status is not None else "unavailable"
+        error = {
+            ApprovalStatus.DENIED: "approval_denied",
+            ApprovalStatus.EXPIRED: "approval_expired",
+        }.get(status, "approval_unavailable")
+        return json.dumps(
+            {
+                "error": error,
+                "status": status_value,
+                "approval_id": request_id,
+                "tool": tool_name,
+            }
+        )
+
+    async def _resolve_permission(
+        self,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        context: dict[str, Any],
+    ) -> tuple[str | dict[str, Any] | None, str | None]:
+        """Check permission and optionally await an approval off-loop."""
+        manager = self._tool_manager
+        wait_for_resolution, timeout_seconds = self._approval_wait_settings(context)
+        if wait_for_resolution:
+            permission_response = await asyncio.to_thread(
+                manager._permission_response,
+                tool_name,
+                tool_input,
+                context,
+            )
+        else:
+            # Preserve the existing HTTP callback/event-loop behavior when the
+            # request has not opted into a blocking approval lifecycle.
+            permission_response = manager._permission_response(
+                tool_name,
+                tool_input,
+                context,
+            )
+        if permission_response is None:
+            return None, None
+
+        request_id = self._pending_approval_id(permission_response)
+        if not wait_for_resolution or request_id is None:
+            return permission_response, None
+
+        approval_manager = get_approval_manager()
+        try:
+            resolved = await asyncio.to_thread(
+                approval_manager.wait_for_resolution,
+                request_id,
+                timeout_seconds,
+            )
+        except asyncio.CancelledError:
+            # Cancelled channel/server work must not strand a worker thread or
+            # leave a stale approval capable of resuming later.
+            await asyncio.to_thread(approval_manager.deny, request_id)
+            raise
+        if resolved is not None and resolved.status == ApprovalStatus.APPROVED:
+            return None, request_id
+        return (
+            self._approval_failure_response(
+                request_id,
+                resolved.status if resolved is not None else None,
+                tool_name,
+            ),
+            None,
+        )
+
     async def execute(
         self,
         tool_name: str,
@@ -121,7 +241,8 @@ class AsyncToolDispatcher:
             effective_context
         ):
             return json.dumps(disabled_subagent_result(canonical_name))
-        if canonical_name not in ASYNC_TOOL_NAMES:
+        wait_for_resolution, _ = self._approval_wait_settings(effective_context)
+        if canonical_name not in ASYNC_TOOL_NAMES and not wait_for_resolution:
             return await asyncio.to_thread(
                 manager.execute_tool,
                 requested_name,
@@ -139,13 +260,47 @@ class AsyncToolDispatcher:
                 file_root,
             )
 
-            permission_response = manager._permission_response(
+            permission_response, approval_id = await self._resolve_permission(
                 canonical_name,
                 normalized_input,
                 effective_context,
             )
             if permission_response is not None:
                 return permission_response
+
+            if canonical_name not in ASYNC_TOOL_NAMES:
+                resume_context = effective_context
+                if approval_id is not None:
+                    resume_context = manager._with_approval_grant(
+                        effective_context,
+                        approval_id,
+                    )
+                return await asyncio.to_thread(
+                    manager.execute_tool,
+                    requested_name,
+                    normalized_input,
+                    resume_context,
+                )
+
+            if approval_id is not None:
+                resume_context = manager._with_approval_grant(
+                    effective_context,
+                    approval_id,
+                )
+                consumed = await asyncio.to_thread(
+                    manager._consume_approval_grant,
+                    canonical_name,
+                    normalized_input,
+                    resume_context,
+                )
+                if consumed is not True:
+                    return json.dumps(
+                        {
+                            "error": "approval_grant_invalid",
+                            "approval_id": approval_id,
+                            "tool": canonical_name,
+                        }
+                    )
 
             diagnostic_input = manager._redact_tool_input_for_diagnostics(
                 canonical_name,

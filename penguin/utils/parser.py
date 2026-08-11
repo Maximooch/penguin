@@ -23,11 +23,15 @@ from penguin.multi.policy import (
     disabled_subagent_result,
     subagents_enabled,
 )
+from penguin.security.action_policy import (
+    authorize_direct_action,
+    deny_pending_approvals_for_current_request,
+    policy_timeout_seconds,
+)
 from penguin.tools import ToolManager
 from penguin.utils.process_manager import ProcessManager
 from penguin.system.conversation import MessageCategory
 from penguin.system.execution_context import get_current_execution_context
-from penguin.tools.image_tools import ReadImageTool
 from penguin.tools.browser_harness_tools import BrowserHarnessScreenshotTool
 from penguin.tools.browser_tools import BrowserScreenshotTool, browser_manager
 from penguin.constants import DEFAULT_LARGE_FILE_THRESHOLD_BYTES
@@ -139,6 +143,7 @@ class ActionType(Enum):
     BROWSER_INTERACT = "browser_interact"
     BROWSER_SCREENSHOT = "browser_screenshot"
     READ_IMAGE = "read_image"
+    PUBLISH_ARTIFACT = "publish_artifact"
     BROWSER_STATUS = "browser_status"
     BROWSER_CLEANUP = "browser_cleanup"
     BROWSER_OPEN_TAB = "browser_open_tab"
@@ -1641,6 +1646,13 @@ class ActionExecutor:
         ):
             return json.dumps(disabled_subagent_result(action.action_type.value))
 
+        permission_response = await authorize_direct_action(
+            action.action_type.value,
+            handler_params,
+        )
+        if permission_response is not None:
+            return permission_response
+
         # --------------------------------------------------
         # Emit *start* UI event
         # --------------------------------------------------
@@ -1731,6 +1743,7 @@ class ActionExecutor:
             ActionType.BROWSER_INTERACT: self._browser_interact,
             ActionType.BROWSER_SCREENSHOT: self._browser_screenshot,
             ActionType.READ_IMAGE: self._read_image,
+            ActionType.PUBLISH_ARTIFACT: self._publish_artifact,
             ActionType.BROWSER_STATUS: lambda params: self._browser_harness_tool(
                 "browser_status", params
             ),
@@ -1833,7 +1846,11 @@ class ActionExecutor:
                 )
                 # Offload synchronous tools to thread pool to avoid blocking the event loop.
                 # asyncio.to_thread preserves contextvars for per-request execution context.
-                result = await asyncio.to_thread(handler, handler_params)
+                try:
+                    result = await asyncio.to_thread(handler, handler_params)
+                except asyncio.CancelledError:
+                    await deny_pending_approvals_for_current_request()
+                    raise
 
                 if asyncio.iscoroutine(result):
                     result = await result
@@ -3566,6 +3583,13 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
                 request_context["agent_id"] = context.agent_id
             if context is not None and isinstance(context.directory, str):
                 request_context["directory"] = context.directory
+            if context is not None and isinstance(context.request_id, str):
+                request_context["request_id"] = context.request_id
+
+            timeout_seconds: Optional[float] = None
+            approval_policy = context.approval_policy if context is not None else None
+            if isinstance(approval_policy, dict):
+                timeout_seconds = policy_timeout_seconds(approval_policy)
 
             manager = get_question_manager()
             request = manager.create_request(
@@ -3573,7 +3597,10 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
                 questions=questions,
                 context=request_context,
             )
-            resolved = await manager.wait_for_resolution(request.id)
+            resolved = await manager.wait_for_resolution(
+                request.id,
+                timeout_seconds=timeout_seconds,
+            )
             if resolved is None:
                 return "Error: Question request was not resolved"
             if resolved.status == QuestionStatus.REJECTED:
@@ -3981,7 +4008,7 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             return "Failed to initialize browser"
         return await browser_manager.navigate_to(params)
 
-    async def _read_image(self, params: str) -> str:
+    def _read_image(self, params: str) -> str:
         """Load a local image and add it to conversation as multimodal content."""
         try:
             payload = _parse_json_payload(params)
@@ -3997,7 +4024,18 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             if not path:
                 return "Error reading image: path is required"
 
-            result = ReadImageTool().execute(str(path), prompt=prompt, max_dim=max_dim)
+            result = self.tool_manager.execute_tool(
+                "read_image",
+                {
+                    "path": str(path),
+                    "prompt": prompt,
+                    "max_dim": max_dim,
+                },
+            )
+            if isinstance(result, str):
+                return result
+            if not isinstance(result, dict):
+                return "Error reading image: unexpected tool result"
             if "filepath" in result and os.path.exists(result["filepath"]):
                 description = result.get("prompt") or "What can you see in this image?"
                 add_message_fn = None
@@ -4025,6 +4063,17 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             return result.get("error", "Failed to load image")
         except Exception as e:
             return f"Error reading image: {str(e)}"
+
+    def _publish_artifact(self, params: str) -> Any:
+        """Expose one explicitly requested workspace file for channel delivery."""
+
+        payload = _parse_json_payload(params)
+        path = payload.get("path") if isinstance(payload, dict) else params.strip()
+        if not isinstance(path, str) or not path.strip():
+            return {"error": "path is required"}
+        return self.tool_manager.execute_tool(
+            "publish_artifact", {"path": path.strip()}
+        )
 
     async def _browser_harness_tool(self, tool_name: str, params: str) -> str:
         """Execute a browser-harness tool from ActionXML using JSON payloads."""

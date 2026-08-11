@@ -93,7 +93,16 @@ class QuestionManager:
             for waiter in group:
                 if waiter.done():
                     continue
-                waiter.cancel()
+                try:
+                    waiter.get_loop().call_soon_threadsafe(self._cancel_waiter, waiter)
+                except RuntimeError:
+                    logger.debug("Question waiter loop was already closed")
+
+    @staticmethod
+    def _cancel_waiter(waiter: asyncio.Future[QuestionRequest]) -> None:
+        """Cancel a waiter on its owning event loop."""
+        if not waiter.done():
+            waiter.cancel()
 
     def _notify_waiters(self, request: QuestionRequest) -> None:
         """Resolve any async waiters for a request."""
@@ -152,7 +161,9 @@ class QuestionManager:
             self._pending[request.id] = request
             self._waiters.setdefault(request.id, [])
 
-        for callback in self._on_request_created:
+        with self._data_lock:
+            callbacks = list(self._on_request_created)
+        for callback in callbacks:
             try:
                 callback(request)
             except Exception:
@@ -177,7 +188,9 @@ class QuestionManager:
 
         self._notify_waiters(request)
 
-        for callback in self._on_request_answered:
+        with self._data_lock:
+            callbacks = list(self._on_request_answered)
+        for callback in callbacks:
             try:
                 callback(request)
             except Exception:
@@ -197,13 +210,42 @@ class QuestionManager:
 
         self._notify_waiters(request)
 
-        for callback in self._on_request_rejected:
+        with self._data_lock:
+            callbacks = list(self._on_request_rejected)
+        for callback in callbacks:
             try:
                 callback(request)
             except Exception:
                 logger.debug("Question rejected callback failed", exc_info=True)
 
         return request
+
+    def shutdown(self) -> int:
+        """Reject all pending questions and wake their async waiters.
+
+        Returns:
+            Number of pending requests rejected during shutdown.
+        """
+        with self._data_lock:
+            requests = list(self._pending.values())
+            self._pending.clear()
+            for request in requests:
+                request.status = QuestionStatus.REJECTED
+                request.resolved_at = datetime.utcnow()
+                self._resolved[request.id] = request
+            callbacks = list(self._on_request_rejected)
+
+        for request in requests:
+            self._notify_waiters(request)
+            for callback in callbacks:
+                try:
+                    callback(request)
+                except Exception:
+                    logger.debug(
+                        "Question shutdown callback failed",
+                        exc_info=True,
+                    )
+        return len(requests)
 
     def list_pending(self, session_id: str | None = None) -> list[QuestionRequest]:
         """List pending question requests, optionally filtered by session."""
@@ -252,21 +294,39 @@ class QuestionManager:
                 return await waiter
             return await asyncio.wait_for(waiter, timeout=timeout_seconds)
         except asyncio.TimeoutError:
+            self.reject(request_id)
             return None
+        except asyncio.CancelledError:
+            self.reject(request_id)
+            raise
         finally:
             self._remove_waiter(request_id, waiter)
 
     def on_request_created(self, callback: Callable[[QuestionRequest], None]) -> None:
         """Register callback for request creation."""
-        self._on_request_created.append(callback)
+        with self._data_lock:
+            self._on_request_created.append(callback)
 
     def on_request_answered(self, callback: Callable[[QuestionRequest], None]) -> None:
         """Register callback for answered requests."""
-        self._on_request_answered.append(callback)
+        with self._data_lock:
+            self._on_request_answered.append(callback)
 
     def on_request_rejected(self, callback: Callable[[QuestionRequest], None]) -> None:
         """Register callback for rejected requests."""
-        self._on_request_rejected.append(callback)
+        with self._data_lock:
+            self._on_request_rejected.append(callback)
+
+    def remove_callback(self, callback: Callable[[QuestionRequest], None]) -> None:
+        """Unregister a callback from every question lifecycle event."""
+        with self._data_lock:
+            for callbacks in (
+                self._on_request_created,
+                self._on_request_answered,
+                self._on_request_rejected,
+            ):
+                while callback in callbacks:
+                    callbacks.remove(callback)
 
 
 def get_question_manager() -> QuestionManager:

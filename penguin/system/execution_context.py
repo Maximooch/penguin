@@ -6,9 +6,9 @@ from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Iterator
 
-_CURRENT_EXECUTION_CONTEXT: ContextVar["ExecutionContext | None"] = ContextVar(
+_CURRENT_EXECUTION_CONTEXT: ContextVar[ExecutionContext | None] = ContextVar(
     "penguin_execution_context",
     default=None,
 )
@@ -18,15 +18,20 @@ _CURRENT_EXECUTION_CONTEXT: ContextVar["ExecutionContext | None"] = ContextVar(
 class ExecutionContext:
     """Request-scoped execution state used by tool execution paths."""
 
-    session_id: Optional[str] = None
-    conversation_id: Optional[str] = None
-    agent_id: Optional[str] = None
-    agent_mode: Optional[str] = None
-    directory: Optional[str] = None
-    project_root: Optional[str] = None
-    workspace_root: Optional[str] = None
-    request_id: Optional[str] = None
-    subagents_enabled: Optional[bool] = None
+    session_id: str | None = None
+    conversation_id: str | None = None
+    agent_id: str | None = None
+    agent_mode: str | None = None
+    directory: str | None = None
+    project_root: str | None = None
+    workspace_root: str | None = None
+    request_id: str | None = None
+    subagents_enabled: bool | None = None
+    permission_mode: str | None = None
+    approval_policy: dict[str, Any] | None = None
+    request_system_prompt: str | None = None
+    request_skills: tuple[str, ...] = ()
+    require_registered_agent: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         """Return a dictionary representation for compatibility with existing APIs."""
@@ -40,10 +45,17 @@ class ExecutionContext:
             "workspace_root": self.workspace_root,
             "request_id": self.request_id,
             "subagents_enabled": self.subagents_enabled,
+            "permission_mode": self.permission_mode,
+            "approval_policy": dict(self.approval_policy)
+            if isinstance(self.approval_policy, dict)
+            else None,
+            "request_system_prompt": self.request_system_prompt,
+            "request_skills": list(self.request_skills),
+            "require_registered_agent": self.require_registered_agent,
         }
 
 
-def normalize_directory(directory: Optional[str]) -> Optional[str]:
+def normalize_directory(directory: str | None) -> str | None:
     """Return a resolved directory path when valid, otherwise None."""
     if not directory:
         return None
@@ -56,7 +68,7 @@ def normalize_directory(directory: Optional[str]) -> Optional[str]:
     return str(resolved)
 
 
-def get_current_execution_context() -> Optional[ExecutionContext]:
+def get_current_execution_context() -> ExecutionContext | None:
     """Get the active execution context, if any."""
     return _CURRENT_EXECUTION_CONTEXT.get()
 

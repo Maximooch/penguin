@@ -104,6 +104,56 @@ def test_tool_result_adapter_round_trips_current_action_result_shape() -> None:
     assert legacy_action_result_from_tool_result(result) == action_result
 
 
+def test_legacy_action_result_projects_only_explicit_bounded_artifacts() -> None:
+    result = ToolResult(
+        call_id="call_image",
+        name="read_image",
+        status="completed",
+        output="loaded",
+        artifact_path="/internal/truncated-output.txt",
+        structured_output={
+            "path": "/generic/path-must-not-project",
+            "artifact": {
+                "type": "image",
+                "image_path": "/workspace/image.png",
+                "mime_type": "image/png",
+                "secret": "must-not-project",
+            },
+        },
+    )
+
+    assert legacy_action_result_from_tool_result(result) == {
+        "action": "read_image",
+        "result": "loaded",
+        "status": "completed",
+        "artifact": {
+            "type": "image",
+            "image_path": "/workspace/image.png",
+            "mime_type": "image/png",
+        },
+    }
+
+
+def test_publish_artifact_is_an_approval_gated_external_effect() -> None:
+    scheduled = tool_call_with_schedule_metadata(
+        ToolCall(
+            id="publish-1",
+            name="publish_artifact",
+            arguments={"path": "report.pdf"},
+            source="action_xml",
+        ),
+        {
+            "mutates_state": False,
+            "requires_approval": True,
+            "parallel_safe": True,
+        },
+    )
+
+    assert scheduled.effect == "external_mutation"
+    assert scheduled.requires_approval is True
+    assert scheduled.resources == ("fs:report.pdf", "network:channel")
+
+
 def test_scheduler_policy_can_select_first_or_all_calls() -> None:
     calls = tool_calls_from_actionxml(
         """

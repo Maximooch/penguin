@@ -13,7 +13,7 @@ from contextlib import suppress
 from typing import Optional, Dict, Any, List, AsyncGenerator, Callable, Awaitable
 
 from penguin import __version__
-from penguin.config import config, Config, _ensure_env_loaded
+from penguin.config import config, Config, _ensure_env_loaded, load_config
 from penguin.core import PenguinCore
 from penguin.core_runtime import startup as core_startup
 from penguin.run_mode import RunMode
@@ -166,6 +166,7 @@ def create_app() -> "FastAPI":
     # AuthConfig so a normal `penguin-web` restart retains dedicated service
     # credentials such as LINK_API_KEY.
     _ensure_env_loaded()
+    raw_config = load_config()
 
     try:
         from fastapi import FastAPI
@@ -174,6 +175,9 @@ def create_app() -> "FastAPI":
         from fastapi.middleware.cors import CORSMiddleware
         from .routes import router, get_capabilities
         from .integrations.github_webhook import router as github_webhook_router
+        from .integrations.telegram import build_telegram_router
+        from penguin.integrations.telegram import TelegramConfig
+        from penguin.integrations.telegram.manager import TelegramManager
         from .middleware.auth import AuthenticationMiddleware, AuthConfig
         from .sse_events import router as sse_router, set_core_instance
     except ImportError:
@@ -185,6 +189,9 @@ def create_app() -> "FastAPI":
     # Lifespan context manager for startup/shutdown hooks
     from contextlib import asynccontextmanager
 
+    telegram_config = TelegramConfig.from_mapping(raw_config)
+    telegram_manager: Optional[TelegramManager] = None
+
     @asynccontextmanager
     async def lifespan(app: "FastAPI"):
         # Startup
@@ -194,29 +201,44 @@ def create_app() -> "FastAPI":
             start_vcs_watcher(core)
         except Exception:
             logger.debug("Unable to start VCS watcher", exc_info=True)
-        yield
-        # Shutdown: close connection pools
-        logger.info("Penguin web application shutting down...")
         try:
-            await stop_vcs_watcher()
-        except Exception:
-            logger.debug("Unable to stop VCS watcher", exc_info=True)
-        try:
-            shutdown_agents = getattr(
-                getattr(core, "tool_manager", None),
-                "shutdown_background_agents",
-                None,
-            )
-            if callable(shutdown_agents):
-                await shutdown_agents()
-        except Exception:
-            logger.warning("Unable to stop background agents", exc_info=True)
-        try:
-            pool = ConnectionPoolManager.get_instance()
-            await pool.close_all()
-            logger.info("Connection pools closed successfully")
-        except Exception as e:
-            logger.warning(f"Error closing connection pools: {e}")
+            if telegram_manager is not None:
+                try:
+                    await telegram_manager.start()
+                except Exception:
+                    logger.error(
+                        "Telegram integration did not start: %s",
+                        telegram_manager.status().get("error") or "unknown error",
+                    )
+            yield
+        finally:
+            if telegram_manager is not None:
+                try:
+                    await telegram_manager.stop()
+                except Exception:
+                    logger.warning("Unable to stop Telegram", exc_info=True)
+            # Shutdown: close connection pools
+            logger.info("Penguin web application shutting down...")
+            try:
+                await stop_vcs_watcher()
+            except Exception:
+                logger.debug("Unable to stop VCS watcher", exc_info=True)
+            try:
+                shutdown_agents = getattr(
+                    getattr(core, "tool_manager", None),
+                    "shutdown_background_agents",
+                    None,
+                )
+                if callable(shutdown_agents):
+                    await shutdown_agents()
+            except Exception:
+                logger.warning("Unable to stop background agents", exc_info=True)
+            try:
+                pool = ConnectionPoolManager.get_instance()
+                await pool.close_all()
+                logger.info("Connection pools closed successfully")
+            except Exception as e:
+                logger.warning(f"Error closing connection pools: {e}")
 
     app = FastAPI(
         lifespan=lifespan,
@@ -265,6 +287,10 @@ def create_app() -> "FastAPI":
 
     # Add authentication middleware (applies after CORS)
     auth_config = AuthConfig()
+    if telegram_config.enabled and telegram_config.transport == "webhook":
+        # Telegram authenticates this one public ingress route with its own
+        # constant-time secret-token check.
+        auth_config.public_endpoints.add(telegram_config.webhook_path)
     app.add_middleware(AuthenticationMiddleware, config=auth_config)
 
     # Initialize core and attach to router
@@ -279,6 +305,8 @@ def create_app() -> "FastAPI":
         logger.info("Model configs loaded: unknown")
     router.core = core
     github_webhook_router.core = core
+    telegram_manager = TelegramManager(core, telegram_config)
+    app.state.telegram_manager = telegram_manager
 
     # Set core for SSE router
     set_core_instance(core)
@@ -287,6 +315,7 @@ def create_app() -> "FastAPI":
     app.include_router(router)
     app.include_router(sse_router)
     app.include_router(github_webhook_router)
+    app.include_router(build_telegram_router(telegram_config))
 
     # Optionally include MCP HTTP router when enabled
     try:

@@ -366,6 +366,18 @@ or artifacts from MCP/browser/test tools that returned a local image path.
 **Important:** Use `read_image` when you need to actually see an image. Reading a
 filename or JSON artifact path is not enough; promote the image into conversation
 context with this tool.
+
+### publish_artifact
+Mark one existing project/workspace file for delivery to the requesting channel.
+Use this only when the user explicitly asked to receive that file. Writing or
+reading a file does not publish it automatically.
+
+**Native tool call:** call `publish_artifact` with `{"path":"path/to/report.pdf"}`.
+
+**ActionXML fallback example:**
+```actionxml
+<publish_artifact>{"path":"path/to/report.pdf"}</publish_artifact>
+```
 """
 
 

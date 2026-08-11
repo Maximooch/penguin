@@ -118,6 +118,54 @@ jobs:
             tests/api/test_sse_and_status_scoping.py \
             tests/api/test_session_view_service.py
 
+  telegram-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install Penguin Telegram development dependencies
+        run: python -m pip install -e '.[dev,telegram]'
+      - name: Verify Telegram dependency marker
+        run: |
+          python - <<'PY'
+          import importlib.util
+          import sys
+          from importlib.metadata import version
+
+          installed = importlib.util.find_spec("telegram") is not None
+          if sys.version_info >= (3, 10):
+              assert installed, "Telegram extra did not install its runtime"
+              assert version("python-telegram-bot") == "22.6"
+          else:
+              assert not installed, "Telegram runtime must remain Python 3.10+"
+          PY
+      - name: Check Telegram channel modules
+        run: |
+          ruff check \
+            penguin/channels \
+            penguin/integrations/telegram \
+            penguin/web/integrations/telegram.py \
+            tests/channels \
+            tests/integrations/telegram
+          ruff format --check \
+            penguin/channels \
+            penguin/integrations/telegram \
+            penguin/web/integrations/telegram.py \
+            tests/channels \
+            tests/integrations/telegram
+      - name: Run Telegram transport contracts
+        run: pytest -q tests/channels tests/integrations/telegram
+
   tui-goal-contract:
     runs-on: ubuntu-latest
     timeout-minutes: 20

@@ -66,12 +66,14 @@ from penguin.tools.schema_contract import (
     runtime_metadata_from_tool_schema,
 )
 from penguin.tools.image_tools import ReadImageTool
+from penguin.tools.artifact_tools import PublishArtifactTool
 from penguin.tools.async_dispatch import ASYNC_TOOL_NAMES, AsyncToolDispatcher
 
 # Lazy import for PyDoll to avoid breaking if pydoll-python is not installed
 _pydoll_tools_imported = False
 _pydoll_import_error = None
 ORDERED_TOOL_BATCH_NAME = "ordered_tool_batch"
+_APPROVAL_GRANT_CONTEXT_KEY = "_penguin_approval_grant_id"
 
 
 def _ensure_pydoll_imports():
@@ -318,6 +320,7 @@ class ToolManager:
             self._browser_harness_list_tabs_tool = None
             self._browser_harness_switch_tab_tool = None
             self._read_image_tool = None
+            self._publish_artifact_tool = None
 
             # PyDoll tools placeholders
             self._pydoll_browser_navigation_tool = None
@@ -360,6 +363,7 @@ class ToolManager:
                 "apply_patch": "self._execute_apply_patch",
                 "read_file": "penguin.tools.core.support.enhanced_read_file",
                 "read_image": "self.read_image_tool.execute",
+                "publish_artifact": "self.publish_artifact_tool.execute",
                 "list_files": "penguin.tools.core.support.list_files_filtered",
                 "find_file": "penguin.tools.core.support.find_files_enhanced",
                 "encode_image_to_base64": "penguin.tools.core.support.encode_image_to_base64",
@@ -1010,6 +1014,33 @@ class ToolManager:
                     "required": ["path"],
                 },
                 "x-penguin-permissions": read_only_permissions,
+            },
+            {
+                "name": "publish_artifact",
+                "description": (
+                    "Publish one existing project/workspace file as an explicit "
+                    "outbound artifact. Use only when the user asked to receive "
+                    "that file; ordinary file writes are never auto-published."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": (
+                                "Path to an existing file within the active "
+                                "project/workspace"
+                            ),
+                        }
+                    },
+                    "required": ["path"],
+                },
+                "x-penguin-permissions": {
+                    "mutates_state": False,
+                    "requires_approval": True,
+                    "parallel_safe": True,
+                    "risk": "medium",
+                },
             },
             {
                 "name": "add_summary_note",
@@ -2242,6 +2273,14 @@ class ToolManager:
         return self._read_image_tool
 
     @property
+    def publish_artifact_tool(self):
+        if self._publish_artifact_tool is None:
+            with profile_operation("ToolManager.lazy_load_publish_artifact_tool"):
+                logger.debug("Lazy-loading publish_artifact tool")
+                self._publish_artifact_tool = PublishArtifactTool()
+        return self._publish_artifact_tool
+
+    @property
     def process_runtime(self):
         """Lazy load the persistent process runtime."""
 
@@ -2341,9 +2380,173 @@ class ToolManager:
         if _check_tool_permission is None:
             return None, None
 
-        return _check_tool_permission(
-            tool_name, tool_input, self.permission_enforcer, context
+        effective_context = context if isinstance(context, dict) else {}
+        permission_mode = (
+            str(effective_context.get("permission_mode") or "").strip().lower()
         )
+        if permission_mode == "read_only":
+            from penguin.security.tool_permissions import is_safe_tool
+
+            if not is_safe_tool(tool_name):
+                return (
+                    _PermissionResult.DENY,
+                    "Request-scoped read-only mode blocks mutating tools",
+                )
+
+        if permission_mode == "workspace" and tool_name in {
+            "publish_artifact",
+            "read_image",
+        }:
+            raw_path = tool_input.get("path") or tool_input.get("file_path")
+            allowed_roots: list[Path] = []
+            for key in ("directory", "project_root", "workspace_root"):
+                raw_root = effective_context.get(key)
+                if not isinstance(raw_root, str) or not raw_root.strip():
+                    continue
+                try:
+                    resolved_root = Path(raw_root).expanduser().resolve()
+                except (OSError, RuntimeError):
+                    continue
+                if resolved_root not in allowed_roots:
+                    allowed_roots.append(resolved_root)
+
+            if isinstance(raw_path, str) and raw_path.strip() and allowed_roots:
+                try:
+                    resolved_path = Path(raw_path).expanduser().resolve()
+                except (OSError, RuntimeError):
+                    return (
+                        _PermissionResult.DENY,
+                        "File path is invalid for the request workspace",
+                    )
+                if not any(
+                    resolved_path == root or root in resolved_path.parents
+                    for root in allowed_roots
+                ):
+                    return (
+                        _PermissionResult.DENY,
+                        "File path is outside request workspace",
+                    )
+
+        result, reason = _check_tool_permission(
+            tool_name,
+            tool_input,
+            self.permission_enforcer,
+            effective_context,
+        )
+        if result == _PermissionResult.DENY:
+            return result, reason
+
+        approval_policy = effective_context.get("approval_policy")
+        if not isinstance(approval_policy, dict):
+            return result, reason
+
+        from penguin.security.permission_engine import Operation
+        from penguin.security.tool_permissions import get_tool_operations
+
+        operations = get_tool_operations(tool_name)
+        policy_keys: set[str] = set()
+        for operation in operations:
+            if operation in {Operation.PROCESS_EXECUTE, Operation.PROCESS_SPAWN}:
+                policy_keys.add("shell")
+            elif operation == Operation.FILESYSTEM_DELETE:
+                policy_keys.add("fileDelete")
+            elif operation in {
+                Operation.FILESYSTEM_WRITE,
+                Operation.FILESYSTEM_MKDIR,
+                Operation.GIT_WRITE,
+                Operation.MEMORY_WRITE,
+            }:
+                policy_keys.add("fileWrite")
+            elif operation == Operation.GIT_PUSH:
+                policy_keys.add("gitPush")
+            elif operation in {
+                Operation.NETWORK_FETCH,
+                Operation.NETWORK_POST,
+                Operation.NETWORK_LISTEN,
+            }:
+                policy_keys.add("network")
+        if not operations or (
+            not policy_keys
+            and not all(Operation.is_read_only(operation) for operation in operations)
+        ):
+            policy_keys.add("default")
+
+        decisions = {
+            str(approval_policy.get(key, approval_policy.get("default", "")))
+            for key in policy_keys
+        }
+        if "deny" in decisions:
+            return (
+                _PermissionResult.DENY,
+                "Request-scoped approval policy denies this operation",
+            )
+        if "ask" in decisions:
+            return (
+                _PermissionResult.ASK,
+                "Request-scoped approval policy requires approval",
+            )
+        return result, reason
+
+    @staticmethod
+    def _approval_target(
+        tool_name: str,
+        tool_input: dict[str, Any],
+        context: dict[str, Any],
+    ) -> tuple[str, str, Optional[str]]:
+        """Return the stable operation, resource, and session approval key."""
+        operation_value = context.get("operation", f"tool.{tool_name}")
+        resource_value = tool_input.get(
+            "path",
+            tool_input.get("file_path", tool_input.get("target", "")),
+        )
+        session_value = context.get("session_id")
+        return (
+            str(operation_value),
+            "" if resource_value is None else str(resource_value),
+            str(session_value) if session_value is not None else None,
+        )
+
+    @staticmethod
+    def _with_approval_grant(
+        context: dict[str, Any],
+        request_id: str,
+    ) -> dict[str, Any]:
+        """Copy a context and attach a private one-shot approval grant."""
+        resumed_context = dict(context)
+        resumed_context[_APPROVAL_GRANT_CONTEXT_KEY] = request_id
+        return resumed_context
+
+    def _consume_approval_grant(
+        self,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        context: dict[str, Any],
+    ) -> Optional[bool]:
+        """Consume a resumed approval, or return ``None`` when absent."""
+        grant_id = context.get(_APPROVAL_GRANT_CONTEXT_KEY)
+        if grant_id is None:
+            return None
+        if not isinstance(grant_id, str) or not grant_id:
+            return False
+
+        try:
+            from penguin.security.approval import get_approval_manager
+
+            operation, resource, session_id = self._approval_target(
+                tool_name,
+                tool_input,
+                context,
+            )
+            return get_approval_manager().consume_approved_request(
+                grant_id,
+                tool_name=tool_name,
+                operation=operation,
+                resource=resource,
+                session_id=session_id,
+            )
+        except ImportError:
+            logger.error("Approval module unavailable while resuming %s", tool_name)
+            return False
 
     def _permission_response(
         self,
@@ -2361,6 +2564,20 @@ class ToolManager:
 
         if not self._permission_enabled:
             return None
+
+        approval_grant = self._consume_approval_grant(
+            tool_name,
+            tool_input,
+            context,
+        )
+        if approval_grant is False:
+            return json.dumps(
+                {
+                    "error": "approval_grant_invalid",
+                    "tool": tool_name,
+                    "message": "Approval was missing, mismatched, or already consumed.",
+                }
+            )
 
         result, reason = self.check_tool_permission(tool_name, tool_input, context)
         if result is None:
@@ -2389,6 +2606,28 @@ class ToolManager:
         if result != _PermissionResult.ASK:
             return None
 
+        approval_policy = context.get("approval_policy")
+        if (
+            isinstance(approval_policy, dict)
+            and approval_policy.get("default") == "deny"
+        ):
+            logger.warning(
+                "permission.approval_disabled tool=%s session=%s",
+                tool_name,
+                context.get("session_id"),
+            )
+            return json.dumps(
+                {
+                    "error": "permission_denied",
+                    "tool": tool_name,
+                    "reason": "Remote approval policy denies prompted operations",
+                }
+            )
+
+        if approval_grant is True:
+            logger.info("Resuming approved tool '%s' exactly once", tool_name)
+            return None
+
         logger.info(
             "permission.approval_required tool=%s agent=%s mode=%s "
             "session=%s reason=%s",
@@ -2398,12 +2637,11 @@ class ToolManager:
             context.get("session_id"),
             reason,
         )
-        operation = context.get("operation", f"tool.{tool_name}")
-        resource = tool_input.get(
-            "path",
-            tool_input.get("file_path", tool_input.get("target", "")),
+        operation, resource, session_id = self._approval_target(
+            tool_name,
+            tool_input,
+            context,
         )
-        session_id = context.get("session_id")
 
         try:
             from penguin.security.approval import get_approval_manager
@@ -2417,6 +2655,14 @@ class ToolManager:
                 logger.info("Tool '%s' pre-approved for %s", tool_name, resource)
                 return None
 
+            ttl_seconds = None
+            if isinstance(approval_policy, dict):
+                try:
+                    configured_ttl = float(approval_policy.get("timeout_seconds"))
+                except (TypeError, ValueError):
+                    configured_ttl = 0.0
+                if math.isfinite(configured_ttl) and configured_ttl > 0:
+                    ttl_seconds = min(3600.0, configured_ttl)
             approval_request = approval_manager.create_request(
                 tool_name=tool_name,
                 operation=operation,
@@ -2429,7 +2675,9 @@ class ToolManager:
                         tool_input,
                     ),
                     "agent_id": context.get("agent_id"),
+                    "request_id": context.get("request_id"),
                 },
+                ttl_seconds=ttl_seconds,
             )
             logger.info("Approval request created: %s", approval_request.id)
             return json.dumps(
@@ -2484,6 +2732,63 @@ class ToolManager:
                     ),
                 }
             )
+
+    def _permission_response_with_sync_wait(
+        self,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        context: dict[str, Any],
+    ) -> tuple[Optional[Union[str, dict[str, Any]]], dict[str, Any]]:
+        """Resolve an opted-in approval from a synchronous worker call.
+
+        The synchronous ToolManager API is used by legacy ActionXML handlers in
+        ``asyncio.to_thread``. Waiting is therefore safe there, but is skipped
+        when an event loop is running so this compatibility path can never
+        block the loop. AsyncToolDispatcher owns the native async lifecycle and
+        passes a consumed one-shot grant through this same check.
+        """
+        permission_response = self._permission_response(
+            tool_name,
+            tool_input,
+            context,
+        )
+        wait_for_resolution, timeout_seconds = (
+            AsyncToolDispatcher._approval_wait_settings(context)
+        )
+        if (
+            permission_response is None
+            or not wait_for_resolution
+            or self._is_in_async_context()
+        ):
+            return permission_response, context
+
+        request_id = AsyncToolDispatcher._pending_approval_id(permission_response)
+        if request_id is None:
+            return permission_response, context
+
+        from penguin.security.approval import ApprovalStatus, get_approval_manager
+
+        resolved = get_approval_manager().wait_for_resolution(
+            request_id,
+            timeout_seconds,
+        )
+        if resolved is None or resolved.status != ApprovalStatus.APPROVED:
+            return (
+                AsyncToolDispatcher._approval_failure_response(
+                    request_id,
+                    resolved.status if resolved is not None else None,
+                    tool_name,
+                ),
+                context,
+            )
+
+        resumed_context = self._with_approval_grant(context, request_id)
+        resumed_response = self._permission_response(
+            tool_name,
+            tool_input,
+            resumed_context,
+        )
+        return resumed_response, resumed_context
 
     async def ensure_memory_provider(self) -> Optional[MemoryProvider]:
         """Ensure memory provider is initialized. Used for lazy loading."""
@@ -2905,6 +3210,7 @@ class ToolManager:
             "apply_patch",
             "read_file",
             "read_image",
+            "publish_artifact",
             "list_files",
             "find_file",
             "enhanced_diff",
@@ -4315,6 +4621,18 @@ class ToolManager:
 
             if self._mcp_provider.is_mcp_tool(tool_name):
                 if self._permission_enabled:
+                    approval_grant = self._consume_approval_grant(
+                        tool_name,
+                        tool_input,
+                        effective_context,
+                    )
+                    if approval_grant is False:
+                        return {
+                            "error": (
+                                "Approval was missing, mismatched, or already "
+                                "consumed."
+                            )
+                        }
                     result, reason = self.check_tool_permission(
                         tool_name, tool_input, effective_context
                     )
@@ -4322,16 +4640,21 @@ class ToolManager:
                         _ensure_permission_imports()
                         if result == _PermissionResult.DENY:
                             return {"error": f"Permission denied: {reason}"}
-                        if result == _PermissionResult.ASK:
+                        if (
+                            result == _PermissionResult.ASK
+                            and approval_grant is not True
+                        ):
                             return {"error": f"Permission required: {reason}"}
                 return self._mcp_provider.execute_tool(tool_name, tool_input)
 
             tool_input = self._normalize_tool_input_paths(tool_input, file_root)
 
-            permission_response = self._permission_response(
-                tool_name,
-                tool_input,
-                effective_context,
+            permission_response, effective_context = (
+                self._permission_response_with_sync_wait(
+                    tool_name,
+                    tool_input,
+                    effective_context,
+                )
             )
             if permission_response is not None:
                 return permission_response
@@ -4359,6 +4682,9 @@ class ToolManager:
                     tool_input.get("path", ""),
                     tool_input.get("prompt"),
                     tool_input.get("max_dim"),
+                ),
+                "publish_artifact": lambda: self.publish_artifact_tool.execute(
+                    tool_input.get("path", "")
                 ),
                 "list_files": lambda: self._execute_file_operation(
                     "list_files", tool_input, file_root=file_root
