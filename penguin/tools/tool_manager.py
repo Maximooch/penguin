@@ -41,6 +41,7 @@ from penguin.tools.browser_tools import (
 )
 from penguin.tools.core.skill_tools import SkillTools
 from penguin.tools.core.task_tools import TaskTools
+from penguin.tools.core.todo_tools import TodoTools, get_todo_tool_schemas
 from penguin.tools.editing.registry import (
     get_edit_tool_public_names,
     get_edit_tool_schemas,
@@ -280,6 +281,7 @@ class ToolManager:
             self._skill_tools = None
             self._declarative_memory_tool = None
             self._task_tools = None
+            self._todo_tools = TodoTools(lambda: self._core)
             self._grep_search = None
             self._file_map = None
             self._summary_notes_tool = None
@@ -400,6 +402,8 @@ class ToolManager:
                 "finish_response": "self.task_tools.finish_response",
                 "finish_task": "self.task_tools.finish_task",
                 "task_completed": "self.task_tools.task_completed",  # Deprecated alias
+                "todowrite": "self._execute_todo_write",
+                "todoread": "self._execute_todo_read",
             }
 
             # Cached tool instances for performance
@@ -464,6 +468,7 @@ class ToolManager:
                     "required": [],
                 },
             },
+            *get_todo_tool_schemas(),
             {
                 "name": "list_skills",
                 "description": "List discovered Agent Skills and discovery diagnostics. Use this before activating a skill when you need task-specific instructions.",
@@ -2660,6 +2665,11 @@ class ToolManager:
         tools.extend(self._mcp_provider.get_tool_schemas())
         return tools
 
+    @property
+    def todo_tools(self) -> TodoTools:
+        """Return session-scoped todo tools."""
+        return self._todo_tools
+
     def get_model_visible_tools(self) -> List[Dict[str, Any]]:
         """Return tool schemas normalized to Penguin's model-visible contract."""
 
@@ -2769,6 +2779,8 @@ class ToolManager:
             "process_stop",
             ORDERED_TOOL_BATCH_NAME,
             "grep_search",
+            "todowrite",
+            "todoread",
             "finish_response",
             "finish_task",
             "list_skills",
@@ -4573,6 +4585,10 @@ class ToolManager:
                     or effective_context.get("session_id"),
                     load_into_context=tool_input.get("load_into_context", True),
                 ),
+                "todowrite": lambda: self._execute_async_tool(
+                    self.todo_tools.write(tool_input.get("todos"), effective_context)
+                ),
+                "todoread": lambda: self.todo_tools.read(effective_context),
                 "get_repository_status": lambda: get_repository_status(
                     tool_input["repo_owner"], tool_input["repo_name"]
                 ),
@@ -5961,6 +5977,16 @@ class ToolManager:
             return True
         except RuntimeError:
             return False
+
+    def _execute_todo_write(self, todos: Any = None) -> str:
+        """Execute todowrite through the synchronous compatibility API."""
+        return self._execute_async_tool(
+            self.todo_tools.write(todos, self._merged_execution_context(None))
+        )
+
+    def _execute_todo_read(self) -> str:
+        """Execute todoread through the synchronous compatibility API."""
+        return self.todo_tools.read(self._merged_execution_context(None))
 
     def _execute_async_tool(self, coro):
         """Execute an async tool properly depending on the current context."""
