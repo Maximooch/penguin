@@ -134,6 +134,119 @@ def test_remote_permissions_are_prompted_and_capped_by_instance() -> None:
     assert config.approval_policy["timeout_seconds"] == 300.0
 
 
+def test_granular_remote_permissions_preserve_instance_ceiling() -> None:
+    config = TelegramConfig.from_mapping(
+        {
+            "security": {"mode": "workspace"},
+            "channels": {
+                "telegram": {
+                    "permissions": {
+                        "mode": "full_access",
+                        "approvals": {
+                            "shell": "ask",
+                            "fileWrite": "allow",
+                            "fileDelete": "deny",
+                            "gitPush": "deny",
+                            "network": "allow",
+                            "secrets": "deny",
+                            "default": "deny",
+                        },
+                        "timeout_seconds": 90,
+                    }
+                }
+            },
+        },
+        {},
+    )
+
+    assert config.permission_mode == "workspace"
+    assert config.approval_policy == {
+        "shell": "ask",
+        "fileWrite": "allow",
+        "fileDelete": "deny",
+        "gitPush": "deny",
+        "network": "allow",
+        "secrets": "deny",
+        "default": "deny",
+        "allowLists": {},
+        "timeout_seconds": 90.0,
+        "wait_for_resolution": True,
+    }
+
+
+def test_granular_remote_permissions_fall_back_to_secure_default() -> None:
+    config = TelegramConfig.from_mapping(
+        _config(permissions={"approvals": {"network": "allow"}}),
+        {},
+    )
+
+    assert config.approval_policy["network"] == "allow"
+    assert config.approval_policy["shell"] == "ask"
+    assert config.approval_policy["default"] == "ask"
+    assert config.approval_policy["wait_for_resolution"] is True
+
+
+def test_legacy_scalar_deny_remains_supported() -> None:
+    config = TelegramConfig.from_mapping(
+        _config(permissions={"approvals": "deny"}),
+        {},
+    )
+
+    assert config.approvals == "deny"
+    assert config.approval_policy["shell"] == "deny"
+    assert config.approval_policy["default"] == "deny"
+    assert "wait_for_resolution" not in config.approval_policy
+
+
+@pytest.mark.parametrize(
+    ("approvals", "message"),
+    [
+        ({"shell": "prompt"}, r"approvals\.shell"),
+        ({"futureCategory": "ask"}, "unknown categories"),
+        ("allow", "permissions.approvals"),
+    ],
+)
+def test_remote_permissions_reject_ambiguous_decisions(
+    approvals: object,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        TelegramConfig.from_mapping(
+            _config(permissions={"approvals": approvals}),
+            {},
+        )
+
+
+def test_permissions_summary_is_effective_and_credential_free() -> None:
+    config = TelegramConfig.from_mapping(
+        _config(
+            permissions={
+                "mode": "read_only",
+                "approvals": {"shell": "deny", "default": "allow"},
+                "timeout_seconds": 45,
+            }
+        ),
+        {},
+    )
+
+    assert config.permissions_summary == (
+        "Telegram permission policy\n"
+        "Mode cap: read_only (cannot exceed Penguin security.mode)\n"
+        "Approval timeout: 45 seconds\n"
+        "Telegram category decisions:\n"
+        "- shell: deny\n"
+        "- fileWrite: allow\n"
+        "- fileDelete: allow\n"
+        "- gitPush: allow\n"
+        "- network: allow\n"
+        "- secrets: allow\n"
+        "- default: allow\n"
+        "allow means Telegram adds no prompt; Penguin instance or agent policy "
+        "can still ASK, and any instance, agent, or workspace DENY still blocks. "
+        "YOLO is unavailable."
+    )
+
+
 @pytest.mark.parametrize(
     ("telegram", "message"),
     [

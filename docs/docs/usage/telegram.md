@@ -88,7 +88,14 @@ channels:
 
     permissions:
       mode: workspace
-      approvals: prompt
+      approvals:
+        shell: ask
+        fileWrite: ask
+        fileDelete: ask
+        gitPush: ask
+        network: ask
+        secrets: deny
+        default: ask
       timeout_seconds: 300
       allow_yolo: false
 
@@ -272,6 +279,7 @@ The bot registers this command menu:
 | `/model` | Show the active model. |
 | `/goal ...` | Use Penguin's session-goal command for the bound session. |
 | `/project` | Show the bound project directory. |
+| `/permissions` | Show Telegram's capped permission policy and timeout. |
 
 Additional policy commands are `/pair CODE`, `/activation mention|always`, and
 `/topic`. A command explicitly addressed to another bot is ignored.
@@ -313,20 +321,34 @@ video, media groups, and general file ingestion are not implemented in Phases
 
 Penguin projects pending questions into Telegram with inline choices; the
 authorized user may also answer with text. Tool approval prompts have
-`Approve once` and `Deny` buttons. Callback records are scoped to the originating
-bot account, chat, topic, and user, expire after the configured timeout, and can
-be completed only once. An approved waiter resumes the intended tool operation
-at most once. When Penguin asks several questions together, answer with exactly
-one non-empty line per question; inline choices are offered only for a single
-question. Resolution, expiry, shutdown, and restart replace active controls with
-a terminal state so stale buttons cannot resume work.
+`Approve once`, `Approve for session`, and `Deny` buttons. Callback records are
+scoped to the originating bot account, chat, topic, and user, expire after the
+configured timeout, and can be completed only once. An approved waiter resumes
+the intended tool operation at most once. When Penguin asks several questions
+together, answer with exactly one non-empty line per question; inline choices
+are offered only for a single question. Resolution, expiry, shutdown, and
+restart replace active controls with a terminal state so stale buttons cannot
+resume work.
 
 Remote permissions remain subordinate to Penguin's instance security mode:
 
 - `permissions.mode` accepts `read_only`, `workspace`, or `full_access`, but is
   capped by the instance-level `security.mode`.
-- `permissions.approvals: prompt` waits for Telegram approval; `deny` refuses
-  operations requiring approval.
+- `permissions.approvals` accepts category decisions for `shell`, `fileWrite`,
+  `fileDelete`, `gitPush`, `network`, `secrets`, and `default`. Each decision is
+  `allow`, `ask`, or `deny`. `allow` skips only the Telegram prompt; Penguin's
+  instance security, workspace boundaries, and child-tool checks still apply.
+- Legacy scalar `permissions.approvals: prompt` and
+  `permissions.approvals: deny` remain supported.
+- `/permissions` reports Telegram's mode cap, category decisions, and approval
+  timeout without changing configuration or exposing credentials. An `allow`
+  decision removes only Telegram's own prompt; instance or agent policy may
+  still ask, and any instance, agent, or workspace denial still blocks.
+- `secrets` applies in addition to the tool's normal category when a tool targets
+  common credential files, private-key paths, or secret-bearing process
+  environment names and references.
+- Sub-agent creation and resumption use the conservative `shell` category.
+  Approving orchestration never pre-approves tools subsequently used by a child.
 - `publish_artifact` is an explicit, approval-gated network operation; Penguin
   never infers outbound files from ordinary path-looking tool output.
 - `allow_yolo: true` is rejected.

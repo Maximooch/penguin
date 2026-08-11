@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from penguin.security.approval import get_approval_manager
+from penguin.security.approval import ApprovalScope, get_approval_manager
 from penguin.security.permission_engine import PermissionResult
 from penguin.system.execution_context import ExecutionContext, execution_context_scope
 from penguin.tools.tool_manager import ToolManager
@@ -485,6 +485,175 @@ def test_request_approval_policy_governs_shell_tools(
     )
 
     assert result == expected
+
+
+def test_default_deny_policy_allows_explicit_shell_prompt() -> None:
+    """A deny fallback must not disable a category explicitly set to ask."""
+    approval_manager = get_approval_manager()
+    approval_manager.reset()
+    manager = ToolManager(
+        {"diagnostics": {"enabled": False}},
+        lambda _error, _context: None,
+    )
+
+    raw_result = manager._permission_response(
+        "execute_command",
+        {"command": "pwd"},
+        {
+            "session_id": "session_explicit_shell_prompt",
+            "approval_policy": {"default": "deny", "shell": "ask"},
+        },
+    )
+
+    assert isinstance(raw_result, str)
+    result = json.loads(raw_result)
+    assert result["status"] == "pending_approval"
+    assert result["resource"] == "pwd"
+    pending = approval_manager.get_pending(session_id="session_explicit_shell_prompt")
+    assert [request.resource for request in pending] == ["pwd"]
+    approval_manager.reset()
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "tool_input", "expected_resource"),
+    [
+        ("execute_command", {"command": "pwd"}, "pwd"),
+        ("code_execution", {"code": "print('hi')"}, "print('hi')"),
+        ("process_start", {"command": "python app.py"}, "python app.py"),
+        ("process_stop", {"process_id": "process-123"}, "process-123"),
+    ],
+)
+def test_approval_target_exposes_executed_resource(
+    tool_name: str,
+    tool_input: dict[str, str],
+    expected_resource: str,
+) -> None:
+    """Execution approval cards must identify what will actually run."""
+    _operation, resource, _session_id = ToolManager._approval_target(
+        tool_name,
+        tool_input,
+        {},
+    )
+
+    assert resource == expected_resource
+
+
+def test_session_approval_does_not_bypass_new_ask_category() -> None:
+    """A shell grant must not silently include later secret access."""
+    approval_manager = get_approval_manager()
+    approval_manager.reset()
+    manager = ToolManager(
+        {"diagnostics": {"enabled": False}},
+        lambda _error, _context: None,
+    )
+    session_id = "session_category_escalation"
+    context = {
+        "session_id": session_id,
+        "approval_policy": {
+            "default": "deny",
+            "shell": "ask",
+            "secrets": "ask",
+        },
+    }
+
+    first_result = json.loads(
+        manager._permission_response(
+            "execute_command",
+            {"command": "pwd"},
+            context,
+        )
+    )
+    first_request = approval_manager.get_request(first_result["approval_id"])
+    assert first_request is not None
+    assert first_request.resource == "pwd"
+    assert (
+        approval_manager.approve(
+            first_request.id,
+            scope=ApprovalScope.SESSION,
+        )
+        is not None
+    )
+
+    assert (
+        manager._permission_response(
+            "execute_command",
+            {"command": "whoami"},
+            context,
+        )
+        is None
+    )
+    escalated_result = json.loads(
+        manager._permission_response(
+            "execute_command",
+            {"command": "cat .env"},
+            context,
+        )
+    )
+    escalated_request = approval_manager.get_request(escalated_result["approval_id"])
+    assert escalated_request is not None
+    assert escalated_request.resource == "cat .env"
+    assert escalated_request.operation != first_request.operation
+    approval_manager.deny(escalated_request.id)
+    approval_manager.reset()
+
+
+def test_explicit_base_operation_preapproval_covers_fingerprinted_prompt() -> None:
+    """Existing callers may intentionally preapprove a whole tool operation."""
+    approval_manager = get_approval_manager()
+    approval_manager.reset()
+    approval_manager.pre_approve(
+        "tool.execute_command",
+        session_id="session_explicit_base_preapproval",
+    )
+    manager = ToolManager(
+        {"diagnostics": {"enabled": False}},
+        lambda _error, _context: None,
+    )
+
+    result = manager._permission_response(
+        "execute_command",
+        {"command": "pwd"},
+        {
+            "session_id": "session_explicit_base_preapproval",
+            "approval_policy": {"default": "deny", "shell": "ask"},
+        },
+    )
+
+    assert result is None
+    approval_manager.reset()
+
+
+def test_remote_allow_cannot_override_instance_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Remote allow removes only its own prompt, never an instance-level ASK."""
+    approval_manager = get_approval_manager()
+    approval_manager.reset()
+    manager = ToolManager(
+        {"diagnostics": {"enabled": False}},
+        lambda _error, _context: None,
+    )
+    manager._permission_enabled = True
+    monkeypatch.setattr(
+        manager,
+        "check_tool_permission",
+        lambda *_args, **_kwargs: (PermissionResult.ASK, "instance approval required"),
+    )
+
+    raw_result = manager._permission_response(
+        "execute_command",
+        {"command": "pwd"},
+        {
+            "session_id": "session_instance_ask",
+            "approval_policy": {"default": "deny", "shell": "allow"},
+        },
+    )
+
+    assert isinstance(raw_result, str)
+    result = json.loads(raw_result)
+    assert result["status"] == "pending_approval"
+    assert approval_manager.get_pending(session_id="session_instance_ask")
+    approval_manager.reset()
 
 
 @pytest.mark.asyncio

@@ -2442,36 +2442,9 @@ class ToolManager:
         if not isinstance(approval_policy, dict):
             return result, reason
 
-        from penguin.security.permission_engine import Operation
-        from penguin.security.tool_permissions import get_tool_operations
+        from penguin.security.tool_permissions import get_tool_policy_keys
 
-        operations = get_tool_operations(tool_name)
-        policy_keys: set[str] = set()
-        for operation in operations:
-            if operation in {Operation.PROCESS_EXECUTE, Operation.PROCESS_SPAWN}:
-                policy_keys.add("shell")
-            elif operation == Operation.FILESYSTEM_DELETE:
-                policy_keys.add("fileDelete")
-            elif operation in {
-                Operation.FILESYSTEM_WRITE,
-                Operation.FILESYSTEM_MKDIR,
-                Operation.GIT_WRITE,
-                Operation.MEMORY_WRITE,
-            }:
-                policy_keys.add("fileWrite")
-            elif operation == Operation.GIT_PUSH:
-                policy_keys.add("gitPush")
-            elif operation in {
-                Operation.NETWORK_FETCH,
-                Operation.NETWORK_POST,
-                Operation.NETWORK_LISTEN,
-            }:
-                policy_keys.add("network")
-        if not operations or (
-            not policy_keys
-            and not all(Operation.is_read_only(operation) for operation in operations)
-        ):
-            policy_keys.add("default")
+        policy_keys = get_tool_policy_keys(tool_name, tool_input, effective_context)
 
         decisions = {
             str(approval_policy.get(key, approval_policy.get("default", "")))
@@ -2490,17 +2463,49 @@ class ToolManager:
         return result, reason
 
     @staticmethod
+    def _approval_base_operation(
+        tool_name: str,
+        context: dict[str, Any],
+    ) -> str:
+        """Return the caller-compatible base operation for a tool approval."""
+        return str(context.get("operation", f"tool.{tool_name}"))
+
+    @classmethod
     def _approval_target(
+        cls,
         tool_name: str,
         tool_input: dict[str, Any],
         context: dict[str, Any],
     ) -> tuple[str, str, Optional[str]]:
         """Return the stable operation, resource, and session approval key."""
-        operation_value = context.get("operation", f"tool.{tool_name}")
-        resource_value = tool_input.get(
-            "path",
-            tool_input.get("file_path", tool_input.get("target", "")),
+        from penguin.security.tool_permissions import (
+            extract_resource_from_input,
+            get_tool_policy_keys,
         )
+
+        operation_value = cls._approval_base_operation(tool_name, context)
+        approval_policy = context.get("approval_policy")
+        if isinstance(approval_policy, dict):
+            policy_keys = get_tool_policy_keys(tool_name, tool_input, context)
+            ask_keys = sorted(
+                key
+                for key in policy_keys
+                if str(
+                    approval_policy.get(key, approval_policy.get("default", ""))
+                )
+                .strip()
+                .lower()
+                == "ask"
+            )
+            # An instance-level ASK with no request-policy ASK still needs a
+            # scoped identity so it cannot become a blanket base-operation grant.
+            operation_value = (
+                f"{operation_value}[ask={','.join(ask_keys) or 'instance'}]"
+            )
+
+        resource_value = extract_resource_from_input(tool_name, tool_input)
+        if tool_name.startswith("process_") and tool_input.get("process_id"):
+            resource_value = tool_input["process_id"]
         session_value = context.get("session_id")
         return (
             str(operation_value),
@@ -2609,10 +2614,19 @@ class ToolManager:
             return None
 
         approval_policy = context.get("approval_policy")
-        if (
-            isinstance(approval_policy, dict)
-            and approval_policy.get("default") == "deny"
-        ):
+        if isinstance(approval_policy, dict):
+            from penguin.security.tool_permissions import get_tool_policy_keys
+
+            policy_keys = get_tool_policy_keys(tool_name, tool_input, context) or {
+                "default"
+            }
+            policy_decisions = {
+                str(approval_policy.get(key, approval_policy.get("default", "")))
+                for key in policy_keys
+            }
+        else:
+            policy_decisions = set()
+        if "deny" in policy_decisions:
             logger.warning(
                 "permission.approval_disabled tool=%s session=%s",
                 tool_name,
@@ -2649,10 +2663,18 @@ class ToolManager:
             from penguin.security.approval import get_approval_manager
 
             approval_manager = get_approval_manager()
+            base_operation = self._approval_base_operation(tool_name, context)
             if approval_manager.check_pre_approved(
                 operation,
                 resource,
                 session_id,
+            ) or (
+                operation != base_operation
+                and approval_manager.check_pre_approved(
+                    base_operation,
+                    resource,
+                    session_id,
+                )
             ):
                 logger.info("Tool '%s' pre-approved for %s", tool_name, resource)
                 return None

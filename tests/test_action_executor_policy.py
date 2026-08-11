@@ -16,7 +16,7 @@ from penguin.security.action_policy import (
     TOOL_MANAGED_ACTION_NAMES,
     authorize_direct_action,
 )
-from penguin.security.approval import get_approval_manager
+from penguin.security.approval import ApprovalScope, get_approval_manager
 from penguin.system.execution_context import ExecutionContext, execution_context_scope
 from penguin.tools.tool_manager import ToolManager
 from penguin.utils.parser import (
@@ -54,6 +54,9 @@ def test_every_actionxml_action_has_an_explicit_policy_classification() -> None:
     assert DIRECT_ACTION_POLICY_KEYS[ActionType.PROCESS_EXIT.value] == "fileWrite"
     assert DIRECT_ACTION_POLICY_KEYS[ActionType.FINISH_TASK.value] == "fileWrite"
     assert DIRECT_ACTION_POLICY_KEYS[ActionType.TASK_COMPLETED.value] == "fileWrite"
+    assert DIRECT_ACTION_POLICY_KEYS[ActionType.SPAWN_SUB_AGENT.value] == "shell"
+    assert DIRECT_ACTION_POLICY_KEYS[ActionType.RESUME_SUB_AGENT.value] == "shell"
+    assert DIRECT_ACTION_POLICY_KEYS[ActionType.STOP_SUB_AGENT.value] == "shell"
     assert ActionType.READ_IMAGE.value in tool_managed
     assert ActionType.PUBLISH_ARTIFACT.value in tool_managed
 
@@ -132,6 +135,7 @@ async def test_read_only_actionxml_cannot_start_process() -> None:
         ExecutionContext(
             session_id="telegram-read-only",
             permission_mode="read_only",
+            approval_policy={"shell": "allow", "default": "allow"},
         )
     ):
         raw_result = await executor.execute_action(
@@ -221,8 +225,42 @@ async def test_deny_policy_actionxml_cannot_start_process() -> None:
 
 
 @pytest.mark.asyncio
-async def test_prompt_policy_resumes_actionxml_process_once() -> None:
-    """An approved direct action resumes the original handler exactly once."""
+async def test_secret_policy_caps_allowed_actionxml_shell() -> None:
+    """Allowing shell must not implicitly allow access to environment secrets."""
+
+    class _ProcessManager:
+        async def start_process(self, name: str, command: str) -> str:
+            raise AssertionError(f"unexpected process start: {name}={command}")
+
+    executor = ActionExecutor(
+        tool_manager=SimpleNamespace(),
+        task_manager=SimpleNamespace(),
+    )
+    executor.process_manager = _ProcessManager()
+
+    with execution_context_scope(
+        ExecutionContext(
+            session_id="telegram-secret-deny",
+            permission_mode="workspace",
+            approval_policy={
+                "shell": "allow",
+                "secrets": "deny",
+                "default": "allow",
+            },
+        )
+    ):
+        raw_result = await executor.execute_action(
+            CodeActAction(ActionType.PROCESS_START, "inspect: printenv API_TOKEN")
+        )
+
+    result = json.loads(raw_result)
+    assert result["error"] == "permission_denied"
+    assert result["action"] == "process_start"
+
+
+@pytest.mark.asyncio
+async def test_granular_prompt_resumes_actionxml_process_once() -> None:
+    """An explicit category ASK overrides only a DENY fallback."""
     approval_manager = get_approval_manager()
     approval_manager.reset()
 
@@ -250,7 +288,7 @@ async def test_prompt_policy_resumes_actionxml_process_once() -> None:
             permission_mode="workspace",
             approval_policy={
                 "shell": "ask",
-                "default": "ask",
+                "default": "deny",
                 "wait_for_resolution": True,
                 "timeout_seconds": 1.0,
             },
@@ -309,6 +347,49 @@ async def test_non_waiting_prompt_returns_pending_without_process_start() -> Non
     pending = approval_manager.get_pending(session_id=session_id)
     assert [request.id for request in pending] == [result["approval_id"]]
     approval_manager.deny(result["approval_id"])
+    approval_manager.reset()
+
+
+@pytest.mark.asyncio
+async def test_actionxml_session_approval_does_not_bypass_new_ask_category() -> None:
+    """A direct-action shell grant must not silently include secret access."""
+    approval_manager = get_approval_manager()
+    approval_manager.reset()
+    session_id = "action-category-escalation"
+    context = ExecutionContext(
+        session_id=session_id,
+        permission_mode="workspace",
+        approval_policy={
+            "default": "deny",
+            "shell": "ask",
+            "secrets": "ask",
+        },
+    )
+
+    with execution_context_scope(context):
+        first_result = json.loads(
+            await authorize_direct_action("process_start", "server: pwd")
+        )
+    first_request = approval_manager.get_request(first_result["approval_id"])
+    assert first_request is not None
+    assert (
+        approval_manager.approve(
+            first_request.id,
+            scope=ApprovalScope.SESSION,
+        )
+        is not None
+    )
+
+    with execution_context_scope(context):
+        assert await authorize_direct_action("process_start", "server: whoami") is None
+        escalated_result = json.loads(
+            await authorize_direct_action("process_start", "inspect: cat .env")
+        )
+
+    escalated_request = approval_manager.get_request(escalated_result["approval_id"])
+    assert escalated_request is not None
+    assert escalated_request.operation != first_request.operation
+    approval_manager.deny(escalated_request.id)
     approval_manager.reset()
 
 

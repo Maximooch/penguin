@@ -25,8 +25,8 @@ async def handle_command(
     if command in {"start", "help"}:
         return (
             "Penguin is ready. Send a message or use /new, /status, /stop, "
-            "/session, /mode, /model, /goal, /project, /activation, /topic, "
-            "/pair, or /whoami."
+            "/session, /mode, /model, /goal, /project, /permissions, "
+            "/activation, /topic, /pair, or /whoami."
         )
     if command == "whoami":
         return (
@@ -96,6 +96,8 @@ async def handle_command(
     if command == "project":
         directory = getattr(binding, "directory", None) or WORKSPACE_PATH
         return f"Project directory: {directory}"
+    if command == "permissions":
+        return manager.config.permissions_summary
     if command == "goal":
         from penguin.web.services.session_goal_command import (
             execute_session_goal_command,

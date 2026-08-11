@@ -9,6 +9,7 @@ import math
 from typing import Any, Mapping
 
 from penguin.security.approval import ApprovalStatus, get_approval_manager
+from penguin.security.tool_permissions import is_sensitive_resource
 from penguin.system.execution_context import get_current_execution_context
 
 logger = logging.getLogger(__name__)
@@ -38,9 +39,12 @@ DIRECT_ACTION_POLICY_KEYS: dict[str, str] = {
     "task_completed": "fileWrite",
     "todowrite": "fileWrite",
     "send_message": "network",
-    "spawn_sub_agent": "default",
-    "stop_sub_agent": "default",
-    "resume_sub_agent": "default",
+    # Starting or resuming autonomous work is intentionally as sensitive as
+    # process control. Approval covers orchestration only; child tools are still
+    # checked independently under the active execution context.
+    "spawn_sub_agent": "shell",
+    "stop_sub_agent": "shell",
+    "resume_sub_agent": "shell",
     "delegate": "network",
     "delegate_explore_task": "network",
     "browser_navigate": "network",
@@ -145,6 +149,13 @@ def policy_timeout_seconds(policy: Mapping[str, Any]) -> float | None:
     return min(3600.0, max(0.0, parsed_timeout))
 
 
+def _approval_operation(action_name: str, ask_policy_keys: set[str]) -> tuple[str, str]:
+    """Return category-exact and caller-compatible action operation names."""
+    base_operation = f"action.{action_name}"
+    fingerprint = ",".join(sorted(ask_policy_keys))
+    return f"{base_operation}[ask={fingerprint}]", base_operation
+
+
 async def authorize_direct_action(action_name: str, params: Any) -> str | None:
     """Authorize a direct ActionXML mutation under the active request policy."""
     context = get_current_execution_context()
@@ -155,7 +166,9 @@ async def authorize_direct_action(action_name: str, params: Any) -> str | None:
     if action_name in TOOL_MANAGED_ACTION_NAMES:
         return None
 
-    policy_key = DIRECT_ACTION_POLICY_KEYS.get(action_name, "default")
+    policy_keys = {DIRECT_ACTION_POLICY_KEYS.get(action_name, "default")}
+    if is_sensitive_resource(str(params or "")):
+        policy_keys.add("secrets")
 
     if str(context.permission_mode or "").strip().lower() == "read_only":
         return json.dumps(
@@ -169,17 +182,13 @@ async def authorize_direct_action(action_name: str, params: Any) -> str | None:
     approval_policy = context.approval_policy
     if not isinstance(approval_policy, dict):
         return None
-    decision = (
-        str(
-            approval_policy.get(
-                policy_key,
-                approval_policy.get("default", ""),
-            )
-        )
+    policy_decisions = {
+        key: str(approval_policy.get(key, approval_policy.get("default", "")))
         .strip()
         .lower()
-    )
-    if decision == "deny":
+        for key in policy_keys
+    }
+    if "deny" in policy_decisions.values():
         return json.dumps(
             {
                 "error": "permission_denied",
@@ -187,24 +196,21 @@ async def authorize_direct_action(action_name: str, params: Any) -> str | None:
                 "reason": "Request-scoped approval policy denies this action",
             }
         )
-    if decision != "ask":
+    ask_policy_keys = {
+        key for key, decision in policy_decisions.items() if decision == "ask"
+    }
+    if not ask_policy_keys:
         return None
-
-    if approval_policy.get("default") == "deny":
-        return json.dumps(
-            {
-                "error": "permission_denied",
-                "action": action_name,
-                "reason": "Remote approval policy denies prompted actions",
-            }
-        )
 
     try:
         manager = get_approval_manager()
-        operation = f"action.{action_name}"
+        operation, base_operation = _approval_operation(action_name, ask_policy_keys)
         resource = str(params or "").strip()[:500]
         session_id = context.session_id or context.conversation_id
-        if manager.check_pre_approved(operation, resource, session_id):
+        if manager.check_pre_approved(operation, resource, session_id) or (
+            operation != base_operation
+            and manager.check_pre_approved(base_operation, resource, session_id)
+        ):
             return None
 
         timeout_seconds = policy_timeout_seconds(approval_policy)

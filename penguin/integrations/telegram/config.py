@@ -23,6 +23,7 @@ _APPROVAL_ACTIONS = (
     "network",
     "secrets",
 )
+_APPROVAL_DECISIONS = {"allow", "ask", "deny"}
 
 
 @dataclass(frozen=True)
@@ -48,7 +49,7 @@ class TelegramConfig:
     max_download_bytes: int = 20 * 1024 * 1024
     max_document_text_chars: int = 100_000
     permission_mode: str = "workspace"
-    approvals: str = "prompt"
+    approvals: str | Mapping[str, str] = "prompt"
     approval_timeout_seconds: float = 300.0
     allow_yolo: bool = False
     retry_attempts: int = 8
@@ -133,11 +134,7 @@ class TelegramConfig:
             "permissions.mode",
         )
         permission_mode = _cap_permission_mode(requested_mode, raw)
-        approvals = _choice(
-            permissions.get("approvals", "prompt"),
-            {"prompt", "deny"},
-            "permissions.approvals",
-        )
+        approvals = _approval_setting(permissions.get("approvals", "prompt"))
         allow_yolo = _as_bool(
             permissions.get("allow_yolo"),
             default=False,
@@ -315,16 +312,50 @@ class TelegramConfig:
     @property
     def approval_policy(self) -> dict[str, Any]:
         """Return the request policy consumed by Penguin's permission checks."""
-        decision = "ask" if self.approvals == "prompt" else "deny"
+        if isinstance(self.approvals, Mapping):
+            configured = dict(self.approvals)
+            default_decision = configured.get("default", "ask")
+            decisions = {
+                action: configured.get(action, default_decision)
+                for action in _APPROVAL_ACTIONS
+            }
+            decisions["default"] = default_decision
+        else:
+            decision = "ask" if self.approvals == "prompt" else "deny"
+            decisions = {
+                **{action: decision for action in _APPROVAL_ACTIONS},
+                "default": decision,
+            }
         policy = {
-            **{action: decision for action in _APPROVAL_ACTIONS},
-            "default": decision,
+            **decisions,
             "allowLists": {},
             "timeout_seconds": self.approval_timeout_seconds,
         }
-        if self.approvals == "prompt":
+        if "ask" in decisions.values():
             policy["wait_for_resolution"] = True
         return policy
+
+    @property
+    def permissions_summary(self) -> str:
+        """Return a credential-free description of Telegram's policy layer."""
+
+        policy = self.approval_policy
+        timeout = self.approval_timeout_seconds
+        timeout_text = f"{timeout:g} seconds"
+        decisions = "\n".join(
+            f"- {category}: {policy[category]}"
+            for category in (*_APPROVAL_ACTIONS, "default")
+        )
+        return (
+            "Telegram permission policy\n"
+            f"Mode cap: {self.permission_mode} "
+            "(cannot exceed Penguin security.mode)\n"
+            f"Approval timeout: {timeout_text}\n"
+            f"Telegram category decisions:\n{decisions}\n"
+            "allow means Telegram adds no prompt; Penguin instance or agent "
+            "policy can still ASK, and any instance, agent, or workspace DENY "
+            "still blocks. YOLO is unavailable."
+        )
 
     def allows_dm(self, user_id: int) -> bool:
         """Return whether policy alone admits a DM; pairing grants live elsewhere."""
@@ -390,6 +421,29 @@ def _cap_permission_mode(requested: str, raw: Mapping[str, Any]) -> str:
         instance = "workspace"
     ceiling = min(_PERMISSION_RANK[requested], _PERMISSION_RANK[instance])
     return next(mode for mode, rank in _PERMISSION_RANK.items() if rank == ceiling)
+
+
+def _approval_setting(value: Any) -> str | Mapping[str, str]:
+    """Parse legacy scalar or granular Telegram approval decisions."""
+
+    if not isinstance(value, Mapping):
+        return _choice(value, {"prompt", "deny"}, "permissions.approvals")
+
+    allowed_keys = {*_APPROVAL_ACTIONS, "default"}
+    unknown = sorted(str(key) for key in value if key not in allowed_keys)
+    if unknown:
+        raise ValueError(
+            "permissions.approvals contains unknown categories: " + ", ".join(unknown)
+        )
+
+    parsed: dict[str, str] = {}
+    for category, decision in value.items():
+        parsed[str(category)] = _choice(
+            decision,
+            _APPROVAL_DECISIONS,
+            f"permissions.approvals.{category}",
+        )
+    return parsed
 
 
 def _mapping(value: Any, name: str) -> Mapping[str, Any]:

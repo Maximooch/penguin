@@ -23,7 +23,11 @@ from penguin.integrations.telegram.binding_policy import TelegramBindingPolicy
 from penguin.integrations.telegram.config import TelegramConfig
 from penguin.integrations.telegram.manager import TelegramManager
 from penguin.integrations.telegram.updates import normalize_update
-from penguin.security.approval import ApprovalStatus, get_approval_manager
+from penguin.security.approval import (
+    ApprovalScope,
+    ApprovalStatus,
+    get_approval_manager,
+)
 from penguin.security.question import get_question_manager
 from penguin.system.execution_context import get_current_execution_context
 from penguin.tools.artifact_tools import PublishArtifactTool
@@ -105,11 +109,23 @@ class FakeBot:
         return SimpleNamespace(message_id=kwargs["message_id"])
 
 
-def _callback_data(markup: Any) -> str:
+def _callback_data(markup: Any, *, text: str | None = None) -> str:
     keyboard = getattr(markup, "inline_keyboard", None)
     if keyboard is not None:
-        return str(keyboard[0][0].callback_data)
-    return str(markup[0][0]["data"])
+        buttons = [button for row in keyboard for button in row]
+        selected = next(
+            (button for button in buttons if text is None or button.text == text),
+            None,
+        )
+        assert selected is not None
+        return str(selected.callback_data)
+    buttons = [button for row in markup for button in row]
+    selected = next(
+        (button for button in buttons if text is None or button["text"] == text),
+        None,
+    )
+    assert selected is not None
+    return str(selected["data"])
 
 
 class PollingBot(FakeBot):
@@ -512,6 +528,62 @@ class ApprovalCore(FakeCore):
         }
 
 
+class CascadingApprovalCore(FakeCore):
+    """Attempt a second protected operation unless Telegram aborts the turn."""
+
+    def __init__(self, *, ttl_seconds: float = 2) -> None:
+        super().__init__()
+        self.ttl_seconds = ttl_seconds
+        self.first_request_id: str | None = None
+        self.first_request_created = asyncio.Event()
+        self.second_request_created = asyncio.Event()
+        self.cancelled = asyncio.Event()
+        self.aborted_sessions: list[str] = []
+
+    async def abort_session(self, session_id: str) -> bool:
+        self.aborted_sessions.append(session_id)
+        tasks = getattr(self, "_opencode_process_tasks", {}).get(session_id, set())
+        for task in tuple(tasks):
+            task.cancel()
+        return bool(tasks)
+
+    async def process(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(kwargs)
+        context = get_current_execution_context()
+        try:
+            request = get_approval_manager().create_request(
+                tool_name="execute_command",
+                operation="tool.execute_command",
+                resource="first",
+                reason="test cascade",
+                session_id=str(context.session_id),
+                context={"request_id": context.request_id},
+                ttl_seconds=self.ttl_seconds,
+            )
+            self.first_request_id = request.id
+            self.first_request_created.set()
+            await asyncio.to_thread(
+                get_approval_manager().wait_for_resolution,
+                request.id,
+                self.ttl_seconds,
+            )
+            await asyncio.sleep(0)
+            get_approval_manager().create_request(
+                tool_name="execute_command",
+                operation="tool.execute_command",
+                resource="second",
+                reason="test cascade",
+                session_id=str(context.session_id),
+                context={"request_id": context.request_id},
+                ttl_seconds=self.ttl_seconds,
+            )
+            self.second_request_created.set()
+            return {"assistant_response": "continued", "status": "ok"}
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+
+
 class SharedSessionProjectionCore(FakeCore):
     """Create request-scoped approvals from two serialized shared-session turns."""
 
@@ -655,6 +727,7 @@ async def test_webhook_dm_round_trip_is_durable_and_reuses_binding(
     manager = TelegramManager(core, _config(), bot=bot, store=store)
     await manager.start()
     try:
+        assert ("permissions", "Show Telegram tool permissions") in bot.commands
         assert await manager.admit_webhook_update(_update(1, "hello")) is True
         await _wait_for(lambda: len(core.calls) == 1 and bool(bot.edits))
 
@@ -1058,7 +1131,9 @@ async def test_delivery_worker_survives_completion_lease_loss(tmp_path: Path) ->
 async def test_ingress_lease_loss_cancels_live_turn(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
-    monkeypatch.setattr(manager_module, "_LEASE_SECONDS", 0.06)
+    # Leave enough startup headroom for SQLite/thread-pool scheduling on loaded CI
+    # hosts, while still forcing ownership loss well inside the test deadline.
+    monkeypatch.setattr(manager_module, "_LEASE_SECONDS", 0.3)
     bot = FakeBot()
     core = BlockingCore()
     store = IngressLeaseLossStore(tmp_path / "channel.db")
@@ -1277,7 +1352,12 @@ async def test_media_downloads_are_bounded_and_temporary_files_are_cleaned(
             "[End untrusted Telegram document]\n\n"
             "read this document"
         )
-        assert document_file.paths
+        await _wait_for(
+            lambda: (
+                bool(document_file.paths)
+                and all(not path.exists() for path in document_file.paths)
+            )
+        )
         assert all(not path.exists() for path in document_file.paths)
     finally:
         await manager.stop()
@@ -2168,11 +2248,13 @@ async def test_group_approval_hides_details_and_rejects_wrong_sender(
         await manager.admit_webhook_update(callback_update(72, 42))
         await _wait_for(lambda: core.side_effect_count == 1)
         await _wait_for(
-            lambda: any(item.get("text") == "<b>Approved</b>" for item in bot.edits)
+            lambda: any("<b>Approved</b>" in item.get("text", "") for item in bot.edits)
         )
         terminal = next(
-            item for item in bot.edits if item.get("text") == "<b>Approved</b>"
+            item for item in bot.edits if "<b>Approved</b>" in item.get("text", "")
         )
+        assert "Sensitive operation details are hidden" in terminal["text"]
+        assert "notes.txt" not in terminal["text"]
         assert terminal["reply_markup"] is None
         assert bot.callback_answers[0]["text"] == "This action is unavailable."
         assert bot.callback_answers[-1]["text"] == "Recorded."
@@ -2264,12 +2346,12 @@ async def test_question_text_reply_bypasses_busy_session_lane(tmp_path: Path) ->
             lambda: any("answer:Beta" in item.get("text", "") for item in bot.messages)
         )
         await _wait_for(
-            lambda: any(item.get("text") == "<b>Answered</b>" for item in bot.edits)
+            lambda: any("<b>Answered</b>" in item.get("text", "") for item in bot.edits)
         )
         assert (
-            next(item for item in bot.edits if item.get("text") == "<b>Answered</b>")[
-                "reply_markup"
-            ]
+            next(
+                item for item in bot.edits if "<b>Answered</b>" in item.get("text", "")
+            )["reply_markup"]
             is None
         )
 
@@ -2316,7 +2398,7 @@ async def test_multi_question_requires_one_answer_per_line(tmp_path: Path) -> No
         await _wait_for(lambda: core.answered.is_set())
         assert core.answers == [["alpha"], ["beta"]]
         await _wait_for(
-            lambda: any(item.get("text") == "<b>Answered</b>" for item in bot.edits)
+            lambda: any("<b>Answered</b>" in item.get("text", "") for item in bot.edits)
         )
     finally:
         await manager.stop()
@@ -2348,15 +2430,131 @@ async def test_external_approval_resolution_terminalizes_prompt(
         assert get_approval_manager().deny(core.request_id) is not None
 
         await _wait_for(
-            lambda: any(item.get("text") == "<b>Denied</b>" for item in bot.edits)
+            lambda: any(
+                "Tool approval required" in item.get("text", "")
+                and "<b>Denied</b>" in item.get("text", "")
+                for item in bot.edits
+            )
         )
         terminal = next(
-            item for item in bot.edits if item.get("text") == "<b>Denied</b>"
+            item for item in bot.edits if "<b>Denied</b>" in item.get("text", "")
         )
+        assert "Tool: write" in terminal["text"]
+        assert "Resource: notes.txt" in terminal["text"]
         assert terminal["reply_markup"] is None
         await _wait_for(
             lambda: any(item.get("text") == "denied" for item in bot.messages)
         )
+    finally:
+        await manager.stop()
+
+
+@pytest.mark.asyncio
+async def test_denied_approval_stops_turn_before_next_protected_operation(
+    tmp_path: Path,
+) -> None:
+    bot = FakeBot()
+    core = CascadingApprovalCore()
+    manager = TelegramManager(
+        core,
+        _config(streaming_mode="off", ingress_workers=1),
+        bot=bot,
+        store=ChannelStore(tmp_path / "channel.db"),
+    )
+    await manager.start()
+    try:
+        await manager.admit_webhook_update(_update(91, "run commands"))
+        await asyncio.wait_for(core.first_request_created.wait(), timeout=1.0)
+        await _wait_for(
+            lambda: any(
+                "Tool approval required" in item.get("text", "")
+                for item in bot.messages
+            )
+        )
+        prompt = next(
+            item
+            for item in bot.messages
+            if "Tool approval required" in item.get("text", "")
+        )
+        await manager.admit_webhook_update(
+            {
+                "update_id": 92,
+                "callback_query": {
+                    "id": "callback-deny",
+                    "from": {"id": 42},
+                    "data": _callback_data(prompt["reply_markup"], text="Deny"),
+                    "message": {
+                        "message_id": 52,
+                        "chat": {"id": 42, "type": "private"},
+                        "from": {"id": 867, "username": "Penguin_agent_bot"},
+                    },
+                },
+            }
+        )
+
+        await asyncio.wait_for(core.cancelled.wait(), timeout=1.0)
+        await asyncio.sleep(0.05)
+        assert core.aborted_sessions == ["session-1"]
+        assert not core.second_request_created.is_set()
+    finally:
+        await manager.stop()
+
+
+@pytest.mark.asyncio
+async def test_expired_approval_stops_turn_before_next_protected_operation(
+    tmp_path: Path,
+) -> None:
+    bot = FakeBot()
+    core = CascadingApprovalCore(ttl_seconds=0.05)
+    manager = TelegramManager(
+        core,
+        _config(streaming_mode="off", ingress_workers=1),
+        bot=bot,
+        store=ChannelStore(tmp_path / "channel.db"),
+    )
+    await manager.start()
+    try:
+        await manager.admit_webhook_update(_update(93, "run commands"))
+        await asyncio.wait_for(core.first_request_created.wait(), timeout=1.0)
+        await asyncio.wait_for(core.cancelled.wait(), timeout=1.0)
+        await _wait_for(
+            lambda: any(
+                "Tool approval required" in item.get("text", "")
+                and "<b>Expired</b>" in item.get("text", "")
+                for item in bot.edits
+            )
+        )
+
+        assert core.aborted_sessions == ["session-1"]
+        assert not core.second_request_created.is_set()
+    finally:
+        await manager.stop()
+
+
+@pytest.mark.asyncio
+async def test_non_telegram_approval_resolution_does_not_abort_session(
+    tmp_path: Path,
+) -> None:
+    core = CascadingApprovalCore()
+    manager = TelegramManager(
+        core,
+        _config(streaming_mode="off", ingress_workers=1),
+        bot=FakeBot(),
+        store=ChannelStore(tmp_path / "channel.db"),
+    )
+    await manager.start()
+    try:
+        request = get_approval_manager().create_request(
+            tool_name="execute_command",
+            operation="tool.execute_command",
+            resource="outside Telegram",
+            reason="test shared singleton",
+            session_id="web-session",
+        )
+        assert get_approval_manager().deny(request.id) is not None
+        await asyncio.sleep(0.05)
+
+        assert core.aborted_sessions == []
     finally:
         await manager.stop()
 
@@ -2414,7 +2612,7 @@ async def test_restart_terminalizes_orphaned_prompt_before_ttl(
         await _wait_for(lambda: bool(bot.messages) and bool(bot.edits))
         assert bot.messages[0]["text"] == "Tool approval required"
         assert bot.edits[0]["message_id"] == 1
-        assert bot.edits[0]["text"] == "<b>Expired</b>"
+        assert bot.edits[0]["text"] == "Tool approval required\n\n<b>Expired</b>"
         assert bot.edits[0]["reply_markup"] is None
         with store._read() as conn:
             state = conn.execute(
@@ -2466,7 +2664,7 @@ async def test_approval_callback_resumes_once_and_duplicate_is_inert(
         await manager.admit_webhook_update(callback_update)
         await _wait_for(lambda: core.side_effect_count == 1)
         await _wait_for(
-            lambda: any(item.get("text") == "<b>Approved</b>" for item in bot.edits)
+            lambda: any("<b>Approved</b>" in item.get("text", "") for item in bot.edits)
         )
 
         duplicate = dict(callback_update)
@@ -2478,7 +2676,61 @@ async def test_approval_callback_resumes_once_and_duplicate_is_inert(
 
         assert core.side_effect_count == 1
         assert len(core.calls) == 1
-        assert sum(item.get("text") == "<b>Approved</b>" for item in bot.edits) == 1
+        assert sum("<b>Approved</b>" in item.get("text", "") for item in bot.edits) == 1
+    finally:
+        await manager.stop()
+
+
+@pytest.mark.asyncio
+async def test_approval_callback_can_approve_similar_operations_for_session(
+    tmp_path: Path,
+) -> None:
+    bot = FakeBot()
+    core = ApprovalCore()
+    manager = TelegramManager(
+        core,
+        _config(streaming_mode="off", ingress_workers=1),
+        bot=bot,
+        store=ChannelStore(tmp_path / "channel.db"),
+    )
+    await manager.start()
+    try:
+        await manager.admit_webhook_update(_update(13, "write it"))
+        await _wait_for(
+            lambda: any(
+                "Tool approval required" in item["text"] for item in bot.messages
+            )
+        )
+        prompt = next(
+            item for item in bot.messages if "Tool approval required" in item["text"]
+        )
+        callback_data = _callback_data(
+            prompt["reply_markup"], text="Approve for session"
+        )
+        await manager.admit_webhook_update(
+            {
+                "update_id": 14,
+                "callback_query": {
+                    "id": "callback-session",
+                    "from": {"id": 42},
+                    "data": callback_data,
+                    "message": {
+                        "message_id": 51,
+                        "chat": {"id": 42, "type": "private"},
+                        "from": {"id": 867, "username": "Penguin_agent_bot"},
+                    },
+                },
+            }
+        )
+        await _wait_for(lambda: core.side_effect_count == 1)
+
+        assert core.request_id is not None
+        request = get_approval_manager().get_request(core.request_id)
+        assert request is not None
+        assert request.resolution_scope == ApprovalScope.SESSION
+        assert get_approval_manager().check_pre_approved(
+            "filesystem.write", "another.txt", "session-1"
+        )
     finally:
         await manager.stop()
 

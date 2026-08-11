@@ -435,7 +435,15 @@ channels:
 
     permissions:
       mode: workspace           # read_only | workspace | full_access
-      approvals: prompt
+      approvals:
+        shell: ask
+        fileWrite: ask
+        fileDelete: ask
+        gitPush: ask
+        network: ask
+        secrets: deny
+        default: ask
+      timeout_seconds: 300
       allow_yolo: false
 
     delivery:

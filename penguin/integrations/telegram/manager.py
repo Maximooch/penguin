@@ -26,6 +26,10 @@ from penguin.channels.store import (
 )
 from penguin.config import WORKSPACE_PATH
 from penguin.integrations.telegram import _migration
+from penguin.integrations.telegram._approval_ui import (
+    approval_buttons,
+    send_terminal_edit,
+)
 from penguin.integrations.telegram._artifacts import (
     artifact_paths,
     validated_artifact_path,
@@ -992,6 +996,7 @@ class TelegramManager:
             ("session", "Show the bound Penguin session"),
             ("mode", "Show or set plan/build mode"),
             ("model", "Show the active Penguin model"),
+            ("permissions", "Show Telegram tool permissions"),
             ("goal", "Show or update the session goal"),
             ("project", "Show the bound project directory"),
             ("activation", "Set group mention activation"),
@@ -1524,26 +1529,14 @@ class TelegramManager:
         self, payload: Mapping[str, Any], chat_id: Any
     ) -> str | None:
         assert self.store is not None
-        projection_id = str(payload.get("projection_delivery_id") or "")
-        projection = await asyncio.to_thread(
-            self.store.get_delivery,
-            projection_id,
-            platform=_PLATFORM,
+        return await send_terminal_edit(
+            store=self.store,
+            bot=self.bot,
+            api_call=self._api_call,
             account_id=self.account_id,
+            payload=payload,
+            chat_id=chat_id,
         )
-        if projection is None or not projection.external_message_id:
-            return None
-        label = str(payload.get("label") or "Expired")
-        message = await self._api_call(
-            self.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=int(projection.external_message_id),
-                text=f"<b>{label}</b>",
-                parse_mode="HTML",
-                reply_markup=None,
-            )
-        )
-        return _message_id(message) or projection.external_message_id
 
     async def _handle_delivery_failure(
         self, record: DeliveryRecord, worker_id: str, exc: BaseException
@@ -1713,8 +1706,22 @@ class TelegramManager:
 
     def _on_approval_resolved(self, request: Any) -> None:
         label = interactive_terminal_label(request)
-        if label is not None:
-            self._schedule_projection(self._terminalize_request(request, label))
+        if label is not None and self._projection_target(request) is not None:
+            self._schedule_projection(self._finish_approval(request, label))
+
+    async def _finish_approval(self, request: Any, label: str) -> None:
+        abort = getattr(self.core, "abort_session", None)
+        session_id = str(getattr(request, "session_id", "") or "")
+        if label in {"Denied", "Expired"} and session_id and callable(abort):
+            try:
+                await abort(session_id)
+            except Exception:
+                logger.exception(
+                    "Failed to stop Telegram turn after %s approval session=%s",
+                    label.casefold(),
+                    session_id,
+                )
+        await self._terminalize_request(request, label)
 
     async def _terminalize_request(self, request: Any, label: str) -> None:
         if self.store is None:
@@ -1809,15 +1816,7 @@ class TelegramManager:
             return
         address, user_id = target
         callback_id = uuid.uuid4().hex
-        buttons = [
-            [
-                {
-                    "text": "Approve once",
-                    "data": f"{_INTERACTIVE_PREFIX}{callback_id}:approve",
-                },
-                {"text": "Deny", "data": f"{_INTERACTIVE_PREFIX}{callback_id}:deny"},
-            ]
-        ]
+        buttons = approval_buttons(callback_id, _INTERACTIVE_PREFIX)
         if address.chat_id == user_id:
             text = (
                 f"Tool approval required\nTool: {request.tool_name}\n"
@@ -1925,6 +1924,13 @@ class TelegramManager:
                 )
                 if resolved:
                     label = "Approved"
+            elif action == "approve_session":
+                resolved = (
+                    manager.approve(callback.request_id, scope=ApprovalScope.SESSION)
+                    is not None
+                )
+                if resolved:
+                    label = "Approved for session"
             elif action == "deny":
                 resolved = manager.deny(callback.request_id) is not None
                 if resolved:
