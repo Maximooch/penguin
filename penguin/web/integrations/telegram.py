@@ -21,7 +21,8 @@ __all__ = ["build_telegram_router"]
 class PairingCreateRequest(BaseModel):
     """Operator request for a short-lived pairing code."""
 
-    expected_user_id: Optional[str] = None
+    # Pydantic evaluates this annotation at runtime on supported Python 3.9.
+    expected_user_id: Optional[str] = None  # noqa: UP045
     ttl_seconds: int = Field(default=3600, ge=60, le=3600)
 
 
