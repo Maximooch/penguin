@@ -1022,7 +1022,7 @@ async def test_slow_delivery_renews_lease_until_send_completes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(manager_module, "_LEASE_SECONDS", 0.12)
+    monkeypatch.setattr(manager_module, "_LEASE_SECONDS", 1.0)
     bot = SlowDeliveryBot()
     store = ChannelStore(tmp_path / "channel.db")
     manager = TelegramManager(
@@ -1041,7 +1041,7 @@ async def test_slow_delivery_renews_lease_until_send_completes(
     try:
         assert await manager.admit_webhook_update(_update(23, "slow send"))
         await asyncio.wait_for(bot.send_started.wait(), timeout=1.0)
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(1.4)
 
         assert store.recover_expired_deliveries() == 0
         assert (
