@@ -63,6 +63,7 @@ class Operation(Enum):
     FILESYSTEM_LIST = "filesystem.list"
     
     # Process operations
+    PROCESS_INSPECT = "process.inspect"
     PROCESS_EXECUTE = "process.execute"
     PROCESS_SPAWN = "process.spawn"
     PROCESS_KILL = "process.kill"
@@ -111,6 +112,7 @@ class Operation(Enum):
             cls.GIT_READ,
             cls.MEMORY_READ,
             cls.NETWORK_FETCH,
+            cls.PROCESS_INSPECT,
         }
 
 
@@ -549,4 +551,3 @@ class PermissionEnforcer:
             summary[key] = list(dict.fromkeys(summary[key]))
         
         return summary
-

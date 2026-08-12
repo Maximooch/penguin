@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
+from penguin.system.execution_context import get_current_execution_context
 from penguin.web import routes as routes_module
 from penguin.web.routes import (
     MessageRequest,
@@ -315,6 +316,7 @@ async def test_chat_message_resolves_subscription_model_through_openai(
 ) -> None:
     monkeypatch.setenv("LINK_API_KEY", "link-service-secret")
     resolved_models: list[str | None] = []
+    observed_permission_contexts: list[dict[str, Any]] = []
 
     class _SubscriptionCore(_Core):
         async def resolve_request_runtime(
@@ -327,6 +329,9 @@ async def test_chat_message_resolves_subscription_model_through_openai(
             )
 
         async def process(self, **_kwargs: Any) -> dict[str, Any]:
+            execution_context = get_current_execution_context()
+            assert execution_context is not None
+            observed_permission_contexts.append(execution_context.as_dict())
             return {
                 "assistant_response": "hello from the subscription",
                 "action_results": [],
@@ -358,6 +363,16 @@ async def test_chat_message_resolves_subscription_model_through_openai(
             "integration_support": "ecosystem_compatible",
             "allow_fallback_to_link_gateway": False,
         },
+        permission_mode="read_only",
+        approval_policy={
+            "shell": "deny",
+            "fileWrite": "deny",
+            "fileDelete": "deny",
+            "gitPush": "deny",
+            "network": "deny",
+            "secrets": "deny",
+            "allowLists": {},
+        },
     )
 
     response = await handle_chat_message(
@@ -368,6 +383,17 @@ async def test_chat_message_resolves_subscription_model_through_openai(
 
     assert response["response"] == "hello from the subscription"
     assert resolved_models == ["openai/gpt-5.6-luna"]
+    assert len(observed_permission_contexts) == 1
+    assert observed_permission_contexts[0]["permission_mode"] == "read_only"
+    assert observed_permission_contexts[0]["approval_policy"] == {
+        "shell": "deny",
+        "fileWrite": "deny",
+        "fileDelete": "deny",
+        "gitPush": "deny",
+        "network": "deny",
+        "secrets": "deny",
+        "allowLists": {},
+    }
 
 
 @pytest.mark.asyncio

@@ -16,7 +16,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - python-version: "3.9"
+          - python-version: "3.10"
             pydantic-spec: "pydantic==1.10.24"
           - python-version: "3.12"
             pydantic-spec: "pydantic>=2,<3"
@@ -36,6 +36,7 @@ jobs:
             penguin/web/services/link_inference.py \
             tests/llm/test_link_provider.py \
             tests/llm/test_link_runtime_contract.py \
+            tests/test_link_runtime_permission_policy.py \
             tests/web/test_external_subscription_service.py \
             tests/web/test_link_execution_authority.py
           ruff format --check \
@@ -52,6 +53,7 @@ jobs:
             tests/llm/test_link_provider.py \
             tests/llm/test_link_runtime_contract.py \
             tests/llm/test_provider_registry.py \
+            tests/test_link_runtime_permission_policy.py \
             tests/web/test_link_inference_service.py \
             tests/web/test_external_subscription_service.py \
             tests/web/test_link_execution_authority.py \
@@ -67,7 +69,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - python-version: "3.9"
+          - python-version: "3.10"
             pydantic-spec: "pydantic==1.10.24"
           - python-version: "3.12"
             pydantic-spec: "pydantic>=2,<3"

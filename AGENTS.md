@@ -25,7 +25,7 @@ Commands
 Style and Conventions
 - Follow .cursorrules at repo root. Key points: PEP 8, explicit > implicit, single responsibility, comprehensive type annotations, Google-style docstrings, robust exception handling, logging.
 - Imports: ruff/isort with profile=black; order stdlib, third-party, first-party (penguin). Combine "as" imports; known-first-party = ["penguin"].
-- Formatting: Black 88 col; Ruff line-length 88; quotes = double (ruff fmt). Target Python 3.9+ (ruff target 3.8, black target py39).
+- Formatting: Black 88 col; Ruff line-length 88; quotes = double (ruff fmt). Target Python 3.10+ (ruff target 3.8, black target py39).
 - Types: annotate all public functions and dataclasses; prefer precise types (dict[str, Any] over Dict). Use Pydantic types where appropriate.
 - Naming Penguin: Just call it "Penguin", not "Penguin AI", or "Penguin AI Assistant". In some cases "Penguin Agent" are reasonable though.
 - Naming: snake_case for functions/vars; PascalCase for classes; UPPER_SNAKE for constants; clear, descriptive names.

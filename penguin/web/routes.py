@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, NoReturn, Optional
+from typing import Any, Dict, List, Literal, NoReturn, Optional
 from fastapi import (
     APIRouter,
     Depends,
@@ -553,6 +553,8 @@ def _build_execution_context(
     agent_id: Optional[str],
     agent_mode: Optional[str],
     directory: Optional[str],
+    permission_mode: Optional[str] = None,
+    approval_policy: Optional[Dict[str, Any]] = None,
 ) -> ExecutionContext:
     """Create request-scoped execution context for concurrent web sessions."""
     path_info = get_path_info(core, directory=directory, session_id=session_id)
@@ -566,6 +568,8 @@ def _build_execution_context(
         project_root=effective_directory,
         workspace_root=effective_directory,
         request_id=str(uuid.uuid4()),
+        permission_mode=permission_mode,
+        approval_policy=approval_policy,
     )
 
 
@@ -1050,6 +1054,8 @@ class MessageRequest(BaseModel):
     external_subscription_execution: Optional[ExternalSubscriptionExecutionRequest] = (
         None
     )
+    permission_mode: Optional[Literal["read_only", "workspace", "full_access"]] = None
+    approval_policy: Optional[Dict[str, Any]] = None
 
 
 _REASONING_EFFORT_VARIANTS = {
@@ -3989,6 +3995,20 @@ async def handle_chat_message(
                 detail="Link execution requires an authenticated HTTP request.",
             )
         authenticate_link_service_request(http_request)
+    if (
+        request.permission_mode is not None or request.approval_policy is not None
+    ) and not has_link_execution_authority:
+        raise HTTPException(
+            status_code=403,
+            detail="Runtime permission overrides require Link execution authority.",
+        )
+    if (
+        request.permission_mode is not None or request.approval_policy is not None
+    ) and os.environ.get("PENGUIN_YOLO", "").lower() in {"1", "true", "yes"}:
+        raise HTTPException(
+            status_code=503,
+            detail="Runtime permission enforcement is disabled by PENGUIN_YOLO.",
+        )
 
     temp_image_files: List[str] = []
     request_session_id: Optional[str] = None
@@ -4118,6 +4138,8 @@ async def handle_chat_message(
             agent_id=request.agent_id,
             agent_mode=resolved_agent_mode,
             directory=bound_directory or request.directory,
+            permission_mode=request.permission_mode,
+            approval_policy=request.approval_policy,
         )
         _request_log_debug(
             "chat.trace.start request=%s session=%s agent=%s mode=%s dir=%s model=%s streaming=%s client_msg=%s prompt=%r",
