@@ -1,27 +1,29 @@
-from __future__ import annotations
-
 """Authentication middleware and local session helpers for Penguin web API.
 
 Supports API key and JWT authentication for external clients plus a
 startup-token-to-cookie bootstrap flow for local browser sessions.
 """
 
+from __future__ import annotations
+
+import base64
+import binascii
 import logging
 import os
+import re
 import secrets
 from collections import OrderedDict
 from datetime import datetime, timedelta
 from http.cookies import SimpleCookie
 from ipaddress import ip_address
-import re
 from threading import Lock
 from typing import Any, Optional
 
+import jwt
 from fastapi import HTTPException, Request, WebSocket, WebSocketException, status
 from fastapi.responses import JSONResponse
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from starlette.middleware.base import BaseHTTPMiddleware
-import jwt
 
 from penguin.local_auth import is_web_auth_enabled
 
@@ -48,6 +50,29 @@ LINK_SERVICE_HTTP_SCOPE = frozenset(
 )
 LINK_SERVICE_FORBIDDEN_DETAIL = (
     "The Link execution credential is not authorized for this endpoint."
+)
+_OPENCODE_V2_ROUTE_ROOTS = frozenset(
+    {
+        "agent",
+        "command",
+        "event",
+        "experimental",
+        "form",
+        "fs",
+        "health",
+        "integration",
+        "location",
+        "mcp",
+        "model",
+        "permission",
+        "project",
+        "provider",
+        "reference",
+        "session",
+        "shell",
+        "skill",
+        "vcs",
+    }
 )
 
 # Security scheme for Bearer token
@@ -127,6 +152,7 @@ class AuthConfig:
             "/api/redoc",
             "/api/openapi.json",
             "/api/v1/health",
+            "/api/health",
             "/api/v1/auth/session",
             "/api/v1/auth/logout",
             "/favicon.ico",
@@ -347,7 +373,8 @@ def build_session_cookie_settings(
     secure = request.url.scheme == "https"
     if not secure and not _is_loopback_host(host):
         raise AuthenticationError(
-            "Browser session cookies are only issued for loopback hosts or HTTPS origins"
+            "Browser session cookies are only issued for loopback hosts or "
+            "HTTPS origins"
         )
 
     return {
@@ -367,7 +394,8 @@ def build_auth_remediation(config: Optional[AuthConfig] = None) -> str:
         return (
             "Use the startup token in an X-API-Key header or authenticate via "
             "POST /api/v1/auth/session, or "
-            "restart local-only without auth using PENGUIN_AUTH_ENABLED=false uv run penguin-web."
+            "restart local-only without auth using PENGUIN_AUTH_ENABLED=false "
+            "uv run penguin-web."
         )
 
     return (
@@ -430,6 +458,42 @@ def extract_bearer_token(connection: Any) -> Optional[str]:
         return None
 
     return parts[1]
+
+
+def _is_opencode_v2_route(connection: Any) -> bool:
+    """Return whether a connection targets an allowlisted V2 route root."""
+    url = getattr(connection, "url", None)
+    path = str(getattr(url, "path", "") or "")
+    parts = path.split("/")
+    return (
+        len(parts) >= 3 and parts[1] == "api" and parts[2] in _OPENCODE_V2_ROUTE_ROOTS
+    )
+
+
+def extract_opencode_basic_password(connection: Any) -> Optional[str]:
+    """Extract a password from OpenCode V2's fixed Basic-auth identity."""
+    if not _is_opencode_v2_route(connection):
+        return None
+
+    auth_header = connection.headers.get("Authorization")
+    if not auth_header:
+        return None
+
+    auth_parts = auth_header.split(None, 1)
+    if len(auth_parts) != 2 or auth_parts[0].lower() != "basic":
+        return None
+
+    try:
+        credentials = base64.b64decode(auth_parts[1].strip(), validate=True).decode(
+            "utf-8"
+        )
+    except (binascii.Error, UnicodeDecodeError):
+        return None
+
+    username, separator, password = credentials.partition(":")
+    if separator != ":" or username != "opencode" or not password:
+        return None
+    return password
 
 
 def extract_session_cookie(
@@ -696,6 +760,22 @@ def authenticate_connection(
             }
 
         if validate_startup_token(api_key, auth_config, connection):
+            return {
+                "method": "startup_token",
+                "subject": "local_bootstrap",
+                "metadata": {"interactive": False},
+            }
+
+    basic_password = extract_opencode_basic_password(connection)
+    if basic_password:
+        if validate_api_key(basic_password, auth_config):
+            return {
+                "method": "api_key",
+                "subject": "api_client",
+                "metadata": {"key_prefix": basic_password[:8] + "..."},
+            }
+
+        if validate_startup_token(basic_password, auth_config, connection):
             return {
                 "method": "startup_token",
                 "subject": "local_bootstrap",

@@ -224,6 +224,8 @@ The Penguin TUI launcher supports both development and packaged installs.
 - In a source checkout, `penguin` prefers local `penguin-tui/packages/opencode` sources.
 - Outside a source checkout, it bootstraps a cached sidecar binary under `~/.cache/penguin/tui`.
 - Stable installs prefer a sidecar that matches the installed Penguin version.
+- OpenCode 2 is available as a parallel beta client. It never replaces the
+  default TUI or its cache.
 - You can override the source or binary path when needed:
 
 ```bash
@@ -235,6 +237,22 @@ export PENGUIN_TUI_BIN_PATH="/path/to/opencode"
 ```
 
 You can also override the release endpoint for staging/testing with `PENGUIN_TUI_RELEASE_URL`.
+
+To try the pinned OpenCode 2 client, opt in explicitly:
+
+```bash
+export PENGUIN_TUI_V2=1
+penguin .
+```
+
+The V2 path uses `opencode2`, `--server`, a separate `~/.cache/penguin/tui/v2`
+cache, and the same Penguin backend data. Unset `PENGUIN_TUI_V2` for immediate
+rollback. For a local V2 artifact, set `PENGUIN_TUI_BIN_PATH` to its
+`opencode2` binary and set `OPENCODE_CONFIG_DIR` to the extracted sidecar root
+that contains `plugins/tui/penguin.tsx`. The launcher preserves an explicit
+`OPENCODE_PASSWORD`; otherwise it uses the first configured `PENGUIN_API_KEYS`
+entry or the local startup token. V2 remains beta: its server, plugin, and
+configuration contracts may change between upstream pins.
 
 ## Common Commands
 
