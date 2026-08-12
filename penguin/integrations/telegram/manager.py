@@ -13,9 +13,11 @@ from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
-from PIL import Image, UnidentifiedImageError
-
-from penguin.channels.chat import ChatProcessRequest, execute_chat_turn
+from penguin.channels.chat import (
+    ChatProcessRequest,
+    ChatRuntimeResolutionError,
+    execute_chat_turn,
+)
 from penguin.channels.store import (
     ChannelStore,
     CompareAndSwapError,
@@ -25,7 +27,7 @@ from penguin.channels.store import (
     PollerLeaseConflictError,
 )
 from penguin.config import WORKSPACE_PATH
-from penguin.integrations.telegram import _migration
+from penguin.integrations.telegram import _attachments, _migration
 from penguin.integrations.telegram._approval_ui import (
     approval_buttons,
     send_terminal_edit,
@@ -38,7 +40,11 @@ from penguin.integrations.telegram._authorization import (
     group_event_is_authorized,
     migration_chat_ids,
 )
-from penguin.integrations.telegram._commands import handle_command
+from penguin.integrations.telegram._callback_resolution import (
+    resolve_callback as resolve_interactive_callback,
+)
+from penguin.integrations.telegram._commands import handle_command, set_bot_commands
+from penguin.integrations.telegram._controls import binding_streaming_mode
 from penguin.integrations.telegram._helpers import (
     delivery_payload as _delivery_payload,
     inline_markup as _inline_markup,
@@ -49,6 +55,15 @@ from penguin.integrations.telegram._helpers import (
 from penguin.integrations.telegram._history import GroupHistory
 from penguin.integrations.telegram._leases import run_with_lease_heartbeat
 from penguin.integrations.telegram._preview import Preview
+from penguin.integrations.telegram._session_runtime import (
+    resolve_session_request_runtime,
+)
+from penguin.integrations.telegram._sessions import (
+    SessionAccessError,
+    create_bound_session,
+    with_recent_session,
+    with_session_transition,
+)
 from penguin.integrations.telegram.formatting import formatted_chunks
 from penguin.integrations.telegram.transport import classify_failure, retry_delay
 from penguin.integrations.telegram.updates import (
@@ -77,17 +92,6 @@ _RECOVERY_INTERVAL_SECONDS = 30.0
 _INTERACTIVE_PREFIX = "penguin:"
 _INTERACTIVE_LANE_SUFFIX = "\x1finteractive"
 _TOKEN_PATTERN = re.compile(r"\b\d{6,12}:[A-Za-z0-9_-]{30,}\b")
-_TEXT_DOCUMENT_MIMES = frozenset(
-    {
-        "application/json",
-        "application/xml",
-        "application/x-yaml",
-        "text/csv",
-        "text/markdown",
-        "text/plain",
-        "text/yaml",
-    }
-)
 
 
 class TelegramManager:
@@ -186,7 +190,7 @@ class TelegramManager:
         if recovered_callbacks:
             self._work_available.set()
         self._register_interactive_callbacks()
-        await self._set_commands()
+        await set_bot_commands(self)
 
         if self.config.transport == "polling":
             deleter = getattr(self.bot, "delete_webhook", None)
@@ -755,7 +759,24 @@ class TelegramManager:
                 await self._complete_without_delivery(record, worker_id)
                 return
 
-            binding = await self._binding_for(envelope.address)
+            try:
+                binding = await self._binding_for(envelope.address)
+            except SessionAccessError as exc:
+                await asyncio.to_thread(
+                    self.store.start_ingress,
+                    record.event_id,
+                    platform=_PLATFORM,
+                    account_id=self.account_id,
+                    owner_id=worker_id,
+                )
+                started = True
+                await self._complete_with_text(
+                    record,
+                    worker_id,
+                    envelope,
+                    f"Penguin session unavailable: {self._safe_error(exc)}",
+                )
+                return
             if command is not None:
                 await asyncio.to_thread(
                     self.store.start_ingress,
@@ -765,9 +786,12 @@ class TelegramManager:
                     owner_id=worker_id,
                 )
                 started = True
-                response = await handle_command(
-                    self, command, arguments, envelope, binding
-                )
+                try:
+                    response = await handle_command(
+                        self, command, arguments, envelope, binding
+                    )
+                except SessionAccessError as exc:
+                    response = f"Penguin session unavailable: {self._safe_error(exc)}"
                 if response is None:
                     await self._complete_without_delivery(record, worker_id)
                 else:
@@ -982,30 +1006,6 @@ class TelegramManager:
             ) from exc
         return Bot(token=token)
 
-    async def _set_commands(self) -> None:
-        setter = getattr(self.bot, "set_my_commands", None)
-        if not callable(setter):
-            return
-        commands = [
-            ("start", "Start or resume Penguin"),
-            ("help", "Show Telegram commands"),
-            ("new", "Start a fresh Penguin session"),
-            ("status", "Show bot and session status"),
-            ("stop", "Stop the active Penguin turn"),
-            ("whoami", "Show your numeric Telegram identity"),
-            ("session", "Show the bound Penguin session"),
-            ("mode", "Show or set plan/build mode"),
-            ("model", "Show the active Penguin model"),
-            ("permissions", "Show Telegram tool permissions"),
-            ("goal", "Show or update the session goal"),
-            ("project", "Show the bound project directory"),
-            ("activation", "Set group mention activation"),
-            ("topic", "Show the current topic binding"),
-            ("pair", "Authorize this private chat"),
-        ]
-        with suppress(Exception):
-            await self._api_call(setter(commands))
-
     async def _api_call(self, operation: Any, *, timeout: float | None = None) -> Any:
         """Run one Bot API operation within its configured wall-clock budget."""
 
@@ -1163,7 +1163,11 @@ class TelegramManager:
             if binding is not None:
                 return binding
             policy = self._configured_group_binding(address)
-            session_id = await asyncio.to_thread(self.core.create_conversation)
+            agent_id = policy.agent_id if policy is not None else None
+            session_id = await asyncio.to_thread(
+                create_bound_session, self.core, agent_id
+            )
+            base_settings = policy.durable_settings() if policy is not None else None
             try:
                 return await asyncio.to_thread(
                     self.store.upsert_binding,
@@ -1174,11 +1178,9 @@ class TelegramManager:
                         if policy is not None and policy.directory is not None
                         else normalize_directory(WORKSPACE_PATH)
                     ),
-                    agent_id=policy.agent_id if policy is not None else None,
+                    agent_id=agent_id,
                     agent_mode=policy.mode if policy is not None else "build",
-                    settings=(
-                        policy.durable_settings() if policy is not None else None
-                    ),
+                    settings=with_recent_session(base_settings, session_id),
                     expected_version=0,
                 )
             except CompareAndSwapError:
@@ -1193,7 +1195,22 @@ class TelegramManager:
         assert self.store is not None
         async with self._session_create_lock:
             policy = self._configured_group_binding(address)
-            session_id = await asyncio.to_thread(self.core.create_conversation)
+            agent_id = (
+                policy.agent_id
+                if policy is not None and policy.agent_id
+                else getattr(binding, "agent_id", None)
+            )
+            session_id = await asyncio.to_thread(
+                create_bound_session, self.core, agent_id
+            )
+            base_settings = (
+                {
+                    **dict(getattr(binding, "settings", {}) or {}),
+                    **policy.durable_settings(),
+                }
+                if policy is not None
+                else getattr(binding, "settings", {})
+            )
             return await asyncio.to_thread(
                 self.store.upsert_binding,
                 address.lane_key,
@@ -1203,20 +1220,16 @@ class TelegramManager:
                     if policy is not None
                     else getattr(binding, "directory", None)
                 ),
-                agent_id=(
-                    policy.agent_id
-                    if policy is not None
-                    else getattr(binding, "agent_id", None)
-                ),
+                agent_id=agent_id,
                 agent_mode=(
                     policy.mode
                     if policy is not None
                     else getattr(binding, "agent_mode", None)
                 ),
-                settings=(
-                    policy.durable_settings()
-                    if policy is not None
-                    else getattr(binding, "settings", {})
+                settings=with_session_transition(
+                    base_settings,
+                    current_session_id=binding.session_id,
+                    target_session_id=session_id,
                 ),
                 expected_version=getattr(binding, "version", None),
             )
@@ -1324,26 +1337,39 @@ class TelegramManager:
             request_skills=skills,
             require_registered_agent=bool(agent_id),
         )
+        streaming_mode = binding_streaming_mode(self, binding)
         target = (envelope.address, envelope.sender_id)
         self._request_targets[request_id] = target
         self._session_targets[binding.session_id] = target
-        preview = Preview(self, envelope)
+        preview = Preview(self, envelope, mode=streaming_mode)
         try:
             await preview.start()
-            result = await execute_chat_turn(
-                self.core,
-                ChatProcessRequest(
-                    input_data=input_data,
-                    execution_context=execution_context,
-                    session_id=binding.session_id,
-                    context=context,
-                    agent_id=agent_id,
-                    streaming=self.config.streaming_mode != "off",
-                    stream_callback=preview.push
-                    if self.config.streaming_mode != "off"
-                    else None,
-                ),
-            )
+            try:
+                result = await execute_chat_turn(
+                    self.core,
+                    ChatProcessRequest(
+                        input_data=input_data,
+                        execution_context=execution_context,
+                        session_id=binding.session_id,
+                        context=context,
+                        agent_id=agent_id,
+                        streaming=streaming_mode != "off",
+                        stream_callback=(
+                            preview.push if streaming_mode != "off" else None
+                        ),
+                        runtime_resolver=lambda: resolve_session_request_runtime(
+                            self.core, binding.session_id
+                        ),
+                    ),
+                )
+            except ChatRuntimeResolutionError as exc:
+                return {
+                    "status": "error",
+                    "error": {
+                        "message": "Session model settings are invalid: "
+                        f"{self._safe_error(exc)}"
+                    },
+                }, await preview.finish()
             return result, await preview.finish()
         finally:
             await preview.close()
@@ -1379,11 +1405,13 @@ class TelegramManager:
                     "Downloaded Telegram attachment exceeds the size limit"
                 )
             if attachment.kind == "photo":
-                await asyncio.to_thread(_validate_image, target)
+                await asyncio.to_thread(_attachments.validate_image, target)
                 image_paths.append(str(target))
                 continue
             mime = (attachment.mime_type or "").lower()
-            if not (mime.startswith("text/") or mime in _TEXT_DOCUMENT_MIMES):
+            if not (
+                mime.startswith("text/") or mime in _attachments.TEXT_DOCUMENT_MIMES
+            ):
                 raise ValueError(
                     f"Unsupported Telegram document type: {mime or 'unknown'}"
                 )
@@ -1893,76 +1921,7 @@ class TelegramManager:
         self, envelope: InboundEnvelope, callback_data: str, worker_id: str
     ) -> None:
         assert self.store is not None
-        parts = callback_data.split(":", 2)
-        if len(parts) != 3:
-            return
-        _prefix, callback_id, action = parts
-        callback = await asyncio.to_thread(
-            self.store.claim_callback,
-            callback_id,
-            account_id=self.account_id,
-            chat_id=envelope.address.chat_id,
-            topic_id=envelope.address.topic_id or None,
-            user_id=envelope.sender_id,
-            owner_id=worker_id,
-            platform=_PLATFORM,
-        )
-        if callback is None:
-            await self._answer_callback(envelope, "This action is unavailable.")
-            return
-        kind = callback.payload.get("kind")
-        resolved = False
-        label = "Expired"
-        if kind == "approval":
-            from penguin.security.approval import ApprovalScope, get_approval_manager
-
-            manager = get_approval_manager()
-            if action == "approve":
-                resolved = (
-                    manager.approve(callback.request_id, scope=ApprovalScope.ONCE)
-                    is not None
-                )
-                if resolved:
-                    label = "Approved"
-            elif action == "approve_session":
-                resolved = (
-                    manager.approve(callback.request_id, scope=ApprovalScope.SESSION)
-                    is not None
-                )
-                if resolved:
-                    label = "Approved for session"
-            elif action == "deny":
-                resolved = manager.deny(callback.request_id) is not None
-                if resolved:
-                    label = "Denied"
-        elif kind == "question" and action.startswith("q"):
-            try:
-                index = int(action[1:])
-            except ValueError:
-                index = -1
-            questions = callback.payload.get("questions") or []
-            options = questions[0].get("options") if questions else []
-            if 0 <= index < len(options):
-                option = options[index]
-                answer = str(option.get("label") or option.get("description") or "")
-                resolved = await self._reply_to_question(callback.request_id, answer)
-                if resolved:
-                    label = "Answered"
-                    self._pending_questions.pop(
-                        (envelope.address.lane_key, envelope.sender_id), None
-                    )
-        await asyncio.to_thread(
-            self.store.complete_callback_with_terminal,
-            callback_id,
-            owner_id=worker_id,
-            label=label,
-            platform=_PLATFORM,
-        )
-        self._work_available.set()
-        await self._answer_callback(
-            envelope,
-            "Recorded." if resolved else "This request is no longer pending.",
-        )
+        await resolve_interactive_callback(self, envelope, callback_data, worker_id)
 
     async def _reply_to_question(self, request_id: str, text: str) -> bool | None:
         from penguin.security.question import get_question_manager
@@ -1988,11 +1947,3 @@ class TelegramManager:
                 await self._api_call(
                     answer(callback_query_id=callback_id, text=text[:200])
                 )
-
-
-def _validate_image(path: Path) -> None:
-    try:
-        with Image.open(path) as image:
-            image.verify()
-    except (OSError, UnidentifiedImageError) as exc:
-        raise ValueError("Telegram photo is not a valid supported image") from exc

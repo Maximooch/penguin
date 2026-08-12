@@ -10,6 +10,10 @@ DMs, allowlisted groups and forum topics, stable Penguin sessions, streaming,
 basic media, questions and approvals, polling or authenticated webhooks, and
 restart-safe SQLite ingress and delivery.
 
+It also provides curated controls for session model, reasoning, fast mode,
+recent-session rebinding, plan/build mode, permissions, and per-binding
+streaming.
+
 Voice transcription, TTS, audio/video and broad media support, reactions,
 scheduled delivery, and general proactive/background sends are later phases.
 
@@ -275,14 +279,33 @@ The bot registers this command menu:
 | `/stop` | Abort the active Penguin turn for the bound session. |
 | `/whoami` | Show numeric user, chat, and topic IDs. |
 | `/session` | Show the bound Penguin session ID. |
-| `/mode plan`, `/mode build` | Show or change the binding's agent mode. |
-| `/model` | Show the active model. |
+| `/mode` | Pick `plan` or `build`; `/mode plan` and `/mode build` change it directly. |
+| `/model` | Pick a connected model; `/model <provider-id>/<model-id>` selects one directly and `/model reset` inherits Penguin's default. |
+| `/reasoning` | Pick an effort supported by the active model; `/reasoning <effort>` sets it directly and `/reasoning reset` inherits the model default. |
+| `/fast` | Pick OpenAI fast mode; `/fast on`, `/fast off`, or `/fast reset` selects priority, default, or inherited service tier. |
+| `/sessions` | Pick a recent session owned by this chat/topic lane; `/sessions <session-id>` rebinds directly when that ID is in the lane's history. |
+| `/settings` | Open curated controls for model, reasoning, fast mode, plan/build mode, session, permissions, and streaming. |
 | `/goal ...` | Use Penguin's session-goal command for the bound session. |
 | `/project` | Show the bound project directory. |
 | `/permissions` | Show Telegram's capped permission policy and timeout. |
 
 Additional policy commands are `/pair CODE`, `/activation mention|always`, and
 `/topic`. A command explicitly addressed to another bot is ignored.
+
+Model, reasoning, and fast-mode choices are stored on the Penguin session and
+return with that session when it is rebound. Plan/build mode and streaming are
+stored on the Telegram chat/topic binding and remain in place while switching
+sessions. Changes affect future turns; an in-flight turn keeps the runtime
+snapshot with which it started.
+
+`/sessions` is not a global session browser. It exposes at most 20 sessions
+previously bound to the same Telegram chat/topic lane, and direct rebinding is
+limited to that history. Busy sessions, concurrent binding changes, and stale
+buttons fail without changing state.
+
+The settings surface is deliberately curated: it cannot read or edit arbitrary
+YAML. Its inline controls are durable across a Penguin restart until their TTL,
+but remain scoped to the originating bot account, sender, chat, and topic.
 
 ## Streaming and media
 
@@ -292,6 +315,9 @@ conservative 4,000 UTF-16 code units. The streaming modes are:
 - `off`: typing indicator followed by the final response.
 - `progress`: one `Penguin is working…` message, replaced by the final response.
 - `edit`: throttled, coalesced assistant previews followed by the final response.
+
+The configured mode is the default. The Streaming control under `/settings`
+can override it independently for each Telegram chat or forum-topic binding.
 
 Reasoning is hidden by default. Enable `include_reasoning` only when everyone
 with access to the destination is allowed to see model reasoning.

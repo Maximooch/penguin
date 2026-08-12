@@ -3,7 +3,7 @@
 ## Status
 
 - Created: 2026-08-11
-- State: active — Phases 0–5 baseline implemented; Phases 6–8 planned
+- State: active — Phases 0–5 and Telegram controls implemented; Phases 6–8 planned
 - Owner: Penguin runtime and integrations
 - Target: basic personal bot through Hermes-level Telegram parity
 - Primary implementation language: Python
@@ -661,7 +661,9 @@ recoverable/manual-retry outcome.
 | Final text chunking/fallback | yes | yes | yes |
 | Editable streaming answer | no | yes | yes |
 | Tool/progress status | no | yes | yes |
-| `/stop`, `/status`, `/model` | partial | yes | yes |
+| `/stop` and `/status` | yes | yes | yes |
+| Session model/reasoning/fast controls | no | yes | yes |
+| Recent session picker and safe rebinding | no | yes | yes |
 | Inbound photos | no | yes | yes |
 | Bounded text documents | no | yes | yes |
 | Groups and mention gating | no | yes | yes |
@@ -859,6 +861,40 @@ Acceptance criteria:
 - One blocked lane does not stall unrelated chats.
 - Polling and webhook paths pass the same normalized ingress contract tests.
 
+### Completed Follow-Up — Session And Runtime Controls
+
+Objective: expose the useful TUI-style controls without mutating Penguin's
+process-wide configuration or allowing arbitrary YAML edits from Telegram.
+
+Work:
+
+- [x] Add a session-scoped `/model` picker plus exact
+  `/model <provider-id>/<model-id>` selection and reset.
+- [x] Add `/reasoning` picker/direct/reset behavior using only variants supported
+  by the active model.
+- [x] Add OpenAI-only `/fast on|off|reset` for priority, default, or inherited
+  service tier.
+- [x] Add `/sessions` with a bounded, chat/topic-lane-owned history and safe
+  direct rebinding by session ID.
+- [x] Add curated `/settings` controls for model, reasoning, fast mode,
+  plan/build mode, sessions, permissions, and streaming.
+- [x] Store streaming per Telegram binding; keep model, reasoning, and fast mode
+  with their Penguin session across rebinding.
+- [x] Apply setting changes only to future turns while in-flight turns retain
+  their initial runtime snapshot.
+- [x] Scope durable control callbacks to bot account, sender, chat, and topic;
+  keep them restart-resumable until TTL.
+- [x] Reject busy sessions, stale controls, cross-lane session IDs, and
+  concurrent binding changes without partial mutation.
+
+Acceptance criteria:
+
+- Telegram controls never mutate global model configuration or persist provider
+  credentials.
+- A chat/topic can list and rebind only sessions previously owned by its binding.
+- Restart-safe pickers remain usable until expiry; stale or busy controls fail
+  closed.
+
 ### Phase 6 — Voice, Files, Reactions, And Media Parity
 
 Objective: reach Hermes-level conversational media support.
@@ -928,7 +964,8 @@ Work:
 - [ ] Test polling, webhook, proxy, and local Bot API configurations.
 - [ ] Add notification modes, edited status, pins, and recovery notices.
 - [ ] Complete command menu validation, help text, and access tiers.
-- [ ] Add model picker, topic skill binding, and per-channel prompt behavior.
+- [x] Add the model picker.
+- [ ] Add topic skill binding and per-channel prompt behavior.
 - [ ] Add setup, status, probe, doctor, pairing, and dead-letter CLI flows.
 - [ ] Add actionable diagnostics for token, permissions, privacy mode, webhook,
   network, polling conflicts, and delivery backlog.

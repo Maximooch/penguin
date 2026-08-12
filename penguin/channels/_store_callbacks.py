@@ -245,6 +245,42 @@ class CallbackStoreMixin:
             assert row is not None
             return callback_record_from_row(row)
 
+    def renew_callback_lease(
+        self,
+        callback_id: str,
+        *,
+        platform: str,
+        account_id: str,
+        owner_id: str,
+        lease_seconds: float,
+        now: float | None = None,
+    ) -> bool:
+        """Extend an owned callback lease before it expires."""
+
+        del platform
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive")
+        timestamp = self._now(now)
+        with self._write() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE channel_callbacks
+                SET lease_expires_at = ?, updated_at = ?
+                WHERE callback_id = ? AND account_id = ?
+                  AND state = 'claimed' AND claim_owner = ?
+                  AND lease_expires_at > ?
+                """,
+                (
+                    timestamp + lease_seconds,
+                    timestamp,
+                    callback_id,
+                    account_id,
+                    owner_id,
+                    timestamp,
+                ),
+            )
+            return cursor.rowcount == 1
+
     def complete_callback(
         self,
         callback_id: str,
@@ -416,6 +452,12 @@ class CallbackStoreMixin:
                 (account_id,),
             ).fetchall()
             for row in rows:
+                callback = callback_record_from_row(row)
+                if (
+                    row["state"] == "pending"
+                    and callback.payload.get("kind") == "control"
+                ):
+                    continue
                 terminal_state = "expired" if row["state"] == "pending" else "dead"
                 cursor = conn.execute(
                     """UPDATE channel_callbacks

@@ -492,6 +492,78 @@ def test_callback_claim_is_atomic_across_workers(store: ChannelStore) -> None:
     assert sorted(results) == [False, True]
 
 
+def test_callback_lease_renewal_uses_owner_and_account_cas(
+    store: ChannelStore,
+) -> None:
+    store.create_callback(
+        "callback-renew",
+        account_id=ACCOUNT,
+        chat_id="7",
+        topic_id=None,
+        user_id="7",
+        request_id="request",
+        payload={"answer": "yes"},
+        expires_at=100,
+        now=1,
+    )
+    assert store.claim_callback(
+        "callback-renew",
+        account_id=ACCOUNT,
+        chat_id="7",
+        topic_id=None,
+        user_id="7",
+        owner_id="worker",
+        lease_seconds=2,
+        now=2,
+    )
+    assert store.renew_callback_lease(
+        "callback-renew",
+        platform=PLATFORM,
+        account_id=ACCOUNT,
+        owner_id="worker",
+        lease_seconds=2,
+        now=3,
+    )
+    assert not store.renew_callback_lease(
+        "callback-renew",
+        platform=PLATFORM,
+        account_id="other",
+        owner_id="worker",
+        lease_seconds=2,
+        now=3,
+    )
+    assert not store.renew_callback_lease(
+        "callback-renew",
+        platform=PLATFORM,
+        account_id=ACCOUNT,
+        owner_id="other",
+        lease_seconds=2,
+        now=3,
+    )
+    assert (
+        store.recover_expired_callbacks(
+            platform=PLATFORM,
+            account_id=ACCOUNT,
+            now=4.5,
+        )
+        == []
+    )
+    recovered = store.recover_expired_callbacks(
+        platform=PLATFORM,
+        account_id=ACCOUNT,
+        now=5,
+    )
+    assert [record.state for record in recovered] == ["dead"]
+    assert not store.renew_callback_lease(
+        "callback-renew",
+        platform=PLATFORM,
+        account_id=ACCOUNT,
+        owner_id="worker",
+        lease_seconds=2,
+        now=5,
+    )
+
+
 def test_callback_recovery_terminalizes_expired_and_dead_once(
     store: ChannelStore,
 ) -> None:
@@ -566,6 +638,55 @@ def test_callback_recovery_terminalizes_expired_and_dead_once(
         assert terminal.sequence > projection.sequence
         assert terminal.kind == "callback_terminal"
         assert terminal.payload["label"] == "Expired"
+
+
+def test_orphan_recovery_preserves_pending_control_callbacks(
+    store: ChannelStore,
+) -> None:
+    for callback_id, kind in (("approval", "approval"), ("control", "control")):
+        store.create_callback(
+            callback_id,
+            account_id=ACCOUNT,
+            chat_id="7",
+            topic_id=None,
+            user_id="7",
+            request_id=f"request-{callback_id}",
+            payload={"kind": kind},
+            expires_at=100,
+            now=1,
+        )
+
+    recovered = store.recover_orphaned_callbacks(
+        platform=PLATFORM,
+        account_id=ACCOUNT,
+        now=2,
+    )
+
+    assert [record.callback_id for record in recovered] == ["approval"]
+    assert (
+        store.claim_callback(
+            "approval",
+            account_id=ACCOUNT,
+            chat_id="7",
+            topic_id=None,
+            user_id="7",
+            owner_id="worker",
+            now=3,
+        )
+        is None
+    )
+    assert (
+        store.claim_callback(
+            "control",
+            account_id=ACCOUNT,
+            chat_id="7",
+            topic_id=None,
+            user_id="7",
+            owner_id="worker",
+            now=3,
+        )
+        is not None
+    )
 
 
 def test_ingress_deduplicates_and_rejects_conflicting_reuse(

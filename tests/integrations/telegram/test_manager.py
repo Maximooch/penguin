@@ -17,7 +17,10 @@ from penguin.channels.store import (
     LeaseLostError,
     PollerLeaseConflictError,
 )
-from penguin.integrations.telegram import manager as manager_module
+from penguin.integrations.telegram import (
+    _callback_resolution,
+    manager as manager_module,
+)
 from penguin.integrations.telegram._artifacts import artifact_paths
 from penguin.integrations.telegram.binding_policy import TelegramBindingPolicy
 from penguin.integrations.telegram.config import TelegramConfig
@@ -372,6 +375,12 @@ class FakeCore:
             "action_results": [],
             "status": "ok",
         }
+
+
+class ConfiguredAgentCore(FakeCore):
+    def create_agent_conversation(self, agent_id: str) -> str:
+        self.session_number += 1
+        return f"session-{agent_id}-{self.session_number}"
 
 
 class MediaCore(FakeCore):
@@ -746,6 +755,83 @@ async def test_webhook_dm_round_trip_is_durable_and_reuses_binding(
         )
         assert manager.status()["username"] == "@Penguin_agent_bot"
         assert "token" not in repr(manager.status()).lower()
+    finally:
+        await manager.stop()
+
+
+@pytest.mark.asyncio
+async def test_progress_runtime_resolution_error_replaces_working_preview(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_runtime(_core: Any, _session_id: str) -> Any:
+        raise ValueError("bad session model")
+
+    monkeypatch.setattr(
+        manager_module,
+        "resolve_session_request_runtime",
+        fail_runtime,
+    )
+    bot = FakeBot()
+    core = FakeCore()
+    store = ChannelStore(tmp_path / "channel.db")
+    manager = TelegramManager(
+        core,
+        _config(streaming_mode="progress"),
+        bot=bot,
+        store=store,
+    )
+
+    await manager.start()
+    try:
+        assert await manager.admit_webhook_update(_update(3, "hello"))
+        await _wait_for(lambda: len(bot.edits) == 1)
+
+        assert [message["text"] for message in bot.messages] == ["Penguin is working…"]
+        assert bot.edits[0]["message_id"] == 1
+        assert "Penguin error" in bot.edits[0]["text"]
+        assert "bad session model" in bot.edits[0]["text"]
+        assert core.calls == []
+        assert manager._request_targets == {}
+        assert manager._session_targets == {}
+    finally:
+        await manager.stop()
+
+
+@pytest.mark.asyncio
+async def test_new_session_agent_failure_is_visible_and_keeps_binding(
+    tmp_path: Path,
+) -> None:
+    bot = FakeBot()
+    core = FakeCore()
+    store = ChannelStore(tmp_path / "channel.db")
+    original = store.upsert_binding(
+        "telegram\x1f867\x1f42\x1f",
+        "session-existing",
+        agent_id="missing-agent",
+        expected_version=0,
+    )
+    manager = TelegramManager(
+        core,
+        _config(streaming_mode="off"),
+        bot=bot,
+        store=store,
+    )
+
+    await manager.start()
+    try:
+        assert await manager.admit_webhook_update(_update(4, "/new"))
+        await _wait_for(lambda: len(bot.messages) == 1)
+
+        assert bot.messages[0]["text"] == (
+            "Penguin session unavailable: Cannot create a session for "
+            "agent 'missing-agent'."
+        )
+        assert store.get_binding(original.address_key) == original
+        ingress = store.get_ingress(
+            "telegram:867:4", platform="telegram", account_id="867"
+        )
+        assert ingress is not None and ingress.state == "completed"
     finally:
         await manager.stop()
 
@@ -2624,6 +2710,253 @@ async def test_restart_terminalizes_orphaned_prompt_before_ttl(
 
 
 @pytest.mark.asyncio
+async def test_control_picker_survives_restart_and_completes_once(
+    tmp_path: Path,
+) -> None:
+    store = ChannelStore(tmp_path / "channel.db")
+    core = FakeCore()
+    config = _config(streaming_mode="off")
+    first_bot = FakeBot()
+    first_manager = TelegramManager(core, config, bot=first_bot, store=store)
+
+    await first_manager.start()
+    try:
+        assert await first_manager.admit_webhook_update(_update(256, "/mode"))
+        await _wait_for(
+            lambda: any(
+                message.get("text") == "Choose plan or build mode:"
+                for message in first_bot.messages
+            )
+        )
+        prompt = next(
+            message
+            for message in first_bot.messages
+            if message.get("text") == "Choose plan or build mode:"
+        )
+        callback_data = _callback_data(prompt["reply_markup"], text="Plan")
+        callback_id = callback_data.split(":", 2)[1]
+        projection_id = f"telegram:control:{callback_id}"
+
+        def projection_delivered() -> bool:
+            with store._read() as conn:
+                row = conn.execute(
+                    """
+                    SELECT state, external_message_id
+                    FROM channel_deliveries
+                    WHERE delivery_id = ?
+                    """,
+                    (projection_id,),
+                ).fetchone()
+            return bool(
+                row is not None
+                and row["state"] == "delivered"
+                and row["external_message_id"] == "1"
+            )
+
+        await _wait_for(projection_delivered)
+    finally:
+        await first_manager.stop()
+
+    with store._read() as conn:
+        state = conn.execute(
+            "SELECT state FROM channel_callbacks WHERE callback_id = ?",
+            (callback_id,),
+        ).fetchone()[0]
+    assert state == "pending"
+
+    second_bot = FakeBot()
+    second_manager = TelegramManager(core, config, bot=second_bot, store=store)
+    callback_message = {
+        "message_id": 1,
+        "chat": {"id": 42, "type": "private"},
+        "from": {"id": 867, "username": "Penguin_agent_bot"},
+    }
+
+    await second_manager.start()
+    try:
+        assert second_bot.edits == []
+        assert await second_manager.admit_webhook_update(
+            {
+                "update_id": 257,
+                "callback_query": {
+                    "id": "control-after-restart",
+                    "from": {"id": 42},
+                    "data": callback_data,
+                    "message": callback_message,
+                },
+            }
+        )
+        await _wait_for(
+            lambda: (
+                (binding := store.get_binding("telegram\x1f867\x1f42\x1f")) is not None
+                and binding.agent_mode == "plan"
+            )
+        )
+
+        def callback_completed() -> bool:
+            with store._read() as conn:
+                row = conn.execute(
+                    "SELECT state FROM channel_callbacks WHERE callback_id = ?",
+                    (callback_id,),
+                ).fetchone()
+            return row is not None and row["state"] == "completed"
+
+        await _wait_for(callback_completed)
+        await _wait_for(lambda: len(second_bot.edits) == 1)
+        assert second_bot.callback_answers == [
+            {
+                "callback_query_id": "control-after-restart",
+                "text": "Updated.",
+            }
+        ]
+        assert second_bot.edits[0]["reply_markup"] is None
+
+        assert await second_manager.admit_webhook_update(
+            {
+                "update_id": 258,
+                "callback_query": {
+                    "id": "control-replay",
+                    "from": {"id": 42},
+                    "data": callback_data,
+                    "message": callback_message,
+                },
+            }
+        )
+        await _wait_for(lambda: len(second_bot.callback_answers) == 2)
+
+        assert second_bot.callback_answers[-1] == {
+            "callback_query_id": "control-replay",
+            "text": "This action is unavailable.",
+        }
+        assert len(second_bot.edits) == 1
+        assert callback_completed()
+    finally:
+        await second_manager.stop()
+
+
+@pytest.mark.asyncio
+async def test_slow_control_resolution_renews_callback_lease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_callback_resolution, "_CALLBACK_LEASE_SECONDS", 1.0)
+    monkeypatch.setattr(manager_module, "_RECOVERY_INTERVAL_SECONDS", 0.02)
+    original_resolver = _callback_resolution.resolve_control_callback
+    resolution_started = asyncio.Event()
+    release_resolution = asyncio.Event()
+
+    async def slow_resolver(*args: Any, **kwargs: Any) -> Any:
+        resolution_started.set()
+        await release_resolution.wait()
+        return await original_resolver(*args, **kwargs)
+
+    monkeypatch.setattr(
+        _callback_resolution,
+        "resolve_control_callback",
+        slow_resolver,
+    )
+    store = ChannelStore(tmp_path / "channel.db")
+    bot = FakeBot()
+    manager = TelegramManager(
+        FakeCore(),
+        _config(streaming_mode="off"),
+        bot=bot,
+        store=store,
+    )
+
+    await manager.start()
+    try:
+        assert await manager.admit_webhook_update(_update(259, "/mode"))
+        await _wait_for(
+            lambda: any(
+                message.get("text") == "Choose plan or build mode:"
+                for message in bot.messages
+            )
+        )
+        prompt = next(
+            message
+            for message in bot.messages
+            if message.get("text") == "Choose plan or build mode:"
+        )
+        callback_data = _callback_data(prompt["reply_markup"], text="Plan")
+        callback_id = callback_data.split(":", 2)[1]
+        callback_message = {
+            "message_id": 1,
+            "chat": {"id": 42, "type": "private"},
+            "from": {"id": 867, "username": "Penguin_agent_bot"},
+        }
+        assert await manager.admit_webhook_update(
+            {
+                "update_id": 260,
+                "callback_query": {
+                    "id": "slow-control",
+                    "from": {"id": 42},
+                    "data": callback_data,
+                    "message": callback_message,
+                },
+            }
+        )
+        await asyncio.wait_for(resolution_started.wait(), timeout=1.0)
+        await asyncio.sleep(1.4)
+
+        with store._read() as conn:
+            claimed = conn.execute(
+                """
+                SELECT state, lease_expires_at
+                FROM channel_callbacks WHERE callback_id = ?
+                """,
+                (callback_id,),
+            ).fetchone()
+        assert claimed is not None and claimed["state"] == "claimed"
+        assert claimed["lease_expires_at"] > time.time()
+
+        release_resolution.set()
+        await _wait_for(
+            lambda: (
+                (binding := store.get_binding("telegram\x1f867\x1f42\x1f")) is not None
+                and binding.agent_mode == "plan"
+            )
+        )
+
+        def callback_completed() -> bool:
+            with store._read() as conn:
+                row = conn.execute(
+                    "SELECT state FROM channel_callbacks WHERE callback_id = ?",
+                    (callback_id,),
+                ).fetchone()
+            return row is not None and row["state"] == "completed"
+
+        await _wait_for(callback_completed)
+        await _wait_for(lambda: len(bot.edits) == 1)
+        assert bot.callback_answers == [
+            {"callback_query_id": "slow-control", "text": "Updated."}
+        ]
+        assert bot.edits[0]["reply_markup"] is None
+
+        assert await manager.admit_webhook_update(
+            {
+                "update_id": 261,
+                "callback_query": {
+                    "id": "slow-control-replay",
+                    "from": {"id": 42},
+                    "data": callback_data,
+                    "message": callback_message,
+                },
+            }
+        )
+        await _wait_for(lambda: len(bot.callback_answers) == 2)
+        assert bot.callback_answers[-1] == {
+            "callback_query_id": "slow-control-replay",
+            "text": "This action is unavailable.",
+        }
+        assert len(bot.edits) == 1
+        assert callback_completed()
+    finally:
+        release_resolution.set()
+        await manager.stop()
+
+
+@pytest.mark.asyncio
 async def test_approval_callback_resumes_once_and_duplicate_is_inert(
     tmp_path: Path,
 ) -> None:
@@ -2754,7 +3087,7 @@ async def test_group_topic_policy_seeds_and_scopes_execution(
             }
         }
     )
-    core = FakeCore()
+    core = ConfiguredAgentCore()
     store = ChannelStore(tmp_path / "channel.db")
     manager = TelegramManager(
         core,
@@ -2809,7 +3142,9 @@ async def test_group_topic_policy_seeds_and_scopes_execution(
         assert binding.directory == str(project.resolve())
         assert binding.agent_id == "configured-agent"
         assert binding.agent_mode == "plan"
+        assert binding.session_id == "session-configured-agent-1"
         assert binding.settings == {
+            "_telegram_recent_sessions_v1": ["session-configured-agent-1"],
             "activation": "mention",
             "history_limit": 1,
             "prompt": "Answer for the release team.",
@@ -2825,6 +3160,55 @@ async def test_group_topic_policy_seeds_and_scopes_execution(
         assert execution.require_registered_agent is True
     finally:
         await manager.stop()
+
+
+@pytest.mark.asyncio
+async def test_configured_agent_new_session_preserves_agent_and_history(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "configured-project"
+    project.mkdir()
+    policy = TelegramBindingPolicy.from_mapping(
+        {
+            "-100": {
+                "directory": str(project),
+                "agent_id": "configured-agent",
+            }
+        }
+    )
+    core = ConfiguredAgentCore()
+    store = ChannelStore(tmp_path / "channel.db")
+    manager = TelegramManager(
+        core,
+        _config(binding_policy=policy),
+        bot=FakeBot(),
+        store=store,
+    )
+    normalized = normalize_update(
+        {
+            "update_id": 1,
+            "message": {
+                "message_id": 1,
+                "chat": {"id": -100, "type": "supergroup"},
+                "from": {"id": 42},
+                "text": "/new",
+            },
+        },
+        account_id="867",
+    )
+    assert normalized is not None
+    address = normalized.address
+
+    first = await manager._binding_for(address)
+    second = await manager._new_binding(address, first)
+
+    assert first.session_id == "session-configured-agent-1"
+    assert second.session_id == "session-configured-agent-2"
+    assert second.agent_id == "configured-agent"
+    assert second.settings["_telegram_recent_sessions_v1"] == [
+        "session-configured-agent-2",
+        "session-configured-agent-1",
+    ]
 
 
 @pytest.mark.asyncio
