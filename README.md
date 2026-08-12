@@ -132,6 +132,8 @@ with PenguinAgent() as agent:
 
 ## Installation
 
+Penguin requires Python 3.10 through 3.12.
+
 ### Recommended
 
 ```bash

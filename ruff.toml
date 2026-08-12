@@ -25,7 +25,7 @@ select = [
 # Line length
 line-length = 88
 
-# Assume Python 3.8+
+# Use a conservative syntax target until the existing codebase is modernized.
 target-version = "py38"
 
 [lint.isort]
@@ -36,4 +36,4 @@ combine-as-imports = true
 quote-style = "double"
 indent-style = "space"
 skip-magic-trailing-comma = false
-line-ending = "auto" 
+line-ending = "auto"
