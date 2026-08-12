@@ -1,0 +1,44 @@
+diff --git a/dist/index.js b/dist/index.js
+index dab337e6b3210937e5d0784336b91ee2e8cc12b4..9311528ad7899f53a38890de11d981b1ef15c6d1 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -1400,6 +1400,7 @@ async function resolve(value) {
+ // src/response-handler.ts
+ var import_provider12 = require("@ai-sdk/provider");
+ var textDecoder = new TextDecoder();
++var MAX_JSON_RESPONSE_SIZE = 64 * 1024 * 1024;
+ async function readResponseBodyAsText({
+   response,
+   url
+@@ -1407,7 +1408,8 @@ async function readResponseBodyAsText({
+   return textDecoder.decode(
+     await readResponseWithSizeLimit({
+       response,
+-      url
++      url,
++      maxBytes: MAX_JSON_RESPONSE_SIZE
+     })
+   );
+ }
+diff --git a/dist/index.mjs b/dist/index.mjs
+index ddba8eb33deebf3c26b55ae0d3b8ffa2a60f4ed7..3d7c71d5c669a0e7df1fa3fd2f4e4bca1648b863 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -1304,6 +1304,7 @@ async function resolve(value) {
+ // src/response-handler.ts
+ import { APICallError as APICallError4, EmptyResponseBodyError } from "@ai-sdk/provider";
+ var textDecoder = new TextDecoder();
++var MAX_JSON_RESPONSE_SIZE = 64 * 1024 * 1024;
+ async function readResponseBodyAsText({
+   response,
+   url
+@@ -1311,7 +1312,8 @@ async function readResponseBodyAsText({
+   return textDecoder.decode(
+     await readResponseWithSizeLimit({
+       response,
+-      url
++      url,
++      maxBytes: MAX_JSON_RESPONSE_SIZE
+     })
+   );
+ }

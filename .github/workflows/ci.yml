@@ -130,11 +130,17 @@ jobs:
           persist-credentials: false
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.3.5"
+          bun-version: "1.3.8"
       - run: bun install --frozen-lockfile
       - name: Typecheck TUI
         working-directory: penguin-tui/packages/opencode
         run: bun run typecheck
+      - name: Verify provider-utils response limits across peer variants
+        working-directory: penguin-tui/packages/opencode
+        run: bun test test/provider/provider-utils-response-limit.test.ts
+      - name: Build TUI web package
+        working-directory: penguin-tui/packages/web
+        run: bun run build
       - name: Run goal command and session-state tests
         working-directory: penguin-tui/packages/opencode
         run: |
@@ -166,5 +172,6 @@ jobs:
           cache-dependency-path: docs/yarn.lock
       - run: corepack enable
       - run: yarn install --frozen-lockfile
+      - run: yarn test:security
       - run: yarn typecheck
       - run: yarn build

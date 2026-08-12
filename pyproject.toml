@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=76.1,<77", "wheel>=0.40.0"]
+requires = ["setuptools>=78.1.1", "wheel>=0.40.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -154,7 +154,7 @@ dev = [
     "build",
     "twine>=5.0.0",
     "wheel>=0.40.0",
-    "setuptools>=76.1,<77",
+    "setuptools>=78.1.1",
     "pre-commit",
     "pydoll-python>=2.0.0; python_version>='3.10'",  # For browser automation testing
 ]

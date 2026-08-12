@@ -24,7 +24,7 @@
     "./*": "./src/*.ts"
   },
   "devDependencies": {
-    "@babel/core": "7.28.4",
+    "@babel/core": "7.29.6",
     "@octokit/webhooks-types": "7.6.1",
     "@opencode-ai/script": "workspace:*",
     "@parcel/watcher-darwin-arm64": "2.5.1",
@@ -64,8 +64,8 @@
     "@ai-sdk/openai": "2.0.89",
     "@ai-sdk/openai-compatible": "1.0.32",
     "@ai-sdk/perplexity": "2.0.23",
-    "@ai-sdk/provider": "2.0.1",
-    "@ai-sdk/provider-utils": "3.0.20",
+    "@ai-sdk/provider": "2.0.3",
+    "@ai-sdk/provider-utils": "3.0.32",
     "@ai-sdk/togetherai": "1.0.34",
     "@ai-sdk/vercel": "1.0.33",
     "@ai-sdk/xai": "2.0.56",
