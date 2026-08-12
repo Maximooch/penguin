@@ -41,6 +41,7 @@ class FakeChannel:
             stream_callback=capture,
             api_client_override=request.api_client_override,
             model_config_override=request.model_config_override,
+            runtime_resolver=request.runtime_resolver,
         )
         task = asyncio.current_task()
         if task is not None:

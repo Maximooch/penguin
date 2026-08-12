@@ -5,16 +5,27 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Mapping, Sequence
+from typing import Any, Awaitable, Callable, Mapping, Optional, Sequence
 
 from penguin.core_runtime import process_lifecycle
 from penguin.system.execution_context import ExecutionContext, execution_context_scope
 
-__all__ = ["ChatProcessRequest", "ChatStreamCallback", "execute_chat_turn"]
+__all__ = [
+    "ChatProcessRequest",
+    "ChatRuntimeResolutionError",
+    "ChatRuntimeResolver",
+    "ChatStreamCallback",
+    "execute_chat_turn",
+]
 
 logger = logging.getLogger(__name__)
 
 ChatStreamCallback = Callable[[str, str], Awaitable[None]]
+ChatRuntimeResolver = Callable[[], Awaitable[Optional[tuple[Any, Any]]]]
+
+
+class ChatRuntimeResolutionError(RuntimeError):
+    """A request-scoped runtime could not be resolved."""
 
 
 @dataclass(frozen=True)
@@ -37,6 +48,7 @@ class ChatProcessRequest:
     stream_callback: ChatStreamCallback | None = None
     api_client_override: Any = None
     model_config_override: Any = None
+    runtime_resolver: ChatRuntimeResolver | None = None
 
 
 def _track_request(core: Any, session_id: str | None) -> asyncio.Task[Any] | None:
@@ -88,6 +100,15 @@ async def execute_chat_turn(
     try:
         with execution_context_scope(request.execution_context):
             async with gate:
+                model_config_override = request.model_config_override
+                api_client_override = request.api_client_override
+                if request.runtime_resolver is not None:
+                    try:
+                        runtime = await request.runtime_resolver()
+                    except (RuntimeError, ValueError) as exc:
+                        raise ChatRuntimeResolutionError(str(exc)) from exc
+                    if runtime is not None:
+                        model_config_override, api_client_override = runtime
                 result = await core.process(
                     input_data=request.input_data,
                     context=dict(request.context)
@@ -99,8 +120,8 @@ async def execute_chat_turn(
                     context_files=list(request.context_files),
                     streaming=request.streaming,
                     stream_callback=request.stream_callback,
-                    api_client_override=request.api_client_override,
-                    model_config_override=request.model_config_override,
+                    api_client_override=api_client_override,
+                    model_config_override=model_config_override,
                 )
         if not isinstance(result, dict):
             raise TypeError("PenguinCore.process() must return a dictionary")

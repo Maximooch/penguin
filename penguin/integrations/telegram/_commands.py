@@ -3,12 +3,54 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
 from penguin.config import WORKSPACE_PATH
+from penguin.integrations.telegram._controls import (
+    CONTROL_COMMANDS,
+    handle_control_command,
+)
 
 if TYPE_CHECKING:
     from penguin.channels.schema import InboundEnvelope
+
+BOT_COMMANDS = [
+    ("start", "Start or resume Penguin"),
+    ("help", "Show Telegram commands"),
+    ("new", "Start a fresh Penguin session"),
+    ("status", "Show bot and session status"),
+    ("stop", "Stop the active Penguin turn"),
+    ("whoami", "Show your numeric Telegram identity"),
+    ("session", "Show the bound Penguin session"),
+    ("sessions", "Switch Penguin sessions"),
+    ("mode", "Show or set plan/build mode"),
+    ("model", "Show or set the session model"),
+    ("reasoning", "Show or set reasoning effort"),
+    ("fast", "Show or set OpenAI fast mode"),
+    ("settings", "Show session controls"),
+    ("permissions", "Show Telegram tool permissions"),
+    ("goal", "Show or update the session goal"),
+    ("project", "Show the bound project directory"),
+    ("activation", "Set group mention activation"),
+    ("topic", "Show the current topic binding"),
+    ("pair", "Authorize this private chat"),
+]
+
+
+def bot_commands() -> list[tuple[str, str]]:
+    """Return the curated Telegram command catalog."""
+
+    return list(BOT_COMMANDS)
+
+
+async def set_bot_commands(manager: Any) -> None:
+    """Register the curated command catalog when supported by the bot client."""
+
+    setter = getattr(manager.bot, "set_my_commands", None)
+    if callable(setter):
+        with suppress(Exception):
+            await manager._api_call(setter(bot_commands()))
 
 
 async def handle_command(
@@ -22,11 +64,16 @@ async def handle_command(
 
     store = manager.store
     assert store is not None
+    if command in CONTROL_COMMANDS:
+        return await handle_control_command(
+            manager, command, arguments, envelope, binding
+        )
     if command in {"start", "help"}:
         return (
             "Penguin is ready. Send a message or use /new, /status, /stop, "
-            "/session, /mode, /model, /goal, /project, /permissions, "
-            "/activation, /topic, /pair, or /whoami."
+            "/session, /sessions, /mode, /model, /reasoning, /fast, "
+            "/settings, /goal, /project, /permissions, /activation, "
+            "/topic, /pair, or /whoami."
         )
     if command == "whoami":
         return (
@@ -48,23 +95,6 @@ async def handle_command(
         abort = getattr(manager.core, "abort_session", None)
         stopped = bool(await abort(binding.session_id)) if callable(abort) else False
         return "Stopped the active Penguin turn." if stopped else "No active turn."
-    if command == "mode":
-        normalized = arguments.strip().lower()
-        if not normalized:
-            return f"Mode: {getattr(binding, 'agent_mode', None) or 'build'}"
-        if normalized not in {"plan", "build"}:
-            return "Usage: /mode plan|build"
-        updated = await asyncio.to_thread(
-            store.upsert_binding,
-            envelope.address.lane_key,
-            binding.session_id,
-            directory=getattr(binding, "directory", None),
-            agent_id=getattr(binding, "agent_id", None),
-            agent_mode=normalized,
-            settings=getattr(binding, "settings", {}),
-            expected_version=binding.version,
-        )
-        return f"Mode set to {updated.agent_mode}."
     if command == "activation":
         if envelope.metadata.get("chat_type") == "private":
             return "/activation is only available in groups and topics."
@@ -89,10 +119,6 @@ async def handle_command(
             f"Topic binding: {envelope.address.topic_id or 'none'}\n"
             f"Session: {binding.session_id}"
         )
-    if command == "model":
-        model_config = getattr(manager.core, "model_config", None)
-        model = getattr(model_config, "model", None) or "not configured"
-        return f"Active Penguin model: {model}"
     if command == "project":
         directory = getattr(binding, "directory", None) or WORKSPACE_PATH
         return f"Project directory: {directory}"
@@ -122,4 +148,4 @@ async def handle_command(
     return "Unknown command. Use /help for supported commands."
 
 
-__all__ = ["handle_command"]
+__all__ = ["BOT_COMMANDS", "bot_commands", "handle_command", "set_bot_commands"]

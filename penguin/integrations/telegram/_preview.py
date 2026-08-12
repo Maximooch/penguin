@@ -20,9 +20,16 @@ logger = logging.getLogger(__name__)
 class Preview:
     """Per-turn typing/progress task; stream callbacks only mutate memory."""
 
-    def __init__(self, manager: Any, envelope: InboundEnvelope) -> None:
+    def __init__(
+        self,
+        manager: Any,
+        envelope: InboundEnvelope,
+        *,
+        mode: str | None = None,
+    ) -> None:
         self.manager = manager
         self.envelope = envelope
+        self.mode = mode or manager.config.streaming_mode
         self.coalescer = StreamingCoalescer(
             interval_seconds=manager.config.edit_interval_ms / 1000
         )
@@ -33,9 +40,9 @@ class Preview:
 
     async def start(self) -> None:
         self._tasks.append(asyncio.create_task(self._typing_loop()))
-        if self.manager.config.streaming_mode == "progress":
+        if self.mode == "progress":
             await self._send_or_edit("Penguin is working…")
-        if self.manager.config.streaming_mode in {"edit", "progress"}:
+        if self.mode in {"edit", "progress"}:
             self._tasks.append(asyncio.create_task(self._preview_loop()))
 
     async def push(self, chunk: str, message_type: str = "assistant") -> None:
@@ -81,7 +88,6 @@ class Preview:
                 continue
 
     async def _preview_loop(self) -> None:
-        mode = self.manager.config.streaming_mode
         while not self._closed.is_set():
             try:
                 await asyncio.wait_for(
@@ -91,7 +97,7 @@ class Preview:
             except asyncio.TimeoutError:
                 pass
             self._event.clear()
-            if mode != "edit":
+            if self.mode != "edit":
                 continue
             preview = self.coalescer.take(time.monotonic())
             if preview:
