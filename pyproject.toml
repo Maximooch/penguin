@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=76.1,<77", "wheel>=0.40.0"]
+requires = ["setuptools>=83.0.0", "wheel>=0.40.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +7,7 @@ name = "penguin-ai"
 version = "0.9.1"
 description = "Penguin: A modular, extensible AI coding agent and software engineer with its own execution environment."
 readme = "README.md"
-requires-python = ">=3.9,<3.13"
+requires-python = ">=3.10,<3.13"
 authors = [
   { name="Maximus Putnam", email="MaximusPutnam@gmail.com" },
 ]
@@ -21,7 +21,6 @@ keywords = ["ai", "agent", "ai-agent", "llm", "llm-agent", "assistant", "cogniti
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -154,7 +153,7 @@ dev = [
     "build",
     "twine>=5.0.0",
     "wheel>=0.40.0",
-    "setuptools>=76.1,<77",
+    "setuptools>=83.0.0",
     "pre-commit",
     "pydoll-python>=2.0.0; python_version>='3.10'",  # For browser automation testing
 ]
@@ -285,7 +284,7 @@ markers = [
 
 [tool.black]
 line-length = 88
-target-version = ['py39']
+target-version = ['py310']
 include = '\.pyi?$'
 extend-exclude = '''
 /(
@@ -308,7 +307,7 @@ line_length = 88
 
 [tool.ruff]
 line-length = 88
-target-version = "py39" 
+target-version = "py310"
 
 [dependency-groups]
 dev = [

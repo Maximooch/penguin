@@ -5,7 +5,7 @@ ToolManager tool invocations. ActionExecutor remains the compatibility wrapper
 for legacy, UI-heavy, or manager-specific handlers that have not moved yet.
 """
 
-# Keep Optional annotations for Python 3.9 compatibility.
+# Keep Optional annotations for compatibility with older Pydantic/FastAPI stacks.
 # ruff: noqa: UP007
 from __future__ import annotations
 

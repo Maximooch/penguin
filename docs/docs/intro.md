@@ -38,6 +38,8 @@ It is designed for long-running, tool-using, multi-agent software workflows: fro
 
 ### Installation Options
 
+Penguin requires Python 3.10 through 3.12.
+
 **Recommended Installation (default runtime):**
 ```bash
 uv tool install penguin-ai

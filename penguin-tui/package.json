@@ -4,7 +4,7 @@
   "description": "AI-powered development tool",
   "private": true,
   "type": "module",
-  "packageManager": "bun@1.3.5",
+  "packageManager": "bun@1.3.8",
   "scripts": {
     "dev": "bun run --cwd packages/opencode --conditions=browser src/index.ts",
     "typecheck": "bun turbo typecheck",
@@ -21,7 +21,7 @@
       "packages/slack"
     ],
     "catalog": {
-      "@types/bun": "1.3.5",
+      "@types/bun": "1.3.8",
       "@octokit/rest": "22.0.0",
       "@hono/zod-validator": "0.4.2",
       "ulid": "3.0.1",
@@ -37,7 +37,7 @@
       "@solid-primitives/storage": "4.3.3",
       "@tailwindcss/vite": "4.1.11",
       "diff": "8.0.2",
-      "dompurify": "3.3.1",
+      "dompurify": "3.4.13",
       "ai": "5.0.124",
       "hono": "4.10.7",
       "hono-openapi": "1.1.2",
@@ -69,7 +69,7 @@
     "prettier": "3.6.2",
     "semver": "^7.6.0",
     "sst": "3.17.23",
-    "turbo": "2.5.6"
+    "turbo": "2.9.14"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.933.0",
@@ -95,10 +95,16 @@
     "web-tree-sitter"
   ],
   "overrides": {
+    "@ai-sdk/provider": "2.0.3",
+    "@ai-sdk/provider-utils": "3.0.32",
+    "@babel/core": "7.29.6",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "astro": "7.2.1",
     "@types/bun": "catalog:",
     "@types/node": "catalog:"
   },
   "patchedDependencies": {
-    "ghostty-web@0.3.0": "patches/ghostty-web@0.3.0.patch"
+    "ghostty-web@0.3.0": "patches/ghostty-web@0.3.0.patch",
+    "@ai-sdk/provider-utils@3.0.32": "patches/@ai-sdk%2Fprovider-utils@3.0.32.patch"
   }
 }

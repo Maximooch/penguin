@@ -11,7 +11,7 @@ Penguin will not add browser-harness to base dependencies or the `[browser]` ext
 ## Rationale
 
 - browser-harness is not published on PyPI yet.
-- Penguin supports Python `>=3.9,<3.13`; browser-harness currently targets newer Python and its own dependency constraints.
+- Penguin supports Python `>=3.10,<3.13`; browser-harness currently targets newer Python and its own dependency constraints.
 - PyDoll remains useful as an installable fallback for users who install `penguin-ai[browser]` without a local browser-harness checkout.
 - The public Penguin browser interface should remain backend-agnostic enough to swap browser-harness, PyDoll, Playwright/CDP, or a future better backend later.
 

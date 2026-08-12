@@ -57,7 +57,7 @@ try:
             "ipykernel",
             "ipywidgets",
         ],
-        python_requires=">=3.8",
+        python_requires=">=3.10,<3.13",
         entry_points={
             "console_scripts": [
                 "penguin=penguin.chat.cli:app",

@@ -58,8 +58,8 @@ def get_core_instance() -> PenguinCore:
         raise RuntimeError("Core instance not set - call set_core_instance() first")
     return _core_instance
 
-# FastAPI evaluates endpoint annotations at import time on Python 3.9, so these
-# parameters intentionally use typing.Optional rather than PEP 604 unions.
+# Pydantic 1.x evaluates FastAPI endpoint annotations eagerly, so these parameters
+# intentionally use typing.Optional rather than PEP 604 unions.
 @router.get("/api/v1/events/sse")
 async def events_sse(
     session_id: Optional[str] = Query(  # noqa

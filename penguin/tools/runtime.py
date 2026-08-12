@@ -7,7 +7,7 @@ action-result dictionaries that the engine, API, and UI already consume.
 
 from __future__ import annotations
 
-# Keep Optional/Union annotations for Python 3.9 compatibility.
+# Keep Optional/Union annotations for compatibility with older runtime consumers.
 # ruff: noqa: UP007
 import hashlib
 import inspect
