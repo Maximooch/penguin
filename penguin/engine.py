@@ -288,6 +288,12 @@ class LoopConfig:
     # Optional billed-token ceiling for this loop invocation.
     token_budget: Optional[int] = None
 
+    # Per-request execution profile controls. These remain on the loop config
+    # so task-mode runs cannot accidentally bypass a chat/research profile.
+    tools_enabled: bool = True
+    allowed_tool_names: Optional[List[str]] = None
+    include_web_search: bool = True
+
 
 @dataclass
 class LoopState:
@@ -1694,10 +1700,12 @@ class Engine:
 
                 # Execute LLM step
                 response_data = await self._llm_step(
-                    tools_enabled=True,
+                    tools_enabled=config.tools_enabled,
                     streaming=config.streaming,
                     stream_callback=config.stream_callback,
                     agent_id=self.current_agent_id,
+                    allowed_tool_names=config.allowed_tool_names,
+                    include_web_search=config.include_web_search,
                 )
 
                 last_response = response_data.get("assistant_response", "")
@@ -1864,10 +1872,14 @@ class Engine:
                     )
                     break
 
-                if not iteration_results and self._queue_malformed_action_repair_note(
-                    cm,
-                    last_response,
-                    mode=config.mode,
+                if (
+                    config.tools_enabled
+                    and not iteration_results
+                    and self._queue_malformed_action_repair_note(
+                        cm,
+                        last_response,
+                        mode=config.mode,
+                    )
                 ):
                     await self._save_conversation(cm, async_save=config.async_save)
                     if config.message_callback:
@@ -2109,6 +2121,8 @@ class Engine:
         *,
         image_paths: Optional[List[str]] = None,
         tools_enabled: bool = True,
+        allowed_tool_names: Optional[List[str]] = None,
+        include_web_search: bool = True,
         streaming: Optional[bool] = None,
         stream_callback: Optional[Callable[[str], None]] = None,
         agent_id: Optional[str] = None,
@@ -2144,6 +2158,8 @@ class Engine:
                 streaming=streaming,
                 stream_callback=stream_callback,
                 agent_id=self.current_agent_id,
+                allowed_tool_names=allowed_tool_names,
+                include_web_search=include_web_search,
             )
             return response_data
         finally:
@@ -2166,6 +2182,9 @@ class Engine:
         agent_role: Optional[str] = None,
         api_client_override: Optional[Any] = None,
         model_config_override: Optional[Any] = None,
+        tools_enabled: bool = True,
+        allowed_tool_names: Optional[List[str]] = None,
+        include_web_search: bool = True,
     ) -> Dict[str, Any]:
         """
         Multi-step conversational loop for natural conversation flow.
@@ -2249,10 +2268,12 @@ class Engine:
 
                 # Execute LLM step with streaming support
                 response_data = await self._llm_step(
-                    tools_enabled=True,
+                    tools_enabled=tools_enabled,
                     streaming=streaming_flag,
                     stream_callback=stream_callback,
                     agent_id=self.current_agent_id,
+                    allowed_tool_names=allowed_tool_names,
+                    include_web_search=include_web_search,
                 )
 
                 last_response = response_data.get("assistant_response", "")
@@ -2320,10 +2341,14 @@ class Engine:
                         f"[LOOP DEBUG] Response contains 'finish_response' text but wasn't parsed as action. Response preview: {last_response[:100]}..."
                     )
 
-                if not iteration_results and self._queue_malformed_action_repair_note(
-                    cm,
-                    last_response,
-                    mode="response",
+                if (
+                    tools_enabled
+                    and not iteration_results
+                    and self._queue_malformed_action_repair_note(
+                        cm,
+                        last_response,
+                        mode="response",
+                    )
                 ):
                     await self._save_conversation(cm, async_save=True)
                     continue
@@ -2409,6 +2434,10 @@ class Engine:
         api_client_override: Optional[Any] = None,
         model_config_override: Optional[Any] = None,
         token_budget: Optional[int] = None,
+
+        tools_enabled: bool = True,
+        allowed_tool_names: Optional[List[str]] = None,
+        include_web_search: bool = True,
     ) -> Dict[str, Any]:
         """Run a task-oriented reasoning loop using the shared iteration engine.
 
@@ -2595,6 +2624,9 @@ class Engine:
                 ),
                 default_completion_status="iterations_exceeded",
                 token_budget=token_budget,
+                tools_enabled=tools_enabled,
+                allowed_tool_names=allowed_tool_names,
+                include_web_search=include_web_search,
             )
 
             result = await self._iteration_loop(cm, config, max_iters)
@@ -2698,7 +2730,13 @@ class Engine:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _prepare_responses_tools(self, tool_manager) -> Dict[str, Any]:
+    def _prepare_responses_tools(
+        self,
+        tool_manager,
+        *,
+        allowed_names: Optional[Sequence[str]] = None,
+        include_web_search: bool = True,
+    ) -> Dict[str, Any]:
         """Prepare Responses API tools payload if enabled.
 
         Returns:
@@ -2708,6 +2746,8 @@ class Engine:
             return prepare_responses_tool_kwargs(
                 self._get_runtime_model_config(),
                 tool_manager,
+                allowed_names=allowed_names,
+                include_web_search=include_web_search,
             )
         except Exception as exc:
             logger.debug("Failed to prepare Responses tools: %s", exc)
@@ -3023,6 +3063,7 @@ class Engine:
         api_client: APIClient,
         tool_manager,
         cm: ConversationManager,
+        allowed_tool_names: Optional[Sequence[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Handle all pending Responses API tool calls.
 
@@ -3075,6 +3116,7 @@ class Engine:
             persist_image_artifacts=lambda action_result: (
                 self._persist_tool_image_artifacts(cm, action_result)
             ),
+            allowed_tool_names=allowed_tool_names,
         )
 
     def _persist_record(
@@ -3432,6 +3474,7 @@ class Engine:
         cm: ConversationManager,
         action_executor: ActionExecutor,
         assistant_response: str,
+        allowed_tool_names: Optional[Sequence[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Parse and execute CodeAct actions from assistant response.
 
@@ -3463,6 +3506,21 @@ class Engine:
             )
             for tool_call in tool_calls_from_codeact_actions(actions)
         ]
+        if allowed_tool_names is not None:
+            allowed = {name.strip() for name in allowed_tool_names if name.strip()}
+            blocked = [
+                tool_call.name
+                for tool_call in tool_calls
+                if tool_call.name not in allowed
+            ]
+            if blocked:
+                logger.warning(
+                    "Skipping ActionXML tool calls outside this execution profile: %s",
+                    blocked,
+                )
+            tool_calls = [
+                tool_call for tool_call in tool_calls if tool_call.name in allowed
+            ]
         logger.debug(
             "[AUTO-CONTINUE FIX] Parsed %s actions from response", len(tool_calls)
         )
@@ -3594,6 +3652,8 @@ class Engine:
         streaming: Optional[bool] = None,
         stream_callback: Optional[Callable[[str], None]] = None,
         agent_id: Optional[str] = None,
+        allowed_tool_names: Optional[Sequence[str]] = None,
+        include_web_search: bool = True,
     ) -> Dict[str, Any]:
         """Execute a single LLM step: call model, handle tool calls, execute actions.
 
@@ -3652,9 +3712,20 @@ class Engine:
             agent_id=agent_id,
         )
 
-        # Step 1: Prepare Responses API tools if enabled
+        # Step 1: Prepare Responses API tools only for profiles that permit
+        # them. A no-tool chat request must not send schemas at all.
         llm_step_started = time.perf_counter()
-        extra_kwargs = self._prepare_responses_tools(tool_manager)
+        tool_profile_kwargs: Dict[str, Any] = {}
+        if allowed_tool_names is not None or not include_web_search:
+            tool_profile_kwargs = {
+                "allowed_names": allowed_tool_names,
+                "include_web_search": include_web_search,
+            }
+        extra_kwargs = (
+            self._prepare_responses_tools(tool_manager, **tool_profile_kwargs)
+            if tools_enabled
+            else {}
+        )
         tool_schema_count = (
             len(extra_kwargs.get("tools", []))
             if isinstance(extra_kwargs.get("tools"), list)
@@ -3721,10 +3792,15 @@ class Engine:
 
         # Step 4: Handle Responses API tool_calls if they were triggered
         responses_tools_started = time.perf_counter()
-        responses_action_results = await self._handle_responses_tool_calls(
-            api_client,
-            tool_manager,
-            cm,
+        responses_action_results = (
+            await self._handle_responses_tool_calls(
+                api_client,
+                tool_manager,
+                cm,
+                allowed_tool_names=allowed_tool_names,
+            )
+            if tools_enabled
+            else []
         )
         _trace_log_info(
             "engine.llm_step.responses_tools_done request=%s session=%s agent=%s "
@@ -3747,7 +3823,10 @@ class Engine:
             codeact_started = time.perf_counter()
             action_results.extend(
                 await self._execute_codeact_actions(
-                    cm, action_executor, assistant_response
+                    cm,
+                    action_executor,
+                    assistant_response,
+                    allowed_tool_names=allowed_tool_names,
                 )
             )
             _trace_log_info(

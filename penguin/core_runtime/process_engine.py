@@ -100,8 +100,19 @@ async def run_engine_process(
     request_session_id: str | None,
     scoped_conversation_id: str | None,
     trace_log_info: Any,
+    tools_enabled: bool = True,
+    allowed_tool_names: list[str] | None = None,
+    include_web_search: bool = True,
 ) -> Any:
     """Dispatch a process request through the configured Engine."""
+    profile_kwargs: dict[str, Any] = {}
+    if not (tools_enabled and allowed_tool_names is None and include_web_search):
+        profile_kwargs = {
+            "tools_enabled": tools_enabled,
+            "allowed_tool_names": allowed_tool_names,
+            "include_web_search": include_web_search,
+        }
+
     if multi_step:
         is_formal_task = bool(context and context.get("task_mode", False))
         _trace_engine_process(
@@ -124,6 +135,7 @@ async def run_engine_process(
                 agent_id=agent_id,
                 api_client_override=api_client_override,
                 model_config_override=model_config_override,
+                **profile_kwargs,
             )
 
         return await owner.engine.run_response(
@@ -135,6 +147,7 @@ async def run_engine_process(
             agent_id=agent_id,
             api_client_override=api_client_override,
             model_config_override=model_config_override,
+            **profile_kwargs,
         )
 
     return await owner.engine.run_single_turn(
@@ -145,4 +158,5 @@ async def run_engine_process(
         agent_id=agent_id,
         api_client_override=api_client_override,
         model_config_override=model_config_override,
+        **profile_kwargs,
     )

@@ -104,6 +104,9 @@ class ProcessCoreFacade:
         multi_step: bool = True,
         api_client_override: APIClient | None = None,
         model_config_override: ModelConfig | None = None,
+        tools_enabled: bool = True,
+        allowed_tool_names: list[str] | None = None,
+        include_web_search: bool = True,
     ) -> dict[str, Any]:
         """Process a message through Penguin."""
         return await core_process_runtime.process_with_retry(
@@ -119,6 +122,9 @@ class ProcessCoreFacade:
             multi_step=multi_step,
             api_client_override=api_client_override,
             model_config_override=model_config_override,
+            tools_enabled=tools_enabled,
+            allowed_tool_names=allowed_tool_names,
+            include_web_search=include_web_search,
             log=logger,
             trace_log_info=_trace_log_info,
             log_error_fn=log_error,

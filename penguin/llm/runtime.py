@@ -5,7 +5,7 @@ import inspect
 import json
 import logging
 import time
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence
 
 from penguin.tools.runtime import (
     ORDERED_TOOL_BATCH_NAME,
@@ -313,6 +313,7 @@ def should_retry_provider_failure(
 def _get_tool_payload(
     tool_manager: Any,
     *,
+    allowed_names: Optional[Sequence[str]],
     include_web_search: bool,
 ) -> List[Dict[str, Any]]:
     tools_getter = getattr(tool_manager, "get_responses_tools", None)
@@ -323,10 +324,16 @@ def _get_tool_payload(
         parameter.kind is inspect.Parameter.VAR_KEYWORD
         for parameter in signature.parameters.values()
     )
+    accepts_allowed_names = "allowed_names" in signature.parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+    kwargs: Dict[str, Any] = {}
     if accepts_include_web_search:
-        tools_payload = tools_getter(include_web_search=include_web_search)
-    else:
-        tools_payload = tools_getter()
+        kwargs["include_web_search"] = include_web_search
+    if accepts_allowed_names and allowed_names is not None:
+        kwargs["allowed_names"] = list(allowed_names)
+    tools_payload = tools_getter(**kwargs)
     return list(tools_payload or [])
 
 
@@ -361,7 +368,13 @@ def _filter_native_loop_control_tools(
     return filtered
 
 
-def prepare_native_tool_kwargs(model_config: Any, tool_manager: Any) -> Dict[str, Any]:
+def prepare_native_tool_kwargs(
+    model_config: Any,
+    tool_manager: Any,
+    *,
+    allowed_names: Optional[Sequence[str]] = None,
+    include_web_search: bool = True,
+) -> Dict[str, Any]:
     """Build native tool kwargs for providers that support structured tool calls."""
 
     extra_kwargs: Dict[str, Any] = {}
@@ -374,7 +387,8 @@ def prepare_native_tool_kwargs(model_config: Any, tool_manager: Any) -> Dict[str
 
     tools_payload = _get_tool_payload(
         tool_manager,
-        include_web_search=tool_format == "openai_responses",
+        allowed_names=allowed_names,
+        include_web_search=(tool_format == "openai_responses" and include_web_search),
     )
     tools_payload = _filter_native_loop_control_tools(tools_payload)
     if not tools_payload:
@@ -412,11 +426,20 @@ def prepare_native_tool_kwargs(model_config: Any, tool_manager: Any) -> Dict[str
 
 
 def prepare_responses_tool_kwargs(
-    model_config: Any, tool_manager: Any
+    model_config: Any,
+    tool_manager: Any,
+    *,
+    allowed_names: Optional[Sequence[str]] = None,
+    include_web_search: bool = True,
 ) -> Dict[str, Any]:
     """Backward-compatible wrapper for native tool kwargs preparation."""
 
-    return prepare_native_tool_kwargs(model_config, tool_manager)
+    return prepare_native_tool_kwargs(
+        model_config,
+        tool_manager,
+        allowed_names=allowed_names,
+        include_web_search=include_web_search,
+    )
 
 
 def handler_has_pending_tool_call(api_client: Any) -> bool:
@@ -923,6 +946,7 @@ async def execute_pending_tool_calls(
     emit_action_result: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     emit_tool_timeline: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     persist_image_artifacts: Optional[Callable[[Dict[str, Any]], None]] = None,
+    allowed_tool_names: Optional[Sequence[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Execute all pending provider-captured tool calls using generic hooks."""
 
@@ -938,6 +962,19 @@ async def execute_pending_tool_calls(
         )
         if tool_call is not None
     ]
+    if allowed_tool_names is not None:
+        allowed = {name.strip() for name in allowed_tool_names if name.strip()}
+        blocked = [
+            tool_call.name for tool_call in tool_calls if tool_call.name not in allowed
+        ]
+        if blocked:
+            logger.warning(
+                "Ignoring provider tool calls outside this execution profile: %s",
+                blocked,
+            )
+        tool_calls = [
+            tool_call for tool_call in tool_calls if tool_call.name in allowed
+        ]
     if not tool_calls:
         return []
 
