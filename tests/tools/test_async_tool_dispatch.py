@@ -9,11 +9,22 @@ from typing import Any
 
 import pytest
 
-from penguin.security.approval import get_approval_manager
+from penguin.security.approval import ApprovalScope, get_approval_manager
 from penguin.security.permission_engine import PermissionResult
 from penguin.system.execution_context import ExecutionContext, execution_context_scope
 from penguin.tools.tool_manager import ToolManager
 from penguin.utils.parser import ActionExecutor, ActionType, CodeActAction
+
+
+async def _wait_for_pending_approval(session_id: str) -> str:
+    """Return the first approval ID created for a test session."""
+    manager = get_approval_manager()
+    for _ in range(200):
+        pending = manager.get_pending(session_id=session_id)
+        if pending:
+            return pending[0].id
+        await asyncio.sleep(0.005)
+    raise AssertionError("Approval request was never created")
 
 
 @pytest.mark.asyncio
@@ -399,6 +410,499 @@ async def test_preapproved_async_tool_stays_on_callers_event_loop(
 
     assert json.loads(raw_result)["status"] == "ok"
     assert observed_loop is caller_loop
+
+
+@pytest.mark.asyncio
+async def test_default_async_approval_still_returns_pending_immediately(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Existing HTTP-style contexts must not start waiting implicitly."""
+    approval_manager = get_approval_manager()
+    approval_manager.reset()
+    calls = 0
+    manager = ToolManager(
+        {"diagnostics": {"enabled": False}},
+        lambda _error, _context: None,
+    )
+    manager._permission_enabled = True
+    monkeypatch.setattr(
+        manager,
+        "check_tool_permission",
+        lambda *_args, **_kwargs: (PermissionResult.ASK, "approval required"),
+    )
+
+    async def _memory_search(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+        nonlocal calls
+        calls += 1
+        return {"status": "executed"}
+
+    monkeypatch.setattr(manager, "perform_memory_search", _memory_search)
+    raw_result = await manager.execute_tool_async(
+        "memory_search",
+        {"query": "penguin"},
+        {"session_id": "session_default_pending"},
+    )
+
+    result = json.loads(raw_result)
+    assert result["status"] == "pending_approval"
+    assert calls == 0
+    approval_manager.reset()
+
+
+def test_request_scoped_read_only_mode_blocks_mutating_tools() -> None:
+    manager = ToolManager(
+        {"diagnostics": {"enabled": False}},
+        lambda _error, _context: None,
+    )
+
+    result, reason = manager.check_tool_permission(
+        "write_file",
+        {"path": "notes.txt", "content": "mutate"},
+        {"permission_mode": "read_only"},
+    )
+
+    assert result == PermissionResult.DENY
+    assert "read-only" in reason
+
+
+@pytest.mark.parametrize(
+    ("decision", "expected"),
+    [("ask", PermissionResult.ASK), ("deny", PermissionResult.DENY)],
+)
+def test_request_approval_policy_governs_shell_tools(
+    decision: str,
+    expected: PermissionResult,
+) -> None:
+    manager = ToolManager(
+        {"diagnostics": {"enabled": False}},
+        lambda _error, _context: None,
+    )
+
+    result, _reason = manager.check_tool_permission(
+        "execute_command",
+        {"command": "pwd"},
+        {"approval_policy": {"default": decision, "shell": decision}},
+    )
+
+    assert result == expected
+
+
+def test_default_deny_policy_allows_explicit_shell_prompt() -> None:
+    """A deny fallback must not disable a category explicitly set to ask."""
+    approval_manager = get_approval_manager()
+    approval_manager.reset()
+    manager = ToolManager(
+        {"diagnostics": {"enabled": False}},
+        lambda _error, _context: None,
+    )
+
+    raw_result = manager._permission_response(
+        "execute_command",
+        {"command": "pwd"},
+        {
+            "session_id": "session_explicit_shell_prompt",
+            "approval_policy": {"default": "deny", "shell": "ask"},
+        },
+    )
+
+    assert isinstance(raw_result, str)
+    result = json.loads(raw_result)
+    assert result["status"] == "pending_approval"
+    assert result["resource"] == "pwd"
+    pending = approval_manager.get_pending(session_id="session_explicit_shell_prompt")
+    assert [request.resource for request in pending] == ["pwd"]
+    approval_manager.reset()
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "tool_input", "expected_resource"),
+    [
+        ("execute_command", {"command": "pwd"}, "pwd"),
+        ("code_execution", {"code": "print('hi')"}, "print('hi')"),
+        ("process_start", {"command": "python app.py"}, "python app.py"),
+        ("process_stop", {"process_id": "process-123"}, "process-123"),
+    ],
+)
+def test_approval_target_exposes_executed_resource(
+    tool_name: str,
+    tool_input: dict[str, str],
+    expected_resource: str,
+) -> None:
+    """Execution approval cards must identify what will actually run."""
+    _operation, resource, _session_id = ToolManager._approval_target(
+        tool_name,
+        tool_input,
+        {},
+    )
+
+    assert resource == expected_resource
+
+
+def test_session_approval_does_not_bypass_new_ask_category() -> None:
+    """A shell grant must not silently include later secret access."""
+    approval_manager = get_approval_manager()
+    approval_manager.reset()
+    manager = ToolManager(
+        {"diagnostics": {"enabled": False}},
+        lambda _error, _context: None,
+    )
+    session_id = "session_category_escalation"
+    context = {
+        "session_id": session_id,
+        "approval_policy": {
+            "default": "deny",
+            "shell": "ask",
+            "secrets": "ask",
+        },
+    }
+
+    first_result = json.loads(
+        manager._permission_response(
+            "execute_command",
+            {"command": "pwd"},
+            context,
+        )
+    )
+    first_request = approval_manager.get_request(first_result["approval_id"])
+    assert first_request is not None
+    assert first_request.resource == "pwd"
+    assert (
+        approval_manager.approve(
+            first_request.id,
+            scope=ApprovalScope.SESSION,
+        )
+        is not None
+    )
+
+    assert (
+        manager._permission_response(
+            "execute_command",
+            {"command": "whoami"},
+            context,
+        )
+        is None
+    )
+    escalated_result = json.loads(
+        manager._permission_response(
+            "execute_command",
+            {"command": "cat .env"},
+            context,
+        )
+    )
+    escalated_request = approval_manager.get_request(escalated_result["approval_id"])
+    assert escalated_request is not None
+    assert escalated_request.resource == "cat .env"
+    assert escalated_request.operation != first_request.operation
+    approval_manager.deny(escalated_request.id)
+    approval_manager.reset()
+
+
+def test_explicit_base_operation_preapproval_covers_fingerprinted_prompt() -> None:
+    """Existing callers may intentionally preapprove a whole tool operation."""
+    approval_manager = get_approval_manager()
+    approval_manager.reset()
+    approval_manager.pre_approve(
+        "tool.execute_command",
+        session_id="session_explicit_base_preapproval",
+    )
+    manager = ToolManager(
+        {"diagnostics": {"enabled": False}},
+        lambda _error, _context: None,
+    )
+
+    result = manager._permission_response(
+        "execute_command",
+        {"command": "pwd"},
+        {
+            "session_id": "session_explicit_base_preapproval",
+            "approval_policy": {"default": "deny", "shell": "ask"},
+        },
+    )
+
+    assert result is None
+    approval_manager.reset()
+
+
+def test_remote_allow_cannot_override_instance_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Remote allow removes only its own prompt, never an instance-level ASK."""
+    approval_manager = get_approval_manager()
+    approval_manager.reset()
+    manager = ToolManager(
+        {"diagnostics": {"enabled": False}},
+        lambda _error, _context: None,
+    )
+    manager._permission_enabled = True
+    monkeypatch.setattr(
+        manager,
+        "check_tool_permission",
+        lambda *_args, **_kwargs: (PermissionResult.ASK, "instance approval required"),
+    )
+
+    raw_result = manager._permission_response(
+        "execute_command",
+        {"command": "pwd"},
+        {
+            "session_id": "session_instance_ask",
+            "approval_policy": {"default": "deny", "shell": "allow"},
+        },
+    )
+
+    assert isinstance(raw_result, str)
+    result = json.loads(raw_result)
+    assert result["status"] == "pending_approval"
+    assert approval_manager.get_pending(session_id="session_instance_ask")
+    approval_manager.reset()
+
+
+@pytest.mark.asyncio
+async def test_remote_deny_policy_never_creates_approval_or_executes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    approval_manager = get_approval_manager()
+    approval_manager.reset()
+    manager = ToolManager(
+        {"diagnostics": {"enabled": False}},
+        lambda _error, _context: None,
+    )
+    manager._permission_enabled = True
+    monkeypatch.setattr(
+        manager,
+        "check_tool_permission",
+        lambda *_args, **_kwargs: (PermissionResult.ASK, "approval required"),
+    )
+
+    async def _unexpected_execution(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("deny policy executed the tool")
+
+    monkeypatch.setattr(manager, "perform_memory_search", _unexpected_execution)
+    result = json.loads(
+        await manager.execute_tool_async(
+            "memory_search",
+            {"query": "penguin"},
+            {
+                "session_id": "session_remote_deny",
+                "approval_policy": {"default": "deny"},
+            },
+        )
+    )
+
+    assert result["error"] == "permission_denied"
+    assert approval_manager.get_pending(session_id="session_remote_deny") == []
+    approval_manager.reset()
+
+
+@pytest.mark.asyncio
+async def test_async_tool_resumes_once_after_opt_in_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An opted-in async call continues once after the matching approval."""
+    approval_manager = get_approval_manager()
+    approval_manager.reset()
+    calls = 0
+    manager = ToolManager(
+        {"diagnostics": {"enabled": False}},
+        lambda _error, _context: None,
+    )
+    manager._permission_enabled = True
+    monkeypatch.setattr(
+        manager,
+        "check_tool_permission",
+        lambda *_args, **_kwargs: (PermissionResult.ASK, "approval required"),
+    )
+    monkeypatch.setattr(manager, "add_message_to_search", lambda _message: None)
+
+    async def _memory_search(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+        nonlocal calls
+        calls += 1
+        return {"status": "executed"}
+
+    monkeypatch.setattr(manager, "perform_memory_search", _memory_search)
+    session_id = "session_async_resume"
+    execution = asyncio.create_task(
+        manager.execute_tool_async(
+            "memory_search",
+            {"query": "penguin"},
+            {
+                "session_id": session_id,
+                "approval_policy": {
+                    "wait_for_resolution": True,
+                    "timeout_seconds": 1.0,
+                },
+            },
+        )
+    )
+
+    request_id = await _wait_for_pending_approval(session_id)
+    await asyncio.sleep(0)
+    assert execution.done() is False
+    assert approval_manager.approve(request_id) is not None
+    assert approval_manager.approve(request_id) is None
+    result = await asyncio.wait_for(execution, timeout=1.0)
+
+    assert result == {"status": "executed"}
+    assert calls == 1
+    approval_manager.reset()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resolution", ["deny", "expire"])
+async def test_denied_or_expired_approval_never_executes_async_tool(
+    monkeypatch: pytest.MonkeyPatch,
+    resolution: str,
+) -> None:
+    """Terminal non-approval outcomes must never mutate through the tool."""
+    approval_manager = get_approval_manager()
+    approval_manager.reset()
+    manager = ToolManager(
+        {"diagnostics": {"enabled": False}},
+        lambda _error, _context: None,
+    )
+    manager._permission_enabled = True
+    monkeypatch.setattr(
+        manager,
+        "check_tool_permission",
+        lambda *_args, **_kwargs: (PermissionResult.ASK, "approval required"),
+    )
+
+    async def _unexpected_execution(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("denied or expired tool executed")
+
+    monkeypatch.setattr(manager, "perform_memory_search", _unexpected_execution)
+    session_id = f"session_async_{resolution}"
+    timeout_seconds = 1.0 if resolution == "deny" else 0.01
+    execution = asyncio.create_task(
+        manager.execute_tool_async(
+            "memory_search",
+            {"query": "penguin"},
+            {
+                "session_id": session_id,
+                "approval_policy": {
+                    "wait_for_resolution": True,
+                    "timeout_seconds": timeout_seconds,
+                },
+            },
+        )
+    )
+
+    request_id = await _wait_for_pending_approval(session_id)
+    if resolution == "deny":
+        assert approval_manager.deny(request_id) is not None
+    result = json.loads(await asyncio.wait_for(execution, timeout=1.0))
+
+    expected_error = "approval_denied" if resolution == "deny" else "approval_expired"
+    assert result["error"] == expected_error
+    assert approval_manager.approve(request_id) is None
+    approval_manager.reset()
+
+
+@pytest.mark.asyncio
+async def test_sync_tool_resumes_once_without_blocking_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A synchronous tool waits and runs in worker threads, exactly once."""
+    approval_manager = get_approval_manager()
+    approval_manager.reset()
+    calls = 0
+    manager = ToolManager(
+        {"diagnostics": {"enabled": False}},
+        lambda _error, _context: None,
+    )
+    manager._permission_enabled = True
+    monkeypatch.setattr(
+        manager,
+        "check_tool_permission",
+        lambda *_args, **_kwargs: (PermissionResult.ASK, "approval required"),
+    )
+    monkeypatch.setattr(manager, "add_message_to_search", lambda _message: None)
+
+    def _grep_search(*_args: Any, **_kwargs: Any) -> str:
+        nonlocal calls
+        calls += 1
+        return "executed"
+
+    monkeypatch.setattr(manager, "perform_grep_search", _grep_search)
+    session_id = "session_sync_resume"
+    execution = asyncio.create_task(
+        manager.execute_tool_async(
+            "grep_search",
+            {"pattern": "penguin"},
+            {
+                "session_id": session_id,
+                "approval_policy": {
+                    "wait_for_resolution": True,
+                    "timeout_seconds": 1.0,
+                },
+            },
+        )
+    )
+
+    request_id = await _wait_for_pending_approval(session_id)
+    heartbeat_ran = False
+
+    async def _heartbeat() -> None:
+        nonlocal heartbeat_ran
+        await asyncio.sleep(0)
+        heartbeat_ran = True
+
+    await _heartbeat()
+    assert heartbeat_ran is True
+    assert approval_manager.approve(request_id) is not None
+    result = await asyncio.wait_for(execution, timeout=1.0)
+
+    assert result == "executed"
+    assert calls == 1
+    approval_manager.reset()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_approval_wait_denies_request_and_never_executes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancelling channel work must wake its approval worker and close state."""
+    approval_manager = get_approval_manager()
+    approval_manager.reset()
+    manager = ToolManager(
+        {"diagnostics": {"enabled": False}},
+        lambda _error, _context: None,
+    )
+    manager._permission_enabled = True
+    monkeypatch.setattr(
+        manager,
+        "check_tool_permission",
+        lambda *_args, **_kwargs: (PermissionResult.ASK, "approval required"),
+    )
+
+    async def _unexpected_execution(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("cancelled tool executed")
+
+    monkeypatch.setattr(manager, "perform_memory_search", _unexpected_execution)
+    session_id = "session_async_cancel"
+    execution = asyncio.create_task(
+        manager.execute_tool_async(
+            "memory_search",
+            {"query": "penguin"},
+            {
+                "session_id": session_id,
+                "approval_policy": {
+                    "wait_for_resolution": True,
+                    "timeout_seconds": 10.0,
+                },
+            },
+        )
+    )
+
+    request_id = await _wait_for_pending_approval(session_id)
+    execution.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await execution
+
+    resolved = approval_manager.get_request(request_id)
+    assert resolved is not None
+    assert resolved.status.value == "denied"
+    assert approval_manager.get_pending(session_id=session_id) == []
+    approval_manager.reset()
 
 
 @pytest.mark.asyncio

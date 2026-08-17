@@ -35,6 +35,7 @@ import websockets
 import httpx
 from PIL import Image, UnidentifiedImageError
 
+from penguin.channels.chat import ChatProcessRequest, execute_chat_turn
 from penguin.config import WORKSPACE_PATH
 from penguin.core import PenguinCore
 from penguin.core_runtime import process_lifecycle
@@ -4339,66 +4340,37 @@ async def handle_chat_message(
                 reasoning_payload,
             )
 
-        # Process the message with all available options
-        with execution_context_scope(execution_context):
-            request_gate = _get_session_request_gate(core, request_session_id)
-            gate_locked_before = request_gate.locked()
-            gate_wait_started = time.perf_counter()
-            active_requests = getattr(core, "_opencode_active_requests", {})
-            active_request_count = (
-                active_requests.get(request_session_id, 0)
-                if isinstance(active_requests, dict) and request_session_id
-                else 0
-            )
-            _request_log_debug(
-                "chat.trace.before_process request=%s session=%s gate=%s gate_locked=%s active=%s cm=%s tracked=%s ctx=%s",
-                execution_context.request_id or "unknown",
-                request_session_id or "unknown",
-                hex(id(request_gate)),
-                gate_locked_before,
-                active_request_count,
-                hex(id(getattr(core, "conversation_manager", None)))
-                if getattr(core, "conversation_manager", None) is not None
-                else "none",
-                bool(request_tracked),
-                execution_context.as_dict(),
-            )
-            async with request_gate:
-                gate_wait_ms = (time.perf_counter() - gate_wait_started) * 1000
-                _request_log_debug(
-                    "chat.trace.gate_acquired request=%s session=%s gate=%s wait_ms=%.2f tracked=%s",
-                    execution_context.request_id or "unknown",
-                    request_session_id or "unknown",
-                    hex(id(request_gate)),
-                    gate_wait_ms,
-                    bool(request_tracked),
-                )
-                process_started = time.perf_counter()
-                process_result = await core.process(
-                    input_data=input_data,
-                    context=request.context,
-                    conversation_id=effective_session_id,
-                    agent_id=request.agent_id,
-                    max_iterations=request.max_iterations,
-                    context_files=context_files,
-                    streaming=effective_streaming,
-                    stream_callback=stream_cb,
-                    api_client_override=request_api_client,
-                    model_config_override=request_model_config,
-                )
-                process_ms = (time.perf_counter() - process_started) * 1000
-            _request_log_debug(
-                "chat.trace.after_process request=%s session=%s status=%s iterations=%s response_len=%s actions=%s usage=%s process_ms=%.2f preview=%r",
-                execution_context.request_id or "unknown",
-                request_session_id or "unknown",
-                process_result.get("status"),
-                process_result.get("iterations"),
-                len(process_result.get("assistant_response", "") or ""),
-                len(process_result.get("action_results", []) or []),
-                process_result.get("usage") or {},
-                process_ms,
-                _preview_text(process_result.get("assistant_response", "")),
-            )
+        # Use the shared transport-neutral authority and per-session gate.
+        process_started = time.perf_counter()
+        process_result = await execute_chat_turn(
+            core,
+            ChatProcessRequest(
+                input_data=input_data,
+                execution_context=execution_context,
+                session_id=request_session_id,
+                context=request.context,
+                agent_id=request.agent_id,
+                max_iterations=request.max_iterations,
+                context_files=context_files,
+                streaming=effective_streaming,
+                stream_callback=stream_cb,
+                api_client_override=request_api_client,
+                model_config_override=request_model_config,
+            ),
+        )
+        process_ms = (time.perf_counter() - process_started) * 1000
+        _request_log_debug(
+            "chat.trace.after_process request=%s session=%s status=%s iterations=%s response_len=%s actions=%s usage=%s process_ms=%.2f preview=%r",
+            execution_context.request_id or "unknown",
+            request_session_id or "unknown",
+            process_result.get("status"),
+            process_result.get("iterations"),
+            len(process_result.get("assistant_response", "") or ""),
+            len(process_result.get("action_results", []) or []),
+            process_result.get("usage") or {},
+            process_ms,
+            _preview_text(process_result.get("assistant_response", "")),
+        )
 
         # Build response
         if (
@@ -4912,11 +4884,13 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
                         reasoning_payload,
                     )
                 try:
-                    with execution_context_scope(execution_context):
-                        process_task = asyncio.create_task(
-                            core.process(
+                    process_task = asyncio.create_task(
+                        execute_chat_turn(
+                            core,
+                            ChatProcessRequest(
                                 input_data=input_data,
-                                conversation_id=effective_session_id,
+                                execution_context=execution_context,
+                                session_id=effective_session_id,
                                 agent_id=agent_id,
                                 max_iterations=max_iterations,
                                 context_files=context_files,
@@ -4925,8 +4899,9 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
                                 stream_callback=per_request_stream_callback,
                                 api_client_override=request_api_client,
                                 model_config_override=request_model_config,
-                            )
+                            ),
                         )
+                    )
 
                     # Wait for the core process to finish
                     process_result = await process_task

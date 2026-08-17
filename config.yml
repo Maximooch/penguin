@@ -22,6 +22,66 @@ diagnostics:
   enabled: true
   verbose_logging: true
 
+# Optional Telegram bot. Credentials are read from the named environment
+# variables and must never be placed in this file.
+channels:
+  telegram:
+    enabled: false
+    expected_username: Penguin_agent_bot
+    transport: polling  # polling | webhook
+    token_env: TELEGRAM_BOT_TOKEN
+
+    # Empty numeric allowlists deny access by default.
+    dm_policy: allowlist  # pairing | allowlist | open | disabled
+    allow_from: []  # Telegram user IDs
+    group_policy: allowlist  # allowlist | open | disabled
+    group_allow_from: []  # Telegram group/supergroup chat IDs, usually negative
+    group_sender_allow_from: []  # Telegram user IDs allowed inside those groups
+    activation: mention  # mention | always
+    groups: {}  # Optional trusted per-group/topic binding defaults
+    open_access_acknowledged: false
+
+    streaming:
+      mode: progress  # off | edit | progress
+      edit_interval_ms: 750
+      include_reasoning: false
+
+    media:
+      max_download_mb: 20
+      max_document_text_chars: 100000
+
+    permissions:
+      mode: workspace  # read_only | workspace | full_access
+      approvals:
+        shell: ask
+        fileWrite: ask
+        fileDelete: ask
+        gitPush: ask
+        network: ask
+        secrets: deny
+        default: ask
+      timeout_seconds: 300
+      allow_yolo: false
+
+    delivery:
+      retry_attempts: 8
+      retry_base_seconds: 1
+      retry_max_seconds: 300
+      dead_letter_after_hours: 24
+
+    runtime:
+      poll_timeout_seconds: 30
+      request_timeout_seconds: 30
+      ingress_workers: 2
+      delivery_workers: 2
+
+    webhook:
+      public_url: null
+      path: /api/v1/integrations/telegram/webhook
+      secret_env: TELEGRAM_WEBHOOK_SECRET
+      timeout_seconds: 10
+      body_limit_bytes: 1048576
+
 # CLI Display Settings
 cli:
   display:

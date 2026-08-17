@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import fnmatch
 import logging
+import math
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -177,6 +179,9 @@ class ApprovalManager:
         
         # Resolved requests (kept for history/audit)
         self._resolved: Dict[str, ApprovalRequest] = {}
+
+        # Approved requests whose one-shot execution grant has been consumed.
+        self._consumed_approvals: Set[str] = set()
         
         # Session approvals by session_id
         self._session_approvals: Dict[str, List[SessionApproval]] = {}
@@ -190,17 +195,20 @@ class ApprovalManager:
         
         # Lock for thread-safe operations
         self._data_lock = threading.RLock()
+        self._resolution_condition = threading.Condition(self._data_lock)
         
         self._initialized = True
         logger.info(f"ApprovalManager initialized with TTL={default_ttl_seconds}s")
     
     def reset(self) -> None:
         """Reset the manager state. Mainly for testing."""
-        with self._data_lock:
+        with self._resolution_condition:
             self._pending.clear()
             self._resolved.clear()
+            self._consumed_approvals.clear()
             self._session_approvals.clear()
             self._global_approvals.clear()
+            self._resolution_condition.notify_all()
     
     # --- Request Creation ---
     
@@ -212,7 +220,7 @@ class ApprovalManager:
         reason: str,
         session_id: Optional[str] = None,
         context: Optional[Dict[str, Any]] = None,
-        ttl_seconds: Optional[int] = None,
+        ttl_seconds: Optional[float] = None,
     ) -> ApprovalRequest:
         """Create a new approval request.
         
@@ -228,7 +236,11 @@ class ApprovalManager:
         Returns:
             The created ApprovalRequest
         """
-        ttl = timedelta(seconds=ttl_seconds) if ttl_seconds else self._default_ttl
+        ttl = (
+            timedelta(seconds=ttl_seconds)
+            if ttl_seconds is not None
+            else self._default_ttl
+        )
         
         request = ApprovalRequest(
             tool_name=tool_name,
@@ -275,41 +287,52 @@ class ApprovalManager:
         Returns:
             The resolved request, or None if not found/already resolved
         """
-        with self._data_lock:
-            request = self._pending.pop(request_id, None)
-            if request is None:
-                logger.warning(f"Approval request not found or already resolved: {request_id}")
-                return None
-            
-            request.status = ApprovalStatus.APPROVED
-            request.resolved_at = datetime.utcnow()
-            request.resolution_scope = scope
-            
-            self._resolved[request_id] = request
-            
-            # Create session/pattern approval if scope warrants
-            if scope == ApprovalScope.SESSION and request.session_id:
-                self._add_session_approval(
-                    request.session_id,
-                    request.operation,
-                    pattern=None,
-                )
-            elif scope == ApprovalScope.PATTERN and pattern:
-                session_id = request.session_id or "__global__"
-                self._add_session_approval(
-                    session_id,
-                    request.operation,
-                    pattern=pattern,
-                )
+        expired_request: Optional[ApprovalRequest] = None
+        request: Optional[ApprovalRequest] = None
+        with self._resolution_condition:
+            existing = self._pending.get(request_id)
+            if existing is not None and existing.is_expired():
+                expired_request = self._expire_pending_locked(request_id)
+            else:
+                request = self._pending.pop(request_id, None)
+                if request is not None:
+                    request.status = ApprovalStatus.APPROVED
+                    request.resolved_at = datetime.utcnow()
+                    request.resolution_scope = scope
+                    self._resolved[request_id] = request
+
+                    # Create session/pattern approval if scope warrants.
+                    if scope == ApprovalScope.SESSION and request.session_id:
+                        self._add_session_approval(
+                            request.session_id,
+                            request.operation,
+                            pattern=None,
+                        )
+                    elif scope == ApprovalScope.PATTERN and pattern:
+                        session_id = request.session_id or "__global__"
+                        self._add_session_approval(
+                            session_id,
+                            request.operation,
+                            pattern=pattern,
+                        )
+
+                    self._resolution_condition.notify_all()
+
+        if expired_request is not None:
+            self._notify_resolved_callbacks(expired_request)
+            logger.warning("Approval request expired before approval: %s", request_id)
+            return None
+        if request is None:
+            logger.warning(
+                "Approval request not found or already resolved: %s",
+                request_id,
+            )
+            return None
         
         logger.info(f"Approval granted: id={request_id}, scope={scope.value}")
         
         # Notify listeners
-        for callback in self._on_request_resolved:
-            try:
-                callback(request)
-            except Exception as e:
-                logger.error(f"Error in approval resolved callback: {e}")
+        self._notify_resolved_callbacks(request)
         
         return request
     
@@ -322,27 +345,129 @@ class ApprovalManager:
         Returns:
             The resolved request, or None if not found/already resolved
         """
-        with self._data_lock:
-            request = self._pending.pop(request_id, None)
-            if request is None:
-                logger.warning(f"Approval request not found or already resolved: {request_id}")
-                return None
-            
-            request.status = ApprovalStatus.DENIED
-            request.resolved_at = datetime.utcnow()
-            
-            self._resolved[request_id] = request
+        expired_request: Optional[ApprovalRequest] = None
+        request: Optional[ApprovalRequest] = None
+        with self._resolution_condition:
+            existing = self._pending.get(request_id)
+            if existing is not None and existing.is_expired():
+                expired_request = self._expire_pending_locked(request_id)
+            else:
+                request = self._pending.pop(request_id, None)
+                if request is not None:
+                    request.status = ApprovalStatus.DENIED
+                    request.resolved_at = datetime.utcnow()
+                    self._resolved[request_id] = request
+                    self._resolution_condition.notify_all()
+
+        if expired_request is not None:
+            self._notify_resolved_callbacks(expired_request)
+            logger.warning("Approval request expired before denial: %s", request_id)
+            return None
+        if request is None:
+            logger.warning(
+                "Approval request not found or already resolved: %s",
+                request_id,
+            )
+            return None
         
         logger.info(f"Approval denied: id={request_id}")
         
         # Notify listeners
-        for callback in self._on_request_resolved:
-            try:
-                callback(request)
-            except Exception as e:
-                logger.error(f"Error in approval resolved callback: {e}")
+        self._notify_resolved_callbacks(request)
         
         return request
+
+    def wait_for_resolution(
+        self,
+        request_id: str,
+        timeout_seconds: Optional[float] = None,
+    ) -> Optional[ApprovalRequest]:
+        """Block until an approval is resolved or its wait expires.
+
+        This method is intentionally synchronous. Async callers must run it in
+        a worker thread so the event loop remains available to receive the
+        approval response.
+
+        Args:
+            request_id: ID of the request to wait for.
+            timeout_seconds: Optional maximum wait. A timeout expires the
+                request so a later approval cannot resume stale work.
+
+        Returns:
+            The resolved request, or ``None`` if it was reset or not found.
+        """
+        deadline: Optional[float] = None
+        if timeout_seconds is not None:
+            timeout = float(timeout_seconds)
+            if not math.isfinite(timeout):
+                timeout = 0.0
+            deadline = time.monotonic() + max(timeout, 0.0)
+
+        while True:
+            expired_request: Optional[ApprovalRequest] = None
+            callbacks: List[Callable[[ApprovalRequest], None]] = []
+            with self._resolution_condition:
+                resolved = self._resolved.get(request_id)
+                if resolved is not None:
+                    return resolved
+
+                request = self._pending.get(request_id)
+                if request is None:
+                    return None
+
+                now = datetime.utcnow()
+                wait_limits: List[float] = []
+                if request.expires_at is not None:
+                    wait_limits.append((request.expires_at - now).total_seconds())
+                if deadline is not None:
+                    wait_limits.append(deadline - time.monotonic())
+
+                if wait_limits and min(wait_limits) <= 0:
+                    expired_request = self._expire_pending_locked(request_id)
+                    callbacks = list(self._on_request_resolved)
+                else:
+                    wait_for = min(wait_limits) if wait_limits else None
+                    self._resolution_condition.wait(timeout=wait_for)
+                    continue
+
+            if expired_request is not None:
+                self._invoke_callbacks(
+                    callbacks,
+                    expired_request,
+                    "approval expired",
+                )
+                return expired_request
+
+    def consume_approved_request(
+        self,
+        request_id: str,
+        *,
+        tool_name: str,
+        operation: str,
+        resource: str,
+        session_id: Optional[str],
+    ) -> bool:
+        """Atomically consume one matching approved execution grant.
+
+        Returns ``True`` exactly once for an approved request whose protected
+        operation matches the resumed call. Duplicate or mismatched claims are
+        rejected without replaying the tool.
+        """
+        with self._data_lock:
+            request = self._resolved.get(request_id)
+            if request is None or request.status != ApprovalStatus.APPROVED:
+                return False
+            if request_id in self._consumed_approvals:
+                return False
+            if (
+                request.tool_name != tool_name
+                or request.operation != operation
+                or request.resource != resource
+                or request.session_id != session_id
+            ):
+                return False
+            self._consumed_approvals.add(request_id)
+            return True
     
     # --- Pre-approval & Session Approvals ---
     
@@ -507,33 +632,62 @@ class ApprovalManager:
             return [a for a in approvals if not a.is_expired()]
     
     # --- Expiration Handling ---
+
+    def _expire_pending_locked(
+        self,
+        request_id: str,
+    ) -> Optional[ApprovalRequest]:
+        """Move one pending request to expired state while holding the lock."""
+        request = self._pending.pop(request_id, None)
+        if request is None:
+            return None
+        request.status = ApprovalStatus.EXPIRED
+        request.resolved_at = datetime.utcnow()
+        self._resolved[request_id] = request
+        self._resolution_condition.notify_all()
+        return request
+
+    @staticmethod
+    def _invoke_callbacks(
+        callbacks: List[Callable[[ApprovalRequest], None]],
+        request: ApprovalRequest,
+        event_name: str,
+    ) -> None:
+        """Invoke a callback snapshot without holding manager state locks."""
+        for callback in callbacks:
+            try:
+                callback(request)
+            except Exception as exc:
+                logger.error("Error in %s callback: %s", event_name, exc)
+
+    def _notify_resolved_callbacks(self, request: ApprovalRequest) -> None:
+        """Notify current resolution listeners outside the manager lock."""
+        with self._data_lock:
+            callbacks = list(self._on_request_resolved)
+        self._invoke_callbacks(callbacks, request, "approval resolved")
     
     def _expire_old_requests(self) -> int:
         """Expire old pending requests. Returns count of expired."""
-        expired_ids = []
-        
-        with self._data_lock:
-            for request_id, request in self._pending.items():
-                if request.is_expired():
-                    expired_ids.append(request_id)
-            
+        expired_requests: List[ApprovalRequest] = []
+
+        with self._resolution_condition:
+            expired_ids = [
+                request_id
+                for request_id, request in self._pending.items()
+                if request.is_expired()
+            ]
             for request_id in expired_ids:
-                request = self._pending.pop(request_id)
-                request.status = ApprovalStatus.EXPIRED
-                request.resolved_at = datetime.utcnow()
-                self._resolved[request_id] = request
-                
-                # Notify listeners
-                for callback in self._on_request_resolved:
-                    try:
-                        callback(request)
-                    except Exception as e:
-                        logger.error(f"Error in approval expired callback: {e}")
+                request = self._expire_pending_locked(request_id)
+                if request is not None:
+                    expired_requests.append(request)
+
+        for request in expired_requests:
+            self._notify_resolved_callbacks(request)
         
-        if expired_ids:
-            logger.info(f"Expired {len(expired_ids)} approval requests")
+        if expired_requests:
+            logger.info(f"Expired {len(expired_requests)} approval requests")
         
-        return len(expired_ids)
+        return len(expired_requests)
     
     def cleanup_expired_sessions(self) -> int:
         """Clean up expired session approvals. Returns count removed."""
@@ -588,4 +742,3 @@ class ApprovalManager:
 def get_approval_manager() -> ApprovalManager:
     """Get the singleton ApprovalManager instance."""
     return ApprovalManager()
-

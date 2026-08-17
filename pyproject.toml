@@ -130,6 +130,9 @@ llm_ollama = ["ollama>=0.1.7"]
 # Orchestration (Temporal for durable workflows)
 orchestration = ["temporalio>=1.5.0"]
 
+# Telegram bot transport (installed only when Telegram support is used)
+telegram = ["python-telegram-bot==22.6; python_version>='3.10'"]
+
 # PyDoll browser automation fallback (optional - no WebDriver required)
 pydoll = [
     "pydoll-python>=2.0.0; python_version>='3.10'",  # Requires Python 3.10+
@@ -183,6 +186,7 @@ all = [
     "bitsandbytes>=0.43.0; sys_platform != 'darwin'",
     "ollama>=0.1.7",
     "temporalio>=1.5.0",
+    "python-telegram-bot==22.6; python_version>='3.10'",
     "pydoll-python>=2.0.0; python_version>='3.10'",
     # browser-harness is not on PyPI; install it separately from source.
     "textual",

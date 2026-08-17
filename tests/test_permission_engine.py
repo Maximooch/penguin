@@ -438,6 +438,119 @@ class TestToolPermissionMapping:
         assert is_safe_tool("read_file") is True
         assert is_safe_tool("list_files") is True
         assert is_safe_tool("grep_search") is True
+        assert is_safe_tool("list_skills") is True
+
+    def test_every_native_model_tool_has_an_explicit_classification(self):
+        from penguin.security.tool_permissions import get_tool_operations
+        from penguin.tools.tool_manager import ToolManager
+
+        manager = ToolManager(
+            {},
+            lambda *_args, **_kwargs: None,
+            fast_startup=True,
+        )
+        native_names = {str(schema["name"]) for schema in manager.tools}
+
+        assert {
+            tool_name
+            for tool_name in native_names
+            if not get_tool_operations(tool_name)
+        } == set()
+
+    def test_agent_orchestration_is_conservatively_classified(self):
+        from penguin.security.tool_permissions import (
+            get_tool_operations,
+            get_tool_policy_keys,
+        )
+
+        assert get_tool_operations("spawn_sub_agent") == [Operation.PROCESS_SPAWN]
+        assert get_tool_policy_keys("spawn_sub_agent") == {"shell"}
+        assert get_tool_policy_keys("stop_sub_agent") == {"shell"}
+        assert get_tool_policy_keys("list_skills") == set()
+
+    def test_secret_resources_add_a_separate_fail_closed_category(self):
+        from penguin.security.tool_permissions import get_tool_policy_keys
+
+        assert get_tool_policy_keys("read_file", {"path": ".env.local"}) == {"secrets"}
+        assert get_tool_policy_keys(
+            "write_file",
+            {"path": "certs/private.pem", "content": "test"},
+        ) == {"fileWrite", "secrets"}
+        assert get_tool_policy_keys(
+            "execute_command",
+            {"command": "printenv TELEGRAM_BOT_TOKEN"},
+        ) == {"shell", "secrets"}
+        assert get_tool_policy_keys("read_file", {"path": "docs/config.md"}) == set()
+
+    @pytest.mark.parametrize(
+        ("tool_input", "expected_keys"),
+        [
+            (
+                {
+                    "command": "python server.py",
+                    "env": {"TELEGRAM_BOT_TOKEN": "opaque-value"},
+                },
+                {"shell", "secrets"},
+            ),
+            (
+                {
+                    "command": "python server.py",
+                    "env": {"RUNTIME_ALIAS": "$OPENAI_API_KEY"},
+                },
+                {"shell", "secrets"},
+            ),
+            (
+                {
+                    "command": "python server.py",
+                    "env": {"PYTHONUNBUFFERED": "1"},
+                },
+                {"shell"},
+            ),
+        ],
+    )
+    def test_process_start_classifies_sensitive_environment_overrides(
+        self,
+        tool_input,
+        expected_keys,
+    ):
+        from penguin.security.tool_permissions import get_tool_policy_keys
+
+        assert get_tool_policy_keys("process_start", tool_input) == expected_keys
+
+    def test_process_start_does_not_expose_environment_values_as_resources(self):
+        from penguin.security.tool_permissions import extract_resources_from_input
+
+        assert extract_resources_from_input(
+            "process_start",
+            {
+                "command": "python server.py",
+                "env": {"TELEGRAM_BOT_TOKEN": "opaque-value"},
+            },
+        ) == ["python server.py"]
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "echo $TELEGRAM_BOT_TOKEN\n",
+            "printenv TELEGRAM_BOT_TOKEN\n",
+            "python -c 'import os; print(os.environ[\"OPENAI_API_KEY\"])'\n",
+        ],
+    )
+    def test_process_write_stdin_classifies_secret_access(self, text):
+        from penguin.security.tool_permissions import get_tool_policy_keys
+
+        assert get_tool_policy_keys(
+            "process_write_stdin",
+            {"process_id": "process-1", "text": text},
+        ) == {"shell", "secrets"}
+
+    def test_process_write_stdin_non_secret_text_stays_shell_only(self):
+        from penguin.security.tool_permissions import get_tool_policy_keys
+
+        assert get_tool_policy_keys(
+            "process_write_stdin",
+            {"process_id": "process-1", "text": "echo ready\n"},
+        ) == {"shell"}
 
     def test_write_tools_are_not_safe(self):
         from penguin.security.tool_permissions import is_safe_tool
@@ -450,6 +563,9 @@ class TestToolPermissionMapping:
         assert is_safe_tool("patch_file") is False
         assert is_safe_tool("patch_files") is False
         assert is_safe_tool("apply_diff") is False
+        assert is_safe_tool("browser_interact") is False
+        assert is_safe_tool("pydoll_browser_interact") is False
+        assert is_safe_tool("reindex_workspace") is False
 
     def test_extract_resource(self):
         from penguin.security.tool_permissions import extract_resource_from_input

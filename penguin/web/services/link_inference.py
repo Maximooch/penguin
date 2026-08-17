@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import replace
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, PositiveInt
 
@@ -21,13 +21,14 @@ class LinkExecutionRequest(BaseModel):
     workos_organization_id: str | None = None
     # Omitted together for transient Link conversations that have no durable
     # Link session/agent-instance identity.
-    session_id: str | None = None
-    agent_id: str | None = None
+    # Pydantic evaluates these annotations at runtime on supported Python 3.9.
+    session_id: Optional[str] = None  # noqa: UP045
+    agent_id: Optional[str] = None  # noqa: UP045
     run_id: str
     requested_model_id: str
     # Optional for rolling compatibility with Link versions that predate the
     # explicit per-invocation spend bound.
-    max_output_tokens: PositiveInt | None = None
+    max_output_tokens: Optional[PositiveInt] = None  # noqa: UP045
     execution_source: Literal["link_gateway"]
     provider_state_owner: Literal["link_managed"]
     settlement_mode: Literal["debit_link_credits"]

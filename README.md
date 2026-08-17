@@ -147,6 +147,9 @@ pip install "penguin-ai[tui]"
 # Legacy Textual prototype / experimental UI support
 pip install "penguin-ai[legacy_tui]"
 
+# Telegram bot integration (Python 3.10+)
+pip install "penguin-ai[telegram]"
+
 # Full feature set
 pip install penguin-ai[all]
 ```
@@ -199,6 +202,7 @@ Under the hood, the `latest` targets override the project default with `--exclud
 | `[memory_lance]` | LanceDB vector database |
 | `[memory_chroma]` | ChromaDB integration |
 | `[mcp]` | Model Context Protocol client/server dependencies (Python 3.10+ for the MCP SDK) |
+| `[telegram]` | Telegram DMs, groups, topics, streaming, approvals, and durable delivery (Python 3.10+). See the [Telegram setup guide](docs/docs/usage/telegram.md). |
 | `[browser]` | Browser automation support. Installs PyDoll fallback; browser-harness must be installed from a local/source checkout because it is not published on PyPI yet. |
 | `[pydoll]` | PyDoll browser automation fallback only |
 | `[all]` | Everything above that is available from PyPI |

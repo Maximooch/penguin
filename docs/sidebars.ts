@@ -43,6 +43,7 @@ const sidebars: SidebarsConfig = {
         'usage/skills',
         'usage/project_management',
         'usage/api_usage',
+        'usage/telegram',
         'usage/python_api_reference'
       ],
     },

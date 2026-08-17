@@ -71,6 +71,7 @@ from penguin.tools.runtime import (
     tool_results_loop_identity,
 )
 from penguin.config import TASK_COMPLETION_PHRASE  # Add this import
+from penguin.skills.renderer import render_activation
 from penguin.system.execution_context import get_current_execution_context
 
 import logging
@@ -2638,6 +2639,15 @@ class Engine:
         if agent_id:
             if self.get_agent(agent_id) is not None:
                 return agent_id, None
+            execution_context = get_current_execution_context()
+            if (
+                execution_context is not None
+                and execution_context.require_registered_agent
+                and execution_context.agent_id == agent_id
+            ):
+                raise ValueError(
+                    f"Configured request agent is unavailable: {agent_id}"
+                )
             logger.warning(
                 "Unknown requested agent '%s'; using default agent '%s'",
                 agent_id,
@@ -3559,38 +3569,114 @@ class Engine:
         self,
         messages: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
-        """Append a plan-mode system notice for the current request context."""
+        """Append trusted request-only notices without mutating conversation state."""
         execution_context = get_current_execution_context()
         if execution_context is None:
             return messages
 
+        additions: List[Dict[str, Any]] = []
+
+        def has_marker(marker: str) -> bool:
+            for message in [*messages, *additions]:
+                if not isinstance(message, dict) or message.get("role") != "system":
+                    continue
+                content = message.get("content")
+                if isinstance(content, str) and marker in content:
+                    return True
+            return False
+
         raw_mode = execution_context.agent_mode
         mode = raw_mode.strip().lower() if isinstance(raw_mode, str) else None
-        if mode != "plan":
-            return messages
+        mode_marker = "[PENGUIN_AGENT_MODE_PLAN]"
+        if mode == "plan" and not has_marker(mode_marker):
+            notice = (
+                f"{mode_marker} Plan mode is active for this session. You must stay "
+                "read-only and avoid mutating operations. Do not attempt file writes, "
+                "destructive shell commands, or process execution intended to modify "
+                "state. If implementation is required, provide a plan and request "
+                "build mode."
+            )
+            additions.append({"role": "system", "content": notice})
+            logger.info(
+                "agent.mode.notice_applied mode=plan session=%s agent=%s",
+                execution_context.session_id,
+                execution_context.agent_id,
+            )
 
-        marker = "[PENGUIN_AGENT_MODE_PLAN]"
-        for message in messages:
-            if not isinstance(message, dict):
-                continue
-            if message.get("role") != "system":
-                continue
-            content = message.get("content")
-            if isinstance(content, str) and marker in content:
-                return messages
+        request_prompt = execution_context.request_system_prompt
+        prompt_marker = "[PENGUIN_TRUSTED_REQUEST_PROMPT]"
+        if request_prompt is not None:
+            if (
+                not isinstance(request_prompt, str)
+                or not request_prompt.strip()
+                or "\x00" in request_prompt
+                or len(request_prompt) > 16_000
+            ):
+                raise ValueError("request_system_prompt is invalid")
+            if not has_marker(prompt_marker):
+                additions.append(
+                    {
+                        "role": "system",
+                        "content": f"{prompt_marker}\n{request_prompt.strip()}",
+                    }
+                )
 
-        notice = (
-            f"{marker} Plan mode is active for this session. You must stay read-only "
-            "and avoid mutating operations. Do not attempt file writes, destructive "
-            "shell commands, or process execution intended to modify state. "
-            "If implementation is required, provide a plan and request build mode."
+        skill_names = execution_context.request_skills
+        if skill_names:
+            manager = self._request_skill_manager(execution_context.agent_id)
+            for name in skill_names:
+                if (
+                    not isinstance(name, str)
+                    or re.fullmatch(
+                        r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?", name
+                    )
+                    is None
+                ):
+                    raise ValueError("request_skills contains an invalid skill name")
+                marker = f"[PENGUIN_REQUEST_SKILL:{name}]"
+                if has_marker(marker):
+                    continue
+                skill = manager.get(name)
+                if skill is None:
+                    raise ValueError(f"Configured request skill is unavailable: {name}")
+                additions.append(
+                    {
+                        "role": "system",
+                        "content": f"{marker}\n{render_activation(skill)}",
+                    }
+                )
+
+        return [*messages, *additions]
+
+    def _request_skill_manager(self, agent_id: Optional[str]) -> Any:
+        """Return an existing skill catalog without activating session state."""
+
+        agent = self.get_agent(agent_id) if agent_id else None
+        conversation_manager = (
+            agent.conversation_manager
+            if agent is not None
+            else self.conversation_manager
         )
-        logger.info(
-            "agent.mode.notice_applied mode=plan session=%s agent=%s",
-            execution_context.session_id,
-            execution_context.agent_id,
+        manager = getattr(conversation_manager, "skill_manager", None)
+        if manager is not None:
+            return manager
+
+        tool_manager = (
+            agent.tool_manager
+            if agent is not None and agent.tool_manager is not None
+            else self.tool_manager
         )
-        return [*messages, {"role": "system", "content": notice}]
+        manager = getattr(tool_manager, "skill_manager", None)
+        if manager is None:
+            try:
+                manager = tool_manager.skill_tools.manager
+            except Exception as exc:
+                raise RuntimeError(
+                    "Agent Skills are unavailable for this request"
+                ) from exc
+        if manager is None:
+            raise RuntimeError("Agent Skills are unavailable for this request")
+        return manager
 
     async def _llm_step(
         self,

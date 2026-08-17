@@ -471,7 +471,7 @@ async def test_stream_http_error_reads_link_error_body_before_reporting() -> Non
     provider = _provider(handler)
     with pytest.raises(
         LLMProviderError,
-        match="The selected model rejected this request.",
+        match=r"The selected model rejected this request\.",
     ) as raised:
         await provider.get_response(
             [{"role": "user", "content": "hi"}],

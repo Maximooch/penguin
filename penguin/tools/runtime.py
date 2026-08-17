@@ -701,6 +701,8 @@ def infer_tool_effect(tool_call: ToolCall) -> ToolEffect:
     """Infer a conservative scheduler effect for a tool call."""
 
     name = tool_call.name
+    if name == "publish_artifact":
+        return "external_mutation"
     if name in _READ_ONLY_TOOL_NAMES:
         return "read"
     if name in _FILESYSTEM_MUTATION_TOOL_NAMES:
@@ -719,6 +721,9 @@ def infer_tool_resources(tool_call: ToolCall) -> tuple[ToolResource, ...]:
     name = tool_call.name
     if name in _READ_ONLY_TOOL_NAMES or name in _FILESYSTEM_MUTATION_TOOL_NAMES:
         resources.extend(_path_resources(tool_call.arguments))
+    if name == "publish_artifact":
+        resources.extend(_path_resources(tool_call.arguments))
+        resources.append("network:channel")
     if name in _PROCESS_MUTATION_TOOL_NAMES:
         resources.append("process:*")
         resources.extend(_command_git_resources(_argument_text(tool_call.arguments)))
@@ -1831,14 +1836,60 @@ def image_artifacts_from_action_result(
     return artifacts
 
 
-def legacy_action_result_from_tool_result(tool_result: ToolResult) -> dict[str, str]:
-    """Convert a normalized tool result back to Penguin's current result shape."""
+def _project_artifact(value: Any) -> Optional[dict[str, Any]]:
+    """Return one bounded, explicit artifact descriptor from tool output."""
 
-    return {
+    if not isinstance(value, dict):
+        return None
+    projected: dict[str, Any] = {}
+    for key in (
+        "type",
+        "path",
+        "file_path",
+        "image_path",
+        "file_name",
+        "mime_type",
+        "format",
+        "width",
+        "height",
+    ):
+        item = value.get(key)
+        if isinstance(item, str) and item.strip():
+            projected[key] = item.strip()[:4096]
+        elif (
+            key in {"width", "height"}
+            and isinstance(item, int)
+            and not isinstance(item, bool)
+            and item > 0
+        ):
+            projected[key] = item
+    if not any(key in projected for key in ("path", "file_path", "image_path")):
+        return None
+    return projected
+
+
+def legacy_action_result_from_tool_result(tool_result: ToolResult) -> dict[str, Any]:
+    """Convert a normalized tool result to the bounded public result shape."""
+
+    result: dict[str, Any] = {
         "action": tool_result.name,
         "result": tool_result.output,
         "status": tool_result.status,
     }
+    structured = tool_result.structured_output or {}
+    artifact = _project_artifact(structured.get("artifact"))
+    if artifact is not None:
+        result["artifact"] = artifact
+    raw_artifacts = structured.get("artifacts")
+    if isinstance(raw_artifacts, list):
+        artifacts = [
+            projected
+            for value in raw_artifacts[:20]
+            if (projected := _project_artifact(value)) is not None
+        ]
+        if artifacts:
+            result["artifacts"] = artifacts
+    return result
 
 
 __all__ = [

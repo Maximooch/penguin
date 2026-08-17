@@ -88,6 +88,51 @@ async def test_engine_executes_only_first_actionxml_action_per_iteration() -> No
 
 
 @pytest.mark.asyncio
+async def test_engine_projects_explicit_actionxml_artifact() -> None:
+    engine = Engine.__new__(Engine)
+    emitted: list[dict[str, Any]] = []
+
+    async def _emit_tool_event(_cm: Any, action_result: dict[str, Any]) -> None:
+        emitted.append(action_result)
+
+    engine._emit_tool_event = _emit_tool_event  # type: ignore[method-assign]
+    cm = SimpleNamespace(add_action_result=lambda **_kwargs: None)
+
+    class _ActionExecutor:
+        async def execute_action(self, _action: CodeActAction) -> dict[str, Any]:
+            return {
+                "action": "read_image",
+                "result": "loaded",
+                "status": "completed",
+                "artifact": {
+                    "type": "image",
+                    "image_path": "/workspace/image.png",
+                    "mime_type": "image/png",
+                },
+            }
+
+    action_results = await Engine._execute_codeact_actions(
+        engine,
+        cm,
+        _ActionExecutor(),
+        '<read_image>{"path":"image.png"}</read_image>',
+    )
+
+    expected = {
+        "action": "read_image",
+        "result": "loaded",
+        "status": "completed",
+        "artifact": {
+            "type": "image",
+            "image_path": "/workspace/image.png",
+            "mime_type": "image/png",
+        },
+    }
+    assert {key: action_results[0][key] for key in expected} == expected
+    assert emitted == [expected]
+
+
+@pytest.mark.asyncio
 async def test_responses_tool_call_execution_preserves_provider_identity() -> None:
     persisted: list[dict[str, Any]] = []
     started: list[dict[str, Any]] = []

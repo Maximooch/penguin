@@ -19,6 +19,29 @@ from penguin.security.permission_engine import Operation, PermissionResult
 
 logger = logging.getLogger(__name__)
 
+_SECRET_PATH_PATTERN = re.compile(
+    r"(?:^|[/\\\s'\"`])(?:"
+    r"\.env(?:\.[A-Za-z0-9_-]+)?|"
+    r"\.netrc|\.npmrc|\.pypirc|"
+    r"credentials(?:\.[A-Za-z0-9_-]+)?|"
+    r"id_(?:rsa|dsa|ecdsa|ed25519)|"
+    r"[^/\\\s'\"`]+\.(?:pem|key|p12|pfx)"
+    r")(?:$|[/\\\s'\"`;])|"
+    r"(?:^|[/\\])(?:secrets?|\.ssh)(?:[/\\]|$)",
+    re.IGNORECASE,
+)
+_SECRET_ENV_PATTERN = re.compile(
+    r"\$(?:\{)?[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY)"
+    r"[A-Z0-9_]*(?:\})?|"
+    r"\b(?:os\.environ|os\.getenv|process\.env|printenv)\b|"
+    r"(?:^|[;&|]\s*)env(?:\s|$)",
+    re.IGNORECASE,
+)
+_SECRET_ENV_NAME_PATTERN = re.compile(
+    r"(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY|ACCESS_KEY|CREDENTIAL)",
+    re.IGNORECASE,
+)
+
 
 # Map tool names to their required operations
 # Tools can require multiple operations (e.g., apply_diff needs read + write)
@@ -29,7 +52,12 @@ TOOL_OPERATION_MAP: dict[str, list[Operation]] = {
     "find_file": [Operation.FILESYSTEM_LIST],
     "get_file_map": [Operation.FILESYSTEM_LIST],
     "read_image": [Operation.FILESYSTEM_READ],
+    "publish_artifact": [Operation.FILESYSTEM_READ, Operation.NETWORK_POST],
     "enhanced_read": [Operation.FILESYSTEM_READ],
+    # Skill discovery and activation only read local instruction files. Activating a
+    # skill changes model context, but it does not mutate the host or external state.
+    "list_skills": [Operation.FILESYSTEM_LIST],
+    "activate_skill": [Operation.FILESYSTEM_READ],
     # File write operations
     "create_folder": [Operation.FILESYSTEM_MKDIR],
     "create_file": [Operation.FILESYSTEM_WRITE],
@@ -49,6 +77,11 @@ TOOL_OPERATION_MAP: dict[str, list[Operation]] = {
     # Code execution
     "code_execution": [Operation.PROCESS_EXECUTE],
     "execute_command": [Operation.PROCESS_EXECUTE],
+    "process_start": [Operation.PROCESS_SPAWN],
+    # Polling reads Penguin's bounded process buffer without changing the process.
+    "process_poll": [Operation.MEMORY_READ],
+    "process_write_stdin": [Operation.PROCESS_EXECUTE],
+    "process_stop": [Operation.PROCESS_KILL],
     # Search operations (generally safe)
     "grep_search": [Operation.FILESYSTEM_READ],
     "memory_search": [Operation.MEMORY_READ],
@@ -60,11 +93,12 @@ TOOL_OPERATION_MAP: dict[str, list[Operation]] = {
     "add_summary_note": [Operation.MEMORY_WRITE],
     # Browser operations
     "browser_navigate": [Operation.NETWORK_FETCH],
-    "browser_interact": [Operation.NETWORK_FETCH],
+    "browser_interact": [Operation.NETWORK_POST],
     "browser_screenshot": [Operation.FILESYSTEM_WRITE],  # Saves screenshot
     "pydoll_browser_navigate": [Operation.NETWORK_FETCH],
-    "pydoll_browser_interact": [Operation.NETWORK_FETCH],
+    "pydoll_browser_interact": [Operation.NETWORK_POST],
     "pydoll_browser_screenshot": [Operation.FILESYSTEM_WRITE],
+    "pydoll_browser_scroll": [Operation.NETWORK_POST],
     "browser_status": [Operation.NETWORK_FETCH],
     "browser_cleanup": [Operation.NETWORK_POST],
     "browser_open_tab": [Operation.NETWORK_FETCH],
@@ -84,12 +118,71 @@ TOOL_OPERATION_MAP: dict[str, list[Operation]] = {
     "git_log": [Operation.GIT_READ],
     "git_commit": [Operation.GIT_WRITE],
     "git_push": [Operation.GIT_PUSH],
-    # Indexing (requires filesystem access)
-    "reindex_workspace": [Operation.FILESYSTEM_READ],
+    "get_repository_status": [Operation.GIT_READ],
+    "create_and_switch_branch": [Operation.GIT_WRITE],
+    "commit_and_push_changes": [Operation.GIT_WRITE, Operation.GIT_PUSH],
+    "create_improvement_pr": [
+        Operation.GIT_WRITE,
+        Operation.GIT_PUSH,
+        Operation.NETWORK_POST,
+    ],
+    "create_feature_pr": [
+        Operation.GIT_WRITE,
+        Operation.GIT_PUSH,
+        Operation.NETWORK_POST,
+    ],
+    "create_bugfix_pr": [
+        Operation.GIT_WRITE,
+        Operation.GIT_PUSH,
+        Operation.NETWORK_POST,
+    ],
+    # Indexing reads files and persists their contents in Penguin memory.
+    "reindex_workspace": [Operation.FILESYSTEM_READ, Operation.MEMORY_WRITE],
     # Image encoding
     "encode_image_to_base64": [Operation.FILESYSTEM_READ],
     # Linting
     "lint_python": [Operation.FILESYSTEM_READ, Operation.PROCESS_EXECUTE],
+    # Agent orchestration. Starting or resuming autonomous work is deliberately
+    # treated like process spawning; approving it does not approve the child's
+    # later tools, which remain subject to their own permission checks.
+    "spawn_sub_agent": [Operation.PROCESS_SPAWN],
+    "resume_sub_agent": [Operation.PROCESS_SPAWN],
+    "stop_sub_agent": [Operation.PROCESS_KILL],
+    "delegate": [Operation.PROCESS_SPAWN, Operation.NETWORK_POST],
+    "delegate_explore_task": [
+        Operation.PROCESS_SPAWN,
+        Operation.FILESYSTEM_READ,
+        Operation.NETWORK_POST,
+    ],
+    "send_message": [Operation.NETWORK_POST],
+    "sync_context": [Operation.MEMORY_WRITE],
+    # Inspection and lifecycle controls have no host side effect. MEMORY_READ is
+    # the existing read-only operation closest to Penguin runtime-state reads.
+    "get_agent_status": [Operation.MEMORY_READ],
+    "get_context_info": [Operation.MEMORY_READ],
+    "wait_for_agents": [Operation.MEMORY_READ],
+    "finish_response": [Operation.MEMORY_READ],
+    # The batch wrapper is inert; every child is authorized independently.
+    "ordered_tool_batch": [Operation.MEMORY_READ],
+    "finish_task": [Operation.MEMORY_WRITE],
+    "task_completed": [Operation.MEMORY_WRITE],
+}
+
+
+_OPERATION_POLICY_KEYS: dict[Operation, str] = {
+    Operation.PROCESS_EXECUTE: "shell",
+    Operation.PROCESS_SPAWN: "shell",
+    Operation.PROCESS_KILL: "shell",
+    Operation.FILESYSTEM_DELETE: "fileDelete",
+    Operation.FILESYSTEM_WRITE: "fileWrite",
+    Operation.FILESYSTEM_MKDIR: "fileWrite",
+    Operation.GIT_WRITE: "fileWrite",
+    Operation.MEMORY_WRITE: "fileWrite",
+    Operation.GIT_PUSH: "gitPush",
+    Operation.GIT_FORCE: "gitPush",
+    Operation.NETWORK_FETCH: "network",
+    Operation.NETWORK_POST: "network",
+    Operation.NETWORK_LISTEN: "network",
 }
 
 
@@ -107,6 +200,45 @@ def get_tool_operations(tool_name: str) -> list[Operation]:
         return [Operation.NETWORK_POST]
 
     return TOOL_OPERATION_MAP.get(tool_name, [])
+
+
+def get_tool_policy_keys(
+    tool_name: str,
+    tool_input: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
+) -> set[str]:
+    """Return request-policy categories required by a tool.
+
+    Unknown or non-read-only operations fail closed through the ``default``
+    category. Pure read operations need no remote approval category because the
+    instance permission engine and request mode still enforce their boundaries.
+    """
+
+    operations = get_tool_operations(tool_name)
+    keys = {
+        policy_key
+        for operation in operations
+        if (policy_key := _OPERATION_POLICY_KEYS.get(operation)) is not None
+    }
+    if not operations or (
+        not keys
+        and not all(Operation.is_read_only(operation) for operation in operations)
+    ):
+        keys.add("default")
+    if tool_input is not None and _tool_accesses_secrets(
+        tool_name,
+        tool_input,
+        context,
+    ):
+        keys.add("secrets")
+    return keys
+
+
+def is_sensitive_resource(resource: str) -> bool:
+    """Return whether text references common credential paths or environment data."""
+
+    value = str(resource or "")
+    return bool(_SECRET_PATH_PATTERN.search(value) or _SECRET_ENV_PATTERN.search(value))
 
 
 def extract_resource_from_input(
@@ -129,9 +261,14 @@ def extract_resource_from_input(
             return str(tool_input[key])
 
     # Special cases
-    if tool_name in ("execute_command", "code_execution"):
+    if tool_name in ("execute_command", "code_execution", "process_start"):
         # For commands, the resource is the command itself
         return tool_input.get("command") or tool_input.get("code")
+
+    if tool_name == "process_write_stdin":
+        return (
+            tool_input.get("text") or tool_input.get("data") or tool_input.get("input")
+        )
 
     if tool_name in ("browser_navigate", "pydoll_browser_navigate", "browser_open_tab"):
         return tool_input.get("url")
@@ -262,6 +399,29 @@ def extract_resources_from_input(
         seen.add(text)
         deduped.append(text)
     return deduped
+
+
+def _tool_accesses_secrets(
+    tool_name: str,
+    tool_input: dict[str, Any],
+    context: dict[str, Any] | None,
+) -> bool:
+    """Return whether a tool targets common credential paths or environment data."""
+
+    if tool_name == "process_start":
+        environment = tool_input.get("env")
+        if isinstance(environment, dict):
+            for name, value in environment.items():
+                if _SECRET_ENV_NAME_PATTERN.search(str(name)):
+                    return True
+                value_text = str(value or "")
+                if _SECRET_ENV_NAME_PATTERN.search(value_text) or is_sensitive_resource(
+                    value_text
+                ):
+                    return True
+
+    resources = extract_resources_from_input(tool_name, tool_input, context)
+    return any(is_sensitive_resource(resource) for resource in resources)
 
 
 def is_safe_tool(tool_name: str) -> bool:
