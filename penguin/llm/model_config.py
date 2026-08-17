@@ -85,6 +85,7 @@ class ModelConfig:
     supported_reasoning_levels: Optional[list[str]] = None
     _reasoning_enabled_explicit: bool = field(init=False, repr=False, default=False)
     _reasoning_effort_explicit: bool = field(init=False, repr=False, default=False)
+    _reasoning_max_tokens_explicit: bool = field(init=False, repr=False, default=False)
 
     # OpenRouter debug mode - echoes upstream request body (development only)
     debug_upstream: bool = False
@@ -92,6 +93,7 @@ class ModelConfig:
     def __post_init__(self):
         self._reasoning_enabled_explicit = self.reasoning_enabled is not None
         self._reasoning_effort_explicit = self.reasoning_effort is not None
+        self._reasoning_max_tokens_explicit = self.reasoning_max_tokens is not None
         if self.reasoning_enabled is None:
             self.reasoning_enabled = False
         self.service_tier = normalize_openai_service_tier(self.service_tier)
@@ -161,6 +163,24 @@ class ModelConfig:
 
         self.supports_vision = self.vision_enabled
         self.streaming_enabled = self.streaming_enabled
+
+    @property
+    def reasoning_enabled_was_explicit(self) -> bool:
+        """Whether reasoning enablement was supplied by configuration."""
+
+        return self._reasoning_enabled_explicit
+
+    @property
+    def reasoning_effort_was_explicit(self) -> bool:
+        """Whether reasoning effort was supplied by configuration."""
+
+        return self._reasoning_effort_explicit
+
+    @property
+    def reasoning_max_tokens_was_explicit(self) -> bool:
+        """Whether a reasoning token budget was supplied by configuration."""
+
+        return self._reasoning_max_tokens_explicit
 
     @property
     def max_tokens(self) -> Optional[int]:
@@ -330,8 +350,7 @@ class ModelConfig:
         raw_reasoning_enabled = os.getenv("PENGUIN_REASONING_ENABLED")
         reasoning_enabled = (
             raw_reasoning_enabled.strip().lower() == "true"
-            if isinstance(raw_reasoning_enabled, str)
-            and raw_reasoning_enabled.strip()
+            if isinstance(raw_reasoning_enabled, str) and raw_reasoning_enabled.strip()
             else None
         )
         raw_reasoning_effort = os.getenv("PENGUIN_REASONING_EFFORT")
@@ -359,9 +378,8 @@ class ModelConfig:
         max_context_env = os.getenv("PENGUIN_MAX_CONTEXT_WINDOW_TOKENS") or os.getenv(
             "PENGUIN_CONTEXT_WINDOW"
         )
-        service_tier = (
-            os.getenv("PENGUIN_OPENAI_SERVICE_TIER")
-            or os.getenv("OPENAI_SERVICE_TIER")
+        service_tier = os.getenv("PENGUIN_OPENAI_SERVICE_TIER") or os.getenv(
+            "OPENAI_SERVICE_TIER"
         )
 
         return cls(
@@ -568,6 +586,7 @@ class ModelConfig:
 # =============================================================================
 # MODEL SPECS SERVICE - Cached OpenRouter API fetching
 # =============================================================================
+
 
 @dataclass
 class ModelSpecs:

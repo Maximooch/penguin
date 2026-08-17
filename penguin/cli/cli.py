@@ -223,7 +223,24 @@ else:
     from prompt_toolkit.formatted_text import HTML  # type: ignore
 
 from penguin._version import __version__
+from penguin.cli.bootstrap import bootstrap_cli
+from penguin.cli.command_services import (
+    AmbiguousProjectError,
+    ProjectNotFoundError,
+    parse_task_status,
+    resolve_project_identifier,
+)
+from penguin.cli.environment import (
+    preconfigure_cli_environment,
+    set_cli_workspace_path,
+)
 from penguin.cli.interface import PenguinInterface
+from penguin.cli.model_runtime import (
+    project_reasoning_config as _project_reasoning_config,
+    resolve_reasoning_config as _resolve_cli_reasoning_config,
+)
+from penguin.cli.output_policy import classify_runmode_completion
+from penguin.cli.run_dispatch import DispatchMode, DispatchRequest, select_dispatch_mode
 from penguin.config import (
     DEFAULT_MODEL,
     DEFAULT_PROVIDER,
@@ -425,68 +442,6 @@ def _ensure_config_compatible(config_data: Any) -> Any:
     return config_data
 
 
-def _project_reasoning_config(model_config: ModelConfig) -> dict[str, Any]:
-    """Project reasoning fields without converting implicit state to explicit off."""
-
-    reasoning_enabled_explicit = bool(
-        getattr(model_config, "_reasoning_enabled_explicit", False)
-    )
-    reasoning_effort_explicit = bool(
-        getattr(model_config, "_reasoning_effort_explicit", False)
-    )
-    return {
-        "reasoning_enabled": (
-            model_config.reasoning_enabled
-            if reasoning_enabled_explicit
-            else None
-        ),
-        "reasoning_effort": (
-            model_config.reasoning_effort if reasoning_effort_explicit else None
-        ),
-        "reasoning_max_tokens": (
-            model_config.reasoning_max_tokens
-            if reasoning_enabled_explicit
-            else None
-        ),
-        "reasoning_exclude": model_config.reasoning_exclude,
-        "supports_reasoning": model_config.supports_reasoning,
-        "supported_reasoning_levels": model_config.supported_reasoning_levels,
-    }
-
-
-def _resolve_cli_reasoning_config(model_dict: dict[str, Any]) -> dict[str, Any]:
-    """Resolve flat or nested CLI reasoning configuration without inventing values."""
-
-    nested = model_dict.get("reasoning")
-    reasoning = nested if isinstance(nested, dict) else {}
-    if "enabled" in reasoning:
-        reasoning_enabled: bool | None = bool(reasoning.get("enabled"))
-    elif "reasoning_enabled" in model_dict:
-        configured_enabled = model_dict.get("reasoning_enabled")
-        reasoning_enabled = (
-            None if configured_enabled is None else bool(configured_enabled)
-        )
-    else:
-        reasoning_enabled = None
-    reasoning_effort = reasoning.get(
-        "effort", model_dict.get("reasoning_effort")
-    )
-    return {
-        "reasoning_enabled": reasoning_enabled,
-        "reasoning_effort": reasoning_effort,
-        "reasoning_max_tokens": reasoning.get(
-            "max_tokens", model_dict.get("reasoning_max_tokens")
-        ),
-        "reasoning_exclude": bool(
-            reasoning.get("exclude", model_dict.get("reasoning_exclude", False))
-        ),
-        "supports_reasoning": model_dict.get("supports_reasoning"),
-        "supported_reasoning_levels": model_dict.get(
-            "supported_reasoning_levels"
-        ),
-    }
-
-
 async def _initialize_core_components_globally(
     model_override: Optional[str] = None,
     workspace_override: Optional[Path] = None,
@@ -502,177 +457,21 @@ async def _initialize_core_components_globally(
         # For now, first initialization is sticky for simplicity.
         return
 
-    logger.info("Initializing core components globally...")
-    init_start_time = time.time()
-
-    workspace_source = workspace_override or os.environ.get("PENGUIN_WORKSPACE")
-    if workspace_source:
-        _set_cli_workspace_path(workspace_source)
-
-    _loaded_config = Config.load_config()  # Use Config object with parsed agent_personas
-
-    effective_workspace = Path(
-        workspace_override or os.environ.get("PENGUIN_WORKSPACE", str(WORKSPACE_PATH))
-    ).expanduser().resolve()
-    logger.debug(f"Effective workspace path for global init: {effective_workspace}")
-    # Note: PenguinCore itself uses WORKSPACE_PATH from config for ProjectManager.
-    # A more direct way to override this in Core would be needed if ProjectManager path needs to change.
-
-    # Access _loaded_config as a dictionary or using property access
-    streaming_enabled = not no_streaming_override
-
-    # Try both attribute-style and dict-style access to handle different Config implementations
-    if hasattr(_loaded_config, "model") and callable(
-        getattr(_loaded_config, "model", None)
-    ):
-        # Config.model() returns a dict-like object
-        model_dict = _loaded_config.model()
-        streaming_enabled = not no_streaming_override and model_dict.get(
-            "streaming_enabled", True
-        )
-    elif hasattr(_loaded_config, "model") and not callable(
-        getattr(_loaded_config, "model", None)
-    ):
-        # Config.model is a property that returns a dict-like object
-        model_dict = _loaded_config.model
-        streaming_enabled = not no_streaming_override and model_dict.get(
-            "streaming_enabled", True
-        )
-    elif isinstance(_loaded_config, dict) and "model" in _loaded_config:
-        # _loaded_config is a dict with a model key
-        streaming_enabled = not no_streaming_override and _loaded_config["model"].get(
-            "streaming_enabled", True
-        )
-
-    # Create ModelConfig with safe access
-    # Check for Config dataclass FIRST (before generic model checks)
-    if hasattr(_loaded_config, "model_config"):
-        # It's a Config dataclass object (from Config.load_config())
-        _model_cfg = _loaded_config.model_config
-        if _model_cfg:
-            model_dict = {
-                "default": getattr(_model_cfg, "model", None),
-                "provider": getattr(_model_cfg, "provider", None),
-                "client_preference": getattr(_model_cfg, "client_preference", None),
-                "streaming_enabled": getattr(_model_cfg, "streaming_enabled", True),
-                "temperature": getattr(_model_cfg, "temperature", 0.7),
-                "vision_enabled": getattr(_model_cfg, "vision_enabled", False),
-                "max_output_tokens": getattr(_model_cfg, "max_output_tokens", None),
-                "context_window": getattr(_model_cfg, "max_context_window_tokens", None),
-                **_project_reasoning_config(_model_cfg),
-            }
-        else:
-            model_dict = {}
-        api_obj = getattr(_loaded_config, "api", None)
-        api_base = getattr(api_obj, "base_url", None) if api_obj else None
-    elif hasattr(_loaded_config, "model") and callable(
-        getattr(_loaded_config, "model", None)
-    ):
-        # Model is a method that returns a dict-like object
-        model_dict = _loaded_config.model()
-        api_dict = getattr(_loaded_config, "api", {})
-        if isinstance(api_dict, dict):
-            api_base = api_dict.get("base_url")
-        else:
-            api_base = getattr(api_dict, "base_url", None)
-    elif hasattr(_loaded_config, "model") and not callable(
-        getattr(_loaded_config, "model", None)
-    ):
-        # Model is a property that returns a dict-like object
-        model_dict = _loaded_config.model
-        api_dict = getattr(_loaded_config, "api", {})
-        if isinstance(api_dict, dict):
-            api_base = api_dict.get("base_url")
-        else:
-            api_base = getattr(api_dict, "base_url", None)
-    elif isinstance(_loaded_config, dict):
-        # Direct dictionary access
-        model_dict = _loaded_config.get("model", {})
-        api_dict = _loaded_config.get("api", {})
-        api_base = api_dict.get("base_url") if isinstance(api_dict, dict) else None
-    else:
-        # Fallback for unknown config type
-        model_dict = {}
-        api_base = None
-
-    reasoning_config = _resolve_cli_reasoning_config(model_dict)
-    _model_config = ModelConfig(
-        model=model_override or model_dict.get("default", DEFAULT_MODEL),
-        provider=model_dict.get("provider", DEFAULT_PROVIDER),
-        api_base=api_base,  # Use the api_base we determined above
-        client_preference=model_dict.get("client_preference", "openrouter"),
-        streaming_enabled=streaming_enabled,
-        vision_enabled=model_dict.get("vision_enabled", False),
-        max_output_tokens=model_dict.get(
-            "max_output_tokens", model_dict.get("max_tokens", 8000)
-        ),
-        max_context_window_tokens=model_dict.get(
-            "max_context_window_tokens",
-            model_dict.get("context_window"),
-        ),
-        temperature=model_dict.get("temperature", 0.7),
-        reasoning_enabled=reasoning_config["reasoning_enabled"],
-        reasoning_effort=reasoning_config["reasoning_effort"],
-        reasoning_max_tokens=reasoning_config["reasoning_max_tokens"],
-        reasoning_exclude=reasoning_config["reasoning_exclude"],
-        supports_reasoning=reasoning_config["supports_reasoning"],
-        supported_reasoning_levels=reasoning_config[
-            "supported_reasoning_levels"
-        ],
-        service_tier=model_dict.get("service_tier"),
+    result = bootstrap_cli(
+        model_override=model_override,
+        workspace_override=workspace_override,
+        no_streaming_override=no_streaming_override,
+        fast_startup_override=fast_startup_override,
     )
+    _core = result.core
+    _interface = result.interface
+    _model_config = result.model_config
+    _api_client = result.api_client
+    _tool_manager = result.tool_manager
+    _loaded_config = result.loaded_config
 
-    # Ensure .env files are loaded before API client needs API keys
-    _ensure_env_loaded()
-    _api_client = APIClient(model_config=_model_config)
-    _api_client.set_system_prompt(SYSTEM_PROMPT)
-
-    # Determine fast startup setting from config or override
-    config_fast_startup = False
-    try:
-        if hasattr(_loaded_config, "fast_startup"):
-            config_fast_startup = _loaded_config.fast_startup
-        elif isinstance(_loaded_config, dict):
-            config_fast_startup = _loaded_config.get("performance", {}).get(
-                "fast_startup", False
-            )
-    except Exception:
-        pass
-
-    effective_fast_startup = fast_startup_override or config_fast_startup
-
-    # Convert config to dict format for ToolManager while preserving typed fields
-    # like `skills` that are not present in a raw dataclass `__dict__` shape.
-    config_dict = (
-        _loaded_config.to_dict()
-        if hasattr(_loaded_config, "to_dict")
-        else (_loaded_config.__dict__ if hasattr(_loaded_config, "__dict__") else _loaded_config)
-    )
-    _tool_manager = ToolManager(
-        config_dict, log_error, fast_startup=effective_fast_startup
-    )
-
-    # Make sure our config is compatible with what PenguinCore expects
-    wrapped_config = _ensure_config_compatible(_loaded_config)
-
-    # PenguinCore's __init__ will use its passed config to set up ProjectManager with WORKSPACE_PATH
-    _core = PenguinCore(
-        config=wrapped_config,
-        api_client=_api_client,
-        tool_manager=_tool_manager,
-        model_config=_model_config,
-    )
-    # If workspace_override needs to directly influence PenguinCore's ProjectManager path,
-    # PenguinCore would need to accept a workspace_path argument or have a setter.
-
-    _interface = PenguinInterface(_core)
-
-    # Set core on command registry for unified command handling
+    # Publish compatibility state only after every dependency was constructed.
     _command_registry.set_core(_core)
-
-    logger.info(
-        f"Core components initialized globally in {time.time() - init_start_time:.2f}s"
-    )
 
 
 async def _run_penguin_direct_prompt(prompt_text: str, output_format: str):
@@ -1110,21 +909,10 @@ _previous_main_callback = app.registered_callback
 
 
 def _set_cli_workspace_path(workspace_path: Union[str, Path]) -> Path:
-    """Normalize and propagate a CLI workspace override before core initialization."""
+    """Compatibility wrapper for extracted workspace normalization."""
     global WORKSPACE_PATH
-
-    resolved_workspace = Path(workspace_path).expanduser().resolve()
-    os.environ["PENGUIN_WORKSPACE"] = str(resolved_workspace)
+    resolved_workspace = set_cli_workspace_path(workspace_path)
     WORKSPACE_PATH = resolved_workspace
-
-    try:
-        import importlib
-
-        config_module = importlib.import_module("penguin.config")
-        config_module.WORKSPACE_PATH = resolved_workspace
-    except Exception:
-        logger.debug("Unable to sync workspace override into penguin.config", exc_info=True)
-
     return resolved_workspace
 
 
@@ -1133,45 +921,16 @@ def _preconfigure_cli_environment(
     project: Optional[str],
     root: Optional[str],
 ) -> Tuple[Optional[Path], Path]:
-    """Normalize root/workspace env hints before config- and core-level initialization."""
-    workspace_source: Union[str, Path] = workspace or os.environ.get(
-        "PENGUIN_WORKSPACE", WORKSPACE_PATH
+    """Compatibility wrapper for extracted environment normalization."""
+    global WORKSPACE_PATH
+    result = preconfigure_cli_environment(
+        workspace,
+        project,
+        root,
+        default_workspace=WORKSPACE_PATH,
     )
-    resolved_workspace = _set_cli_workspace_path(workspace_source)
-
-    current_cwd = Path.cwd().resolve()
-    os.environ["PENGUIN_CWD"] = str(current_cwd)
-    os.environ.pop("PENGUIN_PROJECT_ROOT", None)
-
-    resolved_project_path: Optional[Path] = None
-    if project:
-        candidates = []
-        try:
-            candidates.append(Path(project).expanduser())
-        except Exception:
-            pass
-        candidates.append(resolved_workspace / "projects" / project)
-
-        for candidate in candidates:
-            try:
-                if candidate.exists() and candidate.is_dir():
-                    resolved_project_path = candidate.resolve()
-                    os.environ["PENGUIN_PROJECT_ROOT"] = str(resolved_project_path)
-                    os.environ["PENGUIN_CWD"] = str(resolved_project_path)
-                    logger.info("CLI env: PENGUIN_PROJECT_ROOT=%s", resolved_project_path)
-                    break
-            except Exception:
-                continue
-
-    root_mode = (root or "project").lower()
-    if root_mode in ("project", "workspace"):
-        os.environ["PENGUIN_WRITE_ROOT"] = root_mode
-        if root_mode == "workspace":
-            os.environ["PENGUIN_CWD"] = str(resolved_workspace)
-        elif resolved_project_path is not None:
-            os.environ["PENGUIN_CWD"] = str(resolved_project_path)
-
-    return resolved_project_path, resolved_workspace
+    WORKSPACE_PATH = result[1]
+    return result
 
 
 @app.callback(invoke_without_command=True)
@@ -1464,31 +1223,30 @@ def main_entry(
         ctx.obj = ctx.obj or {}
         ctx.obj["project"] = project
 
-        # Check for priority flags in order of precedence:
-        # 1. Task execution (--run)
-        if run_task is not None:
+        dispatch_mode = select_dispatch_mode(
+            DispatchRequest(
+                run_task=run_task,
+                continue_last=continue_last,
+                resume_session=resume_session,
+                prompt=prompt,
+                continuous=continuous,
+                invoked_subcommand=ctx.invoked_subcommand,
+            )
+        )
+        if dispatch_mode is DispatchMode.RUN_MODE:
             await _handle_run_mode(run_task, continuous, time_limit, task_description)
-        # 2. Session management (--continue/--resume)
-        elif continue_last or resume_session:
-            # We'll always go into interactive mode for session management
+        elif dispatch_mode is DispatchMode.SESSION:
             if prompt is not None:
-                # Combine -p with -c/--resume
                 await _handle_session_management(
                     continue_last, resume_session, prompt, output_format
                 )
             else:
-                # Just go into interactive mode with loaded session
                 await _handle_session_management(continue_last, resume_session)
-        # 3. Direct prompt (-p/--prompt)
-        elif prompt is not None:
-            # Standard non-interactive mode if -p or --prompt was used
+        elif dispatch_mode is DispatchMode.DIRECT_PROMPT:
             await _run_penguin_direct_prompt(prompt, output_format)
-        # 4. Continuous mode without task (just --247)
-        elif continuous:
+        elif dispatch_mode is DispatchMode.CONTINUOUS:
             await _handle_run_mode(None, continuous, time_limit, task_description)
-        # 5. Default: interactive chat session
-        elif ctx.invoked_subcommand is None:
-            # No subcommand invoked, default to interactive chat
+        elif dispatch_mode is DispatchMode.INTERACTIVE:
             await _run_interactive_chat()
         # Else: a subcommand was invoked (e.g., `penguin chat`, `penguin profile`).
         # Typer will handle calling the subcommand.
@@ -1690,26 +1448,23 @@ async def _handle_run_mode(
                 ui_update_callback_for_cli=ui_update_callback,
             )
 
-        status_summary = getattr(_core, "current_runmode_status_summary", "") or ""
-        status_summary_lower = status_summary.lower()
-
-        if "clarification" in status_summary_lower or "awaiting input" in status_summary_lower:
+        completion = classify_runmode_completion(
+            getattr(_core, "current_runmode_status_summary", "")
+        )
+        if completion.kind == "waiting_input":
             console.print(
-                f"[yellow]Run mode is waiting for clarification/input.[/yellow] {status_summary}"
+                f"[yellow]Run mode is waiting for clarification/input.[/yellow] {completion.message}"
             )
-        elif (
-            "time limit" in status_summary_lower
-            or "time_limit" in status_summary_lower
-        ):
-            console.print(f"[yellow]Run mode stopped due to time limit.[/yellow] {status_summary}")
-        elif (
-            "idle" in status_summary_lower
-            or "no ready task" in status_summary_lower
-            or "no ready work remained" in status_summary_lower
-        ):
-            console.print(f"[yellow]Run mode stopped because no ready work remained.[/yellow] {status_summary}")
-        elif status_summary:
-            console.print(f"[green]Run mode finished.[/green] {status_summary}")
+        elif completion.kind == "time_limit":
+            console.print(
+                f"[yellow]Run mode stopped due to time limit.[/yellow] {completion.message}"
+            )
+        elif completion.kind == "idle":
+            console.print(
+                f"[yellow]Run mode stopped because no ready work remained.[/yellow] {completion.message}"
+            )
+        elif completion.message:
+            console.print(f"[green]Run mode finished.[/green] {completion.message}")
         else:
             console.print("[green]Run mode finished.[/green]")
 
@@ -3152,26 +2907,18 @@ def _resolve_project_identifier_or_exit(project_identifier: str):
     """Resolve a project by exact ID or unique exact name, failing honestly otherwise."""
     assert _core is not None and _core.project_manager is not None
 
-    project = _core.project_manager.get_project(project_identifier)
-    if project:
-        return project
-
-    exact_name_match = _core.project_manager.get_project_by_name(project_identifier)
-    if exact_name_match:
-        return exact_name_match
-
-    projects = _core.project_manager.list_projects()
-    matching_by_name = [p for p in projects if p.name == project_identifier]
-    if len(matching_by_name) > 1:
+    try:
+        return resolve_project_identifier(_core.project_manager, project_identifier)
+    except AmbiguousProjectError:
         console.print(
             f"[red]Ambiguous project name '{project_identifier}'. Use the project ID instead.[/red]"
         )
         raise typer.Exit(code=1)
-
-    console.print(
-        f"[red]Project '{project_identifier}' was not found by exact ID or exact name.[/red]"
-    )
-    raise typer.Exit(code=1)
+    except ProjectNotFoundError:
+        console.print(
+            f"[red]Project '{project_identifier}' was not found by exact ID or exact name.[/red]"
+        )
+        raise typer.Exit(code=1)
 
 
 async def _delete_project_and_tasks_async(project_id: str) -> None:
@@ -3469,10 +3216,8 @@ def task_list(
             status_filter = None
             if status:
                 from penguin.project.models import TaskStatus
-
                 try:
-                    normalized_status = status.strip().lower()
-                    status_filter = TaskStatus(normalized_status)
+                    status_filter = parse_task_status(status)
                 except ValueError:
                     valid_options = ", ".join(task_status.value for task_status in TaskStatus)
                     console.print(
