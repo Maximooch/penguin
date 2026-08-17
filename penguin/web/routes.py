@@ -553,6 +553,7 @@ def _build_execution_context(
     agent_id: Optional[str],
     agent_mode: Optional[str],
     directory: Optional[str],
+    subagents_enabled: Optional[bool] = None,
 ) -> ExecutionContext:
     """Create request-scoped execution context for concurrent web sessions."""
     path_info = get_path_info(core, directory=directory, session_id=session_id)
@@ -566,6 +567,7 @@ def _build_execution_context(
         project_root=effective_directory,
         workspace_root=effective_directory,
         request_id=str(uuid.uuid4()),
+        subagents_enabled=subagents_enabled,
     )
 
 
@@ -1050,6 +1052,7 @@ class MessageRequest(BaseModel):
     external_subscription_execution: Optional[ExternalSubscriptionExecutionRequest] = (
         None
     )
+    subagents_enabled: Optional[bool] = None
 
 
 _REASONING_EFFORT_VARIANTS = {
@@ -2448,13 +2451,14 @@ def _validate_agent_id(agent_id: str) -> None:
 class AgentSpawnRequest(BaseModel):
     id: str
     parent: Optional[str] = None
-    model_config_id: str
+    model_config_id: Optional[str] = None
     persona: Optional[str] = None
     system_prompt: Optional[str] = None
     share_session: bool = False
     share_context_window: bool = False
     shared_cw_max_tokens: Optional[int] = None
     model_overrides: Optional[Dict[str, Any]] = None
+    model_output_max_tokens: Optional[int] = None
     default_tools: Optional[List[str]] = None
     activate: bool = False
     initial_prompt: Optional[str] = None
@@ -2847,10 +2851,15 @@ async def create_agent(req: AgentSpawnRequest, core: PenguinCore = Depends(get_c
             core.create_sub_agent(
                 req.id,
                 parent_agent_id=parent,
+                persona=req.persona,
                 system_prompt=req.system_prompt,
                 share_session=bool(req.share_session),
                 share_context_window=bool(req.share_context_window),
                 shared_context_window_max_tokens=req.shared_cw_max_tokens,
+                model_config_id=req.model_config_id,
+                model_overrides=req.model_overrides,
+                model_output_max_tokens=req.model_output_max_tokens,
+                default_tools=req.default_tools,
             )
         else:
             core.ensure_agent_conversation(req.id, system_prompt=req.system_prompt)
@@ -2896,6 +2905,8 @@ async def create_agent(req: AgentSpawnRequest, core: PenguinCore = Depends(get_c
         return core.get_agent_profile(req.id) or {"id": req.id}
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"create_agent error: {e}")
         raise HTTPException(status_code=500, detail="Failed to create agent")
@@ -4118,6 +4129,7 @@ async def handle_chat_message(
             agent_id=request.agent_id,
             agent_mode=resolved_agent_mode,
             directory=bound_directory or request.directory,
+            subagents_enabled=request.subagents_enabled,
         )
         _request_log_debug(
             "chat.trace.start request=%s session=%s agent=%s mode=%s dir=%s model=%s streaming=%s client_msg=%s prompt=%r",

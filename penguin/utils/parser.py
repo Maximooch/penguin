@@ -18,6 +18,11 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, Callable, Awaitable
 import base64
 from penguin.local_task.manager import ProjectManager
+from penguin.multi.policy import (
+    SUBAGENT_TOOL_NAMES,
+    disabled_subagent_result,
+    subagents_enabled,
+)
 from penguin.tools import ToolManager
 from penguin.utils.process_manager import ProcessManager
 from penguin.system.conversation import MessageCategory
@@ -1630,6 +1635,11 @@ class ActionExecutor:
 
         action_id = str(uuid.uuid4())[:8]
         handler_params = self._prepare_action_params(action, action_id)
+        if (
+            action.action_type.value in SUBAGENT_TOOL_NAMES
+            and not subagents_enabled()
+        ):
+            return json.dumps(disabled_subagent_result(action.action_type.value))
 
         # --------------------------------------------------
         # Emit *start* UI event
@@ -2193,7 +2203,10 @@ class ActionExecutor:
             )
             return f"Invalid JSON for spawn_sub_agent: {e}"
 
-        agent_id = str(payload.get("id") or "").strip()
+        from penguin.multi.admission import validate_spawn_request
+
+        raw_agent_id = payload.get("id")
+        agent_id = raw_agent_id.strip() if isinstance(raw_agent_id, str) else ""
         if not agent_id:
             self._log_subagent_event(
                 "spawn.summary",
@@ -2203,6 +2216,11 @@ class ActionExecutor:
                 error="missing_id",
             )
             return "spawn_sub_agent requires 'id'"
+
+        try:
+            validate_spawn_request(payload)
+        except ValueError as error:
+            return f"Invalid spawn_sub_agent request: {error}"
 
         conversation = self.conversation_system
         core = getattr(conversation, "core", None)
@@ -2240,14 +2258,6 @@ class ActionExecutor:
         shared_context_window_max_tokens = payload.get(
             "shared_context_window_max_tokens", payload.get("shared_cw_max_tokens")
         )  # Accept both keys
-        try:
-            shared_context_window_max_tokens = (
-                int(shared_context_window_max_tokens)
-                if shared_context_window_max_tokens is not None
-                else None
-            )
-        except Exception:
-            shared_context_window_max_tokens = None
 
         kwargs: Dict[str, Any] = {}
         for key in (
@@ -2259,7 +2269,7 @@ class ActionExecutor:
         ):
             if key in payload:
                 kwargs[key] = payload[key]
-        if isinstance(payload.get("model_overrides"), dict):
+        if payload.get("model_overrides") is not None:
             kwargs["model_overrides"] = payload["model_overrides"]
 
         try:

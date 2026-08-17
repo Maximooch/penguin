@@ -18,6 +18,7 @@ class LinkExecutionRequest(BaseModel):
 
     workspace_id: str
     user_id: str
+    workos_organization_id: str | None = None
     # Omitted together for transient Link conversations that have no durable
     # Link session/agent-instance identity.
     session_id: str | None = None
@@ -80,6 +81,7 @@ def resolve_link_inference_runtime(
     context = LinkInferenceContext(
         workspace_id=execution.workspace_id,
         user_id=execution.user_id,
+        workos_organization_id=execution.workos_organization_id,
         session_id=execution.session_id,
         agent_id=execution.agent_id,
         run_id=execution.run_id,

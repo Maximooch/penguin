@@ -26,6 +26,7 @@ class ExecutionContext:
     project_root: Optional[str] = None
     workspace_root: Optional[str] = None
     request_id: Optional[str] = None
+    subagents_enabled: Optional[bool] = None
 
     def as_dict(self) -> dict[str, Any]:
         """Return a dictionary representation for compatibility with existing APIs."""
@@ -38,6 +39,7 @@ class ExecutionContext:
             "project_root": self.project_root,
             "workspace_root": self.workspace_root,
             "request_id": self.request_id,
+            "subagents_enabled": self.subagents_enabled,
         }
 
 

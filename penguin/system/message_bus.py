@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Dict, Optional
 import asyncio
+import inspect
 import logging
 
 from penguin.utils.events import EventBus
@@ -61,9 +62,13 @@ class MessageBus:
         if key in self._handlers:
             del self._handlers[key]
 
-    async def send(self, msg: ProtocolMessage) -> None:
-        """Dispatch `msg` to a handler if one is registered, and fan-out via EventBus."""
-        logger.info(f"[SUB-AGENT-DEBUG] MessageBus.send: sender={msg.sender}, recipient={msg.recipient}")
+    async def send(self, msg: ProtocolMessage) -> bool:
+        """Dispatch a message and return whether a recipient handled it."""
+        logger.debug(
+            "MessageBus.send sender=%s recipient=%s",
+            msg.sender,
+            msg.recipient,
+        )
 
         # Publish to EventBus so UI/Web can observe
         try:
@@ -76,23 +81,30 @@ class MessageBus:
         recipient = msg.recipient or "human"
         handler_key = self._handler_key(recipient, msg.channel)
         handler = self._handlers.get(handler_key)
-        logger.info(f"[SUB-AGENT-DEBUG] Looking for handler: key={handler_key}, found={handler is not None}")
-        logger.info(f"[SUB-AGENT-DEBUG] Registered handlers: {list(self._handlers.keys())}")
+        logger.debug(
+            "MessageBus handler lookup key=%s found=%s",
+            handler_key,
+            handler is not None,
+        )
 
         if handler is None and msg.channel:
             handler = self._handlers.get(self._handler_key(recipient, None))
         if handler is None:
-            logger.warning(f"[SUB-AGENT-DEBUG] No handler found for recipient '{recipient}'")
-            return
+            logger.warning("No MessageBus handler found for recipient '%s'", recipient)
+            return False
         try:
-            logger.info(f"[SUB-AGENT-DEBUG] Calling handler for '{recipient}'")
-            if asyncio.iscoroutinefunction(handler):
-                await handler(msg)
-            else:
-                handler(msg)
-            logger.info(f"[SUB-AGENT-DEBUG] Handler completed for '{recipient}'")
+            result = handler(msg)
+            if inspect.isawaitable(result):
+                await result
+            return True
         except Exception as e:
-            logger.error(f"[SUB-AGENT-DEBUG] MessageBus handler error for recipient '{recipient}': {e}", exc_info=True)
+            logger.error(
+                "MessageBus handler error for recipient '%s': %s",
+                recipient,
+                e,
+                exc_info=True,
+            )
+            return False
 
     def _handler_key(self, target_id: str, channel: Optional[str]) -> str:
         return f"{target_id}:::{channel or '*'}"

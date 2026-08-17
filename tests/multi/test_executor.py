@@ -271,6 +271,41 @@ class TestAgentState:
         assert "Simulated failure" in status["error"]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("payload", "expected_state", "expected_error"),
+        [
+            (
+                {"status": "error", "error": "provider failed"},
+                AgentState.FAILED,
+                "provider failed",
+            ),
+            (
+                {"status": "ok", "aborted": True},
+                AgentState.CANCELLED,
+                "Child execution was aborted",
+            ),
+        ],
+    )
+    async def test_terminal_payload_controls_background_state(
+        self,
+        mock_core,
+        payload,
+        expected_state,
+        expected_error,
+    ):
+        """Background state must reflect returned failure and abort payloads."""
+
+        mock_core.process = AsyncMock(return_value=payload)
+        executor = AgentExecutor(mock_core, max_concurrent=1)
+
+        await executor.spawn_agent("terminal-agent", "Finish with terminal payload")
+        await executor.wait_for("terminal-agent", timeout=5.0)
+
+        status = executor.get_status("terminal-agent")
+        assert status["state"] == expected_state.value
+        assert status["error"] == expected_error
+
+    @pytest.mark.asyncio
     async def test_cancelled_state(self, executor):
         """Test CANCELLED state after cancel() call."""
 
@@ -368,6 +403,14 @@ class TestWaitOperations:
 
         with pytest.raises(asyncio.TimeoutError):
             await executor.wait_for("timeout-agent", timeout=0.1)
+
+        status = executor.get_status("timeout-agent")
+        assert status is not None
+        assert status["state"] in {
+            AgentState.PENDING.value,
+            AgentState.RUNNING.value,
+        }
+        await executor.cancel("timeout-agent")
 
 
 # =============================================================================

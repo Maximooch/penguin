@@ -1085,8 +1085,7 @@ class Engine:
                 session_id=session_id,
                 channel=channel,
             )
-            await MessageBus.get_instance().send(msg)
-            return True
+            return await MessageBus.get_instance().send(msg)
         except Exception as e:
             logger.error(f"route_message failed: {e}")
             return False
@@ -1172,8 +1171,7 @@ class Engine:
                 session_id=session_id,
                 channel=channel,
             )
-            await MessageBus.get_instance().send(msg)
-            return True
+            return await MessageBus.get_instance().send(msg)
         except Exception as e:
             logger.error(f"human_reply failed: {e}")
             return False
@@ -1220,7 +1218,7 @@ class Engine:
         self,
         base_manager: ConversationManager,
         agent_id: str,
-    ) -> _ScopedConversationManager:
+    ) -> Any:
         """Return a request-scoped conversation view reused within the same run."""
         request_id, session_id = self._trace_request_fields()
         run_state = _CURRENT_ENGINE_RUN_STATE.get()
@@ -1239,7 +1237,7 @@ class Engine:
 
         key = (id(base_manager), agent_id)
         cached = run_state.scoped_conversation_managers.get(key)
-        if isinstance(cached, _ScopedConversationManager):
+        if cached is not None:
             _trace_log_info(
                 "engine.scope.reuse request=%s session=%s agent=%s cache=%s base_cm=%s scoped_cm=%s scoped_session=%s",
                 request_id,
@@ -2638,7 +2636,14 @@ class Engine:
         context: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
         if agent_id:
-            return agent_id, None
+            if self.get_agent(agent_id) is not None:
+                return agent_id, None
+            logger.warning(
+                "Unknown requested agent '%s'; using default agent '%s'",
+                agent_id,
+                self.default_agent_id,
+            )
+            return self.default_agent_id, None
         coordinator = getattr(self, "coordinator", None)
         if not coordinator or not agent_role:
             return self.default_agent_id, None

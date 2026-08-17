@@ -78,6 +78,20 @@ def test_transient_context_omits_persisted_identity_headers() -> None:
     assert "X-Link-Agent-Id" not in headers
 
 
+def test_context_includes_workos_organization_header() -> None:
+    context = LinkInferenceContext(
+        workspace_id="workspace-1",
+        user_id="user-1",
+        workos_organization_id="org_01M06XBYP88CD1MHHSRGWTC2BA",
+        run_id="run-1",
+        requested_model_id="openai/gpt-5.4-nano",
+    )
+
+    headers = context.headers("request-1")
+
+    assert headers["X-Link-WorkOS-Organization-Id"] == "org_01M06XBYP88CD1MHHSRGWTC2BA"
+
+
 def test_context_rejects_one_sided_persisted_identity() -> None:
     with pytest.raises(ValueError, match="supplied together"):
         LinkInferenceContext(

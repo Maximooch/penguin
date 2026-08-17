@@ -67,6 +67,7 @@ from penguin.tools.schema_contract import (
     runtime_metadata_from_tool_schema,
 )
 from penguin.tools.image_tools import ReadImageTool
+from penguin.tools.async_dispatch import ASYNC_TOOL_NAMES, AsyncToolDispatcher
 
 # Lazy import for PyDoll to avoid breaking if pydoll-python is not installed
 _pydoll_tools_imported = False
@@ -115,6 +116,11 @@ PyDollBrowserScreenshotTool = None
 PyDollBrowserScrollTool = None
 # from penguin.llm.model_manager import ModelManager
 from penguin.memory.provider import MemoryProvider
+from penguin.multi.policy import (
+    SUBAGENT_TOOL_NAMES,
+    disabled_subagent_result,
+    subagents_enabled,
+)
 
 # Repository management tools (optional dependency path)
 try:
@@ -323,6 +329,8 @@ class ToolManager:
 
             # PenguinCore reference for sub-agent tools
             self._core = None
+            self._agent_executor = None
+            self._async_tool_dispatcher = AsyncToolDispatcher(self)
             self._code_execution_lock = threading.Lock()
 
             # Permission enforcer (lazy initialized)
@@ -2342,6 +2350,146 @@ class ToolManager:
             tool_name, tool_input, self.permission_enforcer, context
         )
 
+    def _permission_response(
+        self,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        context: dict[str, Any],
+    ) -> str | dict[str, Any] | None:
+        """Return a blocking permission response, or ``None`` when allowed.
+
+        This method resolves allow, deny, approval-required, and pre-approved
+        decisions without executing the tool. Both synchronous and asynchronous
+        dispatch use it so authorization never determines which event loop owns
+        coroutine execution.
+        """
+
+        if not self._permission_enabled:
+            return None
+
+        result, reason = self.check_tool_permission(tool_name, tool_input, context)
+        if result is None:
+            return None
+
+        _ensure_permission_imports()
+        if result == _PermissionResult.DENY:
+            logger.warning(
+                "permission.denied tool=%s agent=%s mode=%s session=%s "
+                "request=%s reason=%s",
+                tool_name,
+                context.get("agent_id"),
+                context.get("agent_mode"),
+                context.get("session_id"),
+                context.get("request_id"),
+                reason,
+            )
+            return json.dumps(
+                {
+                    "error": "permission_denied",
+                    "tool": tool_name,
+                    "reason": reason,
+                }
+            )
+
+        if result != _PermissionResult.ASK:
+            return None
+
+        logger.info(
+            "permission.approval_required tool=%s agent=%s mode=%s "
+            "session=%s reason=%s",
+            tool_name,
+            context.get("agent_id"),
+            context.get("agent_mode"),
+            context.get("session_id"),
+            reason,
+        )
+        operation = context.get("operation", f"tool.{tool_name}")
+        resource = tool_input.get(
+            "path",
+            tool_input.get("file_path", tool_input.get("target", "")),
+        )
+        session_id = context.get("session_id")
+
+        try:
+            from penguin.security.approval import get_approval_manager
+
+            approval_manager = get_approval_manager()
+            if approval_manager.check_pre_approved(
+                operation,
+                resource,
+                session_id,
+            ):
+                logger.info("Tool '%s' pre-approved for %s", tool_name, resource)
+                return None
+
+            approval_request = approval_manager.create_request(
+                tool_name=tool_name,
+                operation=operation,
+                resource=resource,
+                reason=reason,
+                session_id=session_id,
+                context={
+                    "tool_input": self._redact_tool_input_for_diagnostics(
+                        tool_name,
+                        tool_input,
+                    ),
+                    "agent_id": context.get("agent_id"),
+                },
+            )
+            logger.info("Approval request created: %s", approval_request.id)
+            return json.dumps(
+                {
+                    "status": "pending_approval",
+                    "approval_id": approval_request.id,
+                    "tool": tool_name,
+                    "operation": operation,
+                    "resource": resource,
+                    "reason": reason,
+                    "message": (
+                        f"Tool '{tool_name}' requires approval. "
+                        f"Approval ID: {approval_request.id}"
+                    ),
+                }
+            )
+        except ImportError:
+            logger.error(
+                "Approval module not available, blocking '%s' "
+                "(approval required)",
+                tool_name,
+            )
+            return json.dumps(
+                {
+                    "error": "approval_unavailable",
+                    "tool": tool_name,
+                    "operation": operation,
+                    "resource": resource,
+                    "reason": reason,
+                    "message": (
+                        f"Tool '{tool_name}' requires approval but approval "
+                        "system is unavailable."
+                    ),
+                }
+            )
+        except Exception as approval_error:
+            logger.error(
+                "Error in approval flow for '%s': %s",
+                tool_name,
+                approval_error,
+            )
+            return json.dumps(
+                {
+                    "error": "approval_error",
+                    "tool": tool_name,
+                    "operation": operation,
+                    "resource": resource,
+                    "reason": reason,
+                    "message": (
+                        f"Tool '{tool_name}' requires approval but an error "
+                        f"occurred: {approval_error}"
+                    ),
+                }
+            )
+
     async def ensure_memory_provider(self) -> Optional[MemoryProvider]:
         """Ensure memory provider is initialized. Used for lazy loading."""
         if not self._lazy_initialized["memory_provider"]:
@@ -2820,6 +2968,8 @@ class ToolManager:
             self._canonical_tool_name(name)
             for name in (allowed_names or default_allowed)
         }
+        if not subagents_enabled():
+            allowed.difference_update(SUBAGENT_TOOL_NAMES)
         responses_tools: List[Dict[str, Any]] = []
         for t in self.get_tools():
             name = t.get("name")
@@ -4131,6 +4281,28 @@ class ToolManager:
             }
         )
 
+    async def execute_tool_async(
+        self,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        context: Optional[dict[str, Any]] = None,
+    ) -> Union[str, dict[str, Any]]:
+        """Execute a tool without blocking the caller's event loop.
+
+        Args:
+            tool_name: Tool name or supported alias.
+            tool_input: Tool arguments.
+            context: Optional request-scoped execution context.
+
+        Returns:
+            Completed tool output.
+        """
+        return await self._async_tool_dispatcher.execute(
+            tool_name,
+            tool_input,
+            context,
+        )
+
     def execute_tool(
         self, tool_name: str, tool_input: dict, context: dict = None
     ) -> Union[str, dict]:
@@ -4138,6 +4310,15 @@ class ToolManager:
             requested_tool_name = tool_name
             tool_name = self._canonical_tool_name(tool_name)
             effective_context = self._merged_execution_context(context)
+            if tool_name in SUBAGENT_TOOL_NAMES and not subagents_enabled(
+                effective_context
+            ):
+                return json.dumps(disabled_subagent_result(tool_name))
+            if tool_name in ASYNC_TOOL_NAMES and self._is_in_async_context():
+                raise RuntimeError(
+                    f"Tool '{tool_name}' is asynchronous; await "
+                    "ToolManager.execute_tool_async() instead"
+                )
             file_root = self._resolve_file_root(effective_context)
             effective_context.setdefault("directory", file_root)
             effective_context.setdefault("project_root", file_root)
@@ -4159,160 +4340,13 @@ class ToolManager:
 
             tool_input = self._normalize_tool_input_paths(tool_input, file_root)
 
-            # Check permission before executing
-            if self._permission_enabled:
-                result, reason = self.check_tool_permission(
-                    tool_name, tool_input, effective_context
-                )
-                if result is not None:
-                    _ensure_permission_imports()
-                    if result == _PermissionResult.DENY:
-                        agent_id = (
-                            effective_context.get("agent_id")
-                            if isinstance(effective_context, dict)
-                            else None
-                        )
-                        agent_mode = (
-                            effective_context.get("agent_mode")
-                            if isinstance(effective_context, dict)
-                            else None
-                        )
-                        session_id = (
-                            effective_context.get("session_id")
-                            if isinstance(effective_context, dict)
-                            else None
-                        )
-                        request_id = (
-                            effective_context.get("request_id")
-                            if isinstance(effective_context, dict)
-                            else None
-                        )
-                        logger.warning(
-                            "permission.denied tool=%s agent=%s mode=%s session=%s "
-                            "request=%s reason=%s",
-                            tool_name,
-                            agent_id,
-                            agent_mode,
-                            session_id,
-                            request_id,
-                            reason,
-                        )
-                        return json.dumps(
-                            {
-                                "error": "permission_denied",
-                                "tool": tool_name,
-                                "reason": reason,
-                            }
-                        )
-                    elif result == _PermissionResult.ASK:
-                        # Phase 3: Approval flow
-                        logger.info(
-                            "permission.approval_required tool=%s agent=%s mode=%s "
-                            "session=%s reason=%s",
-                            tool_name,
-                            effective_context.get("agent_id"),
-                            effective_context.get("agent_mode"),
-                            effective_context.get("session_id"),
-                            reason,
-                        )
-
-                        # Extract operation and resource for approval tracking
-                        operation = (
-                            effective_context.get("operation", f"tool.{tool_name}")
-                            if effective_context
-                            else f"tool.{tool_name}"
-                        )
-                        resource = tool_input.get(
-                            "path",
-                            tool_input.get("file_path", tool_input.get("target", "")),
-                        )
-                        session_id = (
-                            effective_context.get("session_id")
-                            if effective_context
-                            else None
-                        )
-
-                        # Check for pre-approvals first
-                        try:
-                            from penguin.security.approval import get_approval_manager
-
-                            approval_manager = get_approval_manager()
-
-                            # Check if pre-approved - if so, continue execution
-                            if approval_manager.check_pre_approved(
-                                operation, resource, session_id
-                            ):
-                                logger.info(
-                                    f"Tool '{tool_name}' pre-approved for {resource}"
-                                )
-                                # Pre-approved: fall through to tool execution below
-                            else:
-                                # Not pre-approved: create approval request and return pending status
-                                approval_request = approval_manager.create_request(
-                                    tool_name=tool_name,
-                                    operation=operation,
-                                    resource=resource,
-                                    reason=reason,
-                                    session_id=session_id,
-                                    context={
-                                        "tool_input": self._redact_tool_input_for_diagnostics(
-                                            tool_name,
-                                            tool_input,
-                                        ),
-                                        "agent_id": (
-                                            effective_context.get("agent_id")
-                                            if effective_context
-                                            else None
-                                        ),
-                                    },
-                                )
-
-                                logger.info(
-                                    f"Approval request created: {approval_request.id}"
-                                )
-                                return json.dumps(
-                                    {
-                                        "status": "pending_approval",
-                                        "approval_id": approval_request.id,
-                                        "tool": tool_name,
-                                        "operation": operation,
-                                        "resource": resource,
-                                        "reason": reason,
-                                        "message": f"Tool '{tool_name}' requires approval. Approval ID: {approval_request.id}",
-                                    }
-                                )
-                        except ImportError:
-                            # Approval module not available - BLOCK execution for security
-                            # Tools requiring approval must not bypass when module is missing
-                            logger.error(
-                                f"Approval module not available, blocking '{tool_name}' (approval required)"
-                            )
-                            return json.dumps(
-                                {
-                                    "error": "approval_unavailable",
-                                    "tool": tool_name,
-                                    "operation": operation,
-                                    "resource": resource,
-                                    "reason": reason,
-                                    "message": f"Tool '{tool_name}' requires approval but approval system is unavailable.",
-                                }
-                            )
-                        except Exception as approval_err:
-                            # Error in approval flow - BLOCK execution for security
-                            # Don't silently allow tools that require approval
-                            logger.error(
-                                f"Error in approval flow for '{tool_name}': {approval_err}"
-                            )
-                            return json.dumps(
-                                {
-                                    "error": "approval_error",
-                                    "tool": tool_name,
-                                    "operation": operation,
-                                    "resource": resource,
-                                    "reason": reason,
-                                    "message": f"Tool '{tool_name}' requires approval but an error occurred: {approval_err}",
-                                }
-                            )
+            permission_response = self._permission_response(
+                tool_name,
+                tool_input,
+                effective_context,
+            )
+            if permission_response is not None:
+                return permission_response
 
             tool_map = {
                 "create_folder": lambda: self._execute_file_operation(
@@ -5989,40 +6023,26 @@ class ToolManager:
         return self.todo_tools.read(self._merged_execution_context(None))
 
     def _execute_async_tool(self, coro):
-        """Execute an async tool properly depending on the current context."""
-        try:
-            # Check if we're already in an event loop
-            loop = asyncio.get_running_loop()
-            # We're in an event loop, so we need to run the coroutine directly
-            # This is a hack that works for most cases by creating a new thread
-            import concurrent.futures
-            import threading
+        """Run an async tool from a synchronous call site.
 
-            result = None
-            exception = None
+        Args:
+            coro: Coroutine created by the selected tool handler.
 
-            def run_in_thread():
-                nonlocal result, exception
-                try:
-                    # Create a new event loop in this thread
-                    new_loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(new_loop)
-                    result = new_loop.run_until_complete(coro)
-                    new_loop.close()
-                except Exception as e:
-                    exception = e
+        Returns:
+            Completed coroutine result.
 
-            thread = threading.Thread(target=run_in_thread)
-            thread.start()
-            thread.join()
+        Raises:
+            RuntimeError: If called while an event loop is already running.
+        """
 
-            if exception:
-                raise exception
-            return result
-
-        except RuntimeError:
-            # No event loop running, we can use asyncio.run()
-            return asyncio.run(coro)
+        if self._is_in_async_context():
+            if hasattr(coro, "close"):
+                coro.close()
+            raise RuntimeError(
+                "Cannot execute an async tool through the synchronous API while "
+                "an event loop is running; await execute_tool_async() instead"
+            )
+        return asyncio.run(coro)
 
     async def _initial_indexing(self):
         """Perform initial indexing of workspace files."""
@@ -6181,6 +6201,20 @@ class ToolManager:
         Args:
             core: The PenguinCore instance
         """
+        if (
+            self._core is not None
+            and self._core is not core
+            and self._agent_executor is not None
+            and (
+                self._agent_executor.running_count > 0
+                or self._agent_executor.pending_count > 0
+            )
+        ):
+            raise RuntimeError(
+                "Cannot replace ToolManager core while background agents are active"
+            )
+        if self._core is not core:
+            self._agent_executor = None
         self._core = core
         conversation_manager = getattr(core, "conversation_manager", None)
         if conversation_manager is not None and hasattr(
@@ -6193,6 +6227,39 @@ class ToolManager:
             )
         if hasattr(self._mcp_provider, "core"):
             self._mcp_provider.core = core
+
+    def _get_agent_executor(self, *, create: bool) -> Any:
+        """Return this ToolManager's executor for its owning core.
+
+        Args:
+            create: Create the executor when it does not yet exist.
+
+        Returns:
+            The core-scoped ``AgentExecutor`` or ``None``.
+
+        Raises:
+            RuntimeError: If creation is requested before a core is attached.
+        """
+
+        if self._agent_executor is None and create:
+            if self._core is None:
+                raise RuntimeError("Core unavailable for background agent execution")
+            from penguin.multi.executor import AgentExecutor
+
+            self._agent_executor = AgentExecutor(self._core)
+        return self._agent_executor
+
+    async def shutdown_background_agents(self) -> int:
+        """Cancel and await all background agents owned by this manager.
+
+        Returns:
+            Number of active child tasks cancelled during shutdown.
+        """
+
+        executor = self._get_agent_executor(create=False)
+        if executor is None:
+            return 0
+        return await executor.shutdown()
 
     def _resolve_subagent_tool_call_id(
         self, tool_input: Optional[Dict[str, Any]]
@@ -6279,7 +6346,8 @@ class ToolManager:
         except Exception as e:
             return json.dumps({"error": f"MessageBus unavailable: {e}"})
 
-        results = []
+        delivered_targets: list[str] = []
+        failed_targets: list[str] = []
         for tgt in targets:
             msg = ProtocolMessage(
                 sender=None,  # Will be set by context
@@ -6290,12 +6358,23 @@ class ToolManager:
                 channel=channel,
             )
             try:
-                await bus.send(msg)
-                results.append(tgt)
+                delivered = await bus.send(msg)
+                if delivered:
+                    delivered_targets.append(tgt)
+                else:
+                    failed_targets.append(tgt)
             except Exception as e:
-                results.append(f"{tgt} (failed: {e})")
+                failed_targets.append(f"{tgt}: {e}")
 
-        return json.dumps({"sent_to": results, "status": "ok"})
+        if failed_targets:
+            return json.dumps(
+                {
+                    "error": "message_delivery_failed",
+                    "sent_to": delivered_targets,
+                    "failed": failed_targets,
+                }
+            )
+        return json.dumps({"sent_to": delivered_targets, "status": "ok"})
 
     async def _execute_spawn_sub_agent(self, tool_input: Dict[str, Any]) -> str:
         """Execute spawn_sub_agent tool.
@@ -6306,8 +6385,11 @@ class ToolManager:
         Returns:
             JSON string with result
         """
+        from penguin.multi.admission import validate_spawn_request
+
         spawn_started_at = time.monotonic()
-        agent_id = tool_input.get("id", "").strip()
+        raw_agent_id = tool_input.get("id", "")
+        agent_id = raw_agent_id.strip() if isinstance(raw_agent_id, str) else ""
         if not agent_id:
             self._log_subagent_event(
                 "spawn.summary",
@@ -6317,6 +6399,16 @@ class ToolManager:
                 error="missing_id",
             )
             return json.dumps({"error": "spawn_sub_agent requires 'id'"})
+
+        try:
+            validate_spawn_request(tool_input)
+        except ValueError as error:
+            return json.dumps(
+                {
+                    "error": "invalid_spawn_request",
+                    "details": str(error),
+                }
+            )
 
         if self._core is None:
             self._log_subagent_event(
@@ -6361,7 +6453,7 @@ class ToolManager:
         ):
             if key in tool_input:
                 kwargs[key] = tool_input[key]
-        if isinstance(tool_input.get("model_overrides"), dict):
+        if tool_input.get("model_overrides") is not None:
             kwargs["model_overrides"] = tool_input["model_overrides"]
 
         try:
@@ -6442,21 +6534,12 @@ class ToolManager:
 
         # Handle initial_prompt if provided
         initial_prompt = tool_input.get("initial_prompt")
+        child_result: Any = None
         if initial_prompt:
             if background:
                 # Run agent in background using AgentExecutor
                 try:
-                    from penguin.multi.executor import (
-                        get_executor,
-                        set_executor,
-                        AgentExecutor,
-                    )
-
-                    executor = get_executor()
-                    if executor is None:
-                        # Initialize executor with core
-                        executor = AgentExecutor(self._core)
-                        set_executor(executor)
+                    executor = self._get_agent_executor(create=True)
 
                     await executor.spawn_agent(
                         agent_id,
@@ -6512,7 +6595,7 @@ class ToolManager:
                 # Synchronous: run the child prompt in the child session and block
                 try:
                     if hasattr(self._core, "run_agent_prompt_in_session"):
-                        await self._core.run_agent_prompt_in_session(
+                        child_result = await self._core.run_agent_prompt_in_session(
                             agent_id,
                             initial_prompt,
                             session_id=session_info.get("id"),
@@ -6520,9 +6603,64 @@ class ToolManager:
                             agent_mode=session_info.get("agent_mode"),
                         )
                     elif hasattr(self._core, "send_to_agent"):
-                        await self._core.send_to_agent(agent_id, initial_prompt)
+                        child_result = await self._core.send_to_agent(
+                            agent_id,
+                            initial_prompt,
+                        )
                 except Exception as e:
-                    logger.warning(f"Failed to send initial_prompt to {agent_id}: {e}")
+                    self._log_subagent_event(
+                        "spawn.summary",
+                        status="failed",
+                        elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+                        tool_input=tool_input,
+                        target_agent=agent_id,
+                        parent_agent=parent_id,
+                        source="tool",
+                        background=False,
+                        error=str(e),
+                    )
+                    return json.dumps(
+                        {
+                            "error": "child_execution_failed",
+                            "agent_id": agent_id,
+                            "session_id": session_info.get("id"),
+                            "details": str(e),
+                        }
+                    )
+
+                from penguin.multi.executor import (
+                    AgentState,
+                    classify_agent_result,
+                )
+
+                child_outcome = classify_agent_result(child_result)
+                if child_outcome.state in {AgentState.FAILED, AgentState.CANCELLED}:
+                    details = child_outcome.error or "Child execution failed"
+                    error_code = (
+                        "child_execution_aborted"
+                        if child_outcome.state == AgentState.CANCELLED
+                        else "child_execution_failed"
+                    )
+                    self._log_subagent_event(
+                        "spawn.summary",
+                        status="failed",
+                        elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+                        tool_input=tool_input,
+                        target_agent=agent_id,
+                        parent_agent=parent_id,
+                        source="tool",
+                        background=False,
+                        error=details,
+                    )
+                    error_payload = {
+                        "error": error_code,
+                        "agent_id": agent_id,
+                        "session_id": session_info.get("id"),
+                        "details": details,
+                    }
+                    if child_outcome.state == AgentState.CANCELLED:
+                        error_payload["aborted"] = True
+                    return json.dumps(error_payload)
 
         self._log_subagent_event(
             "spawn.summary",
@@ -6537,18 +6675,19 @@ class ToolManager:
             share_context_window=share_cw,
         )
 
-        return json.dumps(
-            {
-                "status": "ok",
-                "agent_id": agent_id,
-                "parent": parent_id,
-                "share_session": share_session,
-                "share_context_window": share_cw,
-                "background": background,
-                "session_id": session_info.get("id"),
-                "session_title": session_info.get("title"),
-            }
-        )
+        result_payload = {
+            "status": "ok",
+            "agent_id": agent_id,
+            "parent": parent_id,
+            "share_session": share_session,
+            "share_context_window": share_cw,
+            "background": background,
+            "session_id": session_info.get("id"),
+            "session_title": session_info.get("title"),
+        }
+        if initial_prompt and not background:
+            result_payload["result"] = child_result
+        return json.dumps(result_payload)
 
     async def _execute_stop_sub_agent(self, tool_input: Dict[str, Any]) -> str:
         """Execute stop_sub_agent tool.
@@ -6569,9 +6708,7 @@ class ToolManager:
         cancelled_background = False
         try:
             # Try to cancel background task if running in executor
-            from penguin.multi.executor import get_executor
-
-            executor = get_executor()
+            executor = self._get_agent_executor(create=False)
             if executor:
                 status = executor.get_status(agent_id)
                 if status and status.get("state") in ("pending", "running"):
@@ -6632,8 +6769,6 @@ class ToolManager:
         Returns:
             JSON string with agent status(es)
         """
-        from penguin.multi.executor import get_executor
-
         agent_id = tool_input.get("id", "").strip()
         include_result = bool(tool_input.get("include_result", False))
 
@@ -6647,7 +6782,7 @@ class ToolManager:
             include_result=include_result,
         )
 
-        executor = get_executor()
+        executor = self._get_agent_executor(create=False)
         if executor is None:
             self._log_subagent_event(
                 "status.summary",
@@ -6732,14 +6867,12 @@ class ToolManager:
         Returns:
             JSON string with results
         """
-        from penguin.multi.executor import get_executor
-
         uvicorn_logger = logging.getLogger("uvicorn.error")
 
         agent_ids = tool_input.get("ids")
         timeout = tool_input.get("timeout")
 
-        executor = get_executor()
+        executor = self._get_agent_executor(create=False)
         if executor is None:
             logger.info(
                 "subagent.wait.no_executor ids=%s timeout=%s", agent_ids, timeout
@@ -7047,16 +7180,7 @@ class ToolManager:
         try:
             if background:
                 # Run delegated task in background using AgentExecutor
-                from penguin.multi.executor import (
-                    get_executor,
-                    set_executor,
-                    AgentExecutor,
-                )
-
-                executor = get_executor()
-                if executor is None:
-                    executor = AgentExecutor(self._core)
-                    set_executor(executor)
+                executor = self._get_agent_executor(create=True)
 
                 # Check if agent is already registered in executor
                 status = executor.get_status(child)
