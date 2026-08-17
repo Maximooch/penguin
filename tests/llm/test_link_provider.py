@@ -89,10 +89,7 @@ def test_context_includes_workos_organization_header() -> None:
 
     headers = context.headers("request-1")
 
-    assert (
-        headers["X-Link-WorkOS-Organization-Id"]
-        == "org_01M06XBYP88CD1MHHSRGWTC2BA"
-    )
+    assert headers["X-Link-WorkOS-Organization-Id"] == "org_01M06XBYP88CD1MHHSRGWTC2BA"
 
 
 def test_context_rejects_one_sided_persisted_identity() -> None:
