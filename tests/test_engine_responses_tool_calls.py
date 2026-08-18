@@ -141,6 +141,54 @@ def test_prepare_responses_tools_enables_openrouter_chat_tools() -> None:
     assert engine_like.model_config.interrupt_on_tool_call is True
 
 
+def test_prepare_responses_tools_enables_modal_chat_tools() -> None:
+    model_config = SimpleNamespace(
+        provider="modal",
+        client_preference="native",
+        use_responses_api=False,
+        native_tools=True,
+        interrupt_on_tool_call=False,
+    )
+    engine_like = SimpleNamespace(
+        model_config=model_config,
+        _get_runtime_model_config=lambda: model_config,
+    )
+    tool_manager = SimpleNamespace(
+        get_responses_tools=lambda **_kwargs: [
+            {
+                "type": "function",
+                "name": "read_file",
+                "description": "Read a file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                },
+            }
+        ]
+    )
+
+    extra_kwargs = Engine._prepare_responses_tools(engine_like, tool_manager)
+
+    assert extra_kwargs == {
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Read a file",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                    },
+                },
+            }
+        ],
+        "tool_choice": "auto",
+        "parallel_tool_calls": False,
+    }
+    assert engine_like.model_config.interrupt_on_tool_call is True
+
+
 def test_prepare_responses_tools_enables_anthropic_tools() -> None:
     model_config = SimpleNamespace(
         provider="anthropic",

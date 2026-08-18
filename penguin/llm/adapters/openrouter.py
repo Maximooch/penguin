@@ -396,6 +396,21 @@ class OpenRouterGateway:
             },
         )
 
+    def _apply_reasoning_request_params(
+        self,
+        request_params: Dict[str, Any],
+        reasoning_config: Dict[str, Any],
+    ) -> None:
+        """Apply the provider-specific reasoning payload to a request."""
+        request_params["reasoning"] = reasoning_config
+
+    def _uses_direct_reasoning_transport(
+        self,
+        reasoning_config: Optional[Dict[str, Any]],
+    ) -> bool:
+        """Return whether reasoning requires the direct HTTP transport."""
+        return bool(reasoning_config)
+
     async def prepare_request(
         self,
         messages: List[Dict[str, Any]],
@@ -436,10 +451,11 @@ class OpenRouterGateway:
             stream_options["include_usage"] = True
             request_params["stream_options"] = stream_options
         if reasoning_config:
-            request_params["reasoning"] = (
+            self._apply_reasoning_request_params(
+                request_params,
                 reasoning_config
                 if isinstance(reasoning_config, dict)
-                else {"enabled": True}
+                else {"enabled": True},
             )
 
         request_params = {
@@ -450,11 +466,14 @@ class OpenRouterGateway:
             for key, value in request_params.items()
             if key != "extra_headers"
         }
+        direct_reasoning_transport = self._uses_direct_reasoning_transport(
+            reasoning_config
+        )
         transport = (
             "http_sse"
-            if reasoning_config and use_streaming
+            if direct_reasoning_transport and use_streaming
             else "http"
-            if reasoning_config
+            if direct_reasoning_transport
             else "sdk_stream"
             if use_streaming
             else "sdk"
@@ -1434,22 +1453,22 @@ class OpenRouterGateway:
 
         # Add new unified reasoning parameter if reasoning is enabled
         if reasoning_config:
-            # Use new unified reasoning format instead of include_reasoning
-            if isinstance(reasoning_config, dict):
-                request_params["reasoning"] = reasoning_config
-                self.logger.info(
-                    f"[OpenRouterGateway] Using new reasoning config: {reasoning_config}"
-                )
-            else:
-                # Fallback to simple enabled format for backwards compatibility
-                request_params["reasoning"] = {"enabled": True}
-                self.logger.info(
-                    "[OpenRouterGateway] Using basic reasoning config with enabled=True"
-                )
+            normalized_reasoning_config = (
+                reasoning_config
+                if isinstance(reasoning_config, dict)
+                else {"enabled": True}
+            )
+            self._apply_reasoning_request_params(
+                request_params,
+                normalized_reasoning_config,
+            )
+            self.logger.info(
+                "[OpenRouterGateway] Using reasoning config: %s",
+                normalized_reasoning_config,
+            )
 
-        # Handle reasoning configuration - always use direct API for reasoning
-        use_direct_api = bool(reasoning_config)
-        if reasoning_config:
+        use_direct_api = self._uses_direct_reasoning_transport(reasoning_config)
+        if use_direct_api:
             self.logger.info(
                 "[OpenRouterGateway] Reasoning enabled, will use direct API call to bypass SDK limitations"
             )
@@ -1646,6 +1665,12 @@ class OpenRouterGateway:
                     reasoning_delta = getattr(delta_obj, "reasoning", None)
                     if reasoning_delta is None and isinstance(delta_obj, dict):
                         reasoning_delta = delta_obj.get("reasoning")
+                    if reasoning_delta is None:
+                        reasoning_delta = getattr(
+                            delta_obj, "reasoning_content", None
+                        )
+                    if reasoning_delta is None and isinstance(delta_obj, dict):
+                        reasoning_delta = delta_obj.get("reasoning_content")
                     tool_calls_delta = (
                         delta_obj.get("tool_calls")
                         if isinstance(delta_obj, dict)
@@ -1906,6 +1931,20 @@ class OpenRouterGateway:
 
                     # Extract reasoning if present
                     reasoning_content = getattr(response_message, "reasoning", None)
+                    if reasoning_content is None and isinstance(
+                        response_message, dict
+                    ):
+                        reasoning_content = response_message.get("reasoning")
+                    if reasoning_content is None:
+                        reasoning_content = getattr(
+                            response_message, "reasoning_content", None
+                        )
+                    if reasoning_content is None and isinstance(
+                        response_message, dict
+                    ):
+                        reasoning_content = response_message.get(
+                            "reasoning_content"
+                        )
                     if reasoning_content:
                         full_reasoning_content = reasoning_content
                         self._append_reasoning(str(reasoning_content))
@@ -2301,6 +2340,12 @@ class OpenRouterGateway:
                             if hasattr(delta, "reasoning")
                             else delta.get("reasoning")
                         )
+                        if reasoning_delta is None:
+                            reasoning_delta = (
+                                getattr(delta, "reasoning_content", None)
+                                if hasattr(delta, "reasoning_content")
+                                else delta.get("reasoning_content")
+                            )
                         if reasoning_delta and not reasoning_phase_complete:
                             full_reasoning += reasoning_delta
                             self._append_reasoning(reasoning_delta)

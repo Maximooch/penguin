@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+
+import pytest
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -176,3 +178,61 @@ def test_placeholder_api_record_does_not_override_runtime_key(monkeypatch) -> No
 
     assert core.model_config.api_key == "sk-real-runtime"
     assert os.getenv("OPENROUTER_API_KEY") is None
+
+
+def test_modal_structured_record_round_trip_and_runtime(monkeypatch) -> None:
+    for name in (
+        "MODAL_ENDPOINT",
+        "MODAL_PROXY_TOKEN_ID",
+        "MODAL_PROXY_TOKEN_SECRET",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    provider_credentials.set_provider_credential(
+        "modal",
+        {
+            "type": "modal",
+            "endpoint": " https://example-endpoint.modal.direct ",
+            "tokenId": " wk-test ",
+            "tokenSecret": " ws-test ",
+        },
+    )
+    record = provider_credentials.get_provider_credential("modal")
+
+    assert record == {
+        "type": "modal",
+        "endpoint": "https://example-endpoint.modal.direct",
+        "tokenId": "wk-test",
+        "tokenSecret": "ws-test",
+    }
+    assert provider_credentials.provider_connected("modal", {"modal": record}) is True
+
+    core = SimpleNamespace(
+        model_config=SimpleNamespace(provider="modal", api_base=None)
+    )
+    provider_credentials.apply_credentials_to_runtime(core, "modal", record)
+
+    assert os.getenv("MODAL_ENDPOINT") == "https://example-endpoint.modal.direct"
+    assert os.getenv("MODAL_PROXY_TOKEN_ID") == "wk-test"
+    assert os.getenv("MODAL_PROXY_TOKEN_SECRET") == "ws-test"
+    assert core.model_config.api_base == "https://example-endpoint.modal.direct"
+
+
+def test_modal_structured_record_requires_all_fields() -> None:
+    for payload in (
+        {"type": "modal", "tokenId": "wk", "tokenSecret": "ws"},
+        {"type": "modal", "endpoint": "https://example-endpoint.modal.direct", "tokenSecret": "ws"},
+        {"type": "modal", "endpoint": "https://example-endpoint.modal.direct", "tokenId": "wk"},
+    ):
+        with pytest.raises(ValueError):
+            provider_credentials.set_provider_credential("modal", payload)
+
+
+def test_modal_record_can_come_from_environment(
+    monkeypatch, isolate_provider_credentials
+) -> None:
+    monkeypatch.setenv("MODAL_ENDPOINT", "https://example-endpoint.modal.direct")
+    monkeypatch.setenv("MODAL_PROXY_TOKEN_ID", "wk-test")
+    monkeypatch.setenv("MODAL_PROXY_TOKEN_SECRET", "ws-test")
+
+    assert provider_credentials.provider_connected("modal") is True

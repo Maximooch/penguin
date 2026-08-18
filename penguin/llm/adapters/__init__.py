@@ -5,8 +5,10 @@ __all__ = [
     "AnthropicAdapter",
     "BaseAdapter",
     "OllamaAdapter",
+    "ModalAdapter",
     "OpenAIAdapter",
     "OpenAICompatibleAdapter",
+    "RunInfraAdapter",
     "get_adapter",
 ]
 
@@ -30,8 +32,10 @@ def get_adapter(provider: str, model_config):
         provider_mapping = {
             "anthropic": ("anthropic", "AnthropicAdapter"),
             "ollama": ("ollama", "OllamaAdapter"),
+            "modal": ("modal", "ModalAdapter"),
             "openai": ("openai", "OpenAIAdapter"),
             "openai_compatible": ("openai_compatible", "OpenAICompatibleAdapter"),
+            "runinfra": ("runinfra", "RunInfraAdapter"),
             # Add more mappings as needed
         }
 

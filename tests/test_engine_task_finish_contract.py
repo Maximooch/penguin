@@ -10,6 +10,7 @@ import pytest
 from penguin.engine import Engine, EngineSettings
 from penguin.llm.contracts import (
     ErrorCategory,
+    FinishReason,
     LLMCallResult,
     LLMError,
     LLMProviderError,
@@ -58,6 +59,12 @@ class _Conversation:
     def add_assistant_message(self, content: str) -> Message:
         return self.add_message("assistant", content)
 
+    def get_formatted_messages(self) -> list[dict[str, Any]]:
+        return [
+            {"role": message.role, "content": message.content}
+            for message in self.session.messages
+        ]
+
 
 class _ConversationManager:
     def __init__(self) -> None:
@@ -97,6 +104,24 @@ class _ScriptedTaskEngine(Engine):
         self.provider_calls += 1
         self.streaming_flags.append(kwargs.get("streaming"))
         return self.turns.popleft()
+
+
+class _PersistingLengthEngine(_ScriptedTaskEngine):
+    """Script provider turns while retaining Engine's persistence contract."""
+
+    def __init__(self, turns: list[dict[str, Any]]) -> None:
+        super().__init__(turns)
+        self.request_messages: list[list[dict[str, Any]]] = []
+
+    async def _llm_step(self, **kwargs: Any) -> dict[str, Any]:
+        del kwargs
+        self.provider_calls += 1
+        messages = self.test_conversation_manager.conversation.get_formatted_messages()
+        self.request_messages.append([dict(message) for message in messages])
+        response_data = self.turns.popleft()
+        response = response_data.get("assistant_response", "")
+        self.test_conversation_manager.conversation.add_assistant_message(response)
+        return response_data
 
 
 def _finish_turn(
@@ -156,6 +181,170 @@ async def test_run_task_without_limits_crosses_legacy_iteration_and_token_thresh
     assert result["iterations"] == 102
     assert result["usage"]["total_tokens"] > 300_000
     assert engine.provider_calls == 102
+
+
+@pytest.mark.asyncio
+async def test_unbounded_task_continues_once_from_persisted_length_partial() -> None:
+    final_turn = _finish_turn(status="done", summary="Finished the continuation")
+    final_turn["assistant_response"] = "then the rest."
+    final_turn["finish_reason"] = FinishReason.STOP
+    engine = _PersistingLengthEngine(
+        [
+            {
+                "assistant_response": "The answer starts here, ",
+                "action_results": [],
+                "usage": {"input_tokens": 5, "output_tokens": 8, "total_tokens": 13},
+                "finish_reason": FinishReason.LENGTH,
+            },
+            final_turn,
+        ]
+    )
+
+    result = await engine.run_task(
+        task_prompt="Give the complete answer",
+        enable_events=False,
+    )
+
+    assert result["status"] == "pending_review"
+    assert result["finish_status"] == "done"
+    assert result["iterations"] == 2
+    assert engine.provider_calls == 2
+    assert engine.request_messages[0] == [
+        {"role": "user", "content": "Give the complete answer"}
+    ]
+    assert engine.request_messages[1] == [
+        {"role": "user", "content": "Give the complete answer"},
+        {"role": "assistant", "content": "The answer starts here, "},
+        {
+            "role": "system",
+            "content": (
+                "The previous assistant output reached a per-call output boundary. "
+                "Continue exactly where it stopped without repeating any prior text."
+            ),
+        },
+    ]
+    persisted_contents = [
+        message.content
+        for message in engine.test_conversation_manager.conversation.session.messages
+    ]
+    assert persisted_contents.count("The answer starts here, ") == 1
+
+
+@pytest.mark.asyncio
+async def test_unbounded_response_continues_from_persisted_length_partial() -> None:
+    engine = _PersistingLengthEngine(
+        [
+            {
+                "assistant_response": "The answer starts here, ",
+                "action_results": [],
+                "usage": {"total_tokens": 13},
+                "finish_reason": FinishReason.LENGTH,
+            },
+            {
+                "assistant_response": "then the rest.",
+                "action_results": [],
+                "usage": {"total_tokens": 8},
+                "finish_reason": FinishReason.STOP,
+            },
+        ]
+    )
+
+    result = await engine.run_response(
+        "Give the complete answer",
+        streaming=False,
+    )
+
+    assert result["status"] == "completed"
+    assert result["assistant_response"] == "then the rest."
+    assert result["iterations"] == 2
+    assert engine.request_messages[1] == [
+        {"role": "user", "content": "Give the complete answer"},
+        {"role": "assistant", "content": "The answer starts here, "},
+        {
+            "role": "system",
+            "content": (
+                "The previous assistant output reached a per-call output boundary. "
+                "Continue exactly where it stopped without repeating any prior text."
+            ),
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_length_continuation_respects_explicit_iteration_limit() -> None:
+    engine = _PersistingLengthEngine(
+        [
+            {
+                "assistant_response": "Only the bounded partial",
+                "action_results": [],
+                "usage": {"total_tokens": 13},
+                "finish_reason": FinishReason.LENGTH,
+            },
+            _finish_turn(status="done", summary="Must not execute"),
+        ]
+    )
+
+    result = await engine.run_task(
+        task_prompt="Give the complete answer",
+        max_iterations=1,
+        enable_events=False,
+    )
+
+    assert result["status"] == "iterations_exceeded"
+    assert result["iterations"] == 1
+    assert engine.provider_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_length_continuation_respects_explicit_token_budget() -> None:
+    engine = _PersistingLengthEngine(
+        [
+            {
+                "assistant_response": "Only the budgeted partial",
+                "action_results": [],
+                "usage": {"total_tokens": 13},
+                "finish_reason": FinishReason.LENGTH,
+            },
+            _finish_turn(status="done", summary="Must not execute"),
+        ]
+    )
+
+    result = await engine.run_task(
+        task_prompt="Give the complete answer",
+        token_budget=13,
+        enable_events=False,
+    )
+
+    assert result["status"] == "budget_limited"
+    assert result["iterations"] == 1
+    assert engine.provider_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_length_continuation_checks_explicit_stop_before_next_provider_call() -> (
+    None
+):
+    engine = _PersistingLengthEngine(
+        [
+            {
+                "assistant_response": "Partial before stop",
+                "action_results": [],
+                "usage": {"total_tokens": 13},
+                "finish_reason": FinishReason.LENGTH,
+            },
+            _finish_turn(status="done", summary="Must not execute"),
+        ]
+    )
+    engine._check_stop = AsyncMock(side_effect=[False, True])
+
+    result = await engine.run_task(
+        task_prompt="Give the complete answer",
+        enable_events=False,
+    )
+
+    assert result["status"] == "stopped"
+    assert engine.provider_calls == 1
+    assert engine._check_stop.await_count == 2
 
 
 @pytest.mark.asyncio

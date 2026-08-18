@@ -116,6 +116,17 @@ Reference:
 Reference:
 - `context/tasks/runmode-command-truth-pr1-checklist.md`
 
+### Strategic Follow-Up Workstreams
+
+- [ ] Update model names throughout the documentation so they match currently supported and recommended models
+- [ ] Add `recommended-models.yml` as the source of truth for recommended model configurations, including multi-agent and sub-agent setups
+- [ ] Use `recommended-models.yml` to populate a recommended-models documentation section; keep the format suitable for a future endpoint backed by `penguinagents.com` or `linkplatform.ai`
+- [ ] Decompose `config.py` and the broader configuration system using the same separation-of-concerns approach applied to `core.py`
+- [ ] Move todo-related tools and their supporting logic out of `parser.py` into `tool_manager.py` and the appropriate tool modules
+- [ ] Conduct a serious extensibility audit of the Python API, including supported extension points, composition patterns, lifecycle boundaries, and gaps in documentation/tests
+- [ ] Conduct a corresponding extensibility and ergonomics audit of the CLI, including custom workflows, scripting, discoverability, and stable command contracts
+- [ ] Plan a testing suite that reproduces the conditions most likely to cause failures, including incomplete streams, provider errors, retries/resource release, tool replay adjacency, configuration combinations, and CLI/API integration boundaries
+
 ---
 
 ## Deferred

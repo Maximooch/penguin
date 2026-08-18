@@ -27,8 +27,12 @@ function compareFamilyMembers<T extends SessionLike>(left: T, right: T, familyID
   return left.id.localeCompare(right.id)
 }
 
+export function isValidChildSession(session: { id: string; parentID?: string } | undefined) {
+  return Boolean(session?.parentID && session.parentID !== session.id)
+}
+
 function familyID<T extends SessionLike>(session: T) {
-  return session.parentID ?? session.id
+  return isValidChildSession(session) ? session.parentID! : session.id
 }
 
 export function upsertSessionRecord<T extends { id: string }>(sessions: T[], next: T) {
@@ -58,7 +62,7 @@ export function expandSessionSearchResults<T extends SessionLike>(results: T[] |
   const merged = new Map(results.map((item) => [item.id, item]))
 
   for (const item of results) {
-    if (!item.parentID) continue
+    if (!isValidChildSession(item)) continue
     if (merged.has(item.parentID)) continue
     const parent = cache.get(item.parentID)
     if (!parent) continue
@@ -85,7 +89,7 @@ export function getSessionListEntries<T extends SessionLike>(sessions: T[]): Ses
       const ordered = family.toSorted((left, right) => compareFamilyMembers(left, right, rootID))
       return ordered.map((session) => ({
         session,
-        parent: session.parentID ? lookup.get(session.parentID) : undefined,
+        parent: isValidChildSession(session) ? lookup.get(session.parentID!) : undefined,
         familyID: rootID,
         familyTime,
         depth: session.id === rootID ? 0 : 1,

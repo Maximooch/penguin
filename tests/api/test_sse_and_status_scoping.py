@@ -44,7 +44,9 @@ class _EventBus:
 
     async def emit(self, event_name, payload):
         for handler in list(self._handlers.get(event_name, [])):
-            handler(event_name, payload)
+            result = handler(event_name, payload)
+            if asyncio.iscoroutine(result):
+                await result
 
 
 def _parse_sse(chunk: str) -> dict:

@@ -18,6 +18,9 @@ __pycache__/
 # UV cache
 uv.lock
 
+# Turbo cache
+.turbo/cache
+
 # Ruff cache
 .ruff_cache/
 

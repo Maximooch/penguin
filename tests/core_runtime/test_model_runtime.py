@@ -11,6 +11,7 @@ import pytest
 from hypothesis import given, settings, strategies as st
 
 from penguin.core_runtime.model_runtime import (
+    provider_credential_available,
     apply_new_model_config,
     build_model_config_for_model,
     canonicalize_runtime_model_id,
@@ -31,6 +32,12 @@ def test_canonicalize_runtime_model_id_table() -> None:
     cases = [
         ("openai/gpt-4o", "openai", "native", "gpt-4o"),
         ("anthropic/claude-3-5-sonnet", "anthropic", "native", "claude-3-5-sonnet"),
+        (
+            "modal/moonshotai/Kimi-K3",
+            "modal",
+            "native",
+            "moonshotai/Kimi-K3",
+        ),
         ("openrouter/openai/gpt-4o", "openrouter", "openrouter", "openai/gpt-4o"),
         ("openai/gpt-4o", "openai", "openrouter", "openai/gpt-4o"),
         ("google/gemini-2.5-pro", "google", "native", "google/gemini-2.5-pro"),
@@ -41,6 +48,17 @@ def test_canonicalize_runtime_model_id_table() -> None:
             canonicalize_runtime_model_id(model_id, provider, client_preference)
             == expected
         )
+
+
+def test_runinfra_prefix_canonicalizes_to_local_model_id() -> None:
+    assert (
+        canonicalize_runtime_model_id(
+            "runinfra/deepseek-v4-flash",
+            "runinfra",
+            "native",
+        )
+        == "deepseek-v4-flash"
+    )
 
 
 @given(
@@ -767,3 +785,58 @@ async def test_build_model_config_for_model_does_not_mutate_current_config() -> 
     )
 
     assert current.get_config() == before
+
+
+def test_modal_runtime_availability_requires_endpoint_and_proxy_token_pair(
+    monkeypatch,
+) -> None:
+    for name in (
+        "MODAL_ENDPOINT",
+        "MODAL_PROXY_TOKEN_ID",
+        "MODAL_PROXY_TOKEN_SECRET",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    config = ModelConfig(
+        model="moonshotai/Kimi-K3",
+        provider="modal",
+        client_preference="native",
+        api_base="https://example-endpoint.modal.direct",
+    )
+
+    assert provider_credential_available(config) is False
+
+    monkeypatch.setenv("MODAL_PROXY_TOKEN_ID", "wk-test")
+    monkeypatch.setenv("MODAL_PROXY_TOKEN_SECRET", "ws-test")
+
+    assert provider_credential_available(config) is True
+
+
+def test_modal_provider_prefix_resolves_native() -> None:
+    provider, preference = resolve_model_provider("modal/moonshotai/Kimi-K3", None)
+
+    assert provider == "modal"
+    assert preference == "native"
+
+
+def test_runinfra_provider_prefix_resolves_native() -> None:
+    provider, preference = resolve_model_provider("runinfra/deepseek-v4-flash", None)
+
+    assert provider == "runinfra"
+    assert preference == "native"
+
+
+def test_runinfra_runtime_availability_requires_gateway_key(monkeypatch) -> None:
+    monkeypatch.delenv("RUNINFRA_GATEWAY_KEY", raising=False)
+
+    config = ModelConfig(
+        model="deepseek-v4-flash",
+        provider="runinfra",
+        client_preference="native",
+    )
+
+    assert provider_credential_available(config) is False
+
+    monkeypatch.setenv("RUNINFRA_GATEWAY_KEY", "wk-test")
+
+    assert provider_credential_available(config) is True

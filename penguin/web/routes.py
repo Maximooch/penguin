@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, NoReturn, Optional
+from typing import Any, Dict, List, Literal, NoReturn, Optional
 from fastapi import (
     APIRouter,
     Depends,
@@ -79,7 +79,10 @@ from penguin.web.services.link_inference import (
     LinkExecutionRequest,
     resolve_link_inference_runtime,
 )
-from penguin.web.services.opencode_events import schedule_opencode_event
+from penguin.web.services.opencode_events import (
+    emit_opencode_event,
+    schedule_opencode_event,
+)
 from penguin.system.runtime_events import wrap_opencode_event
 from penguin.web.services.conversations import (
     create_conversation_payload,
@@ -554,6 +557,8 @@ def _build_execution_context(
     agent_mode: Optional[str],
     directory: Optional[str],
     subagents_enabled: Optional[bool] = None,
+    permission_mode: Optional[str] = None,
+    approval_policy: Optional[Dict[str, Any]] = None,
 ) -> ExecutionContext:
     """Create request-scoped execution context for concurrent web sessions."""
     path_info = get_path_info(core, directory=directory, session_id=session_id)
@@ -568,6 +573,8 @@ def _build_execution_context(
         workspace_root=effective_directory,
         request_id=str(uuid.uuid4()),
         subagents_enabled=subagents_enabled,
+        permission_mode=permission_mode,
+        approval_policy=approval_policy,
     )
 
 
@@ -1053,6 +1060,8 @@ class MessageRequest(BaseModel):
         None
     )
     subagents_enabled: Optional[bool] = None
+    permission_mode: Optional[Literal["read_only", "workspace", "full_access"]] = None
+    approval_policy: Optional[Dict[str, Any]] = None
 
 
 _REASONING_EFFORT_VARIANTS = {
@@ -4000,6 +4009,20 @@ async def handle_chat_message(
                 detail="Link execution requires an authenticated HTTP request.",
             )
         authenticate_link_service_request(http_request)
+    if (
+        request.permission_mode is not None or request.approval_policy is not None
+    ) and not has_link_execution_authority:
+        raise HTTPException(
+            status_code=403,
+            detail="Runtime permission overrides require Link execution authority.",
+        )
+    if (
+        request.permission_mode is not None or request.approval_policy is not None
+    ) and os.environ.get("PENGUIN_YOLO", "").lower() in {"1", "true", "yes"}:
+        raise HTTPException(
+            status_code=503,
+            detail="Runtime permission enforcement is disabled by PENGUIN_YOLO.",
+        )
 
     temp_image_files: List[str] = []
     request_session_id: Optional[str] = None
@@ -4130,6 +4153,8 @@ async def handle_chat_message(
             agent_mode=resolved_agent_mode,
             directory=bound_directory or request.directory,
             subagents_enabled=request.subagents_enabled,
+            permission_mode=request.permission_mode,
+            approval_policy=request.approval_policy,
         )
         _request_log_debug(
             "chat.trace.start request=%s session=%s agent=%s mode=%s dir=%s model=%s streaming=%s client_msg=%s prompt=%r",
@@ -4197,6 +4222,25 @@ async def handle_chat_message(
         except Exception as exc:
             detail = str(exc) or f"Failed to resolve model runtime '{requested_model}'"
             raise HTTPException(status_code=400, detail=detail) from exc
+        if request.external_subscription_execution is not None:
+            try:
+                await emit_opencode_event(
+                    core,
+                    "link.execution.authorized",
+                    {
+                        "sessionID": effective_session_id,
+                        "execution": request.external_subscription_execution.public_result(),
+                    },
+                )
+            except Exception:
+                # Link still verifies the execution facts from the final HTTP
+                # response. Losing this optimization event must not terminate
+                # an otherwise valid, already-authorized turn.
+                logger.warning(
+                    "Failed to emit Link execution authorization for session %s",
+                    effective_session_id,
+                    exc_info=True,
+                )
         service_tier_override = _apply_request_service_tier_override(
             request.service_tier,
             model_config=request_model_config,

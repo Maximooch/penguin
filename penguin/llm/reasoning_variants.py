@@ -95,13 +95,25 @@ def anthropic_reasoning_efforts(model_id: str) -> tuple[str, ...]:
     return ()
 
 
+def runinfra_reasoning_efforts(model_id: str) -> tuple[str, ...]:
+    """Return conservative RunInfra effort variants for a model id."""
+    key = _normalized_model_key(model_id)
+    if not key:
+        return ()
+    if "deepseek-v4" in key:
+        return _WIDELY_SUPPORTED_EFFORTS
+    return ()
+
+
 def native_reasoning_efforts(provider_id: str, model_id: str) -> tuple[str, ...]:
-    """Return supported effort variants for native OpenAI/Anthropic models."""
+    """Return supported effort variants for native provider models."""
     provider = str(provider_id or "").strip().lower()
     if provider == "openai":
         return openai_reasoning_efforts(model_id)
     if provider == "anthropic":
         return anthropic_reasoning_efforts(model_id)
+    if provider == "runinfra":
+        return runinfra_reasoning_efforts(model_id)
     return ()
 
 
@@ -126,4 +138,5 @@ __all__ = [
     "openai_reasoning_efforts",
     "reasoning_effort_from_metadata",
     "reasoning_efforts_from_metadata",
+    "runinfra_reasoning_efforts",
 ]

@@ -44,6 +44,7 @@ from penguin.web.services import (
     opencode_provider as provider_service,
     provider_catalog,
 )
+from penguin.web.services import provider_auth
 from penguin.web.services.opencode_provider import get_provider_auth_records
 
 if TYPE_CHECKING:
@@ -246,6 +247,7 @@ def test_chat_message_rejects_link_authority_from_ordinary_api_client(
             "agent_id": "agent-1",
             "run_id": "run-1",
             "requested_model_id": "openai/gpt-5.4-nano",
+            "max_output_tokens": 16_384,
             "execution_source": "link_gateway",
             "provider_state_owner": "link_managed",
             "settlement_mode": "debit_link_credits",
@@ -315,6 +317,14 @@ async def test_chat_message_resolves_subscription_model_through_openai(
 ) -> None:
     monkeypatch.setenv("LINK_API_KEY", "link-service-secret")
     resolved_models: list[str | None] = []
+    emitted_events: list[tuple[str, dict[str, Any]]] = []
+
+    async def capture_event(
+        _core: Any,
+        event_type: str,
+        properties: dict[str, Any],
+    ) -> None:
+        emitted_events.append((event_type, properties))
 
     class _SubscriptionCore(_Core):
         async def resolve_request_runtime(
@@ -337,6 +347,7 @@ async def test_chat_message_resolves_subscription_model_through_openai(
         "validate_external_subscription_execution",
         lambda _execution, _model: None,
     )
+    monkeypatch.setattr(routes_module, "emit_opencode_event", capture_event)
     request = MessageRequest(
         text="hello",
         model="gpt-5.6-luna",
@@ -368,6 +379,15 @@ async def test_chat_message_resolves_subscription_model_through_openai(
 
     assert response["response"] == "hello from the subscription"
     assert resolved_models == ["openai/gpt-5.6-luna"]
+    assert emitted_events == [
+        (
+            "link.execution.authorized",
+            {
+                "sessionID": response["session_id"],
+                "execution": response["execution"],
+            },
+        )
+    ]
 
 
 @pytest.mark.asyncio
@@ -1574,3 +1594,41 @@ def test_http_route_wiring_for_config_provider_auth(
             json={},
         )
         assert oauth_callback_missing_method.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_modal_auth_method_and_catalog_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store_path = tmp_path / "provider_auth_modal.json"
+    monkeypatch.setenv("PENGUIN_PROVIDER_AUTH_STORE", str(store_path))
+    monkeypatch.setenv("MODAL_ENDPOINT", "https://example-endpoint.modal.direct")
+    monkeypatch.setenv("MODAL_PROXY_TOKEN_ID", "wk-test")
+    monkeypatch.setenv("MODAL_PROXY_TOKEN_SECRET", "ws-test")
+
+    core = _Core(tmp_path)
+    methods = await opencode_provider_auth(core=cast(Any, core))
+    assert methods["modal"] == [
+        {"type": "modal", "label": "Connect an existing Auto Endpoint"}
+    ]
+
+    providers = await opencode_provider_list(core=cast(Any, core))
+    modal = next(
+        (provider for provider in providers["all"] if provider["id"] == "modal"),
+        None,
+    )
+    assert modal is not None
+    assert "modal" in providers["connected"]
+    assert "moonshotai/Kimi-K3" in modal["models"]
+    kimi = modal["models"]["moonshotai/Kimi-K3"]
+    assert kimi["name"] == "Kimi K3"
+    assert kimi["limit"]["context"] == 1_000_000
+    assert kimi["attachment"] is True
+    assert kimi["tool_call"] is True
+    assert kimi["reasoning"] is True
+    assert kimi["variants"] == {
+        "low": {"reasoning": {"effort": "low"}},
+        "high": {"reasoning": {"effort": "high"}},
+        "max": {"reasoning": {"effort": "max"}},
+    }

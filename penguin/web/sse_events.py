@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import deque
 from typing import TYPE_CHECKING, Any, AsyncIterator, Optional
 
@@ -32,6 +33,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 router = APIRouter()
 _LEDGER_RECORDER_ATTR = "_runtime_event_ledger_recorder_v1"
+# Ledger writes are batched off the streaming hot path: event identity and
+# ordering are assigned per event, but SQLite persistence is drained on a
+# short cadence so the SSE frame is queued before any disk commit.
+_LEDGER_BATCH_ATTR = "_runtime_event_ledger_batch_v1"
+_LEDGER_FLUSH_INTERVAL_SECONDS = 0.25
+_LEDGER_BATCH_MAX_EVENTS = 256
 # Per-connection delivery limits for the compatibility SSE projection. The
 # durable runtime event ledger owns replay truth; this queue only buffers live
 # delivery for a connected client. Slow-client drops are recoverable by
@@ -282,6 +289,9 @@ async def events_sse(
                 yield sse_event_frame(normalized_connected)
 
             if effective_last_event_id:
+                # Ledger writes are batched off the delivery path; drain any
+                # pending batch so reconnect replay reads the freshest events.
+                await _flush_ledger_batch(core)
                 replay_cursor = effective_last_event_id
                 while True:
                     replay = await asyncio.to_thread(
@@ -327,6 +337,7 @@ async def events_sse(
                     replay_cursor = next_cursor
 
             # Stream events
+            last_ledger_flush = time.monotonic()
             while True:
                 try:
                     # Wait for event with timeout for keepalive
@@ -342,6 +353,13 @@ async def events_sse(
                 except asyncio.TimeoutError:
                     # Send keepalive comment
                     yield ": keepalive\n\n"
+                # Ledger writes are batched off the delivery path; drain the
+                # pending batch on a short cadence while this connection is
+                # live so reconnect replay stays fresh.
+                now = time.monotonic()
+                if now - last_ledger_flush >= _LEDGER_FLUSH_INTERVAL_SECONDS:
+                    await _flush_ledger_batch(core)
+                    last_ledger_flush = now
 
         except asyncio.CancelledError:
             # Client disconnected
@@ -350,6 +368,12 @@ async def events_sse(
             # Always unsubscribe
             try:
                 core.event_bus.unsubscribe("opencode_event", event_handler)
+            except Exception:
+                pass
+            # Final best-effort flush so replay sees the freshest events even
+            # when the connection dropped mid-batch.
+            try:
+                await _flush_ledger_batch(core)
             except Exception:
                 pass
 
@@ -364,8 +388,42 @@ async def events_sse(
     )
 
 
+async def _flush_ledger_batch(core: Any) -> None:
+    """Persist the pending opencode-event batch to the runtime ledger.
+
+    Runs on the event loop and offloads the SQLite write to a worker thread;
+    the whole batch lands in a single transaction (INSERT OR IGNORE keeps
+    retries idempotent). Called from the SSE generator on a short cadence,
+    before replay reads, and when the batch grows large.
+    """
+    batch = getattr(core, _LEDGER_BATCH_ATTR, None)
+    if not batch:
+        return
+    events = list(batch)
+    batch.clear()
+    if not events:
+        return
+    try:
+        from penguin.system.runtime_event_ledger import get_runtime_event_ledger
+
+        await asyncio.to_thread(get_runtime_event_ledger(core).extend, events)
+    except Exception:
+        # Requeue at the front (identity/order were already assigned at
+        # emission time); the next drain retries the whole batch.
+        batch[:0] = events
+        logger.debug(
+            "Failed to flush runtime event ledger batch",
+            exc_info=True,
+        )
+
+
 def _install_runtime_event_ledger_recorder(core: Any) -> None:
-    """Install one emission-time ledger recorder on the core EventBus."""
+    """Install one emission-time ledger recorder on the core EventBus.
+
+    Live SSE delivery never waits on a disk commit: each event's identity and
+    ordering are assigned synchronously, then the envelope is appended to a
+    per-core batch that drains to SQLite in a single transaction.
+    """
     if getattr(core, _LEDGER_RECORDER_ATTR, None) is not None:
         return
     event_bus = getattr(core, "event_bus", None)
@@ -373,14 +431,27 @@ def _install_runtime_event_ledger_recorder(core: Any) -> None:
     if not callable(subscribe):
         return
 
-    def ledger_handler(event_type: str, data: Any) -> None:
+    if not isinstance(getattr(core, _LEDGER_BATCH_ATTR, None), list):
+        setattr(core, _LEDGER_BATCH_ATTR, [])
+
+    async def ledger_handler(event_type: str, data: Any) -> None:
         if event_type != "opencode_event" or not isinstance(data, dict):
             return
         try:
-            record_opencode_event(core, data)
+            runtime_event = record_opencode_event(core, data, persist=False)
+            if runtime_event is None:
+                return
+            batch = getattr(core, _LEDGER_BATCH_ATTR, None)
+            if not isinstance(batch, list):
+                batch = []
+                setattr(core, _LEDGER_BATCH_ATTR, batch)
+            batch.append(runtime_event)
+            if len(batch) >= _LEDGER_BATCH_MAX_EVENTS:
+                await _flush_ledger_batch(core)
         except Exception:
-            # Ledger failures must not interrupt live TUI streaming. The client can
-            # still receive the live frame; replay will surface a gap if needed.
+            # Ledger failures must not interrupt live TUI streaming. The client
+            # can still receive the live frame; replay will surface a gap if
+            # needed.
             logger.debug(
                 "Failed to record OpenCode event in runtime ledger",
                 exc_info=True,

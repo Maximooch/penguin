@@ -1,0 +1,998 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Penguin architecture review — 100 opportunities</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+      mermaid.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "loose" });
+    </script>
+    <style>
+      :root { color-scheme: light; }
+      html { scroll-behavior: smooth; }
+      .deep { background: linear-gradient(135deg, #0f172a, #1e293b); }
+      .seam { border-style: dashed; }
+      .candidate { break-inside: avoid; }
+      .schematic { min-height: 154px; }
+      .shallow-stack > span { display:block; margin:.35rem auto; width:88%; border:1px solid #fca5a5; background:#fff7ed; border-radius:.45rem; padding:.38rem .55rem; text-align:center; }
+      .shallow-stack > span + span::before { content:"↓"; display:block; margin:-.7rem 0 .1rem; color:#dc2626; font-weight:700; }
+      .deep-module { min-height:102px; display:flex; align-items:center; justify-content:center; text-align:center; color:white; border:3px solid #0f172a; border-radius:.7rem; padding:1rem; background:linear-gradient(135deg,#0f172a,#334155); }
+      .mini-seam { border-top:2px dashed #64748b; margin:.55rem 0; }
+      .badge-strong { background:#d1fae5; color:#065f46; }
+      .badge-worth { background:#fef3c7; color:#92400e; }
+      .badge-spec { background:#e2e8f0; color:#334155; }
+      .priority-critical { background:#fee2e2; color:#991b1b; }
+      .priority-high { background:#ffedd5; color:#9a3412; }
+      .priority-medium { background:#e0e7ff; color:#3730a3; }
+      code { overflow-wrap:anywhere; }
+      @media print { .candidate { break-inside: avoid-page; } }
+    </style>
+  </head>
+  <body class="bg-stone-50 text-slate-900 font-sans">
+    <main class="max-w-6xl mx-auto px-5 py-10 space-y-12">
+      <header class="border-b-4 border-slate-900 pb-8">
+        <div class="flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <p class="text-xs uppercase tracking-[.25em] text-emerald-700 font-semibold">Architecture review · current working tree</p>
+            <h1 class="mt-2 text-4xl md:text-6xl font-serif tracking-tight">Penguin: 100 fixes, improvements &amp; optimizations</h1>
+          </div>
+          <div class="text-right text-sm text-slate-600"><div>11 August 2026</div><div>Exactly 100 candidates</div></div>
+        </div>
+        <div class="mt-6 flex flex-wrap gap-3 text-xs">
+          <span class="px-3 py-2 rounded border bg-white">solid box = module</span>
+          <span class="px-3 py-2 rounded border-2 border-dashed bg-white">dashed line = seam</span>
+          <span class="px-3 py-2 rounded border border-red-300 bg-red-50 text-red-700">red = leakage/failure</span>
+          <span class="px-3 py-2 rounded deep text-white">dark = deep module</span>
+        </div>
+        <div class="mt-6 grid md:grid-cols-4 gap-3 text-sm">
+          <div class="rounded-lg bg-white border p-4"><div class="text-2xl font-semibold">9</div><div class="text-slate-600">Python suite failures</div></div>
+          <div class="rounded-lg bg-white border p-4"><div class="text-2xl font-semibold">10,374</div><div class="text-slate-600">full-package Ruff findings</div></div>
+          <div class="rounded-lg bg-white border p-4"><div class="text-2xl font-semibold">2</div><div class="text-slate-600">TUI type errors</div></div>
+          <div class="rounded-lg bg-white border p-4"><div class="text-2xl font-semibold">217</div><div class="text-slate-600">focused TUI tests passing</div></div>
+        </div>
+        <p class="mt-4 text-xs text-slate-500">Snapshot note: the worktree already contained uncommitted changes. Confirmed failures describe this snapshot; strategic candidates are explicitly marked. This review made no repository edits.</p>
+      </header>
+
+      <nav class="grid sm:grid-cols-3 gap-3 text-sm">
+
+      <section class="rounded-xl border bg-white p-5 overflow-x-auto" aria-label="Review map">
+        <pre class="mermaid">
+          flowchart LR
+            A["Runtime truth\n35 candidates"] --> D["Deep Penguin\none trustworthy interface per seam"]
+            B["TUI protocol\n34 candidates"] --> D
+            C["Docs + context + product\n31 candidates"] --> D
+            D --> E["Locality\nchange concentrates"]
+            D --> F["Leverage\ncallers stay simple"]
+            classDef deep fill:#0f172a,color:#fff,stroke:#0f172a,stroke-width:3px;
+            class D deep;
+        </pre>
+      </section>
+        <a class="rounded-lg border bg-white p-4 hover:border-emerald-500" href="#runtime"><b>01–35</b><br/>Runtime &amp; Python</a>
+        <a class="rounded-lg border bg-white p-4 hover:border-emerald-500" href="#tui"><b>36–69</b><br/>TUI &amp; protocol</a>
+        <a class="rounded-lg border bg-white p-4 hover:border-emerald-500" href="#docs"><b>70–100</b><br/>Docs, context &amp; product</a>
+      </nav>
+
+      <section id="runtime" class="space-y-8">
+
+        <article id="c1" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">01</span>Collapse the dual package roots</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-critical rounded-full px-3 py-1 text-xs font-semibold">Critical</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">in-process</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">/__init__.py:1–35 · /core.py · /engine.py · penguin/__init__.py:47–55</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>root penguin package</span><span>sys.path mutation</span><span>nested penguin package</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">One canonical package root<br/>one import seam</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Importing from the repository versus its parent resolves different module identities, while two shallow shims mutate <code>sys.path</code> and hide import failures.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Delete the root shims, package only <code>penguin/</code>, and make one deep import module own public exports.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: one package identity</li><li>leverage: stable monkeypatch seams</li><li>tests hit installed layout</li></ul>
+        </article>
+
+        <article id="c2" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">02</span>Make runtime-event identity restart-safe</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/system/runtime_events.py:56–63,168–175 · penguin/system/runtime_event_ledger.py:182–238</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>process counter resets</span><span>same stream + sequence</span><span>duplicate silently dropped</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Durable event identity<br/>transactional ordering</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> A restart can reproduce the same event ID, and the ledger implementation silently rejects the later event.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Deepen the ledger module so it allocates ordering durably or pairs global identity with durable stream order.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: identity in ledger</li><li>leverage: safe replay</li><li>restart tests become deterministic</li></ul>
+        </article>
+
+        <article id="c3" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">03</span>Move ledger writes off the live event seam</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/system/runtime_event_ledger.py:182–238,465–509 · penguin/web/sse_events.py:367–390</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>publish event</span><span>SQL + commit</span><span>cleanup + vacuum</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Bounded ledger writer<br/>batch + overflow policy</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> The live handler blocks on SQL, commits, retention cleanup, and possible vacuum across a latency-sensitive seam.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Put persistence behind a bounded writer adapter with batched transactions and explicit overflow metrics.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: persistence in writer</li><li>leverage: lower stream latency</li><li>fault tests hit one interface</li></ul>
+        </article>
+
+        <article id="c4" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">04</span>Persist a privacy-safe event projection</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-critical rounded-full px-3 py-1 text-xs font-semibold">Critical</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">docs/docs/system/runtime-events.md:57–61 · penguin/tui_adapter/part_events.py:670–684,746–816 · runtime_event_ledger.py:228–233</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>user text</span><span>tool output</span><span>whole payload stored</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Allowlisted projection<br/>redaction + encryption policy</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> The ledger is documented as not being a transcript yet stores whole event payloads, and key-name redaction misses credentials inside values.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Deepen a persistence-projection module that allowlists fields and applies value-aware redaction or encryption before the ledger seam.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: privacy in one module</li><li>leverage: safer replay</li><li>interface matches contract</li></ul>
+        </article>
+
+        <article id="c5" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">05</span>Route response runs through one iteration loop</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">in-process</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/engine.py:251–257,1619–1982,2155–2391</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="grid grid-cols-2 gap-2 mt-5"><div class="border border-red-300 rounded p-3 text-center">task loop</div><div class="border border-red-300 rounded p-3 text-center">response loop</div><div class="col-span-2 text-center text-red-700 text-xs">stop/save/usage drift</div></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">One deep iteration loop<br/>mode supplied as policy</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> <code>run_response</code> reimplements the loop despite a module intended to own both modes, so termination, usage, and saves drift.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Make response-specific behavior policy passed into the shared deep loop implementation.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: control flow concentrates</li><li>leverage: one state machine</li><li>tests hit one interface</li></ul>
+        </article>
+
+        <article id="c6" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">06</span>Accumulate usage across response iterations</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">in-process</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/engine.py:1639–1704,2221–2260,2351–2357</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>iteration 1 usage</span><span>overwritten by iteration 2</span><span>last usage returned</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Shared usage accumulator<br/>truthful run total</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> The response implementation returns only the latest iteration’s usage, making billing, telemetry, and budgets untruthful.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Reuse the accumulator already inside the shared iteration-loop module.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: accounting in loop</li><li>leverage: truthful budgets</li><li>multi-turn tests stay small</li></ul>
+        </article>
+
+        <article id="c7" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">07</span>Report external stops as stopped</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">in-process</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/engine.py:1688–1691,2221–2236,2343–2357</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>external stop</span><span>break loop</span><span>status: completed</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Termination state machine<br/>status: stopped</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> The duplicated response loop can label an interrupted run as completed.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Put all terminal status transitions behind the shared termination seam.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: one status owner</li><li>leverage: honest automation</li><li>interface distinguishes interruption</li></ul>
+        </article>
+
+        <article id="c8" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">08</span>Repair the agent-turn adapter</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">local-substitutable</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/engine.py:2104–2116,3847–3864</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>run_agent_turn(image_path)</span><span>wrong keyword forwarded</span><span>runtime TypeError</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Conforming adapter<br/>public smoke contract</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> The adapter forwards a nonexistent keyword and no test exercises the advertised helper.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Normalize the image input at the adapter seam and add a public-helper contract test.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: conversion in adapter</li><li>leverage: stable helper</li><li>interface test catches drift</li></ul>
+        </article>
+
+        <article id="c9" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">09</span>Own stream tasks through a lifecycle</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/engine.py:3798–3835</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>untracked background task</span><span>exception skips sentinel</span><span>consumer waits forever</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Owned stream lifecycle<br/>terminal event in finally</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Provider or save errors can leave consumers blocked while an untracked task escapes cancellation.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Deepen the stream module with task ownership, terminal events, error propagation, and generator-close cancellation.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: lifecycle in stream</li><li>leverage: no hanging callers</li><li>fault tests hit seam</li></ul>
+        </article>
+
+        <article id="c10" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+
+        <article id="c11" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">11</span>Make canonical LLM types real</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/llm/contracts.py:458–481 · penguin/llm/adapters/base.py:58–81 · context/rationale/llm_provider_contract_design_patterns.md:29–42</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>canonical types defined</span><span>adapters return strings</span><span>callers decode conventions</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">LLM result/event interface<br/>raw data stays in adapters</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Canonical result and stream types are exported but unused, leaving provider conventions to leak through the seam.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Require every adapter to emit the canonical types and keep raw provider data inside its implementation.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: normalization at seam</li><li>leverage: provider interchangeability</li><li>one contract matrix</li></ul>
+        </article>
+
+        <article id="c12" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">12</span>Unify the stream callback contract</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/llm/contracts.py:18 · penguin/llm/api_client.py:713–731 · penguin/llm/adapters/base.py:45–67</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="grid grid-cols-3 gap-2 mt-5 text-xs text-center"><div class="border border-red-300 rounded p-2">2 args</div><div class="border border-red-300 rounded p-2">1 arg</div><div class="border border-red-300 rounded p-2">type lost</div></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">One typed stream event<br/>one callback interface</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Three declarations disagree about callback shape, so reasoning, text, and tool channels can vanish silently.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Put one typed callback protocol—or canonical event—at the provider seam and contract-test every adapter.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: one callback contract</li><li>leverage: channel preservation</li><li>adapters test uniformly</li></ul>
+        </article>
+
+        <article id="c13" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">13</span>Stop encoding failures as assistant text</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/llm/api_client.py:814–835,896–918,965–992 · penguin/llm/runtime.py:314–336</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>provider exception</span><span>"[Error: …]" string</span><span>stored as model output</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Typed failure channel<br/>format only in UI adapters</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Error strings cross the model-result seam and can be persisted or interpreted as successful output.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Raise or return typed failures through the runtime module and format them only in presentation adapters.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: errors stay typed</li><li>leverage: truthful status</li><li>fault tests avoid strings</li></ul>
+        </article>
+
+        <article id="c14" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">14</span>Make the disabled contributor module import-safe</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">in-process</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/system/context_contributors.py:9–68</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>feature flag false</span><span>required imports skipped</span><span>classes defined → NameError</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Import-safe disabled adapter<br/>or implementation fully gated</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> A false feature flag skips imports but not class definitions; importing the module raises <code>NameError</code>.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Delete the unused implementation or move it wholly behind the gate with a minimal disabled adapter.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: gating is complete</li><li>leverage: safe imports</li><li>deletion test becomes obvious</li></ul>
+        </article>
+
+        <article id="c15" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">15</span>Make Phase 2 tests fail honestly</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">mock</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">tests/test_phase2.py:49–112 · tests/test_phase2_simplified.py:123–149</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>behavior raises</span><span>test catches everything</span><span>returns False → pytest passes</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Assertions + fixtures<br/>failures reach pytest</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Blanket catches return booleans, so the contributor import crash still produced passing tests with warnings.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Replace boolean returns with assertions and make the real module interface the test surface.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: failures remain visible</li><li>leverage: trustworthy regression gate</li><li>mock only external seams</li></ul>
+        </article>
+
+        <article id="c16" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">16</span>Load project instructions from the project root</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">local-substitutable</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/system/conversation_manager.py:45–73,154–187</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>project_root received</span><span>workspace_path used</span><span>AGENTS.md missed</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Project-context loader<br/>one root invariant</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Repository instructions are searched under runtime storage while skills correctly use the project root.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Resolve the project root once and let one deep context-loader module own repository-local documents.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: root knowledge concentrates</li><li>leverage: instructions actually load</li><li>filesystem adapter is testable</li></ul>
+        </article>
+
+        <article id="c17" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">17</span>Inject active-model capacity into CWM</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">in-process</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/system/context_window.py:183–240 · penguin/llm/model_config.py:52–66</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>model config injected</span><span>global config read instead</span><span>wrong capacity trims</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Active-model capacity<br/>updated on model switch</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> The CWM interface accepts model state but its implementation reads global configuration, causing over- or under-trimming.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Make injected active-model capacity the only source and update it at the model-switch seam.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: capacity in CWM</li><li>leverage: correct multi-model runs</li><li>interface loses hidden global</li></ul>
+        </article>
+
+        <article id="c18" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">18</span>Reset category borrowing per processing pass</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">in-process</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/system/context_window.py:272–273,823–831,1193–1225</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>session A borrows budget</span><span>maximum mutates</span><span>session B inherits it</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Immutable baseline shares<br/>temporary per-pass allocation</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Borrowing permanently ratchets category maxima, so one conversation changes policy for later conversations.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Keep immutable baseline shares and compute temporary allocations inside each processing implementation.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: policy per pass</li><li>leverage: session isolation</li><li>state-machine tests simplify</li></ul>
+        </article>
+
+        <article id="c19" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">19</span>Fail explicitly on untrimmable overflow</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">in-process</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/system/context_window.py:522–528,855–860</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>system content &gt; capacity</span><span>system cannot trim</span><span>oversize prompt returned</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">System budget invariant<br/>typed overflow result</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Untrimmable system content can exceed total capacity while the module still returns an invalid prompt.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Enforce a system budget and return a typed context-overflow failure through the CWM interface.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: invariant in CWM</li><li>leverage: no doomed requests</li><li>overflow tests are direct</li></ul>
+        </article>
+
+        <article id="c20" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+
+        <article id="c21" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">21</span>Own message and checkpoint tasks</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/system/conversation.py:183–246</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>add message</span><span>two untracked tasks</span><span>errors swallowed</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Conversation outbox<br/>owned drain + shutdown</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> MessageBus and checkpoint work escapes as untracked tasks with invisible delivery failures and nondeterministic shutdown.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Put task registration, ordering, draining, and cancellation behind a lifecycle-owned outbox adapter.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: tasks have owner</li><li>leverage: deterministic ordering</li><li>fault tests hit outbox</li></ul>
+        </article>
+
+        <article id="c22" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">22</span>Stop mutating builtins.open</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">in-process</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/system/session_manager.py:23–39,491–495</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>module import</span><span>global builtin replaced</span><span>every module affected</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Local file adapter<br/>Path.open / io.open</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Importing session persistence mutates process-wide file behavior and can defeat instrumentation or security adapters.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Use a local file adapter inside the persistence implementation and leave the global seam untouched.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: I/O stays local</li><li>leverage: safe instrumentation</li><li>tests stop sharing mutation</li></ul>
+        </article>
+
+        <article id="c23" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">23</span>Serialize session state access</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/system/session_manager.py:95–103,236–400,799–849</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="grid grid-cols-2 gap-2 mt-4"><div class="border border-red-300 rounded p-3 text-center">autosave thread</div><div class="border border-red-300 rounded p-3 text-center">caller methods</div><div class="col-span-2 text-center text-red-700 text-xs">same cache · no lock</div></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Serialized state store<br/>one mutation seam</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> An autosave thread and caller methods mutate the same cache and index without synchronization.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Deepen the state-store module with one lock or serialized persistence worker.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: mutations serialize</li><li>leverage: no lost saves</li><li>race tests gain seam</li></ul>
+        </article>
+
+        <article id="c24" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">24</span>Make session writes crash-durable</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">local-substitutable</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/system/session_manager.py:1–8,500–549</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>session file replace</span><span>index written separately</span><span>no fsync invariant</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Transactional persistence<br/>recoverable index</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> The module claims transaction safety but separate, non-fsynced writes can diverge after a crash.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Use a transactional adapter or fsync-safe replacement with index rebuilding inside one deep implementation.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: durability in store</li><li>leverage: reliable recovery</li><li>fault injection is direct</li></ul>
+        </article>
+
+        <article id="c25" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">25</span>Surface corruption without changing identity</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/system/session_manager.py:335–382,426–479</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>load session X</span><span>corruption hidden</span><span>new session Y becomes current</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Typed corruption result<br/>explicit recovery operation</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> A failed load silently creates a new identity while callers still believe they loaded the requested session.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Return a typed corruption state at the persistence seam and expose recovery as an explicit action.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>interface preserves identity</li><li>locality: recovery is explicit</li><li>leverage: honest UI state</li></ul>
+        </article>
+
+        <article id="c26" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">26</span>Propagate persistence failure into run results</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/system/session_manager.py:481–560 · penguin/system/conversation.py:637–652 · penguin/engine.py:2082–2098</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>save returns False</span><span>Engine ignores result</span><span>run reports success</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Typed durability state<br/>completion requires save</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Save failure is reduced to a boolean and then ignored, so a successful result can lack durable state.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Carry typed persistence state through the Engine interface and make durability part of terminal truth.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: durability stays typed</li><li>leverage: honest completion</li><li>failure tests reach caller</li></ul>
+        </article>
+
+        <article id="c27" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">27</span>Parse ActionXML with one case policy</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-medium rounded-full px-3 py-1 text-xs font-semibold">Medium</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">in-process</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/utils/parser.py:969–1003</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>precheck ignores case</span><span>extractor is case-sensitive</span><span>uppercase action vanishes</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">One compiled grammar<br/>one case invariant</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> The gateway recognizes uppercase action tags while the extractor returns no action.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Put precheck and extraction behind one parser implementation with a consistent case policy.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: grammar in one module</li><li>leverage: no parser disagreement</li><li>table tests cover variants</li></ul>
+        </article>
+
+        <article id="c28" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">28</span>Implement real TEST gates in both orchestrators</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-critical rounded-full px-3 py-1 text-xs font-semibold">Critical</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/orchestration/native.py:447–469 · penguin/orchestration/temporal/activities.py:96–127 · docs/docs/system/orchestration.md:39–74</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="grid grid-cols-2 gap-2 mt-4"><div class="border border-red-300 rounded p-3 text-center">Native<br/>0 tests = pass</div><div class="border border-red-300 rounded p-3 text-center">Temporal<br/>0 tests = pass</div></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Validation-runner interface<br/>two orchestrator adapters</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Both implementations fabricate successful TEST evidence and allow workflows to advance without validation.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Put executable validation behind one deep runner seam and fail closed until an adapter supplies evidence.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>interface is the test surface</li><li>leverage: honest completion</li><li>adapter parity becomes testable</li></ul>
+        </article>
+
+        <article id="c29" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">29</span>Add a repository-wide correctness gate</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">mock</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">.github/workflows/ci.yml:31–48,84–119 · ruff check penguin --select F → 382 findings</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>selected files linted</span><span>rest of package skipped</span><span>NameErrors merge</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Whole-package F/E9 gate<br/>ratcheted broader baseline</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Narrow CI slices leave import crashes, duplicate definitions, and hundreds of basic correctness findings outside the test seam.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Gate the whole package on basic correctness first, then ratchet the wider lint interface.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: one merge gate</li><li>leverage: catches import failures</li><li>baseline shrinks monotonically</li></ul>
+        </article>
+
+        <article id="c30" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">30</span>Decompose the 8,678-line routes module</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/web/routes.py:113–118,706–755,2457–2520,7913–7923 · architecture.md:18–25</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>HTTP validation</span><span>runtime logic + schemas</span><span>imported names redefined</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Thin route adapters<br/>deep domain modules</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> One giant module owns HTTP mapping, runtime behavior, schemas, and duplicate implementations, destroying locality.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Keep routes as thin adapters and move each domain’s behavior behind a deep module seam.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: domains concentrate</li><li>leverage: tiny HTTP adapters</li><li>tests bypass transport</li></ul>
+        </article>
+
+        <article id="c31" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">31</span>Deepen the tool execution pipeline</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/tools/tool_manager.py:202–7509 · penguin/utils/parser.py:956–4738</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="grid grid-cols-3 gap-1 mt-4 text-[11px] text-center"><div class="border rounded p-2">schemas</div><div class="border rounded p-2">policy</div><div class="border rounded p-2">browser</div><div class="border rounded p-2">files</div><div class="border rounded p-2">process</div><div class="border rounded p-2">agents</div><div class="col-span-3 text-red-700">two god modules</div></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Registry + dispatcher seam<br/>per-domain tool adapters</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> ToolManager and ActionExecutor mix registry, policy, schemas, parsing, and implementations across more than 12,000 lines.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Keep parser grammar-only, make ToolManager a registry/dispatcher, and place implementations behind domain adapters.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: one tool per module</li><li>leverage: common policy seam</li><li>interfaces become test surfaces</li></ul>
+        </article>
+
+        <article id="c32" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">32</span>Split configuration schemas from loading</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">local-substitutable</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/config.py:929–963,977–1363</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>feature Config class</span><span>many unrelated schemas</span><span>second Config shadows first</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Dedicated schema modules<br/>one typed loader result</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Loading and unrelated dataclasses share one module, and a later <code>Config</code> class silently replaces an earlier one.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Move schemas to focused modules and keep one deep loading/merge implementation.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: schemas own invariants</li><li>leverage: one loader seam</li><li>shadow interface disappears</li></ul>
+        </article>
+
+        <article id="c33" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">33</span>Consolidate memory-provider contracts</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/memory/provider.py:5–46 · penguin/memory/providers/base.py:24–105 · penguin/memory/providers/factory.py:231–238</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="grid grid-cols-2 gap-2 mt-4"><div class="border border-red-300 rounded p-3 text-center">sync legacy</div><div class="border border-red-300 rounded p-3 text-center">async enhanced</div><div class="col-span-2 text-center text-xs text-red-700">factory imports nonexistent adapter</div></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">One async memory interface<br/>temporary legacy adapter</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Two incompatible interfaces and a broken factory prevent genuine provider substitution.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Choose one async contract, bridge legacy implementations with an adapter, and contract-test every advertised provider.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: one provider contract</li><li>leverage: real interchangeability</li><li>factory tests every adapter</li></ul>
+        </article>
+
+        <article id="c34" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">34</span>Constrain default pytest collection</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">mock</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">pyproject.toml · scripts/test_pydoll_minimal.py:8–20 · uv run pytest -q → collection INTERNALERROR</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>pytest scans repository</span><span>diagnostic script imports</span><span>sys.exit during collection</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Explicit test roots<br/>opt-in smoke adapters</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> The advertised default command collects executable diagnostic scripts; a missing optional browser package terminates collection.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Declare test roots, move smoke scripts outside collection, and make optional integrations explicit adapters.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>interface: one reliable command</li><li>locality: smoke tests opt-in</li><li>leverage: deterministic CI</li></ul>
+        </article>
+
+        <article id="c35" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">35</span>Restore iteration and cancellation regressions</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-critical rounded-full px-3 py-1 text-xs font-semibold">Critical</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">mock</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">tests/core_runtime/test_stream_events.py:467–633 · tests/engine/ · uv run pytest tests -q → 9 failed, 2,349 passed, 26,149 warnings</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>finish reason missing</span><span>continuation stops incorrectly</span><span>abort misses adapter</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">One termination lifecycle<br/>contract + fault tests green</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> The current snapshot has continuation, finish-reason, abort, isolation, and hermeticity failures across nine tests.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Repair the shared termination/cancellation implementation first, then make provider and multi-agent fixtures local-substitutable.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: one lifecycle</li><li>leverage: reliable continuations</li><li>tests prove terminal truth</li></ul>
+        </article>
+      </section>
+
+      <section id="tui" class="space-y-8">
+
+        <article id="c36" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">36</span>Persist the SSE replay cursor</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin-event-stream.ts:73–82 · sdk.tsx:97–128 · penguin/web/sse_events.py:77–105</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>event ID received</span><span>connection drops</span><span>reconnect starts empty</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Transport owns cursor<br/>lossless reconnect interface</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> The transport receives event IDs but never sends the server-supported replay cursor on reconnect.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Deepen the transport adapter so it owns the last delivered canonical ID and supplies it on every reconnect.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: cursor in transport</li><li>leverage: lossless sessions</li><li>reconnect interface stays small</li></ul>
+        </article>
+
+        <article id="c37" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">37</span>Handle replay gaps explicitly</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">docs/docs/system/runtime-events.md:100–102 · penguin-tui/.../context/sync.tsx:347–635</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>server.replay_gap</span><span>switch falls through</span><span>client remains stale</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Gap recovery policy<br/>rehydrate + diagnose</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> A retained-history gap has a documented event but no TUI implementation or test.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Make the transport adapter translate a gap into forced hydration and a visible diagnostic.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: recovery at seam</li><li>leverage: restores server truth</li><li>gap tests become deterministic</li></ul>
+        </article>
+
+        <article id="c38" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">38</span>Make the SSE decoder framing-compliant</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">local-substitutable</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin-tui/.../context/penguin-event-stream.ts:46–67,94–118</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>split only on LF/LF</span><span>malformed JSON dropped</span><span>EOF buffer lost</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Tested SSE decoder<br/>CRLF + EOF + diagnostics</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> CRLF frames, multi-line data, malformed payloads, and final buffered data are handled incompletely or invisibly.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Deepen a standalone decoder module and make framing behavior its test surface.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: framing in decoder</li><li>leverage: deterministic transport</li><li>adapter accepts byte chunks</li></ul>
+        </article>
+
+        <article id="c39" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">39</span>Back off stream reconnects</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin-tui/.../context/sdk.tsx:146–160</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>all errors swallowed</span><span>wait 250 ms</span><span>retry storm</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Backoff state machine<br/>jitter + visible last error</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> A fixed 250-ms retry loop can hammer the backend and logs through an outage.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Put capped exponential backoff, jitter, healthy-reset, and error state inside the transport adapter.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: retry policy concentrates</li><li>leverage: lower outage load</li><li>clock adapter enables tests</li></ul>
+        </article>
+
+        <article id="c40" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">40</span>Retry an empty provider catalog</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">in-process</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">sync-bootstrap.ts:122–129 · sync.tsx:256–268,773</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>catalog length = 0</span><span>not classified sparse</span><span>no recovery scheduled</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Catalog freshness state<br/>cold → ready or failed</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> A total bootstrap failure yields zero models, which the current heuristic never retries.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Let a deep catalog module model cold, partial, ready, and terminal states instead of a magic count.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: freshness in catalog</li><li>leverage: startup recovery</li><li>interface removes magic twenty</li></ul>
+        </article>
+
+        <article id="c41" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">41</span>Serialize bootstrap generations</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">local-substitutable</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">sync.tsx:348–350,641–869,952</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="grid grid-cols-2 gap-2 mt-4"><div class="border border-red-300 rounded p-3 text-center">mount fetch</div><div class="border border-red-300 rounded p-3 text-center">dispose fetch</div><div class="col-span-2 text-center text-red-700 text-xs">older result can win</div></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Single-flight bootstrap<br/>generation + abort</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Concurrent bootstrap runs have no epoch or cancellation, so stale responses and duplicate timers can overwrite fresh state.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Put bootstrap behind a single-flight adapter with generation checks and abort signals.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: one state machine</li><li>leverage: no stale commits</li><li>scheduler adapter enables tests</li></ul>
+        </article>
+
+        <article id="c42" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">42</span>Preserve sessions on transient list failure</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">sync.tsx:665–677,775–800</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>request fails</span><span>failure becomes []</span><span>cache erased</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Stale-while-error state<br/>empty remains meaningful</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Unavailable and successfully empty share one interface value, making server failure look like deletion.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Model availability separately and preserve stale state with an error marker.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>interface separates truth states</li><li>locality: reconcile in module</li><li>leverage: no phantom deletion</li></ul>
+        </article>
+
+        <article id="c43" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">43</span>Do not cache degraded hydration as complete</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">session-hydration.ts:188–215 · sync.tsx:270–300</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>slice request fails</span><span>empty fallback</span><span>session marked fully synced</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Per-slice freshness<br/>retry only failed slices</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Message, todo, or diff failure becomes empty data and permanently suppresses later retry.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Let the hydration module return per-slice freshness and cache only successful results.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: freshness with data</li><li>leverage: precise retries</li><li>interface preserves error state</li></ul>
+        </article>
+
+        <article id="c44" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">44</span>Preserve live assistant rows during hydration</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">in-process</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">session-hydration.ts:150–185 · sync.tsx:290–295</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>live assistant event</span><span>older snapshot commits</span><span>row discarded</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Versioned reconciliation<br/>buffer across hydration seam</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Reconciliation preserves unmatched user rows only, so an assistant event can vanish in a snapshot race.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Reconcile with canonical IDs/versions or buffer events inside the hydration implementation.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: ordering in hydrator</li><li>leverage: no lost output</li><li>race tests hit one seam</li></ul>
+        </article>
+
+        <article id="c45" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+
+        <article id="c46" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">46</span>Guard removal events before hydration</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">in-process</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin-tui/.../context/sync.tsx:561–607</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>remove arrives early</span><span>array is undefined</span><span>Binary.search crashes</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Total reconciliation module<br/>absent slice = empty</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Valid early removal events can pass undefined collections into the search implementation.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Make reconciliation total for every event ordering and contract-test remove-before-add.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: ordering in module</li><li>leverage: no sync crash</li><li>interface accepts cold state</li></ul>
+        </article>
+
+        <article id="c47" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">47</span>Adapt Penguin MCP at the transport seam</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">sync.tsx:140–143,679–858 · local.tsx:443–456 · penguin/web/routes.py:2322–2345</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>Penguin MCP state empty</span><span>upstream paths invoked</span><span>shape mismatch</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Penguin MCP adapter<br/>shared TUI interface</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> The TUI uses upstream MCP paths while Penguin exposes different paths and response shapes.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Put status and mutation translation inside one Penguin MCP adapter.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: MCP knowledge concentrates</li><li>leverage: existing UI works</li><li>two adapters justify seam</li></ul>
+        </article>
+
+        <article id="c48" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">48</span>Make prompt submissions abortable</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">component/prompt/penguin-send.ts:216–270 · component/prompt/index.tsx:1317–1354,1788–1801</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>fetch has no signal</span><span>Escape clears UI only</span><span>submit gate can stick</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Submission lifecycle<br/>controller + timeout + gate</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Local cancellation does not abort the request, and an unresolved promise can block all later input.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Let one deep submission module own its controller, timeout, gate, and terminal cleanup.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: lifecycle in submitter</li><li>leverage: input never wedges</li><li>clock/network adapters testable</li></ul>
+        </article>
+
+        <article id="c49" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">49</span>Deduplicate notifications by canonical event ID</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">in-process</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">notification-runtime.ts:11–14,146–157 · sync.tsx:149–151,330–344</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>runtime ID discarded</span><span>weak key or no key</span><span>unbounded set grows</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Canonical ID + bounded LRU<br/>completion from server truth</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Synthetic and backend events can notify twice, while the dedupe implementation grows without limit.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Preserve event identity at the sync seam and put bounded dedupe inside the notification module.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: dedupe in notifier</li><li>leverage: bounded memory</li><li>interface retains identity</li></ul>
+        </article>
+
+        <article id="c50" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">50</span>Make human replies transactional</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">routes/session/question.tsx:45–74,207–215,397–416 · permission.tsx:170–190,271–291</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>fire-and-forget reply</span><span>no pending/error state</span><span>empty answers can send</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Reply transaction adapter<br/>validate + retry + announce</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Permission and question decisions can duplicate, vanish, or submit invalid empty state.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Route every human decision through one reply adapter with validation and observable lifecycle state.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: decisions in adapter</li><li>leverage: no lost replies</li><li>interface exposes pending state</li></ul>
+        </article>
+
+        <article id="c51" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">51</span>Restore a clean TypeScript build</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">mock</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">util/session-family.ts:30–31,64–67 · packages/opencode/package.json:8–10 · bun run typecheck → 2 errors</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>boolean helper</span><span>parentID remains optional</span><span>build fails</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Precise type predicate<br/>typecheck merge gate</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> The child-session helper does not narrow its type, leaving two current compile errors.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Make the helper a precise predicate and require the typed interface to pass in CI.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>interface proves invariant</li><li>locality: narrowing in helper</li><li>leverage: clean build</li></ul>
+        </article>
+
+        <article id="c52" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">52</span>Deepen one Penguin runtime adapter</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin-tui/architecture.md:374–407 · context/tasks/tui-opencode-fork-alignment-plan.md:93–118 · sync.tsx:641–869 · prompt/index.tsx:1089–1355</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="grid grid-cols-4 gap-1 mt-4 text-[10px] text-center"><div class="border rounded p-2">paths</div><div class="border rounded p-2">events</div><div class="border rounded p-2">send</div><div class="border rounded p-2">recovery</div><div class="col-span-4 text-red-700">leaks across sync + prompt</div></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Penguin runtime adapter<br/>one typed seam</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Endpoint translation, synthetic events, creation, recovery, and send semantics leak across two thousand-line modules.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Move Penguin runtime knowledge into one deep typed adapter at the SDK seam.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: Penguin changes local</li><li>leverage: upstream sync shrinks</li><li>interface becomes contract surface</li></ul>
+        </article>
+
+        <article id="c53" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">53</span>Do not boot the unused OpenCode runtime</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">in-process</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">thread.ts:157–188 · worker.ts:46–97 · penguin-tui/architecture.md:78–87</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>Penguin fetch/events selected</span><span>worker still spawns</span><span>second runtime starts stream</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Penguin mode lifecycle<br/>no redundant worker</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Penguin mode ignores worker networking yet still initializes an embedded OpenCode runtime, watchers, and stream.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Skip the worker in Penguin mode or expose only a minimal lifecycle adapter.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>deletion removes complexity</li><li>leverage: faster startup</li><li>locality: one runtime owner</li></ul>
+        </article>
+
+        <article id="c54" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">54</span>Disable OpenCode auto-update in Penguin mode</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-critical rounded-full px-3 py-1 text-xs font-semibold">Critical</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">worker.ts:124–130 · cli/upgrade.ts:6–24 · installation/index.ts:60–179</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>Penguin launches TUI</span><span>worker detects OpenCode</span><span>may mutate other install</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Penguin update adapter<br/>sole version authority</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Penguin can invoke upstream release logic and unexpectedly alter a separate globally installed product.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Make Penguin launcher/sidecar versioning the sole update interface in Penguin mode.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: updates in launcher</li><li>leverage: no foreign mutation</li><li>interface owns product identity</li></ul>
+        </article>
+
+        <article id="c55" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+
+        <article id="c56" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">56</span>Unify URL-prefix behavior</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/cli/opencode_launcher.py:63–94 · penguin-event-stream.ts:73–75</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>Python preserves /base</span><span>TypeScript uses /absolute</span><span>/base silently discarded</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">One URL builder adapter<br/>one prefix invariant</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Health checks preserve a base path while runtime requests erase it, so one configured URL has two meanings.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Centralize URL construction behind an adapter or reject non-root bases explicitly.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: URL rules concentrate</li><li>leverage: consistent requests</li><li>interface states prefix support</li></ul>
+        </article>
+
+        <article id="c57" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">57</span>Replace compatibility guesses with a handshake</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/cli/opencode_launcher.py:97–112,720–749</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="grid grid-cols-2 gap-2 mt-4"><div class="border border-red-300 rounded p-3 text-center">HTTP 200?</div><div class="border border-red-300 rounded p-3 text-center">help contains --url?</div><div class="col-span-2 text-center text-xs text-red-700">compatibility guessed</div></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Versioned handshake<br/>product + protocol + capabilities</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Two shallow probes cannot prove the backend and binary speak Penguin’s protocol.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Deepen a compatibility module with an explicit versioned handshake at the launcher seam.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: compatibility in handshake</li><li>leverage: actionable rejection</li><li>interface advertises capabilities</li></ul>
+        </article>
+
+        <article id="c58" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">58</span>Fail fast for an unreachable server</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/cli/opencode_launcher.py:980–1016</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>health check fails</span><span>warning only</span><span>TUI loops forever</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Startup readiness policy<br/>explicit offline opt-in</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Remote and no-autostart modes launch into a useless reconnect loop after failed readiness.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Make readiness failure terminal by default, with a deliberate offline-start policy.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>interface makes failure actionable</li><li>locality: readiness in launcher</li><li>leverage: less wasted work</li></ul>
+        </article>
+
+        <article id="c59" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">59</span>Detect libc before selecting Linux assets</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">local-substitutable</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/cli/opencode_launcher.py:397–421,587–597</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>Linux detected</span><span>glibc always preferred</span><span>musl binary fails</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Platform probe adapter<br/>validated asset choice</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Alpine-like systems choose an incompatible glibc archive whenever both assets exist.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Put libc detection and validated overrides inside the platform-selection implementation.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: platform rules concentrate</li><li>leverage: portable sidecar</li><li>probe adapter is testable</li></ul>
+        </article>
+
+        <article id="c60" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">60</span>Stop assuming AVX2 on x64</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">local-substitutable</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/cli/opencode_launcher.py:406–425</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>x64 detected</span><span>optimized asset first</span><span>illegal instruction possible</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">CPU capability adapter<br/>baseline-safe default</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Older and virtualized x64 machines can receive an unsupported optimized binary.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Detect AVX2 through a platform adapter or choose the baseline asset by default.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>interface states capability</li><li>locality: selection in adapter</li><li>leverage: wider compatibility</li></ul>
+        </article>
+
+        <article id="c61" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">61</span>Reverify cached sidecar integrity</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">local-substitutable</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/cli/opencode_launcher.py:472–486,531–584,633–639</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>archive checked once</span><span>marker stores path only</span><span>existing binary trusted</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Integrity-aware cache<br/>digest reverified</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Later launches trust any file at the cached path without binding it to a verified digest.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Make digest identity part of the cache interface and verify it before execution.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: trust in cache</li><li>leverage: tamper detection</li><li>interface binds path + digest</li></ul>
+        </article>
+
+        <article id="c62" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">62</span>Reject unsafe tar members</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-critical rounded-full px-3 py-1 text-xs font-semibold">Critical</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">local-substitutable</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/cli/opencode_launcher.py:489–514</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>member name checked</span><span>links/devices accepted</span><span>extractall crosses target</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Safe extraction module<br/>regular files + contained links</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Symlink, hardlink, and special-file metadata can escape the extraction directory despite safe-looking member names.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Deepen archive extraction with an allowlist and contained-target validation.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: archive trust policy</li><li>leverage: blocks path escape</li><li>malicious fixtures test seam</li></ul>
+        </article>
+
+        <article id="c63" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">63</span>Package notification assets with the sidecar</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">local-substitutable</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">notification-runtime.ts:303–330,382–391 · script/build.ts:220–228 · opencode_launcher.py:694–704</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>runtime seeks source paths</span><span>release ships bin only</span><span>notifications miss assets</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Self-contained sidecar bundle<br/>asset root interface</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Notification sounds and icons work in source checkouts but are absent from release archives.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Bundle assets beside the executable and resolve them through one installed-root adapter.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>interface owns asset root</li><li>locality: bundle is complete</li><li>release smoke test gains leverage</li></ul>
+        </article>
+
+        <article id="c64" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">64</span>Paginate and cancel session search</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">component/dialog-session-list.tsx:19–57,73–105</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>query every 150 ms</span><span>fetch up to 1,000</span><span>old requests keep running</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Paged search adapter<br/>abort superseded requests</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Each keystroke can trigger a large uncancelled request and synchronous option mapping.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Put cursor paging, cancellation, and incremental result delivery behind the session-list seam.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: query lifecycle concentrates</li><li>leverage: bounded network cost</li><li>interface streams pages</li></ul>
+        </article>
+
+        <article id="c65" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+
+        <article id="c66" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">66</span>Contain transcript export paths</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-critical rounded-full px-3 py-1 text-xs font-semibold">Critical</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">local-substitutable</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin-tui/.../routes/session/index.tsx:825–870</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>user filename</span><span>join process.cwd()</span><span>../ escapes workspace</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Export-path policy<br/>contain + confirm overwrite</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> A crafted filename can overwrite outside the workspace, and process cwd may not match the session directory.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Put path resolution, containment, and overwrite policy in one export adapter.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: path policy concentrates</li><li>leverage: prevents traversal</li><li>filesystem adapter is testable</li></ul>
+        </article>
+
+        <article id="c67" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">67</span>Replace the upstream TUI README</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">in-process</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin-tui/README.md:2–14,44–58,95–130 · README.md:220–237</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>Penguin repository</span><span>OpenCode install guide</span><span>installs another product</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Penguin TUI guide<br/>fork seam + attribution</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> The nested README retains upstream branding and commands that install a different product.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Document Penguin sidecar development, launcher modes, compatibility, upstream-sync policy, and attribution.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>interface matches implementation</li><li>locality: fork knowledge nearby</li><li>leverage: safer onboarding</li></ul>
+        </article>
+
+        <article id="c68" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">68</span>Add a real TUI/backend contract harness</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">mock</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">packages/opencode/package.json:8–10 · specs/08-app-e2e-smoke-suite.md:11–18,46–50 · penguin-event-stream.ts:46–119</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>217 helper tests pass</span><span>transport never imported</span><span>streaming excluded</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Fake Penguin backend<br/>real adapter contract suite</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Helper tests are green while replay, auth, disconnect, hydration, and reply seams remain untested together.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Exercise the built transport and sync adapters against an in-process fake backend.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>interface is test surface</li><li>locality: protocol fixtures central</li><li>leverage: catches real drift</li></ul>
+        </article>
+
+        <article id="c69" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">69</span>Scope initial-prompt consumption to a route</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-medium rounded-full px-3 py-1 text-xs font-semibold">Medium</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">in-process</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin-tui/.../routes/home.tsx:19–20,79–91</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>module-global once</span><span>first prompt consumed</span><span>later route prompt ignored</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Route-owned prompt state<br/>identity-scoped consumption</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Process-global state causes later Home mounts with a new prompt to ignore it silently.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Track consumption inside the route module by prompt identity.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: state in route</li><li>leverage: correct remounts</li><li>interface loses global coupling</li></ul>
+        </article>
+      </section>
+
+      <section id="docs" class="space-y-8">
+
+        <article id="c70" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">70</span>Repair every PenguinAgent example</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-critical rounded-full px-3 py-1 text-xs font-semibold">Critical</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">mock</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">README.md:123–131 · docs/docs/usage/python_api_reference.md:47–62 · penguin/agent/__init__.py:57–97</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>copy README example</span><span>missing context-manager interface</span><span>string indexed as dict</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Executable public examples<br/>derived from real interface</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> The primary example cannot run: the class has no context-manager protocol, chat returns a string, and a documented argument is unsupported.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Generate or test public examples against the installed module interface.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>interface and docs agree</li><li>locality: examples near contract</li><li>leverage: onboarding works</li></ul>
+        </article>
+
+        <article id="c71" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">71</span>Publish a prerequisite matrix</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">in-process</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">README.md:36–51 · docs/docs/intro.md:37–55 · pyproject.toml:5–10,89–94,133–143</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>install command first</span><span>Python range omitted</span><span>extras fail on 3.9</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">One compatibility matrix<br/>base + extras + OS</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Onboarding hides the base Python range and the stricter requirements of MCP/browser extras.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Make one generated compatibility module the documentation seam for Python, OS, and sidecar constraints.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: prerequisites central</li><li>leverage: fewer resolver failures</li><li>interface states compatibility</li></ul>
+        </article>
+
+        <article id="c72" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">72</span>Remove the impossible minimal-extra claim</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">in-process</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">docs/docs/intro.md:49–55 · pyproject.toml:36–77,96–107</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>install [minimal]</span><span>extras only add packages</span><span>heavy base still installs</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Genuinely slim base<br/>feature adapters as extras</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Python extras cannot override base dependencies, so the promised library-only footprint does not exist.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Split a truly minimal distribution/base or remove the shallow extra and its claim.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>interface tells install truth</li><li>locality: dependencies by feature</li><li>leverage: smaller deployments</li></ul>
+        </article>
+
+        <article id="c73" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">73</span>Replace the obsolete roadmap</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">in-process</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">docs/docs/advanced/roadmap.md:5–60 · pyproject.toml:5–10 · README.md:296–324</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>roadmap: v0.3 current</span><span>package: v0.9.1</span><span>future/shipped claims blur</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Dated evidence-linked roadmap<br/>or no published page</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> The public roadmap is six minor versions behind and makes unqualified claims about security and interface stability.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Derive a dated roadmap from current evidence or delete the stale module from navigation.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: status has owner</li><li>leverage: roadmap becomes usable</li><li>interface separates shipped/future</li></ul>
+        </article>
+
+        <article id="c74" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">74</span>Hide or finish empty operational pages</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">in-process</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">docs/docs/advanced/diagnostics.md:1–3 · error_handling.md:1–3 · docs/sidebars.ts:61–73</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>sidebar promises guidance</span><span>user opens page</span><span>“Coming Soon!”</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Real diagnostic contracts<br/>or no navigation entry</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Prominent diagnostic and error pages are empty dead ends.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Document real operational interfaces or keep the modules unpublished until their implementation exists.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>interface earns navigation space</li><li>locality: guidance stays useful</li><li>deletion removes dead ends</li></ul>
+        </article>
+
+        <article id="c75" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">75</span>Expose orphaned docs in navigation</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">in-process</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">docs/sidebars.ts:31–90 · docs/docs/system/mcp.md · usage/web_interface.md · advanced/multi_agents.md · advanced/sub_agents.md</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="grid grid-cols-3 gap-1 mt-4 text-[11px] text-center"><div class="border rounded p-2">MCP</div><div class="border rounded p-2">web</div><div class="border rounded p-2">agents</div><div class="col-span-3 text-red-700">real modules, no path</div></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Journey-based docs map<br/>orphan-page check</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Important existing modules are unreachable from the manually enumerated sidebar.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Organize navigation around user journeys and add an orphan-page validation seam.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: related docs group</li><li>leverage: features become discoverable</li><li>navigation is test surface</li></ul>
+        </article>
+
+        <article id="c76" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">76</span>Turn documentation checks into gates</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">mock</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">docs/docusaurus.config.ts:6–14 · docs/package.json:6–16 · docs/tsconfig.json:1–7</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>build succeeds</span><span>Markdown links only warn</span><span>typecheck config unused</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Docs verification module<br/>links + types + examples</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> The production build passes despite link and contract drift because key checks do not fail.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Make links fatal, use a real no-emit typecheck, and verify examples through one CI interface.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>interface becomes enforceable</li><li>locality: checks in one gate</li><li>leverage: safer releases</li></ul>
+        </article>
+
+        <article id="c77" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">77</span>Define one custom-tool extension seam</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-critical rounded-full px-3 py-1 text-xs font-semibold">Critical</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">docs/docs/advanced/custom_tools.md:3–14 · architecture.md:776–786 · docs/docs/usage/python_api_reference.md:182–196 · penguin/tools/registry.py:7–55</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="grid grid-cols-3 gap-1 mt-4 text-[10px] text-center"><div class="border rounded p-2">missing function</div><div class="border rounded p-2">unsupported decorator</div><div class="border rounded p-2">invalid constructor</div><div class="col-span-3 text-red-700">three fictional interfaces</div></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">One extension adapter<br/>tested end to end</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Three docs expose nonexistent functions, decorators, and methods instead of one supported extension interface.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Choose one public extension seam and document a single executable adapter path.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: registry internals hidden</li><li>leverage: stable extensions</li><li>interface tested end-to-end</li></ul>
+        </article>
+
+        <article id="c78" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">78</span>Document Skills as shipped</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">in-process</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">docs/docs/usage/skills.md:19–38,157–165 · penguin/web/routes.py:2288–2417 · tests/api/test_skill_routes.py:94–170 · features.md:113</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>routes implemented</span><span>contract tests pass</span><span>docs call feature planned</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Live Skills contract<br/>remaining gaps explicit</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Docs and the feature matrix describe web/TUI skill surfaces as planned even though tested routes and UI exist.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Document the shipped interface, session activation semantics, deactivation, and only the genuine remaining gaps.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>interface matches shipped state</li><li>locality: gaps stay explicit</li><li>leverage: feature is discoverable</li></ul>
+        </article>
+
+        <article id="c79" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+
+        <article id="c80" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">80</span>Stop calling CWM trimming compression</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">in-process</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">architecture.md:727–743 · features.md:100–116 · penguin/system/context_window.py:1–11</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>docs say compression</span><span>implementation drops messages</span><span>summary assumed to exist</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Precise trimming contract<br/>compaction remains separate</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Current CWM trims by category and recency; it does not summarize or compact content.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Use trimming vocabulary for the present module and reserve compaction for a future separate seam.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>interface names real behavior</li><li>locality: concepts stay separate</li><li>leverage: safer context design</li></ul>
+        </article>
+
+        <article id="c81" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">81</span>Document actual configuration precedence</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">local-substitutable</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">architecture.md:810–834 · penguin/config.py:30–45,87–182</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>generic hierarchy shown</span><span>six file sources merge</span><span>env overrides selective</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Executable precedence model<br/>source trace per value</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> The documented hierarchy differs from the package, development, user, project, local, and override implementation.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Expose one precedence module that can generate docs and explain the winning source.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: precedence central</li><li>leverage: explainable config</li><li>interface exposes provenance</li></ul>
+        </article>
+
+        <article id="c82" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">82</span>Establish one canonical architecture</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">in-process</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">architecture.md:1–26 · context/architecture/SYSTEM_DESIGN.md:1–29,51–68 · pyproject.toml:1–10</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="grid grid-cols-2 gap-2 mt-4"><div class="border border-red-300 rounded p-3 text-center">root architecture</div><div class="border border-red-300 rounded p-3 text-center">v0.6 system design</div><div class="col-span-2 text-center text-xs text-red-700">duplicate + contradictory</div></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Canonical architecture map<br/>linked subsystem modules</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Two active architecture documents duplicate each other and disagree about version and packaging.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Make one map canonical, link deep subsystem documents, and archive historical designs.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: one source of truth</li><li>leverage: less drift</li><li>interface maps current modules</li></ul>
+        </article>
+
+        <article id="c83" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">83</span>Generate the HTTP reference from OpenAPI</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-critical rounded-full px-3 py-1 text-xs font-semibold">Critical</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">context/tasks/web-docs-vs-live-code-audit.md:1–20 · docs/docs/api_reference/api_server.md:1–20 · penguin/web/routes.py</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>146 live routes</span><span>64 documented paths</span><span>59 exact matches (~40%)</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Generated route inventory<br/>handwritten workflow guidance</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> A hand-maintained duplicate of the HTTP interface covers roughly 40% of live routes.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Generate endpoint inventory and schemas from OpenAPI; keep prose for workflow semantics only.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>interface generates reference</li><li>locality: schemas stay executable</li><li>leverage: drift collapses</li></ul>
+        </article>
+
+        <article id="c84" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">84</span>Delete nonexistent route examples</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-critical rounded-full px-3 py-1 text-xs font-semibold">Critical</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">mock</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">docs/docs/api_reference/api_server.md:125–134,399–413,622–630 · penguin/web/routes.py:2654–2720,5224–5235</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>copy documented path</span><span>route does not exist</span><span>client fails at runtime</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Method/path contract test<br/>every example resolves</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Project creation and agent-session history examples target paths the implementation does not expose.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Correct them now and validate every documented method/path against the live route interface.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>interface examples become executable</li><li>locality: paths derive centrally</li><li>leverage: safer clients</li></ul>
+        </article>
+
+        <article id="c85" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">85</span>Collapse duplicate Python references</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">in-process</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">docs/docs/usage/python_api_reference.md · docs/docs/api_reference/python_api_reference.md:1–30,287–320,378–402 · docs/sidebars.ts:46–59</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="grid grid-cols-2 gap-2 mt-4"><div class="border border-red-300 rounded p-3 text-center">usage copy</div><div class="border border-red-300 rounded p-3 text-center">concatenated old/new copy</div><div class="col-span-2 text-center text-xs text-red-700">two entry paths</div></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">One generated Python reference<br/>redirect old location</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Two references—and two copies inside one file—expose conflicting public-surface claims.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Generate one canonical public-interface module and redirect all alternate paths.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: one reference</li><li>leverage: no duplicate upkeep</li><li>interface matches exports</li></ul>
+        </article>
+
+        <article id="c86" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">86</span>Rewrite provider selection around the registry</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">docs/docs/api_reference/api_client.md:232–250,267–283,323–328 · penguin/llm/provider_registry.py:45–84 · adapters/openai.py:92–102</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>native OpenAI called missing</span><span>paths misclassified</span><span>link omitted</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Registry-derived provider map<br/>fallback + credentials explicit</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Provider docs describe an obsolete hierarchy rather than the implemented registry and adapters.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Generate the provider map from registered adapters and document resolution rules at that seam.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>interface follows registry</li><li>locality: provider truth central</li><li>leverage: intentional selection</li></ul>
+        </article>
+
+        <article id="c87" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">87</span>Correct environment-variable names</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-critical rounded-full px-3 py-1 text-xs font-semibold">Critical</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">local-substitutable</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">docs/docs/configuration.md:133–180 · penguin/config.py:880–883 · penguin/llm/model_config.py:385–399</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>DEFAULT_MODEL documented</span><span>PENGUIN_DEFAULT_MODEL read</span><span>setting silently ignored</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Generated env-var table<br/>scope + default + sensitivity</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Several canonical-looking names in docs are not read by the implementation.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Generate the environment interface from typed settings/constants and test each override.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>interface names become canonical</li><li>locality: variables central</li><li>leverage: no silent no-op</li></ul>
+        </article>
+
+        <article id="c88" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">88</span>Separate supported config from aspirational YAML</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-critical rounded-full px-3 py-1 text-xs font-semibold">Critical</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">local-substitutable</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">docs/docs/configuration.md:299–384,527–555 · penguin/config.yml:64–155 · penguin/web/server.py:246–286</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>many YAML knobs advertised</span><span>loader ignores them</span><span>port example is obsolete</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Typed config schema<br/>unknown keys rejected</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Docs advertise inert web, alias, rate-limit, cache, worker, and request-size knobs.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Make a typed supported schema the only interface and label proposals outside it explicitly.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>interface rejects inert keys</li><li>locality: schema owns truth</li><li>leverage: predictable deployment</li></ul>
+        </article>
+
+        <article id="c89" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+
+        <article id="c90" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">90</span>Correct the full-security-mode assurance</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-critical rounded-full px-3 py-1 text-xs font-semibold">Critical</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">docs/docs/advanced/security.md:73–82,435–444 · penguin/security/policies/workspace.py:225–234</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>docs promise protections</span><span>full mode returns ALLOW</span><span>security seam disappears</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Explicit trust model<br/>named invariants contract-tested</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Docs say system paths remain protected and dangerous commands require approval, while full mode allows every operation.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> State that full mode is not a security seam or preserve named invariants in the policy implementation.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>interface states real trust</li><li>locality: invariants in policy</li><li>leverage: avoids false safety</li></ul>
+        </article>
+
+        <article id="c91" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">91</span>Repair security configuration docs</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-critical rounded-full px-3 py-1 text-xs font-semibold">Critical</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">docs/docs/advanced/security.md:117–141 · penguin/config.py:427–434 · penguin/web/routes.py:7995–8090</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>wrong env variable</span><span>wrong method/path</span><span>policy never changes</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Live security controls<br/>contract-tested examples</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> The documented environment and HTTP controls do not match the implementation’s YAML, YOLO variable, and GET/PATCH paths.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Publish only live security interfaces and verify every control example against the policy adapter.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>interface controls real policy</li><li>locality: security docs central</li><li>leverage: operators can verify</li></ul>
+        </article>
+
+        <article id="c92" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">92</span>Make security examples executable</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">mock</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">docs/docs/advanced/security.md:366–433 · penguin/security/permission_engine.py:176–196,241–263 · path_utils.py:174–192</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>unsupported constructor args</span><span>wrong string types</span><span>nonexistent path parameters</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Compiled security examples<br/>real enums + paths</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Custom policy and path examples use parameters and types the implementation does not accept.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Compile and run examples against the public permission and path interfaces in CI.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>interface examples stay safe</li><li>locality: types drive docs</li><li>leverage: copyable extensions</li></ul>
+        </article>
+
+        <article id="c93" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">93</span>Remove raw logs and credentials from context</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-critical rounded-full px-3 py-1 text-xs font-semibold">Critical</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">local-substitutable</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">context/bugs/no-events-spinner-logs.txt:1–45 · context/bugs/browser-mess.md:1–40</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>raw runtime logs committed</span><span>tokens + user paths exposed</span><span>context grows hundreds of KB</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Ignored artifact store<br/>redacted bug summaries</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Tracked context artifacts expose authorization tokens, identities, paths, prompts, and provider traces.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Rotate live secrets, purge sensitive history as appropriate, and put raw evidence behind an ignored artifact adapter.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: artifacts outside context</li><li>leverage: lower privacy risk</li><li>interface admits redacted summaries</li></ul>
+        </article>
+
+        <article id="c94" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">94</span>Govern context artifact lifecycle</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">in-process</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">context/tasks/todo.md:1–34 · context/TASK_SCRATCHPAD.md:1–6 · context/MEMORY.md:1–16 · context/old-features.md:1–16</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>87 “active” task files</span><span>old versions called current</span><span>duplicates lack ownership</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Context index + schema<br/>owner/state/evidence/supersedes</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Current, historical, duplicate, cached, and ownerless artifacts share one shallow tree.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Add lifecycle metadata and a canonical index; archive completed artifacts and delete duplicates using Git history.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: status becomes visible</li><li>leverage: context is navigable</li><li>interface filters active truth</li></ul>
+        </article>
+
+        <article id="c95" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">95</span>Rewrite the Cloudflare deployment guide</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-critical rounded-full px-3 py-1 text-xs font-semibold">Critical</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">docs/DEPLOYMENT_CLOUDFLARE.md:65–110,197–205 · README.md:64–80</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>obsolete port 8000</span><span>real-looking IDs embedded</span><span>Flexible SSL advised</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Tested deployment profile<br/>strict TLS + secret adapter</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> The guide routes to an obsolete port, embeds identifiers, and leaves origin traffic plaintext.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Use placeholders, port 9000, strict origin TLS, authentication, secret storage, and an executable deployment profile.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>interface matches runtime defaults</li><li>locality: deployment policy central</li><li>leverage: secure production path</li></ul>
+        </article>
+
+        <article id="c96" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">96</span>Promote execution environments to a module</h3><div class="flex gap-2"><span class="badge-spec rounded-full px-3 py-1 text-xs font-semibold">Speculative</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">Strategic</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">features.md:116,253–258,310–314</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>run tied to local workspace</span><span>parallel work collides</span><span>no lifecycle identity</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Execution-environment seam<br/>local · worktree · container</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Run lifecycle is coupled to one local workspace, limiting isolation and parallelism.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Deepen an execution-environment module with local, worktree, container, and later remote adapters; persist environment identity on runs.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>two adapters make real seam</li><li>locality: lifecycle concentrates</li><li>leverage: isolated parallel work</li></ul>
+        </article>
+
+        <article id="c97" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">97</span>Enforce evidence-backed completion</h3><div class="flex gap-2"><span class="badge-spec rounded-full px-3 py-1 text-xs font-semibold">Speculative</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">Strategic</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">features.md:117,265–268,319–320 · README.md:110–119</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>agent says completed</span><span>evidence stored optionally</span><span>no mandatory gate</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Completion-policy seam<br/>criteria + tests + artifacts</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Task type, acceptance criteria, tests, recipes, and evidence do not form a mandatory terminal gate.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Put completion truth behind a composable policy module evaluated before terminal success.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>interface defines “done”</li><li>locality: evidence policy central</li><li>leverage: auditable automation</li></ul>
+        </article>
+
+        <article id="c98" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">98</span>Build a durable run-attempt control plane</h3><div class="flex gap-2"><span class="badge-spec rounded-full px-3 py-1 text-xs font-semibold">Speculative</span><span class="priority-critical rounded-full px-3 py-1 text-xs font-semibold">Strategic</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">features.md:115,270–273,314–315 · README.md:259–267</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>events/goals persist</span><span>ownership is process-local</span><span>restart loses control</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Durable attempt scheduler<br/>leases + heartbeat + recovery</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Run ownership and cancellation handles remain process-local, preventing safe restart and multi-worker operation.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Persist attempts, leases, heartbeats, cancellation intent, recovery state, and idempotency behind a scheduler adapter.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: run ownership central</li><li>leverage: restart recovery</li><li>interface supports multiple adapters</li></ul>
+        </article>
+
+        <article id="c99" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">99</span>Unify policy across every surface</h3><div class="flex gap-2"><span class="badge-spec rounded-full px-3 py-1 text-xs font-semibold">Speculative</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">Strategic</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">features.md:275–279,321–322 · docs/docs/advanced/security.md:84–167 · penguin/security/permission_engine.py:48–85</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="grid grid-cols-4 gap-1 mt-4 text-[10px] text-center"><div class="border rounded p-2">YAML</div><div class="border rounded p-2">tools</div><div class="border rounded p-2">CLI</div><div class="border rounded p-2">TUI</div><div class="col-span-4 text-red-700">taxonomy leaks everywhere</div></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Typed policy profile<br/>adapters consume one contract</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Risk controls are scattered across configuration, modes, tools, MCP, CLI, web, and TUI with visible taxonomy drift.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Deepen one typed policy-profile module consumed by every surface adapter.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: policy concentrates</li><li>leverage: consistent permissions</li><li>interface becomes inspectable</li></ul>
+        </article>
+
+        <article id="c100" class="candidate rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">100</span>Add structured compaction as a separate seam</h3><div class="flex gap-2"><span class="badge-spec rounded-full px-3 py-1 text-xs font-semibold">Speculative</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">Strategic</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">features.md:111,291–294 · context/tasks/CWM-v2.md:11–50 · penguin/system/context_window.py:1–11</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>raw transcript grows</span><span>CWM trims by priority</span><span>decisions can disappear</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Versioned compaction records<br/>provenance + recovery links</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Trimming controls prompt size but does not preserve structured files, commands, failures, decisions, or abandoned branches.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Add versioned compaction artifacts outside the raw transcript and inject them through a context-assembly adapter.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>seam stays separate from trimming</li><li>locality: summaries have provenance</li><li>leverage: resumable long sessions</li></ul>
+        </article>
+      </section>
+
+      <section id="top-recommendation" class="rounded-2xl deep text-white p-8 md:p-10">
+        <p class="text-xs uppercase tracking-[.25em] text-emerald-300 font-semibold">Top recommendation</p>
+        <h2 class="mt-3 text-3xl md:text-4xl font-serif"><a class="underline decoration-emerald-400 underline-offset-4" href="#c62">#62 — Reject unsafe tar members</a></h2>
+        <p class="mt-4 text-slate-200">Tackle this first: it is a critical, narrowly scoped extraction flaw with a small interface, a clear safe implementation, and high security leverage.</p>
+      </section>
+
+      <footer class="pb-8 text-xs text-slate-500 flex flex-wrap justify-between gap-3"><span>Penguin architecture review · 100 candidates</span><span>No repository files changed</span></footer>
+    </main>
+  </body>
+</html>
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">89</span>Remove the nonexistent --config workflow</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">mock</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">docs/docs/configuration.md:683–715 · penguin/cli/cli.py:1177–1251 · penguin/config.py:170–182</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>docs use --config</span><span>CLI has no option</span><span>deployment fails</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">One supported override seam<br/>executable CLI examples</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> The deployment example uses a flag that does not exist; only an environment override is implemented.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Document the live override interface or add and contract-test a real option.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>interface examples execute</li><li>locality: override path central</li><li>leverage: reproducible deployments</li></ul>
+        </article>
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">79</span>Correct Engine termination documentation</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-critical rounded-full px-3 py-1 text-xs font-semibold">Critical</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">in-process</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">architecture.md:702–717 · penguin/engine.py:1619–1669 · README.md:259–267</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>architecture: 5,000 limit</span><span>implementation: none by default</span><span>unsafe assumption</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">One termination contract<br/>every terminal state named</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Architecture promises a default iteration ceiling that the implementation and README explicitly do not provide.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Describe completion, interruption, failure, caller-supplied limits, and non-terminal returns from one contract source.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>interface states safety limits</li><li>locality: termination truth central</li><li>leverage: safer operation</li></ul>
+        </article>
+        <div class="flex items-end justify-between border-b pb-3"><h2 class="text-3xl font-serif">Docs, context &amp; product</h2><span class="text-sm text-slate-500">31 candidates</span></div>
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">65</span>Virtualize transcript rendering</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">in-process</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">routes/session/index.tsx:274–316,1011–1123</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>render every message</span><span>scan every child</span><span>linear lookup per child</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Windowed transcript module<br/>ID index + measured rows</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Long sessions render all rows and navigation performs quadratic work.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Deepen the transcript module with an ID index and measured-height windowing.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: rendering strategy local</li><li>leverage: smooth long sessions</li><li>interface exposes visible window</li></ul>
+        </article>
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">55</span>Make attach select Penguin mode</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-critical rounded-full px-3 py-1 text-xs font-semibold">Critical</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">cli/cmd/tui/attach.ts:4–37 · penguin/cli/opencode_launcher.py:752–817</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>attach says Penguin</span><span>penguin flag omitted</span><span>wrong runtime semantics</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Explicit Penguin attach<br/>reject incompatible binary</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> The attach command describes Penguin but calls the TUI without selecting Penguin mode.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Provide an explicit Penguin attach adapter and fail closed for an incompatible binary.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>interface preserves product mode</li><li>locality: attach owns flags</li><li>leverage: correct auth/events</li></ul>
+        </article>
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">45</span>Replace transcript caps with pagination</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">session-hydration.ts:212 · sync.tsx:495–515 · penguin-tui/architecture.md:202–218</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>reopen cap: 300</span><span>live cap: 100</span><span>old history silently gone</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Cursor transcript pages<br/>explicit retention state</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> Two silent limits contradict the documented full-session reload and make history availability unpredictable.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Put cursor pagination and explicit retention metadata at the transcript seam.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>interface states completeness</li><li>locality: paging in transcript</li><li>leverage: bounded memory</li></ul>
+        </article>
+        <div class="flex items-end justify-between border-b pb-3"><h2 class="text-3xl font-serif">TUI &amp; protocol</h2><span class="text-sm text-slate-500">34 candidates</span></div>
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">20</span>Implement or delete preserve-recency</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-medium rounded-full px-3 py-1 text-xs font-semibold">Medium</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">in-process</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/system/context_window.py:469–479,558–573</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="shallow-stack mt-3"><span>flag exposed</span><span>flag ignored</span><span>oldest always first</span></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Explicit trimming policy<br/>or smaller interface</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> The public flag documents a behavior that the implementation never reads.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Model trimming as an explicit policy inside the CWM module or remove the shallow option.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>interface tells the truth</li><li>locality: policy is explicit</li><li>deletion shrinks test surface</li></ul>
+        </article>
+          <div class="flex flex-wrap justify-between gap-3"><h3 class="text-2xl font-serif"><span class="text-slate-400 mr-2">10</span>Use one scheduler for both tool syntaxes</h3><div class="flex gap-2"><span class="badge-strong rounded-full px-3 py-1 text-xs font-semibold">Strong</span><span class="priority-high rounded-full px-3 py-1 text-xs font-semibold">High</span><span class="rounded-full bg-slate-100 px-3 py-1 text-xs">ports &amp; adapters</span></div></div>
+          <p class="mt-3 font-mono text-xs text-slate-600">penguin/engine.py:3461–3514 · penguin/llm/runtime.py:944–1078 · README.md:319–323</p>
+          <div class="mt-5 grid md:grid-cols-2 gap-4"><div class="schematic rounded-lg border bg-red-50 p-4"><b class="text-xs uppercase tracking-wider text-red-700">Before</b><div class="grid grid-cols-2 gap-2 mt-4"><div class="rounded border border-red-300 p-3 text-center">ActionXML<br/><small>drops calls</small></div><div class="rounded border border-red-300 p-3 text-center">native tools<br/><small>batches</small></div><div class="col-span-2 text-center text-xs text-red-700">two policies</div></div></div><div class="schematic rounded-lg border-2 border-slate-800 p-4"><b class="text-xs uppercase tracking-wider">After</b><div class="deep-module mt-3">Canonical tool-call scheduler<br/>two syntax adapters</div></div></div>
+          <p class="mt-4 text-sm"><b>Problem.</b> ActionXML silently discards all but one call while native calls use an ordered batch implementation.</p>
+          <p class="mt-2 text-sm"><b>Solution.</b> Normalize both syntaxes before a single deep scheduling seam, or reject unsupported batches before execution.</p>
+          <ul class="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-slate-600"><li>locality: policy in scheduler</li><li>leverage: syntax parity</li><li>batch tests share interface</li></ul>
+        </article>
+        <div class="flex items-end justify-between border-b pb-3"><h2 class="text-3xl font-serif">Runtime &amp; Python</h2><span class="text-sm text-slate-500">35 candidates</span></div>

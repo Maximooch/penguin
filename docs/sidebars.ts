@@ -13,12 +13,24 @@ import type {SidebarsConfig} from '@docusaurus/plugin-content-docs';
 const sidebars: SidebarsConfig = {
   // By default, Docusaurus generates a sidebar from the docs folder structure
   tutorialSidebar: [
-    'intro',
-    'getting_started',
-    'configuration',
+    {
+      type: 'doc',
+      id: 'intro',
+      label: 'Overview',
+    },
+    {
+      type: 'doc',
+      id: 'getting_started',
+      label: 'Getting Started',
+    },
+    {
+      type: 'doc',
+      id: 'configuration',
+      label: 'Configuration',
+    },
     {
       type: 'category',
-      label: 'System',
+      label: 'Concepts & Architecture',
       items: [
         'system/core-runtime',
         'system/runtime-events',
@@ -33,7 +45,7 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
-      label: 'Usage Guide',
+      label: 'Guides',
       items: [
         'usage/basic_usage',
         'usage/automode',
@@ -48,7 +60,7 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
-      label: 'Advanced Topics',
+      label: 'Operations & Advanced',
       items: [
         'advanced/custom_tools',
         'advanced/security',

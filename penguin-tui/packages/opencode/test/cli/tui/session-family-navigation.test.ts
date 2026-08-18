@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import type { Session } from "@opencode-ai/sdk/v2"
-import { getSessionFamily } from "../../../src/cli/cmd/tui/util/session-family"
+import { getSessionFamily, isValidChildSession } from "../../../src/cli/cmd/tui/util/session-family"
 
 function session(input: { id: string; title: string; created: number; updated: number; parentID?: string }): Session {
   return {
@@ -88,5 +88,18 @@ describe("session family navigation", () => {
     })
 
     expect(getSessionFamily([parent], "ses_missing")).toEqual([])
+  })
+
+  test("treats legacy self-parent lineage as a root session", () => {
+    const corrupt = session({
+      id: "ses_corrupt",
+      title: "Recovered root",
+      parentID: "ses_corrupt",
+      created: 100,
+      updated: 300,
+    })
+
+    expect(isValidChildSession(corrupt)).toBe(false)
+    expect(getSessionFamily([corrupt], corrupt.id)).toEqual([corrupt])
   })
 })

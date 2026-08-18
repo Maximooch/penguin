@@ -1,15 +1,17 @@
 const config = {
   title: 'Penguin',
-  tagline: 'Open-source coding agent built on a scalable cognitive architecture runtime.',
-  url: 'https://maximooch.github.io',
+  tagline: 'A coding agent built to stay with the work.',
+  url: 'https://penguin-rho.vercel.app',
   baseUrl: '/',
-  onBrokenLinks: 'ignore',
-  onBrokenMarkdownLinks: 'warn',
+  onBrokenLinks: 'throw',
   favicon: 'img/favicon.ico',
-  organizationName: 'LinkAI',
+  organizationName: 'maximooch',
   projectName: 'penguin',
 
   markdown: {
+    hooks: {
+      onBrokenMarkdownLinks: 'warn',
+    },
     mermaid: true,
   },
 
@@ -31,6 +33,19 @@ const config = {
   ],
 
   themeConfig: {
+    colorMode: {
+      defaultMode: 'light',
+      disableSwitch: false,
+      respectPrefersColorScheme: true,
+    },
+    image: 'img/penguin-social-card-v2.png',
+    metadata: [
+      {
+        name: 'description',
+        content:
+          'Penguin is an open-source, Python-first coding-agent runtime that keeps task state, context, checkpoints, tool history, and verification evidence connected across sessions and agents.',
+      },
+    ],
     mermaid: {
       theme: {light: 'neutral', dark: 'forest'},
     },
@@ -45,7 +60,22 @@ const config = {
           type: 'doc',
           docId: 'intro',
           position: 'left',
-          label: 'Documentation',
+          label: 'Docs',
+        },
+        {
+          to: '/docs/getting_started',
+          label: 'Quickstart',
+          position: 'left',
+        },
+        {
+          to: '/docs/usage/basic_usage',
+          label: 'Guides',
+          position: 'left',
+        },
+        {
+          to: '/docs/api_reference/api_server',
+          label: 'API',
+          position: 'left',
         },
         {
           href: 'https://github.com/maximooch/penguin',
@@ -62,16 +92,49 @@ const config = {
           items: [
             {
               label: 'Getting Started',
-              to: '/docs/getting-started',
+              to: '/docs/getting_started',
+            },
+            {
+              label: 'Configuration',
+              to: '/docs/configuration',
+            },
+            {
+              label: 'CLI Commands',
+              to: '/docs/usage/cli_commands',
             },
           ],
         },
         {
-          title: 'Community',
+          title: 'Build with Penguin',
+          items: [
+            {
+              label: 'Python API',
+              to: '/docs/usage/python_api_reference',
+            },
+            {
+              label: 'Web Runtime',
+              to: '/docs/usage/web_interface',
+            },
+            {
+              label: 'Custom Tools',
+              to: '/docs/advanced/custom_tools',
+            },
+          ],
+        },
+        {
+          title: 'Project',
           items: [
             {
               label: 'GitHub',
               href: 'https://github.com/maximooch/penguin',
+            },
+            {
+              label: 'Contributing',
+              href: 'https://github.com/maximooch/penguin/blob/main/CONTRIBUTING.md',
+            },
+            {
+              label: 'License',
+              href: 'https://github.com/maximooch/penguin/blob/main/LICENSE',
             },
           ],
         },

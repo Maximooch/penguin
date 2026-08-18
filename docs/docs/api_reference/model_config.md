@@ -9,6 +9,7 @@ classDiagram
     class ModelConfig {
         +String model
         +String provider
+        +String client_preference
         +Optional~String~ api_base
         +Optional~String~ api_key
         +Optional~String~ api_version
@@ -17,14 +18,17 @@ classDiagram
         +Optional~Int~ max_history_tokens
         +Float temperature
         +Boolean use_assistants_api
-        +Boolean use_native_adapter
         +Boolean streaming_enabled
         +Boolean enable_token_counting
-        +Boolean vision_enabled
-        +Boolean supports_vision
+        +Optional~Boolean~ vision_enabled
+        +Boolean use_responses_api
+        +Boolean interrupt_on_action
+        +Optional~String~ service_tier
+        +Optional~Boolean~ reasoning_enabled
         +__post_init__()
         +get_config()
         +from_env()
+        +for_model()
     }
 ```
 
@@ -32,20 +36,26 @@ classDiagram
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `model` | `str` | Required | The model identifier (e.g., "claude-3-sonnet-20240229") |
+| `model` | `str` | Required | The model identifier (e.g., "claude-sonnet-4.5") |
 | `provider` | `str` | Required | The provider name (e.g., "anthropic", "openai") |
+| `client_preference` | `str` | `"openrouter"` | Adapter preference: `native` \| `litellm` \| `openrouter` \| `link` |
 | `api_base` | `Optional[str]` | `None` | Custom API base URL |
-| `api_key` | `Optional[str]` | `None` | API key for authentication |
+| `api_key` | `Optional[str]` | `None` | API key for authentication (from `<PROVIDER>_API_KEY` env) |
 | `api_version` | `Optional[str]` | `None` | API version identifier |
 | `max_output_tokens` | `Optional[int]` | `None` | Maximum tokens to generate in response |
 | `max_context_window_tokens` | `Optional[int]` | `None` | Maximum context window capacity |
-| `max_history_tokens` | `Optional[int]` | `200000` | Maximum tokens to retain in history |
+| `max_history_tokens` | `Optional[int]` | `None` | Maximum tokens to retain in history |
 | `temperature` | `float` | `0.7` | Temperature for sampling (0.0-1.0) |
 | `use_assistants_api` | `bool` | `False` | Whether to use OpenAI Assistants API |
-| `use_native_adapter` | `bool` | `True` | Whether to use native SDK adapters |
 | `streaming_enabled` | `bool` | `False` | Whether to enable streaming responses |
 | `enable_token_counting` | `bool` | `True` | Whether to track token usage |
-| `vision_enabled` | `Optional[bool]` | `None` | Whether to enable vision capabilities |
+| `vision_enabled` | `Optional[bool]` | `None` | Whether to enable vision capabilities (auto-detected) |
+| `use_responses_api` | `bool` | `False` | Whether to use the OpenAI Responses API |
+| `interrupt_on_action` | `bool` | `True` | Whether to interrupt on tool actions |
+| `service_tier` | `Optional[str]` | `None` | OpenAI service tier: `auto` \| `default` \| `flex` \| `priority` |
+| `reasoning_enabled` | `Optional[bool]` | `None` | Whether reasoning tokens are enabled |
+| `reasoning_effort` | `Optional[str]` | `None` | Reasoning effort level |
+| `reasoning_max_tokens` | `Optional[int]` | `None` | Reasoning token budget |
 
 ## Methods
 
@@ -56,8 +66,11 @@ def __post_init__(self):
 ```
 
 This method is called after initialization to:
-- Set default values for max_history_tokens
-- Set up assistants API configuration
+- Set `reasoning_enabled` default and record explicit reasoning settings
+- Normalize the OpenAI service tier
+- Auto-enable native tools for models known to require them
+- Set supported reasoning levels for known models
+- Resolve the API key from `<PROVIDER>_API_KEY` when not provided
 - Auto-detect vision capabilities based on model name
 - Set backward compatibility properties
 
@@ -80,17 +93,23 @@ Creates a ModelConfig instance from environment variables:
 
 | Environment Variable | Property |
 |---------------------|----------|
+| `PENGUIN_CLIENT_PREFERENCE` | `client_preference` (`native`\|`litellm`\|`openrouter`\|`link`) |
 | `PENGUIN_MODEL` | `model` |
 | `PENGUIN_PROVIDER` | `provider` |
 | `PENGUIN_API_BASE` | `api_base` |
-| `PENGUIN_MAX_OUTPUT_TOKENS` | `max_output_tokens` |
-| `PENGUIN_MAX_CONTEXT_WINDOW_TOKENS` | `max_context_window_tokens` |
+| `PENGUIN_MAX_OUTPUT_TOKENS` | `max_output_tokens` (alias: `PENGUIN_MAX_TOKENS`) |
+| `PENGUIN_MAX_CONTEXT_WINDOW_TOKENS` | `max_context_window_tokens` (alias: `PENGUIN_CONTEXT_WINDOW`) |
 | `PENGUIN_TEMPERATURE` | `temperature` |
 | `PENGUIN_MAX_HISTORY_TOKENS` | `max_history_tokens` |
-| `PENGUIN_USE_ASSISTANTS_API` | `use_assistants_api` |
-| `PENGUIN_USE_NATIVE_ADAPTER` | `use_native_adapter` |
 | `PENGUIN_STREAMING_ENABLED` | `streaming_enabled` |
 | `PENGUIN_VISION_ENABLED` | `vision_enabled` |
+| `PENGUIN_USE_RESPONSES_API` | `use_responses_api` |
+| `PENGUIN_INTERRUPT_ON_ACTION` | `interrupt_on_action` |
+| `PENGUIN_REASONING_ENABLED` | `reasoning_enabled` |
+| `PENGUIN_REASONING_EFFORT` | `reasoning_effort` |
+| `PENGUIN_REASONING_MAX_TOKENS` | `reasoning_max_tokens` |
+| `PENGUIN_REASONING_EXCLUDE` | `reasoning_exclude` |
+| `PENGUIN_OPENAI_SERVICE_TIER` | `service_tier` (alias: `OPENAI_SERVICE_TIER`) |
 
 ## Auto-Detection Features
 
@@ -121,13 +140,15 @@ config = ModelConfig(
 ```python
 # Create config with advanced options
 config = ModelConfig(
-    model="claude-3-5-sonnet",
+    model="claude-sonnet-4.5",
     provider="anthropic",
     max_output_tokens=4096,
     temperature=0.5,
-    use_native_adapter=True,
+    client_preference="native",
     streaming_enabled=True,
-    vision_enabled=True
+    vision_enabled=True,
+    reasoning_enabled=True,
+    reasoning_effort="high"
 )
 ```
 
@@ -148,8 +169,8 @@ config = ModelConfig.from_env()
 ### Anthropic Models
 
 For Anthropic Claude models:
-- Vision automatically enabled for Claude 3 models
-- Native adapter (when `use_native_adapter=True`) uses Anthropic's Python SDK directly
+- Vision automatically enabled for Claude 3+ models
+- `client_preference="native"` uses Anthropic's Python SDK directly
 - Direct token counting for accurate token usage tracking
 
 ### OpenAI Models
@@ -157,4 +178,4 @@ For Anthropic Claude models:
 For OpenAI GPT models:
 - Vision automatically enabled for GPT-4 Vision models
 - Assistants API optionally available through `use_assistants_api=True`
-- Will use OpenAI's native SDK in future updates (currently uses LiteLLM) 
+- Responses API available through `use_responses_api=True` 

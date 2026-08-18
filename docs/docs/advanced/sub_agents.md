@@ -127,11 +127,24 @@ integration tests.
 
 ## Message Flow & Ordering
 
-- **Shared transport**: Parent and sub-agents use the same MessageBus fabric as top-level personas. Registering a sub-agent wires an inbox handler for that `agent_id`; `core.send_to_agent(...)` simply enqueues events for that handler.
-- **Event-driven**: Delegates operate asynchronously. Parents send work, then consume events (stream chunks, action results, summaries) as they arrive. There is no blocking RPC; instead, the conversation manager records every message with `agent_id`, `recipient_id`, and timestamps so parents can reconstruct the full timeline.
-- **Ordering guarantees**: Each agent processes its own queue sequentially—tool output emitted by a delegate arrives in-order for that delegate. When multiple agents talk on the same room/channel, interleaving is determined by send time; rely on the recorded timestamps and `channel` metadata to understand flow.
+- **Execution path**: Foreground and background child prompts run directly in the
+  child session. MessageBus delivery is a separate point-to-point facility and
+  reports failure when no recipient handler exists.
+- **Event-driven background work**: Background delegates emit stream, action,
+  and lifecycle events while their executor-owned task is active. Foreground
+  delegates return the completed child result directly to the spawning tool.
+- **Ordering guarantees**: Each child turn preserves its own tool/event order.
+  Concurrent children may interleave, so use session, request, and agent IDs to
+  correlate events.
 - **Result merging**: Parents typically read the delegate’s conversation history or listen on the shared channel to decide how to respond. For deterministic handoffs, write shared artifacts (e.g., `context/TASK_CHARTER.md`) so every participant reads the same source of truth before continuing.
 - **Synchronous needs**: When a parent must wait for a specific completion signal, have the delegate post a sentinel message (e.g., `status=ready`) or update the shared charter/status file—parents can watch for that condition before proceeding.
+
+### Disabling Subagents Per Request
+
+Chat requests can set `subagents_enabled: false`. Penguin then omits every
+subagent schema from provider-native tools and denies native or ActionXML
+subagent dispatch before it can create sessions, metadata, or background tasks.
+Omitting the field preserves the existing enabled behavior.
 
 ### REST and WebSocket
 

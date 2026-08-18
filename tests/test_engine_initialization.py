@@ -862,7 +862,8 @@ async def test_llm_step_returns_usage_from_active_api_client() -> None:
                 "total_tokens": 17,
                 "cost": 0.0003,
             }
-        )
+        ),
+        get_last_finish_reason=MagicMock(return_value=FinishReason.LENGTH),
     )
     api_client = SimpleNamespace(
         get_response=AsyncMock(return_value="hello"),
@@ -889,6 +890,7 @@ async def test_llm_step_returns_usage_from_active_api_client() -> None:
         "total_tokens": 17,
         "cost": 0.0003,
     }
+    assert result["finish_reason"] is FinishReason.LENGTH
 
 
 @pytest.mark.asyncio

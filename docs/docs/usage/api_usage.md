@@ -649,4 +649,4 @@ curl http://127.0.0.1:9000/api/v1/system/status
 
 - Review the [API Reference Documentation](/docs/api_reference/api_server) for detailed endpoint specifications
 - Explore the [Web Interface](/docs/api_reference/webui) for a browser-based experience
-- Consider [setting up a proxy](/docs/advanced/deployment) for production deployments
+- Review the [web runtime guide](/docs/usage/web_interface) before exposing Penguin beyond localhost

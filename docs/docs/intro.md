@@ -116,7 +116,7 @@ response = agent.chat("Help me debug this function")
 - [Security & Permissions](advanced/security.md)
 - [Error Handling](advanced/error_handling.md)
 - [Diagnostics](advanced/diagnostics.md)
-- [Extending Penguin](advanced/extensibility.md)
+- [Custom Tools](advanced/custom_tools.md)
 - [Multi-Agent Orchestration](advanced/multi_agents.md)
 - [Sub-Agent Delegation](advanced/sub_agents.md)
 

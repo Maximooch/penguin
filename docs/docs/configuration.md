@@ -4,7 +4,7 @@ sidebar_position: 3
 
 # Configuring Penguin
 
-Penguin can be configured through environment variables and YAML configuration files. This guide explains current options for core functionality, project management, the web server, and advanced features.
+Penguin can be configured through environment variables and YAML configuration files. This guide documents the configuration surface that the code actually reads: core model settings, project/workspace paths, security, prompt composition, output style, diagnostics, theme, tools, and the web server.
 
 Simplest way is to run `penguin config setup`.
 
@@ -13,7 +13,30 @@ Simplest way is to run `penguin config setup`.
 Penguin uses a two-tier configuration system:
 
 1. **Startup Configuration** (Immutable): Loaded from environment variables and YAML files at startup
-2. **Runtime Configuration** (Mutable): Can be changed dynamically during operation without restart
+2. **Runtime Configuration** (Mutable): Can be changed dynamically during operation without restart (`RuntimeConfig`, observer pattern)
+
+### Configuration Precedence
+
+YAML configuration is merged from multiple locations. Precedence is **lowest → highest**:
+
+| # | Source | Location |
+| --- | --- | --- |
+| 1 | Package default | `penguin/config.yml` (inside the installed package) |
+| 2 | Dev repo default | `<repo_root>/config.yml` (source checkouts only) |
+| 3 | User config | `~/.config/penguin/config.yml` (or `%APPDATA%/penguin/config.yml`) |
+| 4 | Project config | `<project_root>/.penguin/config.yml` |
+| 5 | Project local overrides | `<project_root>/.penguin/settings.local.yml` |
+| 6 | Explicit override | `PENGUIN_CONFIG_PATH` (highest single-file override) |
+
+Each higher layer overrides the same keys in lower layers. The one exception:
+**security lists** (`security.allowed_paths`, `security.denied_paths`,
+`security.require_approval`) are merged **additively** (combined and
+deduplicated), so a project can always add to the deny list even when a
+lower-precedence layer set one.
+
+`/config set <key> <value>` writes to the project scope
+(`.penguin/settings.local.yml`); `/config --global set <key> <value>` writes to
+the user config (`~/.config/penguin/config.yml`).
 
 ### Runtime Configuration
 
@@ -28,18 +51,6 @@ The `RuntimeConfig` system allows you to change critical settings while the serv
 - ✅ Observer pattern ensures all components stay synchronized
 - ✅ Validated to prevent invalid configurations
 - ✅ Accessible via CLI commands or Web API
-
-**Example: Dynamic Configuration via CLI**
-```bash
-# Change project root at runtime
-/config runtime set project_root /path/to/new/project
-
-# Switch execution mode
-/config runtime set execution_mode workspace
-
-# View current runtime config
-/config runtime show
-```
 
 **Example: Dynamic Configuration via Web API**
 ```bash
@@ -132,256 +143,269 @@ the changed prompt to take effect.
 
 ### 1. Environment Variables
 
-Create a `.env` file in your working directory or project root:
+Environment variables take precedence over YAML for the keys they cover. The
+package loads `.env` files from the working directory, project root, and the
+user config directory (`~/.config/penguin/.env`).
+
+**Provider API keys** (at least one is needed to connect a model):
 
 ```bash
-# Language Model Providers (at least one required)
-OPENAI_API_KEY=your_openai_key_here
-ANTHROPIC_API_KEY=your_anthropic_key_here
-GOOGLE_API_KEY=your_google_key_here
+OPENAI_API_KEY=...
+ANTHROPIC_API_KEY=...
+GOOGLE_API_KEY=...
+OPENROUTER_API_KEY=...
+DEEPSEEK_API_KEY=...
+```
 
-# Default Model Configuration
-DEFAULT_MODEL=gpt-4
-DEFAULT_PROVIDER=openai
-TEMPERATURE=0.7
+Additional provider keys are read as `<PROVIDER_UPPERCASE>_API_KEY`; see
+`penguin/core_runtime/model_runtime.py` and `penguin/setup/wizard.py` for the
+supported set.
 
-# Runtime Configuration (can be changed via API while running)
-PENGUIN_PROJECT_ROOT=/path/to/your/project    # Initial project root
-PENGUIN_WORKSPACE=/path/to/workspace          # Initial workspace root
-PENGUIN_WRITE_ROOT=project                     # Initial execution mode (project|workspace)
+**Model selection and behavior:**
 
-# Task Management
-TASK_COMPLETION_PHRASE=TASK_COMPLETED
+```bash
+PENGUIN_DEFAULT_MODEL=openai/gpt-5          # Default model id
+PENGUIN_DEFAULT_PROVIDER=openrouter          # Default provider
+PENGUIN_CLIENT_PREFERENCE=openrouter         # native | litellm | openrouter | link
+PENGUIN_MODEL=openai/gpt-5                   # Legacy fallback model id
+PENGUIN_PROVIDER=openrouter                  # Legacy fallback provider
+PENGUIN_TEMPERATURE=0.7
+PENGUIN_MAX_OUTPUT_TOKENS=4000
+PENGUIN_MAX_TOKENS=4000                      # Accepted alias for max output tokens
+PENGUIN_MAX_HISTORY_TOKENS=200000
+PENGUIN_MAX_CONTEXT_WINDOW_TOKENS=200000
+PENGUIN_CONTEXT_SAFETY_FRACTION=0.85
+PENGUIN_STREAMING_ENABLED=true
+PENGUIN_USE_RESPONSES_API=true
+PENGUIN_INTERRUPT_ON_ACTION=true
+PENGUIN_VISION_ENABLED=true
+PENGUIN_REASONING_ENABLED=true
+PENGUIN_REASONING_EFFORT=high
+PENGUIN_REASONING_MAX_TOKENS=8000
+PENGUIN_REASONING_EXCLUDE=false
+PENGUIN_OPENAI_SERVICE_TIER=auto             # auto | default | flex | priority
+```
 
-# Web server
+**Paths and runtime roots:**
+
+```bash
+PENGUIN_CONFIG_PATH=/path/to/config.yml      # Highest-precedence config override
+PENGUIN_ROOT=/path/to/data                   # Data root when installed (site-packages)
+PENGUIN_CWD=...
+PENGUIN_PROJECT_ROOT=/path/to/project        # Initial project root (runtime-configurable)
+PENGUIN_WORKSPACE=/path/to/workspace         # Initial workspace root (runtime-configurable)
+PENGUIN_WRITE_ROOT=project                   # Initial execution mode: project | workspace
+PENGUIN_CACHE_DIR=/path/to/cache
+PENGUIN_OPENCODE_DIR=...
+PENGUIN_TUI_BIN_PATH=...
+PENGUIN_TUI_CACHE_DIR=...
+PENGUIN_TUI_LAUNCH_MODE=...
+PENGUIN_TUI_PROFILE=...
+PENGUIN_SOURCE_ROOT=...
+```
+
+**Security and behavior:**
+
+```bash
+PENGUIN_YOLO=true                            # Disable permission checks (use with caution)
+PENGUIN_DEBUG=true                           # Debug logging
+PENGUIN_LOG_LEVEL=INFO
+PENGUIN_LOG_CONTEXT_PREVIEWS=true
+PENGUIN_TELEMETRY=false
+NO_COLOR=true                                # Disable ANSI color output
+```
+
+**Web server** (see below for details):
+
+```bash
 HOST=127.0.0.1
 PORT=9000
-DEBUG=false
-
-# Web auth and exposure controls
 PENGUIN_AUTH_ENABLED=true
 PENGUIN_API_KEYS=replace-me
 PENGUIN_JWT_SECRET=replace-me
+PENGUIN_JWT_ALGORITHM=HS256
+PENGUIN_JWT_EXPIRATION_HOURS=24
 PENGUIN_PUBLIC_ENDPOINTS=/api/v1/integrations/github/webhook
 PENGUIN_CORS_ORIGINS=https://penguin.example.com
 PENGUIN_ALLOW_INSECURE_NO_AUTH=false
 PENGUIN_MAX_UPLOAD_BYTES=10737418240
+PENGUIN_MAX_CONCURRENT_TASKS=4
+PENGUIN_MAX_DIFF_LINES=5000
+PENGUIN_MAX_FILES_PER_REVIEW=50
 PENGUIN_GITHUB_WEBHOOK_DELIVERY_TTL_SECONDS=600
 GITHUB_WEBHOOK_SECRET=replace-me
-
-# Project Management
-PROJECT_AUTO_CHECKPOINT=true
-PROJECT_BACKUP_INTERVAL=3600
-
-# Memory System
-MEMORY_PROVIDER=sqlite
-MEMORY_STORAGE_PATH=./memory
-EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
 ```
-
-## Web Server Configuration Notes
-
-The web server now has explicit startup and auth hardening behavior that operators should understand:
-
-- `PENGUIN_AUTH_ENABLED` protects HTTP and protected WebSocket endpoints
-- `PENGUIN_API_KEYS` defines accepted header-based API keys
-- `PENGUIN_PUBLIC_ENDPOINTS` exposes additional routes without auth when needed
-- `PENGUIN_ALLOW_INSECURE_NO_AUTH=true` bypasses the startup block on non-local bind without auth
-- `PENGUIN_CORS_ORIGINS` should be set explicitly for exposed deployments
-- `PENGUIN_MAX_UPLOAD_BYTES` controls the server-side upload cap
-- `PENGUIN_GITHUB_WEBHOOK_DELIVERY_TTL_SECONDS` controls the in-memory replay-defense TTL
-
-### Recommended deployment defaults
-
-#### Local development
-
-```bash
-PENGUIN_AUTH_ENABLED=false
-HOST=127.0.0.1
-PORT=9000
-```
-
-#### Exposed deployment
-
-```bash
-PENGUIN_AUTH_ENABLED=true
-PENGUIN_API_KEYS=replace-me
-PENGUIN_CORS_ORIGINS=https://penguin.example.com
-HOST=0.0.0.0
-PORT=9000
-```
-
-#### GitHub webhooks with auth enabled
-
-```bash
-PENGUIN_AUTH_ENABLED=true
-PENGUIN_API_KEYS=replace-me
-PENGUIN_PUBLIC_ENDPOINTS=/api/v1/integrations/github/webhook
-GITHUB_WEBHOOK_SECRET=replace-me
-HOST=0.0.0.0
-PORT=9000
-```
-
-Environment variables are now the preferred credential path for provider secrets in headless/server/container usage. Legacy plaintext JSON credential persistence remains compatibility fallback only.
 
 ### 2. YAML Configuration File
 
-Create a `config.yml` file for advanced configuration:
+Create a `config.yml` for advanced configuration. The full schema below
+matches what `penguin/config.py` and the package default
+(`penguin/config.yml`) actually read.
 
 ```yaml
-# Model Configuration
+# --- Model ---
 model:
-  default: gpt-4
-  provider: openai
-  temperature: 0.7
-  max_output_tokens: 4000
-  timeout: 30
+  default: openai/gpt-5          # Default model id
+  provider: openrouter           # openai | anthropic | openrouter | google | ...
+  client_preference: openrouter  # native | litellm | openrouter | link
+  temperature: 0.3
+  max_output_tokens: 50000
+  context_window: 170000
+  streaming_enabled: true
+  vision_enabled: true
+  service_tier: auto             # OpenAI only: auto | default | flex | priority
 
-# Provider-specific settings
-providers:
-  openai:
-    base_url: https://api.openai.com/v1
-    api_version: v1
-  anthropic:
-    base_url: https://api.anthropic.com
-    api_version: "2023-06-01"
+# --- Per-model overrides (resolved by LLMModelConfig.for_model) ---
+model_configs:
+  openai/gpt-5:
+    context_window: 390000
+    max_output_tokens: 120000
+    provider: openrouter
+    temperature: 0.5
+    reasoning:
+      enabled: true
+      effort: high
 
-# Project and Workspace Configuration
+# --- Provider base URL ---
+api:
+  base_url: null   # Optional global API base URL
+
+# --- Project and workspace ---
 project:
-  # Runtime configuration
-  root_strategy: git-root  # 'git-root' (default) or 'cwd'
-  additional_directories:  # Additional allowed directories for security
+  root_strategy: git-root   # 'git-root' (default) or 'cwd'
+  additional_directories:   # Additional allowed directories for security
     - /path/to/extra/dir
-  
-  # Project management storage
-  storage:
-    type: sqlite
-    database_path: "${paths.workspace}/projects.db"
-    backup_enabled: true
-    backup_interval: 3600  # seconds
-  defaults:
-    workspace: ./projects
-    write_root: project  # Default execution mode: 'project' (set to workspace to isolate)
-    auto_checkpoint: true
-    # max_iterations: 10  # Optional explicit task limit; unset is unbounded
-  constraints:
-    max_projects: 100
-    max_tasks_per_project: 500
-    max_task_depth: 5
 
-# Memory System Configuration
-memory:
-  provider: sqlite  # auto, sqlite, file, faiss, lance, chroma
-  storage_path: "${paths.memory_db}"
-  embedding_model: sentence-transformers/all-MiniLM-L6-v2
-  max_memories: 10000
-  similarity_threshold: 0.7
-  
-  providers:
-    sqlite:
-      database_file: penguin_memory.db
-      enable_fts: true
-      chunk_size: 512
-    
-    file:
-      storage_dir: file_memory
-      enable_embeddings: true
-      max_file_size: 10485760  # 10MB
-    
-    chroma:
-      persist_directory: ./chroma_db
-      collection_name: penguin_memories
-    
-    lance:
-      uri: ./memory.lance
-      table_name: memories
+workspace:
+  path: penguin_workspace
+  create_dirs:
+    - conversations
+    - memory_db
+    - logs
+    - notes
+    - projects
+    - context
 
-# Web Interface (requires penguin-ai[web])
-web:
-  host: localhost
-  port: 8000
-  debug: false
-  cors_origins:
-    - http://localhost:3000
-    - http://localhost:8080
-  
-  # Authentication (future feature)
-  auth:
-    enabled: false
-    provider: local
-    
-  # WebSocket configuration
-  websocket:
-    heartbeat_interval: 30
-    max_connections: 100
-    
-  # Static file serving
-  static:
+defaults:
+  write_root: project   # Default execution mode: 'project' (set to workspace to isolate)
+
+# --- Context loading ---
+context:
+  additional_paths: []
+  allowed_load_paths:
+    - ./
+  autoload_project_docs: true
+  load_from_project: true
+  scratchpad_dir: context
+
+# --- Security ---
+security:
+  mode: workspace        # read_only | workspace | full
+  enabled: true
+  allowed_paths: []      # Merged additively across config layers
+  denied_paths:          # Merged additively
+    - .env
+    - .env.*
+    - '**/*.pem'
+    - '**/*.key'
+    - '**/*secret*'
+    - '**/*credential*'
+  require_approval:      # Merged additively
+    - filesystem.delete
+    - git.push
+    - git.force
+
+  # Optional audit logging
+  audit:
     enabled: true
-    directory: ./static
-    max_file_size: 52428800  # 50MB
+    log_file: ".penguin/permission_audit.log"
+    categories:
+      filesystem: all
+      process: ask_and_deny
+      network: deny_only
+      git: ask_and_deny
+      memory: off
+    max_memory_entries: 1000
+    include_context: false
 
-# CLI Configuration
-cli:
-  interactive_mode: true
-  auto_save: true
-  history_size: 1000
-  color_output: true
-  
-  # Command aliases
-  aliases:
-    p: project
-    t: task
-    c: chat
+# --- Per-agent personas (multi-agent mode) ---
+agents:
+  reviewer:
+    description: Code reviewer - read-only quality and security analysis
+    system_prompt: '...'
+    model:
+      model: anthropic/claude-haiku-4.5
+      provider: openrouter
+      max_output_tokens: 100000
+    permissions:
+      mode: read_only
+    default_tools:
+      - enhanced_read
+      - list_files_filtered
+      - search
+    shared_context_window_max_tokens: 60000
 
-# Tool System
-tools:
-  enabled_tools:
-    - file_operations
-    - web_search
-    - code_execution
-    - image_generation
-  
-  file_operations:
-    max_file_size: 10485760  # 10MB
-    allowed_extensions: [".py", ".js", ".html", ".css", ".md", ".txt"]
-    
-  web_search:
-    provider: duckduckgo
-    max_results: 10
-    
-  code_execution:
-    timeout: 30
-    max_memory: 512  # MB
-    
-# Logging and Diagnostics
-logging:
-  level: INFO
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  file: penguin.log
-  max_size: 10485760  # 10MB
-  backup_count: 5
+# --- Output / reply style ---
+output:
+  prompt_style: steps_final   # steps_final | plain | json_guided | explanatory
+  show_tool_results: true
 
-# Performance and Resource Management
+# --- Diagnostics ---
+diagnostics:
+  enabled: true
+  verbose_logging: true
+  max_context_tokens: 400000
+  log_to_file: false
+  log_path: null
+
+# --- Performance ---
 performance:
-  max_concurrent_tasks: 5
-  request_timeout: 60
-  retry_attempts: 3
-  cache_size: 1000
-  
-  # Rate limiting
-  rate_limits:
-    requests_per_minute: 60
-    tokens_per_hour: 100000
+  fast_startup: false
 
-# Paths (auto-configured but can be overridden)
-paths:
-  workspace: ./workspace
-  memory_db: ./memory
-  logs: ./logs
-  cache: ./cache
-  temp: ./temp
+# --- Tools ---
+tools:
+  enabled: true
+  allow_file_operations: true
+  allow_web_access: true
+  allow_code_execution: true
+
+# --- TUI theme ---
+theme:
+  colors:
+    assistant: '#5F87FF'
+    banner: 'bold #00D7FF'
+    code_border: 'dim #5F87FF'
+    context: dim
+    diff_add: green
+    diff_remove: red
+    error: red
+    penguin_name: '#5F87FF'
+    reasoning: dim white
+    system: yellow
+    tool: magenta
+    user: cyan
+
+# --- CLI display (optional; read by penguin/cli/ui.py) ---
+cli:
+  display:
+    style: minimal            # minimal | compact | standard | detailed | streaming
+    consolidate_system_messages: true
+    hide_internal_markers: true
+    hide_tool_results: true
+    max_blank_lines: 2
+    deduplicate_messages: true
+    show_timestamps: true
+    show_metadata: false
 ```
+
+> **Note on sections not listed here:** earlier versions of this guide
+> documented `logging:`, `providers:` (with `api_key`/`models` lists),
+> `memory:`, `web:`, `paths:`, and `project.storage`/`project.execution`
+> blocks. The current code does **not** read those YAML sections — model
+> provider credentials come from environment variables, the web server is
+> configured via environment variables, and memory providers are configured in
+> code (see `penguin/memory/providers/factory.py`). Treat any such YAML from
+> older setups as inert.
 
 ## Output Formatting
 
@@ -428,131 +452,43 @@ penguin -p "…" --output-format text|json|stream-json
 
 ## Model Provider Configuration
 
-### OpenAI
+Model providers are configured with the `model:` block plus per-model
+overrides in `model_configs:`. Provider credentials always come from
+environment variables (`<PROVIDER>_API_KEY`); the wizard (`penguin config
+setup`) writes them to the user-level `.env`.
+
 ```yaml
-providers:
-  openai:
-    api_key: ${OPENAI_API_KEY}
-    base_url: https://api.openai.com/v1
-    models:
-      - gpt-4
-      - gpt-3.5-turbo
-      - gpt-4-turbo-preview
+model:
+  default: openai/gpt-5
+  provider: openrouter
+  client_preference: openrouter
+
+model_configs:
+  anthropic/claude-sonnet-4.5:
+    provider: openrouter
+    context_window: 990000
+    max_output_tokens: 63000
+    temperature: 0.5
 ```
 
-### Anthropic
-```yaml
-providers:
-  anthropic:
-    api_key: ${ANTHROPIC_API_KEY}
-    base_url: https://api.anthropic.com
-    api_version: "2023-06-01"
-    models:
-      - claude-3-opus-20240229
-      - claude-3-sonnet-20240229
-```
-
-### Local Models (Ollama)
-```yaml
-providers:
-  ollama:
-    base_url: http://localhost:11434
-    models:
-      - llama2
-      - codellama
-      - mistral
-```
-
-For a complete list of supported providers, see the [LiteLLM documentation](https://docs.litellm.ai/docs/providers).
+The resolved model config is produced by
+`penguin.llm.model_config.ModelConfig.for_model()`, which consults the
+environment variables listed above, the `model:` block, and `model_configs:`.
+Use `penguin config test-routing` to debug provider/model routing.
 
 ## Project Management Configuration
 
-### Database Settings
 ```yaml
 project:
-  storage:
-    type: sqlite
-    database_path: ./projects.db
-    
-    # Connection pool settings
-    max_connections: 10
-    timeout: 30
-    
-    # Performance tuning
-    journal_mode: WAL
-    synchronous: NORMAL
-    cache_size: 10000
+  root_strategy: git-root   # or 'cwd'
+  additional_directories:
+    - /path/to/extra/dir
 ```
 
-### Task Execution Settings
-```yaml
-project:
-  execution:
-    # max_iterations: 10  # Optional explicit task limit; unset is unbounded
-    # timeout_minutes: 60  # Optional explicit wall-clock limit; unset is unbounded
-    auto_checkpoint: true
-    
-    # Resource constraints
-    max_memory_mb: 1024
-    max_files: 100
-    max_context_window_tokens: 100000  # For indexing budget
-```
-
-## Memory System Configuration
-
-### SQLite Provider (Recommended)
-```yaml
-memory:
-  provider: sqlite
-  providers:
-    sqlite:
-      database_file: penguin_memory.db
-      enable_fts: true      # Full-text search
-      enable_vector: true   # Vector similarity search
-      chunk_size: 512       # Text chunk size for embeddings
-      overlap: 50           # Overlap between chunks
-```
-
-### Vector Database Providers
-```yaml
-memory:
-  provider: chroma  # or lance, faiss
-  providers:
-    chroma:
-      persist_directory: ./chroma_db
-      collection_name: penguin_memories
-      embedding_function: sentence-transformers/all-MiniLM-L6-v2
-```
-
-## Web Interface Configuration
-
-### Basic Server Settings
-```yaml
-web:
-  host: 0.0.0.0        # Bind to all interfaces
-  port: 8000
-  workers: 1           # Number of worker processes
-  reload: false        # Auto-reload on file changes (development only)
-```
-
-### Security Settings
-```yaml
-web:
-  security:
-    cors_origins:
-      - http://localhost:3000
-      - https://myapp.com
-    cors_methods: ["GET", "POST", "PUT", "DELETE"]
-    cors_headers: ["*"]
-    
-    # Rate limiting
-    rate_limit:
-      enabled: true
-      requests_per_minute: 100
-      
-    # Request size limits
-    max_request_size: 10485760  # 10MB
-```
+`project.root_strategy` controls how the project root is discovered: `git-root`
+climbs to the enclosing git repository, `cwd` uses the current working
+directory. `project.additional_directories` are extra directories the security
+layer permits access to.
 
 ## Security Configuration
 
@@ -564,20 +500,20 @@ Penguin includes a comprehensive permission system that controls what operations
 security:
   # Security mode: read_only, workspace, or full
   mode: workspace
-  
+
   # Enable/disable permission checks (set to false or use PENGUIN_YOLO=true to disable)
   enabled: true
-  
-  # Additional allowed paths beyond workspace/project
+
+  # Additional allowed paths beyond workspace/project (merged additively)
   allowed_paths:
     - /path/to/shared/resources
-  
-  # Explicitly denied paths (always blocked)
+
+  # Explicitly denied paths (always blocked, merged additively)
   denied_paths:
     - ~/.ssh
     - ~/.aws
     - /etc
-  
+
   # Operations requiring user approval before execution
   require_approval:
     - filesystem.delete
@@ -590,144 +526,107 @@ security:
 - `workspace`: Operations restricted to workspace and project directories (default)
 - `full`: Minimal restrictions, use with caution in trusted environments
 
-### Audit Logging
-
-Configure permission audit logging for debugging and compliance:
-
-```yaml
-security:
-  audit:
-    enabled: true
-    log_file: ".penguin/permission_audit.log"
-    
-    # Per-category verbosity: off, deny_only, ask_and_deny, all
-    categories:
-      filesystem: all
-      process: ask_and_deny
-      network: deny_only
-      git: ask_and_deny
-      memory: off
-    
-    # Maximum entries to keep in memory for API queries
-    max_memory_entries: 1000
-    
-    # Include full context in logs (may contain sensitive data)
-    include_context: false
-```
-
 ### Multi-Agent Permissions
 
-Define per-agent permission restrictions:
+Per-agent permission restrictions live under `agents:` (Phase 1+
+configuration surface, loaded by `Config.load_config`):
 
 ```yaml
 agents:
   code-reviewer:
-    persona: "Code Review Expert"
+    description: "Code Review Expert"
     permissions:
       mode: read_only
-      operations:
-        - filesystem.read
-        - memory.read
-      allowed_paths:
-        - ./src
-        - ./tests
+    default_tools:
+      - filesystem.read
+      - memory.read
 ```
 
 ## Advanced Configuration
 
 ### Custom Tool Configuration
+
 ```yaml
 tools:
-  custom_tools_path: ./custom_tools
-  
-  # Tool-specific settings
-  file_operations:
-    sandbox_mode: true
-    allowed_paths:
-      - ./workspace
-      - ./projects
-    
-  web_search:
-    cache_results: true
-    cache_ttl: 3600
+  enabled: true
+  allow_file_operations: true
+  allow_web_access: true
+  allow_code_execution: true
 ```
 
 ### Performance Tuning
+
 ```yaml
 performance:
-  # Async settings
-  max_concurrent_requests: 10
-  connection_pool_size: 20
-  
-  # Caching
-  cache:
-    provider: memory  # memory, redis, file
-    ttl: 3600
-    max_size: 1000
-    
-  # Background tasks
-  background_tasks:
-    enabled: true
-    max_workers: 5
-```
-
-## Configuration Validation
-
-Penguin validates your configuration on startup. Common validation errors:
-
-- **Missing API keys**: Ensure at least one model provider is configured
-- **Invalid paths**: Check that specified directories exist and are writable
-- **Resource limits**: Ensure memory and timeout values are reasonable
-- **Network settings**: Verify ports are available and addresses are valid
-
-## Environment-Specific Configurations
-
-### Development
-```yaml
-# config.dev.yml
-logging:
-  level: DEBUG
-web:
-  debug: true
-  reload: true
-performance:
-  cache_size: 100
-```
-
-### Production
-```yaml
-# config.prod.yml
-logging:
-  level: WARNING
-web:
-  debug: false
-  workers: 4
-security:
-  rate_limit:
-    enabled: true
-performance:
-  cache_size: 5000
-```
-
-Load environment-specific config:
-```bash
-penguin --config config.prod.yml
+  fast_startup: false
 ```
 
 ## Configuration Troubleshooting
 
 **Common Issues:**
 
-1. **Configuration not loading**: Check YAML syntax and file permissions
-2. **API connection errors**: Verify API keys and network connectivity
-3. **Database errors**: Ensure SQLite database is writable
-4. **Memory issues**: Adjust cache sizes and memory limits
-5. **Web interface not accessible**: Check firewall settings and port availability
+1. **Configuration not loading**: Check YAML syntax and file permissions; run `penguin config check` and `penguin config debug` for diagnostics.
+2. **API connection errors**: Verify API keys are set in the environment or user-level `.env`; run `penguin config test-routing`.
+3. **Wrong model or provider being used**: Check `model.default`, `model.provider`, and any `model_configs` entry for the model id; env vars (`PENGUIN_DEFAULT_MODEL`, `PENGUIN_DEFAULT_PROVIDER`) override YAML.
+4. **Project vs workspace write targets**: Check `defaults.write_root` and `PENGUIN_WRITE_ROOT`; change at runtime via `RuntimeConfig` or the Web API (`/api/v1/system/config/execution-mode`).
+5. **Web interface not accessible**: Check `HOST`/`PORT` bind and auth settings (see below).
 
-For detailed debugging, enable debug logging:
-```yaml
-logging:
-  level: DEBUG
+For detailed debugging, run `penguin config debug` or set `PENGUIN_DEBUG=true`.
+
+## Web Server Configuration Notes
+
+The web server is configured **entirely via environment variables** — there is
+no `web:` YAML section. Key settings:
+
+- `HOST` / `PORT` — bind address and port (default `127.0.0.1:9000`)
+- `PENGUIN_AUTH_ENABLED` — protects HTTP and protected WebSocket endpoints
+- `PENGUIN_API_KEYS` — accepted header-based API keys
+- `PENGUIN_JWT_SECRET` / `PENGUIN_JWT_ALGORITHM` / `PENGUIN_JWT_EXPIRATION_HOURS` — session tokens
+- `PENGUIN_PUBLIC_ENDPOINTS` — routes exposed without auth when needed
+- `PENGUIN_ALLOW_INSECURE_NO_AUTH=true` — bypasses the startup block on non-local bind without auth
+- `PENGUIN_CORS_ORIGINS` — explicit CORS allowlist (a small dev allowlist is used when unset, not `*`)
+- `PENGUIN_MAX_UPLOAD_BYTES` — server-side upload cap
+- `PENGUIN_GITHUB_WEBHOOK_DELIVERY_TTL_SECONDS` — in-memory replay-defense TTL
+- `GITHUB_WEBHOOK_SECRET` — GitHub webhook signing secret
+
+### Recommended deployment defaults
+
+#### Local development
+
+```bash
+PENGUIN_AUTH_ENABLED=false
+HOST=127.0.0.1
+PORT=9000
 ```
 
-# todo: add configuration for ollama!
+#### Exposed deployment
+
+```bash
+PENGUIN_AUTH_ENABLED=true
+PENGUIN_API_KEYS=replace-me
+PENGUIN_CORS_ORIGINS=https://penguin.example.com
+HOST=0.0.0.0
+PORT=9000
+```
+
+#### GitHub webhooks with auth enabled
+
+```bash
+PENGUIN_AUTH_ENABLED=true
+PENGUIN_API_KEYS=replace-me
+PENGUIN_PUBLIC_ENDPOINTS=/api/v1/integrations/github/webhook
+GITHUB_WEBHOOK_SECRET=replace-me
+HOST=0.0.0.0
+PORT=9000
+```
+
+Environment variables are the preferred credential path for provider secrets in headless/server/container usage. Legacy plaintext JSON credential persistence remains compatibility fallback only.
+
+## Configuration Validation
+
+Penguin validates required workspace configuration on launch (see `penguin
+config check` and the startup completeness check in `penguin/cli/cli.py`). A
+workspace-only configuration with no model connected is valid; you can run
+`penguin config setup` to connect a model later. There is no hard startup
+validation of API keys, paths, or resource limits beyond the completeness
+check — runtime errors surface as warnings and in `penguin config debug`.

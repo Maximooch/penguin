@@ -77,6 +77,34 @@ def test_responses_adapter_preserves_provider_call_identity() -> None:
     )
 
 
+def test_responses_adapter_accepts_openai_compatible_tool_call_shape() -> None:
+    call = tool_call_from_responses_info(
+        {
+            "id": "call_456",
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "arguments": '{"path":"context/todo"}',
+            },
+        }
+    )
+
+    assert call == ToolCall(
+        id="call_456",
+        name="read_file",
+        arguments='{"path":"context/todo"}',
+        source="responses",
+        raw={
+            "id": "call_456",
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "arguments": '{"path":"context/todo"}',
+            },
+        },
+    )
+
+
 def test_action_result_adapter_maps_legacy_result_to_tool_result() -> None:
     result = tool_result_from_action_result(
         {"action": "read_file", "result": "contents", "status": "completed"},
