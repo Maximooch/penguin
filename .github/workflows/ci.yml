@@ -118,6 +118,70 @@ jobs:
             tests/api/test_sse_and_status_scoping.py \
             tests/api/test_session_view_service.py
 
+  opencode-v2-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python-version: "3.9"
+            pydantic-spec: "pydantic==1.10.24"
+          - python-version: "3.12"
+            pydantic-spec: "pydantic>=2,<3"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install Penguin development dependencies
+        run: python -m pip install -e '.[dev]' '${{ matrix.pydantic-spec }}'
+      - name: Check V2 compatibility and launcher modules
+        run: |
+          ruff check \
+            penguin/cli/opencode_launcher.py \
+            penguin/web/opencode_v2_routes.py \
+            penguin/web/services/link_inference.py \
+            penguin/web/services/opencode_v2.py \
+            penguin/web/services/opencode_v2_events.py \
+            penguin/web/services/opencode_v2_interactions.py \
+            tests/test_opencode_launcher.py \
+            tests/test_opencode_v2_plugin.py \
+            tests/api/test_opencode_v2_routes.py \
+            tests/api/test_opencode_v2_events.py \
+            tests/web/test_link_inference_service.py
+          ruff check --select E,F,I \
+            penguin/web/middleware/auth.py \
+            tests/api/test_web_auth_hardening.py
+          ruff format --check \
+            penguin/cli/opencode_launcher.py \
+            penguin/web/middleware/auth.py \
+            penguin/web/opencode_v2_routes.py \
+            penguin/web/services/link_inference.py \
+            penguin/web/services/opencode_v2.py \
+            penguin/web/services/opencode_v2_events.py \
+            penguin/web/services/opencode_v2_interactions.py \
+            tests/test_opencode_launcher.py \
+            tests/test_opencode_v2_plugin.py \
+            tests/api/test_web_auth_hardening.py \
+            tests/api/test_opencode_v2_routes.py \
+            tests/api/test_opencode_v2_events.py \
+            tests/web/test_link_inference_service.py
+      - name: Run V2 protocol, launcher, and auth contracts
+        run: |
+          pytest -q \
+            tests/api/test_opencode_v2_routes.py \
+            tests/api/test_opencode_v2_events.py \
+            tests/test_opencode_launcher.py \
+            tests/test_opencode_v2_plugin.py \
+            tests/test_cli_entrypoint_dispatcher.py \
+            tests/web/test_link_inference_service.py
+          pytest -q tests/api/test_web_auth_hardening.py \
+            -k 'opencode_basic or startup_token_from_non_loopback or public_endpoint_matching_is_exact_for_sensitive_prefixes'
+
   tui-goal-contract:
     runs-on: ubuntu-latest
     timeout-minutes: 20

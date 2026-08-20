@@ -169,12 +169,18 @@ def create_app() -> "FastAPI":
 
     try:
         from fastapi import FastAPI
+        from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import FileResponse
         from fastapi.staticfiles import StaticFiles
-        from fastapi.middleware.cors import CORSMiddleware
-        from .routes import router, get_capabilities
+
         from .integrations.github_webhook import router as github_webhook_router
         from .middleware.auth import AuthenticationMiddleware, AuthConfig
+        from .opencode_v2_routes import (
+            OpenCodeV2HTTPError,
+            handle_http_error as handle_opencode_v2_http_error,
+            router as opencode_v2_router,
+        )
+        from .routes import get_capabilities, router
         from .sse_events import router as sse_router, set_core_instance
     except ImportError:
         raise ImportError(
@@ -278,6 +284,7 @@ def create_app() -> "FastAPI":
     except Exception:
         logger.info("Model configs loaded: unknown")
     router.core = core
+    opencode_v2_router.core = core
     github_webhook_router.core = core
 
     # Set core for SSE router
@@ -285,8 +292,10 @@ def create_app() -> "FastAPI":
 
     # Include API routes
     app.include_router(router)
+    app.include_router(opencode_v2_router)
     app.include_router(sse_router)
     app.include_router(github_webhook_router)
+    app.add_exception_handler(OpenCodeV2HTTPError, handle_opencode_v2_http_error)
 
     # Optionally include MCP HTTP router when enabled
     try:
