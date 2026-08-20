@@ -4469,6 +4469,7 @@ async def handle_chat_message(
             "action_results": process_result.get("action_results", []),
             "aborted": bool(process_result.get("aborted")),
             "status": process_result.get("status"),
+            "session_id": request_session_id,
         }
         if "recoverable" in process_result:
             resp["recoverable"] = bool(process_result.get("recoverable"))

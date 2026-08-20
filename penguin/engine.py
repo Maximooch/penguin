@@ -1888,6 +1888,14 @@ class Engine:
                     completion_status = guard_status or "implicit_completion"
                     break
 
+                # TODO(task-loop): a provider turn that ends with FinishReason.LENGTH
+                # (per-call output boundary) is currently treated as implicit
+                # completion here. tests/test_engine_task_finish_contract.py
+                # documents the intended continuation behavior
+                # (test_unbounded_task_continues_once_from_persisted_length_partial).
+                # Implement output-boundary continuation before relying on that
+                # contract; see tests for the expected message shape.
+
             else:
                 # The loop condition expired without an explicit or guarded break.
                 if (
@@ -2339,6 +2347,15 @@ class Engine:
                             guard_status,
                         )
                     break
+
+                # TODO(response-loop): a provider turn that ends with
+                # FinishReason.LENGTH (per-call output boundary) is currently
+                # treated as implicit completion here.
+                # tests/test_engine_task_finish_contract.py documents the
+                # intended continuation behavior
+                # (test_unbounded_response_continues_from_persisted_length_partial).
+                # Implement output-boundary continuation before relying on that
+                # contract; see tests for the expected message shape.
 
             # Determine final status
             if (

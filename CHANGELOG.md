@@ -5,6 +5,45 @@ Changelog
 
 All notable changes to this project are documented in this file.
 
+0.9.2 — 2026-08-20
+------------------
+
+Highlights
+- **Durable session goals**: Added session-scoped `/goal` and `/247` workflows with persisted lifecycle state, RunMode execution, API support, TUI controls, and explicit partial/blocked completion handling.
+- **Expanded inference options**: Added native Modal Auto Endpoint and RunInfra providers plus Link-backed personal subscription inference across Chat Completions and Responses-compatible paths.
+- **Safer delegated execution**: Stabilized sub-agent event-loop ownership, admission policy, child model selection, message delivery, cancellation, and execution-scope isolation.
+- **Faster live output**: Removed source-side assistant-delta coalescing and moved runtime-event persistence off the SSE hot path with batched ledger writes.
+- **Operational visibility**: Added the packaged Penguin dashboard with session, task, context, cost, performance, reliability, runtime-event, and server-log views.
+
+Added
+- Durable session-goal persistence, lifecycle APIs, OpenCode-compatible events, TUI commands, and sidebar status summaries.
+- Native `todowrite` and `todoread` tools backed by the active session's todo metadata.
+- Modal and RunInfra provider adapters, credentials, model catalog entries, reasoning controls, native tool support, and TUI connection flows.
+- Link external-subscription discovery and inference, including scoped execution authority and per-request permission/approval policies.
+- Dashboard queries and panels for projects, runtime events, server logs, usage, cost, performance, reliability, context, and session exploration.
+- Deterministic coverage for provider contracts, goal execution, async tool dispatch, Link authorization, SSE batching, setup, and multi-agent runtime behavior.
+
+Changed
+- Reworked prompt composition around separate profile, soul, action, workflow, and configurable prompt-setting dimensions while reducing duplicated prompt text.
+- Simplified first-run setup so workspace initialization is required but provider configuration can be deferred until connection time.
+- Emitted assistant stream deltas immediately while batching runtime-event ledger commits outside the live SSE delivery path.
+- Dropped Python 3.9 support; Penguin now supports Python 3.10 through 3.12 and uses updated Python tooling and dependency security floors.
+- Improved OpenRouter-compatible reasoning transport, reasoning-content recovery, nested tool-call extraction, request diagnostics, and provider-specific runtime resolution.
+
+Fixed
+- TUI cancellation returning slowly or leaving sessions in a running state while adapter cleanup completed.
+- Provider discovery after optional setup was skipped, including first-connection flows without pre-existing credentials or model state.
+- Link Responses compatibility, ChatGPT subscription model resolution, organization-context forwarding, runtime selection, credential scoping, and execution-authority enforcement.
+- Sub-agent coroutine dispatch, executor ownership, wait-timeout preservation, disabled-capability handling, child lineage, shutdown, delivery acknowledgements, and child model selection.
+- Dependency security alerts across the Python package, documentation site, examples, and TUI workspace.
+- Clean-wheel CLI startup by declaring the runtime progress-bar dependency, Link authorization responses missing their session identifier, and CI checkout failures caused by tracked local worktree metadata.
+
+Compatibility note
+- Python 3.9 is no longer supported. Use Python 3.10, 3.11, or 3.12.
+
+Known issues
+- Output-boundary (per-call `FinishReason.LENGTH`) continuation is not yet implemented. Four tests in `tests/test_engine_task_finish_contract.py` (`test_unbounded_task_continues_once_from_persisted_length_partial`, `test_unbounded_response_continues_from_persisted_length_partial`, `test_length_continuation_respects_explicit_iteration_limit`, `test_length_continuation_checks_explicit_stop_before_next_provider_call`) currently fail on `main`; the intended behavior is tracked by `TODO(task-loop)` / `TODO(response-loop)` comments in `penguin/engine.py`.
+
 0.9.1 — 2026-07-09
 ------------------
 

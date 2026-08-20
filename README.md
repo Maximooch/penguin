@@ -297,6 +297,15 @@ Read more:
 
 ## Version Highlights
 
+### v0.9.2
+
+- Added durable session-scoped `/goal` and `/247` workflows with persisted lifecycle state, RunMode execution, API/TUI controls, and truthful partial or blocked outcomes.
+- Added native Modal Auto Endpoint and RunInfra providers, plus Link-backed personal subscription inference with scoped execution authority and per-request permission policies.
+- Stabilized multi-agent execution across async tool dispatch, executor ownership, admission policy, child model selection, cancellation, message delivery, and execution isolation.
+- Reduced live-output latency by emitting assistant deltas immediately and batching runtime-event ledger persistence outside the SSE hot path.
+- Added a packaged observability dashboard for sessions, tasks, context, cost, performance, reliability, runtime events, and server logs.
+- Simplified first-run onboarding, refactored prompt composition, exposed native session todo tools, resolved dependency security alerts, and moved the supported Python range to 3.10–3.12.
+
 ### v0.9.1
 
 - Added day-one GPT-5.6 support through Penguin's OpenAI/Codex OAuth catalog path, including Sol, Terra, and Luna when advertised and provisioned for the authenticated account.
