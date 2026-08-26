@@ -15,7 +15,6 @@ from fastapi import (
 from pydantic import BaseModel, ValidationError  # type: ignore
 from fastapi.responses import PlainTextResponse
 from datetime import datetime  # type: ignore
-from collections import OrderedDict
 import asyncio
 import base64
 import copy
@@ -28,7 +27,6 @@ import re
 from contextlib import suppress
 import tempfile
 import time
-from threading import Lock
 import uuid
 from urllib.parse import unquote, urlparse
 import websockets
@@ -75,6 +73,7 @@ from penguin.web.services.external_subscription import (
     build_external_subscription_capabilities,
     validate_external_subscription_execution,
 )
+from penguin.web.services.file_search import get_file_search_service
 from penguin.web.services.link_inference import (
     LinkExecutionRequest,
     resolve_link_inference_runtime,
@@ -257,27 +256,6 @@ def _validate_saved_upload_image(
             detail="Uploaded file content does not match the file extension.",
         )
     return detected_content_type
-
-
-_FIND_FILE_CACHE_TTL_SECONDS = 5.0
-_FIND_FILE_CACHE_MAX_DIRECTORIES = 16
-_FIND_FILE_SKIP_DIR_NAMES = {
-    ".git",
-    ".hg",
-    ".svn",
-    "node_modules",
-    "dist",
-    "build",
-    "target",
-    "__pycache__",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".ruff_cache",
-    ".venv",
-    "venv",
-}
-_FIND_FILE_INDEX_CACHE: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
-_FIND_FILE_INDEX_CACHE_LOCK = Lock()
 
 
 def _remember_last_scoped_directory(
@@ -1499,178 +1477,6 @@ def _extract_context_files_from_text(
         seen.add(resolved)
         resolved_files.append(resolved)
     return resolved_files
-
-
-def _normalize_repo_relative(path_value: str) -> str:
-    """Normalize a relative path to POSIX separators."""
-    return path_value.replace(os.sep, "/") if os.sep != "/" else path_value
-
-
-def _scan_find_file_index(directory: str) -> tuple[List[str], List[str]]:
-    """Build a lightweight file/dir index for fast autocomplete searches."""
-    root = Path(directory).expanduser().resolve()
-    if not root.exists() or not root.is_dir():
-        return [], []
-
-    files: List[str] = []
-    dirs: List[str] = []
-
-    for current_dir, dirnames, filenames in os.walk(str(root), topdown=True):
-        dirnames[:] = [
-            name
-            for name in dirnames
-            if name not in _FIND_FILE_SKIP_DIR_NAMES and name not in {".", ".."}
-        ]
-
-        current_path = Path(current_dir)
-        try:
-            relative_dir = current_path.relative_to(root)
-        except ValueError:
-            continue
-
-        for dirname in dirnames:
-            rel = (
-                (relative_dir / dirname).as_posix()
-                if str(relative_dir) != "."
-                else dirname
-            )
-            dirs.append(f"{_normalize_repo_relative(rel).rstrip('/')}/")
-
-        for filename in filenames:
-            rel = (
-                (relative_dir / filename).as_posix()
-                if str(relative_dir) != "."
-                else filename
-            )
-            files.append(_normalize_repo_relative(rel).rstrip("/"))
-
-    files.sort()
-    dirs.sort()
-    return files, dirs
-
-
-def _get_find_file_index(directory: str) -> tuple[List[str], List[str]]:
-    """Return cached file index for a directory, refreshing on TTL expiry."""
-    normalized = normalize_directory(directory)
-    if not normalized:
-        return [], []
-
-    now = time.monotonic()
-    with _FIND_FILE_INDEX_CACHE_LOCK:
-        cached = _FIND_FILE_INDEX_CACHE.get(normalized)
-        if isinstance(cached, dict) and float(cached.get("expires_at", 0.0)) > now:
-            _FIND_FILE_INDEX_CACHE.move_to_end(normalized)
-            return list(cached.get("files") or []), list(cached.get("dirs") or [])
-
-    files, dirs = _scan_find_file_index(normalized)
-
-    with _FIND_FILE_INDEX_CACHE_LOCK:
-        _FIND_FILE_INDEX_CACHE[normalized] = {
-            "expires_at": now + _FIND_FILE_CACHE_TTL_SECONDS,
-            "files": files,
-            "dirs": dirs,
-        }
-        _FIND_FILE_INDEX_CACHE.move_to_end(normalized)
-        while len(_FIND_FILE_INDEX_CACHE) > _FIND_FILE_CACHE_MAX_DIRECTORIES:
-            _FIND_FILE_INDEX_CACHE.popitem(last=False)
-
-    return files, dirs
-
-
-def _is_hidden_path(path_value: str) -> bool:
-    """Return whether any segment is hidden (starts with '.')."""
-    normalized = path_value.replace("\\", "/").rstrip("/")
-    return any(
-        segment.startswith(".") and len(segment) > 1
-        for segment in normalized.split("/")
-        if segment
-    )
-
-
-def _query_targets_hidden_paths(query: str) -> bool:
-    """Return whether the query intentionally targets hidden paths."""
-    return query.startswith(".") or "/." in query
-
-
-def _sort_hidden_last(items: List[str], query: str) -> List[str]:
-    """Sort hidden entries to the end unless query targets hidden paths."""
-    if _query_targets_hidden_paths(query):
-        return items
-
-    visible: List[str] = []
-    hidden: List[str] = []
-    for item in items:
-        if _is_hidden_path(item):
-            hidden.append(item)
-        else:
-            visible.append(item)
-    return [*visible, *hidden]
-
-
-def _subsequence_gap(query: str, candidate: str) -> Optional[int]:
-    """Return gap score if query is a subsequence of candidate."""
-    cursor = 0
-    last = -1
-    gap = 0
-    for char in query:
-        found = candidate.find(char, cursor)
-        if found < 0:
-            return None
-        if last >= 0:
-            gap += max(found - last - 1, 0)
-        last = found
-        cursor = found + 1
-    return gap
-
-
-def _find_file_match_score(
-    query: str, candidate: str
-) -> Optional[tuple[int, int, int, str]]:
-    """Compute an OpenCode-like fuzzy ranking score for path suggestions."""
-    query_l = query.lower()
-    candidate_l = candidate.lower()
-    basename_l = candidate_l.rstrip("/").split("/")[-1]
-
-    if candidate_l == query_l or basename_l == query_l:
-        return (0, 0, len(candidate), candidate_l)
-    if basename_l.startswith(query_l):
-        return (1, 0, len(candidate), candidate_l)
-    if candidate_l.startswith(query_l):
-        return (2, 0, len(candidate), candidate_l)
-
-    basename_idx = basename_l.find(query_l)
-    if basename_idx >= 0:
-        return (3, basename_idx, len(candidate), candidate_l)
-    candidate_idx = candidate_l.find(query_l)
-    if candidate_idx >= 0:
-        return (4, candidate_idx, len(candidate), candidate_l)
-
-    basename_gap = _subsequence_gap(query_l, basename_l)
-    if basename_gap is not None:
-        return (5, basename_gap, len(candidate), candidate_l)
-
-    candidate_gap = _subsequence_gap(query_l, candidate_l)
-    if candidate_gap is not None:
-        return (6, candidate_gap, len(candidate), candidate_l)
-
-    return None
-
-
-def _search_find_file_items(items: List[str], query: str, limit: int) -> List[str]:
-    """Search indexed file/dir items with deterministic fuzzy ranking."""
-    normalized_query = query.strip().lower()
-    if not normalized_query:
-        return items[:limit]
-
-    ranked: List[tuple[tuple[int, int, int, str], str]] = []
-    for item in items:
-        score = _find_file_match_score(normalized_query, item)
-        if score is None:
-            continue
-        ranked.append((score, item))
-
-    ranked.sort(key=lambda entry: entry[0])
-    return [item for _, item in ranked[:limit]]
 
 
 def _materialize_image_paths(
@@ -3327,49 +3133,13 @@ async def opencode_find_files(
             status_code=400, detail="Unable to resolve search directory"
         )
 
-    files, directories = _get_find_file_index(resolved_directory)
     kind = type_value or ("file" if not dirs_enabled else "all")
-    _request_log_debug(
-        "find.index session=%s query=%r resolved=%s files=%s dirs=%s kind=%s",
-        session_id or conversation_id or "",
-        query_value,
+    result = await get_file_search_service().search(
         resolved_directory,
-        len(files),
-        len(directories),
-        kind,
+        query_value,
+        kind=kind,
+        limit=limit_value,
     )
-
-    if not query_value:
-        if kind == "file":
-            result = _sort_hidden_last(files, query_value)[:limit_value]
-        else:
-            result = _sort_hidden_last(directories, query_value)[:limit_value]
-        _request_log_debug(
-            "find.result session=%s query=%r resolved=%s count=%s sample=%s",
-            session_id or conversation_id or "",
-            query_value,
-            resolved_directory,
-            len(result),
-            result[:5],
-        )
-        return result
-
-    items = (
-        files
-        if kind == "file"
-        else directories
-        if kind == "directory"
-        else [*files, *directories]
-    )
-    search_limit = (
-        limit_value * 20
-        if kind == "directory" and not _query_targets_hidden_paths(query_value)
-        else limit_value
-    )
-    matched = _search_find_file_items(
-        items, query_value, max(search_limit, limit_value)
-    )
-    result = _sort_hidden_last(matched, query_value)[:limit_value]
     _request_log_debug(
         "find.result session=%s query=%r resolved=%s count=%s sample=%s",
         session_id or conversation_id or "",

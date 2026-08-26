@@ -15,6 +15,7 @@ import { useFrecency } from "./frecency"
 import { rankSlashAutocompleteOptions } from "./slash-autocomplete"
 import { formatMcpResourceAutocomplete } from "./mcp-autocomplete"
 import { fileAutocompleteURL } from "./file-url"
+import { createDebouncedSignal } from "@tui/util/signal"
 
 function removeLineRange(input: string) {
   const hashIndex = input.lastIndexOf("#")
@@ -210,10 +211,23 @@ export function Autocomplete(props: {
     }
   }
 
+  const [fileQuery, setFileQuery] = createDebouncedSignal("", 35)
+  let fileSearchAbort: AbortController | undefined
+  createEffect(() => {
+    const query = filter() ?? ""
+    fileSearchAbort?.abort()
+    setFileQuery(query)
+  })
+  onCleanup(() => fileSearchAbort?.abort())
+
   const [files] = createResource(
-    () => filter(),
+    fileQuery,
     async (query) => {
       if (!store.visible || store.visible === "/") return []
+
+      fileSearchAbort?.abort()
+      const abort = new AbortController()
+      fileSearchAbort = abort
 
       const { lineRange, baseQuery } = extractLineRange(query ?? "")
       const scopedSessionID = props.sessionID ?? sdk.sessionID
@@ -222,13 +236,19 @@ export function Autocomplete(props: {
         query: baseQuery,
         directory: scopedSession?.directory ?? sdk.directory,
         session_id: scopedSessionID,
+        signal: abort.signal,
       } as Parameters<typeof sdk.client.find.files>[0] & {
         session_id?: string
       }
       const searchDirectory = params.directory ?? sdk.directory ?? process.cwd()
 
       // Get files from SDK
-      const result = await sdk.client.find.files(params)
+      const result = await sdk.client.find.files(params).catch((error) => {
+        if (abort.signal.aborted) return undefined
+        throw error
+      })
+      if (abort.signal.aborted) return []
+      if (!result) return []
 
       const options: AutocompleteOption[] = []
 
@@ -336,20 +356,22 @@ export function Autocomplete(props: {
     const agents = sync.data.agent
     return agents
       .filter((agent) => !agent.hidden && agent.mode !== "primary")
-      .map((agent): AutocompleteOption => ({
-        display: "@" + agent.name,
-        onSelect: () => {
-          insertPart(agent.name, {
-            type: "agent",
-            name: agent.name,
-            source: {
-              start: 0,
-              end: 0,
-              value: "",
-            },
-          })
-        },
-      }))
+      .map(
+        (agent): AutocompleteOption => ({
+          display: "@" + agent.name,
+          onSelect: () => {
+            insertPart(agent.name, {
+              type: "agent",
+              name: agent.name,
+              source: {
+                start: 0,
+                end: 0,
+                value: "",
+              },
+            })
+          },
+        }),
+      )
   })
 
   const commands = createMemo((): AutocompleteOption[] => {

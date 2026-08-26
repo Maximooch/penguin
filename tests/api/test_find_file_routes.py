@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from penguin.web import routes as routes_module
+from penguin.web.services.file_search import get_file_search_service
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class _Core:
@@ -24,8 +27,7 @@ class _Core:
 
 
 def _clear_find_cache() -> None:
-    with routes_module._FIND_FILE_INDEX_CACHE_LOCK:
-        routes_module._FIND_FILE_INDEX_CACHE.clear()
+    get_file_search_service().clear()
 
 
 def _build_client(core: _Core) -> TestClient:
@@ -33,6 +35,36 @@ def _build_client(core: _Core) -> TestClient:
     app = FastAPI()
     app.include_router(routes_module.router)
     return TestClient(app)
+
+
+def test_find_file_route_delegates_search_to_service(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _clear_find_cache()
+    repo = tmp_path / "repo_find_service"
+    repo.mkdir()
+    calls: list[tuple[str, str, str, int]] = []
+
+    class _SearchService:
+        async def search(
+            self, directory: str, query: str, *, kind: str, limit: int
+        ) -> list[str]:
+            calls.append((directory, query, kind, limit))
+            return ["from-service.txt"]
+
+    monkeypatch.setattr(
+        routes_module, "get_file_search_service", lambda: _SearchService()
+    )
+    core = _Core(repo)
+    with _build_client(core) as client:
+        response = client.get(
+            "/find/file",
+            params={"directory": str(repo), "query": "service", "limit": 7},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == ["from-service.txt"]
+    assert calls == [(str(repo.resolve()), "service", "all", 7)]
 
 
 def test_find_file_routes_resolve_files_and_alias_without_404(tmp_path: Path) -> None:
