@@ -3963,6 +3963,7 @@ async def handle_chat_message(
                 validate_external_subscription_execution(
                     request.external_subscription_execution,
                     requested_model or None,
+                    AuthConfig().link_api_key or "",
                 )
                 # The Link capability contract intentionally advertises
                 # provider-local Codex model ids. Penguin's generic runtime
