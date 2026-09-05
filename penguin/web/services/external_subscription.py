@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-import os
+import hashlib
+import hmac
+import json
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel
@@ -15,7 +18,7 @@ from penguin.web.services.reasoning_variants import (
 )
 
 EXTERNAL_SUBSCRIPTION_PROTOCOL_VERSION = 1
-LINK_SUBSCRIPTION_OWNER_ENV = "PENGUIN_LINK_SUBSCRIPTION_OWNER_USER_ID"
+EXTERNAL_SUBSCRIPTION_AUTHORITY_MAX_LIFETIME = timedelta(minutes=5)
 
 
 class ExternalSubscriptionExecutionRequest(BaseModel):
@@ -24,6 +27,14 @@ class ExternalSubscriptionExecutionRequest(BaseModel):
     protocol_version: Literal[1]
     owner_user_id: str
     user_id: str
+    actor_user_id: str
+    credential_owner_type: Literal["user"]
+    credential_owner_id: str
+    workspace_id: str
+    agent_id: str
+    run_id: str
+    issued_at: datetime
+    expires_at: datetime
     requested_model_id: str
     agent_runtime: Literal["penguin"]
     provider: Literal["openai"]
@@ -35,14 +46,54 @@ class ExternalSubscriptionExecutionRequest(BaseModel):
     usage_authority: Literal["local_runtime_observed"]
     integration_support: Literal["ecosystem_compatible"]
     allow_fallback_to_link_gateway: Literal[False] = False
+    authority_signature_version: Literal[1]
+    authority_signature: str
 
     def public_result(self) -> dict[str, Any]:
         """Return execution facts without credentials or local auth records."""
 
         model_dump = getattr(self, "model_dump", None)
         if callable(model_dump):
-            return model_dump()
-        return self.dict()
+            result = model_dump()
+        else:
+            result = self.dict()
+        result.pop("authority_signature", None)
+        result["issued_at"] = self.issued_at.isoformat(timespec="milliseconds").replace(
+            "+00:00", "Z"
+        )
+        result["expires_at"] = self.expires_at.isoformat(
+            timespec="milliseconds"
+        ).replace("+00:00", "Z")
+        return result
+
+    def signature_payload(self) -> bytes:
+        """Return the canonical payload Link signs for this authority."""
+
+        values = [
+            self.protocol_version,
+            self.owner_user_id,
+            self.user_id,
+            self.actor_user_id,
+            self.credential_owner_type,
+            self.credential_owner_id,
+            self.workspace_id,
+            self.agent_id,
+            self.run_id,
+            self.issued_at.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            self.expires_at.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            self.requested_model_id,
+            self.agent_runtime,
+            self.provider,
+            self.inference_transport,
+            self.execution_source,
+            self.provider_state_owner,
+            self.credential_custodian,
+            self.settlement_mode,
+            self.usage_authority,
+            self.integration_support,
+            self.allow_fallback_to_link_gateway,
+        ]
+        return json.dumps(values, separators=(",", ":"), ensure_ascii=False).encode()
 
 
 def build_external_subscription_capabilities() -> dict[str, Any]:
@@ -98,21 +149,49 @@ def build_external_subscription_capabilities() -> dict[str, Any]:
 def validate_external_subscription_execution(
     execution: ExternalSubscriptionExecutionRequest,
     requested_model: str | None,
+    link_service_secret: str,
 ) -> None:
     """Fail closed unless Link's user-scoped request matches local OAuth state."""
 
+    secret = str(link_service_secret or "").strip()
+    if not secret:
+        raise ValueError("Link execution signing is not configured.")
+    expected_signature = hmac.new(
+        secret.encode(), execution.signature_payload(), hashlib.sha256
+    ).hexdigest()
+    if not hmac.compare_digest(execution.authority_signature, expected_signature):
+        raise ValueError("Link's personal-subscription execution signature is invalid.")
     if execution.owner_user_id != execution.user_id:
         raise ValueError("A personal subscription can only serve its owning Link user.")
-    bound_owner_user_id = os.getenv(LINK_SUBSCRIPTION_OWNER_ENV, "").strip()
-    if not bound_owner_user_id:
+    if execution.actor_user_id != execution.owner_user_id:
+        raise ValueError("A personal subscription can only serve its owning Link user.")
+    if execution.credential_owner_id != execution.owner_user_id:
         raise ValueError(
-            "This Penguin runtime is not paired with a Link user for personal "
-            "subscription execution."
+            "The personal-subscription credential owner does not match Link's "
+            "execution authority."
         )
-    if execution.user_id != bound_owner_user_id:
+    if not all(
+        value.strip()
+        for value in (
+            execution.workspace_id,
+            execution.agent_id,
+            execution.run_id,
+        )
+    ):
         raise ValueError(
-            "The requested Link user does not own this Penguin runtime's "
-            "personal subscription binding."
+            "Personal-subscription execution requires workspace, agent, and "
+            "run identity."
+        )
+    now = datetime.now(timezone.utc)
+    issued_at = execution.issued_at.astimezone(timezone.utc)
+    expires_at = execution.expires_at.astimezone(timezone.utc)
+    if expires_at <= now:
+        raise ValueError("Link's personal-subscription execution authority expired.")
+    if expires_at <= issued_at or (
+        expires_at - issued_at > EXTERNAL_SUBSCRIPTION_AUTHORITY_MAX_LIFETIME
+    ):
+        raise ValueError(
+            "Link's personal-subscription execution authority has an invalid lifetime."
         )
     selected = str(requested_model or "").strip()
     if not selected or selected != execution.requested_model_id:

@@ -202,6 +202,14 @@ async def test_chat_message_rejects_cross_user_subscription_authority(
             "protocol_version": 1,
             "owner_user_id": "user-a",
             "user_id": "user-b",
+            "actor_user_id": "user-b",
+            "credential_owner_type": "user",
+            "credential_owner_id": "user-a",
+            "workspace_id": "workspace-a",
+            "agent_id": "agent-a",
+            "run_id": "run-a",
+            "issued_at": "2099-01-01T00:00:00Z",
+            "expires_at": "2099-01-01T00:05:00Z",
             "requested_model_id": "gpt-5.4",
             "agent_runtime": "penguin",
             "provider": "openai",
@@ -213,6 +221,11 @@ async def test_chat_message_rejects_cross_user_subscription_authority(
             "usage_authority": "local_runtime_observed",
             "integration_support": "ecosystem_compatible",
             "allow_fallback_to_link_gateway": False,
+            "authority_signature_version": 1,
+            "authority_signature": (
+                "e3586ef6e9e08d53f3a71cc034df5196"
+                "e7f90e1ed15852899fa27833e21cc88c"
+            ),
         },
     )
 
@@ -345,7 +358,7 @@ async def test_chat_message_resolves_subscription_model_through_openai(
     monkeypatch.setattr(
         routes_module,
         "validate_external_subscription_execution",
-        lambda _execution, _model: None,
+        lambda _execution, _model, _secret: None,
     )
     monkeypatch.setattr(routes_module, "emit_opencode_event", capture_event)
     request = MessageRequest(
@@ -357,6 +370,14 @@ async def test_chat_message_resolves_subscription_model_through_openai(
             "protocol_version": 1,
             "owner_user_id": "user-a",
             "user_id": "user-a",
+            "actor_user_id": "user-a",
+            "credential_owner_type": "user",
+            "credential_owner_id": "user-a",
+            "workspace_id": "workspace-a",
+            "agent_id": "agent-a",
+            "run_id": "run-a",
+            "issued_at": "2099-01-01T00:00:00Z",
+            "expires_at": "2099-01-01T00:05:00Z",
             "requested_model_id": "gpt-5.6-luna",
             "agent_runtime": "penguin",
             "provider": "openai",
@@ -368,6 +389,8 @@ async def test_chat_message_resolves_subscription_model_through_openai(
             "usage_authority": "local_runtime_observed",
             "integration_support": "ecosystem_compatible",
             "allow_fallback_to_link_gateway": False,
+            "authority_signature_version": 1,
+            "authority_signature": "verified-by-test-double",
         },
     )
 
