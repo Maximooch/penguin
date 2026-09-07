@@ -14,6 +14,7 @@ from fastapi import (
 )  # type: ignore
 from pydantic import BaseModel, ValidationError  # type: ignore
 from fastapi.responses import PlainTextResponse
+from fastapi.encoders import jsonable_encoder
 from datetime import datetime  # type: ignore
 import asyncio
 import base64
@@ -3819,7 +3820,7 @@ async def handle_chat_message(
             get_chat_request_store(core),
             request.session_id,
             request.client_message_id,
-            request.model_dump(mode="json"),
+            jsonable_encoder(request),
             lambda: _process_chat_message(request, core, http_request),
         )
     return await _process_chat_message(request, core, http_request)

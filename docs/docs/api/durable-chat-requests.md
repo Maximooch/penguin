@@ -1,7 +1,7 @@
 # Durable Link chat requests
 
 Penguin can persist acceptance and results for chat requests from the trusted Link service.
-Ordinary chat requests keep their existing behavior.
+Ordinary chat requests do not create durable acceptance receipts.
 
 ## Contract
 
@@ -41,6 +41,17 @@ Its response can describe an error or another runtime status.
 A duplicate POST returns the persisted response when one exists.
 Otherwise, it returns `status: recovering` and `request_state: accepted`.
 
+## Provider output boundaries
+
+The engine passes the provider finish reason to its response and task loops.
+A per-call output boundary does not complete the agent request.
+The loop retains the partial assistant message and adds a continuation instruction before the next provider call.
+The final response contains the accumulated text from that continuation sequence, not only its last fragment.
+
+The next iteration still checks explicit stop and configured budgets.
+No default iteration limit applies to this continuation.
+An explicit response stop returns `status: stopped`. Link projects that result as cancellation, not success.
+
 ## Storage and limits
 
 Receipts live in `chat-requests.sqlite3` under the runtime workspace.
@@ -60,6 +71,8 @@ Removal loses the evidence that prevents duplicate execution.
 ## Verification
 
 The offline tests cover concurrent claims, conflicting reuse, disconnects, restart lookup, failed result writes, immutable results, and authenticated HTTP behavior.
+CI runs the receipt route tests with Pydantic v1 and v2.
+The engine tests cover repeated output boundaries, preserved text, explicit stop, and configured iteration and token budgets.
 
 ```sh
 python -m pytest tests/web/test_chat_requests.py tests/web/test_link_execution_authority.py -q
