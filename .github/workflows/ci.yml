@@ -34,6 +34,7 @@ jobs:
             penguin/llm/providers/link \
             penguin/web/services/external_subscription.py \
             penguin/web/services/link_inference.py \
+            penguin/web/services/chat_requests.py \
             tests/llm/test_link_provider.py \
             tests/llm/test_link_runtime_contract.py \
             tests/web/test_external_subscription_service.py \
@@ -42,6 +43,7 @@ jobs:
             penguin/llm/providers/link \
             penguin/web/services/external_subscription.py \
             penguin/web/services/link_inference.py \
+            penguin/web/services/chat_requests.py \
             tests/llm/test_link_provider.py \
             tests/llm/test_link_runtime_contract.py \
             tests/web/test_external_subscription_service.py \
@@ -55,6 +57,7 @@ jobs:
             tests/web/test_link_inference_service.py \
             tests/web/test_external_subscription_service.py \
             tests/web/test_link_execution_authority.py \
+            tests/web/test_chat_requests.py \
             tests/api/test_opencode_provider_routes.py::test_chat_message_rejects_cross_user_subscription_authority \
             tests/api/test_opencode_provider_routes.py::test_chat_message_rejects_link_authority_from_ordinary_api_client \
             tests/api/test_opencode_provider_routes.py::test_link_capabilities_reject_ordinary_api_clients \
@@ -88,6 +91,7 @@ jobs:
             penguin/core_runtime/session_goal_runtime.py \
             penguin/core_runtime/session_goal_store.py \
             penguin/core_runtime/session_goals.py \
+            penguin/llm/output_continuation.py \
             penguin/web/schemas/session_goal.py \
             penguin/web/services/session_goal.py
           ruff format --check \
@@ -95,6 +99,7 @@ jobs:
             penguin/core_runtime/session_goal_runtime.py \
             penguin/core_runtime/session_goal_store.py \
             penguin/core_runtime/session_goals.py \
+            penguin/llm/output_continuation.py \
             penguin/web/schemas/session_goal.py \
             penguin/web/services/session_goal.py
       - name: Run goal, Engine, and API contracts
@@ -108,6 +113,8 @@ jobs:
             tests/llm/test_runtime_stream_retry.py \
             tests/test_conversation_internal_visibility.py \
             tests/test_engine_task_finish_contract.py \
+            tests/test_engine_responses_tool_action_results.py \
+            tests/test_engine_initialization.py \
             tests/test_engine_run_task_thin_wrapper.py \
             tests/test_finish_task_schema_contract.py \
             tests/test_part_event_persist_callback.py \

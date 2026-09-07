@@ -6,6 +6,7 @@ from typing import Any, cast
 import pytest
 
 from penguin.engine import Engine
+from penguin.llm.contracts import FinishReason, LLMRequestLifecycle
 from penguin.system.conversation import ConversationSystem
 from penguin.system.state import Session
 
@@ -61,7 +62,14 @@ async def test_llm_step_includes_responses_tool_call_in_action_results() -> None
             get_formatted_messages=lambda: [{"role": "user", "content": "hi"}]
         )
     )
-    api_client = SimpleNamespace()
+    api_client = SimpleNamespace(
+        get_last_request_lifecycle=lambda: LLMRequestLifecycle(
+            request_id="req-1",
+            provider="link",
+            model="test",
+            finish_reason=FinishReason.LENGTH,
+        )
+    )
     tool_manager = SimpleNamespace()
     action_executor = SimpleNamespace()
     engine._resolve_components = lambda _agent_id: (
@@ -82,6 +90,7 @@ async def test_llm_step_includes_responses_tool_call_in_action_results() -> None
     assert result["action_results"] == [
         {"action": "code_execution", "result": "7", "status": "completed"}
     ]
+    assert result["finish_reason"] == FinishReason.LENGTH
 
 
 @pytest.mark.asyncio
@@ -167,8 +176,7 @@ async def test_llm_step_persists_assistant_before_responses_tool_result() -> Non
     assert action_result["status"] == "completed"
     assert action_result["tool_call_id"] == "call_123"
     assert (
-        action_result["tool_arguments"]
-        == '{"path":"context/todo.md","content":"hi"}'
+        action_result["tool_arguments"] == '{"path":"context/todo.md","content":"hi"}'
     )
     assert isinstance(action_result["output_hash"], str)
     assert [message.role for message in conversation.session.messages] == [
