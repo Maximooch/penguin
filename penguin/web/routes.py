@@ -1016,6 +1016,7 @@ def _queue_session_title_refresh(
 
 class MessageRequest(BaseModel):
     text: str
+    durable_request: bool = False
     conversation_id: Optional[str] = None
     session_id: Optional[str] = None
     client_message_id: Optional[str] = None
@@ -3399,7 +3400,10 @@ async def api_link_capabilities(http_request: Request) -> dict[str, Any]:
     """Return versioned Link capabilities without provider credentials."""
 
     authenticate_link_service_request(http_request)
-    return build_external_subscription_capabilities()
+    return {
+        **build_external_subscription_capabilities(),
+        "durable_chat_requests": {"version": 1, "lookup": "/api/v1/link/chat-request"},
+    }
 
 
 @router.get("/api/v1/provider")
@@ -3794,6 +3798,53 @@ async def handle_chat_message(
             detail="Runtime permission enforcement is disabled by PENGUIN_YOLO.",
         )
 
+    if request.durable_request:
+        if (
+            not has_link_execution_authority
+            or not request.session_id
+            or not request.session_id.strip()
+            or not request.client_message_id
+            or not request.client_message_id.strip()
+        ):
+            raise HTTPException(
+                422,
+                "Durable chat requires Link authority, session_id, and client_message_id.",
+            )
+        from penguin.web.services.chat_requests import (
+            execute_chat_request,
+            get_chat_request_store,
+        )
+
+        return await execute_chat_request(
+            get_chat_request_store(core),
+            request.session_id,
+            request.client_message_id,
+            request.model_dump(mode="json"),
+            lambda: _process_chat_message(request, core, http_request),
+        )
+    return await _process_chat_message(request, core, http_request)
+
+
+@router.get("/api/v1/link/chat-request")
+async def lookup_link_chat_request(
+    session_id: str,
+    client_message_id: str,
+    http_request: Request,
+    core: PenguinCore = Depends(get_core),
+):
+    """Look up a Link request without granting general session read access."""
+    authenticate_link_service_request(http_request)
+    from penguin.web.services.chat_requests import get_chat_request_store
+
+    return get_chat_request_store(core).lookup(session_id, client_message_id)
+
+
+async def _process_chat_message(
+    request: MessageRequest,
+    core: PenguinCore,
+    http_request: Request = None,
+):
+    """Run the existing chat pipeline after admission and authentication."""
     temp_image_files: List[str] = []
     request_session_id: Optional[str] = None
     request_task: Optional[asyncio.Task[Any]] = None
@@ -4312,6 +4363,8 @@ async def handle_chat_message(
             else "unknown",
             request_session_id or "unknown",
         )
+        if request.durable_request:
+            raise
         return {"response": "", "action_results": [], "aborted": True}
     except HTTPException:
         raise
