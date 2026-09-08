@@ -1,0 +1,101 @@
+# Durable Link chat requests
+
+Penguin can persist acceptance and results for chat requests from the trusted Link service.
+Ordinary chat requests do not create durable acceptance receipts.
+
+## Contract
+
+`GET /api/v1/link/capabilities` advertises `durable_chat_requests.version: 1`.
+The capability includes the lookup endpoint, `/api/v1/link/chat-request`.
+Both endpoints require the dedicated Link service credential.
+
+An opted-in `POST /api/v1/chat/message` includes:
+
+- `durable_request: true`
+- An explicit `session_id` and `client_message_id`
+- A valid Link execution descriptor and the dedicated Link service credential
+
+The identity is the pair `(session_id, client_message_id)`.
+Penguin compares a hash of the validated request fields, including execution authority.
+A retry with different fields returns HTTP 409 and `CHAT_REQUEST_IDEMPOTENCY_CONFLICT`.
+Callers must preserve the original request fields across retries.
+
+Penguin commits acceptance before it starts the existing chat pipeline.
+Only the first claim executes that pipeline.
+Concurrent retries cannot execute a second copy.
+An HTTP disconnect does not cancel the independent execution task.
+
+## Lookup and recovery
+
+The lookup endpoint accepts `session_id` and `client_message_id` query parameters.
+It returns one of these receipts:
+
+| State | Meaning | Safe caller action |
+| --- | --- | --- |
+| `absent` | This database has no acceptance record. | Submit the original request with the same identity and fields. |
+| `accepted` | Penguin committed acceptance but has no persisted result. | Observe or reconcile the original execution. Do not start a replacement. |
+| `completed` | Penguin persisted the HTTP result. | Read the `response` object and interpret its runtime status. |
+
+A completed receipt does not independently prove successful agent work.
+Its response can describe an error or another runtime status.
+A duplicate POST returns the persisted response when one exists.
+Otherwise, it returns `status: recovering` and `request_state: accepted`.
+
+Agent ID/mode and mutually exclusive execution-descriptor checks run before
+acceptance. Rejected admission does not create a receipt.
+An HTTP error raised after acceptance is persisted as `response: {"detail": ...}`
+with an additional `http_error` object containing `status_code` and `headers`.
+Duplicate POSTs replay that HTTP status, detail, and headers without reexecution.
+Existing successful receipts retain their original shape; the database is
+upgraded automatically to store error metadata.
+
+An acknowledged explicit session abort is persisted with `status: stopped`,
+`aborted: true`, and `abort_reason: user_interrupted` before the chat POST returns
+that outcome. An abort endpoint acknowledgment or UI idle event alone is not a
+durable result: lookup can remain accepted until execution cleanup finishes.
+Cancellation does not roll back tools or prove that external side effects stopped.
+Shutdown cancellation without explicit abort intent remains uncertain, even if
+an inner runtime layer converts cancellation into a returned response.
+
+Durable execution tasks record cancellation requests directly, including on Python 3.10.
+An inner response, HTTP error, or `uncancel()` call cannot erase that evidence.
+A later user abort cannot relabel an earlier shutdown cancellation.
+An explicit abort remains a stopped result after cleanup, including when cleanup returns an HTTP error.
+This tracking applies to durable execution tasks, not the event loop's global task factory.
+
+SQLite initialization, acceptance, lookup, and result writes run in worker threads.
+Each operation opens and closes its own connection in the worker thread.
+A database lock does not block the web event loop.
+The independent execution task owns initialization and acceptance, so an HTTP disconnect does not abandon a new claim.
+
+Task cancellation cannot stop a SQLite operation that already runs in a thread.
+Shutdown during acceptance can leave an accepted receipt without agent execution.
+Cancellation during a result write does not change the result that Penguin already classified.
+The write can still commit after cancellation, or leave the receipt accepted if it fails.
+Lookup reports the persisted state in both cases.
+
+## Storage and limits
+
+Receipts live in `chat-requests.sqlite3` under the runtime workspace.
+All processes that serve the same requests must use the same database.
+The database stores request hashes and results, not the original request payloads.
+Receipts have no automatic expiry.
+
+This contract prevents duplicate execution after a Link crash or a lost acknowledgement.
+It does not resume arbitrary tools after a Penguin process crash.
+A crash after acceptance, or a failed result write, leaves the receipt accepted.
+No timeout or lease converts that uncertainty into permission to execute again.
+Automatic reconciliation of those cases remains separate work.
+
+CAUTION: Do not remove the receipt database while clients can retry old requests.
+Removal loses the evidence that prevents duplicate execution.
+
+## Verification
+
+The offline tests cover concurrent claims, conflicting reuse, disconnects, restart lookup, failed result writes, immutable results, and authenticated HTTP behavior.
+Contention tests cover event-loop progress and cancellation during acceptance and result writes.
+CI runs the receipt route tests with Pydantic v1 and v2.
+
+```sh
+python -m pytest tests/web/test_chat_requests.py tests/web/test_chat_request_contention.py tests/web/test_link_execution_authority.py -q
+```

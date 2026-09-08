@@ -10,6 +10,7 @@ from typing import Any
 from penguin.system.execution_context import get_current_execution_context
 from penguin.system.runtime_events import wrap_opencode_event
 from penguin.system.state import Message, MessageCategory
+from penguin.system.task_cancellation import AbortReason, abort_task
 
 from . import opencode_bridge as core_opencode_bridge
 
@@ -437,7 +438,7 @@ async def abort_session(
         for task in active_tasks:
             if task.done():
                 continue
-            task.cancel()
+            abort_task(task, AbortReason.USER_INTERRUPTED)
             aborted = True
 
     states = getattr(owner, "_opencode_stream_states", None)

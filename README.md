@@ -107,6 +107,8 @@ Penguin exposes the same runtime through several surfaces:
 
 ### Web/API Surface Notes
 
+- Trusted Link callers can opt into [durable chat requests](docs/docs/api/durable-chat-requests.md) for deduplicated execution and persisted result lookup.
+
 - Task/project endpoints now expose current runtime state rather than only legacy task summaries.
   - Task payloads include `status`, `phase`, `dependencies`, `dependency_specs`, `artifact_evidence`, `recipe`, `metadata`, and `clarification_requests` where relevant.
 - `POST /api/v1/tasks/{task_id}/execute` now routes through `RunMode`, so non-terminal outcomes like `waiting_input` and clarification-needed results are preserved instead of being flattened into fake completion/failure states.
