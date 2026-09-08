@@ -147,30 +147,34 @@ def get_chat_request_store(core: Any) -> ChatRequestStore:
 
 
 async def execute_chat_request(
-    store: ChatRequestStore,
+    get_store: Callable[[], ChatRequestStore],
     session_id: str,
     request_id: str,
     payload: dict[str, Any],
     execute: Callable[[], Awaitable[dict[str, Any]]],
 ) -> dict[str, Any]:
     """Execute only the durable claim winner, independent of HTTP observation."""
-    if not store.accept(session_id, request_id, payload):
-        receipt = store.lookup(session_id, request_id)
-        if receipt["state"] == "completed":
-            if "http_error" in receipt:
-                raise HTTPException(
-                    status_code=receipt["http_error"]["status_code"],
-                    detail=receipt["response"]["detail"],
-                    headers=receipt["http_error"]["headers"],
-                )
-            return receipt["response"]
-        return {
-            "status": "recovering",
-            "request_state": "accepted",
-            "session_id": session_id,
-        }
 
     async def run() -> dict[str, Any]:
+        # Own initialization and acceptance before either can yield. A lost HTTP
+        # observer must not strand a committed claim before execution starts.
+        store = await asyncio.to_thread(get_store)
+        if not await asyncio.to_thread(store.accept, session_id, request_id, payload):
+            receipt = await asyncio.to_thread(store.lookup, session_id, request_id)
+            if receipt["state"] == "completed":
+                if "http_error" in receipt:
+                    raise HTTPException(
+                        status_code=receipt["http_error"]["status_code"],
+                        detail=receipt["response"]["detail"],
+                        headers=receipt["http_error"]["headers"],
+                    )
+                return receipt["response"]
+            return {
+                "status": "recovering",
+                "request_state": "accepted",
+                "session_id": session_id,
+            }
+
         task = asyncio.current_task()
         assert isinstance(task, CancellationTrackingTask)
         preserve_cancellation.set(True)
@@ -198,7 +202,10 @@ async def execute_chat_request(
         elif task.cancellation_requested:
             # core.process may swallow CancelledError. Shutdown is still uncertain.
             raise asyncio.CancelledError
-        store.complete(
+        # Cancelling this await cannot stop a write already running in a thread.
+        # The classified result may still commit; lookup remains authoritative.
+        await asyncio.to_thread(
+            store.complete,
             session_id,
             request_id,
             response,
@@ -225,7 +232,7 @@ async def execute_chat_request(
             and not isinstance(done.exception(), HTTPException)
         ):
             logger.error(
-                "Chat request remains accepted without a result",
+                "Durable chat request failed; inspect its receipt state",
                 exc_info=done.exception(),
             )
 

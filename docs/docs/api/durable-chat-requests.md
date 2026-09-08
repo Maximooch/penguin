@@ -63,6 +63,17 @@ A later user abort cannot relabel an earlier shutdown cancellation.
 An explicit abort remains a stopped result after cleanup, including when cleanup returns an HTTP error.
 This tracking applies to durable execution tasks, not the event loop's global task factory.
 
+SQLite initialization, acceptance, lookup, and result writes run in worker threads.
+Each operation opens and closes its own connection in the worker thread.
+A database lock does not block the web event loop.
+The independent execution task owns initialization and acceptance, so an HTTP disconnect does not abandon a new claim.
+
+Task cancellation cannot stop a SQLite operation that already runs in a thread.
+Shutdown during acceptance can leave an accepted receipt without agent execution.
+Cancellation during a result write does not change the result that Penguin already classified.
+The write can still commit after cancellation, or leave the receipt accepted if it fails.
+Lookup reports the persisted state in both cases.
+
 ## Storage and limits
 
 Receipts live in `chat-requests.sqlite3` under the runtime workspace.
@@ -82,8 +93,9 @@ Removal loses the evidence that prevents duplicate execution.
 ## Verification
 
 The offline tests cover concurrent claims, conflicting reuse, disconnects, restart lookup, failed result writes, immutable results, and authenticated HTTP behavior.
+Contention tests cover event-loop progress and cancellation during acceptance and result writes.
 CI runs the receipt route tests with Pydantic v1 and v2.
 
 ```sh
-python -m pytest tests/web/test_chat_requests.py tests/web/test_link_execution_authority.py -q
+python -m pytest tests/web/test_chat_requests.py tests/web/test_chat_request_contention.py tests/web/test_link_execution_authority.py -q
 ```

@@ -3833,7 +3833,7 @@ async def handle_chat_message(
         )
 
         return await execute_chat_request(
-            get_chat_request_store(core),
+            lambda: get_chat_request_store(core),
             request.session_id,
             request.client_message_id,
             jsonable_encoder(request),
@@ -3853,7 +3853,9 @@ async def lookup_link_chat_request(
     authenticate_link_service_request(http_request)
     from penguin.web.services.chat_requests import get_chat_request_store
 
-    return get_chat_request_store(core).lookup(session_id, client_message_id)
+    return await asyncio.to_thread(
+        lambda: get_chat_request_store(core).lookup(session_id, client_message_id)
+    )
 
 
 async def _process_chat_message(

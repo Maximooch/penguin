@@ -38,32 +38,34 @@ async def test_disconnect_does_not_cancel_execution_and_result_survives_restart(
 ):
     path = tmp_path / "requests.sqlite3"
     store = ChatRequestStore(path)
-    started, release, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    started, release = asyncio.Event(), asyncio.Event()
+    execution_tasks = []
     calls = 0
 
     async def execute():
         nonlocal calls
         calls += 1
+        execution_tasks.append(asyncio.current_task())
         started.set()
         await release.wait()
-        finished.set()
         return {"response": "done", "status": "completed"}
 
-    observer = asyncio.create_task(execute_chat_request(store, "s", "m", {}, execute))
+    observer = asyncio.create_task(
+        execute_chat_request(lambda: store, "s", "m", {}, execute)
+    )
     await started.wait()
     observer.cancel()
     with pytest.raises(asyncio.CancelledError):
         await observer
     assert store.lookup("s", "m") == {"state": "accepted"}
-    duplicate = await execute_chat_request(store, "s", "m", {}, execute)
+    duplicate = await execute_chat_request(lambda: store, "s", "m", {}, execute)
     assert duplicate["status"] == "recovering"
     assert calls == 1
     release.set()
-    await finished.wait()
-    # The continuation commits synchronously before it yields back to this test.
+    await execution_tasks[0]
     reopened = ChatRequestStore(path)
     assert reopened.lookup("s", "m")["response"]["response"] == "done"
-    assert await execute_chat_request(reopened, "s", "m", {}, execute) == {
+    assert await execute_chat_request(lambda: reopened, "s", "m", {}, execute) == {
         "response": "done",
         "status": "completed",
     }
@@ -80,7 +82,7 @@ async def test_crash_after_acceptance_never_blindly_reexecutes(tmp_path):
 
     reopened = ChatRequestStore(path)
     assert reopened.lookup("s", "other") == {"state": "absent"}
-    assert (await execute_chat_request(reopened, "s", "m", {}, forbidden))[
+    assert (await execute_chat_request(lambda: reopened, "s", "m", {}, forbidden))[
         "status"
     ] == "recovering"
 
@@ -100,7 +102,7 @@ async def test_result_write_failure_preserves_uncertain_acceptance(
         return {"response": "tool already executed"}
 
     with pytest.raises(OSError, match="disk failure"):
-        await execute_chat_request(store, "s", "m", {}, execute)
+        await execute_chat_request(lambda: store, "s", "m", {}, execute)
     assert store.lookup("s", "m") == {"state": "accepted"}
 
 
@@ -242,7 +244,9 @@ async def test_http_failure_survives_restart_and_replays_headers(tmp_path):
 
     for _ in range(2):
         with pytest.raises(HTTPException) as error:
-            await execute_chat_request(ChatRequestStore(path), "s", "m", {}, execute)
+            await execute_chat_request(
+                lambda: ChatRequestStore(path), "s", "m", {}, execute
+            )
         assert error.value.status_code == 429
         assert error.value.detail == {"error": "busy"}
         assert error.value.headers == {"Retry-After": "5"}
@@ -292,7 +296,9 @@ async def test_execution_cancellation_distinguishes_abort_from_shutdown(
         finally:
             cleaned.set()
 
-    observer = asyncio.create_task(execute_chat_request(store, "s", "m", {}, execute))
+    observer = asyncio.create_task(
+        execute_chat_request(lambda: store, "s", "m", {}, execute)
+    )
     await started.wait()
     if explicit:
         await stream_events.abort_session(
@@ -303,7 +309,9 @@ async def test_execution_cancellation_distinguishes_abort_from_shutdown(
         assert result["status"] == "stopped"
         assert result["abort_reason"] == "user_interrupted"
         assert ChatRequestStore(store.path).lookup("s", "m")["response"] == result
-        assert await execute_chat_request(store, "s", "m", {}, execute) == result
+        assert (
+            await execute_chat_request(lambda: store, "s", "m", {}, execute) == result
+        )
     else:
         next(iter(owner._opencode_process_tasks["s"])).cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -329,7 +337,9 @@ async def test_shutdown_cannot_be_relabelled_by_later_user_abort(tmp_path):
             await release.wait()
             return {"status": "completed", "response": "not authoritative"}
 
-    observer = asyncio.create_task(execute_chat_request(store, "s", "m", {}, execute))
+    observer = asyncio.create_task(
+        execute_chat_request(lambda: store, "s", "m", {}, execute)
+    )
     await started.wait()
     tasks[0].cancel()
     await interrupted.wait()
@@ -371,7 +381,7 @@ def test_event_loop_shutdown_does_not_persist_swallowed_completion(tmp_path):
                 return {"status": "completed", "response": "not authoritative"}
 
         observer = asyncio.create_task(
-            execute_chat_request(store, "s", "m", {}, execute)
+            execute_chat_request(lambda: store, "s", "m", {}, execute)
         )
         await started.wait()
         assert not observer.done()
@@ -406,7 +416,9 @@ async def test_disconnected_observer_terminal_outcome(
 
         monkeypatch.setattr(store, "complete", fail_write)
 
-    observer = asyncio.create_task(execute_chat_request(store, "s", "m", {}, execute))
+    observer = asyncio.create_task(
+        execute_chat_request(lambda: store, "s", "m", {}, execute)
+    )
     await started.wait()
     observer.cancel()
     with pytest.raises(asyncio.CancelledError):
