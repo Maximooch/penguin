@@ -108,6 +108,7 @@ jobs:
             tests/llm/test_runtime_stream_retry.py \
             tests/test_conversation_internal_visibility.py \
             tests/test_engine_task_finish_contract.py \
+            tests/test_engine_native_tool_isolation.py \
             tests/test_engine_run_task_thin_wrapper.py \
             tests/test_finish_task_schema_contract.py \
             tests/test_part_event_persist_callback.py \

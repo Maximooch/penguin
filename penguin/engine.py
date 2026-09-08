@@ -47,6 +47,7 @@ from penguin.utils.parser import (  # type: ignore
 from penguin.system.state import MessageCategory  # type: ignore
 from penguin.llm.api_client import APIClient  # type: ignore
 from penguin.llm.contracts import LLMProviderError
+from penguin.llm.provider_transform import native_tool_format
 from penguin.llm.runtime import (
     build_empty_response_diagnostics as build_llm_empty_response_diagnostics,
     build_reasoning_fallback_note,
@@ -1347,6 +1348,8 @@ class Engine:
         last_response: str,
         iteration_results: List[Dict[str, Any]],
         mode: str = "response",
+        *,
+        codeact_enabled: bool = True,
     ) -> Tuple[bool, Optional[str]]:
         """Check WALLET_GUARD conditions that should terminate the loop.
 
@@ -1381,6 +1384,8 @@ class Engine:
 
         # Check for no-action completion (models that don't use CodeAct format)
         if not iteration_results and last_response:
+            if not codeact_enabled:
+                return True, "implicit_completion" if mode == "task" else None
             if self._looks_like_malformed_action_output(last_response):
                 logger.warning(
                     "[WALLET_GUARD] Suppressing implicit completion for malformed %s response",
@@ -1572,9 +1577,12 @@ class Engine:
         response: str,
         *,
         mode: str,
+        codeact_enabled: bool = True,
     ) -> bool:
         """Add a repair note when the model emits broken tool syntax."""
-        if not self._looks_like_malformed_action_output(response):
+        if not codeact_enabled or not self._looks_like_malformed_action_output(
+            response
+        ):
             return False
 
         request_id, session_id = self._trace_request_fields()
@@ -1866,6 +1874,7 @@ class Engine:
                     cm,
                     last_response,
                     mode=config.mode,
+                    codeact_enabled=response_data.get("codeact_enabled", True),
                 ):
                     await self._save_conversation(cm, async_save=config.async_save)
                     if config.message_callback:
@@ -1877,7 +1886,10 @@ class Engine:
 
                 # WALLET_GUARD: Consolidated termination checks
                 should_break, guard_status = self._check_wallet_guard_termination(
-                    last_response, iteration_results, mode=config.mode
+                    last_response,
+                    iteration_results,
+                    mode=config.mode,
+                    codeact_enabled=response_data.get("codeact_enabled", True),
                 )
                 if should_break:
                     if guard_status in _TOOL_ONLY_STALL_NOTES:
@@ -2330,13 +2342,17 @@ class Engine:
                     cm,
                     last_response,
                     mode="response",
+                    codeact_enabled=response_data.get("codeact_enabled", True),
                 ):
                     await self._save_conversation(cm, async_save=True)
                     continue
 
                 # WALLET_GUARD: Consolidated termination checks
                 should_break, guard_status = self._check_wallet_guard_termination(
-                    last_response, iteration_results, mode="response"
+                    last_response,
+                    iteration_results,
+                    mode="response",
+                    codeact_enabled=response_data.get("codeact_enabled", True),
                 )
                 if should_break:
                     if guard_status:
@@ -2720,7 +2736,9 @@ class Engine:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _prepare_responses_tools(self, tool_manager) -> Dict[str, Any]:
+    def _prepare_responses_tools(
+        self, tool_manager: Any, model_config: Any = None
+    ) -> dict[str, Any]:
         """Prepare Responses API tools payload if enabled.
 
         Returns:
@@ -2728,7 +2746,9 @@ class Engine:
         """
         try:
             return prepare_responses_tool_kwargs(
-                self._get_runtime_model_config(),
+                model_config
+                if model_config is not None
+                else self._get_runtime_model_config(),
                 tool_manager,
             )
         except Exception as exc:
@@ -3676,7 +3696,20 @@ class Engine:
 
         # Step 1: Prepare Responses API tools if enabled
         llm_step_started = time.perf_counter()
-        extra_kwargs = self._prepare_responses_tools(tool_manager)
+        run_state = _CURRENT_ENGINE_RUN_STATE.get()
+        model_config = (
+            (run_state.model_config if run_state is not None else None)
+            or getattr(api_client, "model_config", None)
+            or self._get_runtime_model_config()
+        )
+        # Native assistant text is data, never an alternate tool channel. Schema
+        # preparation failure must not silently enable ActionXML execution.
+        codeact_enabled = tools_enabled and native_tool_format(model_config) is None
+        extra_kwargs = (
+            self._prepare_responses_tools(tool_manager, model_config=model_config)
+            if tools_enabled
+            else {}
+        )
         tool_schema_count = (
             len(extra_kwargs.get("tools", []))
             if isinstance(extra_kwargs.get("tools"), list)
@@ -3743,10 +3776,10 @@ class Engine:
 
         # Step 4: Handle Responses API tool_calls if they were triggered
         responses_tools_started = time.perf_counter()
-        responses_action_results = await self._handle_responses_tool_calls(
-            api_client,
-            tool_manager,
-            cm,
+        responses_action_results = (
+            await self._handle_responses_tool_calls(api_client, tool_manager, cm)
+            if tools_enabled
+            else []
         )
         _trace_log_info(
             "engine.llm_step.responses_tools_done request=%s session=%s agent=%s "
@@ -3765,7 +3798,7 @@ class Engine:
 
         # Step 5: Execute CodeAct actions if enabled
         action_results = list(responses_action_results)
-        if tools_enabled and not responses_action_results:
+        if codeact_enabled and not responses_action_results:
             codeact_started = time.perf_counter()
             action_results.extend(
                 await self._execute_codeact_actions(
@@ -3810,6 +3843,7 @@ class Engine:
             "assistant_response": assistant_response,
             "action_results": action_results,
             "usage": usage,
+            "codeact_enabled": codeact_enabled,
         }
 
     async def _llm_stream(self, prompt: str, *, agent_id: Optional[str] = None):
