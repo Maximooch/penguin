@@ -57,6 +57,12 @@ Cancellation does not roll back tools or prove that external side effects stoppe
 Shutdown cancellation without explicit abort intent remains uncertain, even if
 an inner runtime layer converts cancellation into a returned response.
 
+Durable execution tasks record cancellation requests directly, including on Python 3.10.
+An inner response, HTTP error, or `uncancel()` call cannot erase that evidence.
+A later user abort cannot relabel an earlier shutdown cancellation.
+An explicit abort remains a stopped result after cleanup, including when cleanup returns an HTTP error.
+This tracking applies to durable execution tasks, not the event loop's global task factory.
+
 ## Provider output boundaries
 
 The engine passes the provider finish reason to its response and task loops.

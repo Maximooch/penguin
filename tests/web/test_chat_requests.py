@@ -91,7 +91,7 @@ async def test_result_write_failure_preserves_uncertain_acceptance(
 ):
     store = ChatRequestStore(tmp_path / "requests.sqlite3")
 
-    def failed_write(*args):
+    def failed_write(*args, **kwargs):
         raise OSError("injected disk failure")
 
     monkeypatch.setattr(store, "complete", failed_write)
@@ -256,7 +256,7 @@ async def test_http_failure_survives_restart_and_replays_headers(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("explicit", [True, False])
-@pytest.mark.parametrize("swallow", [True, False])
+@pytest.mark.parametrize("swallow", ["response", "http_error", "propagate"])
 async def test_execution_cancellation_distinguishes_abort_from_shutdown(
     tmp_path,
     monkeypatch,
@@ -284,8 +284,10 @@ async def test_execution_cancellation_distinguishes_abort_from_shutdown(
         try:
             await asyncio.Event().wait()
         except asyncio.CancelledError:
-            if not swallow:
+            if swallow == "propagate":
                 raise
+            if swallow == "http_error":
+                raise HTTPException(503, "shutdown converted to HTTP")
             return {"aborted": True}
         finally:
             cleaned.set()
@@ -309,6 +311,35 @@ async def test_execution_cancellation_distinguishes_abort_from_shutdown(
         assert store.lookup("s", "m") == {"state": "accepted"}
 
 
+@pytest.mark.asyncio
+async def test_shutdown_cannot_be_relabelled_by_later_user_abort(tmp_path):
+    from penguin.system.task_cancellation import AbortReason, abort_task
+
+    store = ChatRequestStore(tmp_path / "requests.sqlite3")
+    started, interrupted, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    tasks = []
+
+    async def execute():
+        tasks.append(asyncio.current_task())
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            interrupted.set()
+            await release.wait()
+            return {"status": "completed", "response": "not authoritative"}
+
+    observer = asyncio.create_task(execute_chat_request(store, "s", "m", {}, execute))
+    await started.wait()
+    tasks[0].cancel()
+    await interrupted.wait()
+    abort_task(tasks[0], AbortReason.USER_INTERRUPTED)
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await observer
+    assert ChatRequestStore(store.path).lookup("s", "m") == {"state": "accepted"}
+
+
 def test_existing_receipts_migrate_without_changing_results(tmp_path):
     import sqlite3
 
@@ -324,6 +355,30 @@ def test_existing_receipts_migrate_without_changing_results(tmp_path):
         "state": "completed",
         "response": {},
     }
+
+
+def test_event_loop_shutdown_does_not_persist_swallowed_completion(tmp_path):
+    store = ChatRequestStore(tmp_path / "requests.sqlite3")
+
+    async def main():
+        started = asyncio.Event()
+
+        async def execute():
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                return {"status": "completed", "response": "not authoritative"}
+
+        observer = asyncio.create_task(
+            execute_chat_request(store, "s", "m", {}, execute)
+        )
+        await started.wait()
+        assert not observer.done()
+
+    # asyncio.run cancels pending tasks itself, outside Penguin's abort helper.
+    asyncio.run(main())
+    assert ChatRequestStore(store.path).lookup("s", "m") == {"state": "accepted"}
 
 
 @pytest.mark.asyncio

@@ -19,7 +19,11 @@ from typing import TYPE_CHECKING, Any
 from fastapi import HTTPException
 from fastapi.encoders import jsonable_encoder
 
-from penguin.system.task_cancellation import preserve_cancellation, task_abort_reason
+from penguin.system.task_cancellation import (
+    CancellationTrackingTask,
+    preserve_cancellation,
+    task_abort_reason,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -168,29 +172,21 @@ async def execute_chat_request(
 
     async def run() -> dict[str, Any]:
         task = asyncio.current_task()
-        assert task is not None
+        assert isinstance(task, CancellationTrackingTask)
         preserve_cancellation.set(True)
+        failure: HTTPException | None = None
         try:
             response = await execute()
         except HTTPException as exc:
-            if (
-                getattr(task, "cancelling", lambda: 0)()
-                and task_abort_reason(task) is None
-            ):
-                raise asyncio.CancelledError from exc
-            store.complete(
-                session_id,
-                request_id,
-                {"detail": exc.detail},
-                http_error={"status_code": exc.status_code, "headers": exc.headers},
-            )
-            raise
+            failure = exc
+            response = {"detail": exc.detail}
         except asyncio.CancelledError:
             if task_abort_reason(task) is None:
                 raise
             response = {}
         reason = task_abort_reason(task)
         if reason is not None:
+            failure = None
             response = {
                 "response": "",
                 "action_results": [],
@@ -199,13 +195,26 @@ async def execute_chat_request(
                 "abort_reason": reason.value,
                 "session_id": session_id,
             }
-        elif getattr(task, "cancelling", lambda: 0)():
+        elif task.cancellation_requested:
             # core.process may swallow CancelledError. Shutdown is still uncertain.
             raise asyncio.CancelledError
-        store.complete(session_id, request_id, response)
+        store.complete(
+            session_id,
+            request_id,
+            response,
+            http_error=(
+                {"status_code": failure.status_code, "headers": failure.headers}
+                if failure
+                else None
+            ),
+        )
+        if failure:
+            raise failure
         return response
 
-    task = asyncio.create_task(run(), name=f"chat-request:{session_id}:{request_id}")
+    task = CancellationTrackingTask(
+        run(), name=f"chat-request:{session_id}:{request_id}"
+    )
     _tasks.add(task)
 
     def finished(done: asyncio.Task[dict[str, Any]]) -> None:
