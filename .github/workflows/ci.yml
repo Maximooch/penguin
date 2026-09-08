@@ -152,6 +152,8 @@ jobs:
             test/tui/penguin-send.test.ts
           bun test \
             test/cli/tui/session-goal-summary.test.ts \
+            test/cli/tui/session-family-navigation.test.ts \
+            test/cli/tui/session-list-children.test.ts \
             test/cli/tui/sync-bootstrap.test.ts \
             test/cli/tui/sync-session-events.test.ts
 
