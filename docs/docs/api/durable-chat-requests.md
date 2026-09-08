@@ -41,6 +41,22 @@ Its response can describe an error or another runtime status.
 A duplicate POST returns the persisted response when one exists.
 Otherwise, it returns `status: recovering` and `request_state: accepted`.
 
+Agent ID/mode and mutually exclusive execution-descriptor checks run before
+acceptance. Rejected admission does not create a receipt.
+An HTTP error raised after acceptance is persisted as `response: {"detail": ...}`
+with an additional `http_error` object containing `status_code` and `headers`.
+Duplicate POSTs replay that HTTP status, detail, and headers without reexecution.
+Existing successful receipts retain their original shape; the database is
+upgraded automatically to store error metadata.
+
+An acknowledged explicit session abort is persisted with `status: stopped`,
+`aborted: true`, and `abort_reason: user_interrupted` before the chat POST returns
+that outcome. An abort endpoint acknowledgment or UI idle event alone is not a
+durable result: lookup can remain accepted until execution cleanup finishes.
+Cancellation does not roll back tools or prove that external side effects stopped.
+Shutdown cancellation without explicit abort intent remains uncertain, even if
+an inner runtime layer converts cancellation into a returned response.
+
 ## Provider output boundaries
 
 The engine passes the provider finish reason to its response and task loops.

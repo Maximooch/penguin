@@ -17,6 +17,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
+from fastapi.encoders import jsonable_encoder
+
+from penguin.system.task_cancellation import preserve_cancellation, task_abort_reason
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -40,11 +43,26 @@ class ChatRequestStore:
                     request_id TEXT NOT NULL,
                     fingerprint TEXT NOT NULL,
                     response TEXT,
+                    http_error TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (session_id, request_id)
                 )"""
             )
+            columns = {
+                row["name"] for row in db.execute("PRAGMA table_info(chat_requests)")
+            }
+            if "http_error" not in columns:
+                try:
+                    db.execute("ALTER TABLE chat_requests ADD COLUMN http_error TEXT")
+                except sqlite3.OperationalError:
+                    # Another process may have migrated this version-1 store.
+                    columns = {
+                        row["name"]
+                        for row in db.execute("PRAGMA table_info(chat_requests)")
+                    }
+                    if "http_error" not in columns:
+                        raise
 
     def _connect(self) -> sqlite3.Connection:
         """Open a short-lived connection with durable SQLite commits."""
@@ -76,22 +94,33 @@ class ChatRequestStore:
             return inserted == 1
 
     def complete(
-        self, session_id: str, request_id: str, response: dict[str, Any]
+        self,
+        session_id: str,
+        request_id: str,
+        response: dict[str, Any],
+        *,
+        http_error: dict[str, Any] | None = None,
     ) -> None:
         """Persist the first authoritative HTTP result without overwriting it."""
-        encoded = json.dumps(response, allow_nan=False)
+        encoded = json.dumps(jsonable_encoder(response), allow_nan=False)
         with closing(self._connect()) as db, db:
             db.execute(
-                "UPDATE chat_requests SET response=?, updated_at=CURRENT_TIMESTAMP "
+                "UPDATE chat_requests SET response=?, http_error=?, "
+                "updated_at=CURRENT_TIMESTAMP "
                 "WHERE session_id=? AND request_id=? AND response IS NULL",
-                (encoded, session_id, request_id),
+                (
+                    encoded,
+                    json.dumps(http_error) if http_error else None,
+                    session_id,
+                    request_id,
+                ),
             )
 
     def lookup(self, session_id: str, request_id: str) -> dict[str, Any]:
         """Read durable acceptance independently of live process ownership."""
         with closing(self._connect()) as db:
             row = db.execute(
-                "SELECT response FROM chat_requests "
+                "SELECT response, http_error FROM chat_requests "
                 "WHERE session_id=? AND request_id=?",
                 (session_id, request_id),
             ).fetchone()
@@ -99,7 +128,10 @@ class ChatRequestStore:
             return {"state": "absent"}
         if row["response"] is None:
             return {"state": "accepted"}
-        return {"state": "completed", "response": json.loads(row["response"])}
+        receipt = {"state": "completed", "response": json.loads(row["response"])}
+        if row["http_error"] is not None:
+            receipt["http_error"] = json.loads(row["http_error"])
+        return receipt
 
 
 def get_chat_request_store(core: Any) -> ChatRequestStore:
@@ -121,6 +153,12 @@ async def execute_chat_request(
     if not store.accept(session_id, request_id, payload):
         receipt = store.lookup(session_id, request_id)
         if receipt["state"] == "completed":
+            if "http_error" in receipt:
+                raise HTTPException(
+                    status_code=receipt["http_error"]["status_code"],
+                    detail=receipt["response"]["detail"],
+                    headers=receipt["http_error"]["headers"],
+                )
             return receipt["response"]
         return {
             "status": "recovering",
@@ -129,7 +167,41 @@ async def execute_chat_request(
         }
 
     async def run() -> dict[str, Any]:
-        response = await execute()
+        task = asyncio.current_task()
+        assert task is not None
+        preserve_cancellation.set(True)
+        try:
+            response = await execute()
+        except HTTPException as exc:
+            if (
+                getattr(task, "cancelling", lambda: 0)()
+                and task_abort_reason(task) is None
+            ):
+                raise asyncio.CancelledError from exc
+            store.complete(
+                session_id,
+                request_id,
+                {"detail": exc.detail},
+                http_error={"status_code": exc.status_code, "headers": exc.headers},
+            )
+            raise
+        except asyncio.CancelledError:
+            if task_abort_reason(task) is None:
+                raise
+            response = {}
+        reason = task_abort_reason(task)
+        if reason is not None:
+            response = {
+                "response": "",
+                "action_results": [],
+                "aborted": True,
+                "status": "stopped",
+                "abort_reason": reason.value,
+                "session_id": session_id,
+            }
+        elif getattr(task, "cancelling", lambda: 0)():
+            # core.process may swallow CancelledError. Shutdown is still uncertain.
+            raise asyncio.CancelledError
         store.complete(session_id, request_id, response)
         return response
 
@@ -138,7 +210,11 @@ async def execute_chat_request(
 
     def finished(done: asyncio.Task[dict[str, Any]]) -> None:
         _tasks.discard(done)
-        if not done.cancelled() and done.exception() is not None:
+        if (
+            not done.cancelled()
+            and done.exception() is not None
+            and not isinstance(done.exception(), HTTPException)
+        ):
             logger.error(
                 "Chat request remains accepted without a result",
                 exc_info=done.exception(),

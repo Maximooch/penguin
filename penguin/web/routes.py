@@ -3799,6 +3799,22 @@ async def handle_chat_message(
             detail="Runtime permission enforcement is disabled by PENGUIN_YOLO.",
         )
 
+    if request.agent_id:
+        _validate_agent_id(request.agent_id)
+    if (
+        request.agent_mode is not None
+        and _normalize_agent_mode(request.agent_mode) is None
+    ):
+        raise HTTPException(400, "agent_mode must be one of: plan, build")
+    if (
+        request.link_execution is not None
+        and request.external_subscription_execution is not None
+    ):
+        raise HTTPException(
+            400,
+            "Link-managed and external-subscription execution are mutually exclusive.",
+        )
+
     if request.durable_request:
         if (
             not has_link_execution_authority
@@ -3856,17 +3872,6 @@ async def _process_chat_message(
     try:
         _setup_approval_websocket_callbacks()
         _setup_question_event_callbacks()
-
-        if request.agent_id:
-            _validate_agent_id(request.agent_id)
-        if (
-            request.agent_mode is not None
-            and _normalize_agent_mode(request.agent_mode) is None
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail="agent_mode must be one of: plan, build",
-            )
 
         if not request.conversation_id and request.session_id:
             request.conversation_id = request.session_id
