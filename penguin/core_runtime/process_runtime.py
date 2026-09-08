@@ -283,6 +283,10 @@ async def process(
         return response
 
     except asyncio.CancelledError:
+        from penguin.system.task_cancellation import preserve_cancellation
+
+        if preserve_cancellation.get():
+            raise
         return core_process_lifecycle.handle_process_cancelled(
             owner,
             request_session_id,
