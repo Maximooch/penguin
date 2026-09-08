@@ -46,11 +46,7 @@ from penguin.utils.parser import (  # type: ignore
 )
 from penguin.system.state import MessageCategory  # type: ignore
 from penguin.llm.api_client import APIClient  # type: ignore
-from penguin.llm.contracts import FinishReason, LLMProviderError
-from penguin.llm.output_continuation import (
-    provider_finish_reason,
-    queue_output_continuation,
-)
+from penguin.llm.contracts import LLMProviderError
 from penguin.llm.runtime import (
     build_empty_response_diagnostics as build_llm_empty_response_diagnostics,
     build_reasoning_fallback_note,
@@ -1642,8 +1638,6 @@ class Engine:
         """
         last_response = ""
         all_action_results = []
-        answer_parts: List[str] = []
-        continuing_output = False
         cumulative_usage: Dict[str, Any] = {}
         completion_status = config.default_completion_status
         finish_status: str | None = None
@@ -1712,13 +1706,6 @@ class Engine:
                     cm,
                     last_response,
                     iteration_results,
-                )
-                if continuing_output:
-                    answer_parts.append(last_response)
-                else:
-                    answer_parts = [last_response]
-                continuing_output = (
-                    response_data.get("finish_reason") == FinishReason.LENGTH
                 )
 
                 logger.debug(
@@ -1845,11 +1832,6 @@ class Engine:
                     completion_status = "budget_limited"
                     break
 
-                if continuing_output:
-                    queue_output_continuation(cm.conversation)
-                    await self._save_conversation(cm, async_save=config.async_save)
-                    continue
-
                 # Debug: Check if termination signal mentioned but not parsed correctly
                 if (
                     last_response
@@ -1905,6 +1887,14 @@ class Engine:
                         )
                     completion_status = guard_status or "implicit_completion"
                     break
+
+                # TODO(task-loop): a provider turn that ends with FinishReason.LENGTH
+                # (per-call output boundary) is currently treated as implicit
+                # completion here. tests/test_engine_task_finish_contract.py
+                # documents the intended continuation behavior
+                # (test_unbounded_task_continues_once_from_persisted_length_partial).
+                # Implement output-boundary continuation before relying on that
+                # contract; see tests for the expected message shape.
 
             else:
                 # The loop condition expired without an explicit or guarded break.
@@ -1983,11 +1973,7 @@ class Engine:
                 )
 
         return {
-            "assistant_response": (
-                "".join(answer_parts)
-                if continuing_output or len(answer_parts) > 1
-                else last_response
-            ),
+            "assistant_response": last_response,
             "iterations": self.current_iteration,
             "action_results": all_action_results,
             "usage": cumulative_usage,
@@ -2241,8 +2227,6 @@ class Engine:
             cm.conversation.prepare_conversation(prompt, image_paths=image_paths)
 
             last_response = ""
-            answer_parts: List[str] = []
-            continuing_output = False
             latest_usage: Dict[str, Any] = {}
             final_status = "completed"
 
@@ -2257,7 +2241,6 @@ class Engine:
 
                 # Check for external stop conditions
                 if await self._check_stop():
-                    final_status = "stopped"
                     break
 
                 # NOTE: Pre-iteration finalize removed - post-iteration finalize (after _llm_step) handles cleanup
@@ -2287,14 +2270,6 @@ class Engine:
                     cm,
                     last_response,
                     iteration_results,
-                )
-
-                if continuing_output:
-                    answer_parts.append(last_response)
-                else:
-                    answer_parts = [last_response]
-                continuing_output = (
-                    response_data.get("finish_reason") == FinishReason.LENGTH
                 )
 
                 # Debug: Log response length and action count to help diagnose loops
@@ -2341,11 +2316,6 @@ class Engine:
                     )
                     break
 
-                if continuing_output:
-                    queue_output_continuation(cm.conversation)
-                    await self._save_conversation(cm, async_save=True)
-                    continue
-
                 # Debug: Check if LLM mentioned finish_response but didn't format it correctly
                 if (
                     last_response
@@ -2378,6 +2348,15 @@ class Engine:
                         )
                     break
 
+                # TODO(response-loop): a provider turn that ends with
+                # FinishReason.LENGTH (per-call output boundary) is currently
+                # treated as implicit completion here.
+                # tests/test_engine_task_finish_contract.py documents the
+                # intended continuation behavior
+                # (test_unbounded_response_continues_from_persisted_length_partial).
+                # Implement output-boundary continuation before relying on that
+                # contract; see tests for the expected message shape.
+
             # Determine final status
             if (
                 final_status == "completed"
@@ -2387,11 +2366,7 @@ class Engine:
                 final_status = "max_iterations"
 
             return {
-                "assistant_response": (
-                    "".join(answer_parts)
-                    if continuing_output or len(answer_parts) > 1
-                    else last_response
-                ),
+                "assistant_response": last_response,
                 "iterations": self.current_iteration,
                 "action_results": all_action_results,
                 "usage": latest_usage,
@@ -3744,7 +3719,6 @@ class Engine:
         finally:
             self._persist_llm_request_lifecycle(cm, api_client)
 
-        finish_reason = provider_finish_reason(api_client)
         # Step 3: Finalize streaming response and persist message.
         # This must happen before Responses tool execution so any provider
         # preamble text is attached to the current assistant turn before the
@@ -3836,7 +3810,6 @@ class Engine:
             "assistant_response": assistant_response,
             "action_results": action_results,
             "usage": usage,
-            "finish_reason": finish_reason,
         }
 
     async def _llm_stream(self, prompt: str, *, agent_id: Optional[str] = None):

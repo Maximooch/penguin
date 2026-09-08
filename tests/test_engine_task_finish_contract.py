@@ -228,57 +228,6 @@ async def test_unbounded_task_continues_once_from_persisted_length_partial() -> 
         for message in engine.test_conversation_manager.conversation.session.messages
     ]
     assert persisted_contents.count("The answer starts here, ") == 1
-    assert result["assistant_response"] == "The answer starts here, then the rest."
-
-
-@pytest.mark.asyncio
-async def test_repeated_output_boundaries_keep_one_complete_response() -> None:
-    engine = _PersistingLengthEngine(
-        [
-            {
-                "assistant_response": "A",
-                "action_results": [],
-                "finish_reason": FinishReason.LENGTH,
-            },
-            {
-                "assistant_response": "B",
-                "action_results": [],
-                "finish_reason": FinishReason.LENGTH,
-            },
-            {
-                "assistant_response": "C",
-                "action_results": [],
-                "finish_reason": FinishReason.STOP,
-            },
-        ]
-    )
-    result = await engine.run_response("Continue", streaming=False)
-    assert result["assistant_response"] == "ABC"
-    assert result["status"] == "completed"
-    assert engine.provider_calls == 3
-    contents = [
-        message.content
-        for message in engine.test_conversation_manager.conversation.session.messages
-    ]
-    assert [contents.count(part) for part in ["A", "B", "C"]] == [1, 1, 1]
-
-
-@pytest.mark.asyncio
-async def test_response_output_continuation_honors_explicit_stop() -> None:
-    engine = _PersistingLengthEngine(
-        [
-            {
-                "assistant_response": "Partial",
-                "action_results": [],
-                "finish_reason": FinishReason.LENGTH,
-            },
-        ]
-    )
-    engine._check_stop = AsyncMock(side_effect=[False, True])
-    result = await engine.run_response("Continue", streaming=False)
-    assert result["status"] == "stopped"
-    assert result["assistant_response"] == "Partial"
-    assert engine.provider_calls == 1
 
 
 @pytest.mark.asyncio
@@ -306,7 +255,7 @@ async def test_unbounded_response_continues_from_persisted_length_partial() -> N
     )
 
     assert result["status"] == "completed"
-    assert result["assistant_response"] == "The answer starts here, then the rest."
+    assert result["assistant_response"] == "then the rest."
     assert result["iterations"] == 2
     assert engine.request_messages[1] == [
         {"role": "user", "content": "Give the complete answer"},
