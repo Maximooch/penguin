@@ -88,6 +88,7 @@ jobs:
             penguin/core_runtime/session_goal_runtime.py \
             penguin/core_runtime/session_goal_store.py \
             penguin/core_runtime/session_goals.py \
+            penguin/llm/output_continuation.py \
             penguin/web/schemas/session_goal.py \
             penguin/web/services/session_goal.py
           ruff format --check \
@@ -95,6 +96,7 @@ jobs:
             penguin/core_runtime/session_goal_runtime.py \
             penguin/core_runtime/session_goal_store.py \
             penguin/core_runtime/session_goals.py \
+            penguin/llm/output_continuation.py \
             penguin/web/schemas/session_goal.py \
             penguin/web/services/session_goal.py
       - name: Run goal, Engine, and API contracts
@@ -109,6 +111,8 @@ jobs:
             tests/test_conversation_internal_visibility.py \
             tests/test_engine_task_finish_contract.py \
             tests/test_engine_native_tool_isolation.py \
+            tests/test_engine_responses_tool_action_results.py \
+            tests/test_engine_initialization.py \
             tests/test_engine_run_task_thin_wrapper.py \
             tests/test_finish_task_schema_contract.py \
             tests/test_part_event_persist_callback.py \
