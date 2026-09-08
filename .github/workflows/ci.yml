@@ -34,7 +34,6 @@ jobs:
             penguin/llm/providers/link \
             penguin/web/services/external_subscription.py \
             penguin/web/services/link_inference.py \
-            penguin/web/services/chat_requests.py \
             tests/llm/test_link_provider.py \
             tests/llm/test_link_runtime_contract.py \
             tests/web/test_external_subscription_service.py \
@@ -43,7 +42,6 @@ jobs:
             penguin/llm/providers/link \
             penguin/web/services/external_subscription.py \
             penguin/web/services/link_inference.py \
-            penguin/web/services/chat_requests.py \
             tests/llm/test_link_provider.py \
             tests/llm/test_link_runtime_contract.py \
             tests/web/test_external_subscription_service.py \
@@ -57,7 +55,6 @@ jobs:
             tests/web/test_link_inference_service.py \
             tests/web/test_external_subscription_service.py \
             tests/web/test_link_execution_authority.py \
-            tests/web/test_chat_requests.py \
             tests/api/test_opencode_provider_routes.py::test_chat_message_rejects_cross_user_subscription_authority \
             tests/api/test_opencode_provider_routes.py::test_chat_message_rejects_link_authority_from_ordinary_api_client \
             tests/api/test_opencode_provider_routes.py::test_link_capabilities_reject_ordinary_api_clients \

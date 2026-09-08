@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from penguin.engine import Engine, EngineSettings
+from penguin.llm.contracts import FinishReason, LLMRequestLifecycle
 from penguin.system.conversation import ConversationSystem
 from penguin.system.state import Session
 
@@ -201,3 +202,36 @@ async def test_agent_provider_wins_over_engine_default(
     assert result["action_results"] == []
     assert runtime.provider.await_count == 1
     runtime.executor.execute_action.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["response", "task"])
+async def test_native_output_boundary_continues_and_sums_usage(
+    runtime: SimpleNamespace, mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime.provider.side_effect = ["Hello ", "world."]
+    runtime.api.get_last_request_lifecycle = lambda: LLMRequestLifecycle(
+        request_id="test-continuation",
+        provider="openai",
+        model="test",
+        finish_reason=(
+            FinishReason.LENGTH
+            if runtime.provider.await_count == 1
+            else FinishReason.STOP
+        ),
+    )
+    monkeypatch.setattr(
+        runtime.engine,
+        "_extract_usage_from_api_client",
+        lambda _: {"total_tokens": 13 if runtime.provider.await_count == 1 else 12},
+    )
+    result = await run(runtime, mode)
+    assert result["assistant_response"] == "Hello world."
+    assert runtime.provider.await_count == 2
+    assert result["usage"]["total_tokens"] == 25
+    runtime.executor.execute_action.assert_not_awaited()
+    assert [
+        m.content
+        for m in runtime.conversation.session.messages
+        if m.role == "assistant"
+    ] == ["Hello ", "world."]

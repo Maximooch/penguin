@@ -2255,7 +2255,7 @@ class Engine:
             last_response = ""
             answer_parts: List[str] = []
             continuing_output = False
-            latest_usage: Dict[str, Any] = {}
+            cumulative_usage: Dict[str, Any] = {}
             final_status = "completed"
 
             # Reset loop state for this run
@@ -2293,8 +2293,7 @@ class Engine:
                 last_response = response_data.get("assistant_response", "")
                 iteration_results = response_data.get("action_results", [])
                 usage_data = response_data.get("usage")
-                if isinstance(usage_data, dict) and usage_data:
-                    latest_usage = usage_data
+                cumulative_usage = _accumulate_usage(cumulative_usage, usage_data)
                 last_response = self._suppress_empty_tool_only_placeholder(
                     cm,
                     last_response,
@@ -2410,7 +2409,7 @@ class Engine:
                 ),
                 "iterations": self.current_iteration,
                 "action_results": all_action_results,
-                "usage": latest_usage,
+                "usage": cumulative_usage,
                 "status": final_status,
                 "execution_time": (datetime.utcnow() - self.start_time).total_seconds(),
             }
