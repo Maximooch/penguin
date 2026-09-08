@@ -162,10 +162,14 @@ async def test_run_model_override_controls_native_isolation(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("schema_error", [False, True])
 async def test_schema_failure_does_not_enable_text_execution(
     runtime: SimpleNamespace,
+    schema_error: bool,
 ) -> None:
-    runtime.tools.get_responses_tools.side_effect = ValueError("invalid schema")
+    runtime.tools.get_responses_tools.return_value = []
+    if schema_error:
+        runtime.tools.get_responses_tools.side_effect = ValueError("invalid schema")
     result = await run(runtime, "response")
     assert result["action_results"] == []
     assert runtime.provider.await_count == 1
