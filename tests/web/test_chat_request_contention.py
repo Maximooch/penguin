@@ -212,7 +212,9 @@ async def test_cancel_during_result_write(
     monkeypatch.setattr(store, "complete", blocked_complete)
 
     async def execute():
-        tasks.append(asyncio.current_task())
+        from penguin.system.task_cancellation import cancellation_owner
+
+        tasks.append(cancellation_owner(asyncio.current_task()))
         if http_error:
             raise HTTPException(429, "busy", headers={"Retry-After": "5"})
         return {"response": "done"}

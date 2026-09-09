@@ -1,7 +1,7 @@
 """Task-scoped abort intent, independent of session cleanup and transport loss."""
 
 import asyncio
-from collections.abc import Coroutine
+from collections.abc import Awaitable, Coroutine
 from contextvars import ContextVar
 from enum import Enum
 from typing import Any, TypeVar
@@ -11,11 +11,18 @@ __all__ = [
     "AbortReason",
     "CancellationTrackingTask",
     "abort_task",
+    "cancellation_owner",
     "preserve_cancellation",
     "task_abort_reason",
 ]
 
 _Result = TypeVar("_Result")
+_owners: WeakKeyDictionary[asyncio.Task, asyncio.Task] = WeakKeyDictionary()
+
+
+def cancellation_owner(task: asyncio.Task) -> asyncio.Task:
+    """Resolve the execution boundary for a provider/tool task."""
+    return _owners.get(task, task)
 
 
 class CancellationTrackingTask(asyncio.Task[_Result]):
@@ -43,6 +50,19 @@ class CancellationTrackingTask(asyncio.Task[_Result]):
             self._cancellation_requested = True
         return accepted
 
+    async def run_child(self, awaitable: Awaitable[_Result]) -> _Result:
+        """Keep handled SDK cancellation scopes off the execution owner."""
+
+        async def execute() -> _Result:
+            return await awaitable
+
+        child = asyncio.create_task(execute(), name=f"{self.get_name()}:execute")
+        _owners[child] = self
+        try:
+            return await child
+        finally:
+            _owners.pop(child, None)
+
 
 preserve_cancellation: ContextVar[bool] = ContextVar(
     "preserve_cancellation", default=False
@@ -60,6 +80,7 @@ _reasons: WeakKeyDictionary[asyncio.Task, AbortReason] = WeakKeyDictionary()
 
 def abort_task(task: asyncio.Task, reason: AbortReason) -> None:
     """Record intent before cancellation; do not reclassify prior cancellation."""
+    task = cancellation_owner(task)
     # Durable executions use our monotonic evidence, not version-specific counts.
     # Ordinary tasks retain their legacy best-effort cancellation check.
     pending = (
@@ -74,4 +95,4 @@ def abort_task(task: asyncio.Task, reason: AbortReason) -> None:
 
 def task_abort_reason(task: asyncio.Task) -> AbortReason | None:
     """Read intent even after the session has released its abort bookkeeping."""
-    return _reasons.get(task)
+    return _reasons.get(cancellation_owner(task))

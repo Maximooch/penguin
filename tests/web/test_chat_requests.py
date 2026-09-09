@@ -6,10 +6,12 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
+import anyio
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
+from penguin.system.task_cancellation import cancellation_owner
 from penguin.web.services.chat_requests import ChatRequestStore, execute_chat_request
 
 
@@ -45,7 +47,7 @@ async def test_disconnect_does_not_cancel_execution_and_result_survives_restart(
     async def execute():
         nonlocal calls
         calls += 1
-        execution_tasks.append(asyncio.current_task())
+        execution_tasks.append(cancellation_owner(asyncio.current_task()))
         started.set()
         await release.wait()
         return {"response": "done", "status": "completed"}
@@ -126,6 +128,10 @@ def test_http_contract_auth_replay_conflict_and_lookup(tmp_path, monkeypatch):
 
     async def fake_process(request, core, http_request):
         calls.append(request.text)
+        # SDKs use cancellation scopes for local cleanup, not run cancellation.
+        with anyio.CancelScope() as scope:
+            scope.cancel()
+            await anyio.sleep(0)
         if request.text == "fail":
             raise HTTPException(400, "runtime rejected", headers={"X-Reason": "test"})
         return {"response": "done", "status": "completed"}
@@ -283,7 +289,9 @@ async def test_execution_cancellation_distinguishes_abort_from_shutdown(
     monkeypatch.setattr(stream_events, "emit_opencode_session_status", AsyncMock())
 
     async def execute():
-        owner._opencode_process_tasks["s"] = {asyncio.current_task()}
+        owner._opencode_process_tasks["s"] = {
+            cancellation_owner(asyncio.current_task())
+        }
         started.set()
         try:
             await asyncio.Event().wait()
@@ -328,7 +336,7 @@ async def test_shutdown_cannot_be_relabelled_by_later_user_abort(tmp_path):
     tasks = []
 
     async def execute():
-        tasks.append(asyncio.current_task())
+        tasks.append(cancellation_owner(asyncio.current_task()))
         started.set()
         try:
             await asyncio.Event().wait()
@@ -404,7 +412,7 @@ async def test_disconnected_observer_terminal_outcome(
     execution_tasks = []
 
     async def execute():
-        execution_tasks.append(asyncio.current_task())
+        execution_tasks.append(cancellation_owner(asyncio.current_task()))
         started.set()
         await release.wait()
         raise HTTPException(400, "rejected")
