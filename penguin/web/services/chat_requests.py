@@ -180,7 +180,7 @@ async def execute_chat_request(
         preserve_cancellation.set(True)
         failure: HTTPException | None = None
         try:
-            response = await task.run_child(execute())
+            response = await task.run_child(execute)
         except HTTPException as exc:
             failure = exc
             response = {"detail": exc.detail}

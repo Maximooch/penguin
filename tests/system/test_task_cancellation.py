@@ -110,7 +110,7 @@ async def test_child_cleanup_cannot_hide_boundary_stop(explicit):
             return "swallowed"
 
     async def run():
-        return await asyncio.current_task().run_child(execute())
+        return await asyncio.current_task().run_child(execute)
 
     owner = CancellationTrackingTask(run(), name="boundary")
     await started.wait()

@@ -1,7 +1,7 @@
 """Task-scoped abort intent, independent of session cleanup and transport loss."""
 
 import asyncio
-from collections.abc import Awaitable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
 from contextvars import ContextVar
 from enum import Enum
 from typing import Any, TypeVar
@@ -50,13 +50,13 @@ class CancellationTrackingTask(asyncio.Task[_Result]):
             self._cancellation_requested = True
         return accepted
 
-    async def run_child(self, awaitable: Awaitable[_Result]) -> _Result:
+    async def run_child(self, execute: Callable[[], Awaitable[_Result]]) -> _Result:
         """Keep handled SDK cancellation scopes off the execution owner."""
 
-        async def execute() -> _Result:
-            return await awaitable
+        async def run() -> _Result:
+            return await execute()
 
-        child = asyncio.create_task(execute(), name=f"{self.get_name()}:execute")
+        child = asyncio.create_task(run(), name=f"{self.get_name()}:execute")
         _owners[child] = self
         try:
             return await child
