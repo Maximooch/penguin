@@ -289,9 +289,7 @@ async def test_execution_cancellation_distinguishes_abort_from_shutdown(
     monkeypatch.setattr(stream_events, "emit_opencode_session_status", AsyncMock())
 
     async def execute():
-        owner._opencode_process_tasks["s"] = {
-            cancellation_owner(asyncio.current_task())
-        }
+        owner._opencode_process_tasks["s"] = {asyncio.current_task()}
         started.set()
         try:
             await asyncio.Event().wait()
@@ -321,7 +319,7 @@ async def test_execution_cancellation_distinguishes_abort_from_shutdown(
             await execute_chat_request(lambda: store, "s", "m", {}, execute) == result
         )
     else:
-        next(iter(owner._opencode_process_tasks["s"])).cancel()
+        cancellation_owner(next(iter(owner._opencode_process_tasks["s"]))).cancel()
         with pytest.raises(asyncio.CancelledError):
             await observer
         assert store.lookup("s", "m") == {"state": "accepted"}

@@ -21,7 +21,15 @@ _owners: WeakKeyDictionary[asyncio.Task, asyncio.Task] = WeakKeyDictionary()
 
 
 def cancellation_owner(task: asyncio.Task) -> asyncio.Task:
-    """Resolve the execution boundary for a provider/tool task."""
+    """Resolve the execution boundary for a provider/tool task.
+
+    Args:
+        task: Provider/tool task or execution owner to resolve.
+
+    Returns:
+        The registered owner, or the task itself if unregistered. An
+        unregistered task is not an error.
+    """
     return _owners.get(task, task)
 
 
@@ -51,7 +59,20 @@ class CancellationTrackingTask(asyncio.Task[_Result]):
         return accepted
 
     async def run_child(self, execute: Callable[[], Awaitable[_Result]]) -> _Result:
-        """Keep handled SDK cancellation scopes off the execution owner."""
+        """Keep handled SDK cancellation scopes off the execution owner.
+
+        Args:
+            execute: Callable invoked inside the child to create its awaitable.
+
+        Returns:
+            The result returned by the child execution.
+
+        Raises:
+            asyncio.CancelledError: If cancellation escapes the child.
+            Exception: Any other exception raised by execute propagates unchanged.
+
+        Child ownership is removed on return, failure, or cancellation.
+        """
 
         async def run() -> _Result:
             return await execute()

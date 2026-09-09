@@ -89,13 +89,23 @@ async def test_cancellation_is_isolated_and_does_not_replace_task_factory():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("explicit", [True, False])
-async def test_child_cleanup_cannot_hide_boundary_stop(explicit):
+async def test_child_cleanup_cannot_hide_boundary_stop(explicit: bool) -> None:
+    """Verify child cleanup preserves owner cancellation evidence.
+
+    Args:
+        explicit: Whether to abort through the child instead of stopping the owner.
+    """
     import anyio
 
     started = asyncio.Event()
     children = []
 
-    async def execute():
+    async def execute() -> str | None:
+        """Handle local cancellation, then swallow the execution stop.
+
+        Returns:
+            The swallowed-stop marker, or None if the wait completes normally.
+        """
         children.append(asyncio.current_task())
         with anyio.CancelScope() as scope:
             scope.cancel()
@@ -109,7 +119,15 @@ async def test_child_cleanup_cannot_hide_boundary_stop(explicit):
                 asyncio.current_task().uncancel()
             return "swallowed"
 
-    async def run():
+    async def run() -> str | None:
+        """Run the child under the current cancellation owner.
+
+        Returns:
+            The child's swallowed-stop marker or normal result.
+
+        Raises:
+            asyncio.CancelledError: If cancellation escapes the child.
+        """
         return await asyncio.current_task().run_child(execute)
 
     owner = CancellationTrackingTask(run(), name="boundary")
