@@ -8,6 +8,7 @@ from penguin.system.task_cancellation import (
     AbortReason,
     CancellationTrackingTask,
     abort_task,
+    cancellation_owner,
     task_abort_reason,
 )
 
@@ -84,3 +85,62 @@ async def test_cancellation_is_isolated_and_does_not_replace_task_factory():
     second.cancel()
     await asyncio.gather(first, second, return_exceptions=True)
     assert loop.get_task_factory() is factory
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("explicit", [True, False])
+async def test_child_cleanup_cannot_hide_boundary_stop(explicit: bool) -> None:
+    """Verify child cleanup preserves owner cancellation evidence.
+
+    Args:
+        explicit: Whether to abort through the child instead of stopping the owner.
+    """
+    import anyio
+
+    started = asyncio.Event()
+    children = []
+
+    async def execute() -> str | None:
+        """Handle local cancellation, then swallow the execution stop.
+
+        Returns:
+            The swallowed-stop marker, or None if the wait completes normally.
+        """
+        children.append(asyncio.current_task())
+        with anyio.CancelScope() as scope:
+            scope.cancel()
+            await anyio.sleep(0)
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            # A swallowed/uncancelled shutdown is still owned by the outer task.
+            if hasattr(asyncio.current_task(), "uncancel"):
+                asyncio.current_task().uncancel()
+            return "swallowed"
+
+    async def run() -> str | None:
+        """Run the child under the current cancellation owner.
+
+        Returns:
+            The child's swallowed-stop marker or normal result.
+
+        Raises:
+            asyncio.CancelledError: If cancellation escapes the child.
+        """
+        return await asyncio.current_task().run_child(execute)
+
+    owner = CancellationTrackingTask(run(), name="boundary")
+    await started.wait()
+    assert cancellation_owner(children[0]) is owner
+    assert not owner.cancellation_requested
+    if explicit:
+        abort_task(children[0], AbortReason.USER_INTERRUPTED)
+    else:
+        owner.cancel()
+    assert await owner == "swallowed"
+    assert owner.cancellation_requested
+    assert task_abort_reason(owner) == (
+        AbortReason.USER_INTERRUPTED if explicit else None
+    )
+    assert cancellation_owner(children[0]) is children[0]
