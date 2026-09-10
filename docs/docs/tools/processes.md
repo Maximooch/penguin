@@ -15,7 +15,20 @@ Tool-call completion (`status`) is separate from child lifecycle
 quiet process waits for up to 120 seconds without new output before returning a
 still-running notice. Ordinary iteration limits also remain in force.
 
-`process_write_stdin` sends input. `process_stop` interrupts, terminates, or kills
+`process_write_stdin` sends UTF-8 input with a `timeout_ms` deadline (default 1000,
+range 1–60000), including time queued behind another writer. Writes return
+`bytes_written`, `bytes_total`, and `bytes_remaining`. These count bytes accepted
+by the pipe, not bytes read by the child. Backpressure returns
+`stdin_write_timeout`; cancellation ends the write and leaves the child running.
+A partial write can end within a multibyte character. Do not resend the whole
+input after a partial write: accepted bytes cannot be undone. The text-only API
+does not support resuming at an arbitrary byte boundary.
+
+Waiting polls release the process condition; explicit replay and other consumers
+can inspect output immediately. Automatic cursor and retry-cache updates remain
+atomic, including concurrent reads from the same consumer.
+
+`process_stop` interrupts, terminates, or kills
 the owned process group, escalating when necessary. Processes use pipes, not a
 PTY. The local implementation requires POSIX shell and pipe support.
 

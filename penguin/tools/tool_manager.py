@@ -937,12 +937,19 @@ class ToolManager:
             },
             {
                 "name": "process_write_stdin",
-                "description": "Write text to the stdin of a persistent process.",
+                "description": "Write UTF-8 stdin with a deadline; reports accepted bytes on partial writes.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
                         "process_id": {"type": "string"},
                         "text": {"type": "string"},
+                        "timeout_ms": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 60000,
+                            "default": 1000,
+                            "description": "Write deadline, including queued writer time; does not terminate the process.",
+                        },
                     },
                     "required": ["process_id", "text"],
                 },

@@ -125,7 +125,12 @@ class ProcessTools:
         if record is None or record.owner != owner:
             return self.runtime._error(process_id, "unknown_process_id")
         if name == "process_write_stdin":
-            return self.runtime.write_stdin(process_id, arguments.get("text", ""))
+            return self.runtime.write_stdin(
+                process_id,
+                arguments.get("text", ""),
+                timeout_ms=arguments.get("timeout_ms", 1000),
+                cancel_event=context.get("process_cancel_event"),
+            )
         if name == "process_stop":
             return self.runtime.stop(
                 process_id,

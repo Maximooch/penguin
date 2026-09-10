@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import shlex
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -181,3 +183,126 @@ def test_capture_failure_terminates_child_and_surfaces_error(
     assert result["status"] == "error"
     assert result["process_status"] == "exited"
     assert "injected log failure" in result["reader_error"]
+
+
+@pytest.mark.parametrize("cursor,consumer", [(0, "agent"), (None, "inspector")])
+def test_waiting_poll_does_not_block_other_readers(
+    runtime: ProcessRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+    cursor: int | None,
+    consumer: str,
+) -> None:
+    pid = runtime.start("sleep 3")["process_id"]
+    record = runtime._processes[pid]
+    waiting = threading.Event()
+    cancelled = threading.Event()
+    original_wait = record.changed.wait
+
+    def wait(timeout: float | None = None) -> bool:
+        waiting.set()
+        return original_wait(timeout)
+
+    monkeypatch.setattr(record.changed, "wait", wait)
+    with ThreadPoolExecutor() as pool:
+        pending = pool.submit(
+            runtime.poll, pid, since_sequence=None, wait_ms=1000, cancel_event=cancelled
+        )
+        try:
+            assert waiting.wait(1)
+            started = time.monotonic()
+            result = runtime.poll(pid, since_sequence=cursor, consumer_id=consumer)
+            assert time.monotonic() - started < 0.3
+            assert result["process_status"] == "running"
+        finally:
+            cancelled.set()
+        pending.result(timeout=2)
+
+
+def test_stdin_backpressure_has_deadline_and_reports_partial_write(
+    runtime: ProcessRuntime,
+) -> None:
+    pid = runtime.start("sleep 2")["process_id"]
+    started = time.monotonic()
+    result = runtime.write_stdin(pid, "x" * 262144)
+    assert time.monotonic() - started < 1.5
+    assert result["error"] == "stdin_write_timeout"
+    assert 0 < result["bytes_written"] < result["bytes_total"]
+    assert result["bytes_remaining"] == 262144 - result["bytes_written"]
+    assert runtime._processes[pid].process.poll() is None
+
+
+@pytest.mark.parametrize("same_request", [False, True])
+def test_concurrent_consumer_reads_commit_cursor_and_retry_atomically(
+    runtime: ProcessRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+    same_request: bool,
+) -> None:
+    pid = runtime.start("sleep 3")["process_id"]
+    record = runtime._processes[pid]
+    both_waiting = threading.Event()
+    waiting_threads = set()
+    original_wait = record.changed.wait
+
+    def wait(timeout: float | None = None) -> bool:
+        waiting_threads.add(threading.get_ident())
+        if len(waiting_threads) == 2:
+            both_waiting.set()
+        return original_wait(timeout)
+
+    monkeypatch.setattr(record.changed, "wait", wait)
+    with ThreadPoolExecutor() as pool:
+        calls = [
+            pool.submit(
+                runtime.poll,
+                pid,
+                since_sequence=None,
+                wait_ms=500,
+                request_id="same" if same_request else str(i),
+            )
+            for i in range(2)
+        ]
+        assert both_waiting.wait(1)
+        with record.changed:
+            record.append_output("stdout", "only once\n")
+            record.changed.notify_all()
+        results = [call.result(timeout=2) for call in calls]
+    if same_request:
+        assert results[0] == results[1]
+        assert "only once" in results[0]["output"]
+    else:
+        assert sum("only once" in result["output"] for result in results) == 1
+    assert record.cursors["agent"] == 1
+
+
+def test_queued_stdin_writer_obeys_deadline(runtime: ProcessRuntime) -> None:
+    pid = runtime.start("sleep 3")["process_id"]
+    with runtime._processes[pid].write_lock:
+        started = time.monotonic()
+        result = runtime.write_stdin(pid, "hello", timeout_ms=50)
+    assert time.monotonic() - started < 0.5
+    assert result["error"] == "stdin_write_timeout"
+    assert result["bytes_written"] == 0
+
+
+def test_stdin_cancellation_reports_partial_utf8_bytes(
+    runtime: ProcessRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import os
+
+    pid = runtime.start("sleep 3")["process_id"]
+    cancelled = threading.Event()
+    original_write = os.write
+
+    def write(fd: int, data: bytes) -> int:
+        count = original_write(fd, data[:3])
+        cancelled.set()
+        return count
+
+    monkeypatch.setattr(os, "write", write)
+    result = runtime.write_stdin(pid, "é" * 100, cancel_event=cancelled)
+    assert result["error"] == "stdin_write_cancelled"
+    assert result["bytes_written"] == 3
+    assert result["bytes_total"] == 200
+    assert result["bytes_remaining"] == 197
+    assert runtime._processes[pid].process.poll() is None

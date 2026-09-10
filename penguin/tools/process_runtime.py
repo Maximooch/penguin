@@ -67,7 +67,7 @@ class ManagedProcess:
     replies: OrderedDict[tuple[str, str], dict[str, Any]] = field(
         default_factory=OrderedDict
     )
-    read_lock: threading.Lock = field(default_factory=threading.Lock)
+    write_lock: threading.Lock = field(default_factory=threading.Lock)
     completion_reason: str | None = None
     owner: tuple[str, str] = ("", "agent")
     deadline: float | None = None
@@ -233,8 +233,8 @@ class ProcessRuntime:
         """Wait for new data/exit and return a reusable exclusive cursor.
 
         Explicit cursors never consume another reader's output. Automatic reads
-        are serialized and request IDs replay the last 128 responses, allowing
-        a transport retry without skipping output. A zero-size read is a peek.
+        commit cursors atomically. Request IDs replay the last 128 responses,
+        allowing a transport retry without skipping output. A zero-size read is a peek.
         """
         if not math.isfinite(wait_ms) or not 0 <= wait_ms <= MAX_POLL_WAIT_MS:
             return self._error(process_id, "wait_ms must be between 0 and 60000")
@@ -247,20 +247,24 @@ class ProcessRuntime:
             return self._error(process_id, "unknown_process_id")
         started = time.monotonic()
         key = (consumer_id, request_id) if request_id else None
-        with record.read_lock, record.changed:
-            if key is not None and key in record.replies:
-                return dict(record.replies[key])
-            cursor = (
-                record.cursors.get(consumer_id, 0)
-                if since_sequence is None
-                else since_sequence
-            )
-            if cursor > record.next_sequence - 1:
-                return self._error(process_id, "cursor_ahead_of_output")
+        with record.changed:
             deadline = started + wait_ms / 1000
-            while (
-                wait_for_exit or record.next_sequence - 1 <= cursor
-            ) and record.status() != "exited":
+            while True:
+                # Recheck after every wait: another call may have consumed output
+                # or completed this same request while the condition was released.
+                if key is not None and key in record.replies:
+                    return dict(record.replies[key])
+                cursor = (
+                    record.cursors.get(consumer_id, 0)
+                    if since_sequence is None
+                    else since_sequence
+                )
+                if cursor > record.next_sequence - 1:
+                    return self._error(process_id, "cursor_ahead_of_output")
+                if record.status() == "exited" or (
+                    not wait_for_exit and record.next_sequence - 1 > cursor
+                ):
+                    break
                 if cancel_event is not None and cancel_event.is_set():
                     break
                 remaining = deadline - time.monotonic()
@@ -301,24 +305,80 @@ class ProcessRuntime:
                 record.replies[key] = dict(snapshot)
                 while len(record.replies) > 128:
                     record.replies.popitem(last=False)
+            record.changed.notify_all()
             return snapshot
 
-    def write_stdin(self, process_id: str, text: str) -> dict[str, Any]:
-        """Write stdin without consuming any captured output."""
+    def write_stdin(
+        self,
+        process_id: str,
+        text: str,
+        *,
+        timeout_ms: int = 1000,
+        cancel_event: threading.Event | None = None,
+    ) -> dict[str, Any]:
+        """Write bounded, cancellable input and report bytes accepted by the pipe."""
+        if not math.isfinite(timeout_ms) or not 0 < timeout_ms <= 60_000:
+            return self._error(process_id, "timeout_ms must be between 1 and 60000")
         record = self._processes.get(process_id)
         if record is None:
             return self._error(process_id, "unknown_process_id")
-        if record.process.poll() is not None:
-            return self._error(process_id, "process_not_running")
-        if record.process.stdin is None:
-            return self._error(process_id, "stdin_unavailable")
+        payload = text.encode("utf-8")
+        written = 0
+        deadline = time.monotonic() + timeout_ms / 1000
+        acquired = False
+        error = None
         try:
-            record.process.stdin.write(text)
-            record.process.stdin.flush()
-        except (BrokenPipeError, OSError, ValueError) as exc:
-            return self._error(process_id, f"stdin_write_failed: {exc}")
+            while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    error = "stdin_write_cancelled"
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    error = "stdin_write_timeout"
+                    break
+                if not acquired:
+                    acquired = record.write_lock.acquire(timeout=min(remaining, 0.05))
+                    if not acquired:
+                        continue
+                if record.process.poll() is not None:
+                    error = "process_not_running"
+                    break
+                if record.process.stdin is None:
+                    error = "stdin_unavailable"
+                    break
+                if written == len(payload):
+                    break
+                fd = record.process.stdin.fileno()
+                os.set_blocking(fd, False)
+                try:
+                    # Small chunks bound work between cancellation checks. All
+                    # stdin writes use the raw descriptor; no text buffer is used.
+                    written += os.write(fd, payload[written : written + 4096])
+                except BlockingIOError:
+                    with selectors.DefaultSelector() as selector:
+                        selector.register(fd, selectors.EVENT_WRITE)
+                        selector.select(timeout=min(remaining, 0.05))
+        except (OSError, ValueError) as exc:
+            error = f"stdin_write_failed: {exc}"
+        finally:
+            if acquired:
+                record.write_lock.release()
         with record.changed:
-            return self._snapshot(record, output="", since_sequence=0, next_sequence=0)
+            result = self._snapshot(
+                record, output="", since_sequence=0, next_sequence=0
+            )
+        result.update(
+            bytes_written=written,
+            bytes_total=len(payload),
+            bytes_remaining=len(payload) - written,
+        )
+        if error is not None:
+            result.update(status="error", error=error)
+            result["result"] += (
+                f"\n{error}: accepted {written}/{len(payload)} UTF-8 bytes. "
+                "Do not resend the entire input: accepted bytes cannot be undone."
+            )
+        return result
 
     def _signal(self, record: ManagedProcess, mode: str) -> None:
         try:

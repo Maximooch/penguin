@@ -375,3 +375,53 @@ def test_terminal_outcome_is_identical_after_yield_or_immediate_completion(
         assert result["error"] == expected_error
     notice = manager.process_runtime.poll(pid)
     assert notice["status"] == expected_status
+
+
+@pytest.mark.asyncio
+async def test_cancel_backpressured_stdin_leaves_child_available(
+    manager: ToolManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import os
+    import threading
+
+    context = {"session_id": "stdin", "agent_id": "agent"}
+    pid = manager.execute_tool("process_start", {"command": "sleep 3"}, context)[
+        "process_id"
+    ]
+    wrote = threading.Event()
+    original_write = os.write
+
+    def write(fd: int, data: bytes) -> int:
+        count = original_write(fd, data)
+        wrote.set()
+        return count
+
+    monkeypatch.setattr(os, "write", write)
+    task = asyncio.create_task(
+        manager.execute_tool_async(
+            "process_write_stdin",
+            {"process_id": pid, "text": "x" * 262144, "timeout_ms": 2000},
+            context,
+        )
+    )
+    assert await asyncio.to_thread(wrote.wait, 1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 0.5)
+    assert manager.process_runtime._processes[pid].process.poll() is None
+
+
+def test_stdin_tool_forwards_deadline(manager: ToolManager) -> None:
+    context = {"session_id": "stdin", "agent_id": "agent"}
+    pid = manager.execute_tool("process_start", {"command": "sleep 3"}, context)[
+        "process_id"
+    ]
+    with manager.process_runtime._processes[pid].write_lock:
+        result = manager.execute_tool(
+            "process_write_stdin",
+            {"process_id": pid, "text": "hello", "timeout_ms": 20},
+            context,
+        )
+    assert result["error"] == "stdin_write_timeout"
+    assert result["bytes_written"] == 0
