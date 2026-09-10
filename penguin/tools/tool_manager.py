@@ -4448,10 +4448,14 @@ class ToolManager:
                     tool_input["target"], tool_input["is_file"]
                 ),
                 "execute_command": lambda: self.process_tools.execute(
-                    "execute_command", tool_input, effective_context
+                    "execute_command",
+                    tool_input,
+                    {**effective_context, "directory": file_root},
                 ),
                 "process_start": lambda: self.process_tools.execute(
-                    "process_start", tool_input, effective_context
+                    "process_start",
+                    tool_input,
+                    {**effective_context, "directory": file_root},
                 ),
                 "process_poll": lambda: self.process_tools.execute(
                     "process_poll", tool_input, effective_context

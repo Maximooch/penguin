@@ -82,3 +82,19 @@ Cancelling a `process_poll` ends the wait and leaves the background process
 available. Use `process_stop` to terminate that process. Web shutdown and normal
 interpreter exit clean up owned processes. Force-killing the interpreter cannot
 run cleanup hooks.
+
+## Execution root and terminal outcomes
+
+Both launch tools default to ToolManager's resolved execution root. Missing,
+null, or invalid request-context directories use that root; an explicit tool
+`cwd` overrides the default. This propagation uses the existing root resolver
+and does not change permission policy.
+
+A natural nonzero exit returns `status: error` and `error: command_failed` across
+immediate command results, final polls, and completion events. Timeout and output
+capture failures retain their specific errors. A successful `process_stop`
+operation remains completed and reports the child's `completion_reason` as
+`cancelled`; cancelling an active command wait reports `status: cancelled`.
+
+Broader permission contracts and inherited CI failures are tracked in
+`context/tasks/process-runtime-follow-ups.md` in the repository.

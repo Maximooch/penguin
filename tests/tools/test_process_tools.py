@@ -302,3 +302,76 @@ def test_registry_reaps_observed_results_and_retains_logs(tmp_path: Path) -> Non
         assert (tmp_path / first["log_path"]).read_text() == "first"
     finally:
         service.cleanup()
+
+
+@pytest.mark.parametrize("tool_name", ["execute_command", "process_start"])
+@pytest.mark.parametrize("directory_kind", ["missing", "none", "invalid", "override"])
+def test_launch_uses_resolved_execution_root(
+    manager: ToolManager,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tool_name: str,
+    directory_kind: str,
+) -> None:
+    from penguin.system.execution_context import execution_context_scope
+
+    root = tmp_path / "project"
+    root.mkdir()
+    override = tmp_path / "override"
+    override.mkdir()
+    # Preserve process-wide configuration changed by the public root setters.
+    monkeypatch.setenv("PENGUIN_CWD", str(tmp_path))
+    monkeypatch.setenv("PENGUIN_WRITE_ROOT", "project")
+    manager.set_project_root(root)
+    manager.set_execution_root("project")
+    arguments = {"command": "pwd"}
+    if directory_kind == "override":
+        arguments["cwd"] = str(override)
+    expected = override if directory_kind == "override" else root
+    if directory_kind == "missing":
+        result = manager.execute_tool(tool_name, arguments, {"session_id": "root"})
+    else:
+        directory = str(tmp_path / "missing") if directory_kind == "invalid" else None
+        with execution_context_scope(
+            ExecutionContext(session_id="root", directory=directory)
+        ):
+            result = manager.execute_tool(tool_name, arguments)
+    final = manager.process_runtime.poll(
+        result["process_id"], wait_ms=2000, wait_for_exit=True
+    )
+    assert final["returncode"] == 0
+    assert final["cwd"] == str(expected.resolve())
+    assert str(expected.resolve()) in final["output"]
+
+
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_terminal_outcome_is_identical_after_yield_or_immediate_completion(
+    manager: ToolManager,
+    exit_code: int,
+) -> None:
+    immediate = manager.execute_tool(
+        "execute_command", {"command": f"exit {exit_code}"}
+    )
+    started = manager.execute_tool(
+        "execute_command",
+        {
+            "command": f"read go; exit {exit_code}",
+            "yield_time_ms": 0,
+        },
+    )
+    pid = started["process_id"]
+    manager.execute_tool("process_write_stdin", {"process_id": pid, "text": "go\n"})
+    manager.process_runtime._processes[pid].reader.join(timeout=2)
+    notifications = manager.process_tools.pending(("", "agent"))
+    resumed = manager.execute_tool("process_poll", {"process_id": pid})
+    expected_status, expected_error = (
+        ("completed", None) if exit_code == 0 else ("error", "command_failed")
+    )
+    assert len(notifications) == 1
+    for result in (immediate, resumed, notifications[0]):
+        assert result["process_status"] == "exited"
+        assert result["returncode"] == exit_code
+        assert result["status"] == expected_status
+        assert result["error"] == expected_error
+    notice = manager.process_runtime.poll(pid)
+    assert notice["status"] == expected_status

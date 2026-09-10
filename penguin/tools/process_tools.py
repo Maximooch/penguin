@@ -227,13 +227,6 @@ class ProcessTools:
         result.update(
             action="execute_command", tool="execute_command", timeout_seconds=timeout
         )
-        if result.get("process_status") == "exited" and result.get(
-            "returncode"
-        ) not in (0, None):
-            result["status"] = (
-                "error" if result["status"] != "cancelled" else "cancelled"
-            )
-            result["error"] = result.get("error") or "command_failed"
         return result
 
     def cleanup(self) -> dict[str, Any]:

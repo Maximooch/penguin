@@ -521,9 +521,19 @@ class ProcessRuntime:
         next_sequence: int,
     ) -> dict[str, Any]:
         status = record.status()
+        returncode = record.process.poll()
+        error = record.reader_error
+        if record.completion_reason == "timeout":
+            error = "timeout"
+        elif (
+            status == "exited"
+            and returncode not in (0, None)
+            and record.completion_reason != "cancelled"
+        ):
+            error = error or "command_failed"
         result = (
             f"process_id={record.process_id} status={status} "
-            f"returncode={record.process.poll()} next_sequence={next_sequence} "
+            f"returncode={returncode} next_sequence={next_sequence} "
             f"reason={record.completion_reason or status}"
         )
         if output:
@@ -541,13 +551,11 @@ class ProcessRuntime:
             result += f"\nOutput capture failed: {record.reader_error}"
         return {
             "action": "process",
-            "status": "error"
-            if record.reader_error or record.completion_reason == "timeout"
-            else "completed",
+            "status": "error" if error else "completed",
             "result": result,
             "process_id": record.process_id,
             "process_status": status,
-            "returncode": record.process.poll(),
+            "returncode": returncode,
             "command": record.command,
             "cwd": record.cwd,
             "env_keys": sorted(record.env_overrides),
@@ -559,9 +567,7 @@ class ProcessRuntime:
             "log_truncated": record.log_truncated,
             "streams_closed": record.streams_closed,
             "reader_error": record.reader_error,
-            "error": "timeout"
-            if record.completion_reason == "timeout"
-            else record.reader_error,
+            "error": error,
             "completion_reason": record.completion_reason
             or ("exited" if status == "exited" else None),
         }
