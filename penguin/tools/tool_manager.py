@@ -881,8 +881,14 @@ class ToolManager:
                         "process_id": {"type": "string"},
                         "since_sequence": {
                             "type": "integer",
-                            "default": 0,
-                            "description": "Only return output after this sequence number",
+                            "description": "Replay output after this cursor; omit to read new output automatically",
+                        },
+                        "wait_ms": {
+                            "type": "integer",
+                            "default": 5000,
+                            "minimum": 0,
+                            "maximum": 60000,
+                            "description": "Wait for output or exit, up to this many milliseconds",
                         },
                         "max_chars": {
                             "type": "integer",
@@ -2453,8 +2459,7 @@ class ToolManager:
             )
         except ImportError:
             logger.error(
-                "Approval module not available, blocking '%s' "
-                "(approval required)",
+                "Approval module not available, blocking '%s' (approval required)",
                 tool_name,
             )
             return json.dumps(
@@ -3542,7 +3547,9 @@ class ToolManager:
         new_string = tool_input.get("new_string")
         warnings = self._extract_internal_warnings(tool_input)
         if not isinstance(path, str) or not path.strip():
-            return json.dumps({"error": "edit_file requires 'path'", "tool": "edit_file"})
+            return json.dumps(
+                {"error": "edit_file requires 'path'", "tool": "edit_file"}
+            )
         if not isinstance(old_string, str):
             return json.dumps(
                 {"error": "edit_file requires 'old_string'", "tool": "edit_file"}
@@ -4418,7 +4425,14 @@ class ToolManager:
                 ),
                 "process_poll": lambda: self.process_runtime.poll(
                     tool_input["process_id"],
-                    since_sequence=int(tool_input.get("since_sequence", 0) or 0),
+                    since_sequence=(
+                        int(tool_input["since_sequence"])
+                        if tool_input.get("since_sequence") is not None
+                        else None
+                    ),
+                    wait_ms=int(tool_input.get("wait_ms", 5000)),
+                    consumer_id=str(effective_context.get("agent_id") or "agent"),
+                    request_id=effective_context.get("tool_call_id"),
                     max_chars=(
                         int(tool_input["max_chars"])
                         if tool_input.get("max_chars") is not None
@@ -4510,11 +4524,13 @@ class ToolManager:
                 "browser_page_info": lambda: self.execute_browser_harness_page_info(
                     effective_context
                 ),
-                "browser_harness_screenshot": lambda: self.execute_browser_harness_screenshot(
-                    tool_input.get("full", False),
-                    tool_input.get("max_dim"),
-                    tool_input.get("output_dir"),
-                    effective_context,
+                "browser_harness_screenshot": lambda: (
+                    self.execute_browser_harness_screenshot(
+                        tool_input.get("full", False),
+                        tool_input.get("max_dim"),
+                        tool_input.get("output_dir"),
+                        effective_context,
+                    )
                 ),
                 "browser_click": lambda: self.execute_browser_harness_click(
                     tool_input["x"],
@@ -7367,9 +7383,7 @@ class ToolManager:
                 return json.dumps(
                     {"error": "max_iterations must be a positive integer when provided"}
                 )
-            if not isinstance(requested_max, str) and (
-                max_iterations != requested_max
-            ):
+            if not isinstance(requested_max, str) and (max_iterations != requested_max):
                 return json.dumps(
                     {"error": "max_iterations must be a positive integer when provided"}
                 )

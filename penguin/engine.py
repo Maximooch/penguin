@@ -57,6 +57,7 @@ from penguin.llm.runtime import (
     prepare_responses_tool_kwargs,
 )
 from penguin.tools import ToolManager  # type: ignore
+from penguin.tools.process_wait import ProcessWaitGuard
 from penguin.tools.runtime import (
     DEFAULT_TOOL_MODEL_OUTPUT_MAX_CHARS,
     ToolCall,
@@ -307,6 +308,7 @@ class LoopState:
     repeat_count: int = 0
 
     # Empty tool-only iteration tracking
+    process_wait_guard: ProcessWaitGuard = field(default_factory=ProcessWaitGuard)
     empty_tool_only_count: int = 0
     last_tool_only_signature: Optional[str] = None
     last_tool_only_summary: str = ""
@@ -317,6 +319,7 @@ class LoopState:
         self.empty_response_count = 0
         self.last_response_hash = None
         self.repeat_count = 0
+        self.process_wait_guard.progress.clear()
         self.empty_tool_only_count = 0
         self.last_tool_only_signature = None
         self.last_tool_only_summary = ""
@@ -378,6 +381,15 @@ class LoopState:
             self.repeated_tool_only_count = 0
             return False, None
 
+        wait_decision = self.process_wait_guard.check(iteration_results)
+        if wait_decision is not None:
+            self.last_tool_only_signature = None
+            self.repeated_tool_only_count = 0
+            self.last_tool_only_summary = tool_results_loop_identity(
+                iteration_results
+            ).summary
+            return wait_decision
+
         self.empty_tool_only_count += 1
         identity = tool_results_loop_identity(iteration_results)
         signature = identity.fingerprint
@@ -397,6 +409,10 @@ class LoopState:
 
 _EMPTY_RESPONSE_PLACEHOLDER = "[Empty response from model]"
 _TOOL_ONLY_STALL_NOTES = {
+    "process_wait_budget_exhausted": (
+        "The process is still running but produced no new output within the "
+        "waiting budget. Its process_id remains available for polling or stopping."
+    ),
     "repeated_empty_tool_only_iterations": (
         "Stopping because empty tool-only turns repeated the same tool result "
         "identity; this is probably a stale loop rather than forward progress."
@@ -3083,23 +3099,25 @@ class Engine:
                 cm,
                 tool_call,
             ),
-            persist_tool_result_record=lambda tool_call,
-            tool_result: self._persist_tool_result_record(
-                cm,
-                tool_call,
-                tool_result,
+            persist_tool_result_record=lambda tool_call, tool_result: (
+                self._persist_tool_result_record(
+                    cm,
+                    tool_call,
+                    tool_result,
+                )
             ),
             execution_policy=self._tool_execution_policy(
                 cm,
                 catch_exceptions=True,
             ),
-            persist_action_result=lambda action_result,
-            tool_context: cm.add_action_result(
-                action_type=action_result["action"],
-                result=action_result["result"],
-                status=action_result["status"],
-                tool_call_id=tool_context.get("tool_call_id"),
-                tool_arguments=tool_context.get("tool_arguments"),
+            persist_action_result=lambda action_result, tool_context: (
+                cm.add_action_result(
+                    action_type=action_result["action"],
+                    result=action_result["result"],
+                    status=action_result["status"],
+                    tool_call_id=tool_context.get("tool_call_id"),
+                    tool_arguments=tool_context.get("tool_arguments"),
+                )
             ),
             emit_action_start=(
                 (lambda payload: cm.core.emit_ui_event("action", payload))
