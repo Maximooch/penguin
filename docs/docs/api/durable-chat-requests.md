@@ -74,6 +74,31 @@ Cancellation during a result write does not change the result that Penguin alrea
 The write can still commit after cancellation, or leave the receipt accepted if it fails.
 Lookup reports the persisted state in both cases.
 
+## Request-scoped cancellation
+
+`POST /api/v1/link/chat-request/cancel` takes the same `session_id` and
+`client_message_id` query parameters as lookup. It requires the dedicated Link
+service credential. Capabilities advertise this endpoint as
+`durable_chat_requests.cancel`.
+
+The endpoint commits cancellation intent before returning the current receipt.
+It does not cancel other requests in that session. Repeat it safely after a lost
+HTTP response or a Link restart.
+
+- No acceptance yet: a durable tombstone prevents delayed execution. Lookup
+  returns a completed stopped response.
+- Accepted and running: the execution owner polls the shared SQLite database
+  and requests cancellation. The receipt stays accepted until cleanup and
+  result persistence finish.
+- Already completed: the original result is returned unchanged.
+- Accepted but owner lost: the receipt stays accepted. Cancellation does not
+  invent proof of termination or authorize replay.
+
+The poll interval is 250 ms, not an execution deadline. Database contention and
+runtime cleanup can delay completion. As with session abort, stopping the owner
+does not roll back external effects or prove that detached processes stopped.
+Cancellation tombstones have no expiry and remain in the receipt database.
+
 ## Storage and limits
 
 Receipts live in `chat-requests.sqlite3` under the runtime workspace.
