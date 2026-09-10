@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import ctypes
 import hashlib
 import importlib.metadata
 import json
@@ -15,6 +16,7 @@ import os
 import platform
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -38,8 +40,16 @@ LOCAL_HOSTS = {"", "localhost", "127.0.0.1", "0.0.0.0", "::1"}
 DEFAULT_TUI_RELEASE_API_ROOT = "https://api.github.com/repos/Maximooch/penguin/releases"
 DEFAULT_TUI_RELEASE_URL = f"{DEFAULT_TUI_RELEASE_API_ROOT}/latest"
 DEFAULT_WEB_URL = f"http://127.0.0.1:{DEFAULT_WEB_PORT}"
+TUI_V2_PROTOCOL_GENERATION = "v2"
+TUI_V2_UPSTREAM_PIN = "b35c5fc98577b77d8d67d298c6254e0cd138c9d5"
+TUI_V2_ARTIFACT_PIN = "@opencode-ai/cli@0.0.0-next-17220"
 _URL_MODE_CAP_CACHE: dict[str, bool] = {}
 _STARTUP_PROFILE_START = time.perf_counter()
+
+
+def _use_opencode_v2() -> bool:
+    """Return whether the parallel OpenCode V2 launcher is enabled."""
+    return os.getenv("PENGUIN_TUI_V2", "").strip() == "1"
 
 
 def _profile_startup(label: str, **details: Any) -> None:
@@ -83,7 +93,7 @@ def _normalize_base_url(raw_url: str) -> str:
 
 
 def _health_url(base_url: str) -> str:
-    """Build the Penguin health endpoint URL.
+    """Build the generation-specific Penguin health endpoint URL.
 
     Args:
         base_url: Normalized Penguin web base URL.
@@ -91,7 +101,8 @@ def _health_url(base_url: str) -> str:
     Returns:
         Health endpoint URL.
     """
-    return f"{base_url.rstrip('/')}/api/v1/health"
+    endpoint = "/api/health" if _use_opencode_v2() else "/api/v1/health"
+    return f"{base_url.rstrip('/')}{endpoint}"
 
 
 def _is_server_running(base_url: str, timeout_seconds: float = 1.0) -> bool:
@@ -102,13 +113,30 @@ def _is_server_running(base_url: str, timeout_seconds: float = 1.0) -> bool:
         timeout_seconds: HTTP timeout for the health check request.
 
     Returns:
-        True if `/api/v1/health` responds with HTTP 200, otherwise False.
+        True if the selected client's health contract is satisfied.
     """
     try:
         with urlopen(_health_url(base_url), timeout=timeout_seconds) as response:
-            status = getattr(response, "status", response.getcode())
-            return status == 200
-    except (URLError, OSError):
+            status = getattr(response, "status", None)
+            if status is None:
+                status = response.getcode()
+            if status != 200:
+                return False
+            if not _use_opencode_v2():
+                return True
+            payload = json.loads(response.read().decode("utf-8"))
+            if not isinstance(payload, dict) or payload.get("healthy") is not True:
+                return False
+            version = payload.get("version")
+            pid = payload.get("pid")
+            return (
+                isinstance(version, str)
+                and bool(version.strip())
+                and isinstance(pid, int)
+                and not isinstance(pid, bool)
+                and pid > 0
+            )
+    except (json.JSONDecodeError, UnicodeDecodeError, URLError, OSError):
         return False
 
 
@@ -330,6 +358,48 @@ def _sync_local_auth_env_from_cache(base_url: str, env: dict[str, str]) -> None:
         env["PENGUIN_LOCAL_AUTH_TOKEN"] = token
 
 
+def _prepare_opencode_v2_env(env: dict[str, str]) -> None:
+    """Configure the opt-in OpenCode V2 client without changing V1."""
+    if not _use_opencode_v2():
+        return
+
+    env["OPENCODE_DISABLE_AUTOUPDATE"] = "1"
+    if env.get("OPENCODE_PASSWORD", "").strip():
+        return
+
+    api_keys = [
+        key.strip() for key in env.get("PENGUIN_API_KEYS", "").split(",") if key.strip()
+    ]
+    if api_keys:
+        env["OPENCODE_PASSWORD"] = api_keys[0]
+        return
+
+    token = env.get("PENGUIN_LOCAL_AUTH_TOKEN", "").strip()
+    if token:
+        env["OPENCODE_PASSWORD"] = token
+
+
+def _prepare_auto_v2_config_env(
+    env: dict[str, str] | None,
+    binary_path: Path,
+) -> None:
+    """Point an auto-resolved V2 client at its bundled extension root."""
+    if env is None or env.get("OPENCODE_CONFIG_DIR", "").strip():
+        return
+
+    install_root = _v2_sidecar_install_root(binary_path)
+    if install_root is None:
+        raise RuntimeError(
+            "Auto-resolved OpenCode V2 sidecar is outside its isolated cache layout"
+        )
+    plugin_path = install_root / "plugins" / "tui" / "penguin.tsx"
+    if not plugin_path.is_file():
+        raise RuntimeError(
+            "Auto-resolved OpenCode V2 sidecar is missing plugins/tui/penguin.tsx"
+        )
+    env["OPENCODE_CONFIG_DIR"] = str(install_root)
+
+
 def _find_local_opencode_dir() -> Path | None:
     """Find local `penguin-tui/packages/opencode` if present.
 
@@ -342,6 +412,9 @@ def _find_local_opencode_dir() -> Path | None:
         if (candidate / "src" / "index.ts").exists():
             return candidate
 
+    if _use_opencode_v2():
+        return None
+
     repo_root = Path(__file__).resolve().parents[2]
     candidate = repo_root / "penguin-tui" / "packages" / "opencode"
     if (candidate / "src" / "index.ts").exists():
@@ -353,11 +426,32 @@ def _sidecar_binary_name() -> str:
     return "opencode.exe" if sys.platform.startswith("win") else "opencode"
 
 
+def _v2_sidecar_binary_name() -> str:
+    return "opencode2.exe" if sys.platform.startswith("win") else "opencode2"
+
+
 def _sidecar_cache_root() -> Path:
     raw = os.getenv("PENGUIN_TUI_CACHE_DIR", "").strip()
     if raw:
         return Path(raw).expanduser().resolve()
     return Path.home() / ".cache" / "penguin" / "tui"
+
+
+def _v2_sidecar_cache_root() -> Path:
+    return _sidecar_cache_root() / TUI_V2_PROTOCOL_GENERATION
+
+
+def _v2_sidecar_install_root(binary_path: Path) -> Path | None:
+    candidate = binary_path.expanduser().resolve()
+    if candidate.name != _v2_sidecar_binary_name() or candidate.parent.name != "bin":
+        return None
+
+    install_root = candidate.parent.parent
+    try:
+        install_root.relative_to(_v2_sidecar_cache_root().resolve())
+    except ValueError:
+        return None
+    return install_root
 
 
 def _sidecar_release_url() -> str:
@@ -430,6 +524,129 @@ def _sidecar_platform_candidates() -> list[str]:
     )
 
 
+def _is_musl_linux() -> bool:
+    """Return whether the current Linux runtime is positively identified as musl."""
+    if not sys.platform.startswith("linux"):
+        return False
+
+    libc_name, _ = platform.libc_ver()
+    if libc_name.strip().lower() == "musl":
+        return True
+    if Path("/etc/alpine-release").is_file():
+        return True
+
+    try:
+        for lib_root in (Path("/lib"), Path("/usr/lib")):
+            if next(lib_root.glob("ld-musl-*.so*"), None) is not None:
+                return True
+    except OSError:
+        pass
+
+    ldd = shutil.which("ldd")
+    if not ldd:
+        return False
+    try:
+        result = subprocess.run(
+            [ldd, "--version"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "musl" in f"{result.stdout}\n{result.stderr}".lower()
+
+
+def _cpu_supports_avx2() -> bool:
+    """Return AVX2 support only when the host reports it explicitly."""
+    machine = platform.machine().strip().lower()
+    if machine not in {"amd64", "x86_64", "x64"}:
+        return False
+
+    if sys.platform.startswith("linux"):
+        try:
+            cpu_info = Path("/proc/cpuinfo").read_text(
+                encoding="utf-8", errors="ignore"
+            )
+        except OSError:
+            return False
+        for line in cpu_info.splitlines():
+            key, separator, value = line.partition(":")
+            if separator and key.strip().lower() in {"flags", "features"}:
+                if "avx2" in value.lower().split():
+                    return True
+        return False
+
+    if sys.platform == "darwin":
+        sysctl = shutil.which("sysctl")
+        if not sysctl:
+            return False
+        try:
+            result = subprocess.run(
+                [sysctl, "-n", "hw.optional.avx2_0"],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return result.returncode == 0 and result.stdout.strip() == "1"
+
+    if sys.platform.startswith("win"):
+        try:
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            return bool(kernel32.IsProcessorFeaturePresent(40))
+        except (AttributeError, OSError):
+            return False
+
+    return False
+
+
+def _v2_sidecar_platform_candidates() -> list[str]:
+    """Return compatible V2 release assets in safest-first order."""
+    machine = platform.machine().strip().lower()
+    if machine in {"amd64", "x86_64", "x64"}:
+        arch = "x64"
+    elif machine in {"arm64", "aarch64"}:
+        arch = "arm64"
+    else:
+        arch = machine
+
+    prefix = "opencode2"
+    if sys.platform == "darwin":
+        if arch == "arm64":
+            return [f"{prefix}-darwin-arm64.zip"]
+        if arch == "x64":
+            baseline = f"{prefix}-darwin-x64-baseline.zip"
+            if not _cpu_supports_avx2():
+                return [baseline]
+            return [f"{prefix}-darwin-x64.zip", baseline]
+
+    if sys.platform.startswith("linux"):
+        musl = _is_musl_linux()
+        if arch == "arm64":
+            suffix = "-musl" if musl else ""
+            return [f"{prefix}-linux-arm64{suffix}.tar.gz"]
+        if arch == "x64":
+            libc_suffix = "-musl" if musl else ""
+            baseline = f"{prefix}-linux-x64-baseline{libc_suffix}.tar.gz"
+            if not _cpu_supports_avx2():
+                return [baseline]
+            return [f"{prefix}-linux-x64{libc_suffix}.tar.gz", baseline]
+
+    if sys.platform.startswith("win") and arch == "x64":
+        baseline = f"{prefix}-windows-x64-baseline.zip"
+        if not _cpu_supports_avx2():
+            return [baseline]
+        return [f"{prefix}-windows-x64.zip", baseline]
+
+    raise RuntimeError(
+        f"Unsupported OpenCode V2 sidecar platform: {sys.platform}/{machine}"
+    )
+
+
 def _read_json_url(url: str, timeout_seconds: float = 20.0) -> dict[str, Any]:
     request = Request(
         url,
@@ -488,29 +705,64 @@ def _verify_asset_digest(archive_path: Path, digest: str | None) -> None:
 
 def _extract_archive(archive_path: Path, destination: Path) -> None:
     destination.mkdir(parents=True, exist_ok=True)
+    base = destination.resolve()
+
+    def target_for(member_name: str, archive_kind: str) -> Path:
+        target = (destination / member_name).resolve()
+        if base not in target.parents and target != base:
+            raise RuntimeError(
+                f"Unsafe path in sidecar {archive_kind} archive: {member_name}"
+            )
+        return target
+
     lower_name = archive_path.name.lower()
     if lower_name.endswith(".zip"):
         with zipfile.ZipFile(archive_path, "r") as archive:
-            for member in archive.namelist():
-                target = (destination / member).resolve()
-                if (
-                    destination.resolve() not in target.parents
-                    and target != destination.resolve()
-                ):
-                    raise RuntimeError(f"Unsafe path in sidecar zip archive: {member}")
-            archive.extractall(destination)
+            members = archive.infolist()
+            for member in members:
+                mode = member.external_attr >> 16
+                member_type = stat.S_IFMT(mode)
+                if member_type not in {0, stat.S_IFREG, stat.S_IFDIR}:
+                    raise RuntimeError(
+                        f"Unsafe member type in sidecar zip archive: {member.filename}"
+                    )
+                target_for(member.filename, "zip")
+            for member in members:
+                target = target_for(member.filename, "zip")
+                if member.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(member, "r") as source, target.open("wb") as output:
+                    shutil.copyfileobj(source, output)
+                mode = member.external_attr >> 16
+                if mode:
+                    target.chmod(stat.S_IMODE(mode))
         return
 
     if lower_name.endswith(".tar.gz") or lower_name.endswith(".tgz"):
         with tarfile.open(archive_path, "r:gz") as archive:
-            base = destination.resolve()
-            for member in archive.getmembers():
-                target = (destination / member.name).resolve()
-                if base not in target.parents and target != base:
+            members = archive.getmembers()
+            for member in members:
+                if not member.isdir() and not member.isreg():
                     raise RuntimeError(
-                        f"Unsafe path in sidecar tar archive: {member.name}"
+                        f"Unsafe member type in sidecar tar archive: {member.name}"
                     )
-            archive.extractall(destination)
+                target_for(member.name, "tar")
+            for member in members:
+                target = target_for(member.name, "tar")
+                if member.isdir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                source = archive.extractfile(member)
+                if source is None:
+                    raise RuntimeError(
+                        f"Unreadable member in sidecar tar archive: {member.name}"
+                    )
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with source, target.open("wb") as output:
+                    shutil.copyfileobj(source, output)
+                target.chmod(stat.S_IMODE(member.mode))
         return
 
     raise RuntimeError(f"Unsupported sidecar archive format: {archive_path.name}")
@@ -533,6 +785,7 @@ def _read_cached_sidecar_marker(
     *,
     release_url: str,
     requested_version: str | None,
+    cache_identity: dict[str, str] | None = None,
 ) -> Path | None:
     marker = cache_root / "current.json"
     if not marker.exists():
@@ -548,6 +801,10 @@ def _read_cached_sidecar_marker(
     marker_release_url = str(data.get("release_url", "")).strip()
     if marker_release_url != release_url:
         return None
+    if cache_identity is not None:
+        for key, expected in cache_identity.items():
+            if data.get(key) != expected:
+                return None
     marker_requested_version = data.get("requested_version")
     if requested_version is not None:
         if not isinstance(marker_requested_version, str):
@@ -571,6 +828,7 @@ def _write_cached_sidecar_marker(
     asset_name: str,
     release_url: str,
     requested_version: str | None,
+    cache_identity: dict[str, str] | None = None,
 ) -> None:
     marker = cache_root / "current.json"
     payload = {
@@ -580,6 +838,8 @@ def _write_cached_sidecar_marker(
         "release_url": release_url,
         "requested_version": requested_version,
     }
+    if cache_identity is not None:
+        payload.update(cache_identity)
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
@@ -607,7 +867,56 @@ def _select_release_asset(release: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def _resolve_sidecar_binary() -> Path:
+def _select_v2_release_asset(
+    release: dict[str, Any],
+    candidates: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    assets_raw = release.get("assets")
+    assets = assets_raw if isinstance(assets_raw, list) else []
+    compatible_assets = list(candidates or _v2_sidecar_platform_candidates())
+
+    for wanted in compatible_assets:
+        for asset in assets:
+            if not isinstance(asset, dict):
+                continue
+            if str(asset.get("name", "")).strip() == wanted:
+                return asset
+
+    available = [
+        str(asset.get("name", "")).strip()
+        for asset in assets
+        if isinstance(asset, dict) and asset.get("name")
+    ]
+    raise RuntimeError(
+        "No compatible OpenCode V2 sidecar asset found for platform "
+        f"{sys.platform}/{platform.machine()}. Expected one of {compatible_assets}; "
+        f"available assets: {available}"
+    )
+
+
+def _required_v2_sha256_digest(asset: dict[str, Any]) -> str:
+    """Return a validated SHA-256 digest or reject the V2 release asset."""
+    raw_digest = asset.get("digest")
+    if not isinstance(raw_digest, str) or not raw_digest.strip():
+        raise RuntimeError(
+            "OpenCode V2 sidecar assets require a nonempty SHA-256 digest"
+        )
+    value = raw_digest.strip()
+
+    algorithm, separator, expected = value.partition(":")
+    if separator:
+        if algorithm.strip().lower() != "sha256":
+            raise RuntimeError("OpenCode V2 sidecar asset digest must use SHA-256")
+        value = expected.strip()
+
+    if len(value) != 64 or any(
+        character not in "0123456789abcdefABCDEF" for character in value
+    ):
+        raise RuntimeError("OpenCode V2 sidecar asset has an invalid SHA-256 digest")
+    return f"sha256:{value.lower()}"
+
+
+def _resolve_v1_sidecar_binary() -> Path:
     explicit_path = os.getenv("PENGUIN_TUI_BIN_PATH", "").strip()
     if explicit_path:
         candidate = Path(explicit_path).expanduser().resolve()
@@ -717,6 +1026,159 @@ def _resolve_sidecar_binary() -> Path:
     return binary_path
 
 
+def _v2_sidecar_cache_identity(platform_asset: str) -> dict[str, str]:
+    return {
+        "protocol_generation": TUI_V2_PROTOCOL_GENERATION,
+        "upstream_pin": TUI_V2_UPSTREAM_PIN,
+        "artifact_pin": TUI_V2_ARTIFACT_PIN,
+        "platform_asset": platform_asset,
+    }
+
+
+def _resolve_v2_sidecar_binary() -> Path:
+    explicit_path = os.getenv("PENGUIN_TUI_BIN_PATH", "").strip()
+    if explicit_path:
+        candidate = Path(explicit_path).expanduser().resolve()
+        if candidate.exists() and candidate.is_file():
+            return candidate
+        raise RuntimeError(
+            f"Configured PENGUIN_TUI_BIN_PATH does not exist: {candidate}"
+        )
+
+    override_release_url = _sidecar_release_override_url()
+    requested_version = None if override_release_url else _installed_penguin_version()
+    if requested_version is None and override_release_url is None:
+        raise RuntimeError(
+            "Unable to determine installed Penguin version for V2 sidecar lookup"
+        )
+    if override_release_url is not None:
+        release_url = override_release_url
+    else:
+        assert requested_version is not None
+        release_url = _sidecar_release_url_for_version(requested_version)
+
+    platform_candidates = _v2_sidecar_platform_candidates()
+    cache_root = _v2_sidecar_cache_root()
+    cached = None
+    for platform_asset in platform_candidates:
+        cached = _read_cached_sidecar_marker(
+            cache_root,
+            release_url=release_url,
+            requested_version=requested_version,
+            cache_identity=_v2_sidecar_cache_identity(platform_asset),
+        )
+        if cached is not None:
+            break
+    if cached is not None:
+        install_root = _v2_sidecar_install_root(cached)
+        plugin_path = (
+            install_root / "plugins" / "tui" / "penguin.tsx"
+            if install_root is not None
+            else None
+        )
+        license_path = (
+            install_root / "penguin-tui" / "LICENSE"
+            if install_root is not None
+            else None
+        )
+        if (
+            plugin_path is not None
+            and plugin_path.is_file()
+            and license_path is not None
+            and license_path.is_file()
+        ):
+            return cached
+
+    try:
+        release = _read_json_url(release_url)
+    except Exception as exc:
+        if requested_version is not None and override_release_url is None:
+            raise RuntimeError(
+                "No OpenCode V2 sidecar release metadata found for installed "
+                f"Penguin version {requested_version}. Expected GitHub release tag "
+                f"v{requested_version}."
+            ) from exc
+        raise RuntimeError(
+            f"Unable to fetch OpenCode V2 sidecar metadata from {release_url}"
+        ) from exc
+
+    try:
+        asset = _select_v2_release_asset(release, platform_candidates)
+    except RuntimeError as exc:
+        if requested_version is not None and override_release_url is None:
+            raise RuntimeError(
+                "OpenCode V2 sidecar release "
+                f"v{requested_version} does not contain a compatible asset for "
+                f"{sys.platform}/{platform.machine()}: {exc}"
+            ) from exc
+        raise
+
+    asset_name = str(asset.get("name", "")).strip()
+    asset_url = str(asset.get("browser_download_url", "")).strip()
+    if not asset_name or not asset_url:
+        raise RuntimeError(
+            "OpenCode V2 sidecar metadata is missing asset download fields"
+        )
+    digest = _required_v2_sha256_digest(asset)
+    cache_identity = _v2_sidecar_cache_identity(asset_name)
+
+    release_tag = str(release.get("tag_name", "latest")).strip() or "latest"
+    install_root = cache_root / release_tag / asset_name
+    binary_path = install_root / "bin" / _v2_sidecar_binary_name()
+
+    tmp_root = cache_root / ".tmp"
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="sidecar-", dir=str(tmp_root)) as tmp_dir:
+        tmp_dir_path = Path(tmp_dir)
+        archive_path = tmp_dir_path / asset_name
+        _download_binary_asset(asset_url, archive_path)
+        _verify_asset_digest(archive_path, digest)
+
+        extracted_dir = tmp_dir_path / "extract"
+        _extract_archive(archive_path, extracted_dir)
+        extracted_binary = extracted_dir / "bin" / _v2_sidecar_binary_name()
+        if not extracted_binary.is_file():
+            raise RuntimeError(
+                "Downloaded OpenCode V2 sidecar archive did not contain "
+                f"'bin/{_v2_sidecar_binary_name()}'"
+            )
+        extracted_plugin = extracted_dir / "plugins" / "tui" / "penguin.tsx"
+        if not extracted_plugin.is_file():
+            raise RuntimeError(
+                "Downloaded OpenCode V2 sidecar archive did not contain "
+                "'plugins/tui/penguin.tsx'"
+            )
+        extracted_license = extracted_dir / "penguin-tui" / "LICENSE"
+        if not extracted_license.is_file():
+            raise RuntimeError(
+                "Downloaded OpenCode V2 sidecar archive did not contain "
+                "'penguin-tui/LICENSE'"
+            )
+
+        shutil.copytree(extracted_dir, install_root, dirs_exist_ok=True)
+
+    if not sys.platform.startswith("win"):
+        mode = binary_path.stat().st_mode
+        binary_path.chmod(mode | 0o755)
+
+    _write_cached_sidecar_marker(
+        cache_root,
+        binary_path=binary_path,
+        release_tag=release_tag,
+        asset_name=asset_name,
+        release_url=release_url,
+        requested_version=requested_version,
+        cache_identity=cache_identity,
+    )
+    return binary_path
+
+
+def _resolve_sidecar_binary() -> Path:
+    if _use_opencode_v2():
+        return _resolve_v2_sidecar_binary()
+    return _resolve_v1_sidecar_binary()
+
+
 def _binary_supports_url_mode(binary: str) -> bool:
     cache_key = str(Path(binary).expanduser())
     cached = _URL_MODE_CAP_CACHE.get(cache_key)
@@ -778,11 +1240,30 @@ def _build_binary_tui_command(
     return cmd
 
 
+def _build_v2_tui_command(
+    *,
+    binary: str,
+    project_dir: Path,
+    base_url: str,
+    extra_args: list[str],
+) -> list[str]:
+    """Build the OpenCode V2 server-mode invocation."""
+    cmd = [binary, str(project_dir)]
+    has_server_arg = any(
+        arg == "--server" or arg.startswith("--server=") for arg in extra_args
+    )
+    if not has_server_arg:
+        cmd.extend(["--server", base_url])
+    cmd.extend(extra_args)
+    return cmd
+
+
 def _build_opencode_command(
     project_dir: Path,
     base_url: str,
     extra_args: Sequence[str],
     use_global_opencode: bool,
+    child_env: dict[str, str] | None = None,
 ) -> tuple[list[str], Path | None]:
     """Resolve the best OpenCode command invocation.
 
@@ -792,6 +1273,8 @@ def _build_opencode_command(
         extra_args: Additional args passed through to OpenCode CLI.
         use_global_opencode: Prefer the global `opencode` binary over local
             source checkout execution.
+        child_env: Optional child environment to configure for an auto-resolved
+            V2 sidecar.
 
     Returns:
         Tuple of command argv and optional cwd for the child process.
@@ -801,11 +1284,23 @@ def _build_opencode_command(
     """
     extra = list(extra_args)
     has_url_arg = "--url" in extra
+    use_v2 = _use_opencode_v2()
     global_error = ""
 
     if use_global_opencode:
-        opencode_bin = shutil.which("opencode")
+        binary_name = "opencode2" if use_v2 else "opencode"
+        opencode_bin = shutil.which(binary_name)
         if opencode_bin:
+            if use_v2:
+                return (
+                    _build_v2_tui_command(
+                        binary=opencode_bin,
+                        project_dir=project_dir,
+                        base_url=base_url,
+                        extra_args=extra,
+                    ),
+                    None,
+                )
             cmd = _build_binary_tui_command(
                 binary=opencode_bin,
                 project_dir=project_dir,
@@ -815,7 +1310,20 @@ def _build_opencode_command(
                 require_url_mode=False,
             )
             return cmd, None
-        global_error = " Global 'opencode' binary was not found."
+        global_error = f" Global '{binary_name}' binary was not found."
+
+    explicit_binary = os.getenv("PENGUIN_TUI_BIN_PATH", "").strip()
+    if use_v2 and not use_global_opencode and explicit_binary:
+        sidecar_bin = _resolve_sidecar_binary()
+        return (
+            _build_v2_tui_command(
+                binary=str(sidecar_bin),
+                project_dir=project_dir,
+                base_url=base_url,
+                extra_args=extra,
+            ),
+            None,
+        )
 
     bun_bin = shutil.which("bun")
     local_dir = _find_local_opencode_dir()
@@ -827,10 +1335,41 @@ def _build_opencode_command(
             "./src/index.ts",
             str(project_dir),
         ]
-        if not has_url_arg:
+        if use_v2:
+            has_server_arg = any(
+                arg == "--server" or arg.startswith("--server=") for arg in extra
+            )
+            if not has_server_arg:
+                cmd.extend(["--server", base_url])
+        elif not has_url_arg:
             cmd.extend(["--url", base_url])
         cmd.extend(extra)
         return cmd, local_dir
+
+    if use_v2:
+        try:
+            sidecar_bin = _resolve_sidecar_binary()
+            if not explicit_binary:
+                _prepare_auto_v2_config_env(child_env, sidecar_bin)
+            return (
+                _build_v2_tui_command(
+                    binary=str(sidecar_bin),
+                    project_dir=project_dir,
+                    base_url=base_url,
+                    extra_args=extra,
+                ),
+                None,
+            )
+        except RuntimeError as exc:
+            sidecar_error = str(exc)
+
+        raise RuntimeError(
+            "OpenCode V2 runtime is not available. Set PENGUIN_TUI_BIN_PATH to "
+            "an 'opencode2' binary, set PENGUIN_OPENCODE_DIR to a V2 source "
+            "checkout, or use --use-global-opencode with an installed "
+            f"'opencode2' binary.{global_error} Sidecar bootstrap error: "
+            f"{sidecar_error}"
+        )
 
     try:
         sidecar_bin = _resolve_sidecar_binary()
@@ -1021,6 +1560,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "launcher.auth_cache.done",
         duration_ms=round((time.perf_counter() - cache_auth_start) * 1000),
     )
+    _prepare_opencode_v2_env(env)
 
     try:
         command_start = time.perf_counter()
@@ -1029,6 +1569,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             base_url,
             extra_args,
             use_global_opencode=args.use_global_opencode,
+            child_env=env,
         )
         _profile_startup(
             "launcher.command.done",
