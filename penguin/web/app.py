@@ -209,6 +209,11 @@ def create_app() -> "FastAPI":
         except Exception:
             logger.debug("Unable to start VCS watcher", exc_info=True)
         yield
+        process_tools = getattr(
+            getattr(core, "tool_manager", None), "_process_tools", None
+        )
+        if process_tools is not None:
+            await asyncio.to_thread(process_tools.cleanup)
         # Shutdown: close connection pools
         logger.info("Penguin web application shutting down...")
         try:

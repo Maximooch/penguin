@@ -1,8 +1,9 @@
 # Bug: process_poll Returns Empty Output and Agent Enters Empty-Tool-Turn Loops
 
 ## Status
-Stage 1 fixed — continuous capture, reusable cursors, bounded polling, and
-live-process wait policy implemented. Command unification follows in stage 2.
+Fixed — continuous capture, reusable cursors, bounded polling, and live-process
+wait policy implemented in stage 1; command unification, cancellation, timeout,
+and scoped completion delivery implemented in stage 2.
 
 ## Summary
 During a long disk-usage investigation (2026-08-19), `process_start` + `process_poll`
@@ -200,3 +201,12 @@ The diagnosis above is historical. Both cursor cases and the live-process guard
 reproduction now pass without xfails. Additional contracts cover independent
 consumers, retry replay, log retention beyond pipe capacity, quiet waits,
 process-group cancellation, and inherited output descriptors.
+
+## Stage 2 implementation
+
+`execute_command` now delegates to the process runtime. Yield and execution
+timeout are separate; partial output survives timeout. Native call IDs support
+retry replay, and process access is scoped by session and agent. Completion
+events notify the UI and queue one lifecycle notice for the owning conversation
+without creating a competing model turn. See `docs/docs/tools/processes.md`
+for API semantics, retention limits, and shutdown behavior.

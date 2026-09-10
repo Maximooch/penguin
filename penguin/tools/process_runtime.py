@@ -16,7 +16,10 @@ from codecs import getincrementaldecoder
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +69,13 @@ class ManagedProcess:
     )
     read_lock: threading.Lock = field(default_factory=threading.Lock)
     completion_reason: str | None = None
+    owner: tuple[str, str] = ("", "agent")
+    deadline: float | None = None
+    on_event: Callable[[str, dict[str, Any]], None] | None = None
+    notify_on_complete: bool = False
+    notified: bool = False
+    last_output_event: float = 0.0
+    completion_observed: bool = False
 
     def append_output(self, stream: str, text: str) -> None:
         """Append an event while holding ``changed``."""
@@ -117,8 +127,18 @@ class ProcessRuntime:
         cwd: str | None = None,
         env: dict[str, str] | None = None,
         process_id: str | None = None,
+        owner: tuple[str, str] = ("", "agent"),
+        timeout_seconds: float | None = None,
+        on_event: Callable[[str, dict[str, Any]], None] | None = None,
+        notify_on_complete: bool = False,
     ) -> dict[str, Any]:
         """Start a shell command and its output reader; return a zero cursor."""
+        if timeout_seconds is not None and (
+            not math.isfinite(timeout_seconds) or timeout_seconds < 0
+        ):
+            return self._error(
+                process_id or "", "timeout_seconds must be finite and nonnegative"
+            )
         resolved_cwd = str(Path(cwd or os.getcwd()).expanduser().resolve())
         effective_env = os.environ.copy()
         effective_env.update(env or {})
@@ -133,7 +153,18 @@ class ProcessRuntime:
             if resolved_id in self._processes:
                 return self._error(resolved_id, "process_id_already_exists")
             if len(self._processes) >= self._max_processes:
-                return self._error(resolved_id, "process_limit_reached; run cleanup")
+                # Reap only completed, already-observed records. Logs survive eviction.
+                for old_id, old in list(self._processes.items()):
+                    if old.status() == "exited" and old.completion_observed:
+                        self.stop(old_id, timeout=0.2)
+                        if old.process.stdin is not None:
+                            old.process.stdin.close()
+                        del self._processes[old_id]
+                        break
+                if len(self._processes) >= self._max_processes:
+                    return self._error(
+                        resolved_id, "process_limit_reached; run cleanup"
+                    )
             log_path = None
             try:
                 self._log_dir.mkdir(parents=True, exist_ok=True)
@@ -164,6 +195,14 @@ class ProcessRuntime:
                 env_overrides={key: str(value) for key, value in (env or {}).items()},
                 owns_group=os.name == "posix",
                 log_path=log_path,
+                owner=owner,
+                on_event=on_event,
+                notify_on_complete=notify_on_complete,
+                deadline=(
+                    time.monotonic() + timeout_seconds
+                    if timeout_seconds is not None
+                    else None
+                ),
             )
             self._processes[resolved_id] = record
             record.reader = threading.Thread(
@@ -188,6 +227,8 @@ class ProcessRuntime:
         wait_ms: int = 0,
         consumer_id: str = "agent",
         request_id: str | None = None,
+        wait_for_exit: bool = False,
+        cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
         """Wait for new data/exit and return a reusable exclusive cursor.
 
@@ -217,11 +258,17 @@ class ProcessRuntime:
             if cursor > record.next_sequence - 1:
                 return self._error(process_id, "cursor_ahead_of_output")
             deadline = started + wait_ms / 1000
-            while record.next_sequence - 1 <= cursor and record.status() != "exited":
+            while (
+                wait_for_exit or record.next_sequence - 1 <= cursor
+            ) and record.status() != "exited":
+                if cancel_event is not None and cancel_event.is_set():
+                    break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
-                record.changed.wait(remaining)
+                record.changed.wait(
+                    min(remaining, 0.05) if cancel_event is not None else remaining
+                )
             events = [event for event in record.events if event.sequence > cursor]
             output = "".join(f"[{event.stream}] {event.text}" for event in events)
             history_lost = bool(
@@ -242,8 +289,14 @@ class ProcessRuntime:
                 no_new_output=not events,
                 waited_ms=round((time.monotonic() - started) * 1000),
             )
+            if truncated:
+                snapshot["result"] += (
+                    "\nOutput truncated; inspect log_path for retained output."
+                )
             if since_sequence is None and max_chars:
                 record.cursors[consumer_id] = next_sequence
+                if snapshot["process_status"] == "exited":
+                    record.completion_observed = True
             if key is not None:
                 record.replies[key] = dict(snapshot)
                 while len(record.replies) > 128:
@@ -299,7 +352,8 @@ class ProcessRuntime:
             or timeout < 0
         ):
             return self._error(process_id, "invalid stop mode or timeout")
-        record.completion_reason = "cancelled"
+        if record.process.poll() is None and record.completion_reason is None:
+            record.completion_reason = "cancelled"
         self._signal(record, mode)
         try:
             record.process.wait(timeout=timeout)
@@ -367,6 +421,14 @@ class ProcessRuntime:
                     os.set_blocking(pipe.fileno(), False)
                     selector.register(pipe, selectors.EVENT_READ, stream)
                 while not record.stop_reader.is_set():
+                    if (
+                        record.deadline is not None
+                        and time.monotonic() >= record.deadline
+                        and record.process.poll() is None
+                    ):
+                        record.completion_reason = "timeout"
+                        self._signal(record, "kill")
+                        record.deadline = None
                     if record.process.poll() is not None:
                         if exit_deadline is None:
                             exit_deadline = time.monotonic() + POST_EXIT_DRAIN_SECONDS
@@ -397,6 +459,9 @@ class ProcessRuntime:
                                 record.log_chars += len(retained)
                                 record.log_truncated |= len(retained) < len(text)
                                 record.changed.notify_all()
+                            if time.monotonic() - record.last_output_event >= 0.1:
+                                record.last_output_event = time.monotonic()
+                                self._emit(record, "output")
                 record.streams_closed = not selector.get_map()
         except (OSError, ValueError) as exc:
             logger.exception("Process capture failed: %s", record.process_id)
@@ -411,6 +476,41 @@ class ProcessRuntime:
             with record.changed:
                 record.reader_done = True
                 record.changed.notify_all()
+            self._emit(record, "output")
+            self.enable_notifications(
+                record.process_id, enabled=record.notify_on_complete
+            )
+
+    def enable_notifications(self, process_id: str, *, enabled: bool = True) -> None:
+        """Arm one completion event, including completion racing with yield."""
+        record = self._processes.get(process_id)
+        if record is None:
+            return
+        with record.changed:
+            record.notify_on_complete = enabled
+            if not enabled or not record.reader_done or record.notified:
+                return
+            record.notified = True
+        self._emit(record, "completed")
+
+    def _emit(self, record: ManagedProcess, kind: str) -> None:
+        if record.on_event is None:
+            return
+        with record.changed:
+            payload = self._snapshot(
+                record,
+                output="",
+                since_sequence=0,
+                next_sequence=record.next_sequence - 1,
+            )
+            payload["output_tail"] = "".join(event.text for event in record.events)[
+                -8192:
+            ]
+            payload["session_id"], payload["agent_id"] = record.owner
+        try:
+            record.on_event(kind, payload)
+        except Exception:
+            logger.exception("Process event callback failed: %s", record.process_id)
 
     def _snapshot(
         self,
@@ -423,7 +523,8 @@ class ProcessRuntime:
         status = record.status()
         result = (
             f"process_id={record.process_id} status={status} "
-            f"returncode={record.process.poll()}"
+            f"returncode={record.process.poll()} next_sequence={next_sequence} "
+            f"reason={record.completion_reason or status}"
         )
         if output:
             result += f"\n{output}"
@@ -434,9 +535,15 @@ class ProcessRuntime:
                 else "\nProcess finished; no new output."
             )
         result += f"\nlog_path={record.log_path}"
+        if record.log_truncated:
+            result += "\nRetained log reached its size limit."
+        if record.reader_error:
+            result += f"\nOutput capture failed: {record.reader_error}"
         return {
             "action": "process",
-            "status": "error" if record.reader_error else "completed",
+            "status": "error"
+            if record.reader_error or record.completion_reason == "timeout"
+            else "completed",
             "result": result,
             "process_id": record.process_id,
             "process_status": status,
@@ -452,6 +559,9 @@ class ProcessRuntime:
             "log_truncated": record.log_truncated,
             "streams_closed": record.streams_closed,
             "reader_error": record.reader_error,
+            "error": "timeout"
+            if record.completion_reason == "timeout"
+            else record.reader_error,
             "completion_reason": record.completion_reason
             or ("exited" if status == "exited" else None),
         }

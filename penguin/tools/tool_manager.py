@@ -336,6 +336,8 @@ class ToolManager:
             # Permission enforcer (lazy initialized)
             self._permission_enforcer = None
             self._process_runtime = None
+            self._process_tools = None
+            self._process_runtime_lock = threading.RLock()
             self._permission_enabled = os.environ.get(
                 "PENGUIN_YOLO", ""
             ).lower() not in ("1", "true", "yes")
@@ -829,14 +831,35 @@ class ToolManager:
             },
             {
                 "name": "execute_command",
-                "description": "Execute a shell command in the project root directory.",
+                "description": "Run a command; return its result or a process_id to continue with process_poll. Yielding does not terminate the command.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
+                        "timeout_seconds": {
+                            "type": "number",
+                            "minimum": 0,
+                            "description": "Optional termination deadline in seconds, separate from yielding",
+                        },
+                        "yield_time_ms": {
+                            "type": "integer",
+                            "default": 1000,
+                            "minimum": 0,
+                            "maximum": 60000,
+                        },
+                        "max_chars": {
+                            "type": "integer",
+                            "default": 12000,
+                            "minimum": 0,
+                        },
+                        "cwd": {"type": "string", "description": "Working directory"},
+                        "env": {
+                            "type": "object",
+                            "additionalProperties": {"type": "string"},
+                        },
                         "command": {
                             "type": "string",
                             "description": "The shell command to execute",
-                        }
+                        },
                     },
                     "required": ["command"],
                 },
@@ -847,6 +870,11 @@ class ToolManager:
                 "input_schema": {
                     "type": "object",
                     "properties": {
+                        "timeout_seconds": {
+                            "type": "number",
+                            "minimum": 0,
+                            "description": "Optional termination deadline in seconds, separate from yielding",
+                        },
                         "command": {
                             "type": "string",
                             "description": "The shell command to run",
@@ -2254,15 +2282,23 @@ class ToolManager:
 
     @property
     def process_runtime(self):
-        """Lazy load the persistent process runtime."""
-
-        if self._process_runtime is None:
-            with profile_operation("ToolManager.lazy_load_process_runtime"):
+        """Return the shared process runtime, initialized once across tool threads."""
+        with self._process_runtime_lock:
+            if self._process_runtime is None:
                 from penguin.tools.process_runtime import ProcessRuntime
 
-                logger.debug("Lazy-loading process runtime")
                 self._process_runtime = ProcessRuntime()
-        return self._process_runtime
+            return self._process_runtime
+
+    @property
+    def process_tools(self):
+        """Return the session-scoped process tool service."""
+        with self._process_runtime_lock:
+            if self._process_tools is None:
+                from penguin.tools.process_tools import ProcessTools
+
+                self._process_tools = ProcessTools(self.process_runtime)
+            return self._process_tools
 
     @property
     def permission_enforcer(self):
@@ -4411,42 +4447,20 @@ class ToolManager:
                 "lint_python": lambda: lint_python(
                     tool_input["target"], tool_input["is_file"]
                 ),
-                "execute_command": lambda: self.execute_command(
-                    tool_input["command"], cwd=file_root
+                "execute_command": lambda: self.process_tools.execute(
+                    "execute_command", tool_input, effective_context
                 ),
-                "process_start": lambda: self.process_runtime.start(
-                    tool_input["command"],
-                    cwd=tool_input.get("cwd") or file_root,
-                    env=(
-                        tool_input.get("env")
-                        if isinstance(tool_input.get("env"), dict)
-                        else None
-                    ),
+                "process_start": lambda: self.process_tools.execute(
+                    "process_start", tool_input, effective_context
                 ),
-                "process_poll": lambda: self.process_runtime.poll(
-                    tool_input["process_id"],
-                    since_sequence=(
-                        int(tool_input["since_sequence"])
-                        if tool_input.get("since_sequence") is not None
-                        else None
-                    ),
-                    wait_ms=int(tool_input.get("wait_ms", 5000)),
-                    consumer_id=str(effective_context.get("agent_id") or "agent"),
-                    request_id=effective_context.get("tool_call_id"),
-                    max_chars=(
-                        int(tool_input["max_chars"])
-                        if tool_input.get("max_chars") is not None
-                        else 12000
-                    ),
+                "process_poll": lambda: self.process_tools.execute(
+                    "process_poll", tool_input, effective_context
                 ),
-                "process_write_stdin": lambda: self.process_runtime.write_stdin(
-                    tool_input["process_id"],
-                    tool_input.get("text", ""),
+                "process_write_stdin": lambda: self.process_tools.execute(
+                    "process_write_stdin", tool_input, effective_context
                 ),
-                "process_stop": lambda: self.process_runtime.stop(
-                    tool_input["process_id"],
-                    mode=tool_input.get("mode", "terminate"),
-                    timeout=float(tool_input.get("timeout", 2.0) or 2.0),
+                "process_stop": lambda: self.process_tools.execute(
+                    "process_stop", tool_input, effective_context
                 ),
                 ORDERED_TOOL_BATCH_NAME: lambda: self._execute_ordered_tool_batch(
                     tool_input,
@@ -4826,72 +4840,15 @@ class ToolManager:
         return result_container["result"] or ""
 
     def execute_command(self, command: str, cwd: Optional[str] = None) -> str:
-        try:
-            # Determine the OS
-            import platform
-
-            os_type = platform.system().lower()
-
-            # Adjust command based on OS
-            if os_type == "windows":
-                shell = True
-                command = f"cmd /c {command}"
-            else:  # Unix-like systems (Linux, macOS)
-                shell = False
-                command = ["bash", "-c", command]
-
-            # Prepare environment to suppress Rich formatting
-            env = os.environ.copy()
-            env["TERM"] = "dumb"
-            env["NO_COLOR"] = "1"
-            env["RICH_NO_MARKUP"] = "1"
-
-            # Default timeout (seconds) for command tools
-            try:
-                default_timeout = int(os.environ.get("PENGUIN_TOOL_TIMEOUT", "60"))
-            except Exception:
-                default_timeout = 300
-                # TODO: make this configurable
-                # NOTE: You need to consider a case where it may be installing packages, etc.
-
-            result = None
-            try:
-                effective_cwd = cwd or self._file_root
-                result = subprocess.run(
-                    command,
-                    shell=shell,
-                    capture_output=True,
-                    text=True,
-                    cwd=effective_cwd,
-                    env=env,  # Use environment with Rich suppression
-                    timeout=default_timeout,
-                )
-            except subprocess.TimeoutExpired:
-                return json.dumps(
-                    {
-                        "error": "timeout",
-                        "tool": "execute_command",
-                        "timeout_seconds": default_timeout,
-                    }
-                )
-
-            if result.returncode == 0:
-                return result.stdout.strip()
-            else:
-                return json.dumps(
-                    {
-                        "error": result.stderr.strip() or "command_failed",
-                        "tool": "execute_command",
-                        "returncode": result.returncode,
-                    }
-                )
-        except Exception as e:
-            return json.dumps(
-                {
-                    "error": f"Error executing command: {str(e)}",
-                    "tool": "execute_command",
-                }
-            )
+        """Compatibility wrapper returning text for short successful commands."""
+        result = self.process_tools.execute(
+            "execute_command",
+            {"command": command},
+            {**self._merged_execution_context(), "directory": cwd or self._file_root},
+        )
+        if result.get("process_status") == "exited" and result.get("returncode") == 0:
+            return str(result.get("output", "")).removeprefix("[stdout] ").strip()
+        return json.dumps(result)
 
     def add_summary_note(self, category: str, content: str) -> str:
         self.summary_notes_tool.add_summary(category, content)

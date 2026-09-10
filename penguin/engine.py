@@ -57,6 +57,7 @@ from penguin.llm.runtime import (
     prepare_responses_tool_kwargs,
 )
 from penguin.tools import ToolManager  # type: ignore
+from penguin.core_runtime.process_notifications import process_session_scope
 from penguin.tools.process_wait import ProcessWaitGuard
 from penguin.tools.runtime import (
     DEFAULT_TOOL_MODEL_OUTPUT_MAX_CHARS,
@@ -3647,6 +3648,7 @@ class Engine:
         )
         return [*messages, {"role": "system", "content": notice}]
 
+    @process_session_scope
     async def _llm_step(
         self,
         *,

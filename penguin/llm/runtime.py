@@ -5,8 +5,14 @@ import inspect
 import json
 import logging
 import time
+from dataclasses import replace
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
+from penguin.system.execution_context import (
+    ExecutionContext,
+    execution_context_scope,
+    get_current_execution_context,
+)
 from penguin.tools.runtime import (
     ORDERED_TOOL_BATCH_NAME,
     OrderedToolBatchPlan,
@@ -86,6 +92,8 @@ class UnsupportedReasoningVariantError(ValueError):
             "variant": self.variant,
             "supported": list(self.supported),
         }
+
+
 _REASONING_DISABLE_VARIANTS = {"off"}
 _NATIVE_RESPONSE_COMPLETION_TOOLS = {"finish_response"}
 logger = logging.getLogger(__name__)
@@ -95,6 +103,7 @@ async def _execute_tool_with_manager(
     tool_manager: Any,
     tool_name: str,
     tool_arguments: Dict[str, Any],
+    tool_call_id: str | None = None,
 ) -> Any:
     """Execute a tool through the manager's async contract when available.
 
@@ -107,14 +116,16 @@ async def _execute_tool_with_manager(
         The completed tool result.
     """
 
-    async_dispatch = getattr(tool_manager, "execute_tool_async", None)
-    if callable(async_dispatch):
-        result = async_dispatch(tool_name, tool_arguments)
-    else:
-        result = tool_manager.execute_tool(tool_name, tool_arguments)
-    if inspect.isawaitable(result):
-        return await result
-    return result
+    previous = get_current_execution_context() or ExecutionContext()
+    with execution_context_scope(replace(previous, tool_call_id=tool_call_id)):
+        async_dispatch = getattr(tool_manager, "execute_tool_async", None)
+        if callable(async_dispatch):
+            result = async_dispatch(tool_name, tool_arguments)
+        else:
+            result = tool_manager.execute_tool(tool_name, tool_arguments)
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
 
 def _tool_arguments_chars(arguments: Any) -> int:
@@ -881,7 +892,7 @@ async def _execute_ordered_batch_parent(
                         "parent_tool_call_id": parent_call.id,
                     },
                 }
-    )
+            )
 
     async def _execute_child(child_call: ToolCall) -> Any:
         child_args = (
@@ -891,6 +902,7 @@ async def _execute_ordered_batch_parent(
             tool_manager,
             child_call.name,
             child_args,
+            tool_call_id=child_call.id,
         )
 
     child_results = await execute_tool_calls_ordered(
@@ -1058,6 +1070,7 @@ async def execute_pending_tool_calls(
                 tool_manager,
                 current_tool_call.name,
                 parsed_args_by_id.get(current_tool_call.id, {}),
+                tool_call_id=current_tool_call.id,
             )
 
         scheduler_results = await execute_tool_calls_ordered(
@@ -1317,9 +1330,7 @@ def apply_reasoning_variant_override(
     provider_id = str(getattr(model_config, "provider", "") or "").strip().lower()
     model_id = str(getattr(model_config, "model", "") or "").strip()
 
-    raw_metadata_variants = getattr(
-        model_config, "supported_reasoning_levels", None
-    )
+    raw_metadata_variants = getattr(model_config, "supported_reasoning_levels", None)
     metadata_variants = reasoning_efforts_from_metadata(raw_metadata_variants)
     capability_variants = reasoning_efforts_from_metadata(supported_efforts)
     capability_declared = supported_efforts is not None

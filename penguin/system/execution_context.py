@@ -26,6 +26,7 @@ class ExecutionContext:
     project_root: Optional[str] = None
     workspace_root: Optional[str] = None
     request_id: Optional[str] = None
+    tool_call_id: Optional[str] = None
     subagents_enabled: Optional[bool] = None
     permission_mode: Optional[str] = None
     approval_policy: Optional[dict[str, Any]] = None
@@ -41,6 +42,7 @@ class ExecutionContext:
             "project_root": self.project_root,
             "workspace_root": self.workspace_root,
             "request_id": self.request_id,
+            "tool_call_id": self.tool_call_id,
             "subagents_enabled": self.subagents_enabled,
             "permission_mode": self.permission_mode,
             "approval_policy": self.approval_policy,

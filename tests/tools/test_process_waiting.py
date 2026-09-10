@@ -153,3 +153,31 @@ def test_terminal_results_still_trigger_stale_guard() -> None:
     assert state.check_empty_tool_only("", [result]) == (False, None)
     assert state.check_empty_tool_only("", [result]) == (False, None)
     assert state.check_empty_tool_only("", [result])[0] is True
+
+
+def test_log_limit_is_visible_without_stopping_capture(
+    runtime: ProcessRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("penguin.tools.process_runtime.MAX_LOG_CHARS", 4)
+    pid = runtime.start("printf 'abcdefgh'; read done")["process_id"]
+    result = runtime.poll(pid, wait_ms=1000)
+    assert result["log_truncated"] is True
+    assert "abcdefgh" in result["output"]
+    assert Path(result["log_path"]).read_text() == "abcd"
+    assert result["process_status"] == "running"
+
+
+def test_capture_failure_terminates_child_and_surfaces_error(
+    runtime: ProcessRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_open(*args, **kwargs):
+        raise OSError("injected log failure")
+
+    monkeypatch.setattr("penguin.tools.process_runtime.open", fail_open, raising=False)
+    pid = runtime.start("read done")["process_id"]
+    result = runtime.poll(pid, wait_ms=1000, wait_for_exit=True)
+    assert result["status"] == "error"
+    assert result["process_status"] == "exited"
+    assert "injected log failure" in result["reader_error"]
