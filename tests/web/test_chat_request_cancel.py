@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 
 from penguin.web.services.chat_requests import ChatRequestStore, execute_chat_request
 
@@ -167,6 +168,38 @@ async def test_cancel_before_acceptance_survives_reopen(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_delayed_acceptance_preserves_stop_without_owner(tmp_path: Path) -> None:
+    """Acceptance must preserve a stopped receipt without a later owner write."""
+    path = tmp_path / "requests.sqlite3"
+    store = ChatRequestStore(path)
+    stopped = store.cancel("s", "old")
+    assert stopped["state"] == "completed"
+    assert stopped["response"]["status"] == "stopped"
+
+    # Simulate owner loss immediately after acceptance: never call complete().
+    claimed = store.accept("s", "old", {"text": "hello"})
+    reopened = ChatRequestStore(path)
+    assert reopened.lookup("s", "old") == stopped
+    assert claimed is False
+
+    async def forbidden() -> dict[str, Any]:
+        """Fail if replay executes work already stopped before acceptance."""
+        pytest.fail("Cancelled request executed")
+
+    assert (
+        await execute_chat_request(
+            lambda: reopened, "s", "old", {"text": "hello"}, forbidden
+        )
+        == stopped["response"]
+    )
+    with pytest.raises(HTTPException) as conflict:
+        reopened.accept("s", "old", {"text": "changed"})
+    assert conflict.value.status_code == 409
+    assert conflict.value.detail == "CHAT_REQUEST_IDEMPOTENCY_CONFLICT"
+    assert ChatRequestStore(path).lookup("s", "old") == stopped
+
+
+@pytest.mark.asyncio
 async def test_cancel_running_request_from_other_connection(tmp_path: Path) -> None:
     """Cancellation uses persisted identity, not an HTTP observer or session ID."""
     path = tmp_path / "requests.sqlite3"
@@ -205,11 +238,25 @@ def test_cancel_does_not_overwrite_completed_result(tmp_path: Path) -> None:
     assert store.cancel("s", "r")["response"] == {"response": "done"}
 
 
-def test_unknown_owner_is_not_reported_stopped(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_unknown_owner_is_not_reported_stopped(tmp_path: Path) -> None:
     """An accepted request without its owner remains uncertain, even after Stop."""
     path = tmp_path / "requests.sqlite3"
     ChatRequestStore(path).accept("s", "r", {})
     assert ChatRequestStore(path).cancel("s", "r") == {"state": "accepted"}
+    reopened = ChatRequestStore(path)
+    assert reopened.accept("s", "r", {}) is False
+    assert reopened.lookup("s", "r") == {"state": "accepted"}
+
+    async def forbidden() -> dict[str, Any]:
+        """Fail if retry executes work whose original outcome is uncertain."""
+        pytest.fail("Accepted request executed twice")
+
+    assert await execute_chat_request(lambda: reopened, "s", "r", {}, forbidden) == {
+        "status": "recovering",
+        "request_state": "accepted",
+        "session_id": "s",
+    }
 
 
 @pytest.mark.asyncio

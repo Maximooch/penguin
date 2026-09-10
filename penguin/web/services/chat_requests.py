@@ -83,7 +83,19 @@ class ChatRequestStore:
         return db
 
     def accept(self, session_id: str, request_id: str, payload: dict[str, Any]) -> bool:
-        """Claim a new request, or reject conflicting reuse before execution."""
+        """Claim new work or atomically record its pre-dispatch cancellation.
+
+        Args:
+            session_id: Exact provider session identity.
+            request_id: Durable request identity within the session.
+            payload: Request fields used to detect conflicting reuse.
+
+        Returns:
+            True only for new work that was not already cancelled.
+
+        Raises:
+            HTTPException: The identity was used with a different payload.
+        """
         fingerprint = hashlib.sha256(
             json.dumps(
                 payload, sort_keys=True, separators=(",", ":"), allow_nan=False
@@ -102,6 +114,22 @@ class ChatRequestStore:
             ).fetchone()
             if row["fingerprint"] != fingerprint:
                 raise HTTPException(409, "CHAT_REQUEST_IDEMPOTENCY_CONFLICT")
+            # The INSERT holds the write lock through this check and completion.
+            # Only new claims are safe to stop here; existing owners may have run.
+            if (
+                inserted == 1
+                and db.execute(
+                    "SELECT 1 FROM chat_request_cancellations "
+                    "WHERE session_id=? AND request_id=?",
+                    (session_id, request_id),
+                ).fetchone()
+            ):
+                db.execute(
+                    "UPDATE chat_requests SET response=? "
+                    "WHERE session_id=? AND request_id=?",
+                    (json.dumps(stopped_response(session_id)), session_id, request_id),
+                )
+                return False
             return inserted == 1
 
     def complete(
