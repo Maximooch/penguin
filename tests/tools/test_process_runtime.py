@@ -255,8 +255,7 @@ class _TimeoutThenKillProcess:
 
 
 class _BrokenStdin:
-    def write(self, text: str) -> int:
-        del text
+    def fileno(self) -> int:
         raise BrokenPipeError("stdin closed")
 
     def flush(self) -> None:
@@ -278,7 +277,7 @@ def test_process_runtime_write_stdin_returns_error_for_broken_pipe() -> None:
         process_id="broken",
         command="closed stdin",
         cwd="/tmp",
-        process=cast(Any, _BrokenStdinProcess()),
+        process=cast("Any", _BrokenStdinProcess()),
     )
 
     result = runtime.write_stdin("broken", "ping\n")
@@ -295,7 +294,7 @@ def test_process_runtime_terminate_timeout_escalates_to_kill() -> None:
         process_id="stubborn",
         command="ignore TERM",
         cwd="/tmp",
-        process=cast(Any, process),
+        process=cast("Any", process),
     )
 
     stopped = runtime.stop("stubborn", timeout=0.001)

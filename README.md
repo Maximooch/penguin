@@ -403,3 +403,5 @@ Built upon insights from:
 - [Claude-Engineer](https://github.com/Doriandarko/claude-engineer)
 - [Aider](https://github.com/paul-gauthier/aider)
 - [RawDog](https://github.com/AbanteAI/rawdog)
+
+For long-running shell commands, see [managed processes](docs/docs/tools/processes.md).

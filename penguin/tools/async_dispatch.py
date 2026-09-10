@@ -5,16 +5,20 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+import threading
+from typing import TYPE_CHECKING, Any
 
 from penguin.multi.policy import (
     SUBAGENT_TOOL_NAMES,
     disabled_subagent_result,
     subagents_enabled,
 )
+from penguin.tools.process_tools import PROCESS_TOOL_NAMES
 from penguin.utils.profiling import profile_operation
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from penguin.tools.tool_manager import ToolManager
 
 logger = logging.getLogger(__name__)
@@ -121,6 +125,24 @@ class AsyncToolDispatcher:
             effective_context
         ):
             return json.dumps(disabled_subagent_result(canonical_name))
+        if canonical_name in PROCESS_TOOL_NAMES:
+            cancellation = threading.Event()
+            call_context = {**effective_context, "process_cancel_event": cancellation}
+            task = asyncio.create_task(
+                asyncio.to_thread(
+                    manager.execute_tool,
+                    requested_name,
+                    tool_input,
+                    call_context,
+                )
+            )
+            try:
+                return await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancellation.set()
+                # The worker owns process cleanup. Do not abandon it on cancellation.
+                await asyncio.shield(task)
+                raise
         if canonical_name not in ASYNC_TOOL_NAMES:
             return await asyncio.to_thread(
                 manager.execute_tool,
