@@ -173,6 +173,23 @@ def test_http_contract_auth_replay_conflict_and_lookup(tmp_path, monkeypatch):
             assert result.status_code == 200
             assert result.json()["response"] == "done"
         assert calls == ["hello"]
+        for bad_headers in ({}, {"X-API-Key": "ordinary-test-key"}):
+            assert client.post(
+                "/api/v1/link/chat-request/cancel", params=query, headers=bad_headers
+            ).status_code in (401, 403)
+        cancelled_query = {"session_id": "s", "client_message_id": "never-start"}
+        stopped = client.post(
+            "/api/v1/link/chat-request/cancel", params=cancelled_query, headers=headers
+        )
+        assert stopped.status_code == 200
+        assert stopped.json()["response"]["aborted"] is True
+        delayed = client.post(
+            "/api/v1/chat/message",
+            json={**body, "client_message_id": "never-start"},
+            headers=headers,
+        )
+        assert delayed.json()["aborted"] is True
+        assert calls == ["hello"]
         result = client.post(
             "/api/v1/chat/message", json={**body, "text": "changed"}, headers=headers
         )

@@ -20,7 +20,9 @@ from fastapi import HTTPException
 from fastapi.encoders import jsonable_encoder
 
 from penguin.system.task_cancellation import (
+    AbortReason,
     CancellationTrackingTask,
+    abort_task,
     preserve_cancellation,
     task_abort_reason,
 )
@@ -41,6 +43,11 @@ class ChatRequestStore:
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._connect()) as db, db:
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS chat_request_cancellations ("
+                "session_id TEXT NOT NULL, request_id TEXT NOT NULL, "
+                "PRIMARY KEY (session_id, request_id))"
+            )
             db.execute(
                 """CREATE TABLE IF NOT EXISTS chat_requests (
                     session_id TEXT NOT NULL,
@@ -123,19 +130,74 @@ class ChatRequestStore:
     def lookup(self, session_id: str, request_id: str) -> dict[str, Any]:
         """Read durable acceptance independently of live process ownership."""
         with closing(self._connect()) as db:
+            # Read acceptance and the tombstone from one snapshot. Otherwise a
+            # concurrent accept could be mistaken for never-started work.
+            db.execute("BEGIN")
             row = db.execute(
                 "SELECT response, http_error FROM chat_requests "
                 "WHERE session_id=? AND request_id=?",
                 (session_id, request_id),
             ).fetchone()
-        if row is None:
-            return {"state": "absent"}
+            if row is None:
+                cancelled = db.execute(
+                    "SELECT 1 FROM chat_request_cancellations "
+                    "WHERE session_id=? AND request_id=?",
+                    (session_id, request_id),
+                ).fetchone()
+                if cancelled:
+                    return {
+                        "state": "completed",
+                        "response": stopped_response(session_id),
+                    }
+                return {"state": "absent"}
         if row["response"] is None:
             return {"state": "accepted"}
         receipt = {"state": "completed", "response": json.loads(row["response"])}
         if row["http_error"] is not None:
             receipt["http_error"] = json.loads(row["http_error"])
         return receipt
+
+    def is_cancelled(self, session_id: str, request_id: str) -> bool:
+        """Read cancellation intent for this request, including delayed dispatches."""
+        with closing(self._connect()) as db:
+            return (
+                db.execute(
+                    "SELECT 1 FROM chat_request_cancellations "
+                    "WHERE session_id=? AND request_id=?",
+                    (session_id, request_id),
+                ).fetchone()
+                is not None
+            )
+
+    def cancel(self, session_id: str, request_id: str) -> dict[str, Any]:
+        """Persist a request tombstone and return its current execution receipt.
+
+        Args:
+            session_id: Exact provider session identity.
+            request_id: Exact durable request identity, never a session-wide abort.
+
+        Returns:
+            The receipt. Accepted work remains nonterminal until its owner stops.
+        """
+        with closing(self._connect()) as db, db:
+            db.execute(
+                "INSERT INTO chat_request_cancellations VALUES (?, ?) "
+                "ON CONFLICT DO NOTHING",
+                (session_id, request_id),
+            )
+        return self.lookup(session_id, request_id)
+
+
+def stopped_response(session_id: str) -> dict[str, Any]:
+    """Return the existing stopped-result contract for a cancelled request."""
+    return {
+        "response": "",
+        "action_results": [],
+        "aborted": True,
+        "status": "stopped",
+        "abort_reason": AbortReason.USER_INTERRUPTED.value,
+        "session_id": session_id,
+    }
 
 
 def get_chat_request_store(core: Any) -> ChatRequestStore:
@@ -179,6 +241,27 @@ async def execute_chat_request(
         assert isinstance(task, CancellationTrackingTask)
         preserve_cancellation.set(True)
         failure: HTTPException | None = None
+        if await asyncio.to_thread(store.is_cancelled, session_id, request_id):
+            response = stopped_response(session_id)
+            await asyncio.to_thread(store.complete, session_id, request_id, response)
+            return response
+
+        async def watch_cancellation() -> None:
+            # This is a cross-process intent poll, not an execution timeout.
+            while True:
+                try:
+                    if await asyncio.to_thread(
+                        store.is_cancelled, session_id, request_id
+                    ):
+                        abort_task(task, AbortReason.USER_INTERRUPTED)
+                        return
+                except sqlite3.OperationalError:
+                    logger.warning(
+                        "Cannot read cancellation intent; retrying", exc_info=True
+                    )
+                await asyncio.sleep(0.25)
+
+        watcher = asyncio.create_task(watch_cancellation())
         try:
             response = await task.run_child(execute)
         except HTTPException as exc:
@@ -188,17 +271,13 @@ async def execute_chat_request(
             if task_abort_reason(task) is None:
                 raise
             response = {}
+        finally:
+            watcher.cancel()
+            await asyncio.gather(watcher, return_exceptions=True)
         reason = task_abort_reason(task)
         if reason is not None:
             failure = None
-            response = {
-                "response": "",
-                "action_results": [],
-                "aborted": True,
-                "status": "stopped",
-                "abort_reason": reason.value,
-                "session_id": session_id,
-            }
+            response = {**stopped_response(session_id), "abort_reason": reason.value}
         elif task.cancellation_requested:
             # core.process may swallow CancelledError. Shutdown is still uncertain.
             raise asyncio.CancelledError

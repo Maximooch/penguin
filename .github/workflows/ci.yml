@@ -39,6 +39,7 @@ jobs:
             tests/system/test_task_cancellation.py \
             tests/web/test_chat_requests.py \
             tests/web/test_chat_request_contention.py \
+            tests/web/test_chat_request_cancel.py \
             tests/llm/test_link_provider.py \
             tests/llm/test_link_runtime_contract.py \
             tests/web/test_external_subscription_service.py \
@@ -52,6 +53,7 @@ jobs:
             tests/system/test_task_cancellation.py \
             tests/web/test_chat_requests.py \
             tests/web/test_chat_request_contention.py \
+            tests/web/test_chat_request_cancel.py \
             tests/llm/test_link_provider.py \
             tests/llm/test_link_runtime_contract.py \
             tests/web/test_external_subscription_service.py \
@@ -67,6 +69,7 @@ jobs:
             tests/web/test_link_execution_authority.py \
             tests/web/test_chat_requests.py \
             tests/web/test_chat_request_contention.py \
+            tests/web/test_chat_request_cancel.py \
             tests/system/test_task_cancellation.py \
             tests/core_runtime/test_process_runtime.py \
             tests/api/test_opencode_provider_routes.py::test_chat_message_rejects_cross_user_subscription_authority \

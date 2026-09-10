@@ -3403,7 +3403,11 @@ async def api_link_capabilities(http_request: Request) -> dict[str, Any]:
     authenticate_link_service_request(http_request)
     return {
         **build_external_subscription_capabilities(),
-        "durable_chat_requests": {"version": 1, "lookup": "/api/v1/link/chat-request"},
+        "durable_chat_requests": {
+            "version": 1,
+            "lookup": "/api/v1/link/chat-request",
+            "cancel": "/api/v1/link/chat-request/cancel",
+        },
     }
 
 
@@ -3855,6 +3859,22 @@ async def lookup_link_chat_request(
 
     return await asyncio.to_thread(
         lambda: get_chat_request_store(core).lookup(session_id, client_message_id)
+    )
+
+
+@router.post("/api/v1/link/chat-request/cancel")
+async def cancel_link_chat_request(
+    session_id: str,
+    client_message_id: str,
+    http_request: Request,
+    core: PenguinCore = Depends(get_core),
+) -> dict[str, Any]:
+    """Persist cancellation for one request using the dedicated Link credential."""
+    authenticate_link_service_request(http_request)
+    from penguin.web.services.chat_requests import get_chat_request_store
+
+    return await asyncio.to_thread(
+        lambda: get_chat_request_store(core).cancel(session_id, client_message_id)
     )
 
 
