@@ -9,6 +9,8 @@ from pathlib import Path
 import sys
 from typing import Any, Dict, List, Union
 
+
+from penguin.system.tool_environment import build_tool_environment
 from penguin.project.models import Task
 
 logger = logging.getLogger(__name__)
@@ -86,6 +88,7 @@ class ValidationManager:
         try:
             process = await asyncio.create_subprocess_exec(
                 *command,
+                env=build_tool_environment(),
                 cwd=self.workspace_path,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,

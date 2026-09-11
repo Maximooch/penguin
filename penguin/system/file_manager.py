@@ -2,6 +2,8 @@ import os
 import subprocess
 from typing import List
 
+from penguin.system.tool_environment import build_tool_environment
+
 
 class FileManager:
     def __init__(self):
@@ -28,7 +30,11 @@ class FileManager:
                 return self.current_dir
             else:
                 result = subprocess.run(
-                    command, shell=True, capture_output=True, text=True
+                    command,
+                    env=build_tool_environment(),
+                    shell=True,
+                    capture_output=True,
+                    text=True,
                 )
                 return (
                     result.stdout

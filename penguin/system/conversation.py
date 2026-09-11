@@ -11,6 +11,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+
+from penguin.system.tool_environment import build_tool_environment
 from penguin.config import CONVERSATION_CONFIG
 from penguin.system.state import Message, MessageCategory, Session
 from penguin.utils.diagnostics import diagnostics
@@ -709,6 +711,7 @@ class ConversationSystem:
 
                     result = subprocess.run(
                         ["git", "rev-parse", "--show-toplevel"],
+                        env=build_tool_environment(),
                         capture_output=True,
                         text=True,
                         cwd=".",
@@ -782,6 +785,7 @@ class ConversationSystem:
 
                 result = subprocess.run(
                     ["git", "rev-parse", "--show-toplevel"],
+                    env=build_tool_environment(),
                     capture_output=True,
                     text=True,
                     cwd=".",

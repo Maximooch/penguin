@@ -140,8 +140,12 @@ class ProcessRuntime:
                 process_id or "", "timeout_seconds must be finite and nonnegative"
             )
         resolved_cwd = str(Path(cwd or os.getcwd()).expanduser().resolve())
-        effective_env = os.environ.copy()
-        effective_env.update(env or {})
+        from penguin.system.tool_environment import build_tool_environment
+
+        try:
+            effective_env = build_tool_environment(env)
+        except ValueError as exc:
+            return self._error(process_id or "", str(exc))
         for key, value in (
             ("TERM", "dumb"),
             ("NO_COLOR", "1"),

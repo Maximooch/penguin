@@ -11,6 +11,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+
+from penguin.system.tool_environment import build_tool_environment
 from penguin.plugins import BasePlugin, PluginMetadata, register_tool
 from penguin.tools.core.support import (
     create_folder,
@@ -468,6 +470,7 @@ class CoreToolsPlugin(BasePlugin):
         try:
             result = subprocess.run(
                 command,
+                env=build_tool_environment(),
                 shell=True,
                 capture_output=True,
                 text=True,

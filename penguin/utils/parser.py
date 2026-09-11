@@ -17,6 +17,8 @@ from html import unescape
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Callable, Awaitable
 import base64
+
+from penguin.system.tool_environment import build_tool_environment
 from penguin.local_task.manager import ProjectManager
 from penguin.multi.policy import (
     SUBAGENT_TOOL_NAMES,
@@ -2556,6 +2558,7 @@ class ActionExecutor:
                         pattern,
                         str(_resolve_explore_path(path)),
                     ],
+                    env=build_tool_environment(),
                     capture_output=True,
                     text=True,
                     timeout=10,
