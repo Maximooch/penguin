@@ -6,6 +6,7 @@ from IPython.core.interactiveshell import InteractiveShell # type: ignore
 
 from penguin.utils.process_manager import ProcessManager
 from penguin.utils import FileMap
+from penguin.system.tool_environment import build_tool_environment, hosted_tools_enabled
 
 
 class NotebookExecutor:
@@ -21,6 +22,8 @@ class NotebookExecutor:
         self.active_directory = WORKSPACE_PATH  # Explicit workspace tracking
 
     def execute_code(self, code: str) -> str:
+        if hosted_tools_enabled():
+            return "Error: In-process Python is disabled in hosted mode. Use execute_command with a Python subprocess."
         try:
             # Store pre-execution state
             pre_dir = os.getcwd()
@@ -119,19 +122,19 @@ class NotebookExecutor:
                 command = ["bash", "-c", command]
 
             # Prepare environment to suppress Rich formatting
-            env = os.environ.copy()
+            env = build_tool_environment()
             env['TERM'] = 'dumb'
             env['NO_COLOR'] = '1'
             env['RICH_NO_MARKUP'] = '1'
 
             # Execute command in explicit workspace directory
             result = subprocess.run(
-                command, 
-                shell=shell, 
-                capture_output=True, 
-                text=True, 
+                command,
+                shell=shell,
+                capture_output=True,
+                text=True,
                 cwd=self.active_directory,  # Force workspace context
-                env=env  # Use environment with Rich suppression
+                env=env,  # Use environment with Rich suppression
             )
 
             # Combine stdout and stderr if present

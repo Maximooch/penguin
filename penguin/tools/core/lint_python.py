@@ -2,6 +2,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from penguin.system.tool_environment import build_tool_environment
+
 
 def lint_python(target: str, is_file: bool) -> dict:
     try:
@@ -24,28 +26,40 @@ def lint_python(target: str, is_file: bool) -> dict:
 
         # Run Flake8
         flake8_result = subprocess.run(
-            ["flake8", str(file_path)], capture_output=True, text=True
+            ["flake8", str(file_path)],
+            env=build_tool_environment(),
+            capture_output=True,
+            text=True,
         )
         if flake8_result.stdout:
             results.append(("Flake8 (Style)", flake8_result.stdout))
 
         # Run Pylint
         pylint_result = subprocess.run(
-            ["pylint", str(file_path)], capture_output=True, text=True
+            ["pylint", str(file_path)],
+            env=build_tool_environment(),
+            capture_output=True,
+            text=True,
         )
         if pylint_result.stdout:
             results.append(("Pylint (Code Quality)", pylint_result.stdout))
 
         # Run mypy
         mypy_result = subprocess.run(
-            ["mypy", str(file_path), "--strict"], capture_output=True, text=True
+            ["mypy", str(file_path), "--strict"],
+            env=build_tool_environment(),
+            capture_output=True,
+            text=True,
         )
         if mypy_result.stdout:
             results.append(("mypy (Type Checking)", mypy_result.stdout))
 
         # Run Bandit
         bandit_result = subprocess.run(
-            ["bandit", "-r", str(file_path)], capture_output=True, text=True
+            ["bandit", "-r", str(file_path)],
+            env=build_tool_environment(),
+            capture_output=True,
+            text=True,
         )
         if bandit_result.stdout:
             results.append(("Bandit (Security)", bandit_result.stdout))
