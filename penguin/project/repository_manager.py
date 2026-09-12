@@ -25,7 +25,7 @@ class RepositoryConfig:
     name: str
     owner: str
     local_path: Path
-    default_branch: str = "main"
+    default_branch: str | None = None
     
     @property
     def full_name(self) -> str:
@@ -49,7 +49,8 @@ class RepositoryManager:
         self.git_manager = GitManager(
             workspace_path=self.local_path,
             project_manager=self.project_manager,
-            repo_owner_and_name=config.full_name
+            repo_owner_and_name=config.full_name,
+            default_branch=config.default_branch
         )
     
     async def create_improvement_pr(

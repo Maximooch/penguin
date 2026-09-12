@@ -4635,6 +4635,7 @@ class ToolManager:
                     tool_input["title"],
                     tool_input["description"],
                     tool_input.get("files_changed"),
+                    directory=file_root,
                 ),
                 "create_feature_pr": lambda: create_feature_pr(
                     tool_input["repo_owner"],
@@ -4643,6 +4644,7 @@ class ToolManager:
                     tool_input["description"],
                     tool_input.get("implementation_notes", ""),
                     tool_input.get("files_modified"),
+                    directory=file_root,
                 ),
                 "create_bugfix_pr": lambda: create_bugfix_pr(
                     tool_input["repo_owner"],
@@ -4650,6 +4652,7 @@ class ToolManager:
                     tool_input["bug_description"],
                     tool_input["fix_description"],
                     tool_input.get("files_fixed"),
+                    directory=file_root,
                 ),
                 "list_skills": lambda: self.skill_tools.list_skills(
                     refresh=tool_input.get("refresh", False),
@@ -4667,18 +4670,20 @@ class ToolManager:
                 ),
                 "todoread": lambda: self.todo_tools.read(effective_context),
                 "get_repository_status": lambda: get_repository_status(
-                    tool_input["repo_owner"], tool_input["repo_name"]
+                    tool_input["repo_owner"], tool_input["repo_name"], directory=file_root
                 ),
                 "commit_and_push_changes": lambda: commit_and_push_changes(
                     tool_input["repo_owner"],
                     tool_input["repo_name"],
                     tool_input["commit_message"],
                     tool_input.get("files_to_add"),
+                    directory=file_root,
                 ),
                 "create_and_switch_branch": lambda: create_and_switch_branch(
                     tool_input["repo_owner"],
                     tool_input["repo_name"],
                     tool_input["branch_name"],
+                    directory=file_root,
                 ),
                 # Response/Task completion signals
                 "finish_response": lambda: self.task_tools.finish_response(),

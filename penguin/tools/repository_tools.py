@@ -11,6 +11,11 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from penguin.project.repository_checkout import validate_checkout
+from penguin.system.execution_context import get_current_execution_context_dict
+from penguin.system.tool_environment import hosted_tools_enabled
+from penguin.project.repository_checkout import RepositoryError
+
 from penguin.project.repository_manager import (
     RepositoryManager,
     RepositoryConfig
@@ -18,39 +23,26 @@ from penguin.project.repository_manager import (
 
 logger = logging.getLogger(__name__)
 
-def _get_repository_manager(repo_owner: str, repo_name: str) -> RepositoryManager:
-    """
-    Helper function to get a repository manager for any repository.
-    
-    NOTE: This function creates git operations against the CURRENT LOCAL REPOSITORY
-    directory, but PRs will be created against the specified repo_owner/repo_name
-    on GitHub. This means you should be in the correct local repository directory
-    when using these tools.
-    
-    For example, if you're in the penguin-test-repo directory locally but specify
-    repo_owner="Maximooch" and repo_name="penguin", it will:
-    - Perform git operations in the penguin-test-repo directory (current dir)
-    - Create PRs against the Maximooch/penguin repository on GitHub
-    """
-    
-    # Always use current directory for local git operations
-    local_path = Path.cwd()
-    
-    # But configure for the specified GitHub repository
-    config = RepositoryConfig(
-        owner=repo_owner,
-        name=repo_name,
-        local_path=local_path,
-        default_branch="main"
-    )
-    return RepositoryManager(config)
+def _get_repository_manager(
+    repo_owner: str, repo_name: str, directory: str | None = None
+) -> RepositoryManager:
+    """Resolve the execution checkout without changing process-wide CWD."""
+    context = get_current_execution_context_dict()
+    selected = directory or context.get("directory") or context.get("project_root")
+    if not selected and hosted_tools_enabled():
+        raise RepositoryError("Hosted repository tools require an execution checkout.")
+    local_path = validate_checkout(Path(selected or Path.cwd()), f"{repo_owner}/{repo_name}")
+    return RepositoryManager(RepositoryConfig(
+        owner=repo_owner, name=repo_name, local_path=local_path, default_branch=None
+    ))
 
 def create_improvement_pr(
     repo_owner: str,
     repo_name: str,
     title: str,
     description: str,
-    files_changed: Optional[str] = None
+    files_changed: Optional[str] = None,
+    *, directory: str | None = None
 ) -> str:
     """
     Create a pull request for improvements to a GitHub repository.
@@ -67,7 +59,7 @@ def create_improvement_pr(
     """
     try:
         # Get repository manager
-        repo_manager = _get_repository_manager(repo_owner, repo_name)
+        repo_manager = _get_repository_manager(repo_owner, repo_name, directory)
         
         # Parse files changed
         file_list = []
@@ -98,7 +90,8 @@ def create_feature_pr(
     feature_name: str,
     description: str,
     implementation_notes: str = "",
-    files_modified: Optional[str] = None
+    files_modified: Optional[str] = None,
+    *, directory: str | None = None
 ) -> str:
     """
     Create a pull request for a new feature in a GitHub repository.
@@ -115,7 +108,7 @@ def create_feature_pr(
         String with PR creation result
     """
     try:
-        repo_manager = _get_repository_manager(repo_owner, repo_name)
+        repo_manager = _get_repository_manager(repo_owner, repo_name, directory)
         
         file_list = []
         if files_modified:
@@ -144,7 +137,8 @@ def create_bugfix_pr(
     repo_name: str,
     bug_description: str,
     fix_description: str,
-    files_fixed: Optional[str] = None
+    files_fixed: Optional[str] = None,
+    *, directory: str | None = None
 ) -> str:
     """
     Create a pull request for a bug fix in a GitHub repository.
@@ -160,7 +154,7 @@ def create_bugfix_pr(
         String with PR creation result
     """
     try:
-        repo_manager = _get_repository_manager(repo_owner, repo_name)
+        repo_manager = _get_repository_manager(repo_owner, repo_name, directory)
         
         file_list = []
         if files_fixed:
@@ -185,7 +179,8 @@ def create_bugfix_pr(
 
 def get_repository_status(
     repo_owner: str,
-    repo_name: str
+    repo_name: str,
+    *, directory: str | None = None
 ) -> str:
     """
     Get the current status of a GitHub repository.
@@ -198,7 +193,7 @@ def get_repository_status(
         String with repository status information
     """
     try:
-        repo_manager = _get_repository_manager(repo_owner, repo_name)
+        repo_manager = _get_repository_manager(repo_owner, repo_name, directory)
         status = repo_manager.get_repository_status()
         
         if "error" in status:
@@ -232,7 +227,8 @@ def commit_and_push_changes(
     repo_owner: str,
     repo_name: str,
     commit_message: str,
-    files_to_add: Optional[str] = None
+    files_to_add: Optional[str] = None,
+    *, directory: str | None = None
 ) -> str:
     """
     Commit and push changes to the current branch of a GitHub repository.
@@ -247,7 +243,7 @@ def commit_and_push_changes(
         String with commit result
     """
     try:
-        repo_manager = _get_repository_manager(repo_owner, repo_name)
+        repo_manager = _get_repository_manager(repo_owner, repo_name, directory)
         git_integration = repo_manager.git_manager.git_integration
         
         # Add files
@@ -282,7 +278,8 @@ def commit_and_push_changes(
 def create_and_switch_branch(
     repo_owner: str,
     repo_name: str,
-    branch_name: str
+    branch_name: str,
+    *, directory: str | None = None
 ) -> str:
     """
     Create a new branch and switch to it in a GitHub repository.
@@ -296,7 +293,7 @@ def create_and_switch_branch(
         String with branch creation result
     """
     try:
-        repo_manager = _get_repository_manager(repo_owner, repo_name)
+        repo_manager = _get_repository_manager(repo_owner, repo_name, directory)
         git_integration = repo_manager.git_manager.git_integration
         
         # Create and switch to branch

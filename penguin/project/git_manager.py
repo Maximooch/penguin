@@ -72,6 +72,7 @@ class GitManager:
         workspace_path: Union[str, Path],
         project_manager: ProjectManager,
         repo_owner_and_name: Optional[str] = None,
+        default_branch: Optional[str] = None,
     ):
         """
         Initialize the Git manager.
@@ -82,6 +83,7 @@ class GitManager:
             repo_owner_and_name: The owner and name of the repo (e.g., "my-org/my-repo").
                                  If None, it will be loaded from config.
         """
+        self.default_branch = default_branch
         self.workspace_path = Path(workspace_path)
         self.project_manager = project_manager
         self.repo_owner_and_name = repo_owner_and_name or GITHUB_REPOSITORY
@@ -286,7 +288,7 @@ class GitManager:
                 title=f"feat(task): {task.title}",
                 body=self._create_pr_body(task, validation_results),
                 head=branch,
-                base="main",  # Or make this configurable
+                base=self.default_branch or repo.default_branch,
             )
             
             logger.info(f"Successfully created new PR for task {task.id}: {pull_request.html_url}")
