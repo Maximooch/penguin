@@ -29,7 +29,10 @@ class GitIntegration:
 
     def get_changed_files(self) -> list[str]:
         """Return staged, unstaged, deleted, and untracked paths, without quoting."""
-        tracked = self.run("diff", "HEAD", "--name-only", "--no-renames", "-z")
+        tracked = self.run("diff", "--name-only", "--no-renames", "-z")
+        tracked += "\0" + self.run(
+            "diff", "--cached", "--name-only", "--no-renames", "-z"
+        )
         untracked = self.run("ls-files", "--others", "--exclude-standard", "-z")
         return sorted(set(filter(None, (tracked + "\0" + untracked).split("\0"))))
 

@@ -124,6 +124,8 @@ from penguin.multi.policy import (
     subagents_enabled,
 )
 
+from penguin.project.repository_checkout import RepositoryError
+
 # Repository management tools (optional dependency path)
 try:
     from penguin.tools.repository_tools import (
@@ -1642,6 +1644,13 @@ class ToolManager:
                             "type": "string",
                             "description": "Detailed description of the improvements made",
                         },
+                        "contribution_id": {
+                            "type": "string",
+                            "description": (
+                                "Stable change ID; reuse on retries. "
+                                "Hosted IDs come from the execution."
+                            ),
+                        },
                         "files_changed": {
                             "type": "string",
                             "description": "Comma-separated list of files that were changed (optional)",
@@ -1675,6 +1684,13 @@ class ToolManager:
                         "implementation_notes": {
                             "type": "string",
                             "description": "Additional implementation details (optional)",
+                        },
+                        "contribution_id": {
+                            "type": "string",
+                            "description": (
+                                "Stable change ID; reuse on retries. "
+                                "Hosted IDs come from the execution."
+                            ),
                         },
                         "files_modified": {
                             "type": "string",
@@ -1710,6 +1726,13 @@ class ToolManager:
                         "fix_description": {
                             "type": "string",
                             "description": "Description of how the bug was fixed",
+                        },
+                        "contribution_id": {
+                            "type": "string",
+                            "description": (
+                                "Stable change ID; reuse on retries. "
+                                "Hosted IDs come from the execution."
+                            ),
                         },
                         "files_fixed": {
                             "type": "string",
@@ -4636,6 +4659,7 @@ class ToolManager:
                     tool_input["description"],
                     tool_input.get("files_changed"),
                     directory=file_root,
+                    contribution_id=tool_input.get("contribution_id"),
                 ),
                 "create_feature_pr": lambda: create_feature_pr(
                     tool_input["repo_owner"],
@@ -4645,6 +4669,7 @@ class ToolManager:
                     tool_input.get("implementation_notes", ""),
                     tool_input.get("files_modified"),
                     directory=file_root,
+                    contribution_id=tool_input.get("contribution_id"),
                 ),
                 "create_bugfix_pr": lambda: create_bugfix_pr(
                     tool_input["repo_owner"],
@@ -4653,6 +4678,7 @@ class ToolManager:
                     tool_input["fix_description"],
                     tool_input.get("files_fixed"),
                     directory=file_root,
+                    contribution_id=tool_input.get("contribution_id"),
                 ),
                 "list_skills": lambda: self.skill_tools.list_skills(
                     refresh=tool_input.get("refresh", False),
@@ -4670,7 +4696,9 @@ class ToolManager:
                 ),
                 "todoread": lambda: self.todo_tools.read(effective_context),
                 "get_repository_status": lambda: get_repository_status(
-                    tool_input["repo_owner"], tool_input["repo_name"], directory=file_root
+                    tool_input["repo_owner"],
+                    tool_input["repo_name"],
+                    directory=file_root,
                 ),
                 "commit_and_push_changes": lambda: commit_and_push_changes(
                     tool_input["repo_owner"],
@@ -4760,6 +4788,9 @@ class ToolManager:
                 )
 
                 return result
+            except RepositoryError as e:
+                logging.warning("Repository operation failed: %s", e.code)
+                return {"status": "error", "error": str(e), "code": e.code}
             except Exception as e:
                 error_message = f"Error executing tool {tool_name}: {str(e)}"
                 logging.error(error_message)

@@ -74,3 +74,12 @@ def test_hosted_push_does_not_use_ambient_auth(git, monkeypatch):
     monkeypatch.setenv("PENGUIN_TOOL_ENVIRONMENT", "hosted")
     with pytest.raises(RepositoryError, match="execution-scoped"):
         git.push_branch("trunk")
+
+
+def test_index_changes_visible_even_when_worktree_matches_head(git):
+    (git.workspace_path / "a.txt").write_text("staged")
+    git.run("add", "a.txt")
+    (git.workspace_path / "a.txt").write_text("initial")
+    assert git.get_changed_files() == ["a.txt"]
+    assert git.commit("index", add_all=False)
+    assert git.run("show", "HEAD:a.txt") == "staged"
