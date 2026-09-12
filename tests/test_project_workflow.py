@@ -5,9 +5,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-logger = logging.getLogger(__name__)
-
-# Adjust imports based on your project structure
 from penguin.project.git_manager import GitManager
 from penguin.project.manager import ProjectManager
 from penguin.project.models import TaskStatus
@@ -15,6 +12,8 @@ from penguin.project.spec_parser import parse_project_specification_from_markdow
 from penguin.project.task_executor import ProjectTaskExecutor
 from penguin.project.validation_manager import ValidationManager
 from penguin.project.workflow_orchestrator import WorkflowOrchestrator
+
+logger = logging.getLogger(__name__)
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.e2e]
 

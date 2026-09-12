@@ -1,13 +1,19 @@
-"""Test GitHub App authentication in container.
-
-Verifies that the GitHub App private key is properly mounted and auth works.
-Requires GITHUB_APP_* env vars to be set.
-"""
+"""Explicit local GitHub App smoke. Hosted workloads must not receive App keys."""
 
 import os
 import sys
 
 import pytest
+
+pytestmark = [pytest.mark.live, pytest.mark.e2e]
+
+if (
+    os.getenv("PENGUIN_RUN_GITHUB_APP_SMOKE") != "1"
+    or os.getenv("PENGUIN_TOOL_ENVIRONMENT") == "hosted"
+):
+    pytest.skip(
+        "Explicit local GitHub App smoke activation required", allow_module_level=True
+    )
 
 required_env = [
     "GITHUB_APP_ID",

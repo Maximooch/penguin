@@ -62,6 +62,14 @@ jobs:
             tests/llm/test_link_runtime_contract.py \
             tests/web/test_external_subscription_service.py \
             tests/web/test_link_execution_authority.py
+      - name: Check GitHub contribution modules
+        run: |
+          ruff check penguin/project/contribution*.py penguin/project/git*.py penguin/project/repository_*.py penguin/tools/repository_tools.py tests/project tests/api/test_github_pr_creation.py tests/test_project_workflow.py tests/test_project_workflow_updated.py
+          ruff format --check penguin/project/contribution*.py penguin/project/git*.py penguin/project/repository_*.py penguin/tools/repository_tools.py tests/project tests/api/test_github_pr_creation.py tests/test_project_workflow.py tests/test_project_workflow_updated.py
+      - name: Run offline GitHub contribution contracts
+        run: |
+          pytest -q tests/project tests/api/test_github_webhook_security.py tests/tools/test_async_tool_dispatch.py
+          pytest -q -m e2e tests/test_project_workflow.py tests/test_project_workflow_updated.py
       - name: Run Link provider and Pydantic compatibility contracts
         run: |
           pytest -q \
