@@ -357,6 +357,8 @@ Read more:
 
 ## Documentation
 
+- [GitHub contributions and the hosted operation contract](docs/docs/usage/github-contributions.md)
+
 - [Hosted tool environments and security activation gates](docs/docs/security/hosted-tool-environment.md)
 
 - [Official Documentation](https://penguin-rho.vercel.app)
