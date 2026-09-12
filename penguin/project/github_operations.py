@@ -64,6 +64,11 @@ class LocalGitHubOperations:
 
     @staticmethod
     def _result(pr: Any) -> PullRequest:
+        if (
+            pr.head.repo is None
+            or pr.head.repo.full_name.lower() != pr.base.repo.full_name.lower()
+        ):
+            raise RepositoryError("Fork contributions require separate authorization.")
         return PullRequest(
             number=pr.number,
             url=pr.html_url,

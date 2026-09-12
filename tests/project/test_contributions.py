@@ -132,7 +132,7 @@ def test_recover_commit_after_receipt_write_failure(setup, monkeypatch):
 
 
 def test_clean_but_ahead_can_publish(setup):
-    binding, broker, git = setup
+    binding, _broker, git = setup
     sha = git.commit("pre-existing change")
     assert not git.get_changed_files()
     assert publish(binding)["commit_sha"] == sha
@@ -171,7 +171,7 @@ def test_wrong_remote_pr_rejected(setup):
 
 
 def test_tool_uses_bound_broker_through_thread(setup, monkeypatch, tmp_path):
-    binding, broker, _ = setup
+    binding, _broker, _ = setup
     monkeypatch.chdir(tmp_path)
     with contribution_scope(binding):
         result = json.loads(
@@ -248,7 +248,7 @@ def test_unknown_push_without_remote_evidence_never_repeats(setup, monkeypatch):
 
 
 def test_preexisting_branch_collision_does_not_checkout_foreign_work(setup):
-    binding, broker, git = setup
+    binding, _broker, git = setup
     publish(binding)
     initial = git.run("rev-parse", "HEAD")
     # Another scope cannot take over this contribution branch via an API parameter.
@@ -287,3 +287,13 @@ async def test_public_tool_manager_dispatch_preserves_binding(
     result = json.loads(raw) if isinstance(raw, str) else raw
     assert result["pr_number"] == 7
     assert broker.creates == 1
+
+
+@pytest.mark.parametrize("state", ["closed", "merged"])
+def test_terminal_pr_survives_remote_branch_deletion(setup, state):
+    binding, broker, _ = setup
+    result = publish(binding)
+    broker.pr = replace(broker.pr, state=state)
+    git_command(broker.remote, "update-ref", "-d", f"refs/heads/{result['branch']}")
+    assert publish(binding)["pr_state"] == state
+    assert broker.pushes == broker.creates == 1

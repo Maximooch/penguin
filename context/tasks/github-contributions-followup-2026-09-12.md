@@ -22,7 +22,7 @@ The [usage guide](../../docs/docs/usage/github-contributions.md) defines the con
 
 Local Python 3.12:
 
-- 113 focused repository, environment, webhook, receipt, authority, and dispatch tests passed.
+- 116 focused repository, environment, webhook, receipt, authority, and dispatch tests passed.
 - Two migrated project workflow tests passed with the fake broker.
 - Changed contribution modules and focused tests passed Ruff checks and formatting checks.
 - The live publication and App tests skip without explicit activation.
@@ -32,7 +32,7 @@ Fly Sprite Python 3.12:
 - Organization: `maximus-putnam`.
 - Existing Sprite: `link-penguin-pr99-20260911`.
 - Test checkout: `/home/sprite/penguin-github-contributions-test-20260912`.
-- The same 113 focused tests passed in 7.91 seconds.
+- The same 116 focused tests passed in 7.01 seconds.
 - The import check resolved Penguin from the named test checkout.
 - Tests reused the dependency environment at `/home/sprite/penguin-source/.venv`.
 - The checkout started from PR #99 and received only the changed source, tests, and documentation.
@@ -56,3 +56,15 @@ Local receipts are recovery evidence, not trusted authority inside an agent-cont
 Unknown remote outcomes without matching evidence stop for operator reconciliation.
 
 Fork contributions, PR edits, reviews, merge, webhook modernization, and a production broker remain follow-ups.
+
+## Final review and CI
+
+Final review added terminal-PR recovery after source-branch deletion and rejection of a fork head in the local adapter.
+The final focused suite passed 116 tests locally and in the Sprite.
+Ruff 0.16.7 in CI found three unused test variables that the older local Ruff did not flag.
+Those variables were corrected.
+
+PR #99 already fails the Engine continuation and TUI typecheck jobs.
+The four Engine continuation failures also reproduced directly on the base worktree.
+The failing Engine and TUI source files are unchanged by this PR.
+These baseline failures remain separate work.

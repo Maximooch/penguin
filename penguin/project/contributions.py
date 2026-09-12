@@ -83,6 +83,13 @@ def publish_contribution(
                 "status": "no_changes",
                 "message": "No changes relative to the base.",
             }
+        if state.get("pr_pending"):
+            terminal_pr = binding.operations.find_pr(binding, branch)
+            if terminal_pr is not None and terminal_pr.state in {"closed", "merged"}:
+                _verify_pr(terminal_pr, binding, branch, sha)
+                state["pr"] = asdict(terminal_pr)
+                store.write(state)
+                return _result(binding, terminal_pr, sha, existed=True)
         remote_sha = binding.operations.branch_sha(binding, branch)
         if remote_sha != sha:
             if remote_sha is not None:
@@ -121,17 +128,23 @@ def publish_contribution(
         _verify_pr(pr, binding, branch, sha)
         state["pr"] = asdict(pr)
         store.write(state)
-        return {
-            "status": "already_exists" if existed else "created",
-            "repository": binding.repository,
-            "branch": branch,
-            "commit_sha": sha,
-            "base_sha": binding.base_sha,
-            "pr_url": pr.url,
-            "pr_number": pr.number,
-            "pr_state": pr.state,
-            "contribution_id": binding.contribution_id,
-        }
+        return _result(binding, pr, sha, existed=existed)
+
+
+def _result(
+    binding: ContributionBinding, pr: PullRequest, sha: str, *, existed: bool
+) -> dict[str, Any]:
+    return {
+        "status": "already_exists" if existed else "created",
+        "repository": binding.repository,
+        "branch": pr.branch,
+        "commit_sha": sha,
+        "base_sha": binding.base_sha,
+        "pr_url": pr.url,
+        "pr_number": pr.number,
+        "pr_state": pr.state,
+        "contribution_id": binding.contribution_id,
+    }
 
 
 def _prepare(

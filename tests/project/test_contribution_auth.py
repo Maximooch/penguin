@@ -67,3 +67,16 @@ async def test_concurrent_scopes_propagate_to_threads(tmp_path):
     first, second = await asyncio.gather(invoke("first"), invoke("second"))
     assert first.execution_id == "first"
     assert second.execution_id == "second"
+
+
+def test_local_adapter_rejects_fork_head():
+    from types import SimpleNamespace
+
+    from penguin.project.github_operations import LocalGitHubOperations
+
+    pr = SimpleNamespace(
+        head=SimpleNamespace(repo=SimpleNamespace(full_name="other/repo")),
+        base=SimpleNamespace(repo=SimpleNamespace(full_name="owner/repo")),
+    )
+    with pytest.raises(RepositoryError, match="Fork contributions"):
+        LocalGitHubOperations._result(pr)
