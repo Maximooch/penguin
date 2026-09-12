@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from penguin.project.repository_checkout import RepositoryError, git_command, validate_checkout
+from penguin.project.repository_checkout import (
+    RepositoryError,
+    git_command,
+    validate_checkout,
+)
 from penguin.tools import repository_tools
 
 
@@ -13,19 +17,34 @@ def checkout(tmp_path: Path) -> Path:
     root = tmp_path / "checkout"
     root.mkdir()
     git_command(root, "init", "-b", "trunk")
-    git_command(root, "remote", "add", "origin", "https://github.com/Maximooch/penguin-test-repo.git")
+    git_command(
+        root,
+        "remote",
+        "add",
+        "origin",
+        "https://github.com/Maximooch/penguin-test-repo.git",
+    )
     return root
 
 
 def test_explicit_root_beats_server_cwd(checkout, monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(repository_tools, "RepositoryManager", lambda config: config)
-    config = repository_tools._get_repository_manager("Maximooch", "penguin-test-repo", str(checkout))
+    config = repository_tools._get_repository_manager(
+        "Maximooch", "penguin-test-repo", str(checkout)
+    )
     assert config.local_path == checkout
     assert config.default_branch is None
 
 
-@pytest.mark.parametrize("url", ["https://github.com/other/repo.git", "https://token@github.com/Maximooch/penguin-test-repo.git", "https://github.com.evil.test/Maximooch/penguin-test-repo.git"])
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://github.com/other/repo.git",
+        "https://token@github.com/Maximooch/penguin-test-repo.git",
+        "https://github.com.evil.test/Maximooch/penguin-test-repo.git",
+    ],
+)
 def test_wrong_push_remote_denied(checkout, url):
     git_command(checkout, "remote", "set-url", "--push", "origin", url)
     with pytest.raises(RepositoryError):

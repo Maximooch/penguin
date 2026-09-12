@@ -49,7 +49,7 @@ def git_command(directory: Path, *args: str) -> str:
 
 def _repository_from_url(url: str) -> str:
     if url.startswith("git@github.com:"):
-        path = url[len("git@github.com:"):]
+        path = url[len("git@github.com:") :]
     else:
         parsed = urlsplit(url)
         if (

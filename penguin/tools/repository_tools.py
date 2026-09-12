@@ -246,22 +246,11 @@ def commit_and_push_changes(
         repo_manager = _get_repository_manager(repo_owner, repo_name, directory)
         git_integration = repo_manager.git_manager.git_integration
         
-        # Add files
-        if files_to_add:
-            file_list = [f.strip() for f in files_to_add.split(",")]
-            for file in file_list:
-                git_integration.repo.index.add([file])
-        else:
-            # Add all changed files
-            changed_files = git_integration.get_changed_files()
-            if changed_files:
-                git_integration.repo.index.add(changed_files)
-        
-        # Commit
-        commit_hash = git_integration.commit(commit_message)
+        file_list = [f.strip() for f in files_to_add.split(",")] if files_to_add else None
+        commit_hash = git_integration.commit(commit_message, files=file_list)
         if not commit_hash:
-            return "❌ Failed to commit changes"
-        
+            commit_hash = git_integration.run("rev-parse", "HEAD")
+
         # Push
         current_branch = git_integration.get_current_branch()
         pushed = git_integration.push_branch(current_branch)
