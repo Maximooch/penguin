@@ -231,7 +231,13 @@ class LinkProvider:
                 # This is a NEW model attempt, not replay of an uncertain charge.
                 # Keep the same completed tool context; never expose failed deltas.
                 kwargs = {**kwargs, "invocation_id": str(uuid.uuid4())}
-                await asyncio.sleep(max(delay, exc.error.retry_after_seconds or 0))
+                try:
+                    await asyncio.sleep(max(delay, exc.error.retry_after_seconds or 0))
+                except asyncio.CancelledError:
+                    if self._last_lifecycle is not None:
+                        self._last_lifecycle.status = ProviderRequestStatus.CANCELLED
+                        self._last_lifecycle.ended_at = time.time()
+                    raise
                 delay = min(delay * 2, 30.0)  # Connection backoff, not a run deadline.
                 continue
             if recoverable:

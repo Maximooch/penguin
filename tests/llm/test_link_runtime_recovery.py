@@ -6,7 +6,7 @@ import json
 import httpx
 import pytest
 
-from penguin.llm.contracts import LLMProviderError
+from penguin.llm.contracts import LLMProviderError, ProviderRequestStatus
 from penguin.llm.model_config import ModelConfig
 from penguin.llm.providers.link import (
     LinkInferenceContext,
@@ -16,8 +16,10 @@ from penguin.llm.providers.link import (
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("fault", ["partial", "unavailable", "connection"])
 async def test_runtime_recovery_discards_partial_attempt(
     monkeypatch: pytest.MonkeyPatch,
+    fault: str,
 ) -> None:
     """Preserve tool results and retry with a fresh billing identity, without deltas."""
     requests = []
@@ -39,6 +41,12 @@ async def test_runtime_recovery_discards_partial_attempt(
             "content": "done once",
         }
         if len(requests) == 1:
+            if fault == "unavailable":
+                return httpx.Response(
+                    503, json={"error": {"message": "broker restarting"}}
+                )
+            if fault == "connection":
+                raise httpx.ConnectError("broker restarting")
             event = {
                 "choices": [
                     {
@@ -123,13 +131,18 @@ async def test_runtime_recovery_is_cancellable(monkeypatch: pytest.MonkeyPatch) 
         raise httpx.ConnectError("broker down")
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = make_provider(client)
         task = asyncio.create_task(
-            make_provider(client).get_response([{"role": "user", "content": "hi"}])
+            provider.get_response([{"role": "user", "content": "hi"}])
         )
         await asyncio.wait_for(waiting.wait(), 1)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+        assert (
+            provider.get_last_request_lifecycle().status
+            == ProviderRequestStatus.CANCELLED
+        )
 
 
 @pytest.mark.asyncio
