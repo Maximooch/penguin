@@ -192,7 +192,7 @@ async def test_responses_request_has_attribution_without_provider_key() -> None:
     assert "authorization" not in captured["headers"]
     assert "openrouter" not in captured["headers"]
     assert captured["body"]["max_output_tokens"] == 32
-    assert captured["timeout"]["read"] == 300.0
+    assert captured["timeout"]["read"] is None
     assert provider.get_last_usage()["input_tokens"] == 10
     assert provider.get_last_request_lifecycle().status == (
         ProviderRequestStatus.COMPLETED
