@@ -108,6 +108,7 @@ Penguin exposes the same runtime through several surfaces:
 ### Web/API Surface Notes
 
 - Trusted Link callers can opt into [durable chat requests](docs/docs/api/durable-chat-requests.md) for deduplicated execution and persisted result lookup.
+- Isolated runtimes can use [run-scoped Link inference](docs/docs/api/link-runtime-inference.md) without a server-wide service secret.
 
 - Task/project endpoints now expose current runtime state rather than only legacy task summaries.
   - Task payloads include `status`, `phase`, `dependencies`, `dependency_specs`, `artifact_evidence`, `recipe`, `metadata`, and `clarification_requests` where relevant.

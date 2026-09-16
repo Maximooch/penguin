@@ -6,9 +6,10 @@ import asyncio
 import inspect
 import json
 import os
+import re
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import httpx
@@ -49,10 +50,27 @@ class LinkProviderConfig:
     """Static Link transport configuration; never carries user attribution."""
 
     base_url: str
-    service_token: str
+    service_token: str = field(default="", repr=False)
     service_name: str = "penguin"
     protocol: LinkProtocol = "responses"
     idle_timeout_seconds: float = 300.0
+    runtime_token: str | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        """Reject missing, malformed, or mixed transport credentials.
+
+        Raises:
+            ValueError: Authentication is absent or ambiguous.
+        """
+        if self.runtime_token is not None:
+            if self.service_token or not re.fullmatch(
+                r"lk-run-[A-Za-z0-9_-]{43}", self.runtime_token
+            ):
+                raise ValueError(
+                    "A valid runtime token requires exclusive bearer authentication."
+                )
+        elif not self.service_token:
+            raise ValueError("Link inference requires a service or runtime credential.")
 
     @classmethod
     def from_env(cls, *, base_url: str | None = None) -> LinkProviderConfig:
@@ -72,11 +90,10 @@ class LinkProviderConfig:
             or os.getenv("LINK_INTERNAL_SERVICE_SECRET")
             or ""
         ).strip()
-        if not service_token:
-            raise ValueError("LINK_INFERENCE_SERVICE_TOKEN is required.")
         return cls(
             base_url=resolved_base_url,
             service_token=service_token,
+            runtime_token=os.getenv("LINK_INFERENCE_RUNTIME_TOKEN"),
             service_name=os.getenv("LINK_INFERENCE_SERVICE_NAME", "penguin"),
             protocol=cast("LinkProtocol", protocol),
         )
@@ -429,8 +446,11 @@ class LinkProvider:
             **self.context.headers(invocation_id),
         }
         if include_secret:
-            headers["X-Link-Service-Name"] = self.config.service_name
-            headers["X-Link-Service-Auth"] = self.config.service_token
+            if self.config.runtime_token is not None:
+                headers["Authorization"] = f"Bearer {self.config.runtime_token}"
+            else:
+                headers["X-Link-Service-Name"] = self.config.service_name
+                headers["X-Link-Service-Auth"] = self.config.service_token
         return headers
 
     async def _stream_response(
