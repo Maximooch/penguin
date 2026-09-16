@@ -5,7 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 from ...contracts import FinishReason, LLMToolCall, LLMUsage
-from ...provider_transform import normalize_finish_reason
+from ...provider_transform import (
+    normalize_finish_reason,
+    normalize_openai_chat_tool_choice,
+    normalize_openai_chat_tools,
+)
 
 
 def build_chat_completions_body(
@@ -40,9 +44,9 @@ def build_chat_completions_body(
     if temperature is not None:
         body["temperature"] = temperature
     if tools:
-        body["tools"] = tools
+        body["tools"] = normalize_openai_chat_tools(tools)
     if tool_choice is not None:
-        body["tool_choice"] = tool_choice
+        body["tool_choice"] = normalize_openai_chat_tool_choice(tool_choice)
     if reasoning is not None:
         body["reasoning"] = reasoning
     return body
