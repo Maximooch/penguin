@@ -53,7 +53,7 @@ class LinkProviderConfig:
     service_token: str = field(default="", repr=False)
     service_name: str = "penguin"
     protocol: LinkProtocol = "responses"
-    idle_timeout_seconds: float = 300.0
+    idle_timeout_seconds: float | None = None
     runtime_token: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -177,6 +177,69 @@ class LinkProvider:
         )
 
     async def get_response(
+        self,
+        messages: list[dict[str, Any]],
+        max_output_tokens: int | None = None,
+        temperature: float | None = None,
+        stream: bool = False,
+        stream_callback: StreamCallback | None = None,
+        **kwargs: Any,
+    ) -> str:
+        """Regenerate interrupted run-scoped inference without replaying tools.
+
+        Args:
+            messages: Current context, including already-completed tool results.
+            max_output_tokens: Explicit per-call output allowance.
+            temperature: Sampling temperature.
+            stream: Whether to read provider SSE.
+            stream_callback: Receives only a successfully completed attempt.
+            **kwargs: Native tool options and optional first invocation ID.
+
+        Returns:
+            Text from the completed model attempt.
+
+        Raises:
+            LLMProviderError: An authoritative provider or authorization failure.
+            asyncio.CancelledError: User Stop or runtime shutdown.
+        """
+        recoverable = (
+            self.config.runtime_token is not None
+            and self.config.protocol == "chat_completions"
+        )
+        delay = 1.0
+        while True:
+            chunks: list[tuple[str, str]] = []
+
+            def collect(text: str, message_type: str = "assistant") -> None:
+                chunks.append((text, message_type))
+
+            try:
+                result = await self._get_response_once(
+                    messages,
+                    max_output_tokens,
+                    temperature,
+                    stream,
+                    collect if recoverable else stream_callback,
+                    **kwargs,
+                )
+            except LLMProviderError as exc:
+                if not recoverable or not (
+                    exc.error.category in {ErrorCategory.NETWORK, ErrorCategory.TIMEOUT}
+                    or exc.error.status_code in {429, 502, 503, 504}
+                ):
+                    raise
+                # This is a NEW model attempt, not replay of an uncertain charge.
+                # Keep the same completed tool context; never expose failed deltas.
+                kwargs = {**kwargs, "invocation_id": str(uuid.uuid4())}
+                await asyncio.sleep(max(delay, exc.error.retry_after_seconds or 0))
+                delay = min(delay * 2, 30.0)  # Connection backoff, not a run deadline.
+                continue
+            if recoverable:
+                for text, message_type in chunks:
+                    await _emit(stream_callback, text, message_type)
+            return result
+
+    async def _get_response_once(
         self,
         messages: list[dict[str, Any]],
         max_output_tokens: int | None = None,
@@ -498,6 +561,22 @@ class LinkProvider:
                     continue
                 if not isinstance(event, dict):
                     continue
+                if protocol == "chat_completions" and isinstance(
+                    event.get("error"), dict
+                ):
+                    failure = event["error"]
+                    raise LLMProviderError(
+                        build_llm_error(
+                            message=str(
+                                failure.get("message") or "Link inference failed."
+                            ),
+                            provider="link",
+                            model=str(self.model_config.model),
+                            category=ErrorCategory.RUNTIME,
+                            retryable=False,
+                            provider_data={"dispatch_outcome": "terminal_failure"},
+                        )
+                    )
                 if protocol == "responses":
                     delta = _optional_str(event.get("delta"))
                     event_type = str(event.get("type") or "")
