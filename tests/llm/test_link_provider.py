@@ -64,6 +64,46 @@ def _provider(
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("nested", [False, True])
+async def test_chat_request_normalizes_native_tools(nested: bool) -> None:
+    """Send both engine tool shapes as Chat Completions function definitions."""
+    function = {
+        "name": "execute_command",
+        "description": "Execute a command",
+        "parameters": {"type": "object", "properties": {"command": {"type": "string"}}},
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Assert the wire shape and return a minimal successful completion."""
+        body = json.loads(request.content)
+        assert body["tools"] == [{"type": "function", "function": function}]
+        assert body["tool_choice"] == {
+            "type": "function",
+            "function": {"name": "execute_command"},
+        }
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]},
+        )
+
+    provider = _provider(handler, protocol="chat_completions")
+    tool = (
+        {"type": "function", "function": function}
+        if nested
+        else {"type": "function", **function}
+    )
+    assert (
+        await provider.get_response(
+            [{"role": "user", "content": "hi"}],
+            max_output_tokens=32,
+            tools=[tool],
+            tool_choice={"type": "function", "name": "execute_command"},
+        )
+        == "ok"
+    )
+
+
 def test_transient_context_omits_persisted_identity_headers() -> None:
     context = LinkInferenceContext(
         workspace_id="workspace-1",
@@ -152,7 +192,7 @@ async def test_responses_request_has_attribution_without_provider_key() -> None:
     assert "authorization" not in captured["headers"]
     assert "openrouter" not in captured["headers"]
     assert captured["body"]["max_output_tokens"] == 32
-    assert captured["timeout"]["read"] == 300.0
+    assert captured["timeout"]["read"] is None
     assert provider.get_last_usage()["input_tokens"] == 10
     assert provider.get_last_request_lifecycle().status == (
         ProviderRequestStatus.COMPLETED
