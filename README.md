@@ -357,6 +357,8 @@ Read more:
 
 ## Documentation
 
+- [Hosted tool environments and security activation gates](docs/docs/security/hosted-tool-environment.md)
+
 - [Official Documentation](https://penguin-rho.vercel.app)
 - [Release Notes](https://github.com/Maximooch/penguin/releases)
 - `architecture.md`

@@ -15,6 +15,8 @@ from collections import defaultdict
 
 # from utils.log_error import log_error
 # from .core.support import create_folder, create_file, write_to_file, read_file, list_files, encode_image_to_base64, find_file
+
+from penguin.system.tool_environment import build_tool_environment
 from penguin.config import config, WORKSPACE_PATH
 from penguin.system.execution_context import get_current_execution_context_dict
 from penguin.utils.path_utils import get_allowed_roots, get_default_write_root
@@ -4796,6 +4798,10 @@ class ToolManager:
         self.grep_search.add_message(message)
 
     def execute_code(self, code: str, cwd: Optional[str] = None) -> str:
+        from penguin.system.tool_environment import hosted_tools_enabled
+
+        if hosted_tools_enabled():
+            return "Error: In-process Python is disabled in hosted mode. Use execute_command with a Python subprocess."
         import threading, json
 
         effective_cwd = cwd or self._file_root
@@ -7418,6 +7424,7 @@ class ToolManager:
                         pattern,
                         path,
                     ],
+                    env=build_tool_environment(),
                     capture_output=True,
                     text=True,
                     timeout=10,

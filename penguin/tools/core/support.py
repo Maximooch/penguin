@@ -10,6 +10,8 @@ import io
 import os
 import traceback
 from pathlib import Path
+
+from penguin.system.tool_environment import build_tool_environment
 from penguin.utils.path_utils import enforce_allowed_path, get_default_write_root
 import fnmatch
 import time
@@ -27,6 +29,7 @@ def _git_available() -> bool:
     try:
         subprocess.run(
             ["git", "--version"],
+            env=build_tool_environment(),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
@@ -40,6 +43,7 @@ def _is_git_repo(path: Path) -> bool:
     try:
         res = subprocess.run(
             ["git", "-C", str(path), "rev-parse", "--is-inside-work-tree"],
+            env=build_tool_environment(),
             capture_output=True,
             text=True,
         )
@@ -1221,6 +1225,7 @@ def _detect_git_conflicts(repo_base: Path) -> list[str]:
     try:
         res = subprocess.run(
             ["git", "-C", str(repo_base), "status", "--porcelain"],
+            env=build_tool_environment(),
             capture_output=True,
             text=True,
         )
@@ -1394,13 +1399,14 @@ def apply_unified_patch(
             # three_way is requested, try direct apply with --3way before falling back.
             chk = subprocess.run(
                 ["git", "-C", str(base), "apply", "--check", patch_file],
+                env=build_tool_environment(),
                 capture_output=True,
                 text=True,
             )
             if chk.returncode != 0 and three_way:
                 # Attempt direct 3-way apply despite check failure
                 args = ["git", "-C", str(base), "apply", "--3way", patch_file]
-                app = subprocess.run(args, capture_output=True, text=True)
+                app = subprocess.run(args, env=build_tool_environment(), capture_output=True, text=True)
                 # Clean up patch file
                 try:
                     os.unlink(patch_file)
@@ -1463,7 +1469,7 @@ def apply_unified_patch(
                 if three_way:
                     args.append("--3way")
                 args.append(patch_file)
-                app = subprocess.run(args, capture_output=True, text=True)
+                app = subprocess.run(args, env=build_tool_environment(), capture_output=True, text=True)
                 try:
                     os.unlink(patch_file)
                 except Exception:
@@ -1540,12 +1546,13 @@ def apply_unified_patch(
             # Ensure branch exists
             res_branch = subprocess.run(
                 ["git", "-C", str(base), "rev-parse", "--verify", branch],
+                env=build_tool_environment(),
                 capture_output=True,
                 text=True,
             )
             if res_branch.returncode != 0:
                 # Create branch from current HEAD
-                subprocess.run(["git", "-C", str(base), "branch", branch], check=False)
+                subprocess.run(["git", "-C", str(base), "branch", branch], env=build_tool_environment(), check=False)
 
             # Add or rebind worktree
             if not (shadow_root / ".git").exists():
@@ -1559,14 +1566,19 @@ def apply_unified_patch(
                         str(shadow_root),
                         branch,
                     ],
+                    env=build_tool_environment(),
                     check=False,
                 )
             else:
                 subprocess.run(
-                    ["git", "-C", str(shadow_root), "checkout", branch], check=False
+                    ["git", "-C", str(shadow_root), "checkout", branch],
+                    env=build_tool_environment(),
+                    check=False,
                 )
                 subprocess.run(
-                    ["git", "-C", str(shadow_root), "pull", "--ff-only"], check=False
+                    ["git", "-C", str(shadow_root), "pull", "--ff-only"],
+                    env=build_tool_environment(),
+                    check=False,
                 )
 
             # Normalize patch paths to be relative to the git base
@@ -1583,6 +1595,7 @@ def apply_unified_patch(
             # Preflight check in shadow
             chk = subprocess.run(
                 ["git", "-C", str(shadow_root), "apply", "--check", patch_file],
+                env=build_tool_environment(),
                 capture_output=True,
                 text=True,
             )
@@ -1612,7 +1625,7 @@ def apply_unified_patch(
             if three_way:
                 args.append("--3way")
             args.append(patch_file)
-            app = subprocess.run(args, capture_output=True, text=True)
+            app = subprocess.run(args, env=build_tool_environment(), capture_output=True, text=True)
             try:
                 os.unlink(patch_file)
             except Exception:
@@ -1631,15 +1644,18 @@ def apply_unified_patch(
                 return f"Error applying diff in shadow: {err}"
 
             # Stage & commit
-            subprocess.run(["git", "-C", str(shadow_root), "add", "-A"], check=False)
+            subprocess.run(["git", "-C", str(shadow_root), "add", "-A"], env=build_tool_environment(), check=False)
             commit_msg = os.environ.get(
                 "PENGUIN_PATCH_COMMIT_MSG", "Penguin multiedit checkpoint"
             )
             subprocess.run(
-                ["git", "-C", str(shadow_root), "commit", "-m", commit_msg], check=False
+                ["git", "-C", str(shadow_root), "commit", "-m", commit_msg],
+                env=build_tool_environment(),
+                check=False,
             )
             sha_res = subprocess.run(
                 ["git", "-C", str(shadow_root), "rev-parse", "HEAD"],
+                env=build_tool_environment(),
                 capture_output=True,
                 text=True,
             )
@@ -1656,6 +1672,7 @@ def apply_unified_patch(
                     "-r",
                     commit_sha,
                 ],
+                env=build_tool_environment(),
                 capture_output=True,
                 text=True,
             )

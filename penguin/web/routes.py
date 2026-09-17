@@ -3401,7 +3401,10 @@ async def api_link_capabilities(http_request: Request) -> dict[str, Any]:
     """Return versioned Link capabilities without provider credentials."""
 
     authenticate_link_service_request(http_request)
+    from penguin.system.tool_environment import tool_environment_capabilities
+
     return {
+        "tool_environment": tool_environment_capabilities(),
         **build_external_subscription_capabilities(),
         "durable_chat_requests": {
             "version": 1,

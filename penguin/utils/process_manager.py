@@ -3,6 +3,8 @@ from typing import Dict, Optional, Tuple, Any
 import asyncio
 import logging
 
+from penguin.system.tool_environment import build_tool_environment
+
 logger = logging.getLogger(__name__)
 
 class ProcessManager:
@@ -14,6 +16,7 @@ class ProcessManager:
         try:
             process = subprocess.Popen(
                 command,
+                env=build_tool_environment(),
                 shell=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
