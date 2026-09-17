@@ -16,7 +16,7 @@ __pycache__/
 *.py[cod]
 
 # UV cache
-uv.lock
+# uv.lock is tracked for reproducible source deployments.
 
 # Local Git worktrees must not be committed as submodules/gitlinks.
 .worktrees/

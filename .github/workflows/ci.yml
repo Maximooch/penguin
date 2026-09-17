@@ -9,6 +9,29 @@ permissions:
   contents: read
 
 jobs:
+  locked-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.2"
+      - name: Install the locked source runtime
+        run: |
+          git ls-files --error-unmatch uv.lock
+          uv sync --locked --python 3.12
+          uv run --locked python -c "import penguin.web.server; import penguin.llm.providers.link"
+          git diff --exit-code -- uv.lock
+      - name: Verify Link contracts with locked dependencies
+        run: |
+          uv run --locked pytest -q \
+            tests/llm/test_link_provider.py \
+            tests/llm/test_link_runtime_contract.py \
+            tests/web/test_link_inference_service.py
+
   link-provider-contract:
     runs-on: ubuntu-latest
     timeout-minutes: 20
