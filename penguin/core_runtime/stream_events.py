@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from datetime import datetime
 from typing import Any
 
@@ -12,7 +13,10 @@ from penguin.system.runtime_events import wrap_opencode_event
 from penguin.system.state import Message, MessageCategory
 from penguin.system.task_cancellation import AbortReason, abort_task
 
-from . import opencode_bridge as core_opencode_bridge
+from . import (
+    opencode_bridge as core_opencode_bridge,
+    opencode_transcript as core_opencode_transcript,
+)
 
 __all__ = [
     "abort_session",
@@ -488,6 +492,37 @@ async def abort_session(
             await owner.emit_ui_event(event.event_type, event_data)
             aborted = True
 
+    session_finder = getattr(owner, "_find_session_store", None)
+    if callable(session_finder):
+        try:
+            session, manager = session_finder(sid)
+            metadata = getattr(session, "metadata", None)
+            if session is not None and manager is not None:
+                aborted_parts = core_opencode_transcript.abort_running_tool_parts(
+                    metadata=metadata,
+                    ended_at_ms=int(time.time() * 1000),
+                    reason="Tool execution was interrupted",
+                )
+                if aborted_parts:
+                    manager.mark_session_modified(sid)
+                    manager.save_session(session)
+                    for part in aborted_parts:
+                        await owner.event_bus.emit(
+                            "opencode_event",
+                            wrap_opencode_event(
+                                "message.part.updated",
+                                {"part": part},
+                                default_session_id=sid,
+                            ),
+                        )
+                    aborted = True
+        except Exception:
+            logger.warning(
+                "Failed to finalize persisted tools for aborted session %s",
+                sid,
+                exc_info=True,
+            )
+
     await emit_opencode_session_status(owner, sid, "idle")
 
     if callable(adapter_abort):
@@ -506,6 +541,7 @@ async def abort_session(
 
         cleanup_task = asyncio.create_task(_cleanup_adapter())
         cleanup_tasks.add(cleanup_task)
+        await asyncio.sleep(0)
         aborted = True
 
     return aborted

@@ -25,7 +25,7 @@ class PermissionMode(Enum):
     """Operating modes for permission enforcement.
     
     READ_ONLY: Only read operations allowed. No writes, deletes, or execution.
-    WORKSPACE: Full permissions within workspace boundaries, deny outside.
+    WORKSPACE: Full permissions within workspace boundaries, ask before outside writes.
     FULL: All operations allowed (use with caution, or with --yolo flag).
     """
     READ_ONLY = "read_only"
@@ -531,7 +531,8 @@ class PermissionEnforcer:
             summary["cannot"].extend(["Write files", "Delete files", "Execute commands", "Git push"])
         elif self._mode == PermissionMode.WORKSPACE:
             summary["can"].extend(["Read/write within workspace", "Execute safe commands"])
-            summary["cannot"].extend(["Modify files outside workspace", "System-level operations"])
+            summary["cannot"].extend(["System-level operations"])
+            summary["requires_approval"].append("Modify files outside workspace")
             summary["requires_approval"].extend(["File deletion", "Git push"])
         else:  # FULL
             summary["can"].extend(["All operations"])

@@ -1799,6 +1799,8 @@ def _permission_name_for_request(request_dict: dict[str, Any]) -> str:
             "get_file_map": "list",
             "find_file": "glob",
             "grep_search": "grep",
+            "edit_file": "edit",
+            "apply_patch": "edit",
             "create_folder": "edit",
             "create_file": "edit",
             "write_file": "edit",
@@ -1845,13 +1847,19 @@ def _approval_request_to_permission_payload(
     context = request_dict.get("context")
     context_data = context if isinstance(context, dict) else {}
     resource = request_dict.get("resource")
-    patterns = [resource] if isinstance(resource, str) and resource.strip() else ["*"]
+    resources = context_data.get("resources")
+    patterns = (
+        resources
+        if isinstance(resources, list) and resources
+        else [resource] if isinstance(resource, str) and resource.strip() else ["*"]
+    )
 
     metadata: dict[str, Any] = {
         "reason": request_dict.get("reason"),
         "operation": request_dict.get("operation"),
         "tool_name": request_dict.get("tool_name"),
         "resource": request_dict.get("resource"),
+        "can_enable_full_access": context_data.get("can_enable_full_access", False),
     }
     tool_input = context_data.get("tool_input")
     if isinstance(tool_input, dict):
@@ -1865,6 +1873,9 @@ def _approval_request_to_permission_payload(
         "always": patterns,
         "metadata": metadata,
     }
+
+    if _permission_name_for_request(request_dict) == "edit":
+        metadata.setdefault("filepath", patterns[0])
 
     tool_payload = context_data.get("tool")
     if isinstance(tool_payload, dict):
@@ -8109,6 +8120,30 @@ async def get_audit_stats():
 # ==========================================================================
 
 
+class SessionAccessRequest(BaseModel):
+    mode: Literal["workspace", "full_access"]
+
+
+@router.get("/api/v1/session/{session_id}/access")
+async def get_session_access_settings(
+    session_id: str, core: PenguinCore = Depends(get_core)
+):
+    from penguin.web.services.session_access import get_access_settings
+
+    return get_access_settings(core, session_id)
+
+
+@router.put("/api/v1/session/{session_id}/access")
+async def update_session_access_settings(
+    session_id: str, request: SessionAccessRequest,
+    core: PenguinCore = Depends(get_core),
+):
+    from penguin.web.services.session_access import update_access_settings
+
+    _setup_approval_websocket_callbacks()
+    return update_access_settings(core, session_id, request.mode)
+
+
 @router.get("/permission")
 @router.get("/api/v1/permission")
 async def list_pending_permissions(
@@ -8169,6 +8204,10 @@ async def reply_permission_request(
                 raw_pattern.strip()
                 if isinstance(raw_pattern, str) and raw_pattern.strip()
                 else "*"
+            )
+            # A displayed literal target must not become a glob grant.
+            pattern = (
+                pattern.replace("[", "[[]").replace("*", "[*]").replace("?", "[?]")
             )
             resolved = manager.approve(
                 request_id,

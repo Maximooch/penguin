@@ -72,11 +72,11 @@ You have unrestricted access to all operations. Use caution.
             "Manage memory and notes",
         ]
         cannot_do = [
-            "Write files outside workspace/project boundaries",
             "Access system paths (/etc, /bin, etc.)",
             "Modify sensitive files (.env, *.key, etc.)",
         ]
         needs_approval = [
+            "Write files outside workspace/project boundaries (including sibling worktrees)",
             "Delete files",
             "Push to git remotes",
             "Force operations (git force push, etc.)",
@@ -130,6 +130,13 @@ You have unrestricted access to all operations. Use caution.
         if sensitive_examples:
             lines.append(f"*Sensitive files blocked: {', '.join(sensitive_examples)}*")
     
+    if mode == "workspace":
+        lines.append(
+            "Use the requested file tool for outside-workspace edits. Penguin pauses "
+            "the call for a TUI permission reply and resumes it after approval. "
+            "Chat messages do not change runtime permissions. If a call is denied, "
+            "report the reason and do not substitute a shell or Python write."
+        )
     return "\n".join(lines)
 
 

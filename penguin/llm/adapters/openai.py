@@ -49,6 +49,7 @@ from ..reasoning_variants import (
     reasoning_efforts_from_metadata,
 )
 from .base import BaseAdapter
+from .responses_reasoning import ResponsesReasoningStream
 
 logger = logging.getLogger(__name__)
 
@@ -1613,11 +1614,39 @@ class OpenAIAdapter(BaseAdapter):
         if account_id:
             headers["ChatGPT-Account-Id"] = account_id
 
+        # Log only known option values, never arbitrary request fields or content.
+        reasoning_options = payload.get("reasoning") or {}
+        stream_options = payload.get("stream_options") or {}
+        request_diagnostics = {}
+        for name, value, allowed in (
+            (
+                "effort",
+                reasoning_options.get("effort"),
+                ("none", "minimal", "low", "medium", "high", "xhigh", "max"),
+            ),
+            (
+                "summary",
+                reasoning_options.get("summary"),
+                ("none", "auto", "concise", "detailed"),
+            ),
+            (
+                "summary_delivery",
+                stream_options.get("reasoning_summary_delivery"),
+                ("sequential_cutoff",),
+            ),
+        ):
+            request_diagnostics[name] = (
+                value if value is None or value in allowed else "unrecognized"
+            )
+        request_diagnostics["encrypted_content"] = (
+            "reasoning.encrypted_content" in payload.get("include", [])
+        )
         _log_info(
             "openai.oauth.codex.request_start diag_id=%s requested_stream=%s "
             "transport_stream=%s model=%s "
             "model_fallback=%s input_items=%s instructions_present=%s "
-            "store=%s service_tier=%s has_account_id=%s has_reasoning=%s",
+            "store=%s service_tier=%s has_account_id=%s has_reasoning=%s "
+            "reasoning_options=%s",
             diag_id,
             stream,
             True,
@@ -1631,6 +1660,7 @@ class OpenAIAdapter(BaseAdapter):
             service_tier,
             bool(account_id),
             isinstance(reasoning_config, dict) and bool(reasoning_config),
+            request_diagnostics,
         )
         self._start_reasoning_debug_snapshot(
             provider=self.provider,
@@ -1642,6 +1672,7 @@ class OpenAIAdapter(BaseAdapter):
                 isinstance(reasoning_config, dict) and reasoning_config
             ),
             reasoning_config=dict(reasoning_config or {}),
+            request_options=request_diagnostics,
             visible_reasoning_chars=0,
             visible_reasoning_summary_returned=False,
         )
@@ -1807,7 +1838,7 @@ class OpenAIAdapter(BaseAdapter):
 
         accumulated_content: List[str] = []
         completed_text = ""
-        accumulated_reasoning = ""
+        reasoning_stream = ResponsesReasoningStream()
         started = time.monotonic()
         event_counts: Dict[str, int] = {}
         first_event_ms: Optional[int] = None
@@ -1988,20 +2019,9 @@ class OpenAIAdapter(BaseAdapter):
                             response_obj = data.get("response")
                             if isinstance(response_obj, dict):
                                 self._set_last_usage(response_obj.get("usage"))
-                                reasoning_text = (
-                                    self._extract_reasoning_from_response_object(
-                                        response_obj
-                                    )
-                                )
-                                if reasoning_text and not accumulated_reasoning.strip():
-                                    accumulated_reasoning += reasoning_text
-                                    self._append_reasoning(reasoning_text)
-                                    if stream_callback:
-                                        await self._safe_invoke_callback(
-                                            stream_callback,
-                                            reasoning_text,
-                                            "reasoning",
-                                        )
+                            await self._emit_reasoning_event(
+                                reasoning_stream, data, stream_callback
+                            )
                             extracted = self._extract_text_from_response_object(
                                 response_obj
                             )
@@ -2009,24 +2029,9 @@ class OpenAIAdapter(BaseAdapter):
                                 completed_text = extracted
                             continue
 
-                        reasoning_delta = (
-                            self._extract_reasoning_delta_from_sse_payload(data)
+                        await self._emit_reasoning_event(
+                            reasoning_stream, data, stream_callback
                         )
-                        if (
-                            reasoning_delta
-                            and etype == "response.output_item.done"
-                            and accumulated_reasoning.strip()
-                        ):
-                            reasoning_delta = ""
-                        if reasoning_delta:
-                            accumulated_reasoning += reasoning_delta
-                            self._append_reasoning(reasoning_delta)
-                        if reasoning_delta and stream_callback:
-                            await self._safe_invoke_callback(
-                                stream_callback,
-                                reasoning_delta,
-                                "reasoning",
-                            )
         except httpx.TimeoutException as exc:
             self._raise_codex_transport_error(
                 error=exc,
@@ -2159,13 +2164,16 @@ class OpenAIAdapter(BaseAdapter):
             provider_data={"stream_breakdown": stream_breakdown},
         )
         self._finalize_reasoning_debug_snapshot(
+            reasoning_parts=reasoning_stream.summary_lengths(),
             visible_reasoning_chars=len(self.get_last_reasoning()),
             visible_reasoning_summary_returned=bool(self.get_last_reasoning()),
             usage=self.get_last_usage(),
             finish_reason=self.get_last_finish_reason().value,
         )
         _log_info(
-            "openai.oauth.codex.reasoning_debug diag_id=%s model=%s visible_reasoning_chars=%s summary_returned=%s reasoning_tokens=%s reasoning_events=%s event_types=%s",
+            "openai.oauth.codex.reasoning_debug diag_id=%s model=%s "
+            "visible_reasoning_chars=%s summary_returned=%s reasoning_tokens=%s "
+            "reasoning_events=%s event_types=%s parts=%s",
             diag_id,
             model_id,
             self._last_reasoning_debug.get("visible_reasoning_chars", 0),
@@ -2173,6 +2181,7 @@ class OpenAIAdapter(BaseAdapter):
             self.get_last_usage().get("reasoning_tokens", 0),
             self._last_reasoning_debug.get("reasoning_event_types", []),
             self._last_reasoning_debug.get("event_types", []),
+            reasoning_stream.summary_lengths(),
         )
 
         if pending_tool_call:
@@ -2578,7 +2587,7 @@ class OpenAIAdapter(BaseAdapter):
     ) -> str:
         """Stream using the official OpenAI SDK responses.stream API."""
         accumulated_content: List[str] = []
-        accumulated_reasoning = ""
+        reasoning_stream = ResponsesReasoningStream()
         saw_completed_event = False
         try:
             # Async streaming context
@@ -2612,24 +2621,9 @@ class OpenAIAdapter(BaseAdapter):
                                     stream_callback, delta, "assistant"
                                 )
                     else:
-                        reasoning_delta = self._extract_reasoning_delta_from_sdk_event(
-                            event
+                        await self._emit_reasoning_event(
+                            reasoning_stream, self._to_dict(event), stream_callback
                         )
-                        if (
-                            reasoning_delta
-                            and etype == "response.output_item.done"
-                            and accumulated_reasoning.strip()
-                        ):
-                            reasoning_delta = ""
-                        if reasoning_delta:
-                            accumulated_reasoning += reasoning_delta
-                            self._append_reasoning(reasoning_delta)
-                        if reasoning_delta and stream_callback:
-                            await self._safe_invoke_callback(
-                                stream_callback,
-                                reasoning_delta,
-                                "reasoning",
-                            )
                 if not saw_completed_event:
                     output_state = (
                         "tool_call"
@@ -2645,16 +2639,11 @@ class OpenAIAdapter(BaseAdapter):
                     provider_response_id=getattr(final, "id", None),
                 )
                 self._set_last_usage(getattr(final, "usage", None))
-                final_reasoning = self._extract_reasoning_from_response_object(final)
-                if final_reasoning and not accumulated_reasoning.strip():
-                    accumulated_reasoning += final_reasoning
-                    self._append_reasoning(final_reasoning)
-                    if stream_callback:
-                        await self._safe_invoke_callback(
-                            stream_callback,
-                            final_reasoning,
-                            "reasoning",
-                        )
+                await self._emit_reasoning_event(
+                    reasoning_stream,
+                    {"type": "response.completed", "response": self._to_dict(final)},
+                    stream_callback,
+                )
                 tool_calls = self._extract_function_calls_from_response_object(final)
                 if tool_calls:
                     for tool_call in tool_calls:
@@ -2701,6 +2690,7 @@ class OpenAIAdapter(BaseAdapter):
         payload = dict(request_params)
         payload["stream"] = True
 
+        reasoning_stream = ResponsesReasoningStream()
         accumulated_content: List[str] = []
         completed_text = ""
         saw_completed_event = False
@@ -2754,28 +2744,18 @@ class OpenAIAdapter(BaseAdapter):
                         response_obj = data.get("response")
                         if isinstance(response_obj, dict):
                             self._set_last_usage(response_obj.get("usage"))
-                            self._append_reasoning(
-                                self._extract_reasoning_from_response_object(
-                                    response_obj
-                                )
-                            )
+                        await self._emit_reasoning_event(
+                            reasoning_stream, data, stream_callback
+                        )
                         extracted = self._extract_text_from_response_object(
                             response_obj
                         )
                         if extracted:
                             completed_text = extracted
                     else:
-                        reasoning_delta = (
-                            self._extract_reasoning_delta_from_sse_payload(data)
+                        await self._emit_reasoning_event(
+                            reasoning_stream, data, stream_callback
                         )
-                        if reasoning_delta:
-                            self._append_reasoning(reasoning_delta)
-                        if reasoning_delta and stream_callback:
-                            await self._safe_invoke_callback(
-                                stream_callback,
-                                reasoning_delta,
-                                "reasoning",
-                            )
                 except Exception:
                     # Skip malformed lines
                     continue
@@ -2909,65 +2889,18 @@ class OpenAIAdapter(BaseAdapter):
         walk(payload)
         return texts
 
-    def _extract_reasoning_delta_from_sdk_event(self, event: Any) -> str:
-        """Extract reasoning text from OpenAI SDK stream events."""
-        etype = getattr(event, "type", None)
-        if etype in {
-            "response.thinking.delta",
-            "response.reasoning.delta",
-            "response.reasoning_summary_text.delta",
-            "response.reasoning_summary.delta",
-        }:
-            return self._coerce_reasoning_text(getattr(event, "delta", ""))
-
-        if etype in {
-            "response.reasoning_summary_part.added",
-            "response.reasoning_summary_part.done",
-        }:
-            return ""
-
-        if etype == "response.output_item.done":
-            item = getattr(event, "item", None)
-            item_payload = self._to_dict(item)
-            if item_payload.get("type") in {
-                "reasoning",
-                "summary",
-                "reasoning_summary",
-            }:
-                return "".join(self._extract_reasoning_texts(item_payload))
-
-        return ""
-
-    def _extract_reasoning_delta_from_sse_payload(self, payload: Any) -> str:
-        """Extract reasoning text from OpenAI HTTP SSE payloads."""
-        if not isinstance(payload, dict):
-            return ""
-
-        etype = payload.get("type")
-        if etype in {
-            "response.thinking.delta",
-            "response.reasoning.delta",
-            "response.reasoning_summary_text.delta",
-            "response.reasoning_summary.delta",
-        }:
-            return self._coerce_reasoning_text(payload.get("delta", ""))
-
-        if etype in {
-            "response.reasoning_summary_part.added",
-            "response.reasoning_summary_part.done",
-        }:
-            return ""
-
-        if etype == "response.output_item.done":
-            item = payload.get("item")
-            if isinstance(item, dict) and item.get("type") in {
-                "reasoning",
-                "summary",
-                "reasoning_summary",
-            }:
-                return "".join(self._extract_reasoning_texts(item))
-
-        return ""
+    async def _emit_reasoning_event(
+        self,
+        reasoning_stream: ResponsesReasoningStream,
+        event: dict[str, Any],
+        stream_callback: Callable[..., Any] | None,
+    ) -> None:
+        """Persist and publish the same reconciled text on every transport."""
+        text = reasoning_stream.consume(event)
+        if text:
+            self._append_reasoning(text)
+            if stream_callback:
+                await self._safe_invoke_callback(stream_callback, text, "reasoning")
 
     def _coerce_reasoning_text(self, value: Any) -> str:
         """Convert provider reasoning payloads to displayable text."""

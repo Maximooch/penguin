@@ -137,3 +137,23 @@ async def test_question_reply_missing_request_returns_404() -> None:
             QuestionReplyAction(answers=[["Any"]]),
         )
     assert exc.value.status_code == 404
+
+
+def test_edit_permission_payload_includes_targets_and_reason() -> None:
+    from penguin.web.routes import _approval_request_to_permission_payload
+
+    payload = _approval_request_to_permission_payload(
+        {
+            "id": "approval-edit",
+            "session_id": "session-edit",
+            "tool_name": "apply_patch",
+            "operation": "filesystem.write",
+            "resource": '["/project/a.ts", "/project/b.ts"]',
+            "reason": "Outside workspace",
+            "context": {"resources": ["/project/a.ts", "/project/b.ts"]},
+        }
+    )
+    assert payload["permission"] == "edit"
+    assert payload["patterns"] == ["/project/a.ts", "/project/b.ts"]
+    assert payload["metadata"]["filepath"] == "/project/a.ts"
+    assert payload["metadata"]["reason"] == "Outside workspace"

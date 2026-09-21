@@ -115,6 +115,47 @@ class AsyncToolDispatcher:
         tool_input: dict[str, Any],
         context: dict[str, Any] | None = None,
     ) -> str | dict[str, Any]:
+        """Resolve permissions on the event loop before starting any worker."""
+        from penguin.security.tool_approval import (
+            approval_identity,
+            authorized_call,
+            wait_for_tool_approval,
+        )
+
+        manager = self._tool_manager
+        name = manager._canonical_tool_name(tool_name)
+        ctx = manager._merged_execution_context(context)
+        if name in SUBAGENT_TOOL_NAMES and not subagents_enabled(ctx):
+            return json.dumps(disabled_subagent_result(name))
+        root = manager._resolve_file_root(ctx)
+        for key in ("directory", "project_root", "workspace_root"):
+            ctx.setdefault(key, root)
+        arguments = manager._normalize_tool_input_paths(
+            tool_input if isinstance(tool_input, dict) else {}, root
+        )
+        _, _, resources = approval_identity(name, arguments, ctx)
+        response = manager._permission_response(name, arguments, ctx)
+        if response is not None:
+            payload = json.loads(response) if isinstance(response, str) else response
+            if payload.get("status") != "pending_approval" or not ctx.get("session_id"):
+                return response
+            if not await wait_for_tool_approval(response):
+                return json.dumps(
+                    {
+                        "error": "permission_denied",
+                        "tool": name,
+                        "reason": "The permission request was rejected or expired.",
+                    }
+                )
+        with authorized_call(name, arguments, ctx, resources):
+            return await self._execute(name, arguments, ctx)
+
+    async def _execute(
+        self,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        context: dict[str, Any] | None = None,
+    ) -> str | dict[str, Any]:
         """Execute a tool without blocking the caller's event loop."""
 
         manager = self._tool_manager

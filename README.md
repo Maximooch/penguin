@@ -408,3 +408,8 @@ Built upon insights from:
 - [RawDog](https://github.com/AbanteAI/rawdog)
 
 For long-running shell commands, see [managed processes](docs/docs/tools/processes.md).
+
+Workspace-mode file writes outside the active project, including sibling worktrees,
+request approval in the TUI. See [tool permissions](docs/docs/usage/web_interface.md#tool-permissions)
+for approval scope and limitations. Use `/permissions` in the TUI to enable
+**Full access** for the current session and avoid per-file approval prompts.

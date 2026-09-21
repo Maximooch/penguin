@@ -2454,11 +2454,11 @@ class ToolManager:
             context.get("session_id"),
             reason,
         )
-        operation = context.get("operation", f"tool.{tool_name}")
-        resource = tool_input.get(
-            "path",
-            tool_input.get("file_path", tool_input.get("target", "")),
-        )
+        from penguin.security.tool_approval import approval_identity, is_call_authorized
+
+        if is_call_authorized(tool_name, tool_input, context):
+            return None
+        operation, resource, resources = approval_identity(tool_name, tool_input, context)
         session_id = context.get("session_id")
 
         try:
@@ -2485,6 +2485,12 @@ class ToolManager:
                         tool_input,
                     ),
                     "agent_id": context.get("agent_id"),
+                    "resources": resources,
+                    "can_enable_full_access": (
+                        context.get("approval_policy") is None
+                        and not context.get("permission_mode")
+                        and context.get("agent_mode") != "plan"
+                    ),
                 },
             )
             logger.info("Approval request created: %s", approval_request.id)
@@ -3210,7 +3216,10 @@ class ToolManager:
             finally:
                 result_container["done"] = True
 
-        thread = threading.Thread(target=_runner, daemon=True)
+        from contextvars import copy_context
+
+        call_context = copy_context()
+        thread = threading.Thread(target=lambda: call_context.run(_runner), daemon=True)
         thread.start()
         thread.join(timeout=default_timeout)
 
@@ -4104,7 +4113,9 @@ class ToolManager:
             merged.update(current)
         if isinstance(context, dict):
             merged.update(context)
-        return merged
+        from penguin.security.session_access import apply_session_access
+
+        return apply_session_access(merged)
 
     def _resolve_file_root(self, context: Optional[dict[str, Any]] = None) -> str:
         """Resolve effective file root for a tool call without global mutation."""
@@ -4378,16 +4389,11 @@ class ToolManager:
             tool_input = tool_input if isinstance(tool_input, dict) else {}
 
             if self._mcp_provider.is_mcp_tool(tool_name):
-                if self._permission_enabled:
-                    result, reason = self.check_tool_permission(
-                        tool_name, tool_input, effective_context
-                    )
-                    if result is not None:
-                        _ensure_permission_imports()
-                        if result == _PermissionResult.DENY:
-                            return {"error": f"Permission denied: {reason}"}
-                        if result == _PermissionResult.ASK:
-                            return {"error": f"Permission required: {reason}"}
+                permission_response = self._permission_response(
+                    tool_name, tool_input, effective_context
+                )
+                if permission_response is not None:
+                    return permission_response
                 return self._mcp_provider.execute_tool(tool_name, tool_input)
 
             tool_input = self._normalize_tool_input_paths(tool_input, file_root)

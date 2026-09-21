@@ -11,8 +11,8 @@ OpenRouter provides access to 200+ models through a single API. This guide expla
 2. **Set Environment Variables**:
    ```bash
    export OPENROUTER_API_KEY=sk-or-xxxx
-   export OPENROUTER_SITE_URL=https://your-site.com  # Optional
-   export OPENROUTER_SITE_TITLE=Your App Name  # Optional
+   export OPENROUTER_SITE_URL=https://penguinagents.com  # Optional override; this is the default
+   export OPENROUTER_SITE_TITLE="Penguin"  # Optional override; this is the default
    ```
 
 3. **Configure Penguin**:
@@ -23,6 +23,22 @@ OpenRouter provides access to 200+ models through a single API. This guide expla
      provider: "openrouter"
      client_preference: "openrouter"
    ```
+
+## App attribution
+
+The Python OpenRouter gateway defaults to `HTTP-Referer: https://penguinagents.com`
+and `X-Title: Penguin`, including streaming and direct reasoning requests. Existing
+constructor arguments and `OPENROUTER_SITE_URL` / `OPENROUTER_SITE_TITLE` overrides
+remain supported; explicitly empty environment values omit the respective header.
+Additional caller headers retain precedence. OpenRouter-compatible proxies used
+through this gateway receive these headers too; they must forward them for upstream
+attribution. Other Python provider adapters are unchanged.
+
+The bundled TypeScript provider loaders identify Penguin for OpenRouter, Vercel
+AI Gateway, and ZenMux. Provider-configured headers can override their defaults.
+
+OpenRouter documents these headers in its quickstart. Attribution identifies the
+application, not the end user, and does not change authentication or billing keys.
 
 ## Available Models
 

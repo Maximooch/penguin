@@ -74,6 +74,7 @@ import { usePromptRef } from "../../context/prompt"
 import { useExit } from "../../context/exit"
 import { Filesystem } from "@/util/filesystem"
 import { Global } from "@/global"
+import { DialogPermissions } from "../../component/dialog-permissions"
 import { PermissionPrompt } from "./permission"
 import { QuestionPrompt } from "./question"
 import { DialogExportOptions } from "../../ui/dialog-export-options"
@@ -340,7 +341,22 @@ export function Session() {
   }
 
   const command = useCommandDialog()
+  createEffect(() => {
+    if (!sdk.penguin || !session()?.id) return
+    sdk.access.load(route.sessionID).catch(() => {})
+  })
+
   command.register(() => [
+    {
+      title: "Session permissions",
+      value: "session.permissions",
+      category: "Session",
+      enabled: sdk.penguin,
+      slash: { name: "permissions" },
+      onSelect: (dialog) => {
+        dialog.replace(() => <DialogPermissions sessionID={route.sessionID} />)
+      },
+    },
     {
       title: "Share session",
       value: "session.share",
@@ -1123,6 +1139,14 @@ export function Session() {
               </For>
             </scrollbox>
             <box flexShrink={0}>
+              <Show when={sdk.penguin}>
+                <text
+                  fg={sdk.access.get(route.sessionID) === "full_access" ? theme.warning : theme.textMuted}
+                  onMouseDown={() => dialog.replace(() => <DialogPermissions sessionID={route.sessionID} />)}
+                >
+                  {sdk.access.get(route.sessionID) === "full_access" ? "Full access" : "Permissions"} · /permissions
+                </text>
+              </Show>
               <Show when={permissions().length > 0}>
                 <PermissionPrompt request={permissions()[0]} />
               </Show>

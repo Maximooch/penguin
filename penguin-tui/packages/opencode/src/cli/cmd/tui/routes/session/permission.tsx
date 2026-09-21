@@ -1,5 +1,5 @@
 import { createStore } from "solid-js/store"
-import { createMemo, For, Match, Show, Switch } from "solid-js"
+import { createEffect, createMemo, For, Match, Show, Switch } from "solid-js"
 import { Portal, useKeyboard, useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import type { TextareaRenderable } from "@opentui/core"
 import { useKeybind } from "../../context/keybind"
@@ -14,6 +14,7 @@ import { LANGUAGE_EXTENSIONS } from "@/lsp/language"
 import { Keybind } from "@/util/keybind"
 import { Locale } from "@/util/locale"
 import { Global } from "@/global"
+import { DialogPermissions } from "../../component/dialog-permissions"
 import { useDialog } from "../../ui/dialog"
 
 type PermissionStage = "permission" | "always" | "reject"
@@ -68,6 +69,12 @@ function EditBody(props: { request: PermissionRequest }) {
         <text fg={theme.textMuted}>{"→"}</text>
         <text fg={theme.textMuted}>Edit {normalizePath(filepath())}</text>
       </box>
+      <Show when={props.request.metadata?.reason}>
+        <text fg={theme.textMuted}>{String(props.request.metadata.reason)}</text>
+      </Show>
+      <Show when={props.request.patterns.length > 1}>
+        <For each={props.request.patterns}>{(pattern) => <text fg={theme.text}>{pattern}</text>}</For>
+      </Show>
       <Show when={diff()}>
         <scrollbox height="100%">
           <diff
@@ -117,6 +124,7 @@ function TextBody(props: { title: string; description?: string; icon?: string })
 }
 
 export function PermissionPrompt(props: { request: PermissionRequest }) {
+  const dialog = useDialog()
   const sdk = useSDK()
   const sync = useSync()
   const [store, setStore] = createStore({
@@ -127,18 +135,17 @@ export function PermissionPrompt(props: { request: PermissionRequest }) {
 
   const input = createMemo(() => {
     const tool = props.request.tool
-    if (!tool) return {}
+    if (!tool) return props.request.metadata ?? {}
     const parts = sync.data.part[tool.messageID] ?? []
     for (const part of parts) {
       if (part.type === "tool" && part.callID === tool.callID && part.state.status !== "pending") {
         return part.state.input ?? {}
       }
     }
-    return {}
+    return props.request.metadata ?? {}
   })
 
   const { theme } = useTheme()
-  const appName = createMemo(() => (sdk.penguin ? "Penguin" : "OpenCode"))
 
   return (
     <Switch>
@@ -148,11 +155,20 @@ export function PermissionPrompt(props: { request: PermissionRequest }) {
           body={
             <Switch>
               <Match when={props.request.always.length === 1 && props.request.always[0] === "*"}>
-                <TextBody title={"This will allow " + props.request.permission + " until " + appName() + " is restarted."} />
+                <TextBody
+                  title={
+                    "This will allow " +
+                    props.request.permission +
+                    (sdk.penguin ? " for this session until Penguin is restarted." : " until OpenCode is restarted.")
+                  }
+                />
               </Match>
               <Match when={true}>
                 <box paddingLeft={1} gap={1}>
-                  <text fg={theme.textMuted}>This will allow the following patterns until {appName()} is restarted</text>
+                  <text fg={theme.textMuted}>
+                    This will allow the following patterns{" "}
+                    {sdk.penguin ? "for this session until Penguin is restarted" : "until OpenCode is restarted"}
+                  </text>
                   <box>
                     <For each={props.request.always}>
                       {(pattern) => (
@@ -265,10 +281,18 @@ export function PermissionPrompt(props: { request: PermissionRequest }) {
                   </Match>
                 </Switch>
               }
-              options={{ once: "Allow once", always: "Allow always", reject: "Reject" }}
+              options={
+                sdk.penguin && props.request.metadata?.can_enable_full_access === true
+                  ? { once: "Allow once", always: "Allow always", full: "Full access", reject: "Reject" }
+                  : { once: "Allow once", always: "Allow always", reject: "Reject" }
+              }
               escapeKey="reject"
               fullscreen
               onSelect={(option) => {
+                if (option === "full") {
+                  dialog.replace(() => <DialogPermissions sessionID={props.request.sessionID} />)
+                  return
+                }
                 if (option === "always") {
                   setStore("stage", "always")
                   return
@@ -384,10 +408,13 @@ function Prompt<const T extends Record<string, string>>(props: {
   const { theme } = useTheme()
   const keybind = useKeybind()
   const dimensions = useTerminalDimensions()
-  const keys = Object.keys(props.options) as (keyof T)[]
+  const keys = createMemo(() => Object.keys(props.options) as (keyof T)[])
   const [store, setStore] = createStore({
-    selected: keys[0],
+    selected: keys()[0],
     expanded: false,
+  })
+  createEffect(() => {
+    if (!keys().includes(store.selected)) setStore("selected", keys()[0])
   })
   const diffKey = Keybind.parse("ctrl+f")[0]
   const narrow = createMemo(() => dimensions().width < 80)
@@ -398,15 +425,15 @@ function Prompt<const T extends Record<string, string>>(props: {
 
     if (evt.name === "left" || evt.name == "h") {
       evt.preventDefault()
-      const idx = keys.indexOf(store.selected)
-      const next = keys[(idx - 1 + keys.length) % keys.length]
+      const idx = keys().indexOf(store.selected)
+      const next = keys()[(idx - 1 + keys().length) % keys().length]
       setStore("selected", next)
     }
 
     if (evt.name === "right" || evt.name == "l") {
       evt.preventDefault()
-      const idx = keys.indexOf(store.selected)
-      const next = keys[(idx + 1) % keys.length]
+      const idx = keys().indexOf(store.selected)
+      const next = keys()[(idx + 1) % keys().length]
       setStore("selected", next)
     }
 
@@ -467,7 +494,7 @@ function Prompt<const T extends Record<string, string>>(props: {
         alignItems={narrow() ? "flex-start" : "center"}
       >
         <box flexDirection="row" gap={1} flexShrink={0}>
-          <For each={keys}>
+          <For each={keys()}>
             {(option) => (
               <box
                 paddingLeft={1}

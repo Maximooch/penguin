@@ -326,15 +326,15 @@ class TestPermissionEnforcer:
         )
         enforcer.add_policy(policy)
 
-        # Normally denied
-        result = enforcer.check(Operation.FILESYSTEM_WRITE, "/etc/test")
-        assert result == PermissionResult.DENY
+        # Ordinary external paths require approval.
+        result = enforcer.check(Operation.FILESYSTEM_WRITE, "/tmp/external-test")
+        assert result == PermissionResult.ASK
 
         # Add to session allowlist
-        enforcer.add_session_allowlist("filesystem.write:/etc/*")
+        enforcer.add_session_allowlist("filesystem.write:/tmp/external-*")
 
         # Now allowed
-        result = enforcer.check(Operation.FILESYSTEM_WRITE, "/etc/test")
+        result = enforcer.check(Operation.FILESYSTEM_WRITE, "/tmp/external-test")
         assert result == PermissionResult.ALLOW
 
     def test_enforcer_audit_log(self, temp_workspace):

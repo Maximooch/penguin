@@ -8,11 +8,12 @@ import argparse
 import logging
 import os
 import sys
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from ipaddress import ip_address
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Any
 from urllib.parse import quote
 
 from penguin.constants import DEFAULT_WEB_PORT
@@ -62,8 +63,7 @@ def _resolve_server_log_path() -> Path:
     directory_override = os.environ.get("PENGUIN_WEB_LOG_DIR", "").strip()
     if directory_override:
         return (
-            Path(directory_override).expanduser().resolve()
-            / _new_server_log_filename()
+            Path(directory_override).expanduser().resolve() / _new_server_log_filename()
         )
 
     from penguin.config import get_workspace_root
@@ -167,7 +167,7 @@ def _build_uvicorn_log_config(log_path: Path, log_level: str) -> dict[str, Any]:
     }
 
 
-def _configure_server_file_logging(log_level: str) -> Optional[dict[str, Any]]:
+def _configure_server_file_logging(log_level: str) -> dict[str, Any] | None:
     """Configure managed web server file logging and return uvicorn config."""
     if not _web_server_file_logging_enabled():
         return None
@@ -268,7 +268,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 
 def _resolve_runtime_settings(
-    argv: Optional[Sequence[str]] = None,
+    argv: Sequence[str] | None = None,
 ) -> tuple[str, int, bool]:
     """Resolve host/port/debug from CLI args first, then env vars."""
     parser = _build_arg_parser()
@@ -375,72 +375,26 @@ def _print_local_auth_bootstrap_banner(host: str, port: int) -> None:
     )
 
 
-def main(argv: Optional[Sequence[str]] = None):
+def main(argv: Sequence[str] | None = None) -> int:
     """Entry point for the web server."""
     try:
-        import uvicorn
-    except ImportError:
-        print("Error: Web dependencies not available.")
-        print("Install with: pip install penguin-ai[web]")
-        return 1
-
-    try:
         host, port, debug = _resolve_runtime_settings(argv)
-        log_level = "debug" if debug else "info"
-        log_config = _configure_server_file_logging(log_level)
-        app = None
-        validate_startup_security(host)
-        if debug:
-            create_app_factory()
-        else:
-            app = create_app_factory()
-    except Exception as e:
-        print(f"Error: Failed to initialize Penguin web application: {e}")
+        start_server(host, port, debug)
+    except Exception as exc:
+        print(f"Error: Failed to initialize Penguin web application: {exc}")
         return 1
-
-    _print_startup_banner(host, port)
-    auth_enabled = is_web_auth_enabled()
-    if auth_enabled:
-        _print_local_auth_bootstrap_banner(host, port)
-    else:
-        _print_no_auth_warning(host, port)
-
-    if debug:
-        uvicorn.run(
-            "penguin.web.server:create_app_factory",
-            host=host,
-            port=port,
-            log_level=log_level,
-            log_config=log_config,
-            reload=True,
-            factory=True,
-        )
-        return 0
-
-    if app is None:
-        return 1
-
-    uvicorn.run(
-        app,
-        host=host,
-        port=port,
-        log_level=log_level,
-        log_config=log_config,
-        reload=False,
-    )
-
     return 0
 
 
 def start_server(
     host: str = DEFAULT_HOST, port: int = DEFAULT_WEB_PORT, debug: bool = False
-):
-    """Start the web server programmatically.
+) -> None:
+    """Start Penguin, reserving its socket before publishing local credentials.
 
     Args:
-        host: Host to bind the server to
-        port: Port to bind the server to
-        debug: Enable debug mode with auto-reload
+        host: Host to bind the server to.
+        port: Port to bind the server to.
+        debug: Enable debug mode with auto-reload.
     """
     try:
         import uvicorn
@@ -452,28 +406,42 @@ def start_server(
     log_level = "debug" if debug else "info"
     log_config = _configure_server_file_logging(log_level)
     validate_startup_security(host)
-
-    if debug:
-        uvicorn.run(
-            "penguin.web.server:create_app_factory",
-            host=host,
-            port=port,
-            log_level=log_level,
-            log_config=log_config,
-            reload=True,
-            factory=True,
-        )
-        return
-
-    app = create_app_factory()
-    uvicorn.run(
-        app,
+    config = uvicorn.Config(
+        "penguin.web.server:create_app_factory",
         host=host,
         port=port,
         log_level=log_level,
         log_config=log_config,
-        reload=False,
+        reload=debug,
+        factory=debug,
+        workers=1,
     )
+    # Retain the socket: a port availability check would race another startup.
+    with config.bind_socket() as sock:
+        sock.listen(config.backlog)
+        app = create_app_factory()
+        if not debug:
+            config.app = app
+        port = sock.getsockname()[1]
+        _print_startup_banner(host, port)
+        if is_web_auth_enabled():
+            _print_local_auth_bootstrap_banner(host, port)
+        else:
+            _print_no_auth_warning(host, port)
+
+        try:
+            server = uvicorn.Server(config)
+            if debug:
+                from uvicorn.supervisors import ChangeReload
+
+                ChangeReload(config, target=server.run, sockets=[sock]).run()
+            else:
+                server.run(sockets=[sock])
+                if not server.started:
+                    raise SystemExit(3)
+        except KeyboardInterrupt:
+            # Match uvicorn.run(): Ctrl-C is a normal shutdown.
+            pass
 
 
 if __name__ == "__main__":

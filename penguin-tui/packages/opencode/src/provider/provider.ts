@@ -325,8 +325,8 @@ export namespace Provider {
         autoload: false,
         options: {
           headers: {
-            "HTTP-Referer": "https://opencode.ai/",
-            "X-Title": "opencode",
+            "HTTP-Referer": "https://penguinagents.com",
+            "X-Title": "Penguin",
           },
         },
       }
@@ -336,8 +336,8 @@ export namespace Provider {
         autoload: false,
         options: {
           headers: {
-            "http-referer": "https://opencode.ai/",
-            "x-title": "opencode",
+            "http-referer": "https://penguinagents.com",
+            "x-title": "Penguin",
           },
         },
       }
@@ -405,8 +405,8 @@ export namespace Provider {
         autoload: false,
         options: {
           headers: {
-            "HTTP-Referer": "https://opencode.ai/",
-            "X-Title": "opencode",
+            "HTTP-Referer": "https://penguinagents.com",
+            "X-Title": "Penguin",
           },
         },
       }
@@ -890,7 +890,7 @@ export namespace Provider {
         continue
       }
       const result = await fn(data)
-      if (result && (result.autoload || providers[providerID])) {
+      if (result && (result.autoload || providers[providerID] || config.provider?.[providerID])) {
         if (result.getModel) modelLoaders[providerID] = result.getModel
         const opts = result.options ?? {}
         const patch: Partial<Info> = providers[providerID] ? { options: opts } : { source: "custom", options: opts }

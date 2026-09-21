@@ -121,17 +121,14 @@ def extract_resource_from_input(
     Returns:
         Resource string (usually a path) or None if not applicable
     """
-    # File path extraction for common patterns
-    path_keys = ["path", "file_path", "filepath", "file", "target", "directory", "dir"]
+    # Commands remain commands even when a working directory is supplied.
+    if tool_name in ("execute_command", "code_execution"):
+        return tool_input.get("command") or tool_input.get("code")
 
+    path_keys = ["path", "file_path", "filepath", "file", "target", "directory", "dir"]
     for key in path_keys:
         if key in tool_input:
             return str(tool_input[key])
-
-    # Special cases
-    if tool_name in ("execute_command", "code_execution"):
-        # For commands, the resource is the command itself
-        return tool_input.get("command") or tool_input.get("code")
 
     if tool_name in ("browser_navigate", "pydoll_browser_navigate", "browser_open_tab"):
         return tool_input.get("url")
@@ -163,7 +160,7 @@ def _resolve_resource_path(resource: str, context: Optional[dict[str, Any]]) -> 
 
     candidate = Path(text).expanduser()
     if candidate.is_absolute():
-        return str(candidate)
+        return str(candidate.resolve())
 
     ctx = context or {}
     for key in ("directory", "project_root", "workspace_root"):
@@ -251,7 +248,10 @@ def extract_resources_from_input(
 
     single = extract_resource_from_input(tool_name, tool_input)
     if single:
-        resources.append(_resolve_resource_path(single, context))
+        operations = get_tool_operations(tool_name)
+        if any(op.category == "filesystem" for op in operations):
+            single = _resolve_resource_path(single, context)
+        resources.append(single)
 
     deduped: list[str] = []
     seen: set[str] = set()
@@ -370,7 +370,7 @@ def check_tool_permission(
     request_result = _check_request_approval_policy(operations, resources, ctx)
     if request_result is not None:
         result, reason = request_result
-        if result != PermissionResult.ALLOW:
+        if result == PermissionResult.DENY:
             return result, reason
 
     # Check agent-specific policy first (if agent_id in context)
@@ -400,6 +400,9 @@ def check_tool_permission(
                     result,
                     f"Operation '{operation.value}' denied for '{resource_candidate}'",
                 )
+
+    if request_result is not None and request_result[0] == PermissionResult.ASK:
+        return request_result
 
     # If any ASK, return ASK
     for result, operation, resource_candidate in results:

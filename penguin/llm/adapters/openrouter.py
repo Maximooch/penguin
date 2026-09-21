@@ -77,7 +77,9 @@ class OpenRouterGateway:
         """
         self.model_config = model_config
         self.logger = logging.getLogger(__name__)
-        self.site_url = site_url or os.getenv("OPENROUTER_SITE_URL")
+        self.site_url = site_url or os.getenv(
+            "OPENROUTER_SITE_URL", "https://penguinagents.com"
+        )
         self.site_title = site_title or os.getenv("OPENROUTER_SITE_TITLE", "Penguin")
 
         # Simple telemetry counters
