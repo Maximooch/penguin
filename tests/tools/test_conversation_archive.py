@@ -69,6 +69,8 @@ def test_archive_boundaries_and_ambiguity(tmp_path):
         open_session(root, "../private")
     assert search(root, "hello", agent_id="external")["results"] == []
     assert open_session(root, "missing")["error"] == "session_not_found"
+    assert open_session(root, "same", agent_id="")["error"] == "ambiguous_session_id"
+    assert len(search(root, "hello", agent_id="")["results"]) == 2
     with pytest.raises(ValueError):
         search(root, "hello", agent_id="../outside")
     with pytest.raises(ValueError):

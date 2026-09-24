@@ -23,6 +23,8 @@ def _within(path: Path, root: Path) -> bool:
 
 def _session_files(root: Path, agent_id: str | None = None) -> Iterator[tuple[str | None, Path]]:
     """Only root sessions and direct child agent sessions; never follow symlinks."""
+    if agent_id == "":
+        agent_id = None  # Optional native-tool string fields can arrive empty.
     if agent_id is not None and (
         not isinstance(agent_id, str) or not agent_id or agent_id in (".", "..")
         or Path(agent_id).name != agent_id or "\\" in agent_id
