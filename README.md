@@ -202,7 +202,7 @@ Under the hood, the `latest` targets override the project default with `--exclud
 | `[llm_litellm]` | Optional LiteLLM support for legacy/custom gateway workflows |
 | `[memory_faiss]` | FAISS vector search + embeddings |
 | `[memory_lance]` | LanceDB vector database |
-| `[memory_chroma]` | ChromaDB integration |
+| `[memory_chroma]` | Compatibility alias (ChromaDB disabled pending upstream security fixes) |
 | `[mcp]` | Model Context Protocol client/server dependencies (Python 3.10+ for the MCP SDK) |
 | `[browser]` | Browser automation support. Installs PyDoll fallback; browser-harness must be installed from a local/source checkout because it is not published on PyPI yet. |
 | `[pydoll]` | PyDoll browser automation fallback only |

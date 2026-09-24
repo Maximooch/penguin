@@ -14,7 +14,7 @@ The `penguin.memory` package exposes a `MemoryProvider` interface and a `MemoryP
 - **File** – simple JSONL storage with in-memory vector search.
 - **FAISS** – high-performance vector search.
 - **LanceDB** – advanced vector database with hybrid search.
-- **ChromaDB** – optional vector store for legacy compatibility.
+- **ChromaDB** – temporarily disabled: unresolved upstream code-injection and authorization vulnerabilities. Existing ChromaDB data is not removed; use a different provider until a fixed release is available.
 
 If the configuration sets `provider: auto`, the factory attempts to use the best provider available on your system.
 
@@ -34,7 +34,7 @@ Edit `config.yml` to select a provider and adjust settings:
 
 ```yaml
 memory:
-  provider: faiss  # or "auto", "sqlite", "file", "lance", "chroma"
+  provider: faiss  # or "auto", "sqlite", "file", "lance"
   storage_path: "${paths.memory_db}"
   embedding_model: sentence-transformers/all-MiniLM-L6-v2
   providers:

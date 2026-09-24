@@ -113,7 +113,7 @@ memory_faiss = [
     "numpy>=1.20.0",
     "sentence-transformers>=2.3.0",
 ]
-memory_chroma = ["chromadb>=0.4.22"]
+memory_chroma = []  # Compatibility alias; disabled until ChromaDB fixes its security advisories
 
 # LLM Providers  
 llm_litellm = ["litellm>=1.0.0"]
@@ -176,7 +176,6 @@ all = [
     "pyarrow>=15.0.0",
     "faiss-cpu>=1.7.4",
     "sentence-transformers>=2.3.0",
-    "chromadb>=0.4.22",
     "transformers>=4.38.0",
     "torch>=2.0.0",
     "accelerate>=0.25.0",
