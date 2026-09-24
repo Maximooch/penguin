@@ -7,6 +7,9 @@ truth. In particular, load_session can change current_session and restore backup
 from __future__ import annotations
 
 import json
+import os
+import stat
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -17,12 +20,19 @@ _MAX_TEXT = 4000
 _MAX_SESSION_BYTES = 16 * 1024 * 1024
 
 
-def _within(path: Path, root: Path) -> bool:
-    return path.is_relative_to(root)  # resolved paths, Python >= 3.9
-
-
 def _session_files(root: Path, agent_id: str | None = None) -> Iterator[tuple[str | None, Path]]:
-    """Only root sessions and direct child agent sessions; never follow symlinks."""
+    """Yield root/child session candidates without following listed symlinks.
+
+    Args:
+        root: Archive conversations directory.
+        agent_id: Optional child-agent directory name.
+
+    Yields:
+        Agent name (or None) and candidate JSON file path.
+
+    Raises:
+        ValueError: If the agent identifier is invalid.
+    """
     if agent_id == "":
         agent_id = None  # Optional native-tool string fields can arrive empty.
     if agent_id is not None and (
@@ -51,12 +61,62 @@ def _session_files(root: Path, agent_id: str | None = None) -> Iterator[tuple[st
 
 
 def _read(root: Path, path: Path) -> tuple[dict[str, Any] | None, bool]:
-    # Re-check containment immediately before opening; never read arbitrary paths.
-    if root.is_symlink() or path.is_symlink() or not _within(path.resolve(), root.resolve()):
+    """Read bounded JSON through no-follow directory and file descriptors.
+
+    Args:
+        root: Configured archive directory.
+        path: Candidate root or direct-child session path.
+
+    Returns:
+        Valid session data (if any) and whether the file exceeded the size cap.
+    """
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    if nofollow is None or directory_flag is None:
+        return None, False  # Fail closed without descriptor-based containment.
+    try:
+        parts = path.relative_to(root).parts
+    except ValueError:
+        return None, False
+    if (
+        len(parts) not in (1, 2)
+        or any(part in (".", "..") for part in parts)
+        or not parts[-1].endswith(".json")
+        or parts[-1] == "session_index.json"
+    ):
         return None, False
     try:
-        with path.open("rb") as handle:
-            raw = handle.read(_MAX_SESSION_BYTES + 1)
+        with ExitStack() as stack:
+            # Open every ancestor by descriptor too: a replaced workspace parent
+            # must not make an otherwise safe root pathname point elsewhere.
+            directory = os.open(root.anchor, os.O_RDONLY | directory_flag | nofollow)
+            stack.callback(os.close, directory)
+            for component in root.parts[1:]:
+                directory = os.open(
+                    component, os.O_RDONLY | directory_flag | nofollow,
+                    dir_fd=directory,
+                )
+                stack.callback(os.close, directory)
+            if len(parts) == 2:
+                directory = os.open(
+                    parts[0], os.O_RDONLY | directory_flag | nofollow,
+                    dir_fd=directory,
+                )
+                stack.callback(os.close, directory)
+            # A replaced FIFO must not block before fstat can reject it.
+            fd = os.open(
+                parts[-1], os.O_RDONLY | nofollow | os.O_NONBLOCK,
+                dir_fd=directory,
+            )
+            stack.callback(os.close, fd)
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return None, False
+            raw = bytearray()
+            while len(raw) <= _MAX_SESSION_BYTES:
+                chunk = os.read(fd, _MAX_SESSION_BYTES + 1 - len(raw))
+                if not chunk:
+                    break
+                raw.extend(chunk)
         if len(raw) > _MAX_SESSION_BYTES:
             return None, True
         data = json.loads(raw)
@@ -68,6 +128,7 @@ def _read(root: Path, path: Path) -> tuple[dict[str, Any] | None, bool]:
 
 
 def _text(content: Any) -> str:
+    """Extract text from a persisted message's content."""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -81,6 +142,7 @@ def _text(content: Any) -> str:
 
 
 def _bounded(value: Any, maximum: int, default: int) -> int:
+    """Clamp an optional numeric argument to a positive upper bound."""
     try:
         return min(max(int(value), 1), maximum)
     except (ValueError, TypeError):
@@ -88,6 +150,11 @@ def _bounded(value: Any, maximum: int, default: int) -> int:
 
 
 def _matches(root: Path, session_id: str, agent_id: str | None) -> Iterator[tuple[str | None, Path]]:
+    """Yield candidates for a validated session identifier.
+
+    Raises:
+        ValueError: If the session or agent identifier is invalid.
+    """
     if not isinstance(session_id, str) or not session_id or Path(session_id).name != session_id or "\\" in session_id or session_id in (".", "..") or session_id == "session_index":
         raise ValueError("Invalid session_id")
     for agent, path in _session_files(root, agent_id):
@@ -103,7 +170,22 @@ def search(
     session_id: str | None = None,
     case_sensitive: bool = False,
 ) -> dict[str, Any]:
-    """Find bounded message excerpts; search dialog by default, not system prompts."""
+    """Find bounded dialog excerpts without switching active sessions.
+
+    Args:
+        workspace: Configured workspace path.
+        query: Literal text to find in dialog messages.
+        limit: Maximum number of excerpts to return (clamped to 30).
+        agent_id: Optional direct child-agent directory name.
+        session_id: Optional session identifier to narrow the search.
+        case_sensitive: Whether to match exact case.
+
+    Returns:
+        Excerpts, result truncation status and number of oversized files.
+
+    Raises:
+        ValueError: If query or either identifier is invalid.
+    """
     if not isinstance(query, str) or not query.strip() or len(query) > 256:
         raise ValueError("query must be 1-256 characters")
     root = Path(workspace).expanduser().resolve() / "conversations"
@@ -157,7 +239,21 @@ def open_session(
     message_start: int = 0,
     limit: int = 10,
 ) -> dict[str, Any]:
-    """Read a bounded slice of one session, without switching active sessions."""
+    """Read a bounded slice of one session without switching active sessions.
+
+    Args:
+        workspace: Configured workspace path.
+        session_id: Session identifier returned by search.
+        agent_id: Optional direct child-agent directory name.
+        message_start: Zero-based first message index.
+        limit: Maximum number of messages to return (clamped to 30).
+
+    Returns:
+        Session metadata and bounded dialog messages, or a structured error.
+
+    Raises:
+        ValueError: If either identifier or the starting index is invalid.
+    """
     root = Path(workspace).expanduser().resolve() / "conversations"
     matches = list(_matches(root, session_id, agent_id))
     if not matches:

@@ -4835,6 +4835,18 @@ class ToolManager:
         )
 
     def _search_conversations(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Search configured archive with validated parameters.
+
+        Args:
+            params: Tool arguments including required query.
+
+        Returns:
+            Bounded archive search results.
+
+        Raises:
+            KeyError: If query is missing.
+            ValueError: If query or identifiers are invalid.
+        """
         from penguin.tools.core.conversation_archive import search
 
         return search(
@@ -4847,6 +4859,18 @@ class ToolManager:
         )
 
     def _open_conversation(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Open one session from the configured archive.
+
+        Args:
+            params: Tool arguments including required session_id.
+
+        Returns:
+            Bounded dialog slice or structured error.
+
+        Raises:
+            KeyError: If session_id is missing.
+            ValueError: If identifiers or message_start are invalid.
+        """
         from penguin.tools.core.conversation_archive import open_session
 
         return open_session(

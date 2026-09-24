@@ -2,12 +2,14 @@
 
 import json
 import logging
+import os
 from pathlib import Path
 
 import pytest
 
 from penguin.security.permission_engine import Operation, PermissionResult, PolicyEngine
 from penguin.security.tool_permissions import extract_resources_from_input, get_tool_operations
+from penguin.tools.core import conversation_archive
 from penguin.tools.core.conversation_archive import _MAX_SESSION_BYTES, open_session, search
 from penguin.tools.tool_manager import ToolManager
 
@@ -92,6 +94,76 @@ def test_large_sessions_are_reported_not_silently_omitted(tmp_path):
     result = open_session(root, "huge")
     assert result["error"] == "session_too_large"
     assert result["max_bytes"] == _MAX_SESSION_BYTES
+
+
+def test_replaced_session_file_cannot_redirect_read(tmp_path, monkeypatch):
+    root = tmp_path / "workspace"
+    candidate = _session(root, "old", "inside")
+    outside = _session(tmp_path / "outside", "old", "outside secret")
+    real_open = os.open
+    replaced = False
+
+    def replace_before_open(path, flags, *args, **kwargs):
+        nonlocal replaced
+        if path == "old.json" and not replaced:
+            replaced = True
+            candidate.unlink()
+            candidate.symlink_to(outside)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(conversation_archive.os, "open", replace_before_open)
+    assert search(root, "outside secret")["results"] == []
+    assert replaced
+    assert open_session(root, "old")["error"] == "session_not_found"
+
+
+def test_replaced_agent_directory_cannot_redirect_read(tmp_path, monkeypatch):
+    root = tmp_path / "workspace"
+    candidate = _session(root, "old", "inside", agent="researcher")
+    outside = _session(tmp_path / "outside", "old", "outside secret")
+    real_open = os.open
+    replaced = False
+
+    def replace_before_open(path, flags, *args, **kwargs):
+        nonlocal replaced
+        if path == "researcher" and not replaced:
+            replaced = True
+            candidate.unlink()
+            candidate.parent.rmdir()
+            candidate.parent.symlink_to(outside.parent)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(conversation_archive.os, "open", replace_before_open)
+    assert search(root, "outside secret")["results"] == []
+    assert replaced
+
+
+def test_replaced_workspace_directory_cannot_redirect_read(tmp_path, monkeypatch):
+    root = tmp_path / "workspace"
+    _session(root, "old", "inside")
+    outside = _session(tmp_path / "outside", "old", "outside secret")
+    real_open = os.open
+    replaced = False
+
+    def replace_before_open(path, flags, *args, **kwargs):
+        nonlocal replaced
+        if path == "workspace" and not replaced:
+            replaced = True
+            root.rename(tmp_path / "moved")
+            root.symlink_to(outside.parent.parent)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(conversation_archive.os, "open", replace_before_open)
+    assert search(root, "outside secret")["results"] == []
+    assert replaced
+
+
+def test_archive_read_fails_closed_without_nofollow(tmp_path, monkeypatch):
+    root = tmp_path / "workspace"
+    _session(root, "old", "inside")
+    monkeypatch.delattr(conversation_archive.os, "O_NOFOLLOW", raising=False)
+    assert search(root, "inside")["results"] == []
+    assert open_session(root, "old")["error"] == "unreadable_session"
 
 
 def test_tool_dispatch_and_permission_metadata(tmp_path, caplog):
