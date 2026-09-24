@@ -249,7 +249,11 @@ class ToolManager:
                     # Fallback to current working directory
                     self.project_root = os.getcwd()
             # Determine active file root (project or workspace)
-            self.workspace_root = str(WORKSPACE_PATH)
+            configured_workspace = (
+                config.get("workspace_path") if isinstance(config, dict)
+                else getattr(config, "workspace_path", None)
+            )
+            self.workspace_root = str(configured_workspace or WORKSPACE_PATH)
             root_pref_env = os.environ.get("PENGUIN_WRITE_ROOT", "").lower()
             if root_pref_env in ("project", "workspace"):
                 self.file_root_mode = root_pref_env
@@ -733,6 +737,37 @@ class ToolManager:
                         },
                     },
                     "required": ["pattern"],
+                },
+                "x-penguin-permissions": read_only_permissions,
+            },
+            {
+                "name": "conversation_search",
+                "description": "Search saved conversation messages in the configured workspace without changing the active session. Returns bounded excerpts and session references.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "limit": {"type": "integer", "description": "Maximum matches (1-30, default 10)"},
+                        "agent_id": {"type": "string", "description": "Optional agent conversation directory"},
+                        "session_id": {"type": "string", "description": "Optional session filter"},
+                        "case_sensitive": {"type": "boolean"},
+                    },
+                    "required": ["query"],
+                },
+                "x-penguin-permissions": read_only_permissions,
+            },
+            {
+                "name": "conversation_open",
+                "description": "Read a bounded slice of a saved session without switching sessions or writing to the archive. Use the session reference from conversation_search.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": {"type": "string"},
+                        "agent_id": {"type": "string", "description": "Specify if the ID occurs in multiple agent archives"},
+                        "message_start": {"type": "integer", "description": "First message index (default 0)"},
+                        "limit": {"type": "integer", "description": "Maximum messages (1-30, default 10)"},
+                    },
+                    "required": ["session_id"],
                 },
                 "x-penguin-permissions": read_only_permissions,
             },
@@ -2983,6 +3018,8 @@ class ToolManager:
             "process_stop",
             ORDERED_TOOL_BATCH_NAME,
             "grep_search",
+            "conversation_search",
+            "conversation_open",
             "todowrite",
             "todoread",
             "finish_response",
@@ -4191,6 +4228,9 @@ class ToolManager:
     ) -> dict[str, Any]:
         """Return a diagnostics-safe copy of tool input."""
 
+        if tool_name in {"conversation_search", "conversation_open"}:
+            return {"archive": "<private>"}
+
         sensitive_keys = {
             "content",
             "diff",
@@ -4387,6 +4427,10 @@ class ToolManager:
             effective_context.setdefault("project_root", file_root)
             effective_context.setdefault("workspace_root", file_root)
             tool_input = tool_input if isinstance(tool_input, dict) else {}
+            if tool_name in {"conversation_search", "conversation_open"}:
+                effective_context, tool_input = self._archive_permission_input(
+                    effective_context, tool_input
+                )
 
             if self._mcp_provider.is_mcp_tool(tool_name):
                 permission_response = self._permission_response(
@@ -4445,6 +4489,8 @@ class ToolManager:
                     tool_input.get("case_sensitive", False),
                     tool_input.get("search_files", True),
                 ),
+                "conversation_search": lambda: self._search_conversations(tool_input),
+                "conversation_open": lambda: self._open_conversation(tool_input),
                 "memory_search": lambda: self._execute_async_tool(
                     self.perform_memory_search(
                         tool_input["query"],
@@ -4750,15 +4796,16 @@ class ToolManager:
                 result = tool_map[tool_name]()
                 if result is None or (isinstance(result, list) and len(result) == 0):
                     result = {"result": "No results found or empty directory."}
-                self.add_message_to_search(
-                    {"role": "assistant", "content": f"Tool use: {tool_name}"}
-                )
-                self.add_message_to_search(
-                    {"role": "user", "content": f"Tool result: {result}"}
-                )
-                logging.info(
-                    f"Tool {tool_name} executed successfully with result: {result}"
-                )
+                if tool_name not in {"conversation_search", "conversation_open"}:
+                    self.add_message_to_search(
+                        {"role": "assistant", "content": f"Tool use: {tool_name}"}
+                    )
+                    self.add_message_to_search(
+                        {"role": "user", "content": f"Tool result: {result}"}
+                    )
+                    logging.info("Tool %s executed successfully with result: %s", tool_name, result)
+                else:
+                    logging.info("Archive tool %s completed (content omitted)", tool_name)
 
                 return result
             except Exception as e:
@@ -4775,6 +4822,40 @@ class ToolManager:
         if effective_root == self._file_root:
             return self.file_map.get_formatted_file_map(directory)
         return FileMap(effective_root).get_formatted_file_map(directory)
+
+    def _archive_permission_input(
+        self, context: dict[str, Any], params: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Authorize the configured archive, never a caller-supplied path."""
+        # Do not let caller-controlled fields masquerade as the trusted resource.
+        archive_root = str(Path(self.workspace_root) / "conversations")
+        return (
+            {**context, "workspace_root": self.workspace_root},
+            {**params, "_archive_root": archive_root},
+        )
+
+    def _search_conversations(self, params: dict[str, Any]) -> dict[str, Any]:
+        from penguin.tools.core.conversation_archive import search
+
+        return search(
+            self.workspace_root,
+            params["query"],
+            limit=params.get("limit", 10),
+            agent_id=params.get("agent_id"),
+            session_id=params.get("session_id"),
+            case_sensitive=params.get("case_sensitive", False),
+        )
+
+    def _open_conversation(self, params: dict[str, Any]) -> dict[str, Any]:
+        from penguin.tools.core.conversation_archive import open_session
+
+        return open_session(
+            self.workspace_root,
+            params["session_id"],
+            agent_id=params.get("agent_id"),
+            message_start=params.get("message_start", 0),
+            limit=params.get("limit", 10),
+        )
 
     def perform_grep_search(self, query, k=5, case_sensitive=False, search_files=True):
         patterns = query.split("|")  # Allow multiple patterns separated by |
