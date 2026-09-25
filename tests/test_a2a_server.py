@@ -43,6 +43,9 @@ async def test_a2a_stream_and_durable_task_lookup(tmp_path, monkeypatch):
         card = await client.get("/.well-known/agent-card.json")
         assert card.status_code == 200
         assert card.json()["supportedInterfaces"][0]["protocolVersion"] == "1.0"
+        assert {skill["id"] for skill in card.json()["skills"]} == {
+            "code.implement", "code.review"
+        }
         assert (
             card.json()["securitySchemes"]["bearer"]["httpAuthSecurityScheme"]["scheme"]
             == "Bearer"

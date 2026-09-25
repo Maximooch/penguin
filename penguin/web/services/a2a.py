@@ -308,9 +308,15 @@ def add_penguin_a2a_routes(app: FastAPI, core: Any) -> bool:
         default_output_modes=["text/plain"],
         skills=[
             AgentSkill(
-                id="penguin",
-                name="Penguin",
-                description="Use Penguin tools to complete tasks.",
+                id="code.implement",
+                name="Implement code",
+                description="Use Penguin tools to implement code tasks.",
+                tags=["code"],
+            ),
+            AgentSkill(
+                id="code.review",
+                name="Review code",
+                description="Use Penguin tools to review code tasks.",
                 tags=["code", "research"],
             )
         ],
