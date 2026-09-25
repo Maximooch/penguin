@@ -271,6 +271,61 @@ async def test_unbounded_response_continues_from_persisted_length_partial() -> N
 
 
 @pytest.mark.asyncio
+async def test_length_boundary_does_not_complete_a_partial_tool_tag() -> None:
+    engine = _PersistingLengthEngine(
+        [
+            {
+                "assistant_response": "<execute_command>",
+                "action_results": [],
+                "finish_reason": FinishReason.LENGTH,
+            },
+            {
+                "assistant_response": "Complete answer",
+                "action_results": [],
+                "finish_reason": FinishReason.STOP,
+            },
+        ]
+    )
+
+    result = await engine.run_response("Explain the change", streaming=False)
+
+    assert result["iterations"] == 2
+    assert result["assistant_response"] == "Complete answer"
+    assert engine.request_messages[1][-1] == {
+        "role": "system",
+        "content": (
+            "The previous assistant output reached a per-call output boundary. "
+            "Continue exactly where it stopped without repeating any prior text."
+        ),
+    }
+
+
+@pytest.mark.asyncio
+async def test_bounded_response_does_not_queue_unusable_continuation() -> None:
+    engine = _PersistingLengthEngine(
+        [
+            {
+                "assistant_response": "Partial answer",
+                "action_results": [],
+                "finish_reason": FinishReason.LENGTH,
+            }
+        ]
+    )
+
+    result = await engine.run_response(
+        "Explain the change", max_iterations=1, streaming=False
+    )
+
+    assert result["status"] == "max_iterations"
+    assert engine.provider_calls == 1
+    roles = [
+        message.role
+        for message in engine.test_conversation_manager.conversation.session.messages
+    ]
+    assert roles == ["user", "assistant"]
+
+
+@pytest.mark.asyncio
 async def test_length_continuation_respects_explicit_iteration_limit() -> None:
     engine = _PersistingLengthEngine(
         [

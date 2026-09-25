@@ -46,7 +46,7 @@ from penguin.utils.parser import (  # type: ignore
 )
 from penguin.system.state import MessageCategory  # type: ignore
 from penguin.llm.api_client import APIClient  # type: ignore
-from penguin.llm.contracts import LLMProviderError
+from penguin.llm.contracts import FinishReason, LLMProviderError
 from penguin.llm.provider_transform import native_tool_format
 from penguin.llm.runtime import (
     build_empty_response_diagnostics as build_llm_empty_response_diagnostics,
@@ -86,6 +86,11 @@ except ImportError:
     ProtocolMessage = None  # type: ignore
 
 logger = logging.getLogger(__name__)
+
+_OUTPUT_BOUNDARY_CONTINUATION = (
+    "The previous assistant output reached a per-call output boundary. "
+    "Continue exactly where it stopped without repeating any prior text."
+)
 
 
 def _empty_truncations() -> Dict[str, Any]:
@@ -1857,6 +1862,17 @@ class Engine:
                     completion_status = "budget_limited"
                     break
 
+                if response_data.get("finish_reason") == FinishReason.LENGTH:
+                    if (
+                        max_iterations is None
+                        or self.current_iteration < max_iterations
+                    ):
+                        cm.conversation.add_message(
+                            "system", _OUTPUT_BOUNDARY_CONTINUATION
+                        )
+                        await self._save_conversation(cm, async_save=config.async_save)
+                    continue
+
                 # Debug: Check if termination signal mentioned but not parsed correctly
                 if (
                     last_response
@@ -1916,14 +1932,6 @@ class Engine:
                         )
                     completion_status = guard_status or "implicit_completion"
                     break
-
-                # TODO(task-loop): a provider turn that ends with FinishReason.LENGTH
-                # (per-call output boundary) is currently treated as implicit
-                # completion here. tests/test_engine_task_finish_contract.py
-                # documents the intended continuation behavior
-                # (test_unbounded_task_continues_once_from_persisted_length_partial).
-                # Implement output-boundary continuation before relying on that
-                # contract; see tests for the expected message shape.
 
             else:
                 # The loop condition expired without an explicit or guarded break.
@@ -2355,6 +2363,14 @@ class Engine:
                         f"[LOOP DEBUG] Response contains 'finish_response' text but wasn't parsed as action. Response preview: {last_response[:100]}..."
                     )
 
+                if response_data.get("finish_reason") == FinishReason.LENGTH:
+                    if max_iters is None or self.current_iteration < max_iters:
+                        cm.conversation.add_message(
+                            "system", _OUTPUT_BOUNDARY_CONTINUATION
+                        )
+                        await self._save_conversation(cm, async_save=True)
+                    continue
+
                 if not iteration_results and self._queue_malformed_action_repair_note(
                     cm,
                     last_response,
@@ -2380,15 +2396,6 @@ class Engine:
                             guard_status,
                         )
                     break
-
-                # TODO(response-loop): a provider turn that ends with
-                # FinishReason.LENGTH (per-call output boundary) is currently
-                # treated as implicit completion here.
-                # tests/test_engine_task_finish_contract.py documents the
-                # intended continuation behavior
-                # (test_unbounded_response_continues_from_persisted_length_partial).
-                # Implement output-boundary continuation before relying on that
-                # contract; see tests for the expected message shape.
 
             # Determine final status
             if (
@@ -3751,6 +3758,14 @@ class Engine:
             assistant_response = await self._call_llm_with_retry(
                 api_client, messages, streaming, stream_callback, extra_kwargs
             )
+            handler = getattr(api_client, "client_handler", None)
+            finish_reason_getter = getattr(handler, "get_last_finish_reason", None)
+            finish_reason = None
+            if callable(finish_reason_getter):
+                try:
+                    finish_reason = finish_reason_getter()
+                except Exception:
+                    logger.debug("Failed to read provider finish reason", exc_info=True)
             provider_duration_ms = (time.perf_counter() - provider_started) * 1000
             _trace_log_info(
                 "engine.llm_step.provider_done request=%s session=%s agent=%s "
@@ -3863,6 +3878,7 @@ class Engine:
             "assistant_response": assistant_response,
             "action_results": action_results,
             "usage": usage,
+            "finish_reason": finish_reason,
             "codeact_enabled": codeact_enabled,
         }
 

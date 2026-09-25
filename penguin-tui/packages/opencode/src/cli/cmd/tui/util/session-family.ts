@@ -62,9 +62,10 @@ export function expandSessionSearchResults<T extends SessionLike>(results: T[] |
   const merged = new Map(results.map((item) => [item.id, item]))
 
   for (const item of results) {
-    if (!isValidChildSession(item)) continue
-    if (merged.has(item.parentID)) continue
-    const parent = cache.get(item.parentID)
+    const parentID = item.parentID
+    if (!parentID || parentID === item.id) continue
+    if (merged.has(parentID)) continue
+    const parent = cache.get(parentID)
     if (!parent) continue
     merged.set(parent.id, parent)
   }
