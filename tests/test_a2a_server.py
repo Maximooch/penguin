@@ -142,6 +142,47 @@ async def test_a2a_persists_authoritative_provider_failure(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_a2a_marks_engine_error_result_failed(tmp_path, monkeypatch):
+    monkeypatch.setenv("PENGUIN_A2A_API_KEY", "a2a-test-secret")
+    monkeypatch.setenv("PENGUIN_A2A_BASE_URL", "http://127.0.0.1:18125")
+
+    async def failed_result(_request, _core, _http_request=None):
+        return {
+            "response": "Error occurred: model returned no answer",
+            "status": "error",
+        }
+
+    monkeypatch.setattr("penguin.web.routes._process_chat_message", failed_result)
+    app = build_app(tmp_path)
+    headers = {"Authorization": "Bearer a2a-test-secret", "A2A-Version": "1.0"}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        streamed = await client.post(
+            "/a2a/rest/message:stream",
+            headers=headers,
+            json={
+                "message": {
+                    "messageId": "engine-error",
+                    "role": "ROLE_USER",
+                    "parts": [{"text": "Hello"}],
+                }
+            },
+        )
+        events = [
+            json.loads(line.removeprefix("data: "))
+            for line in streamed.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        states = [
+            event.get("statusUpdate", {}).get("status", {}).get("state")
+            for event in events
+        ]
+        assert "TASK_STATE_FAILED" in states
+        assert "TASK_STATE_COMPLETED" not in states
+
+
+@pytest.mark.asyncio
 async def test_a2a_link_inference_requires_separate_service_authority(
     tmp_path, monkeypatch
 ):

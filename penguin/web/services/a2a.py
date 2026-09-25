@@ -224,6 +224,9 @@ class PenguinA2AExecutor(AgentExecutor):
             "working",
         } or response.get("recoverable"):
             return
+        if response.get("status") in {"error", "provider_error"}:
+            await updater.failed()
+            return
         if response.get("error"):
             # Provider errors can follow accepted side effects. Keep the task
             # open until a durable receipt can be reconciled.
