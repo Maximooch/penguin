@@ -133,6 +133,8 @@ class AsyncToolDispatcher:
         arguments = manager._normalize_tool_input_paths(
             tool_input if isinstance(tool_input, dict) else {}, root
         )
+        if name in {"conversation_search", "conversation_open"}:
+            ctx, arguments = manager._archive_permission_input(ctx, arguments)
         _, _, resources = approval_identity(name, arguments, ctx)
         response = manager._permission_response(name, arguments, ctx)
         if response is not None:
