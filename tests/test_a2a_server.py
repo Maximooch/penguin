@@ -319,3 +319,44 @@ async def test_a2a_stop_reconciles_after_server_restart(tmp_path, monkeypatch):
         task = await client.get(f"/a2a/rest/tasks/{task_id}", headers=headers)
         assert task.status_code == 200
         assert task.json()["status"]["state"] == "TASK_STATE_CANCELED"
+
+
+@pytest.mark.asyncio
+async def test_a2a_stop_after_completion_preserves_completion(tmp_path, monkeypatch):
+    monkeypatch.setenv("PENGUIN_A2A_API_KEY", "a2a-test-secret")
+    monkeypatch.setenv("PENGUIN_A2A_BASE_URL", "http://127.0.0.1:18125")
+
+    async def answer(_request, _core, _http_request=None):
+        return {"response": "Finished first", "status": "complete"}
+
+    monkeypatch.setattr("penguin.web.routes._process_chat_message", answer)
+    app = build_app(tmp_path)
+    headers = {"Authorization": "Bearer a2a-test-secret", "A2A-Version": "1.0"}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        streamed = await client.post(
+            "/a2a/rest/message:stream",
+            headers=headers,
+            json={"message": {
+                "messageId": "completed-before-stop",
+                "role": "ROLE_USER",
+                "parts": [{"text": "Finish"}],
+            }},
+        )
+        assert streamed.status_code == 200
+        events = [
+            json.loads(line.removeprefix("data: "))
+            for line in streamed.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        task_id = next(event["task"]["id"] for event in events if "task" in event)
+        assert any(
+            event.get("statusUpdate", {}).get("status", {}).get("state")
+            == "TASK_STATE_COMPLETED"
+            for event in events
+        )
+        await client.post(f"/a2a/rest/tasks/{task_id}:cancel", headers=headers)
+        task = await client.get(f"/a2a/rest/tasks/{task_id}", headers=headers)
+        assert task.status_code == 200
+        assert task.json()["status"]["state"] == "TASK_STATE_COMPLETED"
