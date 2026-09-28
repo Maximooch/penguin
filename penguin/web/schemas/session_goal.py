@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-# Keep typing aliases because Pydantic 1.x evaluates model fields on Python 3.9.
+# Keep typing aliases because Pydantic 1.x evaluates model fields eagerly.
 # ruff: noqa
 from enum import Enum
 from typing import Any, Dict, Optional

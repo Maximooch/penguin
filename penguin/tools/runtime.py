@@ -7,7 +7,7 @@ action-result dictionaries that the engine, API, and UI already consume.
 
 from __future__ import annotations
 
-# Keep Optional/Union annotations for Python 3.9 compatibility.
+# Keep Optional/Union annotations for compatibility with older runtime consumers.
 # ruff: noqa: UP007
 import hashlib
 import inspect
@@ -1598,7 +1598,11 @@ def tool_call_from_responses_info(tool_info: dict[str, Any]) -> Optional[ToolCal
     if not isinstance(tool_info, dict):
         return None
 
-    name = str(tool_info.get("name") or "").strip()
+    function_payload = tool_info.get("function")
+    function_payload = (
+        function_payload if isinstance(function_payload, dict) else {}
+    )
+    name = str(tool_info.get("name") or function_payload.get("name") or "").strip()
     if not name:
         return None
 
@@ -1606,10 +1610,15 @@ def tool_call_from_responses_info(tool_info: dict[str, Any]) -> Optional[ToolCal
         tool_info.get("call_id")
         or tool_info.get("tool_call_id")
         or tool_info.get("item_id")
+        or tool_info.get("id")
         or f"call_{uuid.uuid4().hex}"
     )
     raw_args = (
-        tool_info.get("arguments") if tool_info.get("arguments") is not None else "{}"
+        tool_info.get("arguments")
+        if tool_info.get("arguments") is not None
+        else function_payload.get("arguments")
+        if function_payload.get("arguments") is not None
+        else "{}"
     )
     arguments: ToolArguments = (
         raw_args if isinstance(raw_args, (dict, str)) else str(raw_args)
@@ -1704,6 +1713,18 @@ def _model_visible_tool_output(action_result: dict[str, Any]) -> str:
     action = str(action_result.get("action") or action_result.get("name") or "")
     if action.startswith("browser_") or action == "read_image":
         return _format_browser_tool_output(action_result)
+    if (
+        action in {"conversation_search", "conversation_open"}
+        and "result" not in action_result
+        and "output" not in action_result
+    ):
+        # Archive tools return structured data, not a legacy result field.
+        # Keep this scoped so other tools' internal metadata isn't exposed.
+        return json.dumps(
+            {key: value for key, value in action_result.items() if key != "action"},
+            ensure_ascii=False,
+            default=str,
+        )
     raw_output = action_result.get("result", action_result.get("output", ""))
     return str(raw_output if raw_output is not None else "")
 

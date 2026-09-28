@@ -53,6 +53,22 @@ _PROVIDER_METADATA: dict[str, dict[str, Any]] = {
         "api_url": "http://localhost:11434/v1",
         "api_npm": "@ai-sdk/openai-compatible",
     },
+    "modal": {
+        "name": "Modal",
+        "env": [
+            "MODAL_ENDPOINT",
+            "MODAL_PROXY_TOKEN_ID",
+            "MODAL_PROXY_TOKEN_SECRET",
+        ],
+        "api_url": "https://<your-endpoint>.modal.direct/v1",
+        "api_npm": "@ai-sdk/openai-compatible",
+    },
+    "runinfra": {
+        "name": "RunInfra",
+        "env": ["RUNINFRA_GATEWAY_KEY"],
+        "api_url": "https://api.runinfra.ai/v1",
+        "api_npm": "@ai-sdk/openai-compatible",
+    },
 }
 
 _MODELS_DEV_API_URL = "https://models.dev/api.json"

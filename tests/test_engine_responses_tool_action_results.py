@@ -18,7 +18,7 @@ async def test_llm_step_includes_responses_tool_call_in_action_results() -> None
     engine.default_agent_id = "default"
     engine._trace_request_fields = lambda: ("req-1", "session-1")  # type: ignore[method-assign]
     engine._apply_agent_mode_notice = lambda messages: messages  # type: ignore[method-assign]
-    engine._prepare_responses_tools = lambda _tm: {}  # type: ignore[method-assign]
+    engine._prepare_responses_tools = lambda _tm, **_kwargs: {}  # type: ignore[method-assign]
 
     async def _call_llm_with_retry(*args: Any, **kwargs: Any) -> str:
         del args, kwargs
@@ -92,7 +92,7 @@ async def test_llm_step_persists_assistant_before_responses_tool_result() -> Non
     engine.default_agent_id = "default"
     engine._trace_request_fields = lambda: ("req-1", "session-1")  # type: ignore[method-assign]
     engine._apply_agent_mode_notice = lambda messages: messages  # type: ignore[method-assign]
-    engine._prepare_responses_tools = lambda _tm: {}  # type: ignore[method-assign]
+    engine._prepare_responses_tools = lambda _tm, **_kwargs: {}  # type: ignore[method-assign]
 
     async def _call_llm_with_retry(*args: Any, **kwargs: Any) -> str:
         del args, kwargs
@@ -198,7 +198,7 @@ async def test_llm_step_includes_multiple_responses_tool_results() -> None:
     engine.default_agent_id = "default"
     engine._trace_request_fields = lambda: ("req-1", "session-1")  # type: ignore[method-assign]
     engine._apply_agent_mode_notice = lambda messages: messages  # type: ignore[method-assign]
-    engine._prepare_responses_tools = lambda _tm: {}  # type: ignore[method-assign]
+    engine._prepare_responses_tools = lambda _tm, **_kwargs: {}  # type: ignore[method-assign]
 
     async def _call_llm_with_retry(*args: Any, **kwargs: Any) -> str:
         del args, kwargs

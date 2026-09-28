@@ -33,6 +33,8 @@ TOOL_OPERATION_MAP: dict[str, list[Operation]] = {
     "get_file_map": [Operation.FILESYSTEM_LIST],
     "read_image": [Operation.FILESYSTEM_READ],
     "enhanced_read": [Operation.FILESYSTEM_READ],
+    "conversation_search": [Operation.FILESYSTEM_READ],
+    "conversation_open": [Operation.FILESYSTEM_READ],
     # File write operations
     "create_folder": [Operation.FILESYSTEM_MKDIR],
     "create_file": [Operation.FILESYSTEM_WRITE],
@@ -244,6 +246,9 @@ def extract_resource_from_input(
     if tool_name in ("execute_command", "code_execution", "process_start"):
         # For commands, the resource is the command itself
         return tool_input.get("command") or tool_input.get("code")
+
+    if tool_name in ("conversation_search", "conversation_open"):
+        return tool_input.get("_archive_root")
 
     # File path extraction for common patterns
     path_keys = ["path", "file_path", "filepath", "file", "target", "directory", "dir"]
@@ -506,7 +511,15 @@ def check_tool_permission(
     ctx = dict(context or {})
     ctx["tool_name"] = tool_name
 
+    # Request-specific policy may relax workspace ASK, but must never turn an
+    # explicitly read-only turn into an approval prompt for a mutating tool.
+    if ctx.get("permission_mode") == "read_only" and any(
+        not Operation.is_read_only(operation) for operation in operations
+    ):
+        return PermissionResult.DENY, "Read-only mode denies mutating tools"
+
     request_policy_allows = False
+    request_policy_asks: str | None = None
     request_result = _check_request_approval_policy(
         operations,
         resources,
@@ -515,9 +528,12 @@ def check_tool_permission(
     )
     if request_result is not None:
         result, reason = request_result
-        if result != PermissionResult.ALLOW:
+        if result == PermissionResult.DENY:
             return result, reason
-        request_policy_allows = True
+        if result == PermissionResult.ASK:
+            request_policy_asks = reason
+        else:
+            request_policy_allows = True
 
     # Check agent-specific policy first (if agent_id in context)
     agent_id = ctx.get("agent_id")
@@ -546,6 +562,10 @@ def check_tool_permission(
                     result,
                     f"Operation '{operation.value}' denied for '{resource_candidate}'",
                 )
+
+    # Local hard denials must be checked before a request policy can prompt.
+    if request_policy_asks is not None:
+        return PermissionResult.ASK, request_policy_asks
 
     # If any ASK, return ASK
     for result, operation, resource_candidate in results:

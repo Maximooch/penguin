@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 
 import pytest
@@ -77,6 +78,34 @@ def test_responses_adapter_preserves_provider_call_identity() -> None:
     )
 
 
+def test_responses_adapter_accepts_openai_compatible_tool_call_shape() -> None:
+    call = tool_call_from_responses_info(
+        {
+            "id": "call_456",
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "arguments": '{"path":"context/todo"}',
+            },
+        }
+    )
+
+    assert call == ToolCall(
+        id="call_456",
+        name="read_file",
+        arguments='{"path":"context/todo"}',
+        source="responses",
+        raw={
+            "id": "call_456",
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "arguments": '{"path":"context/todo"}',
+            },
+        },
+    )
+
+
 def test_action_result_adapter_maps_legacy_result_to_tool_result() -> None:
     result = tool_result_from_action_result(
         {"action": "read_file", "result": "contents", "status": "completed"},
@@ -102,6 +131,35 @@ def test_tool_result_adapter_round_trips_current_action_result_shape() -> None:
     result = tool_result_from_action_result(action_result, call_id="call_exec")
 
     assert legacy_action_result_from_tool_result(result) == action_result
+
+
+def test_structured_archive_result_is_visible_to_model() -> None:
+    payload = {
+        "results": [{"session_id": "historic", "excerpt": "Penguin began"}],
+        "truncated": False,
+    }
+    result = tool_result_from_action_result(
+        {"action": "conversation_search", **payload}, call_id="call_archive"
+    )
+    assert result.status == "completed"
+    assert json.loads(result.output) == payload
+    assert result.output_hash != hash_tool_output("")
+    assert "e3b0c44298fc" not in tool_results_loop_identity([result]).summary
+
+
+@pytest.mark.asyncio
+async def test_scheduler_replays_structured_archive_result() -> None:
+    call = ToolCall(
+        id="archive",
+        name="conversation_search",
+        arguments={"query": "Penguin"},
+        source="responses",
+    )
+    results = await execute_tool_calls_serially(
+        [call], lambda _: {"results": [{"session_id": "historic"}], "truncated": False}
+    )
+    assert json.loads(results[0].output)["results"][0]["session_id"] == "historic"
+    assert results[0].byte_count > 0
 
 
 def test_scheduler_policy_can_select_first_or_all_calls() -> None:

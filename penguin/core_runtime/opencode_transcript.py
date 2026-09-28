@@ -7,9 +7,9 @@ history.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from penguin.core_runtime.opencode_bridge import normalize_optional_string
 from penguin.system.runtime_events import redact_runtime_payload
@@ -31,6 +31,7 @@ __all__ = [
     "TRANSCRIPT_KEY",
     "AssistantInfoFactory",
     "TranscriptEventResult",
+    "abort_running_tool_parts",
     "apply_transcript_event",
     "resolve_event_session_id",
 ]
@@ -42,6 +43,67 @@ class TranscriptEventResult:
 
     mark_modified: bool
     should_save: bool
+
+
+def abort_running_tool_parts(
+    *,
+    metadata: Any,
+    ended_at_ms: int,
+    reason: str,
+) -> list[dict[str, Any]]:
+    """Finalize persisted tool parts that were left running.
+
+    A restarted process cannot reconstruct the in-memory adapter state that
+    originally owned these parts. Explicit session abort therefore needs to
+    reconcile the durable transcript as well as the current runtime state.
+    """
+
+    if not isinstance(metadata, dict):
+        return []
+    transcript = metadata.get(TRANSCRIPT_KEY)
+    if not isinstance(transcript, dict):
+        return []
+    messages = transcript.get("messages")
+    if not isinstance(messages, dict):
+        return []
+
+    aborted_parts: list[dict[str, Any]] = []
+    for entry in messages.values():
+        if not isinstance(entry, dict):
+            continue
+        parts = entry.get("parts")
+        if not isinstance(parts, dict):
+            continue
+        for part in parts.values():
+            if not isinstance(part, dict) or part.get("type") != "tool":
+                continue
+            state = part.get("state")
+            if not isinstance(state, dict) or state.get("status") != "running":
+                continue
+
+            input_data = state.get("input")
+            time_data = state.get("time")
+            start_time = (
+                time_data.get("start")
+                if isinstance(time_data, dict)
+                and isinstance(time_data.get("start"), int)
+                else ended_at_ms
+            )
+            raw_metadata = state.get("metadata")
+            part_metadata = (
+                dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+            )
+            part_metadata["aborted"] = True
+            part["state"] = {
+                "status": "error",
+                "input": input_data if isinstance(input_data, dict) else {},
+                "time": {"start": start_time, "end": ended_at_ms},
+                "error": reason,
+                "metadata": part_metadata,
+            }
+            aborted_parts.append(part)
+
+    return aborted_parts
 
 
 def resolve_event_session_id(

@@ -180,6 +180,23 @@ def _sanitize_record(payload: dict[str, Any]) -> dict[str, Any]:
 
         return record
 
+    if auth_type == "modal":
+        endpoint = payload.get("endpoint")
+        token_id = payload.get("tokenId")
+        token_secret = payload.get("tokenSecret")
+        if not isinstance(endpoint, str) or not endpoint.strip():
+            raise ValueError("Modal auth requires non-empty 'endpoint'")
+        if not isinstance(token_id, str) or not token_id.strip():
+            raise ValueError("Modal auth requires non-empty 'tokenId'")
+        if not isinstance(token_secret, str) or not token_secret.strip():
+            raise ValueError("Modal auth requires non-empty 'tokenSecret'")
+        return {
+            "type": "modal",
+            "endpoint": endpoint.strip(),
+            "tokenId": token_id.strip(),
+            "tokenSecret": token_secret.strip(),
+        }
+
     if auth_type == "wellknown":
         key = payload.get("key")
         token = payload.get("token")
@@ -189,7 +206,9 @@ def _sanitize_record(payload: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("WellKnown auth requires non-empty 'token'")
         return {"type": "wellknown", "key": key.strip(), "token": token.strip()}
 
-    raise ValueError("Unsupported auth type; expected 'api', 'oauth', or 'wellknown'")
+    raise ValueError(
+        "Unsupported auth type; expected 'api', 'oauth', 'modal', or 'wellknown'"
+    )
 
 
 def get_provider_credentials() -> dict[str, dict[str, Any]]:
@@ -212,8 +231,10 @@ def get_provider_credentials() -> dict[str, dict[str, Any]]:
             {
                 "openai",
                 "openrouter",
-                "anthropic",
+                "anthropic", #Need to remove Anthropic from the list given their new TOS
                 "google",
+                "modal",
+                "runinfra",
             }
         )
 
@@ -321,6 +342,7 @@ def _provider_env_candidates(provider_id: str) -> list[str]:
         "anthropic": ["ANTHROPIC_API_KEY"],
         "google": ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
         "ollama": ["OLLAMA_HOST"],
+        "runinfra": ["RUNINFRA_GATEWAY_KEY"],
     }
     if pid in mapping:
         return mapping[pid]
@@ -335,6 +357,19 @@ def _credential_record_from_environment(provider_id: str) -> dict[str, Any] | No
         return None
 
     if pid == "ollama":
+        return None
+
+    if pid == "modal":
+        endpoint = os.getenv("MODAL_ENDPOINT", "").strip()
+        token_id = os.getenv("MODAL_PROXY_TOKEN_ID", "").strip()
+        token_secret = os.getenv("MODAL_PROXY_TOKEN_SECRET", "").strip()
+        if endpoint and token_id and token_secret:
+            return {
+                "type": "modal",
+                "endpoint": endpoint,
+                "tokenId": token_id,
+                "tokenSecret": token_secret,
+            }
         return None
 
     if pid == "openai":
@@ -388,6 +423,14 @@ def _clear_applied_environment_credentials(
             _clear_env_if_matches(env_name, key)
         return
 
+    if pid == "modal" and auth_type == "modal":
+        _clear_env_if_matches("MODAL_ENDPOINT", credential_record.get("endpoint"))
+        _clear_env_if_matches("MODAL_PROXY_TOKEN_ID", credential_record.get("tokenId"))
+        _clear_env_if_matches(
+            "MODAL_PROXY_TOKEN_SECRET", credential_record.get("tokenSecret")
+        )
+        return
+
     if pid == "openai" and auth_type == "oauth":
         _clear_env_if_matches(
             "OPENAI_OAUTH_ACCESS_TOKEN",
@@ -431,6 +474,11 @@ def provider_connected(
             )
         if auth_type == "oauth" and isinstance(record.get("refresh"), str):
             return bool(record["refresh"].strip())
+        if auth_type == "modal":
+            return all(
+                isinstance(record.get(field), str) and bool(record[field].strip())
+                for field in ("endpoint", "tokenId", "tokenSecret")
+            )
         if auth_type == "wellknown" and isinstance(record.get("token"), str):
             return bool(record["token"].strip())
 
@@ -467,8 +515,23 @@ def apply_credentials_to_environment(
         if pid == "openai":
             os.environ["OPENAI_API_KEY"] = key
             return
+        if pid == "runinfra":
+            os.environ["RUNINFRA_GATEWAY_KEY"] = key
+            return
 
         os.environ[f"{pid.upper()}_API_KEY"] = key
+        return
+
+    if auth_type == "modal" and pid == "modal":
+        endpoint = credential_record.get("endpoint")
+        token_id = credential_record.get("tokenId")
+        token_secret = credential_record.get("tokenSecret")
+        if isinstance(endpoint, str) and endpoint:
+            os.environ["MODAL_ENDPOINT"] = endpoint
+        if isinstance(token_id, str) and token_id:
+            os.environ["MODAL_PROXY_TOKEN_ID"] = token_id
+        if isinstance(token_secret, str) and token_secret:
+            os.environ["MODAL_PROXY_TOKEN_SECRET"] = token_secret
         return
 
     if auth_type == "oauth" and pid == "openai":
@@ -512,6 +575,17 @@ def apply_credentials_to_runtime(
         model_config = getattr(core, "model_config", None)
         if getattr(model_config, "provider", None) == pid:
             setattr(model_config, "api_key", key)
+        return
+
+    if auth_type == "modal" and pid == "modal":
+        endpoint = credential_record.get("endpoint")
+        model_config = getattr(core, "model_config", None)
+        if (
+            isinstance(endpoint, str)
+            and endpoint
+            and getattr(model_config, "provider", None) == pid
+        ):
+            setattr(model_config, "api_base", endpoint)
         return
 
     if auth_type == "oauth" and pid == "openai":

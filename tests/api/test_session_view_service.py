@@ -606,6 +606,17 @@ def test_session_info_includes_subagent_lineage_fields():
     assert info["parent_agent_id"] == "default"
 
 
+def test_session_info_drops_self_parent_lineage():
+    session = _session("session_corrupt", "Recovered Session", "2026-02-03T00:00:00")
+    session.metadata["parentID"] = session.id
+    core = _core([session])
+
+    info = get_session_info(core, session.id)
+
+    assert info is not None
+    assert "parentID" not in info
+
+
 def test_list_session_infos_keeps_child_sessions_visible_until_roots_filter_is_used():
     parent = _session("session_parent", "Parent Session", "2026-02-01T00:00:00")
     child_a = _session("session_child_a", "Child A", "2026-02-02T00:00:00")

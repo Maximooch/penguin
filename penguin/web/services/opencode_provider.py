@@ -450,6 +450,59 @@ def _merge_cached_provider_catalog_models(
 ) -> dict[str, dict[str, dict[str, Any]]]:
     merged = _merge_openrouter_cached_catalog_models(provider_models, auth_records)
 
+    if isinstance(auth_records.get("modal"), dict):
+        merged = {provider_id: dict(models) for provider_id, models in merged.items()}
+        modal_models = merged.setdefault("modal", {})
+        modal_models.setdefault(
+            "moonshotai/Kimi-K3",
+            {
+                "name": "Kimi K3",
+                "model": "moonshotai/Kimi-K3",
+                "provider": "modal",
+                "max_context_window_tokens": 1_000_000,
+                "max_output_tokens": 8192,
+                "vision_enabled": True,
+                "reasoning_enabled": True,
+                "supported_reasoning_levels": ["low", "high", "max"],
+                "default_reasoning_level": "max",
+                "native_tools": True,
+            },
+        )
+
+    if isinstance(auth_records.get("runinfra"), dict):
+        merged = {provider_id: dict(models) for provider_id, models in merged.items()}
+        runinfra_models = merged.setdefault("runinfra", {})
+        runinfra_models.setdefault(
+            "deepseek-v4-flash",
+            {
+                "name": "DeepSeek V4 Flash",
+                "model": "deepseek-v4-flash",
+                "provider": "runinfra",
+                "max_context_window_tokens": 1_000_000,
+                "max_output_tokens": 8192,
+                "vision_enabled": False,
+                "reasoning_enabled": True,
+                "supported_reasoning_levels": ["low", "medium", "high"],
+                "default_reasoning_level": "medium",
+                "native_tools": True,
+            },
+        )
+        runinfra_models.setdefault(
+            "deepseek-ai/DeepSeek-V4-Pro-0813",
+            {
+                "name": "DeepSeek V4 Pro",
+                "model": "deepseek-ai/DeepSeek-V4-Pro-0813",
+                "provider": "runinfra",
+                "max_context_window_tokens": 1_048_576,
+                "max_output_tokens": 32768,
+                "vision_enabled": False,
+                "reasoning_enabled": True,
+                "supported_reasoning_levels": ["low", "medium", "high"],
+                "default_reasoning_level": "medium",
+                "native_tools": True,
+            },
+        )
+
     models_dev_discovered = models_dev_cached_provider_models(_MODELS_DEV_PROVIDER_IDS)
     if models_dev_discovered:
         merged = {provider_id: dict(models) for provider_id, models in merged.items()}
@@ -609,7 +662,7 @@ def _config_model_payload(
             "temperature": True,
             "reasoning": reasoning_supported,
             "attachment": bool(conf.get("vision_enabled", False)),
-            "toolcall": True,
+            "toolcall": bool(conf.get("native_tools", True)),
             "input": {
                 "text": True,
                 "audio": False,
@@ -666,7 +719,7 @@ def _provider_list_model_payload(
         "attachment": bool(conf.get("vision_enabled", False)),
         "reasoning": reasoning_supported,
         "temperature": True,
-        "tool_call": True,
+        "tool_call": bool(conf.get("native_tools", True)),
         "limit": {
             "context": context_limit,
             "output": output_limit,

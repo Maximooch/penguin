@@ -2148,3 +2148,24 @@ test("custom model with variants enabled and disabled", async () => {
     },
   })
 })
+
+for (const id of ["openrouter", "vercel", "zenmux"]) {
+  test(`${id} attributes Penguin by default`, async () => {
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(path.join(dir, "opencode.json"), JSON.stringify({
+          provider: { [id]: { options: { apiKey: "fixture-key" } } },
+        }))
+      },
+    })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const providers = await Provider.list()
+        const headers = new Headers(providers[id].options.headers)
+        expect(headers.get("http-referer")).toBe("https://penguinagents.com")
+        expect(headers.get("x-title")).toBe("Penguin")
+      },
+    })
+  })
+}

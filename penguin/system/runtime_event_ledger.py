@@ -164,74 +164,15 @@ class RuntimeEventLedger:
             True when a new row was inserted. False when the event is invalid,
             unsafe to persist, or already present.
         """
-        event_id = event.get("id")
-        if not isinstance(event_id, str) or not event_id:
+        if not self._validate_event(event):
             return False
-        if not _looks_like_public_runtime_event(event):
-            return False
-
-        scope = event.get("scope")
-        if not isinstance(scope, Mapping):
-            scope = {}
-        privacy = event.get("privacy")
-        if not isinstance(privacy, Mapping):
-            privacy = {}
-        payload = event.get("payload")
-        projections = event.get("projections")
 
         with self._lock:
             conn = self._thread_connection()
             try:
                 self._ensure_schema(conn)
                 before_changes = conn.total_changes
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO runtime_events (
-                        event_id,
-                        stream_id,
-                        sequence,
-                        event_type,
-                        category,
-                        event_time,
-                        inserted_at,
-                        session_id,
-                        conversation_id,
-                        agent_id,
-                        task_id,
-                        run_id,
-                        project_id,
-                        directory,
-                        privacy_classification,
-                        redacted,
-                        payload_json,
-                        projection_json,
-                        event_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        event_id,
-                        _string_or_none(event.get("stream_id")) or "global",
-                        _positive_int_or_zero(event.get("sequence")),
-                        _string_or_none(event.get("type")) or "unknown",
-                        _string_or_none(event.get("category")) or "session_lifecycle",
-                        _positive_int_or_zero(event.get("time")),
-                        int(time.time() * 1000),
-                        _string_or_none(scope.get("session_id")),
-                        _string_or_none(scope.get("conversation_id")),
-                        _string_or_none(scope.get("agent_id")),
-                        _string_or_none(scope.get("task_id")),
-                        _string_or_none(scope.get("run_id")),
-                        _string_or_none(scope.get("project_id")),
-                        _string_or_none(scope.get("directory")),
-                        _string_or_none(privacy.get("classification")) or "public",
-                        1 if privacy.get("redacted") else 0,
-                        _json_dump(payload if isinstance(payload, Mapping) else {}),
-                        _json_dump(
-                            projections if isinstance(projections, Mapping) else {}
-                        ),
-                        _json_dump(dict(event)),
-                    ),
-                )
+                self._insert_event(conn, event)
                 inserted = conn.total_changes > before_changes
                 self.cleanup_if_due(conn=conn)
                 conn.commit()
@@ -243,17 +184,103 @@ class RuntimeEventLedger:
     def extend(self, events: Iterable[Mapping[str, Any]]) -> int:
         """Persist multiple redacted public RuntimeEvent envelopes.
 
+        All accepted events are inserted in a single transaction with one
+        commit, so a burst of streamed events never incurs per-event fsyncs.
+
         Args:
             events: Iterable of candidate RuntimeEvent envelopes.
 
         Returns:
-            Number of rows inserted into the ledger.
+            Number of rows inserted into the ledger. Invalid or duplicate
+            events are skipped and do not count toward the total.
         """
-        accepted = 0
-        for event in events:
-            if self.append(event):
-                accepted += 1
-        return accepted
+        pending = [event for event in events if self._validate_event(event)]
+        if not pending:
+            return 0
+
+        with self._lock:
+            conn = self._thread_connection()
+            try:
+                self._ensure_schema(conn)
+                before_changes = conn.total_changes
+                for event in pending:
+                    self._insert_event(conn, event)
+                accepted = conn.total_changes - before_changes
+                self.cleanup_if_due(conn=conn)
+                conn.commit()
+                return accepted
+            except Exception:
+                conn.rollback()
+                raise
+
+    @staticmethod
+    def _validate_event(event: Mapping[str, Any]) -> bool:
+        """Return whether an event is safe and eligible for the ledger."""
+        event_id = event.get("id")
+        if not isinstance(event_id, str) or not event_id:
+            return False
+        return _looks_like_public_runtime_event(event)
+
+    @staticmethod
+    def _insert_event(conn: sqlite3.Connection, event: Mapping[str, Any]) -> None:
+        """Insert one event row (INSERT OR IGNORE dedupes by event_id)."""
+        event_id = event.get("id")
+        scope = event.get("scope")
+        if not isinstance(scope, Mapping):
+            scope = {}
+        privacy = event.get("privacy")
+        if not isinstance(privacy, Mapping):
+            privacy = {}
+        payload = event.get("payload")
+        projections = event.get("projections")
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO runtime_events (
+                event_id,
+                stream_id,
+                sequence,
+                event_type,
+                category,
+                event_time,
+                inserted_at,
+                session_id,
+                conversation_id,
+                agent_id,
+                task_id,
+                run_id,
+                project_id,
+                directory,
+                privacy_classification,
+                redacted,
+                payload_json,
+                projection_json,
+                event_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_id,
+                _string_or_none(event.get("stream_id")) or "global",
+                _positive_int_or_zero(event.get("sequence")),
+                _string_or_none(event.get("type")) or "unknown",
+                _string_or_none(event.get("category")) or "session_lifecycle",
+                _positive_int_or_zero(event.get("time")),
+                int(time.time() * 1000),
+                _string_or_none(scope.get("session_id")),
+                _string_or_none(scope.get("conversation_id")),
+                _string_or_none(scope.get("agent_id")),
+                _string_or_none(scope.get("task_id")),
+                _string_or_none(scope.get("run_id")),
+                _string_or_none(scope.get("project_id")),
+                _string_or_none(scope.get("directory")),
+                _string_or_none(privacy.get("classification")) or "public",
+                1 if privacy.get("redacted") else 0,
+                _json_dump(payload if isinstance(payload, Mapping) else {}),
+                _json_dump(
+                    projections if isinstance(projections, Mapping) else {}
+                ),
+                _json_dump(dict(event)),
+            ),
+        )
 
     def contains(self, event_id: str) -> bool:
         """Return whether an event id exists in the ledger.

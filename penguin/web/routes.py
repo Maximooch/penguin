@@ -14,8 +14,8 @@ from fastapi import (
 )  # type: ignore
 from pydantic import BaseModel, ValidationError  # type: ignore
 from fastapi.responses import PlainTextResponse
+from fastapi.encoders import jsonable_encoder
 from datetime import datetime  # type: ignore
-from collections import OrderedDict
 import asyncio
 import base64
 import copy
@@ -28,7 +28,6 @@ import re
 from contextlib import suppress
 import tempfile
 import time
-from threading import Lock
 import uuid
 from urllib.parse import unquote, urlparse
 import websockets
@@ -75,11 +74,15 @@ from penguin.web.services.external_subscription import (
     build_external_subscription_capabilities,
     validate_external_subscription_execution,
 )
+from penguin.web.services.file_search import get_file_search_service
 from penguin.web.services.link_inference import (
     LinkExecutionRequest,
     resolve_link_inference_runtime,
 )
-from penguin.web.services.opencode_events import schedule_opencode_event
+from penguin.web.services.opencode_events import (
+    emit_opencode_event,
+    schedule_opencode_event,
+)
 from penguin.system.runtime_events import wrap_opencode_event
 from penguin.web.services.conversations import (
     create_conversation_payload,
@@ -254,27 +257,6 @@ def _validate_saved_upload_image(
             detail="Uploaded file content does not match the file extension.",
         )
     return detected_content_type
-
-
-_FIND_FILE_CACHE_TTL_SECONDS = 5.0
-_FIND_FILE_CACHE_MAX_DIRECTORIES = 16
-_FIND_FILE_SKIP_DIR_NAMES = {
-    ".git",
-    ".hg",
-    ".svn",
-    "node_modules",
-    "dist",
-    "build",
-    "target",
-    "__pycache__",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".ruff_cache",
-    ".venv",
-    "venv",
-}
-_FIND_FILE_INDEX_CACHE: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
-_FIND_FILE_INDEX_CACHE_LOCK = Lock()
 
 
 def _remember_last_scoped_directory(
@@ -553,6 +535,7 @@ def _build_execution_context(
     agent_id: Optional[str],
     agent_mode: Optional[str],
     directory: Optional[str],
+    subagents_enabled: Optional[bool] = None,
     permission_mode: Optional[str] = None,
     approval_policy: Optional[Dict[str, Any]] = None,
 ) -> ExecutionContext:
@@ -568,6 +551,7 @@ def _build_execution_context(
         project_root=effective_directory,
         workspace_root=effective_directory,
         request_id=str(uuid.uuid4()),
+        subagents_enabled=subagents_enabled,
         permission_mode=permission_mode,
         approval_policy=approval_policy,
     )
@@ -1033,6 +1017,7 @@ def _queue_session_title_refresh(
 
 class MessageRequest(BaseModel):
     text: str
+    durable_request: bool = False
     conversation_id: Optional[str] = None
     session_id: Optional[str] = None
     client_message_id: Optional[str] = None
@@ -1054,6 +1039,7 @@ class MessageRequest(BaseModel):
     external_subscription_execution: Optional[ExternalSubscriptionExecutionRequest] = (
         None
     )
+    subagents_enabled: Optional[bool] = None
     permission_mode: Optional[Literal["read_only", "workspace", "full_access"]] = None
     approval_policy: Optional[Dict[str, Any]] = None
 
@@ -1495,178 +1481,6 @@ def _extract_context_files_from_text(
     return resolved_files
 
 
-def _normalize_repo_relative(path_value: str) -> str:
-    """Normalize a relative path to POSIX separators."""
-    return path_value.replace(os.sep, "/") if os.sep != "/" else path_value
-
-
-def _scan_find_file_index(directory: str) -> tuple[List[str], List[str]]:
-    """Build a lightweight file/dir index for fast autocomplete searches."""
-    root = Path(directory).expanduser().resolve()
-    if not root.exists() or not root.is_dir():
-        return [], []
-
-    files: List[str] = []
-    dirs: List[str] = []
-
-    for current_dir, dirnames, filenames in os.walk(str(root), topdown=True):
-        dirnames[:] = [
-            name
-            for name in dirnames
-            if name not in _FIND_FILE_SKIP_DIR_NAMES and name not in {".", ".."}
-        ]
-
-        current_path = Path(current_dir)
-        try:
-            relative_dir = current_path.relative_to(root)
-        except ValueError:
-            continue
-
-        for dirname in dirnames:
-            rel = (
-                (relative_dir / dirname).as_posix()
-                if str(relative_dir) != "."
-                else dirname
-            )
-            dirs.append(f"{_normalize_repo_relative(rel).rstrip('/')}/")
-
-        for filename in filenames:
-            rel = (
-                (relative_dir / filename).as_posix()
-                if str(relative_dir) != "."
-                else filename
-            )
-            files.append(_normalize_repo_relative(rel).rstrip("/"))
-
-    files.sort()
-    dirs.sort()
-    return files, dirs
-
-
-def _get_find_file_index(directory: str) -> tuple[List[str], List[str]]:
-    """Return cached file index for a directory, refreshing on TTL expiry."""
-    normalized = normalize_directory(directory)
-    if not normalized:
-        return [], []
-
-    now = time.monotonic()
-    with _FIND_FILE_INDEX_CACHE_LOCK:
-        cached = _FIND_FILE_INDEX_CACHE.get(normalized)
-        if isinstance(cached, dict) and float(cached.get("expires_at", 0.0)) > now:
-            _FIND_FILE_INDEX_CACHE.move_to_end(normalized)
-            return list(cached.get("files") or []), list(cached.get("dirs") or [])
-
-    files, dirs = _scan_find_file_index(normalized)
-
-    with _FIND_FILE_INDEX_CACHE_LOCK:
-        _FIND_FILE_INDEX_CACHE[normalized] = {
-            "expires_at": now + _FIND_FILE_CACHE_TTL_SECONDS,
-            "files": files,
-            "dirs": dirs,
-        }
-        _FIND_FILE_INDEX_CACHE.move_to_end(normalized)
-        while len(_FIND_FILE_INDEX_CACHE) > _FIND_FILE_CACHE_MAX_DIRECTORIES:
-            _FIND_FILE_INDEX_CACHE.popitem(last=False)
-
-    return files, dirs
-
-
-def _is_hidden_path(path_value: str) -> bool:
-    """Return whether any segment is hidden (starts with '.')."""
-    normalized = path_value.replace("\\", "/").rstrip("/")
-    return any(
-        segment.startswith(".") and len(segment) > 1
-        for segment in normalized.split("/")
-        if segment
-    )
-
-
-def _query_targets_hidden_paths(query: str) -> bool:
-    """Return whether the query intentionally targets hidden paths."""
-    return query.startswith(".") or "/." in query
-
-
-def _sort_hidden_last(items: List[str], query: str) -> List[str]:
-    """Sort hidden entries to the end unless query targets hidden paths."""
-    if _query_targets_hidden_paths(query):
-        return items
-
-    visible: List[str] = []
-    hidden: List[str] = []
-    for item in items:
-        if _is_hidden_path(item):
-            hidden.append(item)
-        else:
-            visible.append(item)
-    return [*visible, *hidden]
-
-
-def _subsequence_gap(query: str, candidate: str) -> Optional[int]:
-    """Return gap score if query is a subsequence of candidate."""
-    cursor = 0
-    last = -1
-    gap = 0
-    for char in query:
-        found = candidate.find(char, cursor)
-        if found < 0:
-            return None
-        if last >= 0:
-            gap += max(found - last - 1, 0)
-        last = found
-        cursor = found + 1
-    return gap
-
-
-def _find_file_match_score(
-    query: str, candidate: str
-) -> Optional[tuple[int, int, int, str]]:
-    """Compute an OpenCode-like fuzzy ranking score for path suggestions."""
-    query_l = query.lower()
-    candidate_l = candidate.lower()
-    basename_l = candidate_l.rstrip("/").split("/")[-1]
-
-    if candidate_l == query_l or basename_l == query_l:
-        return (0, 0, len(candidate), candidate_l)
-    if basename_l.startswith(query_l):
-        return (1, 0, len(candidate), candidate_l)
-    if candidate_l.startswith(query_l):
-        return (2, 0, len(candidate), candidate_l)
-
-    basename_idx = basename_l.find(query_l)
-    if basename_idx >= 0:
-        return (3, basename_idx, len(candidate), candidate_l)
-    candidate_idx = candidate_l.find(query_l)
-    if candidate_idx >= 0:
-        return (4, candidate_idx, len(candidate), candidate_l)
-
-    basename_gap = _subsequence_gap(query_l, basename_l)
-    if basename_gap is not None:
-        return (5, basename_gap, len(candidate), candidate_l)
-
-    candidate_gap = _subsequence_gap(query_l, candidate_l)
-    if candidate_gap is not None:
-        return (6, candidate_gap, len(candidate), candidate_l)
-
-    return None
-
-
-def _search_find_file_items(items: List[str], query: str, limit: int) -> List[str]:
-    """Search indexed file/dir items with deterministic fuzzy ranking."""
-    normalized_query = query.strip().lower()
-    if not normalized_query:
-        return items[:limit]
-
-    ranked: List[tuple[tuple[int, int, int, str], str]] = []
-    for item in items:
-        score = _find_file_match_score(normalized_query, item)
-        if score is None:
-            continue
-        ranked.append((score, item))
-
-    ranked.sort(key=lambda entry: entry[0])
-    return [item for _, item in ranked[:limit]]
-
-
 def _materialize_image_paths(
     image_paths: List[str],
     *,
@@ -1985,6 +1799,8 @@ def _permission_name_for_request(request_dict: dict[str, Any]) -> str:
             "get_file_map": "list",
             "find_file": "glob",
             "grep_search": "grep",
+            "edit_file": "edit",
+            "apply_patch": "edit",
             "create_folder": "edit",
             "create_file": "edit",
             "write_file": "edit",
@@ -2031,13 +1847,19 @@ def _approval_request_to_permission_payload(
     context = request_dict.get("context")
     context_data = context if isinstance(context, dict) else {}
     resource = request_dict.get("resource")
-    patterns = [resource] if isinstance(resource, str) and resource.strip() else ["*"]
+    resources = context_data.get("resources")
+    patterns = (
+        resources
+        if isinstance(resources, list) and resources
+        else [resource] if isinstance(resource, str) and resource.strip() else ["*"]
+    )
 
     metadata: dict[str, Any] = {
         "reason": request_dict.get("reason"),
         "operation": request_dict.get("operation"),
         "tool_name": request_dict.get("tool_name"),
         "resource": request_dict.get("resource"),
+        "can_enable_full_access": context_data.get("can_enable_full_access", False),
     }
     tool_input = context_data.get("tool_input")
     if isinstance(tool_input, dict):
@@ -2051,6 +1873,9 @@ def _approval_request_to_permission_payload(
         "always": patterns,
         "metadata": metadata,
     }
+
+    if _permission_name_for_request(request_dict) == "edit":
+        metadata.setdefault("filepath", patterns[0])
 
     tool_payload = context_data.get("tool")
     if isinstance(tool_payload, dict):
@@ -2454,13 +2279,14 @@ def _validate_agent_id(agent_id: str) -> None:
 class AgentSpawnRequest(BaseModel):
     id: str
     parent: Optional[str] = None
-    model_config_id: str
+    model_config_id: Optional[str] = None
     persona: Optional[str] = None
     system_prompt: Optional[str] = None
     share_session: bool = False
     share_context_window: bool = False
     shared_cw_max_tokens: Optional[int] = None
     model_overrides: Optional[Dict[str, Any]] = None
+    model_output_max_tokens: Optional[int] = None
     default_tools: Optional[List[str]] = None
     activate: bool = False
     initial_prompt: Optional[str] = None
@@ -2853,10 +2679,15 @@ async def create_agent(req: AgentSpawnRequest, core: PenguinCore = Depends(get_c
             core.create_sub_agent(
                 req.id,
                 parent_agent_id=parent,
+                persona=req.persona,
                 system_prompt=req.system_prompt,
                 share_session=bool(req.share_session),
                 share_context_window=bool(req.share_context_window),
                 shared_context_window_max_tokens=req.shared_cw_max_tokens,
+                model_config_id=req.model_config_id,
+                model_overrides=req.model_overrides,
+                model_output_max_tokens=req.model_output_max_tokens,
+                default_tools=req.default_tools,
             )
         else:
             core.ensure_agent_conversation(req.id, system_prompt=req.system_prompt)
@@ -2902,6 +2733,8 @@ async def create_agent(req: AgentSpawnRequest, core: PenguinCore = Depends(get_c
         return core.get_agent_profile(req.id) or {"id": req.id}
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"create_agent error: {e}")
         raise HTTPException(status_code=500, detail="Failed to create agent")
@@ -3313,49 +3146,13 @@ async def opencode_find_files(
             status_code=400, detail="Unable to resolve search directory"
         )
 
-    files, directories = _get_find_file_index(resolved_directory)
     kind = type_value or ("file" if not dirs_enabled else "all")
-    _request_log_debug(
-        "find.index session=%s query=%r resolved=%s files=%s dirs=%s kind=%s",
-        session_id or conversation_id or "",
-        query_value,
+    result = await get_file_search_service().search(
         resolved_directory,
-        len(files),
-        len(directories),
-        kind,
+        query_value,
+        kind=kind,
+        limit=limit_value,
     )
-
-    if not query_value:
-        if kind == "file":
-            result = _sort_hidden_last(files, query_value)[:limit_value]
-        else:
-            result = _sort_hidden_last(directories, query_value)[:limit_value]
-        _request_log_debug(
-            "find.result session=%s query=%r resolved=%s count=%s sample=%s",
-            session_id or conversation_id or "",
-            query_value,
-            resolved_directory,
-            len(result),
-            result[:5],
-        )
-        return result
-
-    items = (
-        files
-        if kind == "file"
-        else directories
-        if kind == "directory"
-        else [*files, *directories]
-    )
-    search_limit = (
-        limit_value * 20
-        if kind == "directory" and not _query_targets_hidden_paths(query_value)
-        else limit_value
-    )
-    matched = _search_find_file_items(
-        items, query_value, max(search_limit, limit_value)
-    )
-    result = _sort_hidden_last(matched, query_value)[:limit_value]
     _request_log_debug(
         "find.result session=%s query=%r resolved=%s count=%s sample=%s",
         session_id or conversation_id or "",
@@ -3615,7 +3412,17 @@ async def api_link_capabilities(http_request: Request) -> dict[str, Any]:
     """Return versioned Link capabilities without provider credentials."""
 
     authenticate_link_service_request(http_request)
-    return build_external_subscription_capabilities()
+    from penguin.system.tool_environment import tool_environment_capabilities
+
+    return {
+        "tool_environment": tool_environment_capabilities(),
+        **build_external_subscription_capabilities(),
+        "durable_chat_requests": {
+            "version": 1,
+            "lookup": "/api/v1/link/chat-request",
+            "cancel": "/api/v1/link/chat-request/cancel",
+        },
+    }
 
 
 @router.get("/api/v1/provider")
@@ -3976,28 +3783,29 @@ async def handle_chat_message(
         request.link_execution is not None
         or request.external_subscription_execution is not None
     )
+    has_link_assignment_policy = request.approval_policy is not None
     is_link_service = bool(
         http_request is not None
         and getattr(http_request.state, "auth_method", None) == "link_service"
     )
-    if is_link_service and not has_link_execution_authority:
+    if is_link_service and not (
+        has_link_execution_authority or has_link_assignment_policy
+    ):
         raise HTTPException(
             status_code=403,
             detail=(
-                "The Link execution credential requires a Link-managed or "
-                "personal-subscription execution descriptor."
+                "The Link execution credential requires an execution descriptor "
+                "or an assignment approval policy."
             ),
         )
-    if has_link_execution_authority:
+    if has_link_execution_authority or has_link_assignment_policy:
         if http_request is None:
             raise HTTPException(
                 status_code=403,
-                detail="Link execution requires an authenticated HTTP request.",
+                detail="Link execution or policy requires an authenticated HTTP request.",
             )
         authenticate_link_service_request(http_request)
-    if (
-        request.permission_mode is not None or request.approval_policy is not None
-    ) and not has_link_execution_authority:
+    if request.permission_mode is not None and not has_link_execution_authority:
         raise HTTPException(
             status_code=403,
             detail="Runtime permission overrides require Link execution authority.",
@@ -4010,6 +3818,87 @@ async def handle_chat_message(
             detail="Runtime permission enforcement is disabled by PENGUIN_YOLO.",
         )
 
+    if request.agent_id:
+        _validate_agent_id(request.agent_id)
+    if (
+        request.agent_mode is not None
+        and _normalize_agent_mode(request.agent_mode) is None
+    ):
+        raise HTTPException(400, "agent_mode must be one of: plan, build")
+    if (
+        request.link_execution is not None
+        and request.external_subscription_execution is not None
+    ):
+        raise HTTPException(
+            400,
+            "Link-managed and external-subscription execution are mutually exclusive.",
+        )
+
+    if request.durable_request:
+        if (
+            not has_link_execution_authority
+            or not request.session_id
+            or not request.session_id.strip()
+            or not request.client_message_id
+            or not request.client_message_id.strip()
+        ):
+            raise HTTPException(
+                422,
+                "Durable chat requires Link authority, session_id, and client_message_id.",
+            )
+        from penguin.web.services.chat_requests import (
+            execute_chat_request,
+            get_chat_request_store,
+        )
+
+        return await execute_chat_request(
+            lambda: get_chat_request_store(core),
+            request.session_id,
+            request.client_message_id,
+            jsonable_encoder(request),
+            lambda: _process_chat_message(request, core, http_request),
+        )
+    return await _process_chat_message(request, core, http_request)
+
+
+@router.get("/api/v1/link/chat-request")
+async def lookup_link_chat_request(
+    session_id: str,
+    client_message_id: str,
+    http_request: Request,
+    core: PenguinCore = Depends(get_core),
+):
+    """Look up a Link request without granting general session read access."""
+    authenticate_link_service_request(http_request)
+    from penguin.web.services.chat_requests import get_chat_request_store
+
+    return await asyncio.to_thread(
+        lambda: get_chat_request_store(core).lookup(session_id, client_message_id)
+    )
+
+
+@router.post("/api/v1/link/chat-request/cancel")
+async def cancel_link_chat_request(
+    session_id: str,
+    client_message_id: str,
+    http_request: Request,
+    core: PenguinCore = Depends(get_core),
+) -> dict[str, Any]:
+    """Persist cancellation for one request using the dedicated Link credential."""
+    authenticate_link_service_request(http_request)
+    from penguin.web.services.chat_requests import get_chat_request_store
+
+    return await asyncio.to_thread(
+        lambda: get_chat_request_store(core).cancel(session_id, client_message_id)
+    )
+
+
+async def _process_chat_message(
+    request: MessageRequest,
+    core: PenguinCore,
+    http_request: Request = None,
+):
+    """Run the existing chat pipeline after admission and authentication."""
     temp_image_files: List[str] = []
     request_session_id: Optional[str] = None
     request_task: Optional[asyncio.Task[Any]] = None
@@ -4020,17 +3909,6 @@ async def handle_chat_message(
     try:
         _setup_approval_websocket_callbacks()
         _setup_question_event_callbacks()
-
-        if request.agent_id:
-            _validate_agent_id(request.agent_id)
-        if (
-            request.agent_mode is not None
-            and _normalize_agent_mode(request.agent_mode) is None
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail="agent_mode must be one of: plan, build",
-            )
 
         if not request.conversation_id and request.session_id:
             request.conversation_id = request.session_id
@@ -4138,6 +4016,7 @@ async def handle_chat_message(
             agent_id=request.agent_id,
             agent_mode=resolved_agent_mode,
             directory=bound_directory or request.directory,
+            subagents_enabled=request.subagents_enabled,
             permission_mode=request.permission_mode,
             approval_policy=request.approval_policy,
         )
@@ -4178,6 +4057,7 @@ async def handle_chat_message(
                 validate_external_subscription_execution(
                     request.external_subscription_execution,
                     requested_model or None,
+                    AuthConfig().link_api_key or "",
                 )
                 # The Link capability contract intentionally advertises
                 # provider-local Codex model ids. Penguin's generic runtime
@@ -4207,6 +4087,25 @@ async def handle_chat_message(
         except Exception as exc:
             detail = str(exc) or f"Failed to resolve model runtime '{requested_model}'"
             raise HTTPException(status_code=400, detail=detail) from exc
+        if request.external_subscription_execution is not None:
+            try:
+                await emit_opencode_event(
+                    core,
+                    "link.execution.authorized",
+                    {
+                        "sessionID": effective_session_id,
+                        "execution": request.external_subscription_execution.public_result(),
+                    },
+                )
+            except Exception:
+                # Link still verifies the execution facts from the final HTTP
+                # response. Losing this optimization event must not terminate
+                # an otherwise valid, already-authorized turn.
+                logger.warning(
+                    "Failed to emit Link execution authorization for session %s",
+                    effective_session_id,
+                    exc_info=True,
+                )
         service_tier_override = _apply_request_service_tier_override(
             request.service_tier,
             model_config=request_model_config,
@@ -4435,6 +4334,7 @@ async def handle_chat_message(
             "action_results": process_result.get("action_results", []),
             "aborted": bool(process_result.get("aborted")),
             "status": process_result.get("status"),
+            "session_id": request_session_id,
         }
         if "recoverable" in process_result:
             resp["recoverable"] = bool(process_result.get("recoverable"))
@@ -4506,6 +4406,8 @@ async def handle_chat_message(
             else "unknown",
             request_session_id or "unknown",
         )
+        if request.durable_request:
+            raise
         return {"response": "", "action_results": [], "aborted": True}
     except HTTPException:
         raise
@@ -8219,6 +8121,30 @@ async def get_audit_stats():
 # ==========================================================================
 
 
+class SessionAccessRequest(BaseModel):
+    mode: Literal["workspace", "full_access"]
+
+
+@router.get("/api/v1/session/{session_id}/access")
+async def get_session_access_settings(
+    session_id: str, core: PenguinCore = Depends(get_core)
+):
+    from penguin.web.services.session_access import get_access_settings
+
+    return get_access_settings(core, session_id)
+
+
+@router.put("/api/v1/session/{session_id}/access")
+async def update_session_access_settings(
+    session_id: str, request: SessionAccessRequest,
+    core: PenguinCore = Depends(get_core),
+):
+    from penguin.web.services.session_access import update_access_settings
+
+    _setup_approval_websocket_callbacks()
+    return update_access_settings(core, session_id, request.mode)
+
+
 @router.get("/permission")
 @router.get("/api/v1/permission")
 async def list_pending_permissions(
@@ -8279,6 +8205,10 @@ async def reply_permission_request(
                 raw_pattern.strip()
                 if isinstance(raw_pattern, str) and raw_pattern.strip()
                 else "*"
+            )
+            # A displayed literal target must not become a glob grant.
+            pattern = (
+                pattern.replace("[", "[[]").replace("*", "[*]").replace("?", "[?]")
             )
             resolved = manager.approve(
                 request_id,

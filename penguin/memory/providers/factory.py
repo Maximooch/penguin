@@ -67,6 +67,12 @@ class MemoryProviderFactory:
         else:
             logger.info(f"Using configured provider: {provider_type}")
         
+        if provider_type == "chroma":
+            raise MemoryProviderError(
+                "ChromaDB provider is disabled due to unresolved upstream security advisories. "
+                "Select sqlite, file, faiss, or lancedb instead."
+            )
+
         if provider_type not in cls._providers:
             available = ', '.join(cls._providers.keys())
             raise MemoryProviderError(
@@ -135,14 +141,6 @@ class MemoryProviderFactory:
                 return {'available': True, 'reason': 'FAISS and numpy available'}
             except ImportError as e:
                 return {'available': False, 'reason': f'FAISS dependencies missing: {str(e)}'}
-        
-        elif provider_name == 'chroma':
-            try:
-                import chromadb  # noqa: F401
-                import sentence_transformers  # noqa: F401
-                return {'available': True, 'reason': 'ChromaDB and sentence-transformers available'}
-            except ImportError as e:
-                return {'available': False, 'reason': f'ChromaDB dependencies missing: {str(e)}'}
         
         elif provider_name == 'sqlite':
             try:
@@ -227,15 +225,6 @@ class MemoryProviderFactory:
             cls.register_provider('faiss', FAISSMemoryProvider)
         except ImportError as e:
             logger.debug(f"FAISS provider not available: {e}")
-        
-            # ChromaDB Provider (optional, may have conflicts). Import lazily to avoid heavy deps.
-        try:
-            import importlib
-            if cls._check_provider_dependencies('chroma')['available']:
-                chroma_mod = importlib.import_module('.chroma_provider', package=__package__)
-                cls.register_provider('chroma', getattr(chroma_mod, 'ChromaMemoryProvider'))
-        except Exception as e:
-            logger.debug(f"ChromaDB provider not available: {e}")
         
         if not cls._providers:
             raise MemoryProviderError("No memory providers could be loaded")

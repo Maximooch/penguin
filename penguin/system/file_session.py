@@ -2,6 +2,8 @@ import os
 import subprocess
 from typing import Any, Dict, List
 
+from penguin.system.tool_environment import build_tool_environment
+
 
 class Session:
     def __init__(self):
@@ -48,7 +50,11 @@ class Session:
                 return self.current_dir
             else:
                 result = subprocess.run(
-                    command, shell=True, capture_output=True, text=True
+                    command,
+                    env=build_tool_environment(),
+                    shell=True,
+                    capture_output=True,
+                    text=True,
                 )
                 return (
                     result.stdout

@@ -23,6 +23,7 @@ from penguin.system_prompt import SYSTEM_PROMPT
 from penguin.tools import ToolManager
 from penguin.utils.log_error import log_error
 from penguin.web.services.system_status import start_vcs_watcher, stop_vcs_watcher
+from penguin.web.services.file_search import get_file_search_service
 from penguin.web.services.provider_credentials import (
     apply_credentials_to_environment,
     apply_credentials_to_runtime,
@@ -189,17 +190,50 @@ def create_app() -> "FastAPI":
     async def lifespan(app: "FastAPI"):
         # Startup
         logger.info("Penguin web application starting up...")
+        core = get_or_create_core()
+        file_search = get_file_search_service()
         try:
-            start_vcs_watcher(get_or_create_core())
+            await file_search.start()
+            runtime_config = getattr(core, "runtime_config", None)
+            search_root = (
+                getattr(runtime_config, "active_root", None)
+                or getattr(runtime_config, "project_root", None)
+                or getattr(runtime_config, "workspace_root", None)
+            )
+            if isinstance(search_root, str) and search_root:
+                file_search.prewarm(search_root)
+        except Exception:
+            logger.debug("Unable to start file-search index", exc_info=True)
+        try:
+            start_vcs_watcher(core)
         except Exception:
             logger.debug("Unable to start VCS watcher", exc_info=True)
         yield
+        process_tools = getattr(
+            getattr(core, "tool_manager", None), "_process_tools", None
+        )
+        if process_tools is not None:
+            await asyncio.to_thread(process_tools.cleanup)
         # Shutdown: close connection pools
         logger.info("Penguin web application shutting down...")
+        try:
+            await file_search.stop()
+        except Exception:
+            logger.debug("Unable to stop file-search index", exc_info=True)
         try:
             await stop_vcs_watcher()
         except Exception:
             logger.debug("Unable to stop VCS watcher", exc_info=True)
+        try:
+            shutdown_agents = getattr(
+                getattr(core, "tool_manager", None),
+                "shutdown_background_agents",
+                None,
+            )
+            if callable(shutdown_agents):
+                await shutdown_agents()
+        except Exception:
+            logger.warning("Unable to stop background agents", exc_info=True)
         try:
             pool = ConnectionPoolManager.get_instance()
             await pool.close_all()

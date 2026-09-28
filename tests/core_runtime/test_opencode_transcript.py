@@ -203,6 +203,61 @@ def test_apply_transcript_event_ignores_invalid_metadata() -> None:
     assert result.should_save is False
 
 
+def test_abort_running_tool_parts_finalizes_only_running_tools() -> None:
+    metadata = {
+        opencode_transcript.TRANSCRIPT_KEY: {
+            "order": ["msg_1"],
+            "messages": {
+                "msg_1": {
+                    "info": {"id": "msg_1", "role": "assistant"},
+                    "part_order": ["part_running", "part_completed", "part_text"],
+                    "parts": {
+                        "part_running": {
+                            "id": "part_running",
+                            "messageID": "msg_1",
+                            "sessionID": "session_1",
+                            "type": "tool",
+                            "tool": "read",
+                            "state": {
+                                "status": "running",
+                                "input": {"filePath": "README.md"},
+                                "time": {"start": 100},
+                                "metadata": {"provider": "test"},
+                            },
+                        },
+                        "part_completed": {
+                            "id": "part_completed",
+                            "type": "tool",
+                            "state": {"status": "completed", "output": "done"},
+                        },
+                        "part_text": {"id": "part_text", "type": "text"},
+                    },
+                }
+            },
+        }
+    }
+
+    aborted_parts = opencode_transcript.abort_running_tool_parts(
+        metadata=metadata,
+        ended_at_ms=250,
+        reason="Tool execution was interrupted",
+    )
+
+    assert [part["id"] for part in aborted_parts] == ["part_running"]
+    running_state = aborted_parts[0]["state"]
+    assert running_state == {
+        "status": "error",
+        "input": {"filePath": "README.md"},
+        "time": {"start": 100, "end": 250},
+        "error": "Tool execution was interrupted",
+        "metadata": {"provider": "test", "aborted": True},
+    }
+    completed = metadata[opencode_transcript.TRANSCRIPT_KEY]["messages"]["msg_1"][
+        "parts"
+    ]["part_completed"]
+    assert completed["state"] == {"status": "completed", "output": "done"}
+
+
 @settings(max_examples=25)
 @given(
     part_ids=st.lists(

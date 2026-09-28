@@ -38,6 +38,22 @@ def provider_credential_available(model_config: ModelConfig) -> bool:
         return True
     if str(getattr(model_config, "api_key", "") or "").strip():
         return True
+    if provider == "modal":
+        endpoint = (
+            str(getattr(model_config, "api_base", "") or "").strip()
+            or str(os.getenv("MODAL_ENDPOINT") or "").strip()
+        )
+        return bool(
+            endpoint
+            and str(os.getenv("MODAL_PROXY_TOKEN_ID") or "").strip()
+            and str(os.getenv("MODAL_PROXY_TOKEN_SECRET") or "").strip()
+        )
+    if provider == "runinfra":
+        return bool(
+            str(
+                getattr(model_config, "api_key", "") or os.getenv("RUNINFRA_GATEWAY_KEY") or ""
+            ).strip()
+        )
     credential_envs = {
         "openai": ("OPENAI_API_KEY", "OPENAI_OAUTH_ACCESS_TOKEN"),
         "anthropic": ("ANTHROPIC_API_KEY",),
@@ -53,6 +69,8 @@ def _missing_provider_credential_message(model_config: ModelConfig) -> str:
         "openai": "OPENAI_API_KEY (or OpenAI OAuth)",
         "anthropic": "ANTHROPIC_API_KEY",
         "openrouter": "OPENROUTER_API_KEY",
+        "modal": "MODAL_ENDPOINT, MODAL_PROXY_TOKEN_ID, and MODAL_PROXY_TOKEN_SECRET",
+        "runinfra": "RUNINFRA_GATEWAY_KEY",
     }.get(
         provider, f"{provider.upper()}_API_KEY" if provider else "provider credential"
     )
@@ -371,7 +389,12 @@ def canonicalize_runtime_model_id(
     client_value = str(client_preference or "").strip().lower()
 
     # Native SDK adapters expect provider-local IDs.
-    if client_value == "native" and provider_value in {"openai", "anthropic"}:
+    if client_value == "native" and provider_value in {
+        "openai",
+        "anthropic",
+        "modal",
+        "runinfra",
+    }:
         if "/" in value:
             prefix, remainder = value.split("/", 1)
             if prefix.strip().lower() == provider_value and remainder.strip():
@@ -413,7 +436,7 @@ def resolve_model_provider(
     if provider_part == "openrouter":
         return "openrouter", "openrouter"
 
-    native_providers = {"openai", "anthropic", "google", "ollama"}
+    native_providers = {"openai", "anthropic", "google", "ollama", "modal", "runinfra"}
     if provider_part in native_providers:
         return provider_part, "native"
 

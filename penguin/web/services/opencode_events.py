@@ -176,15 +176,28 @@ def sse_event_frame(event: dict[str, Any]) -> str:
     return f"{prefix}data: {json.dumps(event)}\n\n"
 
 
-def record_opencode_event(core: Any, data: dict[str, Any]) -> dict[str, Any] | None:
-    """Persist an OpenCode event's RuntimeEvent envelope and return it."""
+def record_opencode_event(
+    core: Any,
+    data: dict[str, Any],
+    *,
+    persist: bool = True,
+) -> dict[str, Any] | None:
+    """Build an OpenCode event's RuntimeEvent envelope and return it.
+
+    Identity and ordering are assigned synchronously so downstream live
+    subscribers share the same event id/order. By default the envelope is
+    persisted to the runtime event ledger inline; callers on the streaming
+    hot path pass ``persist=False`` and batch the returned envelope
+    themselves so live SSE delivery never waits on a disk commit.
+    """
     runtime_event = runtime_event_from_opencode(data)
     if runtime_event is None:
         return None
 
-    from penguin.system.runtime_event_ledger import get_runtime_event_ledger
+    if persist:
+        from penguin.system.runtime_event_ledger import get_runtime_event_ledger
 
-    get_runtime_event_ledger(core).append(runtime_event)
+        get_runtime_event_ledger(core).append(runtime_event)
 
     # Mutate the shared EventBus payload so downstream live subscribers use the
     # same event identity and ordering that was persisted at emission time.

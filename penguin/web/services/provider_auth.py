@@ -527,6 +527,10 @@ def provider_auth_methods(
                 {"type": "oauth", "label": "ChatGPT Pro/Plus (headless)"},
                 {"type": "api", "label": "Manually enter API key"},
             ]
+        elif provider_id == "modal":
+            methods[provider_id] = [
+                {"type": "modal", "label": "Connect an existing Auto Endpoint"}
+            ]
         else:
             methods[provider_id] = [{"type": "api", "label": "API key"}]
     return methods

@@ -1,15 +1,30 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from penguin.web.services import external_subscription as service
 
+LINK_SERVICE_SECRET = "test-link-service-secret"
+
 
 def _execution(**overrides: object) -> service.ExternalSubscriptionExecutionRequest:
+    issued_at = datetime.now(timezone.utc)
     values: dict[str, object] = {
         "protocol_version": 1,
         "owner_user_id": "user-a",
         "user_id": "user-a",
+        "actor_user_id": "user-a",
+        "credential_owner_type": "user",
+        "credential_owner_id": "user-a",
+        "workspace_id": "workspace-a",
+        "agent_id": "agent-a",
+        "run_id": "run-a",
+        "issued_at": issued_at,
+        "expires_at": issued_at + timedelta(minutes=5),
         "requested_model_id": "gpt-5.4",
         "agent_runtime": "penguin",
         "provider": "openai",
@@ -21,9 +36,18 @@ def _execution(**overrides: object) -> service.ExternalSubscriptionExecutionRequ
         "usage_authority": "local_runtime_observed",
         "integration_support": "ecosystem_compatible",
         "allow_fallback_to_link_gateway": False,
+        "authority_signature_version": 1,
+        "authority_signature": "unsigned",
     }
     values.update(overrides)
-    return service.ExternalSubscriptionExecutionRequest(**values)
+    execution = service.ExternalSubscriptionExecutionRequest(**values)
+    signature = hmac.new(
+        LINK_SERVICE_SECRET.encode(), execution.signature_payload(), hashlib.sha256
+    ).hexdigest()
+    model_copy = getattr(execution, "model_copy", None)
+    if callable(model_copy):
+        return model_copy(update={"authority_signature": signature})
+    return execution.copy(update={"authority_signature": signature})
 
 
 def test_capability_reports_oauth_models_without_credentials(monkeypatch) -> None:
@@ -96,6 +120,8 @@ def test_public_execution_result_supports_pydantic_1(monkeypatch) -> None:
 
     assert result["owner_user_id"] == "user-a"
     assert result["settlement_mode"] == "subscription_quota"
+    assert result["issued_at"].endswith("Z")
+    assert "authority_signature" not in result
 
 
 def test_execution_rejects_cross_user_subscription(monkeypatch) -> None:
@@ -109,10 +135,13 @@ def test_execution_rejects_cross_user_subscription(monkeypatch) -> None:
         service.validate_external_subscription_execution(
             _execution(user_id="user-b"),
             "gpt-5.4",
+            LINK_SERVICE_SECRET,
         )
 
 
-def test_execution_requires_a_penguin_owned_link_user_binding(monkeypatch) -> None:
+def test_execution_accepts_an_authenticated_link_user_without_runtime_pairing(
+    monkeypatch,
+) -> None:
     monkeypatch.delenv("PENGUIN_LINK_SUBSCRIPTION_OWNER_USER_ID", raising=False)
     monkeypatch.setattr(
         service,
@@ -120,14 +149,12 @@ def test_execution_requires_a_penguin_owned_link_user_binding(monkeypatch) -> No
         lambda: {"openai": {"type": "oauth", "access": "secret"}},
     )
 
-    with pytest.raises(ValueError, match="not paired with a Link user"):
-        service.validate_external_subscription_execution(
-            _execution(),
-            "gpt-5.4",
-        )
+    service.validate_external_subscription_execution(
+        _execution(), "gpt-5.4", LINK_SERVICE_SECRET
+    )
 
 
-def test_execution_rejects_a_different_user_than_the_runtime_binding(
+def test_execution_ignores_a_stale_runtime_user_binding(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("PENGUIN_LINK_SUBSCRIPTION_OWNER_USER_ID", "user-b")
@@ -137,10 +164,31 @@ def test_execution_rejects_a_different_user_than_the_runtime_binding(
         lambda: {"openai": {"type": "oauth", "access": "secret"}},
     )
 
-    with pytest.raises(ValueError, match="does not own this Penguin runtime"):
+    service.validate_external_subscription_execution(
+        _execution(), "gpt-5.4", LINK_SERVICE_SECRET
+    )
+
+
+def test_execution_rejects_expired_or_cross_owner_authority(monkeypatch) -> None:
+    monkeypatch.setattr(
+        service,
+        "get_provider_credentials",
+        lambda: {"openai": {"type": "oauth", "access": "secret"}},
+    )
+    now = datetime.now(timezone.utc)
+
+    with pytest.raises(ValueError, match="expired"):
         service.validate_external_subscription_execution(
-            _execution(),
+            _execution(issued_at=now - timedelta(minutes=10), expires_at=now),
             "gpt-5.4",
+            LINK_SERVICE_SECRET,
+        )
+
+    with pytest.raises(ValueError, match="credential owner"):
+        service.validate_external_subscription_execution(
+            _execution(credential_owner_id="user-b"),
+            "gpt-5.4",
+            LINK_SERVICE_SECRET,
         )
 
 
@@ -156,6 +204,7 @@ def test_execution_requires_local_oauth_and_exact_model(monkeypatch) -> None:
         service.validate_external_subscription_execution(
             _execution(),
             "gpt-5.4",
+            LINK_SERVICE_SECRET,
         )
 
     monkeypatch.setattr(
@@ -167,4 +216,14 @@ def test_execution_requires_local_oauth_and_exact_model(monkeypatch) -> None:
         service.validate_external_subscription_execution(
             _execution(),
             "gpt-5.4-mini",
+            LINK_SERVICE_SECRET,
+        )
+
+
+def test_execution_rejects_an_invalid_link_signature() -> None:
+    with pytest.raises(ValueError, match="signature is invalid"):
+        service.validate_external_subscription_execution(
+            _execution(authority_signature="invalid"),
+            "gpt-5.4",
+            "different-service-secret",
         )

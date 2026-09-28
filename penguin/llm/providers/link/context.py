@@ -14,6 +14,7 @@ class LinkInferenceContext:
     user_id: str
     run_id: str
     requested_model_id: str
+    workos_organization_id: str | None = None
     session_id: str | None = None
     agent_id: str | None = None
     execution_source: Literal["link_gateway"] = "link_gateway"
@@ -35,6 +36,7 @@ class LinkInferenceContext:
             )
 
         optional_identity = {
+            "workos_organization_id": self.workos_organization_id,
             "session_id": self.session_id,
             "agent_id": self.agent_id,
         }
@@ -66,6 +68,8 @@ class LinkInferenceContext:
             # idempotency. Keep both names equal during the protocol migration.
             "X-Link-Inference-Request-Id": invocation_id,
         }
+        if self.workos_organization_id is not None:
+            headers["X-Link-WorkOS-Organization-Id"] = self.workos_organization_id
         if self.session_id is not None and self.agent_id is not None:
             headers["X-Link-Session-Id"] = self.session_id
             headers["X-Link-Agent-Id"] = self.agent_id

@@ -1012,6 +1012,10 @@ class EditService:
             try:
                 resolved_path.relative_to(workspace_root)
             except ValueError as exc:
+                from penguin.security.tool_approval import is_path_authorized
+
+                if is_path_authorized(resolved_path):
+                    return resolved_path
                 raise ValueError(
                     f"Path escapes workspace root: {requested_path}"
                 ) from exc

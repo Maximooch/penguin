@@ -593,3 +593,30 @@ async def test_process_cancelled_returns_aborted_payload_and_releases_request(
         "aborted": True,
     }
     assert finalized == [("session-1", True)]
+
+    # Durable callers must receive cancellation after the same cleanup runs.
+    from penguin.system.task_cancellation import preserve_cancellation
+
+    token = preserve_cancellation.set(True)
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await process_runtime.process(
+                owner,
+                input_data="hello",
+                context=None,
+                conversation_id=None,
+                agent_id=None,
+                max_iterations=1,
+                context_files=None,
+                streaming=False,
+                stream_callback=None,
+                multi_step=True,
+                api_client_override=None,
+                model_config_override=None,
+                log=_log(),
+                trace_log_info=_trace([]),
+                log_error_fn=lambda *_args, **_kwargs: None,
+            )
+    finally:
+        preserve_cancellation.reset(token)
+    assert finalized == [("session-1", True), ("session-1", True)]

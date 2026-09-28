@@ -2,7 +2,7 @@
 
 This module is intentionally import-safe when browser-harness is not installed.
 The actual browser_harness package is imported lazily at execution time so
-Penguin's base install and Python 3.9/3.10 users are not penalized.
+Penguin's base install and Python 3.10 users are not penalized.
 """
 from __future__ import annotations
 
@@ -139,7 +139,7 @@ class BrowserHarnessAdapter:
                 ),
                 "pypi_published": False,
                 "python_requires": (
-                    ">=3.11 for browser-harness; Penguin supports >=3.9,<3.13"
+                    ">=3.11 for browser-harness; Penguin supports >=3.10,<3.13"
                 ),
                 "install_hint": (
                     "browser-harness is not published on PyPI. Install "

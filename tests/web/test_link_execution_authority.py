@@ -127,6 +127,10 @@ def _scoped_link_service_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     monkeypatch.setenv("PENGUIN_API_KEYS", "ordinary-client-secret")
     app = FastAPI()
 
+    @app.get("/api/v1/link/chat-request")
+    async def chat_receipt() -> dict[str, bool]:
+        return {"allowed": True}
+
     @app.get("/api/v1/link/capabilities")
     async def capabilities() -> dict[str, bool]:
         return {"allowed": True}
@@ -184,6 +188,7 @@ def test_link_service_key_is_rejected_outside_its_exact_http_scope(
     ("method", "path"),
     [
         ("GET", "/api/v1/link/capabilities"),
+        ("GET", "/api/v1/link/chat-request"),
         ("POST", "/api/v1/chat/message"),
     ],
 )

@@ -643,6 +643,87 @@ async def test_abort_session_accepts_adapter_only_cleanup() -> None:
     assert not cleanup_tasks
 
 
+@pytest.mark.asyncio
+async def test_abort_session_finalizes_persisted_tool_after_restart() -> None:
+    session = SimpleNamespace(
+        metadata={
+            "_opencode_transcript_v1": {
+                "order": ["msg_1"],
+                "messages": {
+                    "msg_1": {
+                        "info": {
+                            "id": "msg_1",
+                            "sessionID": "session_1",
+                            "role": "assistant",
+                            "time": {"created": 100, "completed": 150},
+                        },
+                        "part_order": ["part_1"],
+                        "parts": {
+                            "part_1": {
+                                "id": "part_1",
+                                "messageID": "msg_1",
+                                "sessionID": "session_1",
+                                "type": "tool",
+                                "tool": "read",
+                                "state": {
+                                    "status": "running",
+                                    "input": {"filePath": "README.md"},
+                                    "time": {"start": 125},
+                                },
+                            }
+                        },
+                    }
+                },
+            }
+        }
+    )
+
+    class _Manager:
+        def __init__(self) -> None:
+            self.modified: list[str] = []
+            self.saved: list[Any] = []
+
+        def mark_session_modified(self, session_id: str) -> None:
+            self.modified.append(session_id)
+
+        def save_session(self, saved_session: Any) -> bool:
+            self.saved.append(saved_session)
+            return True
+
+    manager = _Manager()
+    owner = SimpleNamespace(
+        event_bus=_EventBus(),
+        _get_tui_adapter=lambda _session_id: object(),
+        _stream_manager=SimpleNamespace(get_active_agents=lambda: []),
+        _find_session_store=lambda _session_id: (session, manager),
+        _opencode_abort_sessions=set(),
+        _opencode_process_tasks={},
+        _opencode_stream_states={},
+        _opencode_tool_parts={},
+        _opencode_tool_info={},
+    )
+
+    aborted = await stream_events.abort_session(
+        owner,
+        "session_1",
+        logger=logging.getLogger("test.stream_events"),
+    )
+
+    assert aborted is True
+    state = session.metadata["_opencode_transcript_v1"]["messages"]["msg_1"][
+        "parts"
+    ]["part_1"]["state"]
+    assert state["status"] == "error"
+    assert state["error"] == "Tool execution was interrupted"
+    assert state["metadata"]["aborted"] is True
+    assert state["time"]["start"] == 125
+    assert isinstance(state["time"]["end"], int)
+    assert manager.modified == ["session_1"]
+    assert manager.saved == [session]
+    event_types = [payload["type"] for _, payload in owner.event_bus.events]
+    assert event_types == ["message.part.updated", "session.status"]
+
+
 def test_persist_finalized_message_writes_target_session_store() -> None:
     trace_messages: list[tuple[str, tuple[Any, ...]]] = []
     persisted_messages: list[Any] = []

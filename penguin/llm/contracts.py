@@ -142,6 +142,7 @@ class LLMPreparedRequest:
     protocol: str
     route: str
     body: Dict[str, Any]
+    url: str = ""
     transport: str = ""
     headers: Dict[str, str] = field(default_factory=dict)
     request_payload_hash: str = ""
@@ -153,6 +154,21 @@ class LLMPreparedRequest:
         if not self.request_payload_hash:
             self.request_payload_hash = stable_payload_hash(self.body)
 
+    def _redacted_headers(self) -> Dict[str, str]:
+        """Return diagnostic-safe headers without provider credentials."""
+
+        sensitive_names = {
+            "authorization",
+            "modal-key",
+            "modal-secret",
+            "proxy-authorization",
+            "x-api-key",
+        }
+        return {
+            name: "[REDACTED]" if name.lower() in sensitive_names else value
+            for name, value in (self.headers or {}).items()
+        }
+
     def to_dict(self) -> Dict[str, Any]:
         """Serialize prepared request metadata for tests and inspection."""
 
@@ -161,9 +177,10 @@ class LLMPreparedRequest:
             "model": self.model,
             "protocol": self.protocol,
             "route": self.route,
+            "url": self.url,
             "body": dict(self.body or {}),
             "transport": self.transport,
-            "headers": dict(self.headers or {}),
+            "headers": self._redacted_headers(),
             "request_payload_hash": self.request_payload_hash,
             "capabilities": self.capabilities.to_dict()
             if isinstance(self.capabilities, LLMProviderCapabilities)

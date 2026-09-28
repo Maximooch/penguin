@@ -22,6 +22,7 @@ def _execution(
     payload: dict[str, Any] = {
         "workspace_id": "workspace-1",
         "user_id": "user-1",
+        "workos_organization_id": "org_01M06XBYP88CD1MHHSRGWTC2BA",
         "run_id": "run-1",
         "requested_model_id": requested_model_id,
         "execution_source": "link_gateway",
@@ -59,6 +60,10 @@ def test_builds_request_scoped_link_provider_without_mutating_core(
     assert model_config.api_key == ""
     assert isinstance(api_client.client_handler, LinkProvider)
     assert api_client.client_handler.context.workspace_id == "workspace-1"
+    assert (
+        api_client.client_handler.context.workos_organization_id
+        == "org_01M06XBYP88CD1MHHSRGWTC2BA"
+    )
     assert core.model_config is original
     assert original.client_preference == "openrouter"
 

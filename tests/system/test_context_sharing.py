@@ -182,6 +182,55 @@ class TestSubAgentSessionLinkage:
         assert shared_session.id == parent_session_id
         assert shared_session.metadata.get("parentID") is None
 
+    def test_duplicate_spawn_cannot_relabel_shared_parent_as_child(self, cm):
+        """Duplicate admission must fail before shared-session metadata mutates."""
+
+        parent_conversation = cm.get_agent_conversation("default")
+        metadata_before = dict(parent_conversation.session.metadata)
+
+        cm.create_sub_agent(
+            "duplicate-child",
+            parent_agent_id="default",
+            share_session=True,
+            share_context_window=True,
+        )
+
+        with pytest.raises(ValueError, match="already exists"):
+            cm.create_sub_agent(
+                "duplicate-child",
+                parent_agent_id="default",
+                share_session=False,
+                share_context_window=False,
+            )
+
+        assert cm.get_agent_conversation("default") is parent_conversation
+        assert cm.get_agent_conversation("duplicate-child") is parent_conversation
+        assert parent_conversation.session.metadata == metadata_before
+        assert parent_conversation.session.metadata.get("parentID") is None
+
+    def test_linkage_failure_leaves_no_discoverable_child(self, cm, monkeypatch):
+        """Admission must roll back every registry if final linkage fails."""
+
+        def _fail_linkage(*_args, **_kwargs):
+            raise ValueError("invalid child lineage")
+
+        monkeypatch.setattr(cm, "_link_sub_agent_session_metadata", _fail_linkage)
+
+        with pytest.raises(ValueError, match="invalid child lineage"):
+            cm.create_sub_agent(
+                "ghost-child",
+                parent_agent_id="default",
+                share_session=False,
+                share_context_window=False,
+            )
+
+        assert "ghost-child" not in cm.agent_sessions
+        assert "ghost-child" not in cm.agent_session_managers
+        assert "ghost-child" not in cm.agent_checkpoint_managers
+        assert "ghost-child" not in cm.agent_context_windows
+        assert "ghost-child" not in cm.sub_agent_parent
+        assert "ghost-child" not in cm.parent_sub_agents.get("default", [])
+
 
 # =============================================================================
 # GET_CONTEXT_WINDOW_STATS TESTS

@@ -22,4 +22,4 @@ Penguin supports saving conversation checkpoints so you can easily return to a p
 
 Adjust checkpoint frequency and retention in the configuration file. You can also choose which data to capture (conversation, tasks, or code) for each checkpoint.
 
-For design mockups of the checkpoint UI, see [UI Mockups](../../misc/UI_mockups_checkpointing.md).
+The terminal interface exposes checkpoint creation, rollback, and branch history directly in the active session.

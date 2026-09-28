@@ -330,3 +330,51 @@ backend is already using the default `9000` port.
 ---
 
 *Last updated: April 27, 2026*
+
+## Tool permissions
+
+In workspace mode, file tools can read outside the current project. Writes to
+ordinary paths outside it, including sibling Git worktrees, request approval.
+The TUI displays the target paths and the reason before the operation runs.
+
+- **Allow once** resumes the waiting tool call. The next call requires a new
+  approval if it is still outside the workspace.
+- **Allow always** remembers the displayed operation and target for this session
+  until the backend restarts. It does not authorize an entire sibling directory
+  or another session. For a patch with multiple targets, it remembers that set
+  of targets.
+- **Reject** returns a denial without executing the operation. Cancelling the
+  waiting turn removes its pending request. Unanswered requests expire after
+  five minutes by default.
+
+Read-only mode, explicit policy denials, and protected-path denials remain
+blocking decisions. Saying “you have permission” in chat does not change the
+runtime policy; use the permission prompt. Restart the backend and run the
+updated TUI to load changes to this flow.
+
+These checks operate at tool boundaries. They are not an operating-system
+filesystem sandbox for shell or Python processes. Shell execution has its own
+operation policy and cannot reliably infer every file a program will modify.
+The model should use the file tool and its approval flow for requested edits.
+
+The pause-and-resume flow applies to asynchronous tool dispatch used by native
+provider tool calls. Direct synchronous tool API callers receive a
+`pending_approval` response and must manage their own continuation.
+
+### Full access in the TUI
+
+Run `/permissions` or choose **Session permissions** from the command palette.
+Select **Full access** to allow local file, command, and network tools without
+per-file approval prompts, including edits in sibling worktrees. The permission
+prompt also includes a **Full access** shortcut to this selector. Selecting it
+resumes local tool calls already waiting for approval in that session.
+
+The current session shows **Full access** above the input. This setting applies
+only to that session and lasts until the backend restarts; new sessions still
+start in workspace mode. Select **Ask for approval** to restore workspace
+boundaries and clear remembered approvals for that session. Completed or
+already-running operations are not undone.
+
+Full access does not remove plan-mode restrictions or override permission
+policies supplied by external execution authorities such as Link. It changes
+Penguin's tool policy, not operating-system file permissions.

@@ -138,6 +138,9 @@ export function createDialogProviderOptions() {
                 ))
               }
             }
+            if (method.type === "modal") {
+              return dialog.replace(() => <ModalMethod providerID={provider.id} title={method.label} />)
+            }
             if (method.type === "api") {
               return dialog.replace(() => <ApiMethod providerID={provider.id} title={method.label} />)
             }
@@ -289,6 +292,91 @@ function ApiMethod(props: ApiMethodProps) {
           auth: {
             type: "api",
             key: value,
+          },
+        })
+        await sdk.client.instance.dispose()
+        await sync.bootstrap()
+        dialog.replace(() => <DialogModel providerID={props.providerID} />)
+      }}
+    />
+  )
+}
+
+
+interface ModalMethodProps {
+  providerID: string
+  title: string
+}
+
+function ModalMethod(props: ModalMethodProps) {
+  const dialog = useDialog()
+
+  return (
+    <DialogPrompt
+      title={props.title}
+      placeholder="Auto Endpoint URL (https://...)"
+      onConfirm={(endpoint) => {
+        if (!endpoint.trim()) return
+        dialog.replace(() => (
+          <ModalTokenID
+            providerID={props.providerID}
+            title={props.title}
+            endpoint={endpoint.trim()}
+          />
+        ))
+      }}
+    />
+  )
+}
+
+interface ModalTokenIDProps extends ModalMethodProps {
+  endpoint: string
+}
+
+function ModalTokenID(props: ModalTokenIDProps) {
+  const dialog = useDialog()
+
+  return (
+    <DialogPrompt
+      title="Modal token ID"
+      placeholder="wk-..."
+      onConfirm={(tokenId) => {
+        if (!tokenId.trim()) return
+        dialog.replace(() => (
+          <ModalTokenSecret
+            providerID={props.providerID}
+            title={props.title}
+            endpoint={props.endpoint}
+            tokenId={tokenId.trim()}
+          />
+        ))
+      }}
+    />
+  )
+}
+
+interface ModalTokenSecretProps extends ModalTokenIDProps {
+  tokenId: string
+}
+
+function ModalTokenSecret(props: ModalTokenSecretProps) {
+  const dialog = useDialog()
+  const sdk = useSDK()
+  const sync = useSync()
+
+  return (
+    <DialogPrompt
+      title="Modal token secret"
+      placeholder="ws-..."
+      onConfirm={async (tokenSecret) => {
+        if (!tokenSecret.trim()) return
+        await sdk.client.auth.set({
+          providerID: props.providerID,
+          auth: {
+            type: "modal",
+            endpoint: props.endpoint,
+            tokenId: props.tokenId,
+            tokenSecret: tokenSecret.trim(),
           },
         })
         await sdk.client.instance.dispose()

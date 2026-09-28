@@ -107,6 +107,9 @@ Penguin exposes the same runtime through several surfaces:
 
 ### Web/API Surface Notes
 
+- Trusted Link callers can opt into [durable chat requests](docs/docs/api/durable-chat-requests.md) for deduplicated execution and persisted result lookup.
+- Isolated runtimes can use [run-scoped Link inference](docs/docs/api/link-runtime-inference.md) without a server-wide service secret.
+
 - Task/project endpoints now expose current runtime state rather than only legacy task summaries.
   - Task payloads include `status`, `phase`, `dependencies`, `dependency_specs`, `artifact_evidence`, `recipe`, `metadata`, and `clarification_requests` where relevant.
 - `POST /api/v1/tasks/{task_id}/execute` now routes through `RunMode`, so non-terminal outcomes like `waiting_input` and clarification-needed results are preserved instead of being flattened into fake completion/failure states.
@@ -131,6 +134,8 @@ with PenguinAgent() as agent:
 ```
 
 ## Installation
+
+Penguin requires Python 3.10 through 3.12.
 
 ### Recommended
 
@@ -197,7 +202,7 @@ Under the hood, the `latest` targets override the project default with `--exclud
 | `[llm_litellm]` | Optional LiteLLM support for legacy/custom gateway workflows |
 | `[memory_faiss]` | FAISS vector search + embeddings |
 | `[memory_lance]` | LanceDB vector database |
-| `[memory_chroma]` | ChromaDB integration |
+| `[memory_chroma]` | Compatibility alias (ChromaDB disabled pending upstream security fixes) |
 | `[mcp]` | Model Context Protocol client/server dependencies (Python 3.10+ for the MCP SDK) |
 | `[browser]` | Browser automation support. Installs PyDoll fallback; browser-harness must be installed from a local/source checkout because it is not published on PyPI yet. |
 | `[pydoll]` | PyDoll browser automation fallback only |
@@ -295,6 +300,15 @@ Read more:
 
 ## Version Highlights
 
+### v0.9.2
+
+- Added durable session-scoped `/goal` and `/247` workflows with persisted lifecycle state, RunMode execution, API/TUI controls, and truthful partial or blocked outcomes.
+- Added native Modal Auto Endpoint and RunInfra providers, plus Link-backed personal subscription inference with scoped execution authority and per-request permission policies.
+- Stabilized multi-agent execution across async tool dispatch, executor ownership, admission policy, child model selection, cancellation, message delivery, and execution isolation.
+- Reduced live-output latency by emitting assistant deltas immediately and batching runtime-event ledger persistence outside the SSE hot path.
+- Added a packaged observability dashboard for sessions, tasks, context, cost, performance, reliability, runtime events, and server logs.
+- Simplified first-run onboarding, refactored prompt composition, exposed native session todo tools, resolved dependency security alerts, and moved the supported Python range to 3.10–3.12.
+
 ### v0.9.1
 
 - Added day-one GPT-5.6 support through Penguin's OpenAI/Codex OAuth catalog path, including Sol, Terra, and Luna when advertised and provisioned for the authenticated account.
@@ -344,6 +358,8 @@ Read more:
 
 ## Documentation
 
+- [Hosted tool environments and security activation gates](docs/docs/security/hosted-tool-environment.md)
+
 - [Official Documentation](https://penguin-rho.vercel.app)
 - [Release Notes](https://github.com/Maximooch/penguin/releases)
 - `architecture.md`
@@ -390,3 +406,10 @@ Built upon insights from:
 - [Claude-Engineer](https://github.com/Doriandarko/claude-engineer)
 - [Aider](https://github.com/paul-gauthier/aider)
 - [RawDog](https://github.com/AbanteAI/rawdog)
+
+For long-running shell commands, see [managed processes](docs/docs/tools/processes.md).
+
+Workspace-mode file writes outside the active project, including sibling worktrees,
+request approval in the TUI. See [tool permissions](docs/docs/usage/web_interface.md#tool-permissions)
+for approval scope and limitations. Use `/permissions` in the TUI to enable
+**Full access** for the current session and avoid per-file approval prompts.

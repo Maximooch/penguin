@@ -45,6 +45,7 @@ from penguin.web.services import (
     opencode_provider as provider_service,
     provider_catalog,
 )
+from penguin.web.services import provider_auth
 from penguin.web.services.opencode_provider import get_provider_auth_records
 
 if TYPE_CHECKING:
@@ -202,6 +203,14 @@ async def test_chat_message_rejects_cross_user_subscription_authority(
             "protocol_version": 1,
             "owner_user_id": "user-a",
             "user_id": "user-b",
+            "actor_user_id": "user-b",
+            "credential_owner_type": "user",
+            "credential_owner_id": "user-a",
+            "workspace_id": "workspace-a",
+            "agent_id": "agent-a",
+            "run_id": "run-a",
+            "issued_at": "2099-01-01T00:00:00Z",
+            "expires_at": "2099-01-01T00:05:00Z",
             "requested_model_id": "gpt-5.4",
             "agent_runtime": "penguin",
             "provider": "openai",
@@ -213,6 +222,11 @@ async def test_chat_message_rejects_cross_user_subscription_authority(
             "usage_authority": "local_runtime_observed",
             "integration_support": "ecosystem_compatible",
             "allow_fallback_to_link_gateway": False,
+            "authority_signature_version": 1,
+            "authority_signature": (
+                "e3586ef6e9e08d53f3a71cc034df5196"
+                "e7f90e1ed15852899fa27833e21cc88c"
+            ),
         },
     )
 
@@ -247,6 +261,7 @@ def test_chat_message_rejects_link_authority_from_ordinary_api_client(
             "agent_id": "agent-1",
             "run_id": "run-1",
             "requested_model_id": "openai/gpt-5.4-nano",
+            "max_output_tokens": 16_384,
             "execution_source": "link_gateway",
             "provider_state_owner": "link_managed",
             "settlement_mode": "debit_link_credits",
@@ -289,9 +304,56 @@ async def test_link_service_credential_cannot_run_chat_without_execution_authori
 
     assert raised.value.status_code == 403
     assert raised.value.detail == (
-        "The Link execution credential requires a Link-managed or "
-        "personal-subscription execution descriptor."
+        "The Link execution credential requires an execution descriptor "
+        "or an assignment approval policy."
     )
+
+
+@pytest.mark.asyncio
+async def test_assignment_policy_requires_link_service_credential(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LINK_API_KEY", "link-service-secret")
+    with pytest.raises(HTTPException) as raised:
+        await handle_chat_message(
+            request=MessageRequest(
+                text="assignment",
+                approval_policy={"shell": "deny"},
+            ),
+            core=cast(Any, _Core(tmp_path)),
+            http_request=_api_request(api_key="ordinary-client-secret"),
+        )
+    assert raised.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_assignment_policy_uses_local_inference_with_link_service_credential(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LINK_API_KEY", "link-service-secret")
+    observed: list[dict[str, Any]] = []
+
+    class _AssignmentCore(_Core):
+        async def process(self, **_kwargs: Any) -> dict[str, Any]:
+            execution_context = get_current_execution_context()
+            assert execution_context is not None
+            observed.append(execution_context.as_dict())
+            return {"assistant_response": "assignment response", "action_results": []}
+
+    core = _AssignmentCore(tmp_path)
+    request = MessageRequest(
+        text="assignment",
+        approval_policy={"shell": "deny"},
+    )
+    response = await handle_chat_message(
+        request=request,
+        core=cast(Any, core),
+        http_request=_api_request(api_key="link-service-secret"),
+    )
+    assert response["response"] == "assignment response"
+    assert observed[0]["approval_policy"] == request.approval_policy
 
 
 @pytest.mark.asyncio
@@ -317,6 +379,14 @@ async def test_chat_message_resolves_subscription_model_through_openai(
     monkeypatch.setenv("LINK_API_KEY", "link-service-secret")
     resolved_models: list[str | None] = []
     observed_permission_contexts: list[dict[str, Any]] = []
+    emitted_events: list[tuple[str, dict[str, Any]]] = []
+
+    async def capture_event(
+        _core: Any,
+        event_type: str,
+        properties: dict[str, Any],
+    ) -> None:
+        emitted_events.append((event_type, properties))
 
     class _SubscriptionCore(_Core):
         async def resolve_request_runtime(
@@ -340,8 +410,9 @@ async def test_chat_message_resolves_subscription_model_through_openai(
     monkeypatch.setattr(
         routes_module,
         "validate_external_subscription_execution",
-        lambda _execution, _model: None,
+        lambda _execution, _model, _secret: None,
     )
+    monkeypatch.setattr(routes_module, "emit_opencode_event", capture_event)
     request = MessageRequest(
         text="hello",
         model="gpt-5.6-luna",
@@ -351,6 +422,14 @@ async def test_chat_message_resolves_subscription_model_through_openai(
             "protocol_version": 1,
             "owner_user_id": "user-a",
             "user_id": "user-a",
+            "actor_user_id": "user-a",
+            "credential_owner_type": "user",
+            "credential_owner_id": "user-a",
+            "workspace_id": "workspace-a",
+            "agent_id": "agent-a",
+            "run_id": "run-a",
+            "issued_at": "2099-01-01T00:00:00Z",
+            "expires_at": "2099-01-01T00:05:00Z",
             "requested_model_id": "gpt-5.6-luna",
             "agent_runtime": "penguin",
             "provider": "openai",
@@ -362,6 +441,8 @@ async def test_chat_message_resolves_subscription_model_through_openai(
             "usage_authority": "local_runtime_observed",
             "integration_support": "ecosystem_compatible",
             "allow_fallback_to_link_gateway": False,
+            "authority_signature_version": 1,
+            "authority_signature": "verified-by-test-double",
         },
         permission_mode="read_only",
         approval_policy={
@@ -385,15 +466,16 @@ async def test_chat_message_resolves_subscription_model_through_openai(
     assert resolved_models == ["openai/gpt-5.6-luna"]
     assert len(observed_permission_contexts) == 1
     assert observed_permission_contexts[0]["permission_mode"] == "read_only"
-    assert observed_permission_contexts[0]["approval_policy"] == {
-        "shell": "deny",
-        "fileWrite": "deny",
-        "fileDelete": "deny",
-        "gitPush": "deny",
-        "network": "deny",
-        "secrets": "deny",
-        "allowLists": {},
-    }
+    assert observed_permission_contexts[0]["approval_policy"] == request.approval_policy
+    assert emitted_events == [
+        (
+            "link.execution.authorized",
+            {
+                "sessionID": response["session_id"],
+                "execution": response["execution"],
+            },
+        )
+    ]
 
 
 @pytest.mark.asyncio
@@ -1600,3 +1682,41 @@ def test_http_route_wiring_for_config_provider_auth(
             json={},
         )
         assert oauth_callback_missing_method.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_modal_auth_method_and_catalog_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store_path = tmp_path / "provider_auth_modal.json"
+    monkeypatch.setenv("PENGUIN_PROVIDER_AUTH_STORE", str(store_path))
+    monkeypatch.setenv("MODAL_ENDPOINT", "https://example-endpoint.modal.direct")
+    monkeypatch.setenv("MODAL_PROXY_TOKEN_ID", "wk-test")
+    monkeypatch.setenv("MODAL_PROXY_TOKEN_SECRET", "ws-test")
+
+    core = _Core(tmp_path)
+    methods = await opencode_provider_auth(core=cast(Any, core))
+    assert methods["modal"] == [
+        {"type": "modal", "label": "Connect an existing Auto Endpoint"}
+    ]
+
+    providers = await opencode_provider_list(core=cast(Any, core))
+    modal = next(
+        (provider for provider in providers["all"] if provider["id"] == "modal"),
+        None,
+    )
+    assert modal is not None
+    assert "modal" in providers["connected"]
+    assert "moonshotai/Kimi-K3" in modal["models"]
+    kimi = modal["models"]["moonshotai/Kimi-K3"]
+    assert kimi["name"] == "Kimi K3"
+    assert kimi["limit"]["context"] == 1_000_000
+    assert kimi["attachment"] is True
+    assert kimi["tool_call"] is True
+    assert kimi["reasoning"] is True
+    assert kimi["variants"] == {
+        "low": {"reasoning": {"effort": "low"}},
+        "high": {"reasoning": {"effort": "high"}},
+        "max": {"reasoning": {"effort": "max"}},
+    }

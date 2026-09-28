@@ -47,6 +47,7 @@ from penguin.utils.parser import (  # type: ignore
 from penguin.system.state import MessageCategory  # type: ignore
 from penguin.llm.api_client import APIClient  # type: ignore
 from penguin.llm.contracts import LLMProviderError
+from penguin.llm.provider_transform import native_tool_format
 from penguin.llm.runtime import (
     build_empty_response_diagnostics as build_llm_empty_response_diagnostics,
     build_reasoning_fallback_note,
@@ -56,6 +57,8 @@ from penguin.llm.runtime import (
     prepare_responses_tool_kwargs,
 )
 from penguin.tools import ToolManager  # type: ignore
+from penguin.core_runtime.process_notifications import process_session_scope
+from penguin.tools.process_wait import ProcessWaitGuard
 from penguin.tools.runtime import (
     DEFAULT_TOOL_MODEL_OUTPUT_MAX_CHARS,
     ToolCall,
@@ -306,6 +309,7 @@ class LoopState:
     repeat_count: int = 0
 
     # Empty tool-only iteration tracking
+    process_wait_guard: ProcessWaitGuard = field(default_factory=ProcessWaitGuard)
     empty_tool_only_count: int = 0
     last_tool_only_signature: Optional[str] = None
     last_tool_only_summary: str = ""
@@ -316,6 +320,7 @@ class LoopState:
         self.empty_response_count = 0
         self.last_response_hash = None
         self.repeat_count = 0
+        self.process_wait_guard.progress.clear()
         self.empty_tool_only_count = 0
         self.last_tool_only_signature = None
         self.last_tool_only_summary = ""
@@ -377,6 +382,15 @@ class LoopState:
             self.repeated_tool_only_count = 0
             return False, None
 
+        wait_decision = self.process_wait_guard.check(iteration_results)
+        if wait_decision is not None:
+            self.last_tool_only_signature = None
+            self.repeated_tool_only_count = 0
+            self.last_tool_only_summary = tool_results_loop_identity(
+                iteration_results
+            ).summary
+            return wait_decision
+
         self.empty_tool_only_count += 1
         identity = tool_results_loop_identity(iteration_results)
         signature = identity.fingerprint
@@ -396,6 +410,10 @@ class LoopState:
 
 _EMPTY_RESPONSE_PLACEHOLDER = "[Empty response from model]"
 _TOOL_ONLY_STALL_NOTES = {
+    "process_wait_budget_exhausted": (
+        "The process is still running but produced no new output within the "
+        "waiting budget. Its process_id remains available for polling or stopping."
+    ),
     "repeated_empty_tool_only_iterations": (
         "Stopping because empty tool-only turns repeated the same tool result "
         "identity; this is probably a stale loop rather than forward progress."
@@ -1085,8 +1103,7 @@ class Engine:
                 session_id=session_id,
                 channel=channel,
             )
-            await MessageBus.get_instance().send(msg)
-            return True
+            return await MessageBus.get_instance().send(msg)
         except Exception as e:
             logger.error(f"route_message failed: {e}")
             return False
@@ -1172,8 +1189,7 @@ class Engine:
                 session_id=session_id,
                 channel=channel,
             )
-            await MessageBus.get_instance().send(msg)
-            return True
+            return await MessageBus.get_instance().send(msg)
         except Exception as e:
             logger.error(f"human_reply failed: {e}")
             return False
@@ -1220,7 +1236,7 @@ class Engine:
         self,
         base_manager: ConversationManager,
         agent_id: str,
-    ) -> _ScopedConversationManager:
+    ) -> Any:
         """Return a request-scoped conversation view reused within the same run."""
         request_id, session_id = self._trace_request_fields()
         run_state = _CURRENT_ENGINE_RUN_STATE.get()
@@ -1239,7 +1255,7 @@ class Engine:
 
         key = (id(base_manager), agent_id)
         cached = run_state.scoped_conversation_managers.get(key)
-        if isinstance(cached, _ScopedConversationManager):
+        if cached is not None:
             _trace_log_info(
                 "engine.scope.reuse request=%s session=%s agent=%s cache=%s base_cm=%s scoped_cm=%s scoped_session=%s",
                 request_id,
@@ -1349,6 +1365,8 @@ class Engine:
         last_response: str,
         iteration_results: List[Dict[str, Any]],
         mode: str = "response",
+        *,
+        codeact_enabled: bool = True,
     ) -> Tuple[bool, Optional[str]]:
         """Check WALLET_GUARD conditions that should terminate the loop.
 
@@ -1383,6 +1401,8 @@ class Engine:
 
         # Check for no-action completion (models that don't use CodeAct format)
         if not iteration_results and last_response:
+            if not codeact_enabled:
+                return True, "implicit_completion" if mode == "task" else None
             if self._looks_like_malformed_action_output(last_response):
                 logger.warning(
                     "[WALLET_GUARD] Suppressing implicit completion for malformed %s response",
@@ -1574,9 +1594,12 @@ class Engine:
         response: str,
         *,
         mode: str,
+        codeact_enabled: bool = True,
     ) -> bool:
         """Add a repair note when the model emits broken tool syntax."""
-        if not self._looks_like_malformed_action_output(response):
+        if not codeact_enabled or not self._looks_like_malformed_action_output(
+            response
+        ):
             return False
 
         request_id, session_id = self._trace_request_fields()
@@ -1868,6 +1891,7 @@ class Engine:
                     cm,
                     last_response,
                     mode=config.mode,
+                    codeact_enabled=response_data.get("codeact_enabled", True),
                 ):
                     await self._save_conversation(cm, async_save=config.async_save)
                     if config.message_callback:
@@ -1879,7 +1903,10 @@ class Engine:
 
                 # WALLET_GUARD: Consolidated termination checks
                 should_break, guard_status = self._check_wallet_guard_termination(
-                    last_response, iteration_results, mode=config.mode
+                    last_response,
+                    iteration_results,
+                    mode=config.mode,
+                    codeact_enabled=response_data.get("codeact_enabled", True),
                 )
                 if should_break:
                     if guard_status in _TOOL_ONLY_STALL_NOTES:
@@ -1889,6 +1916,14 @@ class Engine:
                         )
                     completion_status = guard_status or "implicit_completion"
                     break
+
+                # TODO(task-loop): a provider turn that ends with FinishReason.LENGTH
+                # (per-call output boundary) is currently treated as implicit
+                # completion here. tests/test_engine_task_finish_contract.py
+                # documents the intended continuation behavior
+                # (test_unbounded_task_continues_once_from_persisted_length_partial).
+                # Implement output-boundary continuation before relying on that
+                # contract; see tests for the expected message shape.
 
             else:
                 # The loop condition expired without an explicit or guarded break.
@@ -2324,13 +2359,17 @@ class Engine:
                     cm,
                     last_response,
                     mode="response",
+                    codeact_enabled=response_data.get("codeact_enabled", True),
                 ):
                     await self._save_conversation(cm, async_save=True)
                     continue
 
                 # WALLET_GUARD: Consolidated termination checks
                 should_break, guard_status = self._check_wallet_guard_termination(
-                    last_response, iteration_results, mode="response"
+                    last_response,
+                    iteration_results,
+                    mode="response",
+                    codeact_enabled=response_data.get("codeact_enabled", True),
                 )
                 if should_break:
                     if guard_status:
@@ -2341,6 +2380,15 @@ class Engine:
                             guard_status,
                         )
                     break
+
+                # TODO(response-loop): a provider turn that ends with
+                # FinishReason.LENGTH (per-call output boundary) is currently
+                # treated as implicit completion here.
+                # tests/test_engine_task_finish_contract.py documents the
+                # intended continuation behavior
+                # (test_unbounded_response_continues_from_persisted_length_partial).
+                # Implement output-boundary continuation before relying on that
+                # contract; see tests for the expected message shape.
 
             # Determine final status
             if (
@@ -2638,7 +2686,14 @@ class Engine:
         context: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
         if agent_id:
-            return agent_id, None
+            if self.get_agent(agent_id) is not None:
+                return agent_id, None
+            logger.warning(
+                "Unknown requested agent '%s'; using default agent '%s'",
+                agent_id,
+                self.default_agent_id,
+            )
+            return self.default_agent_id, None
         coordinator = getattr(self, "coordinator", None)
         if not coordinator or not agent_role:
             return self.default_agent_id, None
@@ -2698,7 +2753,9 @@ class Engine:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _prepare_responses_tools(self, tool_manager) -> Dict[str, Any]:
+    def _prepare_responses_tools(
+        self, tool_manager: Any, model_config: Any = None
+    ) -> dict[str, Any]:
         """Prepare Responses API tools payload if enabled.
 
         Returns:
@@ -2706,7 +2763,9 @@ class Engine:
         """
         try:
             return prepare_responses_tool_kwargs(
-                self._get_runtime_model_config(),
+                model_config
+                if model_config is not None
+                else self._get_runtime_model_config(),
                 tool_manager,
             )
         except Exception as exc:
@@ -3041,23 +3100,25 @@ class Engine:
                 cm,
                 tool_call,
             ),
-            persist_tool_result_record=lambda tool_call,
-            tool_result: self._persist_tool_result_record(
-                cm,
-                tool_call,
-                tool_result,
+            persist_tool_result_record=lambda tool_call, tool_result: (
+                self._persist_tool_result_record(
+                    cm,
+                    tool_call,
+                    tool_result,
+                )
             ),
             execution_policy=self._tool_execution_policy(
                 cm,
                 catch_exceptions=True,
             ),
-            persist_action_result=lambda action_result,
-            tool_context: cm.add_action_result(
-                action_type=action_result["action"],
-                result=action_result["result"],
-                status=action_result["status"],
-                tool_call_id=tool_context.get("tool_call_id"),
-                tool_arguments=tool_context.get("tool_arguments"),
+            persist_action_result=lambda action_result, tool_context: (
+                cm.add_action_result(
+                    action_type=action_result["action"],
+                    result=action_result["result"],
+                    status=action_result["status"],
+                    tool_call_id=tool_context.get("tool_call_id"),
+                    tool_arguments=tool_context.get("tool_arguments"),
+                )
             ),
             emit_action_start=(
                 (lambda payload: cm.core.emit_ui_event("action", payload))
@@ -3587,6 +3648,7 @@ class Engine:
         )
         return [*messages, {"role": "system", "content": notice}]
 
+    @process_session_scope
     async def _llm_step(
         self,
         *,
@@ -3654,7 +3716,20 @@ class Engine:
 
         # Step 1: Prepare Responses API tools if enabled
         llm_step_started = time.perf_counter()
-        extra_kwargs = self._prepare_responses_tools(tool_manager)
+        run_state = _CURRENT_ENGINE_RUN_STATE.get()
+        model_config = (
+            (run_state.model_config if run_state is not None else None)
+            or getattr(api_client, "model_config", None)
+            or self._get_runtime_model_config()
+        )
+        # Native assistant text is data, never an alternate tool channel. Schema
+        # preparation failure must not silently enable ActionXML execution.
+        codeact_enabled = tools_enabled and native_tool_format(model_config) is None
+        extra_kwargs = (
+            self._prepare_responses_tools(tool_manager, model_config=model_config)
+            if tools_enabled
+            else {}
+        )
         tool_schema_count = (
             len(extra_kwargs.get("tools", []))
             if isinstance(extra_kwargs.get("tools"), list)
@@ -3721,10 +3796,10 @@ class Engine:
 
         # Step 4: Handle Responses API tool_calls if they were triggered
         responses_tools_started = time.perf_counter()
-        responses_action_results = await self._handle_responses_tool_calls(
-            api_client,
-            tool_manager,
-            cm,
+        responses_action_results = (
+            await self._handle_responses_tool_calls(api_client, tool_manager, cm)
+            if tools_enabled
+            else []
         )
         _trace_log_info(
             "engine.llm_step.responses_tools_done request=%s session=%s agent=%s "
@@ -3743,7 +3818,7 @@ class Engine:
 
         # Step 5: Execute CodeAct actions if enabled
         action_results = list(responses_action_results)
-        if tools_enabled and not responses_action_results:
+        if codeact_enabled and not responses_action_results:
             codeact_started = time.perf_counter()
             action_results.extend(
                 await self._execute_codeact_actions(
@@ -3788,6 +3863,7 @@ class Engine:
             "assistant_response": assistant_response,
             "action_results": action_results,
             "usage": usage,
+            "codeact_enabled": codeact_enabled,
         }
 
     async def _llm_stream(self, prompt: str, *, agent_id: Optional[str] = None):

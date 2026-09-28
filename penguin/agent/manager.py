@@ -91,6 +91,11 @@ class AgentManager:
                 session = getattr(conv, "session", None)
                 if session is not None:
                     metadata = dict(getattr(session, "metadata", {}) or {})
+                    profiles = metadata.get("agent_profiles")
+                    if isinstance(profiles, dict):
+                        agent_profile = profiles.get(agent_id)
+                        if isinstance(agent_profile, dict):
+                            metadata.update(agent_profile)
 
             persona_name = metadata.get("persona")
             persona_config = personas.get(persona_name) if persona_name else None

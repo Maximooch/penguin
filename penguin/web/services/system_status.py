@@ -8,10 +8,13 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any
 
 from penguin.config import WORKSPACE_PATH
 from penguin.system.runtime_events import wrap_opencode_event
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
 _LAST_BRANCH_KEYS: dict[str, str] = {}
@@ -143,7 +146,6 @@ def get_vcs_info(
     emit_events: bool = True,
 ) -> dict[str, Any]:
     """Return real VCS info for the current worktree."""
-    global _LAST_BRANCH_KEYS
     path_info = get_path_info(core, directory=directory, session_id=session_id)
     directory = path_info["directory"]
     worktree = _run_git(["rev-parse", "--show-toplevel"], directory)
@@ -206,9 +208,38 @@ def get_vcs_info(
             behind = 0
             ahead = 0
 
+    snapshot = {
+        "vcs": "git",
+        "root": root,
+        "worktree": worktree,
+        "branch": branch,
+        "detached": detached,
+        "head": head,
+        "upstream": upstream,
+        "dirty": dirty,
+        "ahead": ahead,
+        "behind": behind,
+        "error": "",
+    }
+
+    if emit_events:
+        _emit_vcs_update(core, snapshot, directory, session_id)
+    return snapshot
+
+
+def _emit_vcs_update(
+    core: Any, snapshot: dict[str, Any], directory: str, session_id: str | None
+) -> None:
+    """Emit a changed snapshot for one scope on the event loop."""
+    if snapshot["vcs"] != "git":
+        return
+    worktree = snapshot["worktree"]
+    branch = snapshot["branch"]
+    head = snapshot["head"]
+    detached = snapshot["detached"]
     scope = session_id or directory
     branch_key = f"{worktree}|{branch}|{head}|{detached}"
-    if emit_events and branch_key != _LAST_BRANCH_KEYS.get(scope, ""):
+    if branch_key != _LAST_BRANCH_KEYS.get(scope, ""):
         _LAST_BRANCH_KEYS[scope] = branch_key
         try:
             loop = asyncio.get_running_loop()
@@ -232,33 +263,26 @@ def get_vcs_info(
         except Exception:
             logger.debug("Unable to emit vcs.branch.updated", exc_info=True)
 
-    return {
-        "vcs": "git",
-        "root": root,
-        "worktree": worktree,
-        "branch": branch,
-        "detached": detached,
-        "head": head,
-        "upstream": upstream,
-        "dirty": dirty,
-        "ahead": ahead,
-        "behind": behind,
-        "error": "",
-    }
-
 
 async def _vcs_watch_loop(core: Any, interval_seconds: float) -> None:
     """Watch for VCS branch changes and emit events."""
     while True:
         try:
-            # Default runtime scope
-            get_vcs_info(core, emit_events=True)
-
-            # Session-scoped directories
+            scopes: dict[str, list[str | None]] = {_resolve_directory(core): [None]}
             session_dirs = getattr(core, "_opencode_session_directories", {})
             if isinstance(session_dirs, dict):
-                for session_id in list(session_dirs.keys()):
-                    get_vcs_info(core, session_id=session_id, emit_events=True)
+                for session_id in list(session_dirs):
+                    directory = _resolve_directory(core, session_id=session_id)
+                    scopes.setdefault(directory, []).append(session_id)
+
+            for directory, session_ids in scopes.items():
+                # ponytail: cancellation lets bounded Git calls finish in the thread.
+                # Use async subprocesses if immediate termination becomes necessary.
+                snapshot = await asyncio.to_thread(
+                    get_vcs_info, core, directory=directory, emit_events=False
+                )
+                for session_id in session_ids:
+                    _emit_vcs_update(core, snapshot, directory, session_id)
         except asyncio.CancelledError:
             raise
         except Exception:

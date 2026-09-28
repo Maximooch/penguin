@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import type { Session } from "@opencode-ai/sdk/v2"
-import { getSessionFamily } from "../../../src/cli/cmd/tui/util/session-family"
+import { getSessionFamily, isValidChildSession } from "../../../src/cli/cmd/tui/util/session-family"
 
 function session(input: { id: string; title: string; created: number; updated: number; parentID?: string }): Session {
   return {
@@ -19,6 +19,18 @@ function session(input: { id: string; title: string; created: number; updated: n
 }
 
 describe("session family navigation", () => {
+  test("narrows a valid child's optional parent ID", () => {
+    const child = session({ id: "child", title: "Child", created: 1, updated: 1, parentID: "parent" })
+    if (!isValidChildSession(child)) throw new Error("Expected a child session")
+    const parent: string = child.parentID
+    expect(parent).toBe("parent")
+  })
+
+  test.each([undefined, { id: "root" }, { id: "root", parentID: "" }, { id: "root", parentID: "root" }])(
+    "rejects missing and invalid parent IDs: %j",
+    (item) => expect(isValidChildSession(item)).toBe(false),
+  )
+
   test("returns the full parent-child family from a child session", () => {
     const parent = session({
       id: "ses_parent",
@@ -88,5 +100,18 @@ describe("session family navigation", () => {
     })
 
     expect(getSessionFamily([parent], "ses_missing")).toEqual([])
+  })
+
+  test("treats legacy self-parent lineage as a root session", () => {
+    const corrupt = session({
+      id: "ses_corrupt",
+      title: "Recovered root",
+      parentID: "ses_corrupt",
+      created: 100,
+      updated: 300,
+    })
+
+    expect(isValidChildSession(corrupt)).toBe(false)
+    expect(getSessionFamily([corrupt], corrupt.id)).toEqual([corrupt])
   })
 })

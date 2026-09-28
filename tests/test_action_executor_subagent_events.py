@@ -144,6 +144,30 @@ async def test_spawn_sub_agent_emits_session_created(
 
 
 @pytest.mark.asyncio
+async def test_spawn_sub_agent_rejects_invalid_token_limit_before_creation() -> None:
+    """ActionXML admission must not coerce malformed limits to no override."""
+
+    core = _Core("session_child_invalid")
+    executor = ActionExecutor(
+        tool_manager=cast(Any, SimpleNamespace()),
+        task_manager=cast(Any, SimpleNamespace()),
+        conversation_system=SimpleNamespace(core=core, current_agent_id="default"),
+    )
+
+    result = await executor._spawn_sub_agent(
+        json.dumps(
+            {
+                "id": "invalid-limit",
+                "shared_context_window_max_tokens": "many",
+            }
+        )
+    )
+
+    assert "shared_context_window_max_tokens must be a positive integer" in result
+    assert core.created == []
+
+
+@pytest.mark.asyncio
 async def test_spawn_sub_agent_action_result_emits_task_card_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -375,7 +399,6 @@ async def test_wait_for_agents_uses_async_tool_handler() -> None:
 
 @pytest.mark.asyncio
 async def test_wait_for_agents_action_path_completes_background_agent(
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from penguin.multi.executor import AgentExecutor
     from penguin.tools.tool_manager import ToolManager
@@ -390,15 +413,11 @@ async def test_wait_for_agents_action_path_completes_background_agent(
 
     core.process = AsyncMock(side_effect=_mock_process)
     executor_runner = AgentExecutor(core, max_concurrent=1)
-    monkeypatch.setattr(
-        "penguin.multi.executor.get_executor",
-        lambda _core=None: executor_runner,
-    )
-
     tool_manager = ToolManager(
         config={"diagnostics": {"enabled": False}},
         log_error_func=lambda *_args, **_kwargs: None,
     )
+    tool_manager._agent_executor = executor_runner
     action_executor = ActionExecutor(
         tool_manager=tool_manager,
         task_manager=cast(Any, SimpleNamespace()),

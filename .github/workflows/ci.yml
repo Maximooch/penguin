@@ -9,6 +9,29 @@ permissions:
   contents: read
 
 jobs:
+  locked-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.2"
+      - name: Install the locked source runtime
+        run: |
+          git ls-files --error-unmatch uv.lock
+          uv sync --locked --python 3.12
+          uv run --locked python -c "import penguin.web.server; import penguin.llm.providers.link"
+          git diff --exit-code -- uv.lock
+      - name: Verify Link contracts with locked dependencies
+        run: |
+          uv run --locked pytest -q \
+            tests/llm/test_link_provider.py \
+            tests/llm/test_link_runtime_contract.py \
+            tests/web/test_link_inference_service.py
+
   link-provider-contract:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -34,6 +57,14 @@ jobs:
             penguin/llm/providers/link \
             penguin/web/services/external_subscription.py \
             penguin/web/services/link_inference.py \
+            penguin/web/services/chat_requests.py \
+            penguin/system/task_cancellation.py \
+            penguin/system/tool_environment.py \
+            tests/system/test_tool_environment.py \
+            tests/system/test_task_cancellation.py \
+            tests/web/test_chat_requests.py \
+            tests/web/test_chat_request_contention.py \
+            tests/web/test_chat_request_cancel.py \
             tests/llm/test_link_provider.py \
             tests/llm/test_link_runtime_contract.py \
             tests/test_link_runtime_permission_policy.py \
@@ -43,6 +74,14 @@ jobs:
             penguin/llm/providers/link \
             penguin/web/services/external_subscription.py \
             penguin/web/services/link_inference.py \
+            penguin/web/services/chat_requests.py \
+            penguin/system/task_cancellation.py \
+            penguin/system/tool_environment.py \
+            tests/system/test_tool_environment.py \
+            tests/system/test_task_cancellation.py \
+            tests/web/test_chat_requests.py \
+            tests/web/test_chat_request_contention.py \
+            tests/web/test_chat_request_cancel.py \
             tests/llm/test_link_provider.py \
             tests/llm/test_link_runtime_contract.py \
             tests/web/test_external_subscription_service.py \
@@ -57,6 +96,12 @@ jobs:
             tests/web/test_link_inference_service.py \
             tests/web/test_external_subscription_service.py \
             tests/web/test_link_execution_authority.py \
+            tests/web/test_chat_requests.py \
+            tests/web/test_chat_request_contention.py \
+            tests/web/test_chat_request_cancel.py \
+            tests/system/test_task_cancellation.py \
+            tests/system/test_tool_environment.py \
+            tests/core_runtime/test_process_runtime.py \
             tests/api/test_opencode_provider_routes.py::test_chat_message_rejects_cross_user_subscription_authority \
             tests/api/test_opencode_provider_routes.py::test_chat_message_rejects_link_authority_from_ordinary_api_client \
             tests/api/test_opencode_provider_routes.py::test_link_capabilities_reject_ordinary_api_clients \
@@ -110,6 +155,7 @@ jobs:
             tests/llm/test_runtime_stream_retry.py \
             tests/test_conversation_internal_visibility.py \
             tests/test_engine_task_finish_contract.py \
+            tests/test_engine_native_tool_isolation.py \
             tests/test_engine_run_task_thin_wrapper.py \
             tests/test_finish_task_schema_contract.py \
             tests/test_part_event_persist_callback.py \
@@ -132,11 +178,17 @@ jobs:
           persist-credentials: false
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.3.5"
+          bun-version: "1.3.8"
       - run: bun install --frozen-lockfile
       - name: Typecheck TUI
         working-directory: penguin-tui/packages/opencode
         run: bun run typecheck
+      - name: Verify provider-utils response limits across peer variants
+        working-directory: penguin-tui/packages/opencode
+        run: bun test test/provider/provider-utils-response-limit.test.ts
+      - name: Build TUI web package
+        working-directory: penguin-tui/packages/web
+        run: bun run build
       - name: Run goal command and session-state tests
         working-directory: penguin-tui/packages/opencode
         run: |
@@ -148,6 +200,8 @@ jobs:
             test/tui/penguin-send.test.ts
           bun test \
             test/cli/tui/session-goal-summary.test.ts \
+            test/cli/tui/session-family-navigation.test.ts \
+            test/cli/tui/session-list-children.test.ts \
             test/cli/tui/sync-bootstrap.test.ts \
             test/cli/tui/sync-session-events.test.ts
 
@@ -168,5 +222,6 @@ jobs:
           cache-dependency-path: docs/yarn.lock
       - run: corepack enable
       - run: yarn install --frozen-lockfile
+      - run: yarn test:security
       - run: yarn typecheck
       - run: yarn build

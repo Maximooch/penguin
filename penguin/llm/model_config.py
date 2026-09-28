@@ -69,6 +69,7 @@ class ModelConfig:
     streaming_enabled: bool = False
     enable_token_counting: bool = True
     vision_enabled: Optional[bool] = None
+    native_tools: Optional[bool] = None
 
     # Responses API / streaming interrupt controls
     use_responses_api: bool = False
@@ -95,6 +96,21 @@ class ModelConfig:
         if self.reasoning_enabled is None:
             self.reasoning_enabled = False
         self.service_tier = normalize_openai_service_tier(self.service_tier)
+        model_lower = self.model.lower()
+        provider_lower = self.provider.lower()
+        is_modal_kimi_k3 = (
+            provider_lower == "modal"
+            and ("kimi-k3" in model_lower or "kimi_k3" in model_lower)
+        )
+        is_runinfra_deepseek_v4 = (
+            provider_lower == "runinfra" and "deepseek-v4" in model_lower
+        )
+        if self.native_tools is None and (is_modal_kimi_k3 or is_runinfra_deepseek_v4):
+            self.native_tools = True
+        if self.supported_reasoning_levels is None and is_runinfra_deepseek_v4:
+            self.supported_reasoning_levels = ["low", "medium", "high"]
+        if self.supported_reasoning_levels is None and is_modal_kimi_k3:
+            self.supported_reasoning_levels = ["low", "high", "max"]
 
         if self.api_key is None and self.provider:
             self.api_key = os.getenv(f"{self.provider.upper()}_API_KEY")
@@ -155,7 +171,7 @@ class ModelConfig:
                 self.reasoning_enabled = True
                 # Set default reasoning effort based on model type
                 if self._uses_effort_style():
-                    self.reasoning_effort = "medium"
+                    self.reasoning_effort = "max" if is_modal_kimi_k3 else "medium"
                 elif self._uses_max_tokens_style():
                     self.reasoning_max_tokens = 2000
 
@@ -191,6 +207,10 @@ class ModelConfig:
         ):
             return True
 
+        # RunInfra-hosted DeepSeek V4 reasoning models
+        if self.provider.lower() == "runinfra" and "deepseek-v4" in model_lower:
+            return True
+
         # OpenAI o-series and GPT-5+ models (reasoning is MANDATORY for GPT-5.2+)
         # See: https://openrouter.ai/openai/gpt-5.2/api - "Mandatory reasoning"
         if any(
@@ -218,6 +238,11 @@ class ModelConfig:
         if "grok" in model_lower:
             return True
 
+        if self.provider.lower() == "modal" and (
+            "kimi-k3" in model_lower or "kimi_k3" in model_lower
+        ):
+            return True
+
         return False
 
     def _uses_effort_style(self) -> bool:
@@ -233,6 +258,9 @@ class ModelConfig:
                 "openai/o",
                 "gpt-5",
                 "gpt-6",
+                "kimi-k3",
+                "kimi_k3",
+                "deepseek-v4",
             ]
         )
 
@@ -283,6 +311,7 @@ class ModelConfig:
             "supports_vision": self.supports_vision,
             "vision_enabled": self.vision_enabled,
             "streaming_enabled": self.streaming_enabled,
+            "native_tools": self.native_tools,
             "supports_reasoning": self.supports_reasoning,
             "reasoning_enabled": self.reasoning_enabled,
             "use_responses_api": self.use_responses_api,
@@ -557,6 +586,7 @@ class ModelConfig:
             reasoning_exclude=bool(reasoning_config.get("exclude", False)),
             supports_reasoning=True if supported_reasoning_levels else None,
             supported_reasoning_levels=list(supported_reasoning_levels) or None,
+            native_tools=model_specific.get("native_tools"),
             service_tier=normalize_openai_service_tier(
                 model_specific.get("service_tier")
                 or os.getenv("PENGUIN_OPENAI_SERVICE_TIER")

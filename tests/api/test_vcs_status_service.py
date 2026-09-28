@@ -128,3 +128,109 @@ def test_vcs_linked_worktree_reports_shared_root(tmp_path: Path):
     assert Path(data["worktree"]).resolve() == worktree.resolve()
     assert Path(data["root"]).resolve() == repo.resolve()
     assert data["branch"] == "wt-test"
+
+
+async def test_watcher_polls_once_per_directory_and_preserves_scopes(
+    monkeypatch, tmp_path
+):
+    import asyncio
+
+    from penguin.web.services import system_status as service
+
+    core = _core(tmp_path)
+    other = tmp_path / "other"
+    other.mkdir()
+    core._opencode_session_directories = {
+        **{f"s{i}": str(tmp_path) for i in range(10)},
+        "other": str(other),
+    }
+    monkeypatch.setattr(service, "_LAST_BRANCH_KEYS", {})
+    calls, events = [], []
+    loop = asyncio.get_running_loop()
+
+    def git(args, cwd):
+        calls.append((tuple(args), cwd))
+        if args == ["rev-parse", "--show-toplevel"]:
+            return cwd
+        if args == ["symbolic-ref", "--short", "HEAD"]:
+            return "main"
+        if args == ["rev-parse", "--short", "HEAD"]:
+            return "abc123"
+        return ""
+
+    async def emit(name, event):
+        assert asyncio.get_running_loop() is loop
+        events.append(event)
+
+    passes = 0
+
+    async def pause(_):
+        nonlocal passes
+        passes += 1
+        if passes == 2:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(service, "_run_git", git)
+    monkeypatch.setattr(core.event_bus, "emit", emit)
+    monkeypatch.setattr(service.asyncio, "sleep", pause)
+    try:
+        await service._vcs_watch_loop(core, 2.0)
+    except asyncio.CancelledError:
+        pass
+    # Let the existing event scheduling complete without using patched sleep.
+    done = loop.create_future()
+    loop.call_soon(done.set_result, None)
+    await done
+    # Two directories, two passes, at most eight commands per snapshot.
+    assert len(calls) <= 2 * 2 * 8
+    # Default scope + eleven sessions; unchanged pass is silent.
+    assert len(events) == 12
+    properties = [event["properties"] for event in events]
+    assert {p["sessionID"] for p in properties} == {
+        None,
+        *core._opencode_session_directories,
+    }
+    assert all(
+        p["directory"] == (str(other) if p["sessionID"] == "other" else str(tmp_path))
+        for p in properties
+    )
+
+
+async def test_watcher_slow_git_does_not_block_loop_and_cancels(monkeypatch, tmp_path):
+    import asyncio
+    import threading
+
+    from penguin.web.services import system_status as service
+
+    loop = asyncio.get_running_loop()
+    entered = asyncio.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    calls = []
+
+    def slow_snapshot(*args, **kwargs):
+        calls.append(kwargs)
+        loop.call_soon_threadsafe(entered.set)
+        try:
+            assert release.wait(2), "Git blocked the event loop"
+            return {"vcs": "none"}
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(service, "get_vcs_info", slow_snapshot)
+    task = asyncio.create_task(service._vcs_watch_loop(_core(tmp_path), 0))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        assert not finished.is_set()
+        task.cancel()
+        try:
+            await asyncio.wait_for(task, 1)
+        except asyncio.CancelledError:
+            pass
+        assert task.cancelled()
+        assert len(calls) == 1
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.to_thread(finished.wait, 2)

@@ -16,11 +16,11 @@ Do **not** add a fake PyPI dependency while browser-harness is unpublished. The 
 
 - Python 3.11+ with local/source browser-harness available: use browser-harness by default.
 - Python 3.11+ without browser-harness: show an actionable warning and fall back to `pydoll_browser_*` tools.
-- Python 3.9/3.10: do not try to install/import browser-harness; expose PyDoll fallback and explain the Python requirement only when browser tools/status are requested.
+- Python 3.10: do not try to install/import browser-harness; expose PyDoll fallback and explain the Python requirement only when browser tools/status are requested.
 
 Rationale:
 
-- Penguin supports Python `>=3.9,<3.13`; browser-harness requires newer Python.
+- Penguin supports Python `>=3.10,<3.13`; browser-harness requires newer Python.
 - Browser-harness is not published on PyPI, so `penguin-ai[browser]` cannot honestly depend on it yet.
 - The `[browser]` extra should install the PyPI-available fallback (`pydoll-python`) and document local/source browser-harness installation until browser-harness is published or vendored.
 - Browser-harness is MIT-licensed, so copying/vendoring is legally feasible, but blindly forking it creates maintenance ownership immediately.
@@ -393,7 +393,7 @@ This is the hybrid architecture in practice:
 Phase 4 tasks:
 - [x] Verify browser-harness package source, release cadence, versioning, and install path: local/source only for now; no PyPI package.
 - [x] Confirm license compatibility: MIT browser-harness under Penguin's AGPL distribution path.
-- [x] Confirm Python/dependency constraints and document impact on Penguin's `>=3.9,<3.13` support window.
+- [x] Confirm Python/dependency constraints and document impact on Penguin's `>=3.10,<3.13` support window.
 - [x] Decide optional extra name: keep `browser` as the user-facing extra and install the PyPI-available PyDoll fallback there.
 - [x] Do not add a fake browser-harness dependency while package source/version story is not PyPI-resolvable.
 - [x] Define the Penguin-owned browser backend adapter contract in docs: `context/decisions/browser-backend-contract.md`.
@@ -409,14 +409,14 @@ Phase 4 exit criteria:
 - Penguin can install/use browser-harness as an optional dependency without affecting base installs.
 - Public browser tools remain Penguin-native and backend-agnostic enough to support future vendoring or alternate backend replacement.
 - A decision note records why optional library is current path and what evidence would trigger vendoring.
-- Python/runtime behavior is explicit: 3.11+ prefers browser-harness when importable, warns when unavailable, and 3.9/3.10 uses fallback without import churn.
+- Python/runtime behavior is explicit: 3.11+ prefers browser-harness when importable, warns when unavailable, and 3.10 uses fallback without import churn.
 
 ## Testing Strategy
 
 ### Unit Tests
 
 - Tool schema registration for all `browser_*`, `pydoll_browser_*`, and `read_image` tools.
-- Backend selection/config defaults: Python 3.11+ importable harness, Python 3.11+ missing harness, Python 3.9/3.10 fallback behavior.
+- Backend selection/config defaults: Python 3.11+ importable harness, Python 3.11+ missing harness, Python 3.10 fallback behavior.
 - Missing optional dependency behavior returns actionable guidance and emits a warning surface rather than crashing.
 - Environment mapping for `BU_NAME`, `BH_AGENT_WORKSPACE`, `BH_DOMAIN_SKILLS`, session ID, and agent ID.
 - Ownership persistence: record create/read/update/remove, atomic writes, corrupt-file recovery, and no false ownership for unrelated names.
@@ -458,7 +458,7 @@ Run these manually or in an opt-in integration job because they require local Ch
 
 - Python 3.11+ with local/source browser-harness installed: `browser_status` selects/imports browser-harness and reports package path/version if available.
 - Python 3.11+ without browser-harness installed: console/status warning is emitted; PyDoll fallback tools remain registered.
-- Python 3.9/3.10: browser-harness import is skipped; browser status explains the Python requirement only when requested.
+- Python 3.10: browser-harness import is skipped; browser status explains the Python requirement only when requested.
 - `pip install "penguin-ai[browser]"` installs PyDoll fallback and does not reference an unpublished browser-harness package.
 - `pip install -e /path/to/browser-harness` in the same environment enables canonical `browser_*` tools.
 - Wheel/sdist includes bundled browser skill markdown and interaction references.
@@ -491,7 +491,7 @@ Run these manually or in an opt-in integration job because they require local Ch
 
 - Real-browser automation can mutate user accounts and expose sensitive data.
 - Browser-harness exact dependency pins may conflict with Penguin's broader runtime.
-- Python `>=3.11` requirement excludes Penguin users on 3.9/3.10.
+- Python `>=3.11` requirement excludes Penguin users on 3.10.
 - Domain skills can become stale, site-specific, or privacy-sensitive.
 - Screenshot-heavy workflows can generate large artifacts and sensitive logs.
 - Raw CDP/JS tools are powerful enough to bypass normal page affordances.

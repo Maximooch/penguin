@@ -74,7 +74,7 @@ class WorkspaceBoundaryPolicy(PolicyEngine):
 
     The policy respects the current PermissionMode:
     - READ_ONLY: Only read operations allowed
-    - WORKSPACE: Read/write within boundaries, deny outside
+    - WORKSPACE: Read/write within boundaries, ask outside
     - FULL: All operations allowed (but still logs)
 
     Example:
@@ -302,7 +302,7 @@ class WorkspaceBoundaryPolicy(PolicyEngine):
             if Operation.is_read_only(operation):
                 # Allow reads outside boundaries (useful for reading system files)
                 return PermissionResult.ALLOW, "Read outside boundaries allowed"
-            return PermissionResult.DENY, (
+            return PermissionResult.ASK, (
                 f"Path '{path}' is outside allowed boundaries. "
                 f"Workspace: {workspace_root}, Project: {project_root}"
             )
@@ -415,11 +415,11 @@ class WorkspaceBoundaryPolicy(PolicyEngine):
             ],
             "cannot": [
                 "Write to system paths (/etc, /bin, etc.)",
-                "Write outside workspace/project boundaries",
                 "Write to sensitive files (.env, *.key, etc.)",
             ],
             "requires_approval": [
                 "File deletion",
+                "Write outside workspace/project boundaries",
             ]
             + list(self._require_approval),
         }

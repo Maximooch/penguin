@@ -14,7 +14,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Tuple
-import time
 import uuid
 
 
@@ -114,10 +113,6 @@ class StreamingStateManager:
         self._empty_response_count = 0
         self._error: Optional[str] = None
 
-        # Coalescing state
-        self._emit_buffer = ""
-        self._last_emit_ts = 0.0
-
     # --- Properties ---
 
     @property
@@ -209,15 +204,6 @@ class StreamingStateManager:
             return None, events
 
         self._state = StreamState.FINALIZING
-
-        # Flush any remaining buffer
-        if self._emit_buffer:
-            events.append(self._create_chunk_event(
-                chunk=self._emit_buffer,
-                message_type="assistant",
-                is_final=False,
-            ))
-            self._emit_buffer = ""
 
         # Handle empty response (WALLET_GUARD)
         content = self._content
@@ -318,8 +304,6 @@ class StreamingStateManager:
         self._metadata = {"is_streaming": True}
         self._empty_response_count = 0
         self._error = None
-        self._emit_buffer = ""
-        self._last_emit_ts = 0.0
 
     def _handle_empty_chunk(
         self,
@@ -367,32 +351,15 @@ class StreamingStateManager:
         role: str,
         now: datetime,
     ) -> List[StreamEvent]:
-        """Handle assistant content with coalescing."""
-        events: List[StreamEvent] = []
-
+        """Handle assistant content - emit immediately without coalescing."""
         self._content += chunk
         self._last_update = now
 
-        # Coalescing logic
-        ts_now = time.monotonic()
-        self._emit_buffer += chunk
-
-        should_emit = (
-            len(self._emit_buffer) >= self.config.min_emit_chars or
-            self._last_emit_ts == 0.0 or
-            (ts_now - self._last_emit_ts) >= self.config.min_emit_interval
-        )
-
-        if should_emit:
-            events.append(self._create_chunk_event(
-                chunk=self._emit_buffer,
-                message_type=message_type,
-                is_final=False,
-            ))
-            self._emit_buffer = ""
-            self._last_emit_ts = ts_now
-
-        return events
+        return [self._create_chunk_event(
+            chunk=chunk,
+            message_type=message_type,
+            is_final=False,
+        )]
 
     def _create_chunk_event(
         self,

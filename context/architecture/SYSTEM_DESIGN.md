@@ -51,7 +51,7 @@ Penguin is a modular, event-driven AI software engineering agent that combines a
 ### Technology Stack
 
 **Core:**
-- Python 3.9+ (Docker base: 3.11-slim)
+- Python 3.10+ (Docker base: 3.11-slim)
 - Poetry 1.8.2 (package management)
 - Pydantic (data validation)
 - SQLite (persistence)

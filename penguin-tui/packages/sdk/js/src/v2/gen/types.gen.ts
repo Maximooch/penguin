@@ -1835,7 +1835,14 @@ export type WellKnownAuth = {
   token: string
 }
 
-export type Auth = OAuth | ApiAuth | WellKnownAuth
+export type ModalAuth = {
+  type: "modal"
+  endpoint: string
+  tokenId: string
+  tokenSecret: string
+}
+
+export type Auth = OAuth | ApiAuth | WellKnownAuth | ModalAuth
 
 export type NotFoundError = {
   name: "NotFoundError"
@@ -2018,7 +2025,7 @@ export type SubtaskPartInput = {
 }
 
 export type ProviderAuthMethod = {
-  type: "oauth" | "api"
+  type: "oauth" | "api" | "modal"
   label: string
 }
 

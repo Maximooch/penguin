@@ -60,7 +60,7 @@ import { DialogTimeline } from "./dialog-timeline"
 import { DialogForkFromTimeline } from "./dialog-fork-from-timeline"
 import { DialogSessionRename } from "../../component/dialog-session-rename"
 import { exitSession } from "../../util/exit"
-import { getSessionFamily } from "../../util/session-family"
+import { getSessionFamily, isValidChildSession } from "../../util/session-family"
 import { Sidebar } from "./sidebar"
 import { LANGUAGE_EXTENSIONS } from "@/lsp/language"
 import parsers from "../../../../../../parsers-config.ts"
@@ -74,6 +74,7 @@ import { usePromptRef } from "../../context/prompt"
 import { useExit } from "../../context/exit"
 import { Filesystem } from "@/util/filesystem"
 import { Global } from "@/global"
+import { DialogPermissions } from "../../component/dialog-permissions"
 import { PermissionPrompt } from "./permission"
 import { QuestionPrompt } from "./question"
 import { DialogExportOptions } from "../../ui/dialog-export-options"
@@ -129,11 +130,11 @@ export function Session() {
   })
   const messages = createMemo(() => sync.data.message[route.sessionID] ?? [])
   const permissions = createMemo(() => {
-    if (session()?.parentID) return []
+    if (isValidChildSession(session())) return []
     return children().flatMap((x) => sync.data.permission[x.id] ?? [])
   })
   const questions = createMemo(() => {
-    if (session()?.parentID) return []
+    if (isValidChildSession(session())) return []
     return children().flatMap((x) => sync.data.question[x.id] ?? [])
   })
 
@@ -170,7 +171,7 @@ export function Session() {
 
   const wide = createMemo(() => dimensions().width > 120)
   const sidebarVisible = createMemo(() => {
-    if (session()?.parentID) return false
+    if (isValidChildSession(session())) return false
     if (sidebarOpen()) return true
     if (sidebar() === "auto" && wide()) return true
     return false
@@ -245,7 +246,7 @@ export function Session() {
   // Allow exit when in child session (prompt is hidden)
   const exit = useExit()
   useKeyboard(async (evt) => {
-    if (!session()?.parentID) return
+    if (!isValidChildSession(session())) return
     if (keybind.match("app_exit", evt)) {
       evt.preventDefault?.()
       await exitSession({
@@ -340,7 +341,22 @@ export function Session() {
   }
 
   const command = useCommandDialog()
+  createEffect(() => {
+    if (!sdk.penguin || !session()?.id) return
+    sdk.access.load(route.sessionID).catch(() => {})
+  })
+
   command.register(() => [
+    {
+      title: "Session permissions",
+      value: "session.permissions",
+      category: "Session",
+      enabled: sdk.penguin,
+      slash: { name: "permissions" },
+      onSelect: (dialog) => {
+        dialog.replace(() => <DialogPermissions sessionID={route.sessionID} />)
+      },
+    },
     {
       title: "Share session",
       value: "session.share",
@@ -905,7 +921,7 @@ export function Session() {
       hidden: true,
       onSelect: (dialog) => {
         const parentID = session()?.parentID
-        if (parentID) {
+        if (parentID && parentID !== session()?.id) {
           navigate({
             type: "session",
             sessionID: parentID,
@@ -1123,6 +1139,14 @@ export function Session() {
               </For>
             </scrollbox>
             <box flexShrink={0}>
+              <Show when={sdk.penguin}>
+                <text
+                  fg={sdk.access.get(route.sessionID) === "full_access" ? theme.warning : theme.textMuted}
+                  onMouseDown={() => dialog.replace(() => <DialogPermissions sessionID={route.sessionID} />)}
+                >
+                  {sdk.access.get(route.sessionID) === "full_access" ? "Full access" : "Permissions"} · /permissions
+                </text>
+              </Show>
               <Show when={permissions().length > 0}>
                 <PermissionPrompt request={permissions()[0]} />
               </Show>
@@ -1130,7 +1154,7 @@ export function Session() {
                 <QuestionPrompt request={questions()[0]} />
               </Show>
               <Prompt
-                visible={!session()?.parentID && permissions().length === 0 && questions().length === 0}
+                visible={!isValidChildSession(session()) && permissions().length === 0 && questions().length === 0}
                 ref={(r) => {
                   prompt = r
                   promptRef.set(r)

@@ -227,25 +227,27 @@ class TestCoalescing:
         assert len(events) == 1
         assert events[0].data["chunk"] == "Hi"
 
-    def test_small_chunks_are_buffered(self, slow_coalesce_manager):
-        """Small subsequent chunks should be buffered."""
+    def test_every_chunk_emits_immediately(self, slow_coalesce_manager):
+        """Every chunk emits immediately regardless of size or cadence."""
         m = slow_coalesce_manager
-        m.handle_chunk("First")  # First always emits
-        events = m.handle_chunk("X")  # Should buffer
+        events = m.handle_chunk("First")
+        assert len(events) == 1
+        assert events[0].data["chunk"] == "First"
 
-        # Should not emit - too small and too soon
-        assert len(events) == 0
+        # Small, immediate follow-up still emits (no coalescing buffer)
+        events = m.handle_chunk("X")
+        assert len(events) == 1
+        assert events[0].data["chunk"] == "X"
 
-    def test_buffer_flushes_on_finalize(self, slow_coalesce_manager):
-        """Buffer should flush on finalize."""
+    def test_finalize_emits_terminal_event(self, slow_coalesce_manager):
+        """Finalize emits a terminal event; chunks already streamed live."""
         m = slow_coalesce_manager
         m.handle_chunk("First")
-        m.handle_chunk("X")  # Buffered
-        m.handle_chunk("Y")  # Buffered
+        m.handle_chunk("X")
+        m.handle_chunk("Y")
         message, events = m.finalize()
 
-        # Should have buffer flush event + final event
-        assert len(events) >= 1
+        assert message.content == "FirstXY"
         assert any(e.data.get("is_final") for e in events)
 
     def test_large_chunk_emits(self, slow_coalesce_manager):

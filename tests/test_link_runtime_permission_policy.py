@@ -54,6 +54,23 @@ def test_link_read_only_turn_denies_file_writes(tmp_path: Path) -> None:
     assert result == PermissionResult.DENY
 
 
+def test_link_read_only_turn_cannot_be_relaxed_by_request_policy(
+    tmp_path: Path,
+) -> None:
+    for decision in ("allow", "ask"):
+        result, _reason = check_tool_permission(
+            "write_file",
+            {"path": str(tmp_path / "blocked.txt")},
+            _enforcer(tmp_path),
+            {
+                "permission_mode": "read_only",
+                "approval_policy": _policy(decision),
+                "directory": str(tmp_path),
+            },
+        )
+        assert result == PermissionResult.DENY
+
+
 def test_link_workspace_turn_preserves_ask_decisions(tmp_path: Path) -> None:
     result, _reason = check_tool_permission(
         "execute_command",

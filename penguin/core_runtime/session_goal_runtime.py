@@ -11,7 +11,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from math import isfinite
 from pathlib import Path
-from typing import Any, AsyncIterator, Awaitable, Callable, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 from uuid import uuid4
 
 from penguin.core_runtime import conversations, process_lifecycle
@@ -28,6 +28,9 @@ from penguin.llm.runtime import apply_reasoning_variant_override
 from penguin.run_mode import RunMode
 from penguin.system.execution_context import ExecutionContext, execution_context_scope
 from penguin.web.services.session_events import emit_session_goal_updated_events
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
 _PERSISTED_RESULT_TEXT_CHARS = 8_000
 _GOAL_EVENT_TIMEOUT_SECONDS = 5.0

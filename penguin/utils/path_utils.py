@@ -105,6 +105,10 @@ def get_default_write_root() -> str:
 def enforce_allowed_path(target: Path, root_pref: str = 'auto', cwd_override: Optional[str] = None) -> Path:
     """Raise ValueError if target is outside allowed roots; return resolved path otherwise."""
     resolved = target.expanduser().resolve()
-    if not is_path_allowed(resolved, root_pref=root_pref, cwd_override=cwd_override):
+    from penguin.security.tool_approval import is_path_authorized
+
+    if not is_path_authorized(resolved) and not is_path_allowed(
+        resolved, root_pref=root_pref, cwd_override=cwd_override
+    ):
         raise ValueError(f"Path not allowed by policy: {resolved}")
     return resolved

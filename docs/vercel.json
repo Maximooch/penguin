@@ -1,5 +1,5 @@
 {
-  "buildCommand": "npm ci && npm run build",
-  "installCommand": "npm ci",
+  "buildCommand": "yarn build",
+  "installCommand": "yarn install --frozen-lockfile",
   "framework": "docusaurus"
 }

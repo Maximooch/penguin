@@ -1,30 +1,110 @@
 /**
- * Any CSS included here will be global. The classic template
- * bundles Infima by default. Infima is a CSS framework designed to
- * work well for content-centric websites.
+ * Shared Penguin documentation theme. The homepage owns its layout system;
+ * these tokens keep the navigation, docs, and footer in the same visual family.
  */
-
-/* You can override the default Infima variables here. */
 :root {
-  --ifm-color-primary: #007bff; /* Bootstrap blue */
-  --ifm-color-primary-dark: #29784c;
-  --ifm-color-primary-darker: #277148;
-  --ifm-color-primary-darkest: #205d3b;
-  --ifm-color-primary-light: #33925d;
-  --ifm-color-primary-lighter: #359962;
-  --ifm-color-primary-lightest: #3cad6e;
+  --ifm-color-primary: #315fb4;
+  --ifm-color-primary-dark: #2c56a2;
+  --ifm-color-primary-darker: #295199;
+  --ifm-color-primary-darkest: #22437e;
+  --ifm-color-primary-light: #3768c6;
+  --ifm-color-primary-lighter: #3e6dca;
+  --ifm-color-primary-lightest: #5b83d3;
   --ifm-code-font-size: 95%;
-  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+  --ifm-heading-font-weight: 720;
+  --ifm-navbar-height: 64px;
+  --ifm-font-family-base: Inter, ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --ifm-font-family-monospace: "SFMono-Regular", Consolas, "Liberation Mono",
+    Menlo, monospace;
+  --docusaurus-highlighted-code-line-bg: rgba(49, 95, 180, 0.1);
+  --penguin-nav-bg: rgba(248, 247, 243, 0.94);
+  --penguin-nav-text: #171a22;
+  --penguin-nav-active: #765600;
+  --penguin-nav-border: rgba(23, 26, 34, 0.13);
+  color-scheme: light;
 }
 
-/* For readability concerns, you should choose a lighter palette in dark mode. */
-[data-theme='dark'] {
-  --ifm-color-primary: #25c2a0;
-  --ifm-color-primary-dark: #21af90;
-  --ifm-color-primary-darker: #1fa588;
-  --ifm-color-primary-darkest: #1a8870;
-  --ifm-color-primary-light: #29d5b0;
-  --ifm-color-primary-lighter: #32d8b4;
-  --ifm-color-primary-lightest: #4fddbf;
-  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
+[data-theme="dark"] {
+  --ifm-color-primary: #f5c928;
+  --ifm-color-primary-dark: #edbe0b;
+  --ifm-color-primary-darker: #e0b40a;
+  --ifm-color-primary-darkest: #b99408;
+  --ifm-color-primary-light: #f6d143;
+  --ifm-color-primary-lighter: #f7d650;
+  --ifm-color-primary-lightest: #f9df78;
+  --ifm-background-color: #090c16;
+  --ifm-background-surface-color: #111726;
+  --ifm-navbar-background-color: #080b14;
+  --ifm-footer-background-color: #060812;
+  --docusaurus-highlighted-code-line-bg: rgba(245, 201, 40, 0.1);
+  --penguin-nav-bg: rgba(7, 9, 20, 0.96);
+  --penguin-nav-text: #f7f5ee;
+  --penguin-nav-active: #f5c928;
+  --penguin-nav-border: rgba(223, 229, 245, 0.12);
+  color-scheme: dark;
+}
+
+body {
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+.navbar {
+  color: var(--penguin-nav-text);
+  background: var(--penguin-nav-bg);
+  border-bottom: 1px solid var(--penguin-nav-border);
+  box-shadow: none;
+  backdrop-filter: blur(16px);
+}
+
+.navbar__title,
+.navbar__link,
+.navbar__brand:hover,
+.navbar__link:hover,
+.navbar-sidebar__brand {
+  color: var(--penguin-nav-text);
+}
+
+.navbar__link--active,
+.navbar__link:hover {
+  color: var(--penguin-nav-active);
+}
+
+[data-theme="dark"] .navbar__logo img {
+  filter: brightness(0) invert(1);
+}
+
+.navbar__toggle,
+.navbar__items button {
+  color: var(--penguin-nav-text);
+}
+
+.footer--dark {
+  --ifm-footer-background-color: #060812;
+  border-top: 1px solid rgba(223, 229, 245, 0.1);
+}
+
+.theme-doc-markdown h1,
+.theme-doc-markdown h2,
+.theme-doc-markdown h3 {
+  letter-spacing: -0.025em;
+}
+
+.theme-doc-markdown h1 {
+  font-size: clamp(2.35rem, 5vw, 3.45rem);
+}
+
+.theme-doc-sidebar-container {
+  border-right-color: rgba(100, 112, 137, 0.16) !important;
+}
+
+code {
+  border-radius: 5px;
+}
+
+@media (max-width: 996px) {
+  .navbar-sidebar {
+    background: var(--ifm-background-color);
+  }
 }

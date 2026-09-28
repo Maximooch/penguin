@@ -3,6 +3,7 @@ import { createSimpleContext } from "./helper"
 import { createGlobalEmitter } from "@solid-primitives/event-bus"
 import { batch, createEffect, createSignal, onCleanup, onMount } from "solid-js"
 import { useRoute } from "./route"
+import { createSessionAccessClient } from "./session-access"
 import { getPenguinAuthHeaders } from "./penguin-auth"
 import { cleanPenguinEvent, streamPenguinEvents } from "./penguin-event-stream"
 
@@ -191,6 +192,7 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     })
 
     return {
+      access: createSessionAccessClient(props.url, request),
       client: sdk,
       event: emitter,
       fetch: request,

@@ -116,29 +116,39 @@ security:
 
 ### Environment Variables
 
-You can also control security via environment variables:
+Security can be controlled via environment variables:
 
 ```bash
 # Disable all permission checks (YOLO mode - use with caution!)
 PENGUIN_YOLO=true
-
-# Set security mode
-PENGUIN_SECURITY_MODE=workspace
 ```
+
+> Note: `security.mode` itself is set from the YAML `security:` block or
+> changed at runtime via the API / `RuntimeConfig` — there is no
+> `PENGUIN_SECURITY_MODE` environment variable.
 
 ### Runtime Configuration
 
-Security settings can be changed at runtime via the CLI or API:
+Security settings can be changed at runtime via the Web API or
+`RuntimeConfig` (`set_security_mode`, `set_security_enabled`):
 
 ```bash
-# Via CLI slash command
-/config runtime set security_mode read_only
-
 # Via API
-curl -X POST http://127.0.0.1:9000/api/v1/system/config/security \
+curl -X PATCH http://127.0.0.1:9000/api/v1/security/config \
   -H "Content-Type: application/json" \
-  -d '{"mode": "workspace", "enabled": true}'
+  -d '{"mode": "read_only"}'
+
+# Toggle YOLO mode (disables permission checks)
+curl -X POST "http://127.0.0.1:9000/api/v1/security/yolo?enable=true"
+
+# Read current security config
+curl http://127.0.0.1:9000/api/v1/security/config
 ```
+
+The `/config` slash command persists configuration keys (e.g.
+`/config set security.mode read_only`), but there is no `/config runtime`
+subcommand — security changes take effect immediately via the API endpoints
+above, or after a restart for YAML changes.
 
 ## Operation Taxonomy
 

@@ -474,6 +474,18 @@ def native_tool_format(model_config: Any) -> Optional[str]:
 
     if provider == "openrouter" and preference == "openrouter":
         return "openai_chat"
+    if (
+        provider == "modal"
+        and preference == "native"
+        and bool(getattr(model_config, "native_tools", False))
+    ):
+        return "openai_chat"
+    if (
+        provider == "runinfra"
+        and preference == "native"
+        and bool(getattr(model_config, "native_tools", False))
+    ):
+        return "openai_chat"
     if provider == "anthropic" and preference == "native":
         return "anthropic"
     if getattr(model_config, "use_responses_api", False) or (

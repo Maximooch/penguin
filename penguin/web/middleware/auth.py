@@ -43,6 +43,8 @@ _SEEN_AUTH_FAILURES: "OrderedDict[tuple[str, str], None]" = OrderedDict()
 LINK_SERVICE_HTTP_SCOPE = frozenset(
     {
         ("GET", "/api/v1/link/capabilities"),
+        ("GET", "/api/v1/link/chat-request"),
+        ("POST", "/api/v1/link/chat-request/cancel"),
         ("POST", "/api/v1/chat/message"),
     }
 )

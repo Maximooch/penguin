@@ -1,277 +1,329 @@
 # Coding Agent Feature Comparison
 
-Docs checked: 2026-05-01.
+Docs and repositories checked: 2026-07-22.
 
-This file compares Penguin with the external coding-agent systems requested:
-Claude Code, OpenAI Codex, OpenCode, Pi, and Hermes Agent. Penguin is included
-as the local baseline because this repo is trying to decide what feature bar and
-product shape Penguin should target.
+This file compares Penguin with Claude Code, OpenAI Codex, OpenCode, Pi, and
+Hermes Agent. Penguin is the local baseline. The purpose is to identify the
+product bar Penguin should target, not to score products with a single winner.
+
+Claims below distinguish built-in behavior from extensions and current Penguin
+implementation from plans. These products change quickly; follow the linked
+primary documentation before making a product decision from one row.
 
 ## Sources
 
-- Penguin local docs: [README.md](README.md), [architecture.md](architecture.md),
-  [docs/docs](docs/docs), and selected files under [context/](context).
-- Claude Code: <https://code.claude.com/docs/en/overview>
-- OpenAI Codex: <https://developers.openai.com/codex>
-- OpenCode: <https://opencode.ai/docs/>
-- Pi: <https://pi.dev/docs/latest>
-- Hermes Agent: <https://hermes-agent.nousresearch.com/docs>
+- Penguin: [README](README.md), [architecture](architecture.md),
+  [runtime events](docs/docs/system/runtime-events.md),
+  [MCP](docs/docs/system/mcp.md), and
+  [testing pyramid](context/tasks/testing-pyramid.md).
+- Claude Code: [overview](https://code.claude.com/docs/en/overview),
+  [desktop](https://code.claude.com/docs/en/desktop),
+  [parallel agents](https://code.claude.com/docs/en/agents),
+  [agent teams](https://code.claude.com/docs/en/agent-teams),
+  [worktrees](https://code.claude.com/docs/en/worktrees), and
+  [scheduled work](https://code.claude.com/docs/en/desktop-scheduled-tasks).
+- OpenAI Codex: [overview](https://learn.chatgpt.com/docs),
+  [CLI](https://learn.chatgpt.com/docs/codex/cli),
+  [subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents),
+  [Goal mode](https://learn.chatgpt.com/docs/long-running-work),
+  [worktrees](https://learn.chatgpt.com/docs/environments/git-worktrees),
+  [hooks](https://learn.chatgpt.com/docs/hooks), and
+  [app server](https://learn.chatgpt.com/docs/app-server).
+- OpenCode: [overview](https://opencode.ai/docs/),
+  [agents](https://opencode.ai/docs/agents/),
+  [permissions](https://opencode.ai/docs/permissions/),
+  [skills](https://opencode.ai/docs/skills),
+  [providers](https://opencode.ai/docs/providers), and
+  [SDK](https://opencode.ai/docs/sdk/).
+- Pi: [overview](https://pi.dev/docs/latest),
+  [design principles](https://pi.dev/docs/latest/usage),
+  [sessions](https://pi.dev/docs/latest/sessions),
+  [compaction](https://pi.dev/docs/latest/compaction),
+  [extensions](https://pi.dev/docs/latest/extensions),
+  [providers](https://pi.dev/docs/latest/providers),
+  [security](https://pi.dev/docs/latest/security), and the
+  [Earendil Works move](https://pi.dev/news/2026/5/7/pi-has-a-new-home).
+- Hermes Agent: [overview](https://hermes-agent.nousresearch.com/docs),
+  [features](https://hermes-agent.nousresearch.com/docs/user-guide/features/overview/),
+  [messaging](https://hermes-agent.nousresearch.com/docs/user-guide/messaging),
+  [delegation](https://hermes-agent.nousresearch.com/docs/user-guide/features/delegation),
+  [memory](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory/),
+  [cron](https://hermes-agent.nousresearch.com/docs/user-guide/features/cron),
+  [checkpoints](https://hermes-agent.nousresearch.com/docs/user-guide/checkpoints-and-rollback),
+  and [API server](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server/).
+
+## What Changed Since The 2026-05-01 Snapshot
+
+- Penguin reached `0.9.0` and added a canonical `RuntimeEvent` envelope, a
+  SQLite-backed redacted event ledger with SSE reconnect/replay, OpenCode TUI
+  compatibility improvements, per-run server logs, and durable session goals
+  exposed through `/goal`, `/247`, web routes, and Run Mode. The repository also
+  gained a bidirectional MCP surface, remote MCP transports, safer edit/tool
+  execution, ordered batches/process foundations, browser-harness integration,
+  and stronger provider lifecycle tests.
+- Claude Code now documents worktree-backed parallel sessions and subagents,
+  experimental agent teams with a shared task list and peer messaging, a richer
+  desktop workspace, local scheduled tasks, cloud routines, and `/loop`.
+- Codex now documents Goal mode across desktop, CLI, and IDE; scheduled tasks;
+  plugins and deterministic hooks; Work mode; and a remote-capable app-server
+  protocol in addition to its existing CLI, worktree, review, SDK, and MCP
+  surfaces.
+- OpenCode added the read-only Scout subagent for upstream dependency research.
+  Its current docs describe Build/Plan plus General/Explore/Scout, fine-grained
+  wildcard permissions, child-session navigation, on-demand skills, and 75+
+  providers including local models.
+- Pi moved to `earendil-works/pi` and the `@earendil-works` npm scope. It added
+  clearer project-trust and containerization guidance plus direct llama.cpp
+  router/model management while retaining its intentionally small built-in
+  feature set.
+- Hermes expanded beyond the earlier comparison with desktop and an
+  OpenAI-compatible API server, opt-in filesystem checkpoints, background and
+  nested delegation controls, external memory-provider plugins, durable message
+  delivery, auditable cron executions, script-only cron jobs, and a much larger
+  messaging-platform list.
+
+The Link-managed inference and external-subscription routing visible in the
+current Penguin working tree is still in development. It is noted here for
+freshness but is not counted as a shipped Penguin capability in the matrix.
 
 ## Executive Snapshot
 
 | Agent | Primary shape | Strongest documented differentiator | Closest Penguin relevance |
 |---|---|---|---|
-| Penguin | Open-source coding-agent runtime with CLI/TUI, web/API, Python API, Run Mode, projects/tasks, checkpoints, memory, and multi-agent orchestration | Durable stateful engineering workflows: sessions, checkpoints, context-window budgeting, task/project lifecycle, sub-agents, and shared runtime across interfaces | Baseline system. The main opportunity is making every surface expose the same truthful runtime state and evidence-backed completion semantics. |
-| Claude Code | Commercial agentic coding tool across terminal, IDE, desktop, browser, mobile-adjacent remote control, Slack, CI, and SDK | Most complete product surface and team workflow story: multi-surface continuity, routines/scheduled work, Slack/CI, MCP, hooks, skills, custom agents, and Agent SDK | Target product breadth and workflow polish, especially recurring tasks, remote control, chat/CI integrations, and cross-surface continuity. |
-| OpenAI Codex | OpenAI coding agent across app, CLI, IDE extension, web, integrations, and automation | Strong local/app workflow: parallel threads, worktrees, built-in Git, integrated terminal, cloud/local/worktree modes, subagents, skills, MCP, review mode, and app server | High-value reference for TUI/app ergonomics, sandbox/approval policy, worktree isolation, model capability gating, and subagent UX. |
-| OpenCode | Open-source AI coding agent, terminal-first with desktop app, IDE extension, web/share, SDK/server, plugins, MCP, skills, and configurable agents | Clean terminal product and extensibility surface: Build/Plan primary agents, General/Explore subagents, strong tool permissions, TypeScript SDK, server API, custom tools/plugins | Already influences Penguin's TUI direction. Useful for config, permissions, agent modes, SDK/server contracts, and shareable sessions. |
-| Pi | Minimal terminal coding harness intentionally kept small, extended through TypeScript extensions, skills, prompt templates, themes, packages, SDK, RPC, JSON event stream, and TUI components | Explicit small-core philosophy with rich extension/event/session contracts: session trees, compaction, message queueing, extensions, packages, and SDK | Best reference for event contracts, append-only sessions, compaction metadata, extension hooks, and disciplined boundaries. |
-| Hermes Agent | Autonomous general agent from Nous Research, deployable beyond a laptop with messaging platforms, memory, skills, toolsets, terminal backends, scheduled automation, voice, MCP, and delegation | Self-improving long-running agent identity: closed learning loop, persistent memory, autonomous skill creation/improvement, many messaging surfaces, and remote/container/serverless execution | Reference for long-running remote agents, toolset gating, terminal backend abstraction, persistent memory UX, scheduled automations, and messaging delivery. |
+| Penguin | AGPL Python coding-agent runtime with TUI/CLI, web/API, Python embedding, Run Mode, projects/tasks, checkpoints, memory, MCP, browser tools, and multi-agent orchestration | Durable engineering state across interfaces: category-aware context budgeting, truthful task states, checkpoints, session goals, canonical runtime events, and replayable event history | Baseline. Penguin now has more of the runtime foundation than the old comparison credited; the gap has moved toward isolation, policies, skills, automation delivery, and product UX. |
+| Claude Code | Commercial coding product across terminal, IDEs, desktop, web/cloud, Slack/CI, and Agent SDK | Broadest polished engineering workflow: parallel worktrees, subagents, experimental agent teams, desktop panes/preview/computer use, remote routines, hooks, skills, plugins, MCP, and cross-surface handoff | Reference for worktree lifecycle, permission UX, team-agent visibility, desktop workflow, and local-versus-cloud scheduling. |
+| OpenAI Codex | OpenAI coding system across ChatGPT desktop/web, CLI, IDE, cloud, integrations, SDK, and app server | Unified local/hosted workflow with Goal mode, worktrees, scheduled tasks, subagents, built-in Git/review, hooks/plugins/skills, MCP, and a rich client protocol | Reference for goal UX, sandbox/approval policy, worktree isolation, model capability gating, Git/review UX, and embeddable protocol design. |
+| OpenCode | MIT open-source coding agent with terminal, desktop, IDE, share/web, SDK/server, plugins, MCP, skills, and configurable agents | Small, legible agent and permission model over a polished terminal/server product; broad provider support and direct child-session inspection | Penguin already uses its TUI direction. Continue borrowing upstream-compatible UI contracts while keeping Penguin runtime semantics canonical. |
+| Pi | MIT minimal terminal coding harness extended through TypeScript extensions, skills, packages, SDK, RPC, JSON events, and TUI components | Best small-core example: explicit JSONL session trees, compaction records, event contracts, hot-loadable extensions, packages, and an embeddable SDK | Reference for disciplined boundaries, structured compaction, project trust, extension hooks, and session/event formats. |
+| Hermes Agent | MIT autonomous general agent spanning CLI/desktop, API, remote execution backends, messaging, memory, skills, cron, voice, MCP, and delegation | Long-running personal-agent product with a learning loop, platform-specific toolsets, broad delivery surfaces, durable automation records, and remote/container execution | Reference for execution-backend abstraction, delivery/recovery semantics, memory UX, platform-aware policies, and unattended operation. |
 
 ## Feature Matrix
 
 | Capability | Penguin | Claude Code | OpenAI Codex | OpenCode | Pi | Hermes Agent |
 |---|---|---|---|---|---|---|
-| License / availability | Open source, PyPI package, AGPL-3.0 | Commercial Anthropic product; most surfaces need a Claude subscription or Console account | Commercial OpenAI product included in ChatGPT Plus/Pro/Business/Edu/Enterprise plans | Open source agent from Anomaly; install script, npm/Bun/pnpm/Yarn, Homebrew, Arch packages | MIT-licensed npm package | MIT-licensed Nous Research agent |
-| Main interfaces | `penguin`/`ptui`, headless CLI, FastAPI REST/WebSocket/SSE, Python API, OpenCode-style TUI sidecar | Terminal, VS Code, JetBrains, desktop app, web/browser, iOS/web handoff, Slack, CI/CD, Agent SDK | Desktop app, CLI TUI, IDE extension, web, GitHub/Slack/Linear integrations, SDK/app server/MCP server/GitHub Action | Terminal TUI, desktop app, IDE extension, web/share, JS/TS SDK, server, plugins | Terminal TUI, print mode, RPC mode, JSON event stream mode, SDK, custom TUI components | CLI plus Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Mattermost, Email, SMS, DingTalk, Feishu, WeCom, BlueBubbles, Home Assistant, voice |
-| Coding tools | File operations, diffs, shell/test execution, search, analysis, browser tools, custom tools | Reads codebase, edits files, runs commands, Git/PR workflows, CI review/triage | Reads/explains code, writes/reviews/debugs, runs commands, integrated terminal, Git diff/commit/push/PR, review command | Built-in bash, edit, write, read, grep, glob, apply_patch, LSP, todo, webfetch, websearch, question | Built-in read, bash, edit, write, grep, find, ls; shell command injection from editor | Broad registry: web, terminal/files, browser, media, orchestration, memory, automation, messaging, Home Assistant, MCP, RL |
-| Planning / safe modes | Engine loop, Run Mode, stop conditions, clarification states, task lifecycle; persona/tool defaults in config | Plans, permission modes, hooks, custom commands, best-practice workflows | CLI shows plans before changes; app/CLI approval and sandbox controls; local review mode | Build primary agent has full tools; Plan primary agent is restricted and intended for analysis without modifications | No built-in plan mode or permission popups by design; users can implement via extensions | Clarify/todo/delegation tools, command approval, authorization, container isolation |
-| Multi-agent / delegation | Multi-agent coordinator, per-agent `agent_id`, sub-agent spawn/delegate/pause/resume, shared or isolated context windows, personas, MessageBus | Multiple Claude Code agents, lead-agent coordination, custom agents through Agent SDK | Subagents enabled by default when explicitly requested; built-in `default`, `worker`, `explorer`; custom TOML agents; app/CLI visibility | Primary agents plus subagents; built-in Build/Plan and General/Explore; subagents can be invoked automatically or by `@` mention | Intentionally no built-in subagents; SDK can be used to build custom tools that spawn sub-agents | Delegates and parallelizes via isolated subagents; `delegate_task` and `execute_code` support multi-step/parallel work |
-| Session persistence / branching | Persistent sessions, checkpoints, rollback, branching, transcript replay, conversation manager, snapshot manager | Auto memory and conversation history; desktop/web can run sessions side by side; remote control/teleport | Local transcripts, `codex resume`, app threads, worktrees, automations in background worktrees | Sessions, child sessions for subagents, `/undo`, `/redo`, `/share` | Auto-saved JSONL sessions with tree structure, `/tree`, `/fork`, `/clone`, `/resume`, HTML export/share | SQLite session storage with FTS5 search; memory and session recall across conversations |
-| Context management | Category-based Context Window Manager with system/context/dialog/output/error budgets, multimodal trimming, usage reports, per-agent clamps | Context-window docs, CLAUDE.md, auto memory, MCP/tools context | Compaction, prompt caching, token counting docs; app/CLI project/thread boundaries | Hidden compaction, title, and summary agents; tools and MCP caveats for context bloat | Auto-compaction, branch summarization, structured summary entries, configurable reserve/keep tokens | Bounded memory injected at session start; session search for broader recall |
-| Long-term memory | Declarative notes, summary notes, file-backed context, SQLite plus vector providers: FAISS, LanceDB, Chroma, file | CLAUDE.md instructions plus auto memory | Memories and Chronicle in Codex concepts; rules/AGENTS.md/skills for project context | Rules, AGENTS.md via `/init`, skills, sessions/share; no single memory system emphasized in intro docs | AGENTS.md/CLAUDE.md context files, skills, prompt templates, session trees; no broad built-in memory store by design | Strong memory focus: MEMORY.md, USER.md, agent-curated memory, FTS5 session search, optional Honcho user modeling |
-| Extensibility | Tool registry/plugin manager, custom tools, event bus/message bus, model providers, planned Agent Skills support | MCP, CLAUDE.md, custom commands, hooks, skills, Agent SDK | MCP, AGENTS.md, hooks, rules, plugins, skills, custom agents, Codex SDK/app server/MCP server | MCP, custom tools, plugins, skills, rules, commands, themes, keybinds, LSP, SDK/server | TypeScript extensions, skills, prompt templates, themes, packages, SDK, RPC, JSON event stream | Plugins, MCP, open-standard skills, context files, SOUL.md, toolsets, messaging gateway |
-| Provider/model support | Native/gateway adapters for OpenAI, Anthropic, OpenRouter, LiteLLM, Gemini, Ollama; runtime model switching | Claude subscription/Console; terminal and VS Code also support third-party providers | OpenAI models; current docs recommend GPT-5.5 when available for most Codex tasks | Any LLM provider through API keys; OpenCode Zen curated models | OAuth subscriptions and API-key providers: ChatGPT/Codex, Claude Pro/Max, Copilot, OpenAI, Anthropic, Gemini, OpenRouter, Bedrock, Azure, many others | Nous Portal, OpenRouter, OpenAI, or any compatible endpoint |
-| Automation / background work | Run Mode, continuous tasks, project/task orchestration, SQLite-backed task execution, telemetry; background execution still maturing | Routines, desktop scheduled tasks, `/loop`, CI/CD, Slack-routed work, web long-running tasks | App automations, thread automations, GitHub Action, non-interactive mode, cloud/worktree/local modes | Shareable conversations, GitHub/GitLab docs, SDK/server for automation; less background-control-plane detail in intro docs | Print/RPC/JSON modes and packages; intentionally no background bash built in | Built-in cron, scheduled delivery to messaging platforms, serverless/remote backends |
-| Execution environments / sandboxing | Local workspace today, web server, browser automation; architecture points toward data-plane abstraction but not fully productized | Local terminal/IDE/desktop plus web/cloud sessions; permission modes; MCP tools | Local, Git worktree, cloud environment, remote app server, Windows sandbox, subagent sandbox inheritance | Local project environment; permissions; MCP local/remote; server; LSP; custom tools can execute arbitrary code | Local terminal harness; external containers/tmux recommended for workflows needing isolation | Local, Docker, SSH, Singularity, Modal, Daytona, Vercel Sandbox; container hardening and persistent workspace options |
-| Evidence / verification posture | Explicit local goal: evidence-backed completion, artifact evidence, ITUV workflow, Run Mode task truth, diagnostics | Can run tests, lint, CI, create PRs, review code | Built-in review, terminal validation, Git diff, comments on chunks, PR creation | Tool results, todos, plan/build modes, share links; validation depends on workflow | Strong session/event/extension contracts, but intentionally minimal product policy | Long-running autonomy, memory, session search, toolsets; research and RL trajectory export |
+| License / availability | AGPL-3.0-or-later; PyPI package; current project version `0.9.0` | Commercial Anthropic product; most surfaces require a Claude subscription or Console account | Commercial service; local Codex CLI/app-server components are Apache-2.0 open source | MIT open source; install script and major package managers | MIT open source; now `@earendil-works/pi-coding-agent` | MIT open source from Nous Research |
+| Main interfaces | `penguin`/`ptui`, headless CLI, FastAPI REST/WebSocket/SSE, Python API, OpenCode-derived TUI sidecar, MCP host and server | Terminal, VS Code, JetBrains, desktop, web/cloud, Slack, CI/CD, Agent SDK; desktop includes terminal/editor/diff/preview/task/subagent panes | ChatGPT desktop and web, CLI TUI, IDE extension, cloud, GitHub/Slack/Linear, SDK, app server, MCP server, GitHub Action | Terminal TUI, desktop, IDE, web/share, JS/TS SDK, HTTP server, plugins | Terminal TUI, print, RPC, JSON event stream, SDK, custom TUI components | CLI, desktop, OpenAI-compatible API, browser chat, and 20+ messaging/home-automation adapters including Teams, LINE, QQ, ntfy, Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Email, and SMS |
+| Coding tools | File read/write/diff, safe edit/apply-patch surfaces, shell/tests/search/analysis, ordered tool batches, background process foundation, browser automation, image artifacts, custom/MCP tools | Codebase reads/edits, shell, Git/PR, browser/computer use, CI review and triage | Reads/edits/runs/reviews/debugs; integrated terminal; Git diff/comment/stage/revert/commit/push/PR; image and browser capabilities by surface | Bash, edit/write/read, grep/glob/list, apply_patch, LSP, todo, web fetch/search, question, skill, custom and MCP tools | Four core tools by default (`read`, `bash`, `edit`, `write`); `grep`, `find`, and `ls` are available but not all enabled by default; extensions can add or replace tools | 60+ tools across terminal/files, web/browser, media, memory, skills, cron, clarification, code execution, delegation, home automation, messaging, and MCP |
+| Planning / safe modes | Engine and Run Mode, task phases, stop/clarification states, permission engine, session goals, configurable limits; no polished first-class read-only Plan persona yet | Plan and permission modes, policy rules, hooks, custom agents, worktree isolation, sandbox/cloud controls | Plans and Goal mode, review workflow, permission profiles, approvals and sandbox controls, local/worktree/cloud modes | Build is full access; Plan asks before edits and bash by default rather than being strictly read-only; permissions allow/ask/deny per tool or pattern | No built-in plan mode, permission popups, or sandbox by design; project trust protects resource loading, while extensions/containers implement stronger policy | Todo/clarify/delegation, command approval and authorization, toolsets per platform, container backends, optional checkpoints |
+| Multi-agent / delegation | Coordinator, `agent_id` routing, spawn/delegate/pause/resume, shared or isolated context, personas, MessageBus, Responses-style tool exposure | Subagents, background agents, agent view, worktree-isolated agents, and experimental teams with lead, shared tasks, mailboxes, dependencies, and peer messaging | Parallel subagents in Work mode and Codex; activity visible in desktop/CLI/IDE; custom agents and inherited policies | Build/Plan primary agents; General/Explore/Scout subagents; automatic or `@` invocation; child-session navigation; per-agent task permissions and step limits | No built-in subagents; official extension examples and the SDK can add them | Background `delegate_task`, parallel batches, separate terminal sessions, configurable concurrency/depth, opt-in orchestrator children, durable completion event routing |
+| Sessions / goals / branching | Persistent sessions, checkpoints, rollback, branches, transcript replay, durable session goals with pause/resume/run/clear and optional token/time/iteration limits | Named/resumable sessions, auto memory, side-by-side desktop/web work, side chats, remote control/teleport, worktree sessions | Local transcripts/resume, app threads/projects, Goal mode with pause/resume/edit/clear, Local/Worktree/Cloud handoff, background worktrees | Parent/child sessions, undo/redo, share links, server-backed session APIs | Auto-saved JSONL trees with `/tree`, `/fork`, `/clone`, `/resume`, labels, branch summaries, HTML export/share | SQLite/FTS5 sessions, cross-session search, messaging session scopes, checkpoints and `/rollback` |
+| Runtime events / replay | Versioned `penguin.runtime_event.v1` envelope; stable ids and scope/correlation metadata; redacted SQLite ledger; retention policy; SSE `Last-Event-ID` replay and explicit replay-gap events; OpenCode projection adapter | Hooks and SDK event streams; session/history surfaces; no comparable public append-only runtime ledger emphasized in overview docs | Rich streamed app-server events with approvals and conversation history; record/replay and hooks; local transcripts | Server event stream and SDK types; child sessions and share; internal hidden title/summary/compaction agents | Detailed agent/session event union over JSON and RPC; append-only JSONL entries; compaction/retry/queue/settled events | Durable delivery ledger for platform sends, cron execution database, stored background-delegation completion events, SQLite session state |
+| Context management | Category-priority CWM with separate budgets, recency trimming, multimodal handling, scoped usage telemetry, and per-agent clamps; it trims and does not currently summarize/compact | Context management, `CLAUDE.md`, auto memory, skills, MCP context, subagent isolation | Compaction, prompt caching, token counting, project/thread boundaries, subagent isolation | Automatic hidden compaction plus title and summary agents; configurable small model | Explicit auto-compaction and branch summarization with structured entries, reserve/keep settings, custom compaction hooks, cumulative file tracking | Context compression, prompt caching, bounded memory injection, file/context references, session search |
+| Long-term memory | Declarative and summary notes, file-backed context, SQLite plus FAISS/LanceDB/Chroma/file providers | `CLAUDE.md`, scoped auto memory, and persistent subagent memory | Memories, Chronicle, AGENTS.md, rules, skills, and project context | Rules/AGENTS.md, skills, sessions/share; no broad built-in memory store emphasized | Context files, skills, prompts, and session tree; intentionally no broad built-in memory service | Bounded agent-curated `MEMORY.md` and `USER.md`, FTS5 session search, plus one of eight optional external memory providers |
+| Extensibility | Tool/plugin registries, custom tools, EventBus/MessageBus, model adapters, bidirectional MCP with local/remote transports, resources/prompts, runtime/control-plane tools; general Agent Skills remain planned | MCP, CLAUDE.md, commands, hooks, skills, plugins/marketplaces, custom agents, Agent SDK | MCP, AGENTS.md, rules, custom agents, skills, plugins, hooks, Codex SDK, app server, MCP server | MCP, plugins, custom tools, on-demand skills, agents, rules, commands, themes, keybinds, LSP, SDK/server | TypeScript extensions, Agent Skills, prompts, themes, packages, providers, SDK, RPC, JSON events, custom UI | Plugins, dynamic MCP toolsets, open-standard/self-created skills, context files, SOUL.md, toolsets, messaging gateway, OpenAI-compatible API |
+| Provider / model support | OpenAI/Codex, Anthropic, OpenRouter, LiteLLM, Gemini and Ollama paths, runtime switching, model capability normalization, GPT-5.6 Codex reasoning support | Claude subscription/Console; terminal and VS Code also document third-party-provider support | OpenAI models through ChatGPT or API authentication; CLI currently presents GPT-5.6 Codex-family choices | AI SDK/Models.dev integration for 75+ providers, local models, custom OpenAI-compatible endpoints, Zen and Go catalogs | OAuth subscriptions for ChatGPT/Codex, Claude, Copilot, xAI and Radius; many API/cloud providers; custom endpoints; direct llama.cpp router management | Nous Portal, OpenRouter, OpenAI, and compatible endpoints; provider fallback/credential pools and broad portal catalog |
+| Automation / background work | Run Mode, continuous tasks, SQLite projects/tasks, persisted MCP RunMode jobs, session goals, process runtime, durable event replay; session-goal run ownership and cancellation handles are still process-local | Cloud routines, desktop scheduled tasks, `/loop`, CI/GitHub triggers, Slack ingress, web long-running work, worktree options | Scheduled tasks in desktop/web, Goal mode, non-interactive CLI, GitHub Action, SDK, cloud/local/worktree execution | Headless `run`, server/SDK, GitHub/GitLab integrations and share; less of a built-in durable scheduler/control plane | Print/RPC/JSON/package automation; no built-in background bash | Full cron lifecycle, skill-backed jobs, script gates, no-agent watchdogs, delivery fan-out, execution history, `/background`, and terminal completion notifications |
+| Execution environments / isolation | Local workspace/web server today; browser backends and MCP subprocesses; no first-class worktree/container/remote execution lifecycle | Local, automatic desktop worktrees, CLI/subagent worktrees, SSH and cloud environments; permissions and sandbox controls | Local, desktop worktree, cloud, remote app server, Windows sandbox; worktree UI is currently desktop-specific | Local project/worktree context, permissions, local/remote MCP and attachable server; custom tools run with host permissions | Local host permissions by default; project trust is not a sandbox; documented Gondolin, Docker, and OpenShell patterns | Local, Docker, SSH, Singularity, Modal, Daytona, and Vercel Sandbox backends with platform toolset controls |
+| Evidence / reliability posture | Truthful terminal/non-terminal task states, clarification preservation, artifact evidence/recipes, ITUV MCP tools, runtime diagnostics, provider lifecycle/fault tests, replayable public events | Tests/lint/CI, review/PR workflows, hooks, task/subagent views, worktree isolation | Dedicated review workflow, terminal validation, Git diffs/comments, PR flow, hooks, Goal completion criteria | Tool results, todos, Plan/Build, shared sessions; workflow defines the proof bar | Excellent session/event/extension contracts and explicit security boundary; minimal opinionated completion policy | Checkpoints, session search, execution/delivery ledgers, approvals, memory scanning, cron history, RL trajectory export |
 
 ## Per-Agent Notes
 
 ### Penguin
 
-Penguin is not just a terminal chat loop. The local docs define it as a
-stateful, event-driven coding-agent runtime with multiple interfaces over the
-same core:
+Penguin's current strength is the runtime beneath the UI:
 
-- `PenguinCore` coordinates config, events, runtime state, and managers.
-- `Engine` owns the reasoning and tool loop.
-- `ConversationManager` owns sessions, context, checkpoints, and snapshots.
-- `ProjectManager` and Run Mode provide task execution and continuous work.
-- `ToolManager` and `ActionExecutor` provide the workspace automation surface.
-- `ContextWindowManager` uses category-aware token budgets and multimodal
-  trimming.
-- Multi-agent routing uses `agent_id`, shared infrastructure, isolated runtime
-  state, MessageBus events, and sub-agent delegation.
+- `PenguinCore` is now a thinner compatibility/orchestration facade over focused
+  `penguin.core_runtime` modules; `Engine` owns reasoning and tool execution.
+- `ConversationManager`, `ProjectManager`, Run Mode, checkpoints, tasks, and the
+  new session-goal runtime provide durable workflow state.
+- The canonical runtime-event envelope and SQLite ledger provide normalized,
+  redacted, reconnectable state for web/TUI consumers. This closes the previous
+  comparison's top recommendation; the remaining work is coverage and product
+  projection, not inventing the envelope.
+- Penguin can both consume MCP servers and expose its own project, blueprint,
+  Run Mode, ITUV, session, resource, and prompt surfaces over MCP. Remote
+  Streamable HTTP and legacy SSE client transports are supported.
+- The CWM's category-aware trimming is a real differentiator, but it should not
+  be described as compaction: it does not create summary artifacts today.
+- Recent reliability work includes safer edit contracts, ordered batches,
+  process runtime foundations, native tool replay/adjacency handling,
+  session-scoped usage, provider lifecycle coverage, and browser image artifact
+  promotion.
 
-Current strategic bar from `context/tasks/penguin-capability-bar.md`: Penguin
-should optimize for truthful lifecycle state, explicit evidence, resumability,
-and verification rather than "looks finished" autonomy.
+The strategic bar remains truthful lifecycle state, explicit evidence,
+resumability, and verification rather than autonomy that merely looks finished.
 
 ### Claude Code
 
-Documented strengths:
+Claude Code has the broadest documented team and desktop workflow:
 
-- Available in terminal, VS Code, JetBrains, desktop app, web/browser, and
-  Slack/CI-style integrations.
-- Reads codebases, edits files, runs commands, creates commits/PRs, and
-  automates repetitive development tasks.
-- Supports MCP, project instructions/memory through `CLAUDE.md`, auto memory,
-  custom commands, hooks, skills, and multi-agent/custom-agent workflows.
-- Strong cross-surface continuity story: remote control, web/iOS tasks,
-  `/desktop`, `--teleport`, routines, desktop scheduled tasks, and `/loop`.
+- Desktop combines parallel worktree-isolated sessions with terminal, editor,
+  diff, preview, task, subagent, computer-use, PR-monitoring, and Dispatch flows.
+- CLI and custom subagents can also use worktrees. Experimental agent teams add
+  a lead, independent contexts, a shared dependency-aware task list, and direct
+  teammate messaging; their documented resumption/coordination limits matter.
+- Scheduling is deliberately tiered: session-scoped `/loop`, local desktop
+  tasks, and cloud routines with repositories, environments, connectors, API
+  calls, and GitHub-event triggers.
+- Skills, plugins, hooks, MCP, auto memory, `CLAUDE.md`, custom agents, and the
+  Agent SDK form a coherent team-distribution story.
 
-What Penguin can learn:
-
-- Treat recurring work, chat/CI integrations, and handoff across surfaces as
-  first-class product flows.
-- Keep project instructions, memories, hooks, commands, and skills easy for a
-  team to understand and version.
-- Make multi-agent workflows visible and ergonomic, not just available through
-  backend primitives.
+Penguin should copy the clarity of the isolation, scheduling, permissions, and
+agent-visibility UX, not merely the number of surfaces.
 
 ### OpenAI Codex
 
-Documented strengths:
+Codex's product boundary is now wider than the old "app plus CLI" description:
 
-- A unified product surface across app, CLI, IDE extension, web, GitHub, Slack,
-  Linear, SDKs, and automation.
-- Desktop app supports parallel threads, projects, Local/Worktree/Cloud modes,
-  worktree isolation, built-in Git diff/comment/stage/revert/commit/push/PR,
-  integrated terminal, automations, skills, and voice dictation.
-- CLI supports interactive TUI, local transcripts/resume, remote app-server
-  mode, model switching, image inputs, image generation, local code review, and
-  subagents.
-- Subagents are explicit: Codex only spawns them when asked, exposes them in
-  app/CLI, inherits sandbox/approval policies, and provides built-in
-  `default`, `worker`, and `explorer` roles plus custom TOML agents.
-- MCP is supported in CLI and IDE extension with STDIO and streamable HTTP
-  servers, OAuth/bearer auth, tool allow/deny controls, and project-scoped
-  config.
-
-What Penguin can learn:
-
-- Worktrees are a practical isolation model for parallel coding tasks.
-- Subagent controls should expose concurrency/depth limits, sandbox inheritance,
-  custom roles, and UI visibility.
-- Model capability metadata should gate request options such as reasoning,
-  verbosity, speed tier, and parallel tool calls.
-- Review mode is a distinct workflow, not just "ask the agent to review".
+- Goal mode is available across ChatGPT desktop, Codex CLI, and the IDE, with
+  visible pause/resume/edit/clear controls and explicit completion criteria.
+- Scheduled tasks run from web or desktop; local tasks can target the checkout
+  or an isolated background worktree. Worktree creation/handoff itself is
+  currently documented as a desktop feature.
+- Current local releases expose subagent activity in desktop, CLI, and IDE and
+  delegate when directly requested or when instructions/skills require it.
+- Hooks are deterministic lifecycle scripts. Plugins package hooks and skills,
+  while MCP, the SDK, app server, GitHub Action, and non-interactive mode cover
+  progressively deeper integrations.
+- The app server is especially relevant to Penguin: it is an explicit protocol
+  for authentication, history, approvals, and streamed events, including a
+  remote WebSocket TUI mode.
 
 ### OpenCode
 
-Documented strengths:
+OpenCode remains the cleanest direct TUI/server comparator:
 
-- Open-source, terminal-first agent with desktop app and IDE extension.
-- Strong configuration story: providers, rules, agents, tools, permissions,
-  keybinds, commands, formatters, LSP, MCP, skills, and custom tools.
-- Built-in tool list is explicit: bash, edit, write, read, grep, glob, LSP,
-  apply_patch, skill, todo, webfetch, websearch, and question.
-- Permission model can allow, deny, or ask per tool, including wildcard rules.
-- Agent model is simple and useful: Build and Plan primary agents; General and
-  Explore subagents; custom agents can define prompts, models, permissions,
-  modes, and tool access.
-- SDK provides a type-safe JS/TS client for controlling the OpenCode server and
-  using generated OpenAPI types.
-
-What Penguin can learn:
-
-- Keep the agent-mode vocabulary small and concrete.
-- Make permissions/tool access configurable at the same level users configure
-  agents.
-- Publish a clean programmatic server/SDK contract so alternate UIs do not
-  reverse-engineer the TUI.
+- Build is the full-access primary agent. Plan asks for edits and bash by
+  default; it is safer but not an absolute read-only boundary.
+- General handles broad multi-step work, Explore handles read-only local code
+  search, and the new Scout handles read-only external dependency research.
+- Subagents create navigable child sessions. Agent configs can set prompts,
+  models, modes, step limits, visibility, colors, and wildcard task/tool
+  permissions.
+- Skills load on demand from OpenCode, `.claude`, and `.agents` locations, and
+  permissions can hide, deny, ask for, or allow individual skill patterns.
+- Its typed SDK/server and 75+ provider catalog remain stronger public contracts
+  than Penguin's current programmatic product story, even though Penguin's
+  internal runtime semantics are now richer.
 
 ### Pi
 
-Documented strengths:
+Pi continues to make omission part of the design:
 
-- Minimal terminal harness with a deliberately small core.
-- Rich editor and session UX: file references with `@`, image inputs, shell
-  commands, message queueing, slash commands, session resume, trees, forks,
-  clones, compaction, HTML export, and private gist sharing.
-- Sessions are JSONL trees with branch navigation and summaries.
-- Compaction is explicit and documented: automatic thresholding, configurable
-  reserve/keep tokens, structured summary entries, branch summarization, and
-  cumulative file tracking.
-- Extensions are TypeScript modules that can register tools, commands,
-  shortcuts, flags, custom UI, renderers, providers, lifecycle hooks, and
-  tool-call interceptors.
-- Skills implement the Agent Skills standard and can load skills from Pi,
-  `.agents`, Claude Code, or Codex directories.
-- SDK can embed Pi in other apps, automate pipelines, test behavior, and build
-  custom tools that spawn sub-agents.
-- Pi explicitly does not include built-in MCP, sub-agents, permission popups,
-  plan mode, to-dos, or background bash; those are extension/package territory.
+- It intentionally excludes built-in MCP, subagents, permission popups, Plan
+  mode, todos, and background bash. Extensions/packages or external isolation
+  are the prescribed solution.
+- Sessions are append-only JSONL trees with branch, fork, clone, label,
+  compaction, and branch-summary entries. JSON/RPC modes expose explicit queue,
+  retry, compaction, tool, turn, and settled events.
+- Extensions can intercept lifecycle/tool calls, replace compaction, register
+  providers/tools/commands/UI, persist custom entries, and hot reload.
+- Project trust only decides whether project resources may load; it is not a
+  runtime sandbox. The docs explicitly recommend Gondolin, Docker, OpenShell,
+  VMs, or containers for stronger boundaries.
+- The Earendil move and direct llama.cpp model manager are notable operational
+  changes, not a change to the small-core philosophy.
 
-What Penguin can learn:
-
-- The event/session boundary matters more than any one UI.
-- An append-only session tree with structured compaction artifacts is a strong
-  primitive for replay, branching, audit, and LLM-context projection.
-- Extension hooks should wrap lifecycle, tool policy, UI, commands, session
-  replacement, and compaction without making the kernel monolithic.
+Pi is still the best comparator for structured compaction and a deliberately
+small kernel, but Penguin should retain its own stronger durable task semantics.
 
 ### Hermes Agent
 
-Documented strengths:
+Hermes is less coding-specific and more complete as an always-on personal agent:
 
-- Autonomous agent intended to run beyond the laptop: VPS, GPU cluster,
-  Docker/SSH/Singularity/Modal/Daytona/Vercel Sandbox, and messaging platforms.
-- Strong "self-improving" narrative: agent-curated memory, periodic memory
-  nudges, autonomous skill creation, skill self-improvement, FTS5 cross-session
-  recall, and optional Honcho user modeling.
-- Large built-in tool registry: web search/extract, terminal/files, browser
-  automation, multimodal media, planning/clarification/code execution,
-  delegation, memory/session search, cron, messaging, Home Assistant, MCP, and
-  RL tools.
-- Toolsets can be enabled/disabled per platform, with presets for CLI,
-  messaging surfaces, and dynamic MCP toolsets.
-- Persistent memory is bounded and visible: MEMORY.md and USER.md are injected
-  at session start, with capacity limits, duplicate prevention, and security
-  scanning.
-- Built-in cron and delivery to messaging platforms support scheduled
-  automations.
-- Voice mode is available in CLI and messaging/Discord voice contexts.
+- Its messaging gateway spans more than 20 adapters and uses allowlists/pairing,
+  per-platform capabilities/toolsets, session scopes, streaming activity, and a
+  durable at-least-once delivery ledger.
+- Cron supports create/update/pause/resume/run/remove, skills, toolset overrides,
+  platform delivery, script gates, zero-token script-only jobs, and an execution
+  database with honest terminal/unknown states.
+- Delegation has background handles, persisted completion events, configurable
+  concurrency and spawn depth, separate terminal sessions, and restricted leaf
+  agents. Cron or background terminals are recommended when parent-turn
+  durability matters.
+- Memory is bounded and curated in `MEMORY.md`/`USER.md`, searchable through
+  SQLite/FTS5, and extendable through one of eight external provider plugins.
+- Opt-in shadow-git checkpoints, an OpenAI-compatible API, and multiple terminal
+  backends round out a strong recovery and deployment story.
 
-What Penguin can learn:
-
-- Separate execution backend lifecycle from agent/task lifecycle.
-- Make toolsets platform-aware so a Telegram agent, CLI agent, and web agent do
-  not automatically share the same risk profile.
-- Persistent memory UX should show capacity, scope, and update semantics.
-- Scheduled automations need delivery surfaces and recovery semantics, not just
-  "run this later" prompts.
+Hermes is the strongest reference here for delivery semantics and platform-aware
+operation. Its breadth also shows why Penguin should keep coding reliability and
+runtime truth as its center of gravity.
 
 ## Capability Gaps And Opportunities For Penguin
 
-### Highest-Leverage Product Gaps
+### Foundations That Are No Longer Gaps
 
-1. **Canonical runtime event contract**
-   - Pi and background-agent context both point at the same lesson: every
-     surface should project one event stream with stable ids, lifecycle phases,
-     agent ids, task ids, tool ids, timestamps, and replay semantics.
+- Canonical public runtime-event envelope with stable ids and normalized scope.
+- Durable redacted event ledger with retention and reconnect/replay semantics.
+- A real bidirectional MCP surface rather than only a future integration plan.
+- Persisted session goals and TUI/API lifecycle controls.
+- Stronger OpenCode-compatible TUI event/session/provider contracts.
 
-2. **Evidence-backed completion as product behavior**
-   - Penguin's local capability bar is stronger than most public docs, but the
-     runtime must enforce it: implementation evidence, test evidence, usage
-     evidence, artifact records, and honest task states.
+### Highest-Leverage Remaining Gaps
 
-3. **Background execution control plane**
-   - Claude Code, Codex, and Hermes all frame long-running/off-device work as a
-     user-facing feature. Penguin has Run Mode and tasks; the next step is a
-     durable reconnectable run/session control plane.
+1. **Execution-environment and worktree lifecycle**
+   - Claude Code and Codex make isolated worktrees a visible product primitive;
+     Hermes makes terminal backends explicit. Penguin still conflates much of
+     the run lifecycle with one local workspace.
 
-4. **Worktree/sandbox lifecycle**
-   - Codex makes worktrees central for parallel local isolation. Hermes makes
-     terminal backends explicit. Penguin should define execution-environment
-     state independently from agent/task state.
+2. **Skills, plugins, and deterministic lifecycle hooks**
+   - Every comparator now has an on-demand skill story. Penguin's MCP and tool
+     registries are useful foundations, but the planned Agent Skills surface and
+     policy hooks still need a coherent user-facing contract.
 
-5. **Extension and skill system**
-   - Pi, Claude Code, Codex, OpenCode, and Hermes all converge on skills,
-     custom tools, and lifecycle hooks. Penguin's Agent Skills plan should be
-     implemented around progressive disclosure and tool/policy hooks, not just
-     extra prompt files.
+3. **Evidence-backed completion enforced by the runtime**
+   - Penguin stores artifact evidence and preserves honest non-terminal states,
+     but task type, acceptance criteria, tests, recipes, and verification
+     evidence should determine when completion is allowed.
 
-6. **Sub-agent UX**
-   - Penguin has backend primitives. Codex/OpenCode show the need for small,
-     named roles, explicit invocation, visibility, concurrency/depth controls,
-     and inherited sandbox/approval semantics.
+4. **Durable unattended control plane**
+   - Event replay is durable, but session-goal ownership and some cancellation
+     handles are process-local. Reconnectable runs need leases, recovery,
+     cancellation semantics, delivery destinations, and auditable attempts.
 
-7. **Messaging and automation surfaces**
-   - Claude Code and Hermes show a broader product frontier: Slack/Telegram/etc.
-     as first-class task ingress and delivery channels. Penguin's web/API layer
-     can support this if runtime state is durable and events are replayable.
+5. **Unified policy and permission UX**
+   - OpenCode's pattern permissions, Claude's policy/hooks, Codex profiles, Pi's
+     explicit trust boundary, and Hermes toolsets all make risk visible. Penguin
+     should expose comparable per-agent/per-tool/per-platform policy without
+     scattering it across config and runtime code.
 
-### Differentiators Penguin Already Has Or Can Own
+6. **Subagent product UX and isolation**
+   - Backend primitives exist. Named roles, child-session navigation, live task
+     visibility, concurrency/depth controls, worktree inheritance, cost/usage,
+     cancellation, and review remain the user-facing gap.
 
-- A Python-first open runtime with CLI, TUI, web/API, and embedding APIs.
-- Category-aware context budgeting rather than opaque compaction only.
-- Project/task lifecycle with SQLite persistence and Run Mode.
-- Explicit multi-agent routing and MessageBus concepts.
-- Checkpoints, rollback, branching, and transcript replay.
-- A stated reliability bar centered on truthful lifecycle state and explicit
-  evidence.
-- Potential to make formal verification normal for orchestration/state-machine
-  work where it is worth the cost.
+7. **Messaging and automation delivery**
+   - Claude and Hermes treat ingress, schedules, delivery, recovery, and history
+     as one product. Penguin has web/API/MCP building blocks but no comparable
+     platform delivery layer.
+
+8. **Structured compaction alongside category trimming**
+   - Penguin's CWM preserves priority and recency well. Pi demonstrates the
+     complementary value of explicit summaries that record files, commands,
+     errors, decisions, and abandoned branches for audit and resumption.
+
+### Differentiators Penguin Can Own
+
+- Python-first open runtime spanning TUI, CLI, web/API, MCP, and embedding.
+- Category-aware context budgeting rather than only opaque summarization.
+- Canonical runtime events plus durable replay as a shared UI/runtime boundary.
+- Project/task/session-goal lifecycle with SQLite persistence and Run Mode.
+- Checkpoints, rollback, branching, transcript replay, and explicit subagent ids.
+- Bidirectional MCP exposing not just tools but project, Run Mode, ITUV, session,
+  resource, and prompt surfaces.
+- Reliability tests centered on provider faults, incomplete streams, native-tool
+  adjacency, task truth, isolation, and retry/release behavior.
+- A product identity centered on truthful completion and evidence rather than
+  maximal autonomous breadth.
 
 ## Short Recommendations
 
-1. Define one canonical `RuntimeEvent` envelope and adapt CLI, TUI, web/SSE,
-   REST, and Python API to it.
-2. Convert sessions/tasks/runs toward an append-only ledger with projections for
-   UI, model context, audit, and task state.
-3. Add structured compaction artifacts for files read/modified, commands run,
-   tests, errors, decisions, and acceptance evidence.
-4. Promote execution environments to first-class state:
-   `pending`, `spawning`, `ready`, `running`, `stale`, `snapshotting`,
-   `stopped`, `failed`.
-5. Implement Agent Skills with progressive disclosure and compatibility with
-   `.agents/skills`, `.codex/skills`, and `.claude/skills` where practical.
-6. Add per-tool execution policy metadata:
-   `read_parallel_safe`, `mutation_exclusive`, `requires_confirmation`,
-   `cancel_safe`, `streaming_result`, and `terminal_tool`.
-7. Make Run Mode completion require evidence where the task type has acceptance
-   criteria, tests, artifacts, or usage recipes.
-8. Treat worktrees as the default local isolation primitive for parallel coding
-   tasks once project/root semantics are stable.
+1. Promote execution environments to first-class state and implement
+   worktree-backed runs before adding more parallel-agent UI.
+2. Extend the durable event foundation into a leased run/attempt control plane
+   with restart recovery, cancellation, delivery, and audit history.
+3. Ship Agent Skills with progressive disclosure and compatibility with
+   `.agents/skills`, `.codex/skills`, and `.claude/skills` where practical; pair
+   them with deterministic lifecycle/policy hooks.
+4. Make task completion conditional on applicable tests, acceptance criteria,
+   artifact evidence, and usage recipes.
+5. Define one policy model for agents, tools, shell patterns, MCP tools, external
+   directories, background work, and platform-specific toolsets.
+6. Give subagents named roles, navigable child sessions, visible state and usage,
+   concurrency/depth limits, cancellation, inherited policy, and worktree
+   isolation.
+7. Add structured compaction artifacts without replacing the CWM's
+   category-priority trimming.
+8. Build messaging/scheduled automation only after run leases and delivery
+   semantics are durable enough to survive process restart.

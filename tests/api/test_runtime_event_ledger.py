@@ -279,6 +279,31 @@ def test_append_rolls_back_thread_connection_after_cleanup_failure(
     assert [event["id"] for event in ledger.newest(limit=10)] == [second["id"]]
 
 
+def test_extend_rolls_back_whole_batch_on_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reset_runtime_event_sequences()
+    ledger = _ledger(tmp_path)
+    events = [_event("ses_1", index) for index in (1, 2, 3)]
+
+    def fail_cleanup(*, conn: sqlite3.Connection | None = None) -> None:
+        raise RuntimeError("cleanup failed")
+
+    monkeypatch.setattr(ledger, "cleanup_if_due", fail_cleanup)
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        ledger.extend(events)
+
+    # A failed batch must leave no partial rows behind (single transaction).
+    assert ledger.newest(limit=10) == []
+
+    monkeypatch.setattr(ledger, "cleanup_if_due", lambda *, conn=None: None)
+    assert ledger.extend(events) == 3
+    assert [event["id"] for event in ledger.newest(limit=10)] == [
+        event["id"] for event in events
+    ]
+
+
 def test_ledger_checkpoint_below_size_cap_does_not_prune_rows(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
