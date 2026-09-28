@@ -1713,6 +1713,18 @@ def _model_visible_tool_output(action_result: dict[str, Any]) -> str:
     action = str(action_result.get("action") or action_result.get("name") or "")
     if action.startswith("browser_") or action == "read_image":
         return _format_browser_tool_output(action_result)
+    if (
+        action in {"conversation_search", "conversation_open"}
+        and "result" not in action_result
+        and "output" not in action_result
+    ):
+        # Archive tools return structured data, not a legacy result field.
+        # Keep this scoped so other tools' internal metadata isn't exposed.
+        return json.dumps(
+            {key: value for key, value in action_result.items() if key != "action"},
+            ensure_ascii=False,
+            default=str,
+        )
     raw_output = action_result.get("result", action_result.get("output", ""))
     return str(raw_output if raw_output is not None else "")
 

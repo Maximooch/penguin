@@ -61,7 +61,7 @@ function assertChildTerminates(arguments_) {
   assert.equal(result.status, 0, diagnostic);
 }
 
-test("patched CommonJS buffer entrypoint terminates for zero-sized boxes", () => {
+test("updated CommonJS buffer entrypoint terminates for zero-sized boxes", () => {
   assertChildTerminates([
     "-e",
     `
@@ -74,7 +74,7 @@ test("patched CommonJS buffer entrypoint terminates for zero-sized boxes", () =>
   ]);
 });
 
-test("patched ESM buffer entrypoint terminates for zero-sized boxes", () => {
+test("updated ESM buffer entrypoint terminates for zero-sized boxes", () => {
   assertChildTerminates([
     "--input-type=module",
     "-e",
@@ -88,7 +88,7 @@ test("patched ESM buffer entrypoint terminates for zero-sized boxes", () => {
   ]);
 });
 
-test("patched CommonJS file entrypoint terminates for zero-sized boxes", () => {
+test("updated CommonJS file entrypoint terminates for zero-sized boxes", () => {
   assertChildTerminates([
     "-e",
     `
@@ -113,7 +113,7 @@ test("patched CommonJS file entrypoint terminates for zero-sized boxes", () => {
   ]);
 });
 
-test("patched ESM file entrypoint terminates for zero-sized boxes", () => {
+test("updated ESM file entrypoint terminates for zero-sized boxes", () => {
   assertChildTerminates([
     "--input-type=module",
     "-e",

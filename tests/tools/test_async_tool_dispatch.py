@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -399,6 +400,39 @@ async def test_preapproved_async_tool_stays_on_callers_event_loop(
 
     assert json.loads(raw_result)["status"] == "ok"
     assert observed_loop is caller_loop
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name,args", [
+    ("conversation_search", {"query": "old"}),
+    ("conversation_open", {"session_id": "old"}),
+])
+async def test_async_archive_approval_uses_configured_resource(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, args: dict[str, str]
+) -> None:
+    """An untrusted archive path/context cannot redirect the approval prompt."""
+    approval_manager = get_approval_manager()
+    approval_manager.reset()
+    manager = ToolManager({"diagnostics": {"enabled": False}}, lambda *_args: None)
+    manager.workspace_root = str(tmp_path / "workspace")
+    manager._permission_enabled = True
+    monkeypatch.setattr(
+        manager, "check_tool_permission",
+        lambda *_args, **_kwargs: (PermissionResult.ASK, "approval required"),
+    )
+    try:
+        response = await manager.execute_tool_async(
+            name, {**args, "_archive_root": str(tmp_path / "forged")},
+            {"workspace_root": str(tmp_path / "unrelated")},
+        )
+        payload = json.loads(response)
+        assert payload["status"] == "pending_approval"
+        assert payload["resource"] == str(tmp_path / "workspace" / "conversations")
+        request = approval_manager.get_request(payload["approval_id"])
+        assert request.resource == payload["resource"]
+        assert request.context["resources"] == [payload["resource"]]
+    finally:
+        approval_manager.reset()
 
 
 @pytest.mark.asyncio

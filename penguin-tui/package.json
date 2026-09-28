@@ -99,7 +99,7 @@
     "@ai-sdk/provider-utils": "3.0.32",
     "@babel/core": "7.29.6",
     "@modelcontextprotocol/sdk": "1.29.0",
-    "astro": "7.2.1",
+    "astro": "7.2.8",
     "@types/bun": "catalog:",
     "@types/node": "catalog:"
   },

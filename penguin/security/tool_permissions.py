@@ -30,6 +30,8 @@ TOOL_OPERATION_MAP: dict[str, list[Operation]] = {
     "get_file_map": [Operation.FILESYSTEM_LIST],
     "read_image": [Operation.FILESYSTEM_READ],
     "enhanced_read": [Operation.FILESYSTEM_READ],
+    "conversation_search": [Operation.FILESYSTEM_READ],
+    "conversation_open": [Operation.FILESYSTEM_READ],
     # File write operations
     "create_folder": [Operation.FILESYSTEM_MKDIR],
     "create_file": [Operation.FILESYSTEM_WRITE],
@@ -124,6 +126,8 @@ def extract_resource_from_input(
     # Commands remain commands even when a working directory is supplied.
     if tool_name in ("execute_command", "code_execution"):
         return tool_input.get("command") or tool_input.get("code")
+    if tool_name in ("conversation_search", "conversation_open"):
+        return tool_input.get("_archive_root")
 
     path_keys = ["path", "file_path", "filepath", "file", "target", "directory", "dir"]
     for key in path_keys:
