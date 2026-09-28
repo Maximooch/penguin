@@ -799,7 +799,12 @@ def _target_matches_allow_list(
 
 
 def _shell_pattern_matches(pattern: str, command: str) -> bool:
-    """Match shell patterns token-by-token without spanning control operators."""
+    """Match literal shell tokens; dynamic expansion requires explicit approval."""
+    # shlex strips quoting but does not expand shell syntax. A wildcard in an
+    # allow-list must never match a token that executes a nested command or
+    # resolves to an environment-dependent value at execution time.
+    if any(char in command for char in ("$", "`", "\n", "\r")):
+        return False
     try:
         pattern_tokens = _tokenize_shell_pattern(pattern)
         command_tokens = _tokenize_shell_pattern(command)

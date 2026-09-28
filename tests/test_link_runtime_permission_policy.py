@@ -178,6 +178,29 @@ def test_link_shell_patterns_do_not_span_shell_control_operators(
     assert result == PermissionResult.ASK
 
 
+def test_link_shell_patterns_do_not_allow_command_substitution(tmp_path: Path) -> None:
+    policy = _policy(
+        "ask",
+        permission_mode="approve_safe_actions",
+        allow_lists={"shellCommands": ["pnpm test --filter *"]},
+    )
+    context = {
+        "permission_mode": "workspace",
+        "approval_policy": policy,
+        "directory": str(tmp_path),
+    }
+    for command in (
+        "pnpm test --filter $(id)",
+        "pnpm test --filter `${SHELL}`",
+        'pnpm test --filter "$(id)"',
+        "pnpm test --filter $HOME",
+    ):
+        result, _reason = check_tool_permission(
+            "execute_command", {"command": command}, _enforcer(tmp_path), context
+        )
+        assert result == PermissionResult.ASK, command
+
+
 def test_link_custom_policy_matches_relative_writable_paths(tmp_path: Path) -> None:
     policy = _policy(
         "ask",
