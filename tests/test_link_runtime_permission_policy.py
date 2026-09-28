@@ -221,7 +221,7 @@ def test_link_custom_policy_matches_relative_writable_paths(tmp_path: Path) -> N
     )
     unmatched, _reason = check_tool_permission(
         "write_file",
-        {"path": str(tmp_path / "secrets.txt")},
+        {"path": str(tmp_path / "notes.txt")},
         _enforcer(tmp_path),
         context,
     )
