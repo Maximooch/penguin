@@ -64,6 +64,19 @@ Some routes remain public by design, including:
 
 Additional public routes can be exposed explicitly with `PENGUIN_PUBLIC_ENDPOINTS`.
 
+### Standard A2A v1
+
+Set `PENGUIN_A2A_API_KEY` and `PENGUIN_A2A_BASE_URL` to enable Penguin's
+standard A2A endpoint. The base URL must be a public HTTPS origin, or a
+loopback HTTP origin for local tests. Keep the A2A key distinct from Penguin's
+general and Link service keys.
+
+The AgentCard is public at `/.well-known/agent-card.json`. A2A task requests
+use `/a2a/rest` and require `Authorization: Bearer <PENGUIN_A2A_API_KEY>`.
+Penguin stores tasks and chat request receipts in its workspace so `GetTask`
+can reconcile a completed or canceled request after a server restart. A lost
+connection alone does not end work.
+
 ---
 
 ## Authentication

@@ -84,6 +84,11 @@ class AuthConfig:
         self.link_auth_required = (
             os.getenv("PENGUIN_LINK_AUTH_REQUIRED", "false").lower() == "true"
         )
+        self.a2a_api_key = os.getenv("PENGUIN_A2A_API_KEY", "").strip() or None
+        if self.a2a_api_key and (
+            self.a2a_api_key in self.api_keys or self.a2a_api_key == self.link_api_key
+        ):
+            raise ValueError("PENGUIN_A2A_API_KEY must be distinct from other API keys.")
 
         # General auth settings
         self.auth_enabled = is_web_auth_enabled()
@@ -131,6 +136,7 @@ class AuthConfig:
             "/api/v1/health",
             "/api/v1/auth/session",
             "/api/v1/auth/logout",
+            "/.well-known/agent-card.json",
             "/favicon.ico",
             "/apple-touch-icon.png",
             "/apple-touch-icon-precomposed.png",
@@ -543,6 +549,21 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         """Process request and validate authentication."""
+        if request.url.path.startswith("/a2a/"):
+            authorization = request.headers.get("authorization", "")
+            token = authorization[7:] if authorization.startswith("Bearer ") else ""
+            if not self.config.a2a_api_key or not secrets.compare_digest(
+                token, self.config.a2a_api_key
+            ):
+                return JSONResponse(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    content={"detail": "A2A bearer credential required."},
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            request.state.authenticated = True
+            request.state.auth_method = "a2a_service"
+            request.state.auth_subject = "a2a_client"
+            return await call_next(request)
         # Skip auth if disabled
         if not self.config.auth_enabled:
             return await call_next(request)

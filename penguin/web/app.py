@@ -311,6 +311,10 @@ def create_app() -> "FastAPI":
     app.include_router(sse_router)
     app.include_router(github_webhook_router)
 
+    from penguin.web.services.a2a import add_penguin_a2a_routes
+
+    add_penguin_a2a_routes(app, core)
+
     # Optionally include MCP HTTP router when enabled
     try:
         from penguin.integrations.mcp.server import MCPServer  # type: ignore
