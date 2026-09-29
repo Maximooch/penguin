@@ -47,18 +47,18 @@ dependencies = [
     "uvicorn>=0.15.0",
     "websockets>=10.0",
     "python-multipart>=0.0.7",
-    
+
     # LLM and API
     "anthropic>=0.3.0",
     "openai>=1.12.0",
     "ollama",
-    
+
     # CLI Tools (included by default for better UX)
     "rich>=10.0.0",
     "tqdm>=4.60.0",
     "typer>=0.4.0",
     "questionary>=1.10.0",
-    
+
     # Core Processing
     "IPython",
     "ipykernel", 
@@ -68,12 +68,13 @@ dependencies = [
     "networkx",
     "watchdog>=2.3.0",
     "PyGithub>=1.55",
-    
+
     # Git and Image Processing
     "GitPython>=3.1.0",
     "Pillow>=8.3.0",
     "numpy>=1.20.0",
-    "pandas>=1.3.0"
+    "pandas>=1.3.0",
+    "a2a-sdk[http-server,sqlite]==1.0.3",
 ]
 
 [project.optional-dependencies]
