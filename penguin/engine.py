@@ -47,6 +47,8 @@ from penguin.utils.parser import (  # type: ignore
 from penguin.system.state import MessageCategory  # type: ignore
 from penguin.llm.api_client import APIClient  # type: ignore
 from penguin.llm.contracts import LLMProviderError
+from penguin.system.context_epoch import ContextEpoch
+from penguin.system.request_prefix import RequestPrefix
 from penguin.llm.provider_transform import native_tool_format
 from penguin.llm.runtime import (
     build_empty_response_diagnostics as build_llm_empty_response_diagnostics,
@@ -559,6 +561,8 @@ class EngineRunState:
     api_client: Optional[Any] = None
     model_config: Optional[Any] = None
     provider_attempt_usage: Dict[str, Any] = field(default_factory=dict)
+    context_epochs: Dict[tuple[int, str], ContextEpoch] = field(default_factory=dict)
+    request_prefixes: Dict[tuple[int, str], RequestPrefix] = field(default_factory=dict)
 
 
 _CURRENT_ENGINE_RUN_STATE: ContextVar[Optional[EngineRunState]] = ContextVar(
@@ -2294,7 +2298,7 @@ class Engine:
                 iteration_results = response_data.get("action_results", [])
                 usage_data = response_data.get("usage")
                 if isinstance(usage_data, dict) and usage_data:
-                    latest_usage = usage_data
+                    latest_usage = _accumulate_usage(latest_usage, usage_data)
                 last_response = self._suppress_empty_tool_only_placeholder(
                     cm,
                     last_response,
@@ -3679,7 +3683,16 @@ class Engine:
         cm, api_client, tool_manager, action_executor = self._resolve_components(
             agent_id or self.current_agent_id
         )
-        messages = cm.conversation.get_formatted_messages()
+        run_state = _CURRENT_ENGINE_RUN_STATE.get()
+        epoch = None
+        if run_state is not None:
+            key = (id(cm.conversation), self._conversation_session_id(cm) or "")
+            epoch = run_state.context_epochs.setdefault(key, ContextEpoch())
+        messages = (
+            cm.conversation.get_formatted_messages(epoch=epoch)
+            if epoch is not None
+            else cm.conversation.get_formatted_messages()
+        )
         messages = self._apply_agent_mode_notice(messages)
         request_id, session_id = self._trace_request_fields()
         last_message = messages[-1] if messages else {}
@@ -3744,6 +3757,15 @@ class Engine:
             tool_schema_count,
             extra_kwargs.get("tool_choice"),
         )
+
+        if run_state is not None and epoch is not None:
+            prefix = run_state.request_prefixes.setdefault(key, RequestPrefix())
+            _trace_log_info(
+                "engine.context.prefix epoch=%s reason=%s diagnostics=%s",
+                epoch.generation,
+                epoch.reason,
+                prefix.compare(messages, extra_kwargs),
+            )
 
         # Step 2: Call LLM with retry on empty response
         try:
