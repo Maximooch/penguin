@@ -20,29 +20,32 @@ export function formatPenguinFastModeStatus(enabled: boolean): string {
 
 export function applyPenguinFastCommand(input: {
   fast: PenguinFastMode
+  ultrafast?: PenguinFastMode
   text: string
 }): PenguinFastCommandResult {
-  const [command, argument = ""] = input.text.trim().split(/\s+/, 2)
-  if (command !== "/fast") return { matched: false }
-
+  const [command, argument = "", ...extra] = input.text.trim().split(/\s+/)
+  const mode = command === "/fast" ? input.fast : command === "/ultrafast" ? input.ultrafast : undefined
+  if (!mode) return { matched: false }
+  const name = command === "/ultrafast" ? "Ultrafast" : "Fast"
   const value = argument.toLowerCase()
-  if (!value) {
-    input.fast.toggle()
-  } else if (value === "on") {
-    input.fast.set(true)
-  } else if (value === "off") {
-    input.fast.set(false)
-  } else if (value !== "status") {
+  if (extra.length || !["", "on", "off", "status"].includes(value)) {
     return {
       matched: true,
-      message: "Usage: /fast [on|off|status]",
+      message: `Usage: ${command} [on|off|status]`,
       variant: "warning",
     }
+  }
+  if (!value) {
+    mode.toggle()
+  } else if (value === "on") {
+    mode.set(true)
+  } else if (value === "off") {
+    mode.set(false)
   }
 
   return {
     matched: true,
-    message: formatPenguinFastModeStatus(input.fast.enabled()),
+    message: `${name} mode ${mode.enabled() ? "on" : "off"}`,
     variant: "info",
   }
 }

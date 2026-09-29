@@ -1475,7 +1475,7 @@ export class Session extends HeyApiClient {
       }
       system?: string
       variant?: string
-      service_tier?: "auto" | "default" | "flex" | "priority"
+      service_tier?: "auto" | "default" | "flex" | "priority" | "ultrafast"
       parts?: Array<TextPartInput | FilePartInput | AgentPartInput | SubtaskPartInput>
     },
     options?: Options<never, ThrowOnError>,
@@ -1565,7 +1565,7 @@ export class Session extends HeyApiClient {
       }
       system?: string
       variant?: string
-      service_tier?: "auto" | "default" | "flex" | "priority"
+      service_tier?: "auto" | "default" | "flex" | "priority" | "ultrafast"
       parts?: Array<TextPartInput | FilePartInput | AgentPartInput | SubtaskPartInput>
     },
     options?: Options<never, ThrowOnError>,
@@ -1617,7 +1617,7 @@ export class Session extends HeyApiClient {
       arguments?: string
       command?: string
       variant?: string
-      service_tier?: "auto" | "default" | "flex" | "priority"
+      service_tier?: "auto" | "default" | "flex" | "priority" | "ultrafast"
       parts?: Array<{
         id?: string
         type: "file"

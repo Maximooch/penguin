@@ -81,6 +81,10 @@ dependencies = [
 web = []
 tui = []
 
+# ACP's Python SDK requires Pydantic 2; keep it optional so Penguin's
+# Pydantic 1.x installation contract is not silently changed.
+acp = ["agent-client-protocol>=0.12.1,<0.13", "pydantic>=2.7,<3"]
+
 # Legacy Textual prototype/experimental UI support
 legacy_tui = [
     "textual",

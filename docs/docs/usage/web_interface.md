@@ -39,6 +39,24 @@ After startup, the server prints:
 
 ---
 
+## OpenAI speed modes
+
+In the Penguin TUI, `/fast [on|off|status]` requests the `priority` service tier
+and `/ultrafast [on|off|status]` requests `ultrafast`. With no argument, each
+command toggles its mode. The modes are mutually exclusive; turning either off
+requests `default`. The selection is persisted with the TUI's model preferences
+and applies to subsequent prompts, not an already-running request.
+
+HTTP chat requests and WebSocket chat payloads can set `"service_tier": "ultrafast"`
+using the existing `service_tier` field. To make it the configured default, set
+`model.service_tier: ultrafast` or `PENGUIN_OPENAI_SERVICE_TIER=ultrafast`.
+
+This requests an OpenAI service tier; it does not grant access or guarantee that
+the provider serves that tier. Availability depends on the model and account.
+Reasoning effort is unchanged by speed-mode selection.
+
+---
+
 ## Current Security Posture
 
 The web server is no longer “wide open unless you remember to harden it later.” Current behavior:

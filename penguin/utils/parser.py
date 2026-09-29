@@ -4402,16 +4402,23 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
         )
 
     def _analyze_project(self, params: str) -> str:
-        """Analyze project structure. Format: directory:include_external"""
+        """Analyze project. Format: directory:include_external:respect_gitignore"""
         parts = params.split(":")
         directory = parts[0].strip() if parts and parts[0].strip() else "."
         include_external = (
             parts[1].strip().lower() == "true" if len(parts) > 1 else False
         )
+        respect_gitignore = (
+            parts[2].strip().lower() == "true" if len(parts) > 2 else True
+        )
 
         return self.tool_manager.execute_tool(
             "analyze_project",
-            {"directory": directory, "include_external": include_external},
+            {
+                "directory": directory,
+                "include_external": include_external,
+                "respect_gitignore": respect_gitignore,
+            },
         )
 
     def _read_file(self, params: Any) -> str:

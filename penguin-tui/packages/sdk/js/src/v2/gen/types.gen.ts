@@ -1675,7 +1675,7 @@ export type Config = {
   /**
    * OpenAI Responses service tier to use by default.
    */
-  service_tier?: "auto" | "default" | "flex" | "priority"
+  service_tier?: "auto" | "default" | "flex" | "priority" | "ultrafast"
   /**
    * Small model to use for tasks like title generation in the format of provider/model
    */
@@ -3363,7 +3363,7 @@ export type SessionPromptData = {
     }
     system?: string
     variant?: string
-    service_tier?: "auto" | "default" | "flex" | "priority"
+    service_tier?: "auto" | "default" | "flex" | "priority" | "ultrafast"
     parts: Array<TextPartInput | FilePartInput | AgentPartInput | SubtaskPartInput>
   }
   path: {
@@ -3551,7 +3551,7 @@ export type SessionPromptAsyncData = {
     }
     system?: string
     variant?: string
-    service_tier?: "auto" | "default" | "flex" | "priority"
+    service_tier?: "auto" | "default" | "flex" | "priority" | "ultrafast"
     parts: Array<TextPartInput | FilePartInput | AgentPartInput | SubtaskPartInput>
   }
   path: {
@@ -3596,7 +3596,7 @@ export type SessionCommandData = {
     arguments: string
     command: string
     variant?: string
-    service_tier?: "auto" | "default" | "flex" | "priority"
+    service_tier?: "auto" | "default" | "flex" | "priority" | "ultrafast"
     parts?: Array<{
       id?: string
       type: "file"

@@ -1050,6 +1050,7 @@ export function Prompt(props: PromptProps) {
     const handleFastCommand = () => {
       const result = applyPenguinFastCommand({
         fast: local.model.fast,
+        ultrafast: local.model.ultrafast,
         text: trimmed,
       })
       if (!result.matched) return false
@@ -1918,10 +1919,12 @@ export function Prompt(props: PromptProps) {
                       <span style={{ fg: theme.warning, bold: true }}>{local.model.variant.current()}</span>
                     </text>
                   </Show>
-                  <Show when={sdk.penguin && local.model.fast.enabled()}>
+                  <Show when={sdk.penguin && (local.model.fast.enabled() || local.model.ultrafast.enabled())}>
                     <text fg={theme.textMuted}>·</text>
                     <text>
-                      <span style={{ fg: theme.warning, bold: true }}>fast</span>
+                      <span style={{ fg: theme.warning, bold: true }}>
+                          {local.model.ultrafast.enabled() ? "Ultrafast" : "fast"}
+                        </span>
                     </text>
                   </Show>
                 </box>

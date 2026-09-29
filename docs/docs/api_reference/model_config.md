@@ -52,7 +52,7 @@ classDiagram
 | `vision_enabled` | `Optional[bool]` | `None` | Whether to enable vision capabilities (auto-detected) |
 | `use_responses_api` | `bool` | `False` | Whether to use the OpenAI Responses API |
 | `interrupt_on_action` | `bool` | `True` | Whether to interrupt on tool actions |
-| `service_tier` | `Optional[str]` | `None` | OpenAI service tier: `auto` \| `default` \| `flex` \| `priority` |
+| `service_tier` | `Optional[str]` | `None` | OpenAI service tier: `auto` \| `default` \| `flex` \| `priority` \| `ultrafast` |
 | `reasoning_enabled` | `Optional[bool]` | `None` | Whether reasoning tokens are enabled |
 | `reasoning_effort` | `Optional[str]` | `None` | Reasoning effort level |
 | `reasoning_max_tokens` | `Optional[int]` | `None` | Reasoning token budget |

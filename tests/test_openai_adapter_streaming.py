@@ -257,9 +257,11 @@ async def test_openai_adapter_streaming_ignores_stream_options(
     assert "stream_options" not in adapter.client.responses.last_stream_kwargs
 
 
+@pytest.mark.parametrize("service_tier", ["priority", "ultrafast"])
 @pytest.mark.asyncio
 async def test_openai_adapter_sends_service_tier_to_native_responses(
     monkeypatch: pytest.MonkeyPatch,
+    service_tier: str,
 ) -> None:
     monkeypatch.delenv("OPENAI_OAUTH_ACCESS_TOKEN", raising=False)
     monkeypatch.delenv("OPENAI_ACCOUNT_ID", raising=False)
@@ -274,7 +276,7 @@ async def test_openai_adapter_sends_service_tier_to_native_responses(
         client_preference="native",
         api_key="sk-test",
         streaming_enabled=True,
-        service_tier="priority",
+        service_tier=service_tier,
     )
     adapter = OpenAIAdapter(model_config)
     adapter.client = _DummyOpenAIClient()  # type: ignore[assignment]
@@ -286,12 +288,14 @@ async def test_openai_adapter_sends_service_tier_to_native_responses(
 
     assert result == "hello"
     assert adapter.client.responses.last_stream_kwargs is not None
-    assert adapter.client.responses.last_stream_kwargs["service_tier"] == "priority"
+    assert adapter.client.responses.last_stream_kwargs["service_tier"] == service_tier
 
 
+@pytest.mark.parametrize("service_tier", ["flex", "ultrafast"])
 @pytest.mark.asyncio
 async def test_openai_adapter_sends_service_tier_to_oauth_codex_payload(
     monkeypatch: pytest.MonkeyPatch,
+    service_tier: str,
 ) -> None:
     monkeypatch.delenv("OPENAI_OAUTH_ACCESS_TOKEN", raising=False)
     monkeypatch.delenv("OPENAI_ACCOUNT_ID", raising=False)
@@ -301,7 +305,7 @@ async def test_openai_adapter_sends_service_tier_to_oauth_codex_payload(
         provider="openai",
         client_preference="native",
         api_key="sk-test",
-        service_tier="flex",
+        service_tier=service_tier,
     )
     adapter = OpenAIAdapter(model_config)
     captured: dict[str, Any] = {}
@@ -336,7 +340,7 @@ async def test_openai_adapter_sends_service_tier_to_oauth_codex_payload(
     )
 
     assert result == "ok"
-    assert captured["service_tier"] == "flex"
+    assert captured["service_tier"] == service_tier
 
 
 @pytest.mark.asyncio

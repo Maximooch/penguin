@@ -90,13 +90,14 @@ def test_resolve_model_provider_keeps_openrouter_gateway() -> None:
     assert client_pref == "openrouter"
 
 
+@pytest.mark.parametrize("service_tier", ["priority", "ultrafast"])
 @pytest.mark.asyncio
-async def test_request_model_config_inherits_top_level_service_tier() -> None:
+async def test_request_model_config_inherits_top_level_service_tier(service_tier: str) -> None:
     core_like = SimpleNamespace(
         config=SimpleNamespace(model_configs={}),
         model_config=SimpleNamespace(
             client_preference="native",
-            service_tier="priority",
+            service_tier=service_tier,
         ),
     )
     _attach_core_helpers(core_like)
@@ -113,7 +114,7 @@ async def test_request_model_config_inherits_top_level_service_tier() -> None:
     )
 
     assert model_config.model == "gpt-5.5"
-    assert model_config.service_tier == "priority"
+    assert model_config.service_tier == service_tier
 
 
 @pytest.mark.asyncio

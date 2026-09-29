@@ -519,8 +519,10 @@ Analyze codebase structure using AST parsing.
 
 **Example:**
 ```actionxml
-<analyze_project>src:false</analyze_project>
+<analyze_project>src:false:true</analyze_project>
 ```
+
+The third value controls whether Git-ignored files are excluded (default: true).
 
 **Output:** File stats, imports, functions, classes.
 """

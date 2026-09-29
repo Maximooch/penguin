@@ -302,7 +302,7 @@ class CoreToolsPlugin(BasePlugin):
 
         return ToolDefinition(
             name="analyze_project",
-            description="Analyze project structure and generate summary",
+            description="Analyze Python project structure and generate summary",
             parameters=[
                 ParameterSchema(
                     name="directory",
@@ -312,15 +312,18 @@ class CoreToolsPlugin(BasePlugin):
                     default=".",
                 ),
                 ParameterSchema(
-                    name="depth",
-                    type="integer",
-                    description="Maximum depth to analyze",
+                    name="respect_gitignore",
+                    type="boolean",
+                    description="Use Git to exclude ignored files when available",
                     required=False,
-                    default=3,
+                    default=True,
                 ),
             ],
-            handler=lambda directory=".", depth=3: analyze_project_structure(
-                {"directory": directory, "depth": depth}
+            handler=lambda directory=".", respect_gitignore=True: (
+                analyze_project_structure(
+                    directory=directory,
+                    respect_gitignore=respect_gitignore,
+                )
             ),
             category="development",
             tags=["analysis", "project", "structure"],

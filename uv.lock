@@ -12,7 +12,7 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-09-16T05:43:38.132139Z"
+exclude-newer = "2026-09-21T03:57:15.207977Z"
 exclude-newer-span = "P7D"
 
 [[package]]
@@ -33,6 +33,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/f5/b5/1d3ed029ac71d3f2961346829a268da923698e9fd63f218f78841f216bfd/accelerate-1.15.0.tar.gz", hash = "sha256:5654f8c5eaa0d4fa68b33e287a97765da6849bf6d51dcac874e73fbbddfb6134", size = 422615, upload-time = "2026-09-09T13:04:49.078Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8a/4c/34f0450479d01195027260da68d8a3880683f1640c3ca5adf64acb3185f1/accelerate-1.15.0-py3-none-any.whl", hash = "sha256:97eacca0b73e45cb867dbf8c5d5d4dc32219544300e0c8992c7334dc2ef33cec", size = 394295, upload-time = "2026-09-09T13:04:47.331Z" },
+]
+
+[[package]]
+name = "agent-client-protocol"
+version = "0.12.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9d/95/2c28ca34e545ce0282e88272aa3a8abdf8f3f926a0492f567ea11acd071b/agent_client_protocol-0.12.1.tar.gz", hash = "sha256:9963ccb590ed96d7dc542c9c023e90676fc76b1c6562e21a9ee112f4fbcb0095", size = 130605, upload-time = "2026-08-16T14:08:22.545Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/21/61/0a2186c8ca53cf464767d4c4fb7fd9e23f48ce4547c2fa0d1c83a4d52410/agent_client_protocol-0.12.1-py3-none-any.whl", hash = "sha256:aaf3cc301ed87d9e2c4ccb91adfe1cd58784355f6ce7e513f50e7ca2391862ef", size = 85929, upload-time = "2026-08-16T14:08:21.307Z" },
 ]
 
 [[package]]
@@ -2689,6 +2701,10 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+acp = [
+    { name = "agent-client-protocol" },
+    { name = "pydantic" },
+]
 all = [
     { name = "accelerate" },
     { name = "bitsandbytes", marker = "sys_platform != 'darwin'" },
@@ -2790,6 +2806,7 @@ dev = [
 requires-dist = [
     { name = "accelerate", marker = "extra == 'all'", specifier = ">=0.25.0" },
     { name = "accelerate", marker = "extra == 'llm-transformers'", specifier = ">=0.25.0" },
+    { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = ">=0.12.1,<0.13" },
     { name = "anthropic", specifier = ">=0.3.0" },
     { name = "anthropic", marker = "extra == 'minimal'", specifier = ">=0.3.0" },
     { name = "bitsandbytes", marker = "sys_platform != 'darwin' and extra == 'all'", specifier = ">=0.43.0" },
@@ -2829,6 +2846,7 @@ requires-dist = [
     { name = "pyarrow", marker = "extra == 'all'", specifier = ">=15.0.0" },
     { name = "pyarrow", marker = "extra == 'memory-lance'", specifier = ">=15.0.0" },
     { name = "pydantic", specifier = ">=1.10.24" },
+    { name = "pydantic", marker = "extra == 'acp'", specifier = ">=2.7,<3" },
     { name = "pydantic", marker = "extra == 'minimal'", specifier = ">=1.10.24" },
     { name = "pydoll-python", marker = "python_full_version >= '3.10' and extra == 'all'", specifier = ">=2.0.0" },
     { name = "pydoll-python", marker = "python_full_version >= '3.10' and extra == 'browser'", specifier = ">=2.0.0" },
@@ -2879,7 +2897,7 @@ requires-dist = [
     { name = "websockets", specifier = ">=10.0" },
     { name = "wheel", marker = "extra == 'dev'", specifier = ">=0.40.0" },
 ]
-provides-extras = ["web", "tui", "legacy-tui", "mcp", "minimal", "memory-lance", "memory-faiss", "memory-chroma", "llm-litellm", "llm-transformers", "llm-ollama", "orchestration", "pydoll", "browser", "dev", "test", "all"]
+provides-extras = ["web", "tui", "acp", "legacy-tui", "mcp", "minimal", "memory-lance", "memory-faiss", "memory-chroma", "llm-litellm", "llm-transformers", "llm-ollama", "orchestration", "pydoll", "browser", "dev", "test", "all"]
 
 [package.metadata.requires-dev]
 dev = [

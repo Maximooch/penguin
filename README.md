@@ -356,6 +356,10 @@ Read more:
 - Better handling of tool-only OpenAI/Codex turns and Responses-style tool calls in the runtime loop.
 - Continued runtime/docs alignment work across task clarification, dependency-policy, and public surface verification.
 
+OpenAI speed modes in the TUI: `/fast` requests `priority`; `/ultrafast` requests
+`ultrafast`. Both support `on`, `off`, and `status`, subject to model/account access.
+See [speed-mode configuration](docs/docs/usage/web_interface.md#openai-speed-modes).
+
 ## Documentation
 
 - [Hosted tool environments and security activation gates](docs/docs/security/hosted-tool-environment.md)
@@ -408,6 +412,8 @@ Built upon insights from:
 - [RawDog](https://github.com/AbanteAI/rawdog)
 
 For long-running shell commands, see [managed processes](docs/docs/tools/processes.md).
+Completed handles are retired under capacity pressure while logs and cached retry
+results remain available; live commands keep their slots.
 
 Workspace-mode file writes outside the active project, including sibling worktrees,
 request approval in the TUI. See [tool permissions](docs/docs/usage/web_interface.md#tool-permissions)

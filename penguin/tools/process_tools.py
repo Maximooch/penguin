@@ -122,7 +122,14 @@ class ProcessTools:
             return self._start(name, arguments, context, owner)
         process_id = str(arguments["process_id"])
         record = self.runtime._processes.get(process_id)
-        if record is None or record.owner != owner:
+        if record is None:
+            return self.runtime.retired_result(
+                process_id,
+                owner=owner,
+                consumer_id=owner[1],
+                request_id=context.get("tool_call_id"),
+            ) or self.runtime._error(process_id, "unknown_process_id")
+        if record.owner != owner:
             return self.runtime._error(process_id, "unknown_process_id")
         if name == "process_write_stdin":
             return self.runtime.write_stdin(
@@ -188,6 +195,25 @@ class ProcessTools:
             self._observed.intersection_update(self.runtime._processes)
             existing = self.runtime._processes.get(process_id) if process_id else None
             if existing is None:
+                retired = (
+                    self.runtime.retired_result(
+                        process_id,
+                        owner=owner,
+                        command=arguments["command"],
+                        consumer_id=owner[1],
+                        request_id=request_id,
+                    )
+                    if process_id
+                    else None
+                )
+                if retired is not None:
+                    if name == "execute_command" and "process_status" in retired:
+                        retired.update(
+                            action="execute_command",
+                            tool="execute_command",
+                            timeout_seconds=timeout,
+                        )
+                    return retired
                 started = self.runtime.start(
                     arguments["command"],
                     cwd=arguments.get("cwd") or context.get("directory"),
@@ -200,6 +226,12 @@ class ProcessTools:
                 if started["status"] == "error":
                     return started
                 process_id = started["process_id"]
+                # Completion notices obey the same retention bound as handles.
+                for pending_owner, notices in list(self._pending.items()):
+                    for retired_id in set(notices).difference(self.runtime._processes):
+                        del notices[retired_id]
+                    if not notices:
+                        del self._pending[pending_owner]
             elif existing.command != arguments["command"]:
                 return self.runtime._error(
                     process_id, "tool_call_id reused with different command"

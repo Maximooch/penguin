@@ -1549,7 +1549,7 @@ class ToolManager:
             },
             {
                 "name": "analyze_project",
-                "description": "Analyze project structure and dependencies using AST analysis. Shows file stats, imports, functions, and classes.",
+                "description": "Analyze Python project structure and dependencies using AST analysis. Shows file stats, imports, functions, and classes.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -1560,6 +1560,10 @@ class ToolManager:
                         "include_external": {
                             "type": "boolean",
                             "description": "Include external imports in analysis (default: false)",
+                        },
+                        "respect_gitignore": {
+                            "type": "boolean",
+                            "description": "Use Git to exclude ignored files when available (default: true)",
                         },
                     },
                 },
@@ -3804,6 +3808,7 @@ class ToolManager:
                     directory=tool_input.get("directory", "."),
                     include_external=tool_input.get("include_external", False),
                     workspace_path=effective_root,
+                    respect_gitignore=tool_input.get("respect_gitignore", True),
                 )
             except Exception as e:
                 result_container["error"] = str(e)

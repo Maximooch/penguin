@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
@@ -17,7 +18,6 @@ from penguin.tools.tool_manager import ToolManager
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
-    from pathlib import Path
 
 
 @pytest.fixture
@@ -304,6 +304,25 @@ def test_registry_reaps_observed_results_and_retains_logs(tmp_path: Path) -> Non
         service.cleanup()
 
 
+def test_registry_skips_unobserved_record_when_reaping(tmp_path: Path) -> None:
+    runtime = ProcessRuntime(log_dir=tmp_path, max_processes=2)
+    service = ProcessTools(runtime)
+    try:
+        unobserved = service.execute("process_start", {"command": "printf pending"}, {})
+        observed = service.execute(
+            "execute_command", {"command": "printf observed"}, {}
+        )
+        service.acknowledge(("", "agent"), observed["process_id"])
+
+        latest = service.execute("execute_command", {"command": "printf latest"}, {})
+
+        assert latest["status"] == "completed"
+        assert unobserved["process_id"] in runtime._processes
+        assert observed["process_id"] not in runtime._processes
+    finally:
+        service.cleanup()
+
+
 @pytest.mark.parametrize("tool_name", ["execute_command", "process_start"])
 @pytest.mark.parametrize("directory_kind", ["missing", "none", "invalid", "override"])
 def test_launch_uses_resolved_execution_root(
@@ -425,3 +444,139 @@ def test_stdin_tool_forwards_deadline(manager: ToolManager) -> None:
         )
     assert result["error"] == "stdin_write_timeout"
     assert result["bytes_written"] == 0
+
+
+def test_completed_explicit_polls_do_not_exhaust_shared_runtime(tmp_path: Path) -> None:
+    runtime = ProcessRuntime(log_dir=tmp_path, max_processes=2)
+    service = ProcessTools(runtime)
+    try:
+        for index in range(5):
+            context = {
+                "session_id": f"session-{index}",
+                "tool_call_id": f"start-{index}",
+            }
+            started = service.execute(
+                "process_start", {"command": "printf done"}, context
+            )
+            assert started["status"] == "completed", started
+            record = runtime._processes[started["process_id"]]
+            record.reader.join(timeout=2)
+            assert not record.reader.is_alive()
+            result = service.execute(
+                "process_poll",
+                {"process_id": record.process_id, "since_sequence": 0},
+                {**context, "tool_call_id": f"poll-{index}"},
+            )
+            assert result["process_status"] == "exited"
+            assert "done" in result["output"]
+    finally:
+        service.cleanup()
+
+
+@pytest.mark.parametrize("observe", [False, True])
+def test_retirement_preserves_logs_retries_and_owner_isolation(
+    tmp_path: Path,
+    observe: bool,
+) -> None:
+    runtime = ProcessRuntime(log_dir=tmp_path, max_processes=1)
+    service = ProcessTools(runtime)
+    context = {"session_id": "owner", "tool_call_id": "once"}
+    counter = tmp_path / "counter"
+    args = {"command": f"printf once >> {counter}"}
+    try:
+        first = service.execute("process_start", args, context)
+        pid = first["process_id"]
+        runtime._processes[pid].reader.join(timeout=2)
+        if observe:
+            final = service.execute(
+                "process_poll",
+                {"process_id": pid},
+                {**context, "tool_call_id": "final"},
+            )
+        next_result = service.execute(
+            "execute_command",
+            {"command": "printf next"},
+            {"session_id": "other", "tool_call_id": "next"},
+        )
+        assert next_result["status"] == "completed"
+        assert len(runtime._processes) == 1
+        retry = service.execute("process_start", args, context)
+        assert retry["error"] == "process_result_expired"
+        assert counter.read_text() == "once"
+        assert Path(retry["log_path"]).exists()
+        denied = service.execute(
+            "process_poll",
+            {"process_id": pid},
+            {"session_id": "other", "tool_call_id": "final"},
+        )
+        assert denied["error"] == "unknown_process_id"
+        assert "log_path" not in denied
+        if observe:
+            replay = service.execute(
+                "process_poll",
+                {"process_id": pid},
+                {**context, "tool_call_id": "final"},
+            )
+            assert replay == final
+    finally:
+        service.cleanup()
+
+
+def test_active_capacity_reports_counts_and_does_not_stop_commands(
+    tmp_path: Path,
+) -> None:
+    runtime = ProcessRuntime(log_dir=tmp_path, max_processes=1)
+    service = ProcessTools(runtime)
+    context = {"session_id": "owner"}
+    try:
+        first = service.execute("process_start", {"command": "read go"}, context)
+        denied = service.execute("execute_command", {"command": "printf blocked"}, {})
+        assert denied["error"] == "process_limit_reached"
+        assert denied["process_counts"] == {"running": 1, "draining": 0, "exited": 0}
+        assert runtime._processes[first["process_id"]].process.poll() is None
+        service.execute("process_stop", {"process_id": first["process_id"]}, context)
+        assert (
+            service.execute("execute_command", {"command": "printf resumed"}, {})[
+                "status"
+            ]
+            == "completed"
+        )
+    finally:
+        service.cleanup()
+
+
+def test_command_retry_after_retirement_does_not_execute_twice(tmp_path: Path) -> None:
+    runtime = ProcessRuntime(log_dir=tmp_path, max_processes=1)
+    service = ProcessTools(runtime)
+    context = {"session_id": "owner", "tool_call_id": "once"}
+    counter = tmp_path / "counter"
+    args = {"command": f"printf once >> {counter}; printf result"}
+    try:
+        first = service.execute("execute_command", args, context)
+        service.execute("execute_command", {"command": "printf next"}, {})
+        assert first["process_id"] not in runtime._processes
+        assert service.execute("execute_command", args, context) == first
+        assert counter.read_text() == "once"
+    finally:
+        service.cleanup()
+
+
+def test_retirement_write_failure_keeps_handle_and_prevents_launch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = ProcessRuntime(log_dir=tmp_path, max_processes=1)
+    service = ProcessTools(runtime)
+    try:
+        first = service.execute("execute_command", {"command": "printf first"}, {})
+
+        def fail_replace(*args: Any, **kwargs: Any) -> None:
+            raise OSError("archive unavailable")
+
+        monkeypatch.setattr(Path, "replace", fail_replace)
+        with pytest.raises(OSError, match="archive unavailable"):
+            service.execute("execute_command", {"command": "printf forbidden"}, {})
+        assert list(runtime._processes) == [first["process_id"]]
+        assert runtime.poll(first["process_id"])["output"] == "[stdout] first"
+    finally:
+        service.cleanup()

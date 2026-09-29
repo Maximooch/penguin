@@ -21,7 +21,7 @@ CONTEXT_WINDOW_SAFETY_FRACTION = max(
     min(float(os.getenv("PENGUIN_CONTEXT_SAFETY_FRACTION", "0.85")), 0.95),
     0.5,
 )
-OPENAI_SERVICE_TIERS = frozenset({"auto", "default", "flex", "priority"})
+OPENAI_SERVICE_TIERS = frozenset({"auto", "default", "flex", "priority", "ultrafast"})
 SUSPICIOUS_MAX_OUTPUT_RATIO = 0.8
 
 
@@ -75,7 +75,7 @@ class ModelConfig:
     use_responses_api: bool = False
     interrupt_on_action: bool = True
     interrupt_on_tool_call: bool = False
-    service_tier: Optional[Literal["auto", "default", "flex", "priority"]] = None
+    service_tier: Optional[Literal["auto", "default", "flex", "priority", "ultrafast"]] = None
 
     # Reasoning tokens support
     reasoning_enabled: Optional[bool] = None

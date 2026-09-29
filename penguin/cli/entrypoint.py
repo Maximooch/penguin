@@ -173,6 +173,18 @@ def _setup_succeeded(result: dict[str, Any]) -> bool:
 def main(argv: Sequence[str] | None = None) -> int:
     """Dispatch `penguin` invocations to TUI or headless CLI."""
     args = _normalize_argv(argv)
+    if _first_arg(args) == "acp":
+        if len(args) > 1:
+            print("Usage: penguin acp", file=sys.stderr)
+            return 2
+        try:
+            from penguin.integrations.acp.server import main as acp_main
+        except ImportError as exc:
+            if exc.name == "acp" or (exc.name or "").startswith("acp."):
+                print("ACP requires the optional extra: pip install 'penguin-ai[acp]'", file=sys.stderr)
+                return 2
+            raise
+        return acp_main()
     first = _first_arg(args)
 
     if first in _FORCE_TUI_ALIASES:

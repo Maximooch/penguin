@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import math
 import os
@@ -111,6 +113,7 @@ class ProcessRuntime:
         self._max_events_per_process = max(1, max_events_per_process)
         self._max_processes = max_processes
         self._lock = threading.RLock()
+        self._retired_dir: Path | None = None
         self._log_dir = (
             Path(log_dir)
             if log_dir
@@ -156,19 +159,34 @@ class ProcessRuntime:
         with self._lock:
             if resolved_id in self._processes:
                 return self._error(resolved_id, "process_id_already_exists")
+            retired = self.retired_result(resolved_id, owner=owner)
+            if retired is not None:
+                return retired
             if len(self._processes) >= self._max_processes:
-                # Reap only completed, already-observed records. Logs survive eviction.
-                for old_id, old in list(self._processes.items()):
-                    if old.status() == "exited" and old.completion_observed:
-                        self.stop(old_id, timeout=0.2)
-                        if old.process.stdin is not None:
-                            old.process.stdin.close()
-                        del self._processes[old_id]
-                        break
+                # Prefer consumed results, but unread completions cannot pin capacity.
+                candidates = sorted(
+                    self._processes.values(),
+                    key=lambda old: (not old.completion_observed, old.started_at),
+                )
+                for old in candidates:
+                    if old.status() != "exited":
+                        continue
+                    self._retire(old)
+                    break
                 if len(self._processes) >= self._max_processes:
-                    return self._error(
-                        resolved_id, "process_limit_reached; run cleanup"
+                    counts = {state: 0 for state in ("running", "draining", "exited")}
+                    for record in self._processes.values():
+                        counts[record.status()] += 1
+                    result = self._error(resolved_id, "process_limit_reached")
+                    result.update(limit=self._max_processes, process_counts=counts)
+                    result["result"] += (
+                        f"; limit={self._max_processes}, counts={counts}. "
+                        "Wait for active commands to finish or use process_stop on "
+                        "an owned command you no longer need. Retrying a new command "
+                        "without releasing capacity will not help."
                     )
+                    logger.warning("Process capacity exhausted: %s", counts)
+                    return result
             log_path = None
             try:
                 self._log_dir.mkdir(parents=True, exist_ok=True)
@@ -222,6 +240,79 @@ class ProcessRuntime:
                     record, output="", since_sequence=0, next_sequence=0
                 )
 
+    def _retired_path(self, process_id: str) -> Path | None:
+        if self._retired_dir is None:
+            return None
+        # Hash caller-supplied IDs rather than treating them as filesystem paths.
+        return self._retired_dir / (
+            hashlib.sha256(process_id.encode()).hexdigest() + ".json"
+        )
+
+    def _retire(self, record: ManagedProcess) -> None:
+        """Release an exited handle after saving its result and retry receipts."""
+        with record.changed:
+            if self._retired_dir is None:
+                self._retired_dir = Path(
+                    tempfile.mkdtemp(prefix="retired-", dir=self._log_dir)
+                )
+            path = self._retired_path(record.process_id)
+            snapshot = self._snapshot(
+                record,
+                output="",
+                since_sequence=0,
+                next_sequence=record.next_sequence - 1,
+            )
+            receipt = {
+                "owner": record.owner,
+                "snapshot": snapshot,
+                "replies": [
+                    [list(key), value] for key, value in record.replies.items()
+                ],
+            }
+            # Save before eviction: a failed write must not permit command replay.
+            temporary = path.with_suffix(".tmp")
+            try:
+                temporary.write_text(json.dumps(receipt), encoding="utf-8")
+                temporary.replace(path)
+            finally:
+                temporary.unlink(missing_ok=True)
+            with record.write_lock:
+                if record.process.stdin is not None:
+                    record.process.stdin.close()
+            del self._processes[record.process_id]
+
+    def retired_result(
+        self,
+        process_id: str,
+        *,
+        owner: tuple[str, str] | None = None,
+        command: str | None = None,
+        consumer_id: str = "agent",
+        request_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Replay a retired receipt or report expiration with the retained log."""
+        path = self._retired_path(process_id)
+        if path is None or not path.exists():
+            return None
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+        if owner is not None and tuple(receipt["owner"]) != owner:
+            return self._error(process_id, "unknown_process_id")
+        snapshot = receipt["snapshot"]
+        if command is not None and command != snapshot["command"]:
+            return self._error(process_id, "tool_call_id reused with different command")
+        if request_id is not None:
+            for key, reply in receipt["replies"]:
+                if key == [consumer_id, request_id]:
+                    return reply
+        result = self._error(process_id, "process_result_expired")
+        result.update(log_path=snapshot["log_path"], returncode=snapshot["returncode"])
+        result["result"] += (
+            f"; command exited with returncode={snapshot['returncode']}. "
+            f"Read retained output at log_path={snapshot['log_path']}. "
+            "The command was not restarted."
+        )
+        return result
+
     def poll(
         self,
         process_id: str,
@@ -248,7 +339,9 @@ class ProcessRuntime:
             )
         record = self._processes.get(process_id)
         if record is None:
-            return self._error(process_id, "unknown_process_id")
+            return self.retired_result(
+                process_id, consumer_id=consumer_id, request_id=request_id
+            ) or self._error(process_id, "unknown_process_id")
         started = time.monotonic()
         key = (consumer_id, request_id) if request_id else None
         with record.changed:
@@ -303,8 +396,8 @@ class ProcessRuntime:
                 )
             if since_sequence is None and max_chars:
                 record.cursors[consumer_id] = next_sequence
-                if snapshot["process_status"] == "exited":
-                    record.completion_observed = True
+            if max_chars and snapshot["process_status"] == "exited":
+                record.completion_observed = True
             if key is not None:
                 record.replies[key] = dict(snapshot)
                 while len(record.replies) > 128:

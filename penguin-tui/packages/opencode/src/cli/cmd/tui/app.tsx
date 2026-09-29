@@ -483,6 +483,23 @@ function App() {
       },
     },
     {
+      title: "Toggle ultrafast mode",
+      value: "model.ultrafast.toggle",
+      category: "Agent",
+      enabled: sdk.penguin,
+      slash: {
+        name: "ultrafast",
+      },
+      onSelect: (dialog) => {
+        local.model.ultrafast.toggle()
+        toast.show({
+          variant: "info",
+          message: local.model.ultrafast.enabled() ? "Ultrafast mode on" : "Ultrafast mode off",
+        })
+        dialog.clear()
+      },
+    },
+    {
       title: "Toggle fast mode",
       value: "model.fast.toggle",
       category: "Agent",

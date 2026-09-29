@@ -71,9 +71,24 @@ Process access is scoped to the launching session and agent. Model-supplied
 arguments cannot override that ownership. Provider call IDs identify retried
 launches and reads; cached read responses are replayed without advancing the
 cursor twice. Retry responses are retained for the most recent 128 calls per
-process. Completed processes whose output was consumed can be evicted when the
-128-process registry is full; their logs remain available. Handles and retry
-state do not survive server restart.
+process. The shared registry holds at most 128 handles. When it fills, a new
+command retires an exited handle, preferring the oldest consumed result and then
+the oldest unread completion. Running and draining commands are never retired.
+Explicit and automatic final polls both count as observing completion; delivery
+of a completion notification alone does not mean its output was read.
+
+Retirement closes stdin and saves ownership, exit metadata, and cached read
+responses under a private `process-logs/retired-*` directory before releasing
+the handle. Existing cached calls still replay, including retried command
+launches. Other calls to a retired handle return `process_result_expired` with
+the exit code and retained `log_path`; read that file to recover output. Reusing
+the original launch call ID never restarts a retired command. These receipts
+share the logs' disk retention policy; handles and retry state do not survive
+server restart. Pending completion notices expire with their handles.
+
+If every slot is running or draining, `process_limit_reached` reports state
+counts and the limit. Wait for completion or stop an owned command that is no
+longer needed. A global cleanup is not required to retire completed records.
 
 ## Completion notices
 

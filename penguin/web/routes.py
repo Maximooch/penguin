@@ -1103,7 +1103,7 @@ def _apply_request_service_tier_override(
     if service_tier is None:
         raise HTTPException(
             status_code=400,
-            detail="service_tier must be one of: auto, default, flex, priority",
+            detail="service_tier must be one of: auto, default, flex, priority, ultrafast",
         )
 
     if model_config is not None:

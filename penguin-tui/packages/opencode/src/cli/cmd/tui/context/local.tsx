@@ -14,6 +14,7 @@ import { useSDK } from "./sdk"
 import { RGBA } from "@opentui/core"
 import type { Agent } from "@opencode-ai/sdk/v2"
 import { nextVariantSelection } from "./variant-cycle"
+import { createPenguinSpeedModes, isPenguinSpeedPreference, type PenguinSpeedPreference } from "./penguin-speed-mode"
 import { resolveCatalogModel } from "../util/model-selection"
 import { createModelCatalogProviders, hasSparseModelCatalog, modelCatalogCount } from "../util/model-catalog"
 
@@ -146,7 +147,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           modelID: string
         }[]
         variant: Record<string, string | undefined>
-        fast?: boolean
+        fast?: PenguinSpeedPreference
       }>({
         ready: false,
         model: {},
@@ -183,7 +184,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           if (Array.isArray(x.recent)) setModelStore("recent", x.recent)
           if (Array.isArray(x.favorite)) setModelStore("favorite", x.favorite)
           if (typeof x.variant === "object" && x.variant !== null) setModelStore("variant", x.variant)
-          if (typeof x.fast === "boolean") setModelStore("fast", x.fast)
+          if (isPenguinSpeedPreference(x.fast)) setModelStore("fast", x.fast)
         })
         .catch(() => {})
         .finally(() => {
@@ -417,26 +418,14 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             this.set(result.variant)
           },
         },
-        fast: {
-          override() {
-            return modelStore.fast
-          },
-          enabled() {
-            const config = sync.data.config as { service_tier?: string }
-            return modelStore.fast ?? config.service_tier?.toLowerCase() === "priority"
-          },
-          set(value: boolean | undefined) {
+        ...createPenguinSpeedModes({
+          get: () => modelStore.fast,
+          set(value) {
             setModelStore("fast", value)
             save()
           },
-          toggle() {
-            this.set(!this.enabled())
-          },
-          serviceTier() {
-            if (modelStore.fast === undefined) return undefined
-            return modelStore.fast ? "priority" : "default"
-          },
-        },
+          configured: () => (sync.data.config as { service_tier?: string }).service_tier,
+        }),
       }
     })
 

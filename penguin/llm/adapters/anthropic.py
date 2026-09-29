@@ -6,6 +6,7 @@ import logging
 import os
 import time
 import traceback
+from functools import lru_cache
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 import anthropic
@@ -29,6 +30,30 @@ from ..reasoning_variants import anthropic_reasoning_efforts
 from penguin.constants import get_default_max_output_tokens
 
 logger = logging.getLogger(__name__)
+
+# Anthropic dropped sampling controls (`temperature`, `top_p`, `top_k`) from the
+# Messages API. Penguin still accepts `temperature` in its adapter signatures for
+# interface compatibility with the other providers, but it is never forwarded.
+# First and second generation Claude models predate vision input support.
+_ANTHROPIC_NON_VISION_MODEL_MARKERS = ("claude-1", "claude-2", "claude-instant")
+
+
+@lru_cache(maxsize=1)
+def _supported_messages_create_params() -> Set[str]:
+    """Return the keyword names the installed anthropic SDK will accept."""
+
+    try:
+        from anthropic.resources.messages import AsyncMessages
+
+        signature = inspect.signature(AsyncMessages.create)
+    except Exception:  # pragma: no cover - defensive against SDK reshuffles
+        logger.debug("Could not introspect anthropic messages.create signature")
+        return set()
+    return {
+        name
+        for name, parameter in signature.parameters.items()
+        if parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    }
 
 
 class AnthropicAdapter(BaseAdapter):
@@ -243,6 +268,44 @@ class AnthropicAdapter(BaseAdapter):
             return {}
         return dict(self._last_usage)
 
+    def _filter_messages_create_params(
+        self, params: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Drop request keys the installed anthropic SDK does not accept.
+
+        The SDK validates keyword arguments client side, so a single stale key
+        (for example `temperature`, removed from the Messages API) fails every
+        request before it reaches the provider. Filtering here keeps Penguin
+        usable across SDK versions and surfaces the drift in logs instead.
+        """
+
+        supported = _supported_messages_create_params()
+        if not supported:
+            return dict(params)
+        unsupported = sorted(key for key in params if key not in supported)
+        if not unsupported:
+            return dict(params)
+        self.logger.warning(
+            "Dropping Anthropic Messages parameters unsupported by the installed "
+            "anthropic SDK: %s",
+            ", ".join(unsupported),
+        )
+        return {key: value for key, value in params.items() if key in supported}
+
+    async def _create_messages(self, params: Dict[str, Any]) -> Any:
+        """Send a Messages request, ignoring parameters this SDK cannot accept."""
+
+        return await self.async_client.messages.create(
+            **self._filter_messages_create_params(params)
+        )
+
+    def _merge_usage(self, accumulator: Dict[str, Any], usage: Any) -> None:
+        """Merge usage payloads, keeping the latest non-null values."""
+
+        for key, value in self._usage_to_dict(usage).items():
+            if value is not None:
+                accumulator[key] = value
+
     def get_capabilities(self) -> LLMProviderCapabilities:
         """Return Anthropic Messages capability metadata."""
 
@@ -289,13 +352,15 @@ class AnthropicAdapter(BaseAdapter):
                     system_message = str(system_message).rstrip()
                 break
 
+        # `temperature` stays in the signature for adapter interface
+        # compatibility but is never forwarded; see the module note above.
+        del temperature
         request_params: Dict[str, Any] = {
             "model": self.model_config.model,
             "messages": formatted_messages,
             "max_tokens": max_output_tokens
             or self.model_config.max_output_tokens
             or 4096,
-            "temperature": temperature or self.model_config.temperature or 0.7,
             "stream": stream,
         }
         if system_message:
@@ -445,14 +510,15 @@ class AnthropicAdapter(BaseAdapter):
             # Format messages for Anthropic
             formatted_messages = self.format_messages(messages)
 
-            # Prepare request parameters
+            # Prepare request parameters. `temperature` is not forwarded; see
+            # the module note above the adapter class.
+            del temperature
             request_params = {
                 "model": self.model_config.model,
                 "messages": formatted_messages,
                 "max_tokens": max_tokens
                 or self.model_config.max_tokens
                 or get_default_max_output_tokens(),
-                "temperature": temperature or self.model_config.temperature or 0.4,
             }
 
             # Add system prompt if provided (strip trailing whitespace)
@@ -485,10 +551,10 @@ class AnthropicAdapter(BaseAdapter):
             self._ensure_no_trailing_whitespace(request_params)
 
             self.logger.debug(
-                f"Sending non-streaming request to Anthropic: Model={request_params['model']}, MaxTokens={request_params['max_tokens']}, Temp={request_params['temperature']}, SystemPromptLength={len(request_params.get('system', ''))}, NumMessages={len(request_params['messages'])}"
+                f"Sending non-streaming request to Anthropic: Model={request_params['model']}, MaxTokens={request_params['max_tokens']}, SystemPromptLength={len(request_params.get('system', ''))}, NumMessages={len(request_params['messages'])}"
             )
 
-            response = await self.async_client.messages.create(**request_params)
+            response = await self._create_messages(request_params)
 
             # Log the raw response object
             try:
@@ -552,14 +618,15 @@ class AnthropicAdapter(BaseAdapter):
                         system_message = system_message.rstrip()
                     break
 
-            # Prepare request parameters
+            # Prepare request parameters. `temperature` is not forwarded; see
+            # the module note above the adapter class.
+            del temperature
             request_params = {
                 "model": self.model_config.model,
                 "messages": formatted_messages,
                 "max_tokens": max_output_tokens
                 or self.model_config.max_output_tokens
                 or 4096,
-                "temperature": temperature or self.model_config.temperature or 0.7,
                 "stream": stream,
             }
 
@@ -591,13 +658,13 @@ class AnthropicAdapter(BaseAdapter):
 
             # Make the API call
             self.logger.debug(
-                f"Sending request to Anthropic: Model={request_params['model']}, MaxTokens={request_params['max_tokens']}, Temp={request_params['temperature']}, SystemPromptLength={len(request_params.get('system', ''))}, NumMessages={len(request_params['messages'])}, Stream={stream}"
+                f"Sending request to Anthropic: Model={request_params['model']}, MaxTokens={request_params['max_tokens']}, SystemPromptLength={len(request_params.get('system', ''))}, NumMessages={len(request_params['messages'])}, Stream={stream}"
             )
 
             if stream:
                 return await self._handle_streaming(request_params, stream_callback)
             else:
-                response = await self.async_client.messages.create(**request_params)
+                response = await self._create_messages(request_params)
                 # Log the raw response object for non-streaming completion as well
                 try:
                     import pprint
@@ -703,14 +770,14 @@ class AnthropicAdapter(BaseAdapter):
         final_response_object = None  # To store the final message object
         stream_error = None  # To store any exception during streaming
         stop_reason = None  # To store the stop reason if available
-        usage_info = None  # To store usage info if available
+        usage_info: Dict[str, Any] = {}  # Merged usage across stream events
         chunk_count = 0
         received_content = False
         saw_message_stop = False
 
         try:
             # Create the streaming response
-            stream = await self.async_client.messages.create(**params)
+            stream = await self._create_messages(params)
 
             # Track content reception
             last_chunk_time = time.time()
@@ -783,15 +850,30 @@ class AnthropicAdapter(BaseAdapter):
                             elif chunk.content_block.type == "tool_use":
                                 self._record_tool_use_start(chunk)
 
-                        elif (
-                            chunk.type == "message_delta"
-                            and hasattr(chunk, "usage")
-                            and hasattr(chunk, "stop_reason")
-                        ):
-                            # Capture usage and stop reason from message_delta if available
-                            stop_reason = chunk.stop_reason
-                            self._set_last_finish_reason(stop_reason)
-                            usage_info = chunk.usage
+                        elif chunk.type == "message_start":
+                            start_message = getattr(chunk, "message", None)
+                            self._merge_usage(
+                                usage_info, getattr(start_message, "usage", None)
+                            )
+                            provider_message_id = getattr(start_message, "id", None)
+                            if provider_message_id:
+                                self._update_request_lifecycle(
+                                    status=ProviderRequestStatus.STREAMING,
+                                    provider_response_id=provider_message_id,
+                                )
+
+                        elif chunk.type == "message_delta":
+                            # Anthropic reports usage on the event and nests the
+                            # stop reason under `delta`; older SDK builds exposed
+                            # `stop_reason` directly on the event.
+                            self._merge_usage(usage_info, getattr(chunk, "usage", None))
+                            delta = getattr(chunk, "delta", None)
+                            event_stop_reason = getattr(delta, "stop_reason", None)
+                            if not event_stop_reason:
+                                event_stop_reason = getattr(chunk, "stop_reason", None)
+                            if event_stop_reason:
+                                stop_reason = event_stop_reason
+                                self._set_last_finish_reason(stop_reason)
                             self.logger.debug(
                                 f"Received message_delta: stop_reason={stop_reason}, usage={usage_info}"
                             )
@@ -832,9 +914,15 @@ class AnthropicAdapter(BaseAdapter):
                     break
 
             # ---- After the loop ----
-            # Try to get the final message object AFTER the stream completes
+            # Try to get the final message object AFTER the stream completes.
+            # Raw SDK streams (`messages.create(stream=True)`) do not expose
+            # `get_final_message`; only the `messages.stream()` manager does.
             try:
-                final_response_object = await stream.get_final_message()
+                final_response_object = (
+                    await stream.get_final_message()
+                    if hasattr(stream, "get_final_message")
+                    else None
+                )
                 if final_response_object:
                     # Log the raw final message object from the stream
                     import pprint
@@ -855,8 +943,10 @@ class AnthropicAdapter(BaseAdapter):
                         ),
                     )
                     self._set_last_finish_reason(stop_reason)
-                    if not usage_info:
-                        usage_info = final_response_object.usage
+                    self._merge_usage(
+                        usage_info,
+                        getattr(final_response_object, "usage", None),
+                    )
             except Exception as e:
                 self.logger.warning(
                     f"Could not get final message object from stream: {e}"
@@ -1768,8 +1858,18 @@ class AnthropicAdapter(BaseAdapter):
         return True
 
     def supports_vision(self) -> bool:
-        """Whether this provider supports vision/images"""
-        return "claude-3" in self.model_config.model
+        """Whether this provider supports vision/images.
+
+        Every Claude 3 and later model accepts image content blocks; only the
+        first and second generation Claude models did not.
+        """
+
+        model = str(getattr(self.model_config, "model", "") or "").strip().lower()
+        if "claude" not in model:
+            return False
+        return not any(
+            marker in model for marker in _ANTHROPIC_NON_VISION_MODEL_MARKERS
+        )
 
     def _safe_log_content(self, content):
         """Create a safe version of content for logging, removing base64 data"""
