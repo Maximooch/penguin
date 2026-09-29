@@ -3783,28 +3783,29 @@ async def handle_chat_message(
         request.link_execution is not None
         or request.external_subscription_execution is not None
     )
+    has_link_assignment_policy = request.approval_policy is not None
     is_link_service = bool(
         http_request is not None
         and getattr(http_request.state, "auth_method", None) == "link_service"
     )
-    if is_link_service and not has_link_execution_authority:
+    if is_link_service and not (
+        has_link_execution_authority or has_link_assignment_policy
+    ):
         raise HTTPException(
             status_code=403,
             detail=(
-                "The Link execution credential requires a Link-managed or "
-                "personal-subscription execution descriptor."
+                "The Link execution credential requires an execution descriptor "
+                "or an assignment approval policy."
             ),
         )
-    if has_link_execution_authority:
+    if has_link_execution_authority or has_link_assignment_policy:
         if http_request is None:
             raise HTTPException(
                 status_code=403,
-                detail="Link execution requires an authenticated HTTP request.",
+                detail="Link execution or policy requires an authenticated HTTP request.",
             )
         authenticate_link_service_request(http_request)
-    if (
-        request.permission_mode is not None or request.approval_policy is not None
-    ) and not has_link_execution_authority:
+    if request.permission_mode is not None and not has_link_execution_authority:
         raise HTTPException(
             status_code=403,
             detail="Runtime permission overrides require Link execution authority.",

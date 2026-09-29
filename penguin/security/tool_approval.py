@@ -74,6 +74,12 @@ def approval_identity(
     """Describe the operation and every target covered by an approval."""
     operation = get_highest_risk_operation(tool)
     resources = extract_resources_from_input(tool, arguments, context)
+    if any(op.category == "filesystem" for op in get_tool_operations(tool)):
+        # Bind both the prompt and its grant to the target at approval time.
+        # Dispatch must not follow a symlink retargeted after that decision.
+        resources = [
+            str(Path(resource).expanduser().resolve()) for resource in resources
+        ]
     # Unknown tools have no resource extractor: bind approval to their arguments.
     resource = (
         resources[0]

@@ -67,6 +67,7 @@ jobs:
             tests/web/test_chat_request_cancel.py \
             tests/llm/test_link_provider.py \
             tests/llm/test_link_runtime_contract.py \
+            tests/test_link_runtime_permission_policy.py \
             tests/web/test_external_subscription_service.py \
             tests/web/test_link_execution_authority.py
           ruff format --check \
@@ -91,6 +92,7 @@ jobs:
             tests/llm/test_link_provider.py \
             tests/llm/test_link_runtime_contract.py \
             tests/llm/test_provider_registry.py \
+            tests/test_link_runtime_permission_policy.py \
             tests/web/test_link_inference_service.py \
             tests/web/test_external_subscription_service.py \
             tests/web/test_link_execution_authority.py \
