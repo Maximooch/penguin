@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 import pytest
 
+
 from penguin.llm.adapters.openai import OpenAIAdapter
 from penguin.llm.contracts import (
     ErrorCategory,
@@ -68,7 +69,7 @@ async def test_oauth_request_uses_stored_record_without_env_access(
             del exc_type, exc, tb
             return False
 
-        def stream(self, method: str, url: str, headers=None, json=None):  # type: ignore[no-untyped-def]
+        def stream(self, method: str, url: str, headers=None, json=None, timeout=None):  # type: ignore[no-untyped-def]
             del method, url
             seen["auth"] = dict(headers or {}).get("Authorization")
             seen["account"] = dict(headers or {}).get("ChatGPT-Account-Id")
@@ -141,7 +142,8 @@ async def test_oauth_request_routes_to_codex_with_required_headers(
             del exc_type, exc, tb
             return False
 
-        def stream(self, method: str, url: str, headers=None, json=None):  # type: ignore[no-untyped-def]
+        def stream(self, method: str, url: str, headers=None, json=None, timeout=None):  # type: ignore[no-untyped-def]
+            seen["timeout"] = timeout
             seen["method"] = method
             seen["url"] = url
             seen["headers"] = dict(headers or {})
@@ -240,7 +242,7 @@ async def test_oauth_request_preserves_requested_model_id(
             del exc_type, exc, tb
             return False
 
-        def stream(self, method: str, url: str, headers=None, json=None):  # type: ignore[no-untyped-def]
+        def stream(self, method: str, url: str, headers=None, json=None, timeout=None):  # type: ignore[no-untyped-def]
             del method, url, headers
             seen["model"] = (json or {}).get("model")
             response = _FakeResponse(
@@ -303,7 +305,7 @@ async def test_oauth_request_normalizes_responses_function_tools(
             del exc_type, exc, tb
             return False
 
-        def stream(self, method: str, url: str, headers=None, json=None):  # type: ignore[no-untyped-def]
+        def stream(self, method: str, url: str, headers=None, json=None, timeout=None):  # type: ignore[no-untyped-def]
             del method, url, headers
             seen["json"] = dict(json or {})
             response = _FakeResponse(
@@ -386,7 +388,7 @@ async def test_oauth_stream_records_reasoning_debug_snapshot(
             del exc_type, exc, tb
             return False
 
-        def stream(self, method: str, url: str, headers=None, json=None):  # type: ignore[no-untyped-def]
+        def stream(self, method: str, url: str, headers=None, json=None, timeout=None):  # type: ignore[no-untyped-def]
             del method, url, headers, json
             response = _FakeResponse(
                 200,
@@ -481,7 +483,7 @@ async def test_oauth_request_includes_reasoning_summary_auto_and_encrypted_conte
             del exc_type, exc, tb
             return False
 
-        def stream(self, method: str, url: str, headers=None, json=None):  # type: ignore[no-untyped-def]
+        def stream(self, method: str, url: str, headers=None, json=None, timeout=None):  # type: ignore[no-untyped-def]
             del method, url, headers
             seen["json"] = dict(json or {})
             response = _FakeResponse(
@@ -546,7 +548,7 @@ async def test_oauth_stream_extracts_reasoning_from_output_item_done_summary(
             del exc_type, exc, tb
             return False
 
-        def stream(self, method: str, url: str, headers=None, json=None):  # type: ignore[no-untyped-def]
+        def stream(self, method: str, url: str, headers=None, json=None, timeout=None):  # type: ignore[no-untyped-def]
             del method, url, headers, json
             response = _FakeResponse(
                 200,
@@ -599,6 +601,8 @@ async def test_oauth_stream_extracts_reasoning_from_output_item_done_summary(
     assert debug_snapshot["visible_reasoning_summary_returned"] is True
     assert debug_snapshot["visible_reasoning_chars"] == len("Thinking from summary.")
 
+
+pytestmark = pytest.mark.usefixtures("isolate_codex_pool")
 
 def test_extract_reasoning_from_response_object_reads_summary_array() -> None:
     model_config = ModelConfig(
@@ -1136,7 +1140,7 @@ async def test_oauth_request_refreshes_before_codex_call(
             del exc_type, exc, tb
             return False
 
-        def stream(self, method: str, url: str, headers=None, json=None):  # type: ignore[no-untyped-def]
+        def stream(self, method: str, url: str, headers=None, json=None, timeout=None):  # type: ignore[no-untyped-def]
             del method, url
             seen["auth"] = dict(headers or {}).get("Authorization")
             seen["account"] = dict(headers or {}).get("ChatGPT-Account-Id")
@@ -1257,7 +1261,7 @@ async def test_oauth_codex_status_error_emits_diag_and_trace(
             del exc_type, exc, tb
             return False
 
-        def stream(self, method: str, url: str, headers=None, json=None):  # type: ignore[no-untyped-def]
+        def stream(self, method: str, url: str, headers=None, json=None, timeout=None):  # type: ignore[no-untyped-def]
             del method, url, headers, json
             return _FakeStreamContext(
                 _FakeResponse(
@@ -1591,7 +1595,7 @@ async def test_oauth_codex_incomplete_stream_does_not_lock_next_turn(
             del exc_type, exc, tb
             return False
 
-        def stream(self, method: str, url: str, headers=None, json=None):  # type: ignore[no-untyped-def]
+        def stream(self, method: str, url: str, headers=None, json=None, timeout=None):  # type: ignore[no-untyped-def]
             del method, url, headers, json
             return _FakeStreamContext(responses.pop(0))
 

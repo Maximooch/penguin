@@ -154,7 +154,7 @@ class FakeCodexTransport:
                 del exc_type, exc, tb
                 return False
 
-            def stream(self, method: str, url: str, headers=None, json=None):  # type: ignore[no-untyped-def]
+            def stream(self, method: str, url: str, headers=None, json=None, timeout=None):  # type: ignore[no-untyped-def]
                 transport.requests.append(
                     {
                         "method": method,

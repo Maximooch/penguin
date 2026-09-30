@@ -49,6 +49,7 @@ from penguin.llm.api_client import APIClient  # type: ignore
 from penguin.llm.contracts import LLMProviderError
 from penguin.system.context_epoch import ContextEpoch
 from penguin.system.request_prefix import RequestPrefix
+from penguin.llm.codex_routing import CodexRouting, CURRENT_CODEX_ROUTING
 from penguin.llm.provider_transform import native_tool_format
 from penguin.llm.runtime import (
     build_empty_response_diagnostics as build_llm_empty_response_diagnostics,
@@ -561,6 +562,7 @@ class EngineRunState:
     api_client: Optional[Any] = None
     model_config: Optional[Any] = None
     provider_attempt_usage: Dict[str, Any] = field(default_factory=dict)
+    codex_routing: Dict[tuple[int, str], CodexRouting] = field(default_factory=dict)
     context_epochs: Dict[tuple[int, str], ContextEpoch] = field(default_factory=dict)
     request_prefixes: Dict[tuple[int, str], RequestPrefix] = field(default_factory=dict)
 
@@ -3770,9 +3772,21 @@ class Engine:
         # Step 2: Call LLM with retry on empty response
         try:
             provider_started = time.perf_counter()
-            assistant_response = await self._call_llm_with_retry(
-                api_client, messages, streaming, stream_callback, extra_kwargs
-            )
+            routing = None
+            if run_state is not None:
+                routing_key = (
+                    id(cm.conversation), self._conversation_session_id(cm) or ""
+                )
+                routing = run_state.codex_routing.setdefault(
+                    routing_key, CodexRouting(session_id=routing_key[1])
+                )
+            routing_token = CURRENT_CODEX_ROUTING.set(routing)
+            try:
+                assistant_response = await self._call_llm_with_retry(
+                    api_client, messages, streaming, stream_callback, extra_kwargs
+                )
+            finally:
+                CURRENT_CODEX_ROUTING.reset(routing_token)
             provider_duration_ms = (time.perf_counter() - provider_started) * 1000
             _trace_log_info(
                 "engine.llm_step.provider_done request=%s session=%s agent=%s "
