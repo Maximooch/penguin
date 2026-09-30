@@ -130,9 +130,14 @@ class AsyncToolDispatcher:
         root = manager._resolve_file_root(ctx)
         for key in ("directory", "project_root", "workspace_root"):
             ctx.setdefault(key, root)
+        ctx["directory"] = root
         arguments = manager._normalize_tool_input_paths(
             tool_input if isinstance(tool_input, dict) else {}, root
         )
+        if name in {"execute_command", "process_start"}:
+            from penguin.security.tool_approval import normalize_process_launch
+
+            arguments = normalize_process_launch(arguments, root)
         if name in {"conversation_search", "conversation_open"}:
             ctx, arguments = manager._archive_permission_input(ctx, arguments)
         _, _, resources = approval_identity(name, arguments, ctx)

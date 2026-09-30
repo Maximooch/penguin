@@ -37,6 +37,14 @@ def _call_key(tool: str, arguments: dict[str, Any], context: dict[str, Any]) -> 
     return json.dumps([tool, arguments, authority], sort_keys=True, default=str)
 
 
+def normalize_process_launch(arguments: dict[str, Any], root: str) -> dict[str, Any]:
+    """Bind approval and launch to the same absolute working directory."""
+    cwd = Path(arguments.get("cwd") or root).expanduser()
+    if not cwd.is_absolute():
+        cwd = Path(root) / cwd
+    return {**arguments, "cwd": str(cwd.resolve())}
+
+
 def is_call_authorized(
     tool: str, arguments: dict[str, Any], context: dict[str, Any]
 ) -> bool:
@@ -113,5 +121,6 @@ __all__ = [
     "authorized_call",
     "is_call_authorized",
     "is_path_authorized",
+    "normalize_process_launch",
     "wait_for_tool_approval",
 ]

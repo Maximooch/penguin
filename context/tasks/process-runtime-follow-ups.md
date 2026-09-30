@@ -62,3 +62,33 @@ session-family workstream and rerun the pinned Bun typecheck and goal tests.
 This establishes that the reported failures predate the process PR. It does not
 make the checks green or waive branch-protection requirements. Keep the failures
 visible and link the follow-up fixes when available.
+
+## Implemented lifecycle permission contract
+
+- Each process tool call is checked against the current request and local policy.
+  Start approval is not a lease on the process. When policy returns ASK, process
+  calls require a fresh per-dispatch approval, even if an older reply requested
+  session/pattern scope. Explicit policy ALLOW still runs without a prompt.
+- The one-dispatch grant binds tool, arguments, session, agent, and request
+  context. It expires when dispatch exits; it cannot authorize a later stdin
+  payload, delegated agent, or another session. Hard DENY wins over a grant,
+  including a policy change while approval is pending. Rejection, expiry, and
+  cancellation do not dispatch the operation.
+- Both launch tools resolve relative `cwd` against the resolved execution root
+  before approval. The displayed arguments and executed cwd are identical;
+  missing/null/invalid request directories use the manager's fallback root.
+  This does not introduce a sandbox or a new outside-workspace command policy.
+- Polling is read-only and remains available when mutation is denied; policy
+  checks target the process handle. Stop and stdin remain mutating operations,
+  not exceptions to read-only mode. Changing mode does not automatically kill
+  an already-running process.
+- ProcessTools retains session-and-agent ownership checks for live and retired
+  handles. Delegation does not transfer ownership. Retained output via polling
+  follows those checks; reading a log path directly remains a filesystem read
+  under existing filesystem policy, not a process-grant bypass of that policy.
+  Retention is unchanged and logs are not a new per-session filesystem sandbox.
+
+The goal continuation and TUI fixes are already tracked by PR #106; they are
+not duplicated in this permission-contract change. Deterministic acceptance
+coverage lives in `tests/tools/test_process_permission_contract.py` alongside
+existing permission-resume and process-service tests.
