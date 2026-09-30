@@ -641,9 +641,7 @@ class ConversationManager:
         # Recompute usage under child's CWM
         try:
             if child_conv.context_window:
-                child_conv.session = child_conv.context_window.process_session(
-                    child_conv.session
-                )
+                child_conv.context_window.analyze_session(child_conv.session)
         except Exception:
             pass
 
