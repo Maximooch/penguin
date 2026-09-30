@@ -277,7 +277,7 @@ def extract_resource_from_input(
     if tool_name in ("memory_search", "perplexity_search"):
         return tool_input.get("query")
 
-    if tool_name in ("process_write_stdin", "process_stop"):
+    if tool_name in ("process_poll", "process_write_stdin", "process_stop"):
         return tool_input.get("process_id")
 
     if tool_name == "git_push":

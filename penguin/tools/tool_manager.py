@@ -2502,12 +2502,15 @@ class ToolManager:
 
         try:
             from penguin.security.approval import get_approval_manager
+            from penguin.tools.process_tools import PROCESS_TOOL_NAMES
 
             approval_manager = get_approval_manager()
-            if approval_manager.check_pre_approved(
-                operation,
-                resource,
-                session_id,
+
+            # A running process is not a reusable grant to future commands,
+            # stdin payloads, agents, or policy snapshots.
+            if (
+                tool_name not in PROCESS_TOOL_NAMES
+                and approval_manager.check_pre_approved(operation, resource, session_id)
             ):
                 logger.info("Tool '%s' pre-approved for %s", tool_name, resource)
                 return None
@@ -4428,7 +4431,7 @@ class ToolManager:
                     "ToolManager.execute_tool_async() instead"
                 )
             file_root = self._resolve_file_root(effective_context)
-            effective_context.setdefault("directory", file_root)
+            effective_context["directory"] = file_root
             effective_context.setdefault("project_root", file_root)
             effective_context.setdefault("workspace_root", file_root)
             tool_input = tool_input if isinstance(tool_input, dict) else {}
@@ -4446,6 +4449,10 @@ class ToolManager:
                 return self._mcp_provider.execute_tool(tool_name, tool_input)
 
             tool_input = self._normalize_tool_input_paths(tool_input, file_root)
+            if tool_name in {"execute_command", "process_start"}:
+                from penguin.security.tool_approval import normalize_process_launch
+
+                tool_input = normalize_process_launch(tool_input, file_root)
 
             permission_response = self._permission_response(
                 tool_name,
