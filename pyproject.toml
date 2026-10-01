@@ -267,6 +267,12 @@ penguin = [
 [tool.uv]
 exclude-newer = "7 days"
 
+# Vetted exception to the 7-day rail: oauthlib 4.0.0 (2026-09-28) resolves
+# Dependabot alerts #345/#346. Dated cutoff so future oauthlib releases stay
+# subject to the rail. Remove once the global rail passes 2026-10-05.
+[tool.uv.exclude-newer-package]
+oauthlib = "2026-10-01T00:00:00Z"
+
 
 # Development tools configuration
 [tool.pytest.ini_options]
