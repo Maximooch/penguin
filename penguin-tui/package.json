@@ -37,7 +37,7 @@
       "@solid-primitives/storage": "4.3.3",
       "@tailwindcss/vite": "4.1.11",
       "diff": "8.0.2",
-      "dompurify": "3.4.13",
+      "dompurify": "3.4.16",
       "ai": "5.0.124",
       "hono": "4.10.7",
       "hono-openapi": "1.1.2",
