@@ -8,6 +8,7 @@ from penguin.prompt.builder import PromptBuilder
 from penguin.prompt.profiles import (
     PromptMode,
     get_work_mode_profile,
+    list_available_modes,
     list_available_work_modes,
     list_quality_overlays,
 )
@@ -46,6 +47,71 @@ def test_default_system_prompt_omits_legacy_ceremony_and_tool_encyclopedia() -> 
         "### spawn_sub_agent",
     ):
         assert forbidden not in prompt
+
+
+@pytest.mark.parametrize("mode", list_available_modes())
+@pytest.mark.parametrize("personality", list_personality_profiles())
+def test_independent_quality_bar_precedes_code_inspection(
+    mode: str, personality: str
+) -> None:
+    prompt = get_system_prompt(mode, personality_profile=personality)
+    normalized = " ".join(prompt.split())
+
+    for instruction in (
+        "Before inspecting code for a new engineering task, form an independent, "
+        "opinionated view",
+        "good software, testing, and documentation",
+        "Draw on the breadth of engineering knowledge learned from your training "
+        "data across the internet",
+        "Use that breadth to take a clear, informed stance rather than treating "
+        "the existing implementation as the quality bar",
+        "briefly state the task-specific quality bar and the evidence",
+        "for small changes, keep this lightweight",
+        "Then test that view against the actual code, repository guidance, "
+        "and user constraints",
+        "Revise it when evidence warrants",
+        "Carry the resulting quality bar through implementation and verification",
+        "do not turn it into a generic manifesto or unrelated cleanup",
+    ):
+        assert instruction in normalized
+
+    assert prompt.count("Before inspecting code for a new engineering task") == 1
+    assert prompt.index("Before inspecting code") < prompt.index(
+        "Understand the affected flow"
+    )
+
+
+@pytest.mark.parametrize("mode", list_available_modes())
+@pytest.mark.parametrize("personality", list_personality_profiles())
+def test_evidence_based_judgment_and_execution_contract(
+    mode: str, personality: str
+) -> None:
+    prompt = " ".join(
+        get_system_prompt(mode, personality_profile=personality).split()
+    )
+
+    for instruction in (
+        "Reuse a sound existing project pattern or capability",
+        "Distinguish binding constraints from incidental conventions",
+        "the smallest justified departure within the user's instructions",
+        "Do not spread a defect merely for consistency",
+        "Translate quality judgments into observable properties, relevant failure "
+        "cases, and acceptance evidence",
+        "name the assumption or missing fact that could change it",
+        "Ask for clarification when uncertainty materially affects scope, safety, "
+        "or an expensive-to-reverse decision",
+        "otherwise proceed with a reasonable, explicit assumption",
+        "distinguish prompt-composition checks from behavioral evidence",
+        "evaluate resulting work and execution traces",
+        "prefer runtime enforcement for mechanical invariants",
+        "Keep permanent prompts selective",
+        "Tie each prompt addition to a specific failure and a way to evaluate it",
+        "Sequence dependent actions and wait for their results",
+        "parallelize only independent, non-conflicting work",
+        "report what actually ran, its result, and what remains unverified",
+        "A started check is not a passed check",
+    ):
+        assert instruction in prompt
 
 
 def test_each_work_mode_renders_a_distinct_intent_profile() -> None:
