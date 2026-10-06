@@ -126,7 +126,7 @@ def _find_git_push_args(command: str) -> list[str] | None:
     caller uses ``execute_command`` instead of Penguin's dedicated Git tool.
     """
     try:
-        tokens = shlex.split(str(command or ""), posix=True)
+        tokens = _tokenize_shell_pattern(str(command or ""))
     except ValueError:
         return None
 
@@ -637,6 +637,32 @@ def _check_request_approval_policy(
         allow_lists = {}
     permission_mode = str(policy.get("permissionMode") or "")
     decisions: list[tuple[PermissionResult, str]] = []
+
+    if any(
+        operation in {Operation.PROCESS_EXECUTE, Operation.PROCESS_SPAWN}
+        for operation in operations
+    ):
+        # Arbitrary programs can write/delete files, access the network/secrets,
+        # or push via aliases and interpreters. Command parsing is not a sandbox.
+        # No allow-list can prove those effects absent. Preserve hard denials and
+        # require explicit approval for capabilities that are not unrestricted.
+        for action in ("fileWrite", "fileDelete", "gitPush", "network", "secrets"):
+            decision = policy.get(action, "ask")
+            if decision == "deny":
+                return PermissionResult.DENY, (
+                    f"Policy denies '{action}'; unsandboxed shell/code execution "
+                    "cannot enforce that restriction. Use a scoped tool instead."
+                )
+            if decision != "allow" or allow_lists.get(_ALLOW_LIST_FOR_ACTION[action]):
+                decisions.append(
+                    (
+                        PermissionResult.ASK,
+                        (
+                            f"Unsandboxed shell/code execution can perform '{action}' "
+                            "outside its allow-list; approval is required"
+                        ),
+                    )
+                )
 
     for operation in operations:
         if operation in _READ_OPERATIONS:
