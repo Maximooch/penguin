@@ -89,6 +89,27 @@ _OPENAI_CODEX_MODELS_CACHE: dict[str, Any] = {
 }
 
 
+def _codex_service_tier_ids(item: dict[str, Any]) -> list[str]:
+    """Collect the speed tiers a Codex catalog entry advertises.
+
+    Newer catalogs list ``service_tiers`` as ``[{"id": ...}]``; older ones use
+    ``additional_speed_tiers`` strings, and some only set a default tier.
+    """
+    tiers: list[str] = []
+    raw = [
+        *(item.get("service_tiers") or []),
+        *(item.get("additional_speed_tiers") or []),
+        item.get("default_service_tier"),
+    ]
+    for entry in raw:
+        tier = entry.get("id") if isinstance(entry, dict) else entry
+        if isinstance(tier, str) and tier.strip():
+            normalized = tier.strip().lower()
+            if normalized not in tiers:
+                tiers.append(normalized)
+    return tiers
+
+
 def _coerce_positive_int(value: Any, default: int) -> int:
     try:
         parsed = int(value)
@@ -522,6 +543,9 @@ def codex_oauth_provider_models(
             conf["supports_reasoning_summaries"] = item["supports_reasoning_summaries"]
         if isinstance(priority, int):
             conf["priority"] = priority
+        service_tiers = _codex_service_tier_ids(item)
+        if service_tiers:
+            conf["service_tiers"] = service_tiers
         discovered[model_id] = conf
 
     if not discovered:
