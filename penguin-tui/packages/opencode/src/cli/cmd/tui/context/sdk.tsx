@@ -6,6 +6,7 @@ import { useRoute } from "./route"
 import { createSessionAccessClient } from "./session-access"
 import { getPenguinAuthHeaders } from "./penguin-auth"
 import { cleanPenguinEvent, streamPenguinEvents } from "./penguin-event-stream"
+import { createProgramStatus, type ProgramStatusReport } from "../program-status"
 
 export type EventSource = {
   on: (handler: (event: Event) => void) => () => void
@@ -22,6 +23,16 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     sessionID?: string
   }) => {
     const abort = new AbortController()
+    const [programState, setProgramState] = createSignal<ProgramStatusReport>({
+      state: "idle",
+      message: "Waiting for a prompt",
+    })
+    const programStatus = createProgramStatus({
+      enabled: !!props.penguin && !!process.stdout.isTTY,
+      write: (text) => process.stdout.write(text),
+      tmux: !!process.env.TMUX,
+      onChange: setProgramState,
+    })
     const headers = props.penguin ? getPenguinAuthHeaders() : undefined
     const request = ((input: RequestInfo | URL, init?: RequestInit) => {
       const base = props.fetch ?? fetch
@@ -31,6 +42,8 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
           next.headers.set(key, value)
         }
       }
+      const interrupted = new URL(next.url).pathname.match(/^\/session\/([^/]+)\/abort$/)
+      if (next.method === "POST" && interrupted) programStatus.interrupt(decodeURIComponent(interrupted[1]))
       return base(next)
     }) as typeof fetch
     const sdk = createOpencodeClient({
@@ -186,12 +199,17 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     })
 
     onCleanup(() => {
+      programStatus.dispose()
       abort.abort()
       streamAbort?.abort()
       if (timer) clearTimeout(timer)
     })
 
     return {
+      programStatus,
+      get programState() {
+        return programState()
+      },
       access: createSessionAccessClient(props.url, request),
       client: sdk,
       event: emitter,

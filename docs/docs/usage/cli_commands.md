@@ -37,6 +37,46 @@ ptui
 penguin-tui
 ```
 
+The Penguin TUI automatically emits [OSC 7501 program status](https://www.superlogical.com/rex/docs/build/program-status)
+when stdout is a terminal. It reports the selected session as idle, working,
+waiting for approval/an answer/authentication, completed, or failed. Pressing a
+key acknowledges completion or failure; cancellation returns to idle. Messages
+are generic and do not include prompts, responses, or credentials. This is
+independent of notification settings, and terminals without support can ignore
+the reports. With tmux, enable passthrough (`set -g allow-passthrough on`).
+Headless CLI output and background-session records are not covered.
+
+The tab title also shows `[Idle]`, `[Working]`, `[Needs input]`,
+`[Done]`, or `[Error]`, including in Apple Terminal and cmux. Existing
+terminal-title settings still apply.
+
+With notification mode `terminal`, Penguin selects the terminal's notification
+protocol: OSC 777 for cmux and WezTerm, OSC 9 for iTerm2 and Ghostty,
+and OSC 99 for Kitty. Apple Terminal and unrecognized terminals receive a bell;
+whether it sounds or marks the tab depends on terminal preferences. Notifications
+remain off by default. Focus-aware terminals suppress alerts while the selected
+session is focused; terminals without focus reporting may also alert while focused.
+Override detection with `PENGUIN_TUI_NOTIFICATION_PROTOCOL=bell|osc9|osc99|osc777`.
+cmux detection takes precedence over its underlying Ghostty identity.
+Notification details are enabled by default. Completion alerts include up to 240 characters
+of the final assistant response, with credential redaction. Reasoning and tool
+output are excluded. Disable details in `/notifications` to use generic alerts.
+
+For an isolated smoke test, run these commands in separate terminals from
+`penguin-tui/packages/opencode`:
+
+```bash
+bun test/fixture/terminal-compat-server.ts
+XDG_STATE_HOME="$(mktemp -d)" bun run --conditions=browser src/index.ts --url http://127.0.0.1:9010
+```
+
+Dismiss the provider picker, use `/sessions`, and select “Terminal compatibility test”.
+Then POST to `http://127.0.0.1:9010/test/working`, followed by
+`/test/done` or `/test/error`, and inspect the tab title.
+`/test/question` opens a question. Switch away from the TUI before completing a
+run to check background notifications. The fixture uses no provider or real sessions.
+
+
 ### 2. One-off prompts (non-interactive)
 ```bash
 # Ask a single question (prints assistant reply and exits)

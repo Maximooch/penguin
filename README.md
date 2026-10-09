@@ -101,6 +101,7 @@ export PENGUIN_WEB_LOG_ENABLED=false
 Penguin exposes the same runtime through several surfaces:
 
 - `penguin` / `ptui` - terminal-first coding workflow with streaming, tools, and session navigation.
+- The Penguin TUI reports active-session status through OSC 7501 to supporting terminals, independently of notification settings. Compatible terminal titles show run state; optional alerts select cmux/iTerm2/WezTerm/Kitty protocols with a bell fallback for Apple Terminal. Completion alerts include a short response preview when notification details are enabled.
 - `penguin-cli` - scriptable CLI interface for prompts, tasks, config, and automation.
 - `penguin-web` - REST + WebSocket/SSE backend for the TUI and custom integrations.
 - Python API - `PenguinAgent`, `PenguinClient`, and `PenguinAPI` for embedding Penguin in code.

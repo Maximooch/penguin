@@ -1187,6 +1187,7 @@ export function Prompt(props: PromptProps) {
                 .then((result) => {
                   if (clientMessageID && commandSessionID) {
                     if (result.cancelled) {
+                      sdk.programStatus.interrupt(commandSessionID)
                       recoverPenguinPromptFailure({
                         messageID: clientMessageID,
                         sessionID: commandSessionID,
@@ -1205,6 +1206,7 @@ export function Prompt(props: PromptProps) {
                 })
                 .catch((error) => {
                   if (clientMessageID && commandSessionID) {
+                    sdk.programStatus.fail(commandSessionID)
                     recoverPenguinPromptFailure({
                       messageID: clientMessageID,
                       sessionID: commandSessionID,
@@ -1304,6 +1306,7 @@ export function Prompt(props: PromptProps) {
         setStore("pendingSeenBusy", false)
         setStore("runStartedAt", Date.now())
         const recover = () => {
+          sdk.programStatus.fail(sessionID)
           recoverPenguinPromptFailure({
             messageID,
             sessionID,

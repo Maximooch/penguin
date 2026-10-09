@@ -45,7 +45,7 @@ const MODE_LABELS: Record<NotificationMode, string> = {
 const MODE_DESCRIPTIONS: Partial<Record<NotificationMode, string>> = {
   visual: "In-TUI log only; no desktop banner or sound",
   bell: "Uses the terminal bell; depends on terminal settings",
-  osc: "Uses OSC 9; supported terminals may show a desktop banner",
+  osc: "Uses the detected terminal protocol, with a bell fallback",
   os: "Uses native desktop notifications on macOS, Linux, and Windows",
   terminal: "Uses terminal notification escape sequences; supported terminals may show a desktop banner",
   sound: "Plays a native system sound without showing a desktop banner",

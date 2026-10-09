@@ -60,7 +60,7 @@ def notification_settings_payload(core: Any | None = None) -> dict[str, Any]:
         "soundPack": sound_pack,
         "includeDetails": _env_bool(
             "PENGUIN_TUI_NOTIFICATION_INCLUDE_DETAILS",
-            default=False,
+            default=True,
         ),
         "supportedModes": sorted(NOTIFICATION_MODES),
         "soundPacks": sorted(SOUND_PACKS),

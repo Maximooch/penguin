@@ -44,6 +44,7 @@ import { exitSession } from "./util/exit"
 import { profileStartup } from "./util/startup-profile"
 import { normalizeNotificationPolicy } from "./notification-policy"
 import { NOTIFICATION_POLICY_OVERRIDE_KEY } from "./notification-settings"
+import { terminalProgramTitle } from "./terminal-compat"
 
 const PENGUIN_DOCS_URL = "https://penguin-rho.vercel.app"
 const OPENCODE_DOCS_URL = "https://opencode.ai/docs"
@@ -222,6 +223,7 @@ function App() {
   const toast = useToast()
   const { theme, mode, setMode } = useTheme()
   const sync = useSync()
+  useKeyboard(() => sdk.programStatus.acknowledge())
   const exit = useExit()
   const promptRef = usePromptRef()
 
@@ -252,22 +254,24 @@ function App() {
     if (!terminalTitleEnabled() || Flag.OPENCODE_DISABLE_TERMINAL_TITLE) return
     const appTitle = sdk.penguin ? "Penguin" : "OpenCode"
     const sessionPrefix = sdk.penguin ? "Penguin" : "OC"
+    const setTitle = (title: string) =>
+      renderer.setTerminalTitle(sdk.penguin ? terminalProgramTitle(sdk.programState, title) : title)
 
     if (route.data.type === "home") {
-      renderer.setTerminalTitle(appTitle)
+      setTitle(appTitle)
       return
     }
 
     if (route.data.type === "session") {
       const session = sync.session.get(route.data.sessionID)
       if (!session || SessionApi.isDefaultTitle(session.title)) {
-        renderer.setTerminalTitle(appTitle)
+        setTitle(appTitle)
         return
       }
 
       // Truncate title to 40 chars max
       const title = session.title.length > 40 ? session.title.slice(0, 37) + "..." : session.title
-      renderer.setTerminalTitle(`${sessionPrefix} | ${title}`)
+      setTitle(`${sessionPrefix} | ${title}`)
     }
   })
 
