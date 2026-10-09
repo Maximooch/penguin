@@ -1720,3 +1720,65 @@ async def test_modal_auth_method_and_catalog_model(
         "high": {"reasoning": {"effort": "high"}},
         "max": {"reasoning": {"effort": "max"}},
     }
+
+
+@pytest.mark.asyncio
+async def test_concurrent_assignment_policy_contexts_are_isolated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+
+    monkeypatch.setenv("LINK_API_KEY", "link-service-secret")
+    entered = 0
+    both_entered = asyncio.Event()
+    observed = []
+
+    class PolicyCore(_Core):
+        async def process(self, **kwargs: Any) -> dict[str, Any]:
+            nonlocal entered
+            before = get_current_execution_context()
+            entered += 1
+            if entered == 2:
+                both_entered.set()
+            await asyncio.wait_for(both_entered.wait(), 2)
+            after = get_current_execution_context()
+            assert after is before
+            assert after is not None and after.approval_policy is not None
+            observed.append(after.approval_policy["shell"])
+            return {"assistant_response": "done", "action_results": []}
+
+    core = PolicyCore(tmp_path)
+    await asyncio.gather(
+        *[
+            handle_chat_message(
+                request=MessageRequest(
+                    text=f"assignment {decision}",
+                    session_id=f"policy-{decision}",
+                    approval_policy={"shell": decision},
+                ),
+                core=core,
+                http_request=_api_request(api_key="link-service-secret"),
+            )
+            for decision in ("allow", "deny")
+        ]
+    )
+    assert sorted(observed) == ["allow", "deny"]
+    assert get_current_execution_context() is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("yolo", ["1", "true", "yes"])
+async def test_policy_only_assignment_rejected_when_enforcement_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, yolo: str
+) -> None:
+    monkeypatch.setenv("LINK_API_KEY", "link-service-secret")
+    monkeypatch.setenv("PENGUIN_YOLO", yolo)
+    with pytest.raises(HTTPException) as raised:
+        await handle_chat_message(
+            request=MessageRequest(
+                text="assignment", approval_policy={"shell": "deny"}
+            ),
+            core=_Core(tmp_path),
+            http_request=_api_request(api_key="link-service-secret"),
+        )
+    assert raised.value.status_code == 503

@@ -1,12 +1,17 @@
 from pathlib import Path
 
+import pytest
+
 from penguin.security.permission_engine import (
     PermissionEnforcer,
     PermissionMode,
     PermissionResult,
 )
 from penguin.security.policies.workspace import WorkspaceBoundaryPolicy
-from penguin.security.tool_permissions import check_tool_permission
+from penguin.security.tool_permissions import (
+    _find_git_push_args,
+    check_tool_permission,
+)
 
 
 def _enforcer(root: Path) -> PermissionEnforcer:
@@ -145,10 +150,11 @@ def test_link_approve_safe_actions_allows_matching_shell_pattern(
     tmp_path: Path,
 ) -> None:
     policy = _policy(
-        "ask",
+        "allow",
         permission_mode="approve_safe_actions",
         allow_lists={"shellCommands": ["pnpm test --filter *"]},
     )
+    policy["shell"] = "ask"
     context = {
         "permission_mode": "workspace",
         "approval_policy": policy,
@@ -353,33 +359,11 @@ def test_link_git_push_deny_handles_git_global_options(tmp_path: Path) -> None:
         assert result == PermissionResult.DENY, command
 
 
-def test_link_git_push_classifier_uses_the_git_subcommand(tmp_path: Path) -> None:
-    policy = _policy("allow")
-    policy["gitPush"] = "deny"
-
-    result, _reason = check_tool_permission(
-        "execute_command",
-        {"command": "git config alias.example push"},
-        _enforcer(tmp_path),
-        {
-            "permission_mode": "workspace",
-            "approval_policy": policy,
-            "directory": str(tmp_path),
-        },
-    )
-
-    assert result == PermissionResult.ALLOW
+def test_link_git_push_classifier_uses_the_git_subcommand() -> None:
+    assert _find_git_push_args("git config alias.example push") is None
 
 
-def test_link_git_push_classifier_ignores_quoted_data(tmp_path: Path) -> None:
-    policy = _policy("allow")
-    policy["gitPush"] = "deny"
-    context = {
-        "permission_mode": "workspace",
-        "approval_policy": policy,
-        "directory": str(tmp_path),
-    }
-
+def test_link_git_push_classifier_ignores_quoted_data() -> None:
     for command in (
         "git commit -m 'do not git push yet'",
         "git grep 'git push'",
@@ -388,14 +372,7 @@ def test_link_git_push_classifier_ignores_quoted_data(tmp_path: Path) -> None:
         "echo 'git push origin main'",
         "bash --norc 'git push origin main'",
     ):
-        result, _reason = check_tool_permission(
-            "execute_command",
-            {"command": command},
-            _enforcer(tmp_path),
-            context,
-        )
-
-        assert result == PermissionResult.ALLOW, command
+        assert _find_git_push_args(command) is None, command
 
 
 def test_link_git_push_deny_covers_nested_and_persistent_shells(
@@ -465,14 +442,14 @@ def test_link_custom_policy_matches_git_remote_identity(tmp_path: Path) -> None:
     }
 
     allowed, _reason = check_tool_permission(
-        "execute_command",
-        {"command": "git push origin main"},
+        "git_push",
+        {"remote": "origin"},
         _enforcer(tmp_path),
         context,
     )
     unmatched, _reason = check_tool_permission(
-        "execute_command",
-        {"command": "git push upstream main"},
+        "git_push",
+        {"remote": "upstream"},
         _enforcer(tmp_path),
         context,
     )
@@ -509,7 +486,7 @@ def test_link_custom_policy_normalizes_git_remote_urls(tmp_path: Path) -> None:
         context,
     )
 
-    assert shell_result == PermissionResult.ALLOW
+    assert shell_result == PermissionResult.ASK
     assert dedicated_result == PermissionResult.ALLOW
 
 
@@ -528,3 +505,135 @@ def test_link_unknown_tool_fails_closed_when_request_policy_is_present(
     )
 
     assert result == PermissionResult.DENY
+
+
+# These inputs are only classified; no shell command is executed.
+def test_git_push_deny_handles_adjacent_shell_operators(tmp_path: Path) -> None:
+    policy = _policy("allow")
+    policy["gitPush"] = "deny"
+    context = {"approval_policy": policy, "directory": str(tmp_path)}
+    for command in (
+        "true;git push origin main",
+        "true&&git push origin main",
+        "true\ngit push origin main",
+    ):
+        result, _ = check_tool_permission(
+            "execute_command", {"command": command}, _enforcer(tmp_path), context
+        )
+        assert result == PermissionResult.DENY, command
+
+
+def test_file_write_deny_cannot_be_bypassed_by_shell_redirection(
+    tmp_path: Path,
+) -> None:
+    policy = _policy("allow")
+    policy["fileWrite"] = "deny"
+    result, _ = check_tool_permission(
+        "execute_command",
+        {"command": "printf blocked > blocked.txt"},
+        _enforcer(tmp_path),
+        {"approval_policy": policy, "directory": str(tmp_path)},
+    )
+    assert result == PermissionResult.DENY
+
+
+def test_allowed_path_prefix_does_not_authorize_sibling(tmp_path: Path) -> None:
+    policy = _policy(
+        "ask", permission_mode="custom", allow_lists={"writablePaths": ["src"]}
+    )
+    for path in (
+        tmp_path / "src-other" / "file.py",
+        tmp_path / "src" / ".." / "outside.py",
+    ):
+        result, _ = check_tool_permission(
+            "write_file",
+            {"path": str(path)},
+            _enforcer(tmp_path),
+            {"approval_policy": policy, "directory": str(tmp_path)},
+        )
+        assert result == PermissionResult.ASK
+
+
+def test_allowed_network_host_does_not_authorize_userinfo_or_suffix(
+    tmp_path: Path,
+) -> None:
+    policy = _policy(
+        "ask",
+        permission_mode="custom",
+        allow_lists={"networkHosts": ["api.github.com"]},
+    )
+    for url in (
+        "https://api.github.com.evil.example/",
+        "https://api.github.com@evil.example/",
+    ):
+        result, _ = check_tool_permission(
+            "browser_navigate",
+            {"url": url},
+            _enforcer(tmp_path),
+            {"approval_policy": policy, "directory": str(tmp_path)},
+        )
+        assert result == PermissionResult.ASK
+
+
+@pytest.mark.parametrize(
+    "action", ["fileWrite", "fileDelete", "gitPush", "network", "secrets"]
+)
+@pytest.mark.parametrize(
+    "tool,arguments",
+    [
+        ("execute_command", {"command": "python -c 'pass'"}),
+        ("code_execution", {"code": "print('hello')"}),
+        ("process_start", {"command": "sh"}),
+        ("process_write_stdin", {"process_id": "process-1", "text": "run_alias\n"}),
+    ],
+)
+@pytest.mark.parametrize(
+    "decision,expected",
+    [("deny", PermissionResult.DENY), ("ask", PermissionResult.ASK)],
+)
+def test_opaque_execution_preserves_every_capability_restriction(
+    tmp_path, action, tool, arguments, decision, expected
+):
+    policy = _policy("allow")
+    policy[action] = decision
+    result, reason = check_tool_permission(
+        tool,
+        arguments,
+        _enforcer(tmp_path),
+        {"approval_policy": policy, "directory": str(tmp_path)},
+    )
+    assert result == expected
+    assert action in reason
+
+
+@pytest.mark.parametrize(
+    "list_name", ["writablePaths", "gitRemotes", "networkHosts", "secretNames"]
+)
+def test_shell_allow_list_cannot_override_restricted_capability_targets(
+    tmp_path, list_name
+):
+    policy = _policy(
+        "allow",
+        permission_mode="custom",
+        allow_lists={"shellCommands": ["pnpm test"], list_name: ["allowed"]},
+    )
+    result, _ = check_tool_permission(
+        "execute_command",
+        {"command": "pnpm test"},
+        _enforcer(tmp_path),
+        {"approval_policy": policy, "directory": str(tmp_path)},
+    )
+    assert result == PermissionResult.ASK
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "true;git push origin main",
+        "true&&git push origin main",
+        "true\ngit push origin main",
+        "sh -c 'true;git push origin main'",
+    ],
+)
+def test_classifier_recognizes_push_after_shell_separators(command):
+    assert _find_git_push_args(command) == ["origin", "main"]
