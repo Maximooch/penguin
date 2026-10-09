@@ -1,0 +1,22 @@
+{
+  "upstream": {
+    "repository": "https://github.com/anomalyco/opencode",
+    "branch": "v2",
+    "commit": "b35c5fc98577b77d8d67d298c6254e0cd138c9d5"
+  },
+  "health_required": ["healthy", "version", "pid"],
+  "location_required": ["directory", "project"],
+  "session_required": [
+    "id",
+    "projectID",
+    "cost",
+    "tokens",
+    "time",
+    "location"
+  ],
+  "connected": {
+    "id_prefix": "evt_",
+    "type": "server.connected",
+    "data": {}
+  }
+}

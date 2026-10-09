@@ -204,6 +204,22 @@ A single `Esc` should return the session to idle promptly. Capture the web-serve
 
 Penguin prefers local TUI sources in a source checkout and otherwise bootstraps a cached sidecar. Advanced overrides include `PENGUIN_OPENCODE_DIR`, `PENGUIN_TUI_BIN_PATH`, and `PENGUIN_TUI_RELEASE_URL`.
 
+The OpenCode 2 beta is an explicit parallel path:
+
+```bash
+export PENGUIN_TUI_V2=1
+penguin .
+```
+
+It uses an `opencode2` sidecar and a separate `~/.cache/penguin/tui/v2` cache.
+Unset `PENGUIN_TUI_V2` to return to the default TUI without migrating or
+deleting sessions. If testing an unpublished V2 artifact, point
+`PENGUIN_TUI_BIN_PATH` at the pinned `opencode2` binary and
+`OPENCODE_CONFIG_DIR` at the extracted sidecar root containing
+`plugins/tui/penguin.tsx`. An explicit `OPENCODE_PASSWORD` wins; otherwise the
+launcher bridges the first configured Penguin API key or the local startup
+token into OpenCode's Basic-auth password.
+
 ### Configuration or permissions fail
 
 Confirm the configured workspace exists and is writable. Use:
