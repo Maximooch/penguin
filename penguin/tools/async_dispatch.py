@@ -131,6 +131,11 @@ class AsyncToolDispatcher:
         for key in ("directory", "project_root", "workspace_root"):
             ctx.setdefault(key, root)
         ctx["directory"] = root
+        if name == "ordered_tool_batch":
+            try:
+                tool_input = manager._normalize_ordered_batch_input(tool_input)
+            except ValueError as exc:
+                return json.dumps({"status": "error", "error": str(exc)})
         arguments = manager._normalize_tool_input_paths(
             tool_input if isinstance(tool_input, dict) else {}, root
         )
