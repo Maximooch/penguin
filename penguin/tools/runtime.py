@@ -249,7 +249,7 @@ class ToolExecutionPolicy:
     stop_on_error: bool = False
     max_output_chars: Optional[int] = None
     artifact_dir: Optional[Union[str, Path]] = None
-    truncation_direction: Literal["head", "tail", "middle"] = "tail"
+    truncation_direction: Literal["head", "tail", "middle"] = "middle"
 
 
 @dataclass(frozen=True)
@@ -369,7 +369,7 @@ def tool_result_with_model_output_policy(
     max_chars: Optional[int] = None,
     artifact_dir: Optional[Union[str, Path]] = None,
     artifact_id: Optional[str] = None,
-    truncation_direction: Literal["head", "tail", "middle"] = "tail",
+    truncation_direction: Literal["head", "tail", "middle"] = "middle",
 ) -> ToolResult:
     """Return a tool result whose output is bounded for model replay."""
 
@@ -439,9 +439,18 @@ def _truncate_output_preview(
     if direction == "head":
         return output_text[:budget]
     if direction == "middle":
-        left = max(budget // 2, 0)
-        right = max(budget - left, 0)
-        return f"{output_text[:left]}{output_text[-right:]}"[:budget]
+        # Reserve space using the largest possible omission count so the marker
+        # and both fragments always fit, including very small caller budgets.
+        marker_budget = len(f"\n... [{len(output_text)} characters omitted] ...\n")
+        if budget <= marker_budget:
+            return "[output omitted]"[:budget]
+        retained = budget - marker_budget
+        left = (retained + 1) // 2
+        right = retained // 2
+        omitted = len(output_text) - retained
+        marker = f"\n... [{omitted} characters omitted] ...\n"
+        tail = output_text[-right:] if right else ""
+        return f"{output_text[:left]}{marker}{tail}"
     return output_text[-budget:]
 
 
@@ -451,7 +460,7 @@ def prepare_model_visible_tool_output(
     max_chars: Optional[int] = None,
     artifact_dir: Optional[Union[str, Path]] = None,
     artifact_id: Optional[str] = None,
-    truncation_direction: Literal["head", "tail", "middle"] = "tail",
+    truncation_direction: Literal["head", "tail", "middle"] = "middle",
 ) -> ToolOutputView:
     """Build a capped model-visible tool output and optional full artifact.
 
@@ -505,6 +514,10 @@ def prepare_model_visible_tool_output(
     ]
     if artifact_path:
         notice_parts.append(f"artifact={artifact_path}")
+        notice_parts.append(
+            "Read/search this file for omitted content; "
+            "do not rerun the tool just to retrieve output."
+        )
     notice = "\n\n[" + " ".join(notice_parts) + "]"
     preview_budget = max(effective_max - len(notice), 0)
     preview = _truncate_output_preview(

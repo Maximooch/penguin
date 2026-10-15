@@ -138,3 +138,19 @@ Ordered batches accept either a JSON object or its serialized JSON string at
 synchronous and asynchronous dispatch boundaries. Malformed/non-object payloads
 are rejected before authorization or execution; decoding does not bypass child
 preflight, serial execution, or per-child permission checks.
+
+## Large tool results
+
+Model-visible tool results default to a 24,000-character preview, now retaining
+both the beginning and end with an explicit omitted-character marker in between.
+This avoids losing headers while keeping final errors and summaries visible.
+When a tool-output artifact directory is available, the full returned text is
+saved there and its path appears in the preview (unless the configured budget is
+too small to fit the notice). Read or search that artifact for omitted content;
+do not rerun a command or mutation merely to retrieve its output.
+
+`PENGUIN_TOOL_OUTPUT_MAX_CHARS` overrides the engine's preview budget; a value of
+`0` or less disables this layer of truncation. Tool-specific limits such as
+`process_poll.max_chars` still apply independently; process output is retained
+in the process log indicated by `log_path`. A tool-result artifact preserves
+what the tool returned, not output already omitted by an upstream tool limit.

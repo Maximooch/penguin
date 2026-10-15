@@ -14,8 +14,8 @@ from penguin.tools.runtime import (
     hash_tool_output,
     legacy_action_result_from_tool_result,
     prepare_model_visible_tool_output,
-    tool_result_with_model_output_policy,
     tool_result_from_action_result,
+    tool_result_with_model_output_policy,
 )
 
 
@@ -211,3 +211,32 @@ async def test_serial_scheduler_omits_full_output_from_structured_output(
     assert "result" not in result.structured_output
     assert result.structured_output["path"] == "large.txt"
     assert result.artifact_path is not None
+
+
+def test_default_preview_keeps_both_ends_and_marks_omission(tmp_path: Path) -> None:
+    output = "COMMAND HEADER\n" + "middle line\n" * 1000 + "\nFINAL FAILURE"
+    view = prepare_model_visible_tool_output(
+        output, max_chars=1000, artifact_dir=tmp_path
+    )
+
+    assert len(view.model_output) <= 1000
+    assert "COMMAND HEADER" in view.model_output
+    assert "FINAL FAILURE" in view.model_output
+    assert "characters omitted" in view.model_output
+    assert view.artifact_path in view.model_output
+    assert "do not rerun" in view.model_output
+    assert Path(view.artifact_path).read_text() == output
+
+
+def test_middle_preview_does_not_join_unrelated_fragments() -> None:
+    view = prepare_model_visible_tool_output(
+        "BEGIN" + "x" * 3000 + "END", max_chars=500, truncation_direction="middle"
+    )
+    assert "BEGIN" in view.model_output
+    assert "END" in view.model_output
+    assert "characters omitted" in view.model_output
+    assert len(view.model_output) <= 500
+
+
+def test_execution_policy_defaults_to_middle_preview() -> None:
+    assert ToolExecutionPolicy().truncation_direction == "middle"
