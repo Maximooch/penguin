@@ -1,0 +1,5 @@
+# Tool command process limit during preview-auth work (September 28, 2026)
+
+While developing Link's isolated preview invitation flow in `/tmp/link-cicd-phase1-preview-20260928`, `functions.execute_command` returned `process_limit_reached; run cleanup` on a trivial `sprite exec ...` inspection command. The previously started commands had reported `status=exited`; no long-running foreground command was intentionally left by this task. `functions.code_execution` using `subprocess.run` successfully ran the same `sprite exec` command (exit 0), showing `pnpm` and the expected installed tools on the Sprite. This reproduces the shell-tool limitation independently of the target command. I switched subsequent inspection to Python subprocess calls instead of retrying the same command in a loop.
+
+The process-limit accounting cause has not been established. Do not infer leaked child processes or lost writes without further diagnostics. No production operation or deployment was underway when the error appeared.

@@ -47,18 +47,18 @@ dependencies = [
     "uvicorn>=0.15.0",
     "websockets>=10.0",
     "python-multipart>=0.0.7",
-    
+
     # LLM and API
     "anthropic>=0.3.0",
     "openai>=1.12.0",
     "ollama",
-    
+
     # CLI Tools (included by default for better UX)
     "rich>=10.0.0",
     "tqdm>=4.60.0",
     "typer>=0.4.0",
     "questionary>=1.10.0",
-    
+
     # Core Processing
     "IPython",
     "ipykernel", 
@@ -68,18 +68,23 @@ dependencies = [
     "networkx",
     "watchdog>=2.3.0",
     "PyGithub>=1.55",
-    
+
     # Git and Image Processing
     "GitPython>=3.1.0",
     "Pillow>=8.3.0",
     "numpy>=1.20.0",
-    "pandas>=1.3.0"
+    "pandas>=1.3.0",
+    "a2a-sdk[http-server,sqlite]==1.0.3",
 ]
 
 [project.optional-dependencies]
 # Compatibility aliases: web/TUI runtime deps now ship in the base install
 web = []
 tui = []
+
+# ACP's Python SDK requires Pydantic 2; keep it optional so Penguin's
+# Pydantic 1.x installation contract is not silently changed.
+acp = ["agent-client-protocol>=0.12.1,<0.13", "pydantic>=2.7,<3"]
 
 # Legacy Textual prototype/experimental UI support
 legacy_tui = [
@@ -261,6 +266,12 @@ penguin = [
 #   uv sync --exclude-newer 2999-12-31T23:59:59Z
 [tool.uv]
 exclude-newer = "7 days"
+
+# Vetted exception to the 7-day rail: oauthlib 4.0.0 (2026-09-28) resolves
+# Dependabot alerts #345/#346. Dated cutoff so future oauthlib releases stay
+# subject to the rail. Remove once the global rail passes 2026-10-05.
+[tool.uv.exclude-newer-package]
+oauthlib = "2026-10-01T00:00:00Z"
 
 
 # Development tools configuration

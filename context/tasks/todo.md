@@ -2,12 +2,54 @@
 
 ## Purpose
 
-This file is the **current status snapshot** for the major follow-up workstreams after the
-RunMode / Project / ITUV core-systems push.
+This file tracks the major follow-up workstreams after the RunMode / Project / ITUV
+core-systems push. The ranked backlog below is the proposed execution/import order;
+the detailed checklists retain previously recorded implementation status.
 
-It is intentionally organized by execution reality, not by the original planned order.
-The previous version of this file became stale once several follow-up threads started in
-parallel.
+## Ranked Backlog / Link Import
+
+Planning update: September 23, 2026. This is a consolidation of the existing work,
+not a fresh implementation audit. Revalidate completion and ownership before import;
+“In progress” below is inherited from the older snapshot, not confirmed active work.
+The detailed sections below are supporting scope, not additional cards. Their older
+Next/Deferred headings do not override this proposed ranking.
+
+Target: **Maximus** workspace (`m`) → **Penguin** project
+(`0f86484d-8434-4977-8abc-9e5400afc061`). No Link tasks were created in the planning
+session; check for tasks created by other sessions before importing.
+
+| Rank | Proposed column | Priority | Task | Scope / supporting checklist |
+| ---: | --- | --- | --- | --- |
+| 1 | In progress (verify) | High | Close RunMode command-truth work | Resolve remaining assertions/scope decisions, confirm Phase 6 delivery, and close or explicitly split remaining work. See RunMode Commands and Loop Ownership Audit / Command Truth. |
+| 2 | In progress (verify) | High | Finish CLI workspace semantics and ergonomics | Workflow discoverability and test-protected duplication cleanup. See CLI Workspace Semantics and Ergonomics. |
+| 3 | Next | High | Implement Project Bootstrap Workflow MVP | `project init`, `project start`, deterministic selection, and clear clarification/review outcomes. |
+| 4 | Next | High | Implement failure-oriented testing coverage | Build on `context/tasks/testing-pyramid.md`: incomplete streams, provider errors, retries/release, tool replay adjacency, configuration combinations, and CLI/API boundaries. |
+| 5 | Next | Medium | Audit PenguinAPI contracts and extensibility | Combine PenguinAPI Surface Refresh with the Python API extensibility audit; include composition, lifecycle boundaries, docs, and tests. |
+| 6 | Next | Medium | Unify recommended model configuration and documentation | One recommended-model configuration source, including multi-agent/sub-agent setups, with documentation populated from it. |
+| 7 | Backlog | Medium | Complete Reliability Pass 2 | Dependency properties, status/phase transitions, and clarification waiting/resume invariants. |
+| 8 | Backlog | Medium | Harden project orchestration outcomes and failure paths | Preserve nuanced RunMode outcomes; test pending review, failures, and recipe/use gating. |
+| 9 | Backlog | Medium | Mature validation and VERIFY behavior | Explicit evidence types and orchestration edge cases beyond pytest exit codes. |
+| 10 | Backlog | Medium | Audit CLI extensibility and scripting support | Custom workflows, scripting, discoverability, and stable command contracts; follow #2. |
+| 11 | Backlog | Medium | Move todo tools out of the parser | Use existing tool modules and registry; keep parsing in the parser. |
+| 12 | Backlog | Medium | Decompose the configuration system | Establish configuration boundaries before moving code; avoid parallel configuration mechanisms. |
+| 13 | Later | Low | Remove verified legacy workflow paths | Audit alternate entry points, remove confirmed dead paths, and document authoritative execution paths. |
+| 14 | Later | Low | Decompose core runtime responsibilities | Extract status/event bridging and streaming finalization behind regression coverage. |
+| 15 | Later | Low | Clean up Engine/RunMode boundaries and timeout semantics | Combine Engine Loop Cleanup Follow-On with larger loop/timeout cleanup; preserve explicit cancellation and configured limits without adding implicit execution budgets. |
+| 16 | Later | Low | Use structured Responses/Codex state handling | Preserve first-class tool/result/response state rather than rely on empty-loop heuristics. |
+| 17 | Later | Low | Decompose the CLI following the extensibility audit | Targeted structural changes justified by #10, not a speculative rewrite. |
+
+Import rules:
+- One card per ranked deliverable; use the detailed checklists as acceptance scope.
+- Preserve completed checkboxes as context, not new open tasks. Check existing Link
+  cards for duplicates and leave unrelated integration-test tasks unchanged.
+- “Next” and “Later” are planning buckets, not verified Link status values. Map to
+  supported statuses; verify persisted ordering by read-back before claiming it works.
+- Suggested CLI sequence: #2 → #10 → #17. Bootstrap follows sufficiently stable
+  workspace semantics and RunMode command truth.
+- The consolidated #1 replaces the duplicate RunMode closeout entry. Phase 6 is
+  already recorded as materially complete; verify delivery rather than recreate it.
+- #4 extends the existing testing-pyramid plan; #5 combines the two API audits;
+  #15 combines the overlapping Engine/RunMode cleanup items.
 
 ---
 
@@ -81,7 +123,9 @@ Still remaining in this workstream:
 - [ ] Clean up the one non-critical brittle CLI help-text assertion or explicitly defer it
 - [ ] Decide whether any tiny `Engine.run_task(...)` cleanup belongs in this PR or should be deferred
 - [ ] Decide whether a full auth-bootstrap end-to-end confirmation is needed now or can be deferred
-- [ ] Commit/push the remaining Phase 6 + checklist changes if not already bundled
+- [ ] Verify whether remaining Phase 6 + checklist changes were committed/pushed; deliver only genuinely outstanding changes
+- [ ] Reconcile any remaining Phase 2 cleanup/tests with the existing checklist
+- [ ] Close/merge the command-truth work or intentionally split remaining pieces
 
 Reference:
 - `context/tasks/runmode-command-loop-audit.md`
@@ -104,17 +148,6 @@ Reference:
 Reference:
 - `context/tasks/project-bootstrap-workflow.md`
 - `context/tasks/cli-refactor-and-bootstrap-audit.md`
-
-### PR: RunMode Command Truth Cleanup Closeout
-
-**Why next:** if the current runmode truth branch/PR is left half-finished, the audit loses value
-
-- [ ] Finish remaining Phase 2 cleanup/tests
-- [ ] Decide whether to execute Phase 6 web/API truth pass now
-- [ ] Merge the runmode command-truth work or intentionally split remaining pieces
-
-Reference:
-- `context/tasks/runmode-command-truth-pr1-checklist.md`
 
 ### Strategic Follow-Up Workstreams
 
@@ -243,9 +276,11 @@ Reference:
 
 ---
 
-## Strategic Read (April 17, 2026)
+## Historical Strategic Read (April 17, 2026)
 
-Current state:
+Retained for context; not a current status assessment.
+
+State at that time:
 - We are **behind on the original April feature timeline** in visible product terms.
 - We are **ahead of where the repo was** on runtime truth, clarification handling, and public-surface verification.
 - The last ~3 days produced the majority of the meaningful structural progress after ~2 weeks that were more dominated by bug-fixing and recovery work.
@@ -259,11 +294,9 @@ That means the correct interpretation is:
 
 ## Suggested Immediate Order
 
-1. Finish / close the RunMode command-truth PR cleanly
-2. Finish / merge the CLI workspace semantics PR cleanly
-3. Move to Project Bootstrap Workflow MVP
-4. Revisit PenguinAPI Surface Refresh
-5. Do Reliability Pass 2 after the product-facing path is less mushy
+Use the Ranked Backlog / Link Import table above as the single proposed ordering.
+Verify the first two workstreams' current delivery state before treating them as
+active work; do not reopen completed capabilities merely to match this plan.
 
 ---
 

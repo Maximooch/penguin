@@ -37,6 +37,14 @@ def _call_key(tool: str, arguments: dict[str, Any], context: dict[str, Any]) -> 
     return json.dumps([tool, arguments, authority], sort_keys=True, default=str)
 
 
+def normalize_process_launch(arguments: dict[str, Any], root: str) -> dict[str, Any]:
+    """Bind approval and launch to the same absolute working directory."""
+    cwd = Path(arguments.get("cwd") or root).expanduser()
+    if not cwd.is_absolute():
+        cwd = Path(root) / cwd
+    return {**arguments, "cwd": str(cwd.resolve())}
+
+
 def is_call_authorized(
     tool: str, arguments: dict[str, Any], context: dict[str, Any]
 ) -> bool:
@@ -74,6 +82,12 @@ def approval_identity(
     """Describe the operation and every target covered by an approval."""
     operation = get_highest_risk_operation(tool)
     resources = extract_resources_from_input(tool, arguments, context)
+    if any(op.category == "filesystem" for op in get_tool_operations(tool)):
+        # Bind both the prompt and its grant to the target at approval time.
+        # Dispatch must not follow a symlink retargeted after that decision.
+        resources = [
+            str(Path(resource).expanduser().resolve()) for resource in resources
+        ]
     # Unknown tools have no resource extractor: bind approval to their arguments.
     resource = (
         resources[0]
@@ -107,5 +121,6 @@ __all__ = [
     "authorized_call",
     "is_call_authorized",
     "is_path_authorized",
+    "normalize_process_launch",
     "wait_for_tool_approval",
 ]

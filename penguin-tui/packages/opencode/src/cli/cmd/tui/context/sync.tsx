@@ -27,7 +27,7 @@ import { useExit } from "./exit"
 import { useArgs } from "./args"
 import { useRoute } from "./route"
 import { useTerminalFocus } from "./terminal-focus"
-import { batch, onCleanup, onMount } from "solid-js"
+import { batch, createEffect, on, onCleanup, onMount } from "solid-js"
 import { Log } from "@/util/log"
 import { iife } from "@/util/iife"
 import type { Path } from "@opencode-ai/sdk"
@@ -53,11 +53,7 @@ import { normalizeSessionDiff } from "./session-diff"
 import { upsertSessionRecord } from "../util/session-family"
 import { profileStartup } from "../util/startup-profile"
 import { DEFAULT_NOTIFICATION_POLICY, type NotificationPolicy } from "../notification-policy"
-import {
-  notificationEventKey,
-  notifyForSyncEvent,
-  shouldSuppressNotificationForActiveSession,
-} from "../notification-runtime"
+import { notificationEventKey, notifyForSyncEvent, notifyForProgramStatus } from "../notification-runtime"
 
 export const { use: useSync, provider: SyncProvider } = createSimpleContext({
   name: "Sync",
@@ -149,6 +145,38 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     const fullSyncedSessions = new Set<string>()
     const providerCatalogRefreshTimers = new Set<ReturnType<typeof setTimeout>>()
     const notifiedEventKeys = new Set<string>()
+
+    const syncProgramStatus = () => {
+      if (!sdk.penguin) return
+      const sessionID = route.data.type === "session" ? route.data.sessionID : undefined
+      const messages = sessionID ? (store.message[sessionID] ?? []) : []
+      const assistant = messages.findLast((message) => message.role === "assistant")
+      sdk.programStatus.update({
+        sessionID,
+        errorID: assistant?.role === "assistant" && assistant.error ? assistant.id : undefined,
+        busy: !!sessionID && !!store.session_status[sessionID] && store.session_status[sessionID].type !== "idle",
+        permission: !!sessionID && !!store.permission[sessionID]?.length,
+        question: !!sessionID && !!store.question[sessionID]?.length,
+        connection: sdk.stream.status,
+      })
+    }
+    createEffect(syncProgramStatus)
+    createEffect(
+      on(
+        () => sdk.programState,
+        (report) => {
+          if (!sdk.penguin || route.data.type !== "session") return
+          if (terminalFocus.supported && terminalFocus.focused) return
+          const latest = store.message[route.data.sessionID]?.at(-1)
+          notifyForProgramStatus(report, route.data.sessionID, store.notification_policy, {
+            responseParts: latest?.role === "assistant" ? store.part[latest.id] : undefined,
+            write: (text) => process.stdout.write(text),
+            log: (payload) => Log.Default.info("penguin notification", payload),
+          })
+        },
+        { defer: true },
+      ),
+    )
 
     const resolveDirectory = (sessionID?: string) => {
       if (sessionID) {
@@ -313,20 +341,8 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           })
         )
           return
-        if (
-          shouldSuppressNotificationForActiveSession(event, {
-            activeSessionID,
-            terminalFocused: terminalFocus.focused,
-          })
-        ) {
-          Log.Default.info("penguin notification suppressed", {
-            event: event.type,
-            reason: "active_session",
-            sessionID: activeSessionID,
-            terminalFocused: terminalFocus.focused,
-            terminalFocusSupported: terminalFocus.supported,
-          })
-        } else {
+        // The selected session uses the run state machine, including abort/error handling.
+        if (extractSyncEventSessionID(event) !== activeSessionID) {
           const key = notificationEventKey(event)
           if (!key || !notifiedEventKeys.has(key)) {
             if (key) notifiedEventKeys.add(key)
@@ -345,6 +361,9 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         }
       }
       switch (event.type) {
+        case "session.error":
+          if (event.properties.sessionID) sdk.programStatus.fail(event.properties.sessionID)
+          break
         case "server.instance.disposed":
           fullSyncedSessions.clear()
           void bootstrap(true)
@@ -633,6 +652,8 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           break
         }
       }
+      // Observe each transition even when the SDK batches several events.
+      syncProgramStatus()
     })
 
     const exit = useExit()

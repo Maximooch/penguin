@@ -4,8 +4,13 @@ This website is built using [Docusaurus](https://docusaurus.io/), a modern stati
 
 ### Installation
 
+Use Node.js 24.x and Yarn 1.22.22 (pinned in `package.json`). The docs CI job
+uses the same Node.js major version, and Vercel reads `engines.node` from
+`package.json` to select its build runtime.
+
 ```
-$ yarn
+$ corepack enable
+$ yarn install --frozen-lockfile
 ```
 
 ### Local Development

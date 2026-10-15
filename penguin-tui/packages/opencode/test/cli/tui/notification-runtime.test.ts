@@ -7,11 +7,84 @@ import {
   notificationEscape,
   notificationEventKey,
   notifyForSyncEvent,
+  notifyForProgramStatus,
   shouldSuppressNotificationForActiveSession,
   terminalNotificationIdentity,
 } from "../../../src/cli/cmd/tui/notification-runtime"
 
 describe("terminal notification runtime", () => {
+  test("completion previews reach cmux, tmux and desktop notification bodies", () => {
+    const report = { state: "done" as const, message: "Run complete" }
+    const responseParts = [
+      { type: "reasoning", text: "Private reasoning" },
+      { type: "tool", text: "Tool output" },
+      { type: "text", text: "Hidden text", ignored: true },
+      { type: "text", text: "Synthetic text", synthetic: true },
+      { type: "text", text: "Implemented the fix.\nAll tests pass." },
+      { type: "text", text: "api_key=secret-value\u0007" },
+    ]
+    for (const env of [{ CMUX: "1" }, { CMUX: "1", TMUX: "1" }]) {
+      const writes: string[] = []
+      const [payload] = notifyForProgramStatus(
+        report,
+        "ses_1",
+        { mode: "terminal", includeDetails: true },
+        {
+          responseParts,
+          env,
+          assets: {},
+          write: (text) => writes.push(text),
+        },
+      )
+      expect(payload.body).toBe("Implemented the fix. All tests pass. api_key=[redacted]")
+      expect(payload.title).toBe("Penguin run complete")
+      expect(writes[0]).toContain(";Implemented the fix. All tests pass. api_key=[redacted")
+      expect(writes[0].startsWith(env.TMUX ? "\x1bPtmux;" : "\x1b]777;")).toBe(true)
+    }
+    const commands: string[][] = []
+    notifyForProgramStatus(
+      report,
+      "ses_1",
+      { mode: "os", includeDetails: true },
+      {
+        responseParts,
+        platform: "linux",
+        assets: {},
+        spawn: (command) => commands.push(command),
+      },
+    )
+    expect(commands[0].at(-1)).toBe("Implemented the fix. All tests pass. api_key=[redacted]")
+    expect(report.message).toBe("Run complete")
+  })
+
+  test("completion previews are bounded and respect details and missing-response fallbacks", () => {
+    const report = { state: "done" as const, message: "Run complete" }
+    const notify = (includeDetails: boolean, text?: string) =>
+      notifyForProgramStatus(
+        report,
+        "ses_1",
+        { mode: "visual", includeDetails },
+        {
+          assets: {},
+          responseParts: text === undefined ? undefined : [{ type: "text", text }],
+        },
+      )[0].body
+    expect(notify(true, "x".repeat(300))).toBe("x".repeat(237) + "...")
+    expect(notify(false, "Private response")).toBe("A run finished.")
+    expect(notify(true)).toBe("Run complete")
+    expect(notify(true, "\n\t")).toBe("Run complete")
+    const [failure] = notifyForProgramStatus(
+      { state: "error", message: "Run failed" },
+      "ses_1",
+      {
+        mode: "visual",
+        includeDetails: true,
+      },
+      { assets: {}, responseParts: [{ type: "text", text: "Partial answer" }] },
+    )
+    expect(failure.body).toBe("Run failed")
+  })
+
   test("maps approval and question events into attention events", () => {
     expect(
       attentionEventFromSyncEvent({
@@ -214,24 +287,30 @@ describe("terminal notification runtime", () => {
 
   test("sanitizes OSC notification separators", () => {
     expect(
-      notificationEscape({
-        channel: "osc",
-        category: "run_failed",
-        title: "Bad;title\u0007\u001b]2;owned",
-        body: "Bad;body\r\nnext\u001b\\",
-      }),
-    ).toBe("\u001b]9;Bad title 2 owned;Bad body next\u0007")
+      notificationEscape(
+        {
+          channel: "osc",
+          category: "run_failed",
+          title: "Bad;title\u0007\u001b]2;owned",
+          body: "Bad;body\r\nnext\u001b\\",
+        },
+        { TERM_PROGRAM: "iTerm.app" },
+      ),
+    ).toBe("\u001b]9;Bad title 2 owned: Bad body next\u0007")
   })
 
   test("builds terminal notification escape payloads", () => {
     expect(
-      notificationEscape({
-        channel: "terminal",
-        category: "question_waiting",
-        title: "Bad;title\u0007",
-        body: "Bad;body\u0007",
-      }),
-    ).toBe("\u001b]9;Bad title;Bad body\u0007")
+      notificationEscape(
+        {
+          channel: "terminal",
+          category: "question_waiting",
+          title: "Bad;title\u0007",
+          body: "Bad;body\u0007",
+        },
+        { TERM_PROGRAM: "iTerm.app" },
+      ),
+    ).toBe("\u001b]9;Bad title: Bad body\u0007")
   })
 
   test("builds macOS desktop and audio commands without shell interpolation", () => {
@@ -459,13 +538,14 @@ describe("terminal notification runtime", () => {
       ],
       {
         platform: "darwin",
+        env: { TERM_PROGRAM: "iTerm.app" },
         write: (text) => writes.push(text),
         spawn: (command) => spawns.push(command),
         log: (payload) => logs.push(payload.title),
       },
     )
 
-    expect(writes).toEqual(["\u001b]9;Penguin has a question;Continue?\u0007"])
+    expect(writes).toEqual(["\u001b]9;Penguin has a question: Continue?\u0007"])
     expect(spawns).toEqual([])
     expect(logs).toEqual(["Penguin has a question"])
   })

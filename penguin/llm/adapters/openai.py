@@ -24,6 +24,7 @@ from penguin.web.services.provider_credentials import (
 )
 
 from ..api_client import ConnectionPoolManager
+from ..codex_routing import CURRENT_CODEX_ROUTING
 from ..contracts import (
     ErrorCategory,
     FinishReason,
@@ -342,7 +343,9 @@ class OpenAIAdapter(BaseAdapter):
                 or payload.get("reasoning_tokens"),
                 "cache_read_tokens": input_details.get("cached_tokens")
                 or payload.get("input_cache_read_tokens"),
-                "cache_write_tokens": payload.get("input_cache_write_tokens"),
+                "cache_write_tokens": input_details.get(
+                    "cache_write_tokens", payload.get("input_cache_write_tokens")
+                ),
                 "total_tokens": payload.get("total_tokens"),
                 "cost": payload.get("cost")
                 or payload.get("total_cost")
@@ -350,6 +353,15 @@ class OpenAIAdapter(BaseAdapter):
             }
         )
         return normalized.to_dict()
+
+    def _record_served_tier(self, response: Dict[str, Any]) -> None:
+        """Record only provider-reported tier; do not infer it from the request."""
+        tier = normalize_openai_service_tier(response.get("service_tier"))
+        if tier:
+            self._update_request_lifecycle(
+                status=ProviderRequestStatus.STREAMING,
+                provider_data={"served_service_tier": tier},
+            )
 
     def _set_last_usage(self, usage: Any) -> None:
         normalized = self._normalize_usage(usage)
@@ -934,6 +946,7 @@ class OpenAIAdapter(BaseAdapter):
             )
             raise
         self._set_last_usage(getattr(resp, "usage", None))
+        self._record_served_tier(self._to_dict(resp))
         self._append_reasoning(self._extract_reasoning_from_response_object(resp))
         tool_calls = self._extract_function_calls_from_response_object(resp)
         if tool_calls:
@@ -1613,6 +1626,12 @@ class OpenAIAdapter(BaseAdapter):
         }
         if account_id:
             headers["ChatGPT-Account-Id"] = account_id
+        routing = CURRENT_CODEX_ROUTING.get()
+        if routing is not None and routing.session_id:
+            # Credential fingerprint is never logged or persisted. Account ID alone
+            # cannot distinguish credential owners when an ID is unavailable.
+            owner = stable_payload_hash([account_id, access])
+            headers.update(routing.headers(owner))
 
         # Log only known option values, never arbitrary request fields or content.
         reasoning_options = payload.get("reasoning") or {}
@@ -1708,11 +1727,14 @@ class OpenAIAdapter(BaseAdapter):
             )
         self._update_request_lifecycle(status=ProviderRequestStatus.RUNNING)
         try:
-            async with httpx.AsyncClient(timeout=self._codex_http_timeout()) as client:
+            async with ConnectionPoolManager.get_instance().client_context(
+                _OPENAI_CODEX_RESPONSES_URL
+            ) as client:
                 response = await client.post(
                     _OPENAI_CODEX_RESPONSES_URL,
                     headers=headers,
                     json=payload,
+                    timeout=self._codex_http_timeout(),
                 )
         except httpx.TimeoutException as exc:
             self._raise_codex_transport_error(
@@ -1802,6 +1824,10 @@ class OpenAIAdapter(BaseAdapter):
                     status=ProviderRequestStatus.RUNNING,
                     provider_response_id=response_id.strip(),
                 )
+            routing = CURRENT_CODEX_ROUTING.get()
+            if routing is not None:
+                routing.capture(response.headers.get("x-codex-turn-state"))
+            self._record_served_tier(body)
             self._set_last_usage(body.get("usage"))
             self._append_reasoning(self._extract_reasoning_from_response_object(body))
         tool_calls = self._extract_function_calls_from_response_object(body)
@@ -1865,12 +1891,15 @@ class OpenAIAdapter(BaseAdapter):
         )
         self._update_request_lifecycle(status=ProviderRequestStatus.RUNNING)
         try:
-            async with httpx.AsyncClient(timeout=self._codex_http_timeout()) as client:
+            async with ConnectionPoolManager.get_instance().client_context(
+                _OPENAI_CODEX_RESPONSES_URL
+            ) as client:
                 async with client.stream(
                     "POST",
                     _OPENAI_CODEX_RESPONSES_URL,
                     headers=headers,
                     json=stream_payload,
+                    timeout=self._codex_http_timeout(),
                 ) as response:
                     if response.status_code >= 400:
                         response_text = (await response.aread()).decode(
@@ -1894,6 +1923,10 @@ class OpenAIAdapter(BaseAdapter):
                                 response.headers
                             ),
                         )
+
+                    routing = CURRENT_CODEX_ROUTING.get()
+                    if routing is not None and response.status_code < 400:
+                        routing.capture(response.headers.get("x-codex-turn-state"))
 
                     async for line in response.aiter_lines():
                         if not line or not line.strip():
@@ -2019,6 +2052,7 @@ class OpenAIAdapter(BaseAdapter):
                             response_obj = data.get("response")
                             if isinstance(response_obj, dict):
                                 self._set_last_usage(response_obj.get("usage"))
+                                self._record_served_tier(response_obj)
                             await self._emit_reasoning_event(
                                 reasoning_stream, data, stream_callback
                             )
@@ -2639,6 +2673,7 @@ class OpenAIAdapter(BaseAdapter):
                     provider_response_id=getattr(final, "id", None),
                 )
                 self._set_last_usage(getattr(final, "usage", None))
+                self._record_served_tier(self._to_dict(final))
                 await self._emit_reasoning_event(
                     reasoning_stream,
                     {"type": "response.completed", "response": self._to_dict(final)},
@@ -2744,6 +2779,7 @@ class OpenAIAdapter(BaseAdapter):
                         response_obj = data.get("response")
                         if isinstance(response_obj, dict):
                             self._set_last_usage(response_obj.get("usage"))
+                            self._record_served_tier(response_obj)
                         await self._emit_reasoning_event(
                             reasoning_stream, data, stream_callback
                         )

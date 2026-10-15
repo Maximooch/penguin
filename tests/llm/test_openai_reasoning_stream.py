@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+
 from penguin.llm.adapters.openai import OpenAIAdapter
 from penguin.llm.model_config import ModelConfig
 
@@ -22,6 +23,8 @@ from .codex_oauth_fixtures import (
     install_oauth_codex_test_auth,
 )
 
+
+pytestmark = pytest.mark.usefixtures("isolate_codex_pool")
 
 def _item(text: str, item_id: str = "rs_1") -> dict[str, Any]:
     return {

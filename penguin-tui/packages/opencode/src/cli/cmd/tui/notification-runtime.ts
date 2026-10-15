@@ -1,5 +1,6 @@
 import {
   notificationPayloads,
+  sanitizeNotificationText,
   type AttentionEvent,
   type NotificationPayload,
   type NotificationPolicy,
@@ -7,6 +8,8 @@ import {
 import { existsSync } from "node:fs"
 import { delimiter, dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { isCmux, terminalNotificationProtocol, terminalSequence } from "./terminal-compat"
+import type { ProgramStatusReport } from "./program-status"
 
 type SyncEvent = {
   type: string
@@ -19,6 +22,7 @@ export type NotificationDeliveryOptions = {
   log?: (payload: NotificationPayload) => void
   spawn?: (command: string[]) => void
   platform?: NodeJS.Platform
+  env?: NodeJS.ProcessEnv
 }
 
 export type NotificationAssets = {
@@ -169,19 +173,24 @@ export function shouldSuppressNotificationForActiveSession(
   return Boolean(attention?.sessionID && attention.sessionID === options.activeSessionID)
 }
 
-export function notificationEscape(payload: NotificationPayload): string | undefined {
+export function notificationEscape(
+  payload: NotificationPayload,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
   if (payload.channel === "bell") return "\u0007"
-  if (payload.channel === "osc") {
-    const title = notificationOscField(payload.title)
-    const body = notificationOscField(payload.body)
-    return `\u001b]9;${title};${body}\u0007`
+  if (payload.channel !== "osc" && payload.channel !== "terminal") return
+  const title = notificationOscField(payload.title)
+  const body = notificationOscField(payload.body)
+  const protocol = terminalNotificationProtocol(env)
+  if (protocol === "osc9") return terminalSequence(`\x1b]9;${title}: ${body}\x07`, env)
+  if (protocol === "osc777") return terminalSequence(`\x1b]777;notify;${title};${body}\x07`, env)
+  if (protocol === "osc99") {
+    return (
+      terminalSequence(`\x1b]99;p=title:d=0;${title}\x1b\\`, env) +
+      terminalSequence(`\x1b]99;p=body:d=1;${body}\x1b\\`, env)
+    )
   }
-  if (payload.channel === "terminal") {
-    const title = notificationOscField(payload.title)
-    const body = notificationOscField(payload.body)
-    return `\u001b]9;${title};${body}\u0007`
-  }
-  return
+  return "\x07"
 }
 
 function notificationOscField(value: string): string {
@@ -260,7 +269,7 @@ export function deliverNotificationPayloads(
 ): NotificationPayload[] {
   const assets = options.assets ?? bundledNotificationAssets()
   for (const payload of payloads) {
-    const escape = notificationEscape(payload)
+    const escape = notificationEscape(payload, options.env)
     if (escape && options.write) options.write(escape)
     const command = notificationCommand(payload, options.platform, assets)
     if (command) runNotificationCommand(command, options.spawn)
@@ -277,6 +286,43 @@ export function notifyForSyncEvent(
   const attention = attentionEventFromSyncEvent(event)
   if (!attention) return []
   return deliverNotificationPayloads(notificationPayloads(attention, policy), options)
+}
+
+export function notifyForProgramStatus(
+  report: ProgramStatusReport,
+  sessionID: string,
+  policy: NotificationPolicy,
+  options: NotificationDeliveryOptions & {
+    responseParts?: ReadonlyArray<{ type: string; text?: string; ignored?: boolean; synthetic?: boolean }>
+  } = {},
+): NotificationPayload[] {
+  const category =
+    report.state === "done"
+      ? "run_complete"
+      : report.state === "error"
+        ? "run_failed"
+        : report.state === "blocked"
+          ? report.kind === "permission"
+            ? "approval_waiting"
+            : report.kind === "auth"
+              ? "provider_auth"
+              : "question_waiting"
+          : undefined
+  if (!category) return []
+  const preview =
+    report.state === "done" && policy.includeDetails
+      ? sanitizeNotificationText(
+          (options.responseParts ?? [])
+            .filter((part) => part.type === "text" && !part.ignored && !part.synthetic)
+            .map((part) => part.text ?? "")
+            .join("\n"),
+        )
+          .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+          .replace(/\s+/g, " ")
+          .trim()
+      : ""
+  const message = preview.length > 240 ? `${preview.slice(0, 237)}...` : preview || report.message
+  return deliverNotificationPayloads(notificationPayloads({ category, sessionID, message }, policy), options)
 }
 
 function runNotificationCommand(command: string[], spawn = spawnNotificationCommand): void {
@@ -354,29 +400,13 @@ function resolveCommandPath(command: string): string | undefined {
 export function terminalNotificationIdentity(env: NodeJS.ProcessEnv = process.env): TerminalNotificationIdentity {
   const explicit = env.PENGUIN_TUI_TERMINAL_BUNDLE_ID?.trim()
   const termProgram = env.TERM_PROGRAM?.trim()
-  const identity = termProgram ? TERMINAL_IDENTITIES[termProgram] : undefined
-  const fallback = detectsCMUX(env)
-    ? {
-        app: "CMUX",
-        bundleID: CMUX_BUNDLE_ID,
-      }
-    : undefined
-  const app = identity?.app ?? fallback?.app ?? termProgram ?? (env.TMUX ? "tmux" : undefined)
-  const bundleID = explicit ?? identity?.bundleID ?? fallback?.bundleID
+  const identity = isCmux(env) ? TERMINAL_IDENTITIES.cmux : termProgram ? TERMINAL_IDENTITIES[termProgram] : undefined
+  const app = identity?.app ?? termProgram ?? (env.TMUX ? "tmux" : undefined)
+  const bundleID = explicit ?? identity?.bundleID
   return {
     app: app && env.TMUX ? `${app} via tmux` : app,
     bundleID,
   }
-}
-
-function detectsCMUX(env: NodeJS.ProcessEnv): boolean {
-  return Boolean(
-    env.CMUX ||
-      env.CMUX_SESSION ||
-      env.CMUX_SOCKET ||
-      env.CMUX_PANE ||
-      env.TERM_PROGRAM?.trim().toLowerCase() === "cmux",
-  )
 }
 
 function resolveAssetPath(relative: string): string | undefined {

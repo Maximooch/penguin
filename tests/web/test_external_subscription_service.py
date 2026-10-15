@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from penguin.web.services import external_subscription as service
+from penguin.web.services import provider_catalog
 
 LINK_SERVICE_SECRET = "test-link-service-secret"
 
@@ -82,7 +83,14 @@ def test_capability_reports_oauth_models_without_credentials(monkeypatch) -> Non
                     "default_reasoning_level": "medium",
                     "vision_enabled": True,
                     "source": "codex",
-                }
+                },
+                "gpt-5.5": {
+                    "name": "GPT-5.5",
+                    "reasoning_enabled": True,
+                    "service_tiers": ["priority", "ultrafast"],
+                    "vision_enabled": True,
+                    "source": "codex",
+                },
             }
         },
     )
@@ -97,10 +105,28 @@ def test_capability_reports_oauth_models_without_credentials(monkeypatch) -> Non
     assert model["reasoning_efforts"] == ["low", "medium", "high", "xhigh"]
     assert model["default_reasoning_effort"] == "medium"
     assert model["service_tiers"] == ["priority"]
+    ultrafast_model = next(
+        m for m in subscription["models"] if m["id"] == "gpt-5.5"
+    )
+    assert ultrafast_model["service_tiers"] == ["priority", "ultrafast"]
     serialized = repr(payload)
     assert "secret-access" not in serialized
     assert "secret-refresh" not in serialized
     assert "account-secret" not in serialized
+
+
+@pytest.mark.parametrize(
+    ("item", "expected"),
+    [
+        ({"service_tiers": [{"id": "priority"}, {"id": "Ultrafast"}]}, ["priority", "ultrafast"]),
+        ({"additional_speed_tiers": ["ultrafast"]}, ["ultrafast"]),
+        ({"default_service_tier": "ultrafast"}, ["ultrafast"]),
+        ({"service_tiers": [], "private_value": "x"}, []),
+        ({"service_tiers": [None, {"id": ""}, 3]}, []),
+    ],
+)
+def test_codex_catalog_service_tiers(item: dict, expected: list[str]) -> None:
+    assert provider_catalog._codex_service_tier_ids(item) == expected
 
 
 def test_public_execution_result_supports_pydantic_1(monkeypatch) -> None:

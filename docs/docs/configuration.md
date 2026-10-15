@@ -183,7 +183,7 @@ PENGUIN_REASONING_ENABLED=true
 PENGUIN_REASONING_EFFORT=high
 PENGUIN_REASONING_MAX_TOKENS=8000
 PENGUIN_REASONING_EXCLUDE=false
-PENGUIN_OPENAI_SERVICE_TIER=auto             # auto | default | flex | priority
+PENGUIN_OPENAI_SERVICE_TIER=auto             # auto | default | flex | priority | ultrafast
 ```
 
 **Paths and runtime roots:**
@@ -253,7 +253,7 @@ model:
   context_window: 170000
   streaming_enabled: true
   vision_enabled: true
-  service_tier: auto             # OpenAI only: auto | default | flex | priority
+  service_tier: auto             # OpenAI only: auto | default | flex | priority | ultrafast
 
 # --- Per-model overrides (resolved by LLMModelConfig.for_model) ---
 model_configs:

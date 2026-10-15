@@ -21,6 +21,17 @@ from typing import Optional, Dict
 from PIL import Image  # type: ignore
 
 
+_ANALYZE_PROJECT_MAX_FILES = 2_000
+_ANALYZE_PROJECT_SKIP_DIRS = {
+    ".git",
+    ".venv",
+    ".worktrees",
+    "__pycache__",
+    "node_modules",
+    "venv",
+}
+
+
 class RollbackError(Exception):
     """Raised when edit rollback fails after a partial write."""
 
@@ -563,7 +574,10 @@ def find_files_enhanced(
 
 
 def analyze_project_structure(
-    directory=".", include_external=False, workspace_path=None
+    directory=".",
+    include_external=False,
+    workspace_path=None,
+    respect_gitignore=True,
 ):
     """
     Analyze project structure and dependencies.
@@ -589,8 +603,51 @@ def analyze_project_structure(
         if not target_path.is_dir():
             return f"Error: Not a directory: {target_path}"
 
-        # Find all Python files
-        python_files = list(target_path.rglob("*.py"))
+        python_files = None
+        if respect_gitignore:
+            try:
+                git_files = subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(target_path),
+                        "ls-files",
+                        "--cached",
+                        "--others",
+                        "--exclude-standard",
+                        "--",
+                        "*.py",
+                    ],
+                    env=build_tool_environment(),
+                    capture_output=True,
+                    text=True,
+                )
+            except OSError:
+                git_files = None
+            if git_files is not None and git_files.returncode == 0:
+                python_files = [
+                    target_path / path
+                    for path in git_files.stdout.splitlines()
+                    if path
+                ]
+
+        if python_files is None:
+            python_files = []
+            for root, dirs, files in os.walk(target_path):
+                dirs[:] = [
+                    name for name in dirs if name not in _ANALYZE_PROJECT_SKIP_DIRS
+                ]
+                python_files.extend(
+                    Path(root) / name for name in files if name.endswith(".py")
+                )
+                if len(python_files) > _ANALYZE_PROJECT_MAX_FILES:
+                    break
+
+        if len(python_files) > _ANALYZE_PROJECT_MAX_FILES:
+            return (
+                "Error: Project analysis exceeds "
+                f"{_ANALYZE_PROJECT_MAX_FILES} Python files; narrow the directory."
+            )
 
         if not python_files:
             return f"No Python files found in: {target_path}"

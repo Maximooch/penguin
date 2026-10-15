@@ -4,10 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from pathlib import Path
+from pathlib import Path
 
 import pytest
 
@@ -369,3 +366,108 @@ async def test_approved_command_keeps_grant_through_cancellation_context(permiss
         await asyncio.gather(task, return_exceptions=True)
         approvals.remove_callback(queue.put_nowait)
         manager.process_tools.cleanup()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decision", ["deny", "allow", "ask"])
+async def test_link_policy_controls_real_file_write(permissions, decision):
+    manager, approvals, context, _ = permissions
+    target = Path(context["directory"]) / "policy.txt"
+    context = {**context, "approval_policy": {"fileWrite": decision}}
+    created = asyncio.Queue()
+    approvals.on_request_created(created.put_nowait)
+    task = asyncio.create_task(
+        manager.execute_tool_async(
+            "write_file", {"path": str(target), "content": "allowed"}, context
+        )
+    )
+    try:
+        if decision == "ask":
+            request = await asyncio.wait_for(created.get(), 2)
+            assert not target.exists()
+            assert not task.done()
+            approvals.approve(request.id, scope=ApprovalScope.ONCE)
+        result = await asyncio.wait_for(task, 2)
+        if decision == "deny":
+            assert json.loads(result)["error"] == "permission_denied"
+            assert not target.exists()
+        else:
+            assert target.read_text() == "allowed"
+        assert created.empty()
+        assert not approvals.get_pending()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        approvals.remove_callback(created.put_nowait)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_link_policies_cannot_authorize_each_other(permissions):
+    manager, approvals, context, _ = permissions
+    root = Path(context["directory"])
+    ask_target, allow_target, deny_target = [
+        root / f"{mode}.txt" for mode in ("ask", "allow", "deny")
+    ]
+    created = asyncio.Queue()
+    approvals.on_request_created(created.put_nowait)
+    waiting = asyncio.create_task(
+        manager.execute_tool_async(
+            "write_file",
+            {"path": str(ask_target), "content": "ask"},
+            {
+                **context,
+                "session_id": "ask-session",
+                "approval_policy": {"fileWrite": "ask"},
+            },
+        )
+    )
+    try:
+        request = await asyncio.wait_for(created.get(), 2)
+        await asyncio.gather(
+            *[
+                manager.execute_tool_async(
+                    "write_file",
+                    {"path": str(target), "content": mode},
+                    {
+                        **context,
+                        "session_id": f"{mode}-session",
+                        "approval_policy": {"fileWrite": mode},
+                    },
+                )
+                for mode, target in [("allow", allow_target), ("deny", deny_target)]
+            ]
+        )
+        assert allow_target.read_text() == "allow"
+        assert not deny_target.exists()
+        assert not ask_target.exists()
+        assert not waiting.done()
+        approvals.deny(request.id)
+        assert (
+            json.loads(await asyncio.wait_for(waiting, 2))["error"]
+            == "permission_denied"
+        )
+        assert not ask_target.exists()
+    finally:
+        waiting.cancel()
+        await asyncio.gather(waiting, return_exceptions=True)
+        approvals.remove_callback(created.put_nowait)
+
+
+@pytest.mark.asyncio
+async def test_shell_cannot_write_when_link_policy_denies_file_writes(permissions):
+    import shlex
+
+    manager, approvals, context, _ = permissions
+    target = Path(context["directory"]) / "shell-must-not-write.txt"
+    policy = dict.fromkeys(
+        ["shell", "fileDelete", "gitPush", "network", "secrets"], "allow"
+    )
+    policy["fileWrite"] = "deny"
+    result = await manager.execute_tool_async(
+        "execute_command",
+        {"command": f"printf blocked > {shlex.quote(str(target))}"},
+        {**context, "approval_policy": policy},
+    )
+    assert json.loads(result)["error"] == "permission_denied"
+    assert not target.exists()
+    assert not approvals.get_pending()

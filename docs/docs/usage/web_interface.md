@@ -39,6 +39,24 @@ After startup, the server prints:
 
 ---
 
+## OpenAI speed modes
+
+In the Penguin TUI, `/fast [on|off|status]` requests the `priority` service tier
+and `/ultrafast [on|off|status]` requests `ultrafast`. With no argument, each
+command toggles its mode. The modes are mutually exclusive; turning either off
+requests `default`. The selection is persisted with the TUI's model preferences
+and applies to subsequent prompts, not an already-running request.
+
+HTTP chat requests and WebSocket chat payloads can set `"service_tier": "ultrafast"`
+using the existing `service_tier` field. To make it the configured default, set
+`model.service_tier: ultrafast` or `PENGUIN_OPENAI_SERVICE_TIER=ultrafast`.
+
+This requests an OpenAI service tier; it does not grant access or guarantee that
+the provider serves that tier. Availability depends on the model and account.
+Reasoning effort is unchanged by speed-mode selection.
+
+---
+
 ## Current Security Posture
 
 The web server is no longer “wide open unless you remember to harden it later.” Current behavior:
@@ -63,6 +81,19 @@ Some routes remain public by design, including:
 - `/static/...`
 
 Additional public routes can be exposed explicitly with `PENGUIN_PUBLIC_ENDPOINTS`.
+
+### Standard A2A v1
+
+Set `PENGUIN_A2A_API_KEY` and `PENGUIN_A2A_BASE_URL` to enable Penguin's
+standard A2A endpoint. The base URL must be a public HTTPS origin, or a
+loopback HTTP origin for local tests. Keep the A2A key distinct from Penguin's
+general and Link service keys.
+
+The AgentCard is public at `/.well-known/agent-card.json`. A2A task requests
+use `/a2a/rest` and require `Authorization: Bearer <PENGUIN_A2A_API_KEY>`.
+Penguin stores tasks and chat request receipts in its workspace so `GetTask`
+can reconcile a completed or canceled request after a server restart. A lost
+connection alone does not end work.
 
 ---
 
@@ -356,6 +387,17 @@ These checks operate at tool boundaries. They are not an operating-system
 filesystem sandbox for shell or Python processes. Shell execution has its own
 operation policy and cannot reliably infer every file a program will modify.
 The model should use the file tool and its approval flow for requested edits.
+
+For Link assignments, shell and code tools must also honor the supplied
+file-write, file-delete, Git-push, network, and secrets policy. Because these
+processes are not sandboxed, any hard denial of those capabilities blocks shell
+and code execution, including starting a process or sending it input. A shell
+allow-list does not override that denial. Use scoped file or other dedicated
+tools instead. If a capability requires approval or has a target allow-list,
+shell/code execution requires approval even when the command itself is allowed.
+Only a policy that allows all of those capabilities without target restrictions
+can automatically allow arbitrary shell/code execution. Legacy requests without
+a Link approval policy retain their existing behavior.
 
 The pause-and-resume flow applies to asynchronous tool dispatch used by native
 provider tool calls. Direct synchronous tool API callers receive a

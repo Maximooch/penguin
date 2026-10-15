@@ -231,12 +231,21 @@ def _model_capability(model_id: str, config: dict[str, Any]) -> dict[str, Any]:
         "reasoning": bool(config.get("reasoning_enabled") or reasoning_efforts),
         "reasoning_efforts": list(reasoning_efforts),
         "default_reasoning_effort": default_reasoning_effort,
-        # The ChatGPT-backed Codex transport accepts OpenAI's priority service
-        # tier. Link presents that exact transport capability as Fast mode.
-        "service_tiers": ["priority"],
+        "service_tiers": _advertised_service_tiers(config),
         "vision": bool(config.get("vision_enabled")),
         "tools": True,
     }
+
+
+def _advertised_service_tiers(config: dict[str, Any]) -> list[str]:
+    # The ChatGPT-backed Codex transport accepts OpenAI's priority service
+    # tier for every model; Link presents it as Fast. Ultrafast is per-model,
+    # so advertise it only when the Codex catalog lists it for this model.
+    tiers = ["priority"]
+    catalog_tiers = config.get("service_tiers")
+    if isinstance(catalog_tiers, list) and "ultrafast" in catalog_tiers:
+        tiers.append("ultrafast")
+    return tiers
 
 
 def _model_priority(config: dict[str, Any]) -> int:

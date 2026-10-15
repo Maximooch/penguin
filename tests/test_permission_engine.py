@@ -58,6 +58,7 @@ class TestPermissionEnums:
         assert Operation.is_read_only(Operation.FILESYSTEM_READ) is True
         assert Operation.is_read_only(Operation.FILESYSTEM_LIST) is True
         assert Operation.is_read_only(Operation.MEMORY_READ) is True
+        assert Operation.is_read_only(Operation.PROCESS_INSPECT) is True
         assert Operation.is_read_only(Operation.FILESYSTEM_WRITE) is False
         assert Operation.is_read_only(Operation.PROCESS_EXECUTE) is False
 

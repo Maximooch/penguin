@@ -181,7 +181,9 @@ async def test_anthropic_prepares_messages_request() -> None:
     assert prepared.transport == "sdk_stream"
     assert prepared.body["system"] == "System rules."
     assert prepared.body["max_tokens"] == 321
-    assert prepared.body["temperature"] == 0.2
+    # The Messages API no longer supports sampling controls, so `temperature`
+    # must never reach the SDK call it describes.
+    assert "temperature" not in prepared.body
     assert prepared.body["messages"][0]["role"] == "user"
     assert prepared.body["tools"] == tools
     assert prepared.capabilities is not None

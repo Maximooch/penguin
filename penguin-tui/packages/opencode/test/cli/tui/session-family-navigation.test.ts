@@ -19,6 +19,18 @@ function session(input: { id: string; title: string; created: number; updated: n
 }
 
 describe("session family navigation", () => {
+  test("narrows a valid child's optional parent ID", () => {
+    const child = session({ id: "child", title: "Child", created: 1, updated: 1, parentID: "parent" })
+    if (!isValidChildSession(child)) throw new Error("Expected a child session")
+    const parent: string = child.parentID
+    expect(parent).toBe("parent")
+  })
+
+  test.each([undefined, { id: "root" }, { id: "root", parentID: "" }, { id: "root", parentID: "root" }])(
+    "rejects missing and invalid parent IDs: %j",
+    (item) => expect(isValidChildSession(item)).toBe(false),
+  )
+
   test("returns the full parent-child family from a child session", () => {
     const parent = session({
       id: "ses_parent",

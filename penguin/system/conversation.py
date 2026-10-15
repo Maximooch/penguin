@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from penguin.system.tool_environment import build_tool_environment
 from penguin.config import CONVERSATION_CONFIG
 from penguin.system.state import Message, MessageCategory, Session
+from penguin.system.context_epoch import ContextEpoch
 from penguin.utils.diagnostics import diagnostics
 
 try:
@@ -249,7 +250,7 @@ class ConversationSystem:
 
         # Process session through context window manager if available
         if self.context_window:
-            self.session = self.context_window.process_session(self.session)
+            self.context_window.analyze_session(self.session)
 
         # Check session boundaries and handle transitions automatically
         if self.session_manager and self.session_manager.check_session_boundary(
@@ -487,7 +488,16 @@ class ConversationSystem:
             if is_human_visible_message(msg)
         ]
 
-    def get_formatted_messages(self) -> List[Dict[str, Any]]:
+    def get_formatted_messages(
+        self, *, epoch: Optional[ContextEpoch] = None
+    ) -> List[Dict[str, Any]]:
+        """Derive a budgeted model request without changing persisted history."""
+        request_session = (epoch or ContextEpoch()).select(
+            self.session, self.context_window
+        )
+        return self._format_session_messages(request_session)
+
+    def _format_session_messages(self, session: Session) -> List[Dict[str, Any]]:
         """
         Get formatted messages optimized for API consumption.
 
@@ -496,16 +506,10 @@ class ConversationSystem:
             List of formatted message dictionaries
         """
         # Group by category
-        categorized = {
-            MessageCategory.SYSTEM: [],
-            MessageCategory.CONTEXT: [],
-            MessageCategory.DIALOG: [],
-            MessageCategory.SYSTEM_OUTPUT: [],
-            MessageCategory.INTERNAL: [],
-        }
+        categorized = {category: [] for category in MessageCategory}
 
         # Populate categories
-        for msg in self.session.messages:
+        for msg in session.messages:
             categorized[msg.category].append(msg)
 
         # Create ordered list with proper priority
@@ -531,15 +535,13 @@ class ConversationSystem:
         )
 
         # Merge dialogue and system output by timestamp
-        dialog_and_output = (
-            categorized[MessageCategory.DIALOG]
-            + categorized[MessageCategory.SYSTEM_OUTPUT]
-            + categorized[MessageCategory.INTERNAL]
-        )
-        dialog_and_output.sort(key=lambda msg: msg.timestamp)
+        dialog_and_output = [
+            msg for msg in session.messages
+            if msg.category not in {MessageCategory.SYSTEM, MessageCategory.CONTEXT}
+        ]
 
         def _tool_records_by_call_id(name: str) -> Dict[str, Dict[str, Any]]:
-            records = getattr(self.session, name, [])
+            records = getattr(session, name, [])
             if not isinstance(records, list):
                 return {}
             return {
