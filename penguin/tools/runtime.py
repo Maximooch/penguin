@@ -1224,6 +1224,10 @@ def tool_loop_signature(action_result: Any) -> dict[str, Any]:
         "max_lines",
         "offset",
         "recursive",
+        "process_id",
+        "process_status",
+        "returncode",
+        "next_sequence",
     ):
         value = action_result.get(key, metadata.get(key, argument_fields.get(key)))
         if value is not None:
@@ -1293,7 +1297,13 @@ def _summarize_tool_loop_entry(entry: dict[str, Any]) -> str:
     detail = f"({', '.join(detail_parts[:4])})" if detail_parts else ""
     output_hash = str(entry.get("output_hash") or "")
     hash_preview = output_hash[:12] if output_hash else "none"
-    return f"{name}{detail} status={status} output={hash_preview}"
+    lifecycle = " ".join(
+        f"{key}={fields[key]}"
+        for key in ("process_id", "process_status", "returncode", "next_sequence")
+        if key in fields
+    )
+    lifecycle = f" {lifecycle}" if lifecycle else ""
+    return f"{name}{detail} tool_status={status}{lifecycle} output={hash_preview}"
 
 
 def tool_results_loop_identity(action_results: list[Any]) -> ToolLoopIdentity:

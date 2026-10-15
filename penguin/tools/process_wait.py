@@ -1,4 +1,4 @@
-"""Elapsed-time policy for process waiting inside the reasoning loop."""
+"""Recognize live process waits separately from stale tool repetition."""
 
 from __future__ import annotations
 
@@ -11,9 +11,9 @@ from penguin.tools.runtime import ToolResult
 
 @dataclass
 class ProcessWaitGuard:
-    """Allow live process waits, but stop a turn after bounded lack of progress."""
+    """Allow live waits; an elapsed-time cutoff must be explicitly supplied."""
 
-    timeout_seconds: float = 120.0
+    timeout_seconds: float | None = None
     progress: dict[str, tuple[int, float]] = field(default_factory=dict)
 
     def check(self, results: list[Any]) -> tuple[bool, str | None] | None:
@@ -52,7 +52,7 @@ class ProcessWaitGuard:
             if cursor > previous:
                 since = now
             self.progress[process_id] = (max(previous, cursor), since)
-            if now - since >= self.timeout_seconds:
+            if self.timeout_seconds is not None and now - since >= self.timeout_seconds:
                 return True, "process_wait_budget_exhausted"
         return False, None
 

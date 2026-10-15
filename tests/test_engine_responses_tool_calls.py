@@ -1051,6 +1051,7 @@ async def test_record_tool_only_stall_note_persists_clearer_terminal_message() -
         "identity; this is probably a stale loop rather than forward progress."
     )
     assert "Repeated tool result: read_file(path=README.md)." in result
-    assert "To continue, send a new message" in result
+    assert "Automatic recovery did not produce forward progress." in result
+    assert "send a new message" not in result
     assert added == [result]
     engine._save_conversation.assert_awaited_once()

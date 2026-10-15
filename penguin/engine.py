@@ -307,6 +307,7 @@ class LoopState:
     """
 
     # Empty/trivial response tracking
+    stall_recovery_attempted: bool = False
     empty_response_count: int = 0
 
     # Response repetition detection
@@ -322,6 +323,7 @@ class LoopState:
 
     def reset(self) -> None:
         """Reset state for a new run."""
+        self.stall_recovery_attempted = False
         self.empty_response_count = 0
         self.last_response_hash = None
         self.repeat_count = 0
@@ -1387,6 +1389,8 @@ class Engine:
             - should_break: True if loop should terminate
             - completion_status: Status string if breaking, None otherwise
         """
+        if (last_response or "").strip() == _EMPTY_RESPONSE_PLACEHOLDER:
+            last_response = ""
         stripped_response = (last_response or "").strip()
         loop_state = self._get_loop_state()
 
@@ -1485,8 +1489,8 @@ class Engine:
         assistant_response: str,
         iteration_results: List[Dict[str, Any]],
     ) -> str:
-        """Remove generic empty placeholders for valid tool-only turns."""
-        if not iteration_results or assistant_response != _EMPTY_RESPONSE_PLACEHOLDER:
+        """Remove display-only empty placeholders before completion detection."""
+        if assistant_response != _EMPTY_RESPONSE_PLACEHOLDER:
             return assistant_response
 
         try:
@@ -1536,10 +1540,7 @@ class Engine:
         repeated_tool = loop_state.last_tool_only_summary.strip()
         if repeated_tool:
             note = f"{note} Repeated tool result: {repeated_tool}."
-        return (
-            f"{note} To continue, send a new message with the next file, range, "
-            "query, or command to try."
-        )
+        return f"{note} Automatic recovery did not produce forward progress."
 
     async def _record_tool_only_stall_note(
         self,
@@ -1570,6 +1571,29 @@ class Engine:
             cm.conversation.add_assistant_message(note)
             await self._save_conversation(cm, async_save=True)
         return note
+
+    def _queue_stall_recovery(self, cm: Any, status: Optional[str]) -> bool:
+        """Offer one corrective turn; never replay the stalled tool automatically."""
+        state = self._get_loop_state()
+        if status not in _TOOL_ONLY_STALL_NOTES or state.stall_recovery_attempted:
+            return False
+        cm.conversation.add_message(
+            role="system",
+            content=(
+                "The same tool result has repeated without progress. Continue the "
+                "authorized task using the retained results; choose a different next "
+                "step or explain a concrete blocker. Do not ask the user to resume. "
+                "Tool execution status is not process lifecycle status. For an exited "
+                "process consume its exit code and retained output; for a running "
+                "process use its existing process_id. Do not restart commands or "
+                "replay mutations without checking whether they already ran. "
+                f"Repeated result: {state.last_tool_only_summary}"
+            ),
+            category=MessageCategory.SYSTEM_OUTPUT,
+            metadata={"type": "tool_loop_recovery", "reason": status},
+        )
+        state.stall_recovery_attempted = True
+        return True
 
     def _looks_like_malformed_action_output(self, response: str) -> bool:
         """Return whether text looks like a partial or malformed tool call."""
@@ -1925,6 +1949,9 @@ class Engine:
                     codeact_enabled=response_data.get("codeact_enabled", True),
                 )
                 if should_break:
+                    if self._queue_stall_recovery(cm, guard_status):
+                        await self._save_conversation(cm, async_save=True)
+                        continue
                     if guard_status in _TOOL_ONLY_STALL_NOTES:
                         last_response = await self._record_tool_only_stall_note(
                             cm,
@@ -2388,6 +2415,9 @@ class Engine:
                     codeact_enabled=response_data.get("codeact_enabled", True),
                 )
                 if should_break:
+                    if self._queue_stall_recovery(cm, guard_status):
+                        await self._save_conversation(cm, async_save=True)
+                        continue
                     if guard_status:
                         final_status = guard_status
                     if guard_status in _TOOL_ONLY_STALL_NOTES:
@@ -3590,6 +3620,7 @@ class Engine:
                 )
             )
             runtime_action_result = {
+                **(tool_result.structured_output or {}),
                 **legacy_action_result,
                 "tool_call_id": tool_call.id,
                 "tool_arguments": tool_arguments_text,
