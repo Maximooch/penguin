@@ -1668,6 +1668,8 @@ def _format_browser_tool_output(action_result: dict[str, Any]) -> str:
     action = str(action_result.get("action") or action_result.get("name") or "")
     result = str(action_result.get("result") or action_result.get("output") or "")
     lines = [result] if result else [action]
+    if action_result.get("error"):
+        lines.append(f"Error: {action_result['error']}")
 
     page_info = action_result.get("page_info")
     if isinstance(page_info, dict):
@@ -1766,7 +1768,10 @@ def tool_result_from_action_result(
     name = str(raw_name).strip()
     output = _model_visible_tool_output(action_result)
     metadata = _metadata_from_result(action_result)
-    raw_status = str(action_result.get("status") or "completed").strip().lower()
+    raw_status = str(
+        action_result.get("status")
+        or ("error" if action_result.get("error") else "completed")
+    ).strip().lower()
     status = cast(
         ToolResultStatus,
         raw_status
@@ -1835,7 +1840,11 @@ def image_artifacts_from_action_result(
         when the result has no image payload or the tool failed.
     """
 
-    if not isinstance(action_result, dict) or action_result.get("error"):
+    if (
+        not isinstance(action_result, dict)
+        or action_result.get("error")
+        or action_result.get("status", "completed") != "completed"
+    ):
         return []
 
     action = str(action_result.get("action") or action_result.get("name") or "")
