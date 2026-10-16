@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import logging
@@ -195,7 +196,11 @@ class ProcessRuntime:
                 )
                 os.close(fd)
                 process = subprocess.Popen(
-                    ["bash", "-c", command],
+                    (
+                        f'"{os.environ.get("COMSPEC", "cmd.exe")}" /d /s /c "{command}"'
+                        if os.name == "nt"
+                        else ["bash", "-c", command]
+                    ),
                     cwd=resolved_cwd,
                     env=effective_env,
                     stdin=subprocess.PIPE,
@@ -204,6 +209,9 @@ class ProcessRuntime:
                     text=True,
                     bufsize=1,
                     start_new_session=os.name == "posix",
+                    creationflags=(
+                        subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+                    ),
                 )
             except OSError as exc:
                 if log_path:
@@ -446,15 +454,27 @@ class ProcessRuntime:
                 if written == len(payload):
                     break
                 fd = record.process.stdin.fileno()
-                os.set_blocking(fd, False)
+                if os.name == "nt":
+                    from penguin.tools.windows_pipes import set_nonblocking
+
+                    set_nonblocking(fd)
+                else:
+                    os.set_blocking(fd, False)
                 try:
                     # Small chunks bound work between cancellation checks. All
                     # stdin writes use the raw descriptor; no text buffer is used.
                     written += os.write(fd, payload[written : written + 4096])
-                except BlockingIOError:
-                    with selectors.DefaultSelector() as selector:
-                        selector.register(fd, selectors.EVENT_WRITE)
-                        selector.select(timeout=min(remaining, 0.05))
+                except OSError as exc:
+                    if not isinstance(exc, BlockingIOError) and not (
+                        os.name == "nt" and exc.errno == errno.ENOSPC
+                    ):
+                        raise
+                    if os.name == "nt":
+                        time.sleep(min(remaining, 0.005))
+                    else:
+                        with selectors.DefaultSelector() as selector:
+                            selector.register(fd, selectors.EVENT_WRITE)
+                            selector.select(timeout=min(remaining, 0.05))
         except (OSError, ValueError) as exc:
             error = f"stdin_write_failed: {exc}"
         finally:
@@ -479,7 +499,20 @@ class ProcessRuntime:
 
     def _signal(self, record: ManagedProcess, mode: str) -> None:
         try:
-            if record.owns_group:
+            if os.name == "nt" and record.process.poll() is None:
+                if mode == "interrupt":
+                    record.process.send_signal(signal.CTRL_BREAK_EVENT)
+                else:
+                    # Killing only cmd.exe leaves its Python/build children alive.
+                    result = subprocess.run(
+                        ["taskkill.exe", "/PID", str(record.process.pid), "/T", "/F"],
+                        capture_output=True,
+                        timeout=5,
+                        check=False,
+                    )
+                    if result.returncode and record.process.poll() is None:
+                        raise OSError(f"taskkill failed: {result.stderr!r}")
+            elif record.owns_group:
                 os.killpg(
                     record.process.pid,
                     {"interrupt": signal.SIGINT, "kill": signal.SIGKILL}.get(
@@ -569,13 +602,20 @@ class ProcessRuntime:
         }
         exit_deadline = None
         try:
+            if os.name == "nt":
+                from penguin.tools.windows_pipes import PipeSelector
+
+                selector_factory = PipeSelector
+            else:
+                selector_factory = selectors.DefaultSelector
             with (
-                selectors.DefaultSelector() as selector,
+                selector_factory() as selector,
                 open(record.log_path, "a", encoding="utf-8") as log,
             ):
                 for stream in decoders:
                     pipe = getattr(record.process, stream)
-                    os.set_blocking(pipe.fileno(), False)
+                    if os.name != "nt":
+                        os.set_blocking(pipe.fileno(), False)
                     selector.register(pipe, selectors.EVENT_READ, stream)
                 while not record.stop_reader.is_set():
                     if (
@@ -623,8 +663,11 @@ class ProcessRuntime:
         except (OSError, ValueError) as exc:
             logger.exception("Process capture failed: %s", record.process_id)
             record.reader_error = str(exc)
-            self._signal(record, "kill")
-            record.process.wait()
+            try:
+                self._signal(record, "kill")
+                record.process.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                logger.exception("Unable to stop process after capture failure")
         finally:
             for stream in ("stdout", "stderr"):
                 pipe = getattr(record.process, stream)
@@ -645,7 +688,12 @@ class ProcessRuntime:
             return
         with record.changed:
             record.notify_on_complete = enabled
-            if not enabled or not record.reader_done or record.notified:
+            if (
+                not enabled
+                or not record.reader_done
+                or record.notified
+                or record.process.poll() is None
+            ):
                 return
             record.notified = True
         self._emit(record, "completed")

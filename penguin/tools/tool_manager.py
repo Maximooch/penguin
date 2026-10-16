@@ -794,7 +794,7 @@ class ToolManager:
             },
             {
                 "name": "code_execution",
-                "description": "Execute a snippet of Python code.",
+                "description": "Execute Python code. On Windows each call uses a fresh interpreter (no persistent variables or IPython magics); use print() for output.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -4962,6 +4962,11 @@ class ToolManager:
             )
         except Exception:
             default_timeout = 300
+
+        if os.name == "nt":
+            from penguin.tools.python_execution import execute_python
+
+            return execute_python(code, cwd=effective_cwd, timeout=default_timeout)
 
         result_container = {"done": False, "result": None, "error": None}
 

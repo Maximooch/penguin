@@ -134,6 +134,14 @@ with PenguinAgent() as agent:
     print(response["assistant_response"])
 ```
 
+## Windows execution
+
+Managed command tools use native `cmd.exe` on Windows; Bash/WSL is not required.
+Use cmd syntax or invoke PowerShell explicitly. Python snippets run in isolated
+UTF-8 subprocesses with no persistent variables; use `print()` for output.
+See `docs/docs/tools/processes.md` for timeouts, retained output, and process-tree
+cleanup limitations.
+
 ## Installation
 
 Penguin requires Python 3.10 through 3.12.
