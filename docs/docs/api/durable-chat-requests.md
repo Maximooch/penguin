@@ -119,7 +119,8 @@ Removal loses the evidence that prevents duplicate execution.
 
 The offline tests cover concurrent claims, conflicting reuse, disconnects, restart lookup, failed result writes, immutable results, and authenticated HTTP behavior.
 Contention tests cover event-loop progress and cancellation during acceptance and result writes.
-CI runs the receipt route tests with Pydantic v1 and v2.
+CI runs the receipt route tests with the minimum supported Pydantic 2 version
+on Python 3.10 and current Pydantic 2 on Python 3.12.
 
 ```sh
 python -m pytest tests/web/test_chat_requests.py tests/web/test_chat_request_contention.py tests/web/test_link_execution_authority.py -q

@@ -301,6 +301,15 @@ Read more:
 
 ## Version Highlights
 
+### v0.9.3
+
+- Hardened long-running execution with stale-tool-loop recovery, truncated-output continuation, quiet process waits, and bounded process I/O.
+- Added authenticated A2A serving with durable task receipts and read-only conversation archive lookup.
+- Strengthened Link execution authority, approval enforcement, hosted environments, native-tool isolation, and durable request cancellation.
+- Improved context/cache stability with request-local context epochs, turn-scoped Codex cache routing, and pooled transport.
+- Added TUI terminal status/response notifications, provider-advertised service tiers, and faster workspace file search.
+- Updated security-sensitive dependencies and aligned the supported runtime with Pydantic 2.11.3–2.x (Python 3.10–3.12).
+
 ### v0.9.2
 
 - Added durable session-scoped `/goal` and `/247` workflows with persisted lifecycle state, RunMode execution, API/TUI controls, and truthful partial or blocked outcomes.

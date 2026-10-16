@@ -6,8 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from penguin.web.services import external_subscription as service
-from penguin.web.services import provider_catalog
+from penguin.web.services import external_subscription as service, provider_catalog
 
 LINK_SERVICE_SECRET = "test-link-service-secret"
 
@@ -105,9 +104,7 @@ def test_capability_reports_oauth_models_without_credentials(monkeypatch) -> Non
     assert model["reasoning_efforts"] == ["low", "medium", "high", "xhigh"]
     assert model["default_reasoning_effort"] == "medium"
     assert model["service_tiers"] == ["priority"]
-    ultrafast_model = next(
-        m for m in subscription["models"] if m["id"] == "gpt-5.5"
-    )
+    ultrafast_model = next(m for m in subscription["models"] if m["id"] == "gpt-5.5")
     assert ultrafast_model["service_tiers"] == ["priority", "ultrafast"]
     serialized = repr(payload)
     assert "secret-access" not in serialized
@@ -118,7 +115,10 @@ def test_capability_reports_oauth_models_without_credentials(monkeypatch) -> Non
 @pytest.mark.parametrize(
     ("item", "expected"),
     [
-        ({"service_tiers": [{"id": "priority"}, {"id": "Ultrafast"}]}, ["priority", "ultrafast"]),
+        (
+            {"service_tiers": [{"id": "priority"}, {"id": "Ultrafast"}]},
+            ["priority", "ultrafast"],
+        ),
         ({"additional_speed_tiers": ["ultrafast"]}, ["ultrafast"]),
         ({"default_service_tier": "ultrafast"}, ["ultrafast"]),
         ({"service_tiers": [], "private_value": "x"}, []),

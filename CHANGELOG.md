@@ -5,6 +5,38 @@ Changelog
 
 All notable changes to this project are documented in this file.
 
+0.9.3 — 2026-10-15
+------------------
+
+Highlights
+- **More reliable long-running work**: Recover stale tool loops, continue truncated provider output, and preserve quiet process waits without prematurely ending execution.
+- **Scoped execution and permissions**: Harden Link execution authority, hosted tool environments, process lifecycle permissions, approvals, and native-tool isolation.
+- **Durable interoperability**: Add authenticated A2A serving with persisted task receipts, durable Link chat acceptance/results, and read-only conversation archive lookup.
+- **Cache-stable context**: Preserve the transcript while using request-local context epochs and turn-scoped Codex cache routing with pooled transport.
+
+Added
+- Authenticated standard A2A server routes, code-capability discovery, SQLite task receipts, and failure/cancellation lifecycle coverage.
+- Read-only conversation archive search and bounded retrieval without switching the active session.
+- Unified process execution, continuous output capture, bounded stdin writes, independent polling, and scoped completion notices.
+- TUI terminal status and response notifications, plus provider-advertised Codex service tiers and Ultrafast model support.
+
+Changed
+- Strengthened Link capability restrictions across unsandboxed execution, run-scoped inference credentials, and hosted environment inheritance.
+- Accelerated workspace file search and added a locked source-runtime installation path.
+- Updated Python, TUI, and documentation dependencies to address security alerts; documentation builds now use Node.js 24.
+- Declared Pydantic 2.11.3 or newer (below 3), matching the required A2A SDK, and aligned Python 3.10/3.12 CI coverage with that dependency contract.
+
+Fixed
+- Truncated provider output ending a task instead of continuing across provider-call boundaries.
+- Native assistant prose accidentally being interpreted as ActionXML tool execution.
+- Durable request cancellation, interrupted inference regeneration, result persistence, and late cancellation of completed A2A tasks.
+- Shell-expansion approval bypasses, nested Git push classification, process permission checks, and archive-read authorization.
+- Serialized ordered tool batches failing dispatch validation and large tool output losing marked head/tail previews.
+- TUI child-session parent identifier narrowing and Link contract-test lint failures.
+
+Compatibility note
+- Python 3.10 through 3.12 remain supported. Pydantic 1 is no longer supported because the required A2A SDK depends on Pydantic 2.
+
 0.9.2 — 2026-08-20
 ------------------
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "penguin-ai"
-version = "0.9.2"
+version = "0.9.3"
 description = "Penguin: A modular, extensible AI coding agent and software engineer with its own execution environment."
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
@@ -36,7 +36,7 @@ classifiers = [
 dependencies = [
     # Core Dependencies
     "tenacity>=8.0.1",
-    "pydantic>=1.10.24",
+    "pydantic>=2.11.3,<3",
     "python-dotenv>=0.19.0",
     "pyyaml>=5.4.0",
     "httpx>=0.24.0",
@@ -82,8 +82,7 @@ dependencies = [
 web = []
 tui = []
 
-# ACP's Python SDK requires Pydantic 2; keep it optional so Penguin's
-# Pydantic 1.x installation contract is not silently changed.
+# ACP remains optional; the base A2A SDK also requires Pydantic 2.
 acp = ["agent-client-protocol>=0.12.1,<0.13", "pydantic>=2.7,<3"]
 
 # Legacy Textual prototype/experimental UI support
@@ -102,7 +101,7 @@ mcp = [
 minimal = [
     # Only core essentials
     "tenacity>=8.0.1",
-    "pydantic>=1.10.24",
+    "pydantic>=2.11.3,<3",
     "python-dotenv>=0.19.0",
     "pyyaml>=5.4.0",
     "httpx>=0.24.0",
