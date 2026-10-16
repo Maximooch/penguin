@@ -845,6 +845,7 @@ async def _execute_ordered_batch_parent(
     emit_action_result: Optional[Callable[[Dict[str, Any]], Awaitable[None]]],
     emit_tool_timeline: Optional[Callable[[Dict[str, Any]], Awaitable[None]]],
     event_metadata: Dict[str, Any],
+    image_action_results: List[Dict[str, Any]],
 ) -> ToolResult:
     """Execute one model-visible ordered batch and return its parent result."""
 
@@ -926,6 +927,9 @@ async def _execute_ordered_batch_parent(
         if persist_tool_result_record is not None:
             persist_tool_result_record(child_call, child_result)
         legacy_child_result = legacy_action_result_from_tool_result(child_result)
+        image_action_results.append(
+            {**(child_result.structured_output or {}), **legacy_child_result}
+        )
         child_metadata = {
             **event_metadata,
             "source": "ordered_tool_batch_child",
@@ -1048,6 +1052,8 @@ async def execute_pending_tool_calls(
         known_tool_names = _available_tool_names(tool_manager)
         known_tool_schemas = _available_tool_schemas(tool_manager)
 
+        image_action_results: List[Dict[str, Any]] = []
+
         async def _execute_scheduled_tool_call(
             current_tool_call: ToolCall,
         ) -> Any:
@@ -1065,6 +1071,7 @@ async def execute_pending_tool_calls(
                     emit_action_result=emit_action_result,
                     emit_tool_timeline=emit_tool_timeline,
                     event_metadata=event_metadata,
+                    image_action_results=image_action_results,
                 )
             return await _execute_tool_with_manager(
                 tool_manager,
@@ -1133,8 +1140,7 @@ async def execute_pending_tool_calls(
                         "tool_arguments": runtime_action_result["tool_arguments"],
                     },
                 )
-                if persist_image_artifacts is not None:
-                    persist_image_artifacts(runtime_action_result)
+                image_action_results.append(runtime_action_result)
 
             if emit_action_result is not None and not suppress_ui_artifacts:
                 await emit_action_result(
@@ -1151,6 +1157,11 @@ async def execute_pending_tool_calls(
             action_results.append(
                 legacy_action_result if suppress_ui_artifacts else runtime_action_result
             )
+        # Keep all tool replies adjacent before adding synthetic user images.
+        if persist_image_artifacts is not None:
+            for image_action_result in image_action_results:
+                persist_image_artifacts(image_action_result)
+
         logger.info(
             "llm.tool_batch.done provider=%s model=%s count=%s results=%s "
             "duration_ms=%.2f statuses=%s",
