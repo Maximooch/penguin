@@ -131,3 +131,10 @@ operation remains completed and reports the child's `completion_reason` as
 
 Broader permission contracts and inherited CI failures are tracked in
 `context/tasks/process-runtime-follow-ups.md` in the repository.
+
+## Ordered batch inputs
+
+Ordered batches accept either a JSON object or its serialized JSON string at
+synchronous and asynchronous dispatch boundaries. Malformed/non-object payloads
+are rejected before authorization or execution; decoding does not bypass child
+preflight, serial execution, or per-child permission checks.

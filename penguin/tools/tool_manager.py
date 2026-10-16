@@ -4313,6 +4313,24 @@ class ToolManager:
             ended_at=ended_at,
         )
 
+    @staticmethod
+    def _normalize_ordered_batch_input(tool_input: Any) -> dict[str, Any]:
+        """Decode serialized batch input before path and permission processing.
+
+        Raises:
+            ValueError: If the payload is not a valid JSON object.
+        """
+        if isinstance(tool_input, str):
+            try:
+                tool_input = json.loads(tool_input)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    "ordered_tool_batch requires a valid JSON object"
+                ) from exc
+        if not isinstance(tool_input, dict):
+            raise ValueError("ordered_tool_batch requires a JSON object payload")
+        return tool_input
+
     def _execute_ordered_tool_batch(
         self,
         tool_input: dict[str, Any],
@@ -4434,6 +4452,11 @@ class ToolManager:
             effective_context["directory"] = file_root
             effective_context.setdefault("project_root", file_root)
             effective_context.setdefault("workspace_root", file_root)
+            if tool_name == ORDERED_TOOL_BATCH_NAME:
+                try:
+                    tool_input = self._normalize_ordered_batch_input(tool_input)
+                except ValueError as exc:
+                    return json.dumps({"status": "error", "error": str(exc)})
             tool_input = tool_input if isinstance(tool_input, dict) else {}
             if tool_name in {"conversation_search", "conversation_open"}:
                 effective_context, tool_input = self._archive_permission_input(
