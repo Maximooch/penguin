@@ -122,6 +122,7 @@ def test_process_wait_budget_resets_only_on_progress(
     now = [0.0]
     monkeypatch.setattr("penguin.tools.process_wait.time.monotonic", lambda: now[0])
     state = LoopState()
+    state.process_wait_guard.timeout_seconds = 120.0
     result = {
         "action": "process",
         "status": "completed",

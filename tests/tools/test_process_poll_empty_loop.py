@@ -114,3 +114,48 @@ async def test_scheduler_preserves_running_process_metadata_and_nonempty_hash(
     assert result.structured_output["process_status"] == "running"
     assert result.output_hash != hash_tool_output("")
     assert "e3b0c44298fc" not in tool_results_loop_identity(results).summary
+
+
+def test_quiet_process_has_no_implicit_turn_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = [0.0]
+    monkeypatch.setattr("penguin.tools.process_wait.time.monotonic", lambda: now[0])
+    state = LoopState()
+    result = {
+        "action": "process_poll",
+        "status": "completed",
+        "process_status": "running",
+        "process_id": "proc",
+        "next_sequence": 0,
+    }
+    for elapsed in (0, 120, 600, 3600):
+        now[0] = elapsed
+        assert state.check_empty_tool_only("", [result]) == (False, None)
+    summary = tool_results_loop_identity([result]).summary
+    assert "tool_status=completed" in summary
+    assert "process_status=running" in summary
+    assert "process_id=proc" in summary
+
+
+def test_terminal_transition_changes_loop_identity_without_new_output() -> None:
+    running = {
+        "action": "process_poll",
+        "status": "completed",
+        "process_status": "running",
+        "process_id": "proc",
+        "next_sequence": 0,
+        "result": "No new output.",
+    }
+    exited = {**running, "process_status": "exited", "returncode": 0}
+    assert (
+        tool_results_loop_identity([running]).fingerprint
+        != tool_results_loop_identity([exited]).fingerprint
+    )
+    summary = tool_results_loop_identity([exited]).summary
+    assert "process_status=exited" in summary
+    assert "returncode=0" in summary
+    state = LoopState()
+    for _ in range(4):
+        assert state.check_empty_tool_only("", [running]) == (False, None)
+    assert state.check_empty_tool_only("", [exited]) == (False, None)

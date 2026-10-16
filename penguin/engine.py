@@ -46,7 +46,7 @@ from penguin.utils.parser import (  # type: ignore
 )
 from penguin.system.state import MessageCategory  # type: ignore
 from penguin.llm.api_client import APIClient  # type: ignore
-from penguin.llm.contracts import LLMProviderError
+from penguin.llm.contracts import FinishReason, LLMProviderError
 from penguin.system.context_epoch import ContextEpoch
 from penguin.system.request_prefix import RequestPrefix
 from penguin.llm.codex_routing import CodexRouting, CURRENT_CODEX_ROUTING
@@ -89,6 +89,11 @@ except ImportError:
     ProtocolMessage = None  # type: ignore
 
 logger = logging.getLogger(__name__)
+
+_OUTPUT_BOUNDARY_CONTINUATION = (
+    "The previous assistant output reached a per-call output boundary. "
+    "Continue exactly where it stopped without repeating any prior text."
+)
 
 
 def _empty_truncations() -> Dict[str, Any]:
@@ -305,6 +310,7 @@ class LoopState:
     """
 
     # Empty/trivial response tracking
+    stall_recovery_attempted: bool = False
     empty_response_count: int = 0
 
     # Response repetition detection
@@ -320,6 +326,7 @@ class LoopState:
 
     def reset(self) -> None:
         """Reset state for a new run."""
+        self.stall_recovery_attempted = False
         self.empty_response_count = 0
         self.last_response_hash = None
         self.repeat_count = 0
@@ -1388,6 +1395,8 @@ class Engine:
             - should_break: True if loop should terminate
             - completion_status: Status string if breaking, None otherwise
         """
+        if (last_response or "").strip() == _EMPTY_RESPONSE_PLACEHOLDER:
+            last_response = ""
         stripped_response = (last_response or "").strip()
         loop_state = self._get_loop_state()
 
@@ -1486,8 +1495,8 @@ class Engine:
         assistant_response: str,
         iteration_results: List[Dict[str, Any]],
     ) -> str:
-        """Remove generic empty placeholders for valid tool-only turns."""
-        if not iteration_results or assistant_response != _EMPTY_RESPONSE_PLACEHOLDER:
+        """Remove display-only empty placeholders before completion detection."""
+        if assistant_response != _EMPTY_RESPONSE_PLACEHOLDER:
             return assistant_response
 
         try:
@@ -1537,10 +1546,7 @@ class Engine:
         repeated_tool = loop_state.last_tool_only_summary.strip()
         if repeated_tool:
             note = f"{note} Repeated tool result: {repeated_tool}."
-        return (
-            f"{note} To continue, send a new message with the next file, range, "
-            "query, or command to try."
-        )
+        return f"{note} Automatic recovery did not produce forward progress."
 
     async def _record_tool_only_stall_note(
         self,
@@ -1571,6 +1577,29 @@ class Engine:
             cm.conversation.add_assistant_message(note)
             await self._save_conversation(cm, async_save=True)
         return note
+
+    def _queue_stall_recovery(self, cm: Any, status: Optional[str]) -> bool:
+        """Offer one corrective turn; never replay the stalled tool automatically."""
+        state = self._get_loop_state()
+        if status not in _TOOL_ONLY_STALL_NOTES or state.stall_recovery_attempted:
+            return False
+        cm.conversation.add_message(
+            role="system",
+            content=(
+                "The same tool result has repeated without progress. Continue the "
+                "authorized task using the retained results; choose a different next "
+                "step or explain a concrete blocker. Do not ask the user to resume. "
+                "Tool execution status is not process lifecycle status. For an exited "
+                "process consume its exit code and retained output; for a running "
+                "process use its existing process_id. Do not restart commands or "
+                "replay mutations without checking whether they already ran. "
+                f"Repeated result: {state.last_tool_only_summary}"
+            ),
+            category=MessageCategory.SYSTEM_OUTPUT,
+            metadata={"type": "tool_loop_recovery", "reason": status},
+        )
+        state.stall_recovery_attempted = True
+        return True
 
     def _looks_like_malformed_action_output(self, response: str) -> bool:
         """Return whether text looks like a partial or malformed tool call."""
@@ -1863,6 +1892,17 @@ class Engine:
                     completion_status = "budget_limited"
                     break
 
+                if response_data.get("finish_reason") == FinishReason.LENGTH:
+                    if (
+                        max_iterations is None
+                        or self.current_iteration < max_iterations
+                    ):
+                        cm.conversation.add_message(
+                            "system", _OUTPUT_BOUNDARY_CONTINUATION
+                        )
+                        await self._save_conversation(cm, async_save=config.async_save)
+                    continue
+
                 # Debug: Check if termination signal mentioned but not parsed correctly
                 if (
                     last_response
@@ -1915,6 +1955,9 @@ class Engine:
                     codeact_enabled=response_data.get("codeact_enabled", True),
                 )
                 if should_break:
+                    if self._queue_stall_recovery(cm, guard_status):
+                        await self._save_conversation(cm, async_save=True)
+                        continue
                     if guard_status in _TOOL_ONLY_STALL_NOTES:
                         last_response = await self._record_tool_only_stall_note(
                             cm,
@@ -1922,14 +1965,6 @@ class Engine:
                         )
                     completion_status = guard_status or "implicit_completion"
                     break
-
-                # TODO(task-loop): a provider turn that ends with FinishReason.LENGTH
-                # (per-call output boundary) is currently treated as implicit
-                # completion here. tests/test_engine_task_finish_contract.py
-                # documents the intended continuation behavior
-                # (test_unbounded_task_continues_once_from_persisted_length_partial).
-                # Implement output-boundary continuation before relying on that
-                # contract; see tests for the expected message shape.
 
             else:
                 # The loop condition expired without an explicit or guarded break.
@@ -2361,6 +2396,14 @@ class Engine:
                         f"[LOOP DEBUG] Response contains 'finish_response' text but wasn't parsed as action. Response preview: {last_response[:100]}..."
                     )
 
+                if response_data.get("finish_reason") == FinishReason.LENGTH:
+                    if max_iters is None or self.current_iteration < max_iters:
+                        cm.conversation.add_message(
+                            "system", _OUTPUT_BOUNDARY_CONTINUATION
+                        )
+                        await self._save_conversation(cm, async_save=True)
+                    continue
+
                 if not iteration_results and self._queue_malformed_action_repair_note(
                     cm,
                     last_response,
@@ -2378,6 +2421,9 @@ class Engine:
                     codeact_enabled=response_data.get("codeact_enabled", True),
                 )
                 if should_break:
+                    if self._queue_stall_recovery(cm, guard_status):
+                        await self._save_conversation(cm, async_save=True)
+                        continue
                     if guard_status:
                         final_status = guard_status
                     if guard_status in _TOOL_ONLY_STALL_NOTES:
@@ -2386,15 +2432,6 @@ class Engine:
                             guard_status,
                         )
                     break
-
-                # TODO(response-loop): a provider turn that ends with
-                # FinishReason.LENGTH (per-call output boundary) is currently
-                # treated as implicit completion here.
-                # tests/test_engine_task_finish_contract.py documents the
-                # intended continuation behavior
-                # (test_unbounded_response_continues_from_persisted_length_partial).
-                # Implement output-boundary continuation before relying on that
-                # contract; see tests for the expected message shape.
 
             # Determine final status
             if (
@@ -3589,6 +3626,7 @@ class Engine:
                 )
             )
             runtime_action_result = {
+                **(tool_result.structured_output or {}),
                 **legacy_action_result,
                 "tool_call_id": tool_call.id,
                 "tool_arguments": tool_arguments_text,
@@ -3787,6 +3825,14 @@ class Engine:
                 )
             finally:
                 CURRENT_CODEX_ROUTING.reset(routing_token)
+            handler = getattr(api_client, "client_handler", None)
+            finish_reason_getter = getattr(handler, "get_last_finish_reason", None)
+            finish_reason = None
+            if callable(finish_reason_getter):
+                try:
+                    finish_reason = finish_reason_getter()
+                except Exception:
+                    logger.debug("Failed to read provider finish reason", exc_info=True)
             provider_duration_ms = (time.perf_counter() - provider_started) * 1000
             _trace_log_info(
                 "engine.llm_step.provider_done request=%s session=%s agent=%s "
@@ -3899,6 +3945,7 @@ class Engine:
             "assistant_response": assistant_response,
             "action_results": action_results,
             "usage": usage,
+            "finish_reason": finish_reason,
             "codeact_enabled": codeact_enabled,
         }
 

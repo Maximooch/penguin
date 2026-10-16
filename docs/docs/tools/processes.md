@@ -12,8 +12,13 @@ corrects the previous off-by-one meaning of `next_sequence`.
 Tool-call completion (`status`) is separate from child lifecycle
 (`process_status`: `running`, `draining`, or `exited`). A quiet wait returns
 `no_new_output: true`; it does not terminate the child. The reasoning loop allows
-quiet process waits for up to 120 seconds without new output before returning a
-still-running notice. Ordinary iteration limits also remain in force.
+quiet process waits without an implicit no-output deadline. Explicit iteration,
+token, and process timeout limits remain in force. Loop diagnostics distinguish
+tool-call completion from process lifecycle and retain the process ID and cursor.
+
+Repeated identical non-wait tool results get one corrective model turn before a
+stale-loop stop. Recovery uses retained results rather than automatically
+replaying commands or mutations. Output-length continuation comes from PR #106.
 
 `process_write_stdin` sends UTF-8 input with a `timeout_ms` deadline (default 1000,
 range 1–60000), including time queued behind another writer. Writes return

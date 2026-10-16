@@ -271,6 +271,61 @@ async def test_unbounded_response_continues_from_persisted_length_partial() -> N
 
 
 @pytest.mark.asyncio
+async def test_length_boundary_does_not_complete_a_partial_tool_tag() -> None:
+    engine = _PersistingLengthEngine(
+        [
+            {
+                "assistant_response": "<execute_command>",
+                "action_results": [],
+                "finish_reason": FinishReason.LENGTH,
+            },
+            {
+                "assistant_response": "Complete answer",
+                "action_results": [],
+                "finish_reason": FinishReason.STOP,
+            },
+        ]
+    )
+
+    result = await engine.run_response("Explain the change", streaming=False)
+
+    assert result["iterations"] == 2
+    assert result["assistant_response"] == "Complete answer"
+    assert engine.request_messages[1][-1] == {
+        "role": "system",
+        "content": (
+            "The previous assistant output reached a per-call output boundary. "
+            "Continue exactly where it stopped without repeating any prior text."
+        ),
+    }
+
+
+@pytest.mark.asyncio
+async def test_bounded_response_does_not_queue_unusable_continuation() -> None:
+    engine = _PersistingLengthEngine(
+        [
+            {
+                "assistant_response": "Partial answer",
+                "action_results": [],
+                "finish_reason": FinishReason.LENGTH,
+            }
+        ]
+    )
+
+    result = await engine.run_response(
+        "Explain the change", max_iterations=1, streaming=False
+    )
+
+    assert result["status"] == "max_iterations"
+    assert engine.provider_calls == 1
+    roles = [
+        message.role
+        for message in engine.test_conversation_manager.conversation.session.messages
+    ]
+    assert roles == ["user", "assistant"]
+
+
+@pytest.mark.asyncio
 async def test_length_continuation_respects_explicit_iteration_limit() -> None:
     engine = _PersistingLengthEngine(
         [
@@ -860,3 +915,96 @@ def test_internal_task_prompt_remains_visible_to_model_context() -> None:
     assert conversation.get_formatted_messages() == [
         {"role": "user", "content": "Internal goal continuation"}
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["task", "response"])
+async def test_stale_tool_results_get_recovery_before_stopping(mode: str) -> None:
+    repeated = {
+        "assistant_response": "",
+        "action_results": [
+            {"action": "read_file", "status": "completed", "result": "same"}
+        ],
+    }
+    final = (
+        _finish_turn(status="done", summary="Recovered")
+        if mode == "task"
+        else {"assistant_response": "Recovered", "action_results": []}
+    )
+    engine = _PersistingLengthEngine([repeated, repeated, repeated, final])
+    result = await (
+        engine.run_task(task_prompt="Continue", enable_events=False)
+        if mode == "task"
+        else engine.run_response("Continue", streaming=False)
+    )
+    assert engine.provider_calls == 4
+    assert result["status"] == ("pending_review" if mode == "task" else "completed")
+    note = engine.request_messages[3][-1]
+    assert note["role"] == "system"
+    assert "Do not ask the user to resume" in note["content"]
+    assert len(result["action_results"]) == (4 if mode == "task" else 3)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["task", "response"])
+async def test_stale_loop_stops_if_recovery_also_repeats(mode: str) -> None:
+    repeated = {
+        "assistant_response": "",
+        "action_results": [
+            {"action": "read_file", "status": "completed", "result": "same"}
+        ],
+    }
+    engine = _ScriptedTaskEngine([repeated] * 4)
+    result = await (
+        engine.run_task(task_prompt="Continue", enable_events=False)
+        if mode == "task"
+        else engine.run_response("Continue", streaming=False)
+    )
+    assert result["status"] == "repeated_empty_tool_only_iterations"
+    assert engine.provider_calls == 4
+    assert "Automatic recovery" in result["assistant_response"]
+    assert "send a new message" not in result["assistant_response"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["task", "response"])
+async def test_empty_placeholder_is_not_final_answer(mode: str) -> None:
+    final = (
+        _finish_turn(status="done", summary="Recovered")
+        if mode == "task"
+        else {"assistant_response": "Recovered", "action_results": []}
+    )
+    engine = _ScriptedTaskEngine(
+        [
+            {"assistant_response": "[Empty response from model]", "action_results": []},
+            final,
+        ]
+    )
+    result = await (
+        engine.run_task(task_prompt="Continue", enable_events=False)
+        if mode == "task"
+        else engine.run_response("Continue", streaming=False)
+    )
+    assert engine.provider_calls == 2
+    assert result["status"] == ("pending_review" if mode == "task" else "completed")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["task", "response"])
+async def test_stale_recovery_respects_iteration_limit(mode: str) -> None:
+    repeated = {
+        "assistant_response": "",
+        "action_results": [
+            {"action": "read_file", "status": "completed", "result": "same"}
+        ],
+    }
+    engine = _ScriptedTaskEngine([repeated] * 4)
+    result = await (
+        engine.run_task(task_prompt="Continue", max_iterations=3, enable_events=False)
+        if mode == "task"
+        else engine.run_response("Continue", max_iterations=3, streaming=False)
+    )
+    assert engine.provider_calls == 3
+    assert result["status"] == (
+        "iterations_exceeded" if mode == "task" else "max_iterations"
+    )
