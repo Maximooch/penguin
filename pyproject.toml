@@ -7,7 +7,7 @@ name = "penguin-ai"
 version = "0.9.3"
 description = "Penguin: A modular, extensible AI coding agent and software engineer with its own execution environment."
 readme = "README.md"
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.11,<3.13"
 authors = [
   { name="Maximus Putnam", email="MaximusPutnam@gmail.com" },
 ]
@@ -21,7 +21,6 @@ keywords = ["ai", "agent", "ai-agent", "llm", "llm-agent", "assistant", "cogniti
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
@@ -70,8 +69,8 @@ dependencies = [
     "PyGithub>=1.55",
 
     # Git and Image Processing
-    "GitPython>=3.1.0",
-    "Pillow>=8.3.0",
+    "GitPython>=3.2.1",
+    "Pillow>=13.0.0",
     "numpy>=1.20.0",
     "pandas>=1.3.0",
     "a2a-sdk[http-server,sqlite]==1.0.3",
@@ -151,7 +150,7 @@ dev = [
     "pytest>=6.0.0",
     "pytest-asyncio>=0.21.0",
     "hypothesis>=6.0.0",
-    "black>=21.0.0",
+    "black>=26.10.1",
     "isort>=5.0.0",
     "ruff>=0.1.0",
     "textual",
@@ -266,11 +265,17 @@ penguin = [
 [tool.uv]
 exclude-newer = "7 days"
 
-# Vetted exception to the 7-day rail: oauthlib 4.0.0 (2026-09-28) resolves
-# Dependabot alerts #345/#346. Dated cutoff so future oauthlib releases stay
-# subject to the rail. Remove once the global rail passes 2026-10-05.
+# Security fixes released inside the 7-day window, reviewed on 2026-10-23.
+# Fixed cutoffs retain the age rail for subsequent releases of these packages.
 [tool.uv.exclude-newer-package]
-oauthlib = "2026-10-01T00:00:00Z"
+certifi = "2026-10-23T00:00:00Z"
+gitpython = "2026-10-23T00:00:00Z"
+pillow = "2026-10-23T00:00:00Z"
+virtualenv = "2026-10-23T00:00:00Z"
+black = "2026-10-23T00:00:00Z"
+aiohttp = "2026-10-23T00:00:00Z"
+multidict = "2026-10-23T00:00:00Z"
+opentelemetry-api = "2026-10-23T00:00:00Z"
 
 
 # Development tools configuration

@@ -136,7 +136,7 @@ with PenguinAgent() as agent:
 
 ## Installation
 
-Penguin requires Python 3.10 through 3.12.
+Penguin requires Python 3.11 through 3.12. The minimum version allows installing security-patched Pillow 13.
 
 ### Recommended
 

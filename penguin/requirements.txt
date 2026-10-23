@@ -2,7 +2,7 @@ litellm
 colorama
 pygments
 python-dotenv
-Pillow
+Pillow>=13.0.0
 flake8
 pytest
 rich
