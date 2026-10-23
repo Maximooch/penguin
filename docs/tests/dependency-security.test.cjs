@@ -25,3 +25,24 @@ test('ordinary public cache responses still work', () => {
   const policy = new CachePolicy(req, {status: 200, headers: {'cache-control': 'public, max-age=3600'}});
   assert.equal(policy.satisfiesWithoutRevalidation(req), true);
 });
+
+test('shared s-maxage requires origin revalidation when stale, including authenticated requests', () => {
+  for (const headers of [{}, {authorization: 'Bearer secret'}]) {
+    const req = {url: '/account', method: 'GET', headers};
+    const policy = new CachePolicy(req, {status: 200, headers: {
+      'cache-control': 's-maxage=1', age: '5',
+    }});
+    const incoming = {...req, headers: {...headers, 'cache-control': 'max-stale=999999'}};
+    assert.equal(policy.storable(), true);
+    assert.equal(policy.stale(), true);
+    assert.equal(policy.satisfiesWithoutRevalidation(incoming), false);
+    const result = policy.evaluateRequest(incoming);
+    assert.equal(result.response, undefined);
+    assert.equal(result.revalidation.synchronous, true);
+  }
+});
+test('fresh shared s-maxage responses can still be reused', () => {
+  const req = {url: '/account', method: 'GET', headers: {authorization: 'Bearer secret'}};
+  const policy = new CachePolicy(req, {status: 200, headers: {'cache-control': 's-maxage=3600'}});
+  assert.equal(policy.satisfiesWithoutRevalidation(req), true);
+});

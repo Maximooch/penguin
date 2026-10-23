@@ -266,16 +266,14 @@ penguin = [
 exclude-newer = "7 days"
 
 # Security fixes released inside the 7-day window, reviewed on 2026-10-23.
-# Fixed cutoffs retain the age rail for subsequent releases of these packages.
+# Temporary exceptions expire in CI seven days after their cutoff.
+# When an expiry check fails, remove the entry and run `uv lock`; the reviewed
+# release is then eligible under the global cooldown. Never advance these dates
+# without reviewing the newly admitted releases.
 [tool.uv.exclude-newer-package]
 certifi = "2026-10-23T00:00:00Z"
-gitpython = "2026-10-23T00:00:00Z"
 pillow = "2026-10-23T00:00:00Z"
 virtualenv = "2026-10-23T00:00:00Z"
-black = "2026-10-23T00:00:00Z"
-aiohttp = "2026-10-23T00:00:00Z"
-multidict = "2026-10-23T00:00:00Z"
-opentelemetry-api = "2026-10-23T00:00:00Z"
 
 
 # Development tools configuration

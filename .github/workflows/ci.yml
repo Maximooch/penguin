@@ -28,6 +28,7 @@ jobs:
       - name: Verify Link contracts with locked dependencies
         run: |
           uv run --locked pytest -q \
+            tests/test_dependency_cooldown.py \
             tests/llm/test_link_provider.py \
             tests/llm/test_link_runtime_contract.py \
             tests/web/test_link_inference_service.py

@@ -10,7 +10,7 @@ function patch(name, file, before, after) {
 }
 patch('http-cache-semantics', 'index.js',
   '        this._assertRequestHasHeaders(req);\n\n        // In all circumstances',
-  '        this._assertRequestHasHeaders(req);\n\n        // GHSA-ch52-4w7c-c8xp: never reuse a non-storable response.\n        if (!this.storable() || this.maxAge() === 0) return this._evaluateRequestMissResult(req);\n\n        // In all circumstances');
+  '        this._assertRequestHasHeaders(req);\n\n        // GHSA-ch52-4w7c-c8xp: never reuse a non-storable response.\n        if (!this.storable() || this.maxAge() === 0 || (this._isShared && this._rescc[\'s-maxage\'] !== undefined && this.stale())) return this._evaluateRequestMissResult(req);\n\n        // In all circumstances');
 patch('braces', 'lib/parse.js',
   '    block = stack[stack.length - 1];\n    value = advance();',
   '    // GHSA-vfj7-8cjw-p6xm: bound AST depth before recursive walkers run.\n    if (stack.length > 100) throw new SyntaxError("Brace nesting exceeds security limit");\n    block = stack[stack.length - 1];\n    value = advance();');
