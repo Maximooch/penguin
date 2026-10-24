@@ -105,7 +105,7 @@ def create_file(
             cwd_override=workspace_path,
         )
         safe_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(safe_path, "w") as f:
+        with open(safe_path, "w", encoding="utf-8") as f:
             f.write(content)
         return f"File created successfully at {os.path.abspath(safe_path)}"
     except Exception as e:

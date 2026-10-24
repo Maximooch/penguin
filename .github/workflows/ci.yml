@@ -9,6 +9,20 @@ permissions:
   contents: read
 
 jobs:
+  windows-tools:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install -e ".[dev]"
+      - run: python -m pytest tests/tools/test_windows_execution.py -q
+
   locked-runtime:
     runs-on: ubuntu-latest
     timeout-minutes: 20

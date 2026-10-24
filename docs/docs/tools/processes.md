@@ -35,7 +35,23 @@ atomic, including concurrent reads from the same consumer.
 
 `process_stop` interrupts, terminates, or kills
 the owned process group, escalating when necessary. Processes use pipes, not a
-PTY. The local implementation requires POSIX shell and pipe support.
+PTY. POSIX hosts use Bash; Windows hosts use native `cmd.exe /d /s /c`
+without requiring Bash or WSL. Use cmd syntax on Windows (`&`, not `;`);
+invoke PowerShell explicitly when needed. Windows capture polls pipe readiness
+with `PeekNamedPipe`, retaining stdout/stderr independently of client polls.
+Windows stop/timeout uses `taskkill /T /F` while the launching shell is alive;
+interrupt sends CTRL_BREAK to its process group. This is not a Job Object:
+detached descendants or descendants whose shell has already exited are not
+reliably recoverable. Remote SSH work is not guaranteed to stop with its local
+client.
+
+On Windows, `code_execution` runs a fresh UTF-8 Python subprocess per call.
+Variables and IPython magics do not persist; use `print()` for output. Scripts
+are temporary files, so snippet size is not constrained by cmd's command-line
+limit. The configured code timeout kills the local process tree rather than
+leaving a daemon thread holding the shared notebook lock. Parent cwd and streams
+are untouched. This is process isolation, not a security sandbox. Hosted-mode
+restrictions and tool authorization still apply.
 
 Memory is bounded to 256,000 output characters and 10,000 chunks per process.
 Large reads report `truncated` and `history_lost`. The `log_path` points to captured
