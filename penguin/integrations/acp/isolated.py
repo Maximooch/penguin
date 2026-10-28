@@ -46,17 +46,18 @@ class IsolatedACPAgent:
     ):
         if self._initialization is not None:
             raise RequestError.invalid_request({"reason": "Already initialized"})
+        self.catalog.agent._transport = self._transport
+        with self.catalog.services.activate():
+            response = await self.catalog.agent.initialize(
+                protocol_version, client_capabilities, client_info, **kwargs
+            )
         self._initialization = (
             protocol_version,
             client_capabilities,
             client_info,
             kwargs,
         )
-        self.catalog.agent._transport = self._transport
-        with self.catalog.services.activate():
-            return await self.catalog.agent.initialize(
-                protocol_version, client_capabilities, client_info, **kwargs
-            )
+        return response
 
     def _runtime(self, sid):
         runtime = self.roots.get(sid)
@@ -177,16 +178,17 @@ class IsolatedACPAgent:
         )
 
     async def close_session(self, session_id, **kwargs):
-        runtime = self._runtime(session_id)
-        response = await self._call("close_session", session_id, **kwargs)
-        unresolved = any(
-            sid == session_id and not state.get("completed")
-            for (sid, _), state in runtime.agent._processes.states.items()
-        )
-        if not unresolved:
-            self.roots.pop(session_id, None)
-            await self._dispose(runtime)
-        return response
+        async with self._allocation:
+            runtime = self._runtime(session_id)
+            response = await self._call("close_session", session_id, **kwargs)
+            unresolved = any(
+                sid == session_id and not state.get("completed")
+                for (sid, _), state in runtime.agent._processes.states.items()
+            )
+            if not unresolved:
+                self.roots.pop(session_id, None)
+                await self._dispose(runtime)
+            return response
 
     async def delete_session(self, session_id):
         async with self._allocation:
