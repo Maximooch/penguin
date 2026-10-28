@@ -70,7 +70,10 @@ class PipeSelector:
 
     def select(self, timeout: float) -> list[tuple[selectors.SelectorKey, int]]:
         """Return readable or closed pipes, waiting at most the given duration."""
-        deadline = time.monotonic() + timeout
+        # Windows Python 3.11/3.12 may use 15.625ms GetTickCount64 ticks for
+        # monotonic(). A completed 20ms wait can then look unfinished, causing
+        # extra scans and short tail waits. perf_counter uses high-resolution QPC.
+        deadline = time.perf_counter() + timeout
         while True:
             ready = []
             for fd, key in self._keys.items():
@@ -89,12 +92,12 @@ class PipeSelector:
                     ready.append((key, key.events))
                 elif available.value:
                     ready.append((key, key.events))
-            remaining = deadline - time.monotonic()
+            remaining = deadline - time.perf_counter()
             if ready or remaining <= 0 or self._stop_event.is_set():
                 return ready
             # Anonymous Windows pipes cannot be selected. Bound readiness scans
             # to the capture cadence and block between scans, including when
             # both streams have closed but the child is still running.
             self._stop_event.wait(min(remaining, 0.02))
-            if time.monotonic() >= deadline:
+            if time.perf_counter() >= deadline:
                 return []
