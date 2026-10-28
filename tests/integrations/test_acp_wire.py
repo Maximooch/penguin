@@ -48,18 +48,24 @@ asyncio.run(main())
 # Exercise the shipped entrypoint and serve(), substituting only the expensive
 # provider-backed core. Startup and processing prints must never enter stdout.
 _CLI_AGENT = """
-import sys, types
+import os, sys, types
 from pathlib import Path
 module = types.ModuleType('penguin.core')
 class Core:
     def __init__(self):
         from penguin.cli.events import EventBus
         self.event_bus = EventBus()
+        if os.environ.get('ACP_TEST_STORE'):
+            from penguin.system.session_manager import SessionManager
+            self.conversation_manager = types.SimpleNamespace(session_manager=
+                SessionManager(os.environ['ACP_TEST_STORE'], auto_save_interval=0))
     @classmethod
     async def create(cls, **kwargs):
         print('startup diagnostic')
         return cls()
     def create_conversation(self):
+        if hasattr(self, 'conversation_manager'):
+            return self.conversation_manager.session_manager.create_session().id
         return 'cli-session'
     async def process(self, text, **kwargs):
         print('provider diagnostic')
@@ -127,6 +133,44 @@ class RecordingClient:
 
     async def session_update(self, session_id, update, **kwargs):
         self.updates.append((session_id, update))
+
+
+@pytest.mark.asyncio
+async def test_cli_restart_session_load_resume_and_close(tmp_path):
+    env = {
+        **os.environ,
+        "PENGUIN_WORKSPACE": str(tmp_path),
+        "ACP_TEST_STORE": str(tmp_path / "sessions"),
+    }
+    client = RecordingClient()
+    async with acp.spawn_agent_process(
+        client, sys.executable, "-c", _CLI_AGENT, env=env, use_unstable_protocol=True
+    ) as (conn, _):
+        await asyncio.wait_for(conn.initialize(acp.PROTOCOL_VERSION), 15)
+        sid = (await conn.new_session(str(tmp_path))).session_id
+        await conn.prompt(sid, [text_block("persist")])
+    second_client = RecordingClient()
+    async with acp.spawn_agent_process(
+        second_client,
+        sys.executable,
+        "-c",
+        _CLI_AGENT,
+        env=env,
+        use_unstable_protocol=True,
+    ) as (conn, _):
+        response = await asyncio.wait_for(conn.initialize(acp.PROTOCOL_VERSION), 15)
+        assert response.agent_capabilities.load_session
+        assert [s.session_id for s in (await conn.list_sessions()).sessions] == [sid]
+        await conn.load_session(str(tmp_path), sid)
+        assert [u.session_update for _, u in second_client.updates] == [
+            "user_message_chunk",
+            "agent_message_chunk",
+        ]
+        await conn.close_session(sid)
+        before = len(second_client.updates)
+        await conn.resume_session(sid, str(tmp_path))
+        assert len(second_client.updates) == before
+        assert (await conn.prompt(sid, [text_block("again")])).stop_reason == "end_turn"
 
 
 @pytest.mark.asyncio

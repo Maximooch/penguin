@@ -10,10 +10,15 @@ and todo plans are delivered as native ACP updates with stable call IDs. Display
 output is bounded; file locations are resolved inside the session workspace.
 Returned unified diffs are displayed as diff text (not fabricated full-file
 before/after snapshots). Interrupted tools receive failed terminal updates;
-duplicate and unrelated-session events are suppressed. Sessions are kept in
-memory and turns are serialized because the core conversation manager is shared.
-No resume, images, client MCP, configuration, or child-session capabilities are
-advertised yet. Do not interpret this as full ACP parity.
+duplicate and unrelated-session events are suppressed. ACP-created sessions
+store workspace ownership and the complete visible ACP transcript in Penguin's
+native session store. Load replays that transcript before returning; resume
+restores without replay; close detaches without deleting history. List supports
+workspace filtering and pagination. Legacy sessions without ACP ownership are
+not exposed. Interrupted tool entries replay as failed, without re-execution.
+Turns and lifecycle operations are serialized because the core conversation
+manager is shared. Images, client MCP, configuration, child-session and deletion
+capabilities are not advertised yet. Do not interpret this as full ACP parity.
 
 Resource links are passed to the agent as clearly labeled context references.
 The adapter does not fetch their contents or grant file/network permission. Local
@@ -40,7 +45,7 @@ required before claiming the complete user workflow.
 1. Baseline resource inputs, protocol output, failures and wire validation (implemented).
 2. Tool results, plans and bounded output (implemented); native complete-file
    diff previews and finer execution progress still need runtime evidence.
-3. Session persistence, history replay and lifecycle.
+3. Session persistence, history replay, list/resume/close (implemented).
 4. Image and embedded-resource input.
 5. Per-session client MCP servers.
 6. Model/mode/configuration and command discovery/authentication where supported.

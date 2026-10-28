@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,19 +19,31 @@ from uuid import uuid4
 from acp import PROTOCOL_VERSION, RequestError, run_agent
 from acp.helpers import text_block
 from acp.schema import (
+    AgentCapabilities,
     AgentMessageChunk,
     ClientCapabilities,
+    CloseSessionResponse,
     Implementation,
     InitializeResponse,
+    ListSessionsResponse,
+    LoadSessionResponse,
     NewSessionResponse,
     PermissionOption,
     PromptResponse,
+    ResumeSessionResponse,
+    SessionCapabilities,
+    SessionCloseCapabilities,
+    SessionInfo,
+    SessionListCapabilities,
+    SessionResumeCapabilities,
     ToolCallStart,
+    UserMessageChunk,
 )
 
 from penguin._version import __version__
 from penguin.integrations.acp.content import prompt_text
 from penguin.integrations.acp.events import EventBridge
+from penguin.integrations.acp.sessions import SessionRegistry
 from penguin.security.approval import (
     ApprovalRequest,
     ApprovalScope,
@@ -71,6 +84,7 @@ class PenguinACPAgent:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._approvals = get_approval_manager()
         self._approvals.on_request_created(self._on_approval)
+        self._registry = SessionRegistry(core, self.allowed_roots)
         self._events = EventBridge(
             getattr(core, "event_bus", None), self._active_cwd, self._send_update
         )
@@ -80,6 +94,7 @@ class PenguinACPAgent:
         return session.cwd if session and session.running else None
 
     async def _send_update(self, sid: str, update: Any) -> None:
+        self._registry.record(sid, update)
         if self._connection is not None:
             await self._connection.session_update(session_id=sid, update=update)
 
@@ -108,6 +123,20 @@ class PenguinACPAgent:
         return InitializeResponse(
             protocol_version=PROTOCOL_VERSION,
             agent_info=Implementation(name="penguin", version=__version__),
+            agent_capabilities=AgentCapabilities(
+                load_session=self._registry.available,
+                session_capabilities=SessionCapabilities(
+                    list=SessionListCapabilities()
+                    if self._registry.available
+                    else None,
+                    resume=SessionResumeCapabilities()
+                    if self._registry.available
+                    else None,
+                    close=SessionCloseCapabilities()
+                    if self._registry.available
+                    else None,
+                ),
+            ),
         )
 
     async def new_session(
@@ -134,9 +163,117 @@ class PenguinACPAgent:
             )
         # PenguinCore's create_conversation is synchronous, despite the web
         # interface's separate async convenience wrapper.
-        sid = self.core.create_conversation()
-        self.sessions[sid] = Session(cwd=directory)
+        async with self._process_gate:
+            sid = self.core.create_conversation()
+            self._registry.create(sid, directory)
+            self.sessions[sid] = Session(cwd=directory)
         return NewSessionResponse(session_id=sid)
+
+    async def load_session(
+        self,
+        cwd: str,
+        session_id: str,
+        mcp_servers: list[Any] | None = None,
+        additional_directories: list[str] | None = None,
+        **kwargs: Any,
+    ) -> LoadSessionResponse:
+        """Restore only this adapter's sessions and replay before acknowledging."""
+        await self._restore_session(
+            cwd, session_id, mcp_servers, additional_directories, replay=True
+        )
+        return LoadSessionResponse()
+
+    async def resume_session(
+        self,
+        cwd: str,
+        session_id: str,
+        mcp_servers: list[Any] | None = None,
+        additional_directories: list[str] | None = None,
+        **kwargs: Any,
+    ) -> ResumeSessionResponse:
+        """Restore context without sending historical updates again."""
+        await self._restore_session(
+            cwd, session_id, mcp_servers, additional_directories, replay=False
+        )
+        return ResumeSessionResponse()
+
+    async def close_session(
+        self, session_id: str, **kwargs: Any
+    ) -> CloseSessionResponse:
+        """Cancel active work and detach the session without deleting its history."""
+        session = self.sessions.get(session_id)
+        if session is None:
+            raise RequestError.invalid_params({"reason": "Session is not open"})
+        task = session.task
+        if task is not None:
+            await self.cancel(session_id)
+            await asyncio.shield(task)
+        self.sessions.pop(session_id, None)
+        return CloseSessionResponse()
+
+    async def _restore_session(
+        self,
+        cwd: str,
+        session_id: str,
+        mcp_servers: list[Any] | None,
+        additional_directories: list[str] | None,
+        *,
+        replay: bool,
+    ) -> None:
+        if mcp_servers or additional_directories:
+            raise RequestError.invalid_params({"reason": "Unsupported session options"})
+        if self._connection is None:
+            raise RequestError.internal_error()
+        active = self.sessions.get(session_id)
+        if active and active.task is not None:
+            raise RequestError.invalid_request({"reason": "Session is busy"})
+        async with self._process_gate:
+            saved = self._registry.get(session_id)
+            owned_cwd = self._registry.cwd(saved)
+            if (
+                owned_cwd is None
+                or Path(cwd).resolve() != owned_cwd
+                or not Path(cwd).is_absolute()
+            ):
+                raise RequestError.invalid_params(
+                    {"reason": "Session workspace does not match"}
+                )
+            history = self._registry.history(saved)
+            self.sessions[session_id] = Session(cwd=owned_cwd)
+            if replay:
+                for update in history:
+                    await self._connection.session_update(
+                        session_id=session_id, update=update
+                    )
+
+    async def list_sessions(
+        self, cwd: str | None = None, cursor: str | None = None, **kwargs: Any
+    ) -> ListSessionsResponse:
+        """List scoped ACP sessions with stable ID-based pagination."""
+        if not self._registry.available:
+            raise RequestError.method_not_found("session/list")
+        if cursor is not None and not re.fullmatch(r"[A-Za-z0-9_-]+", cursor):
+            raise RequestError.invalid_params({"reason": "Invalid cursor"})
+        sessions = []
+        async with self._process_gate:
+            for sid in sorted(self._registry.store.session_index):
+                if cursor and sid <= cursor:
+                    continue
+                saved = self._registry.get(sid)
+                path = self._registry.cwd(saved)
+                if path is None or (cwd is not None and str(path) != cwd):
+                    continue
+                sessions.append(
+                    SessionInfo(
+                        session_id=sid, cwd=str(path), updated_at=saved.last_active
+                    )
+                )
+                if len(sessions) == 51:
+                    break
+        return ListSessionsResponse(
+            sessions=sessions[:50],
+            next_cursor=sessions[49].session_id if len(sessions) > 50 else None,
+        )
 
     async def prompt(
         self, session_id: str, prompt: list[Any], **kwargs: Any
@@ -154,38 +291,47 @@ class PenguinACPAgent:
         session.task = asyncio.current_task()
         session.cancelled = False
         sent: list[str] = []
+        gate_owned = False
 
         async def on_chunk(chunk: str, message_type: str = "assistant") -> None:
             if session.cancelled or message_type != "assistant" or not chunk:
                 return
-            await self._connection.session_update(
-                session_id=session_id,
-                update=AgentMessageChunk(
+            await self._send_update(
+                session_id,
+                AgentMessageChunk(
                     content=text_block(chunk), session_update="agent_message_chunk"
                 ),
             )
             sent.append(chunk)
 
         try:
-            async with self._process_gate:
-                if session.cancelled:
-                    return PromptResponse(stop_reason="cancelled")
-                session.running = True
-                with execution_context_scope(
-                    ExecutionContext(
-                        session_id=session_id,
-                        conversation_id=session_id,
-                        directory=str(session.cwd),
-                        project_root=str(session.cwd),
-                        request_id=uuid4().hex,
-                    )
-                ):
-                    result = await self.core.process(
-                        message,
-                        conversation_id=session_id,
-                        streaming=True,
-                        stream_callback=on_chunk,
-                    )
+            await self._process_gate.acquire()
+            gate_owned = True
+            if session.cancelled:
+                return PromptResponse(stop_reason="cancelled")
+            session.running = True
+            for block in prompt:
+                self._registry.record(
+                    session_id,
+                    UserMessageChunk(
+                        session_update="user_message_chunk", content=block
+                    ),
+                )
+            with execution_context_scope(
+                ExecutionContext(
+                    session_id=session_id,
+                    conversation_id=session_id,
+                    directory=str(session.cwd),
+                    project_root=str(session.cwd),
+                    request_id=uuid4().hex,
+                )
+            ):
+                result = await self.core.process(
+                    message,
+                    conversation_id=session_id,
+                    streaming=True,
+                    stream_callback=on_chunk,
+                )
             if not isinstance(result, dict):
                 raise RequestError.internal_error(
                     {"reason": "Penguin returned no valid turn result"}
@@ -234,6 +380,8 @@ class PenguinACPAgent:
                         self._approvals.deny(request.id)
                 session.running = False
                 session.task = None
+                if gate_owned:
+                    self._process_gate.release()
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
         session = self.sessions.get(session_id)
@@ -328,7 +476,14 @@ async def serve() -> None:
         roots = (Path.cwd(), Path(WORKSPACE_PATH))
         agent = PenguinACPAgent(core, allowed_roots=roots)
         try:
-            await run_agent(agent, input_stream=writer, output_stream=reader)
+            # SDK 0.12 calls resume/close "unstable" although current v1 docs
+            # include them. Unimplemented draft methods still return not found.
+            await run_agent(
+                agent,
+                input_stream=writer,
+                output_stream=reader,
+                use_unstable_protocol=True,
+            )
         finally:
             agent.close()
 
