@@ -52,6 +52,9 @@ import sys, types
 from pathlib import Path
 module = types.ModuleType('penguin.core')
 class Core:
+    def __init__(self):
+        from penguin.cli.events import EventBus
+        self.event_bus = EventBus()
     @classmethod
     async def create(cls, **kwargs):
         print('startup diagnostic')
@@ -60,6 +63,13 @@ class Core:
         return 'cli-session'
     async def process(self, text, **kwargs):
         print('provider diagnostic')
+        if text == 'tools':
+            sid = kwargs['conversation_id']
+            await self.event_bus.emit('action', {
+                'session_id': sid, 'id': 'tool-1', 'type': 'execute_command'})
+            await self.event_bus.emit('action_result', {
+                'session_id': sid, 'id': 'tool-1',
+                'status': 'completed', 'result': 'done'})
         await kwargs['stream_callback']('answer: café 🐧', 'assistant')
         return {'assistant_response': 'answer: café 🐧'}
     async def abort_session(self, session_id):
@@ -101,6 +111,14 @@ async def test_real_cli_stdio_keeps_diagnostics_out_of_protocol(tmp_path):
             "answer: café 🐧"
         ]
         assert process.returncode is None
+        await asyncio.wait_for(conn.prompt(sid, [text_block("tools")]), 10)
+        tools = [
+            update
+            for _, update in client.updates
+            if update.session_update.startswith("tool_call")
+        ]
+        assert [update.status for update in tools] == ["pending", "completed"]
+        assert tools[0].tool_call_id == tools[1].tool_call_id == "tool-1"
 
 
 class RecordingClient:

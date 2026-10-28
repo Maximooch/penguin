@@ -30,6 +30,7 @@ from acp.schema import (
 
 from penguin._version import __version__
 from penguin.integrations.acp.content import prompt_text
+from penguin.integrations.acp.events import EventBridge
 from penguin.security.approval import (
     ApprovalRequest,
     ApprovalScope,
@@ -70,11 +71,23 @@ class PenguinACPAgent:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._approvals = get_approval_manager()
         self._approvals.on_request_created(self._on_approval)
+        self._events = EventBridge(
+            getattr(core, "event_bus", None), self._active_cwd, self._send_update
+        )
+
+    def _active_cwd(self, sid: str) -> Path | None:
+        session = self.sessions.get(sid)
+        return session.cwd if session and session.running else None
+
+    async def _send_update(self, sid: str, update: Any) -> None:
+        if self._connection is not None:
+            await self._connection.session_update(session_id=sid, update=update)
 
     def on_connect(self, conn: Client) -> None:
         self._connection = conn
 
     def close(self) -> None:
+        self._events.close()
         self._approvals.remove_callback(self._on_approval)
         for task in self._approval_tasks:
             task.cancel()
@@ -106,9 +119,7 @@ class PenguinACPAgent:
     ) -> NewSessionResponse:
         if additional_directories or mcp_servers:
             raise RequestError.invalid_params(
-                {
-                    "reason": "Additional directories and MCP servers are unsupported"
-                }
+                {"reason": "Additional directories and MCP servers are unsupported"}
             )
         directory = Path(cwd).expanduser()
         if not directory.is_absolute() or not directory.is_dir():
@@ -215,11 +226,14 @@ class PenguinACPAgent:
                 {"reason": "Penguin could not complete the turn"}
             ) from None
         finally:
-            if session.cancelled:
-                for request in self._approvals.get_pending(session_id):
-                    self._approvals.deny(request.id)
-            session.running = False
-            session.task = None
+            try:
+                await self._events.end_turn(session_id)
+            finally:
+                if session.cancelled:
+                    for request in self._approvals.get_pending(session_id):
+                        self._approvals.deny(request.id)
+                session.running = False
+                session.task = None
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
         session = self.sessions.get(session_id)
