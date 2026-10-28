@@ -38,3 +38,4 @@ jobs:
           tests/integrations/test_acp_events.py
           tests/integrations/test_acp_sessions.py
           tests/integrations/test_acp_content.py
+          tests/integrations/test_acp_mcp.py

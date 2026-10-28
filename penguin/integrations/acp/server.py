@@ -27,6 +27,7 @@ from acp.schema import (
     InitializeResponse,
     ListSessionsResponse,
     LoadSessionResponse,
+    McpCapabilities,
     NewSessionResponse,
     PermissionOption,
     PromptCapabilities,
@@ -44,7 +45,9 @@ from acp.schema import (
 from penguin._version import __version__
 from penguin.integrations.acp.content import prepare_prompt
 from penguin.integrations.acp.events import EventBridge
+from penguin.integrations.acp.mcp import session_provider
 from penguin.integrations.acp.sessions import SessionRegistry
+from penguin.integrations.mcp.manager import HAS_MCP_SDK
 from penguin.security.approval import (
     ApprovalRequest,
     ApprovalScope,
@@ -52,6 +55,7 @@ from penguin.security.approval import (
     get_approval_manager,
 )
 from penguin.system.execution_context import ExecutionContext, execution_context_scope
+from penguin.tools.providers.mcp import mcp_provider_scope
 
 if TYPE_CHECKING:
     from acp.interfaces import Client
@@ -65,6 +69,7 @@ class Session:
     task: asyncio.Task[Any] | None = None
     cancelled: bool = False
     running: bool = False
+    mcp_provider: Any = None
 
 
 class PenguinACPAgent:
@@ -89,6 +94,7 @@ class PenguinACPAgent:
         self._image_support = self._registry.available and bool(
             getattr(getattr(core, "model_config", None), "vision_enabled", False)
         )
+        self._mcp_support = HAS_MCP_SDK and hasattr(core, "tool_manager")
         self._events = EventBridge(
             getattr(core, "event_bus", None), self._active_cwd, self._send_update
         )
@@ -107,6 +113,12 @@ class PenguinACPAgent:
 
     def close(self) -> None:
         self._events.close()
+        for session in self.sessions.values():
+            if session.mcp_provider is not None:
+                try:
+                    session.mcp_provider.close()
+                except Exception:
+                    logger.warning("Could not close ACP MCP provider", exc_info=True)
         self._approvals.remove_callback(self._on_approval)
         for task in self._approval_tasks:
             task.cancel()
@@ -128,6 +140,9 @@ class PenguinACPAgent:
             protocol_version=PROTOCOL_VERSION,
             agent_info=Implementation(name="penguin", version=__version__),
             agent_capabilities=AgentCapabilities(
+                mcp_capabilities=McpCapabilities(
+                    http=self._mcp_support, sse=self._mcp_support
+                ),
                 prompt_capabilities=PromptCapabilities(
                     image=self._image_support, embedded_context=self._registry.available
                 ),
@@ -153,7 +168,7 @@ class PenguinACPAgent:
         mcp_servers: list[Any] | None = None,
         **kwargs: Any,
     ) -> NewSessionResponse:
-        if additional_directories or mcp_servers:
+        if additional_directories or (mcp_servers and not self._mcp_support):
             raise RequestError.invalid_params(
                 {"reason": "Additional directories and MCP servers are unsupported"}
             )
@@ -171,10 +186,36 @@ class PenguinACPAgent:
         # PenguinCore's create_conversation is synchronous, despite the web
         # interface's separate async convenience wrapper.
         async with self._process_gate:
-            sid = self.core.create_conversation()
-            self._registry.create(sid, directory)
-            self.sessions[sid] = Session(cwd=directory)
+            provider = await self._new_mcp_provider(mcp_servers, directory)
+            try:
+                sid = self.core.create_conversation()
+                self._registry.create(sid, directory)
+                self.sessions[sid] = Session(cwd=directory, mcp_provider=provider)
+            except BaseException:
+                if provider is not None:
+                    await asyncio.to_thread(provider.close)
+                raise
         return NewSessionResponse(session_id=sid)
+
+    async def _new_mcp_provider(self, servers: list[Any] | None, cwd: Path) -> Any:
+        if not servers:
+            return None
+        if not self._mcp_support:
+            raise RequestError.invalid_params({"reason": "Client MCP is unavailable"})
+        provider = session_provider(servers, cwd, self.core.tool_manager.config)
+        try:
+            await asyncio.to_thread(provider.get_tool_schemas)
+            if any(
+                item["status"] != "connected"
+                for item in provider.status()["servers"].values()
+            ):
+                raise RequestError.internal_error(
+                    {"reason": "MCP server could not connect"}
+                )
+        except BaseException:
+            await asyncio.to_thread(provider.close)
+            raise
+        return provider
 
     async def load_session(
         self,
@@ -215,6 +256,8 @@ class PenguinACPAgent:
         if task is not None:
             await self.cancel(session_id)
             await asyncio.shield(task)
+        if session.mcp_provider is not None:
+            await asyncio.to_thread(session.mcp_provider.close)
         self.sessions.pop(session_id, None)
         return CloseSessionResponse()
 
@@ -227,7 +270,7 @@ class PenguinACPAgent:
         *,
         replay: bool,
     ) -> None:
-        if mcp_servers or additional_directories:
+        if additional_directories or (mcp_servers and not self._mcp_support):
             raise RequestError.invalid_params({"reason": "Unsupported session options"})
         if self._connection is None:
             raise RequestError.internal_error()
@@ -246,7 +289,10 @@ class PenguinACPAgent:
                     {"reason": "Session workspace does not match"}
                 )
             history = self._registry.history(saved)
-            self.sessions[session_id] = Session(cwd=owned_cwd)
+            provider = await self._new_mcp_provider(mcp_servers, owned_cwd)
+            if active and active.mcp_provider is not None:
+                await asyncio.to_thread(active.mcp_provider.close)
+            self.sessions[session_id] = Session(cwd=owned_cwd, mcp_provider=provider)
             if replay:
                 for update in history:
                     await self._connection.session_update(
@@ -335,15 +381,22 @@ class PenguinACPAgent:
                         session_update="user_message_chunk", content=block
                     ),
                 )
-            with execution_context_scope(
-                ExecutionContext(
-                    session_id=session_id,
-                    conversation_id=session_id,
-                    directory=str(session.cwd),
-                    project_root=str(session.cwd),
-                    request_id=uuid4().hex,
+            with contextlib.ExitStack() as scopes:
+                if session.mcp_provider is not None:
+                    scopes.enter_context(
+                        mcp_provider_scope(self.core.tool_manager, session.mcp_provider)
+                    )
+                scopes.enter_context(
+                    execution_context_scope(
+                        ExecutionContext(
+                            session_id=session_id,
+                            conversation_id=session_id,
+                            directory=str(session.cwd),
+                            project_root=str(session.cwd),
+                            request_id=uuid4().hex,
+                        )
+                    )
                 )
-            ):
                 result = await self.core.process(
                     message,
                     conversation_id=session_id,

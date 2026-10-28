@@ -63,7 +63,7 @@ from penguin.tools.browser_harness_tools import (
     BrowserHarnessTypeTool,
     BrowserHarnessWaitTool,
 )
-from penguin.tools.providers.mcp import MCPToolProvider
+from penguin.tools.providers.mcp import MCPToolProvider, active_mcp_provider
 from penguin.tools.schema_contract import (
     normalize_model_visible_tool_schema,
     runtime_metadata_from_tool_schema,
@@ -2905,10 +2905,14 @@ class ToolManager:
                 self._lazy_initialized["pydoll_tools"] = True
         return self._pydoll_browser_scroll_tool
 
+    def _get_mcp_provider(self) -> MCPToolProvider:
+        """Resolve MCP tools from the current request, preserving global defaults."""
+        return active_mcp_provider(self, self._mcp_provider)
+
     def get_tools(self):
         """Get available tool schemas."""
         tools = list(self.tools)
-        tools.extend(self._mcp_provider.get_tool_schemas())
+        tools.extend(self._get_mcp_provider().get_tool_schemas())
         return tools
 
     @property
@@ -2923,19 +2927,19 @@ class ToolManager:
 
     def get_mcp_status(self) -> Dict[str, Any]:
         """Return MCP provider diagnostics."""
-        return self._mcp_provider.status()
+        return self._get_mcp_provider().status()
 
     def refresh_mcp_tools(self) -> List[Dict[str, Any]]:
         """Force MCP tool rediscovery and return fresh schemas."""
-        return self._mcp_provider.refresh()
+        return self._get_mcp_provider().refresh()
 
     def reconnect_mcp(self, server_name: Optional[str] = None) -> Dict[str, Any]:
         """Reconnect one or all MCP servers."""
-        return self._mcp_provider.reconnect(server_name)
+        return self._get_mcp_provider().reconnect(server_name)
 
     def close_mcp(self) -> Dict[str, Any]:
         """Close MCP sessions."""
-        return self._mcp_provider.close()
+        return self._get_mcp_provider().close()
 
     def get_tool_aliases(self) -> Dict[str, str]:
         """Return centralized legacy-to-canonical tool aliases."""
@@ -3099,8 +3103,9 @@ class ToolManager:
     def get_tool(self, tool_name: str):
         """Get a tool instance on-demand with caching."""
         tool_name = self._canonical_tool_name(tool_name)
-        if self._mcp_provider.is_mcp_tool(tool_name):
-            return lambda **kwargs: self._mcp_provider.execute_tool(tool_name, kwargs)
+        provider = self._get_mcp_provider()
+        if provider.is_mcp_tool(tool_name):
+            return lambda **kwargs: provider.execute_tool(tool_name, kwargs)
 
         if tool_name in self._tool_instances:
             return self._tool_instances[tool_name]
@@ -4463,13 +4468,13 @@ class ToolManager:
                     effective_context, tool_input
                 )
 
-            if self._mcp_provider.is_mcp_tool(tool_name):
+            if self._get_mcp_provider().is_mcp_tool(tool_name):
                 permission_response = self._permission_response(
                     tool_name, tool_input, effective_context
                 )
                 if permission_response is not None:
                     return permission_response
-                return self._mcp_provider.execute_tool(tool_name, tool_input)
+                return self._get_mcp_provider().execute_tool(tool_name, tool_input)
 
             tool_input = self._normalize_tool_input_paths(tool_input, file_root)
             if tool_name in {"execute_command", "process_start"}:

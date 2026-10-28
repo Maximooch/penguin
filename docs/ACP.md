@@ -20,7 +20,12 @@ not exposed. Interrupted tool entries replay as failed, without re-execution.
 Turns and lifecycle operations are serialized because the core conversation
 manager is shared. Embedded context is supported with persistent attachment
 storage. PNG/JPEG/WebP image input is advertised only for a vision-enabled model.
-Client MCP, configuration, child-session and deletion capabilities are not
+Client MCP servers are scoped to the session and combined with configured
+Penguin servers. Stdio, HTTP and SSE transports use the existing MCP client;
+tool execution still passes through normal tool permissions. Client environment
+values are literal and client credentials are not persisted in the transcript.
+Servers must be resent on load/resume and are closed with the session.
+Configuration, child-session and deletion capabilities are not
 advertised yet. Do not interpret this as full ACP parity.
 
 Resource links are passed to the agent as clearly labeled context references.
@@ -63,7 +68,7 @@ required before claiming the complete user workflow.
    diff previews and finer execution progress still need runtime evidence.
 3. Session persistence, history replay, list/resume/close (implemented).
 4. Image and embedded-resource input (implemented).
-5. Per-session client MCP servers.
+5. Per-session client MCP servers (implemented; SDK 1.x compatibility pin).
 6. Model/mode/configuration and command discovery/authentication where supported.
 7. Child-agent and background-task visibility using negotiated capabilities.
 8. Remaining client filesystem/terminal integration, concurrency and interop audit.

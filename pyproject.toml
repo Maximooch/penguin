@@ -82,7 +82,7 @@ web = []
 tui = []
 
 # ACP remains optional; the base A2A SDK also requires Pydantic 2.
-acp = ["agent-client-protocol>=0.12.1,<0.13", "pydantic>=2.7,<3"]
+acp = ["agent-client-protocol>=0.12.1,<0.13", "pydantic>=2.7,<3", "mcp>=1.2,<2"]
 
 # Legacy Textual prototype/experimental UI support
 legacy_tui = [
