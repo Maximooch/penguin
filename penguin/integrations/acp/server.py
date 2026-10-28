@@ -99,6 +99,9 @@ class PenguinACPAgent:
         self._process_gate = asyncio.Lock()
         self._connection: Client | None = None
         self._approval_tasks: set[asyncio.Task[Any]] = set()
+        self._approval_tasks_by_session: dict[str, set[asyncio.Task[Any]]] = {}
+        self._approval_state_locks: dict[str, asyncio.Lock] = {}
+        self._closed = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._initialized = False
         self._approvals = get_approval_manager()
@@ -140,6 +143,7 @@ class PenguinACPAgent:
         self._connection = conn
 
     def close(self) -> None:
+        self._closed = True
         self._children.close()
         self._events.close()
         for session in self.sessions.values():
@@ -151,9 +155,31 @@ class PenguinACPAgent:
         self._approvals.remove_callback(self._on_approval)
         for task in self._approval_tasks:
             task.cancel()
-        for sid in self.sessions:
-            for request in self._approvals.get_pending(sid):
-                self._approvals.deny(request.id)
+        for sid in set(self.sessions) | set(self._children.children):
+            self._cancel_approvals(sid)
+
+    def _cancel_approvals(self, sid: str) -> None:
+        """Deny requests before cancelling their network waiters."""
+        for request in self._approvals.get_pending(sid):
+            self._approvals.deny(request.id)
+        try:
+            current = asyncio.current_task()
+        except RuntimeError:
+            current = None
+        for task in self._approval_tasks_by_session.get(sid, set()).copy():
+            if task is not current:
+                task.cancel()
+
+    async def _update_child_approval_state(self, sid: str) -> None:
+        """Keep requires_action until the last pending request is resolved."""
+        lock = self._approval_state_locks.setdefault(sid, asyncio.Lock())
+        async with lock:
+            child = self._children.children.get(sid)
+            if child and child.active and not child.cancelled and not self._closed:
+                state = (
+                    "requires_action" if self._approvals.get_pending(sid) else "running"
+                )
+                await self._children.state(sid, state)
 
     async def initialize(
         self,
@@ -664,6 +690,7 @@ class PenguinACPAgent:
         if session_id in self._children.children:
             await self._children.cancel(session_id)
             return
+        self._cancel_approvals(session_id)
         session = self.sessions.get(session_id)
         if session is None or session.task is None:
             return
@@ -680,18 +707,35 @@ class PenguinACPAgent:
             task.cancel()
 
     def _on_approval(self, request: ApprovalRequest) -> None:
+        if self._closed:
+            self._approvals.deny(request.id)
+            return
         session = self.sessions.get(request.session_id)
         child = self._children.children.get(request.session_id)
         if (session is None and child is None) or self._loop is None:
             return
-        if (session and session.cancelled) or (child and not child.active):
+        if (session and session.cancelled) or (
+            child and (not child.active or child.cancelled)
+        ):
             self._approvals.deny(request.id)
             return
 
         def schedule() -> None:
+            if self._closed:
+                self._approvals.deny(request.id)
+                return
             task = self._loop.create_task(self._request_permission(request))
             self._approval_tasks.add(task)
-            task.add_done_callback(self._approval_tasks.discard)
+            owned = self._approval_tasks_by_session.setdefault(
+                request.session_id, set()
+            )
+            owned.add(task)
+
+            def done(completed: asyncio.Task[Any]) -> None:
+                self._approval_tasks.discard(completed)
+                owned.discard(completed)
+
+            task.add_done_callback(done)
 
         self._loop.call_soon_threadsafe(schedule)
 
@@ -703,7 +747,7 @@ class PenguinACPAgent:
             child = self._children.children.get(request.session_id)
             target = request.session_id
             if child:
-                await self._children.state(request.session_id, "requires_action")
+                await self._update_child_approval_state(request.session_id)
                 if not self._children.native:
                     target = child.root
             response = await asyncio.wait_for(
@@ -727,7 +771,11 @@ class PenguinACPAgent:
             )
             current = self._approvals.get_request(request.id)
             session = self.sessions.get(request.session_id)
-            cancelled = session.cancelled if session else not child or not child.active
+            cancelled = (
+                session.cancelled
+                if session
+                else not child or not child.active or child.cancelled
+            )
             if (
                 current is not None
                 and current.status == ApprovalStatus.PENDING
@@ -745,9 +793,7 @@ class PenguinACPAgent:
             logger.warning("ACP permission request failed; denying", exc_info=True)
             self._approvals.deny(request.id)
         finally:
-            child = self._children.children.get(request.session_id)
-            if child and child.active:
-                await self._children.state(request.session_id, "running")
+            await self._update_child_approval_state(request.session_id)
 
 
 async def serve() -> None:
