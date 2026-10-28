@@ -25,8 +25,17 @@ Penguin servers. Stdio, HTTP and SSE transports use the existing MCP client;
 tool execution still passes through normal tool permissions. Client environment
 values are literal and client credentials are not persisted in the transcript.
 Servers must be resent on load/resume and are closed with the session.
-Configuration, child-session and deletion capabilities are not
-advertised yet. Do not interpret this as full ACP parity.
+Configured model selection is exposed as an ACP session option. It uses
+request-scoped model/runtime overrides and does not change other sessions or the
+global default. Build mode uses normal permission policy; Plan mode is offered
+only while the tool permission enforcer is enabled and blocks mutating tools.
+Mode/model settings persist across resume. `/status` and `/mcp` provide read-only
+session information without making a model request. Child-session and deletion
+capabilities are not advertised yet. Do not interpret this as full ACP parity.
+
+Provider authentication uses the existing local Penguin configuration. This
+adapter does not advertise an interactive ACP authentication flow. Model choices
+that lack configured credentials are rejected without changing the session.
 
 Resource links are passed to the agent as clearly labeled context references.
 The adapter does not fetch their contents or grant file/network permission. Local
@@ -69,7 +78,8 @@ required before claiming the complete user workflow.
 3. Session persistence, history replay, list/resume/close (implemented).
 4. Image and embedded-resource input (implemented).
 5. Per-session client MCP servers (implemented; SDK 1.x compatibility pin).
-6. Model/mode/configuration and command discovery/authentication where supported.
+6. Model/mode selection and command discovery (implemented); interactive ACP
+   authentication remains unsupported, using existing local provider setup.
 7. Child-agent and background-task visibility using negotiated capabilities.
 8. Remaining client filesystem/terminal integration, concurrency and interop audit.
 

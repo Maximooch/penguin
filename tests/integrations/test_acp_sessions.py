@@ -77,7 +77,11 @@ async def test_restart_replays_all_visible_updates_and_continues_core(tmp_path):
         assert response.agent_capabilities.load_session
         assert [s.session_id for s in (await second.list_sessions()).sessions] == [sid]
         await second.load_session(str(workspace), sid)
-        replay = [c.kwargs["update"] for c in second_conn.session_update.call_args_list]
+        replay = [
+            c.kwargs["update"]
+            for c in second_conn.session_update.call_args_list
+            if c.kwargs["update"].session_update != "available_commands_update"
+        ]
         assert [u.session_update for u in replay] == [
             "user_message_chunk",
             "tool_call",

@@ -21,8 +21,12 @@ from acp.helpers import text_block
 from acp.schema import (
     AgentCapabilities,
     AgentMessageChunk,
+    AvailableCommand,
+    AvailableCommandsUpdate,
     ClientCapabilities,
     CloseSessionResponse,
+    ConfigOptionUpdate,
+    CurrentModeUpdate,
     Implementation,
     InitializeResponse,
     ListSessionsResponse,
@@ -38,12 +42,15 @@ from acp.schema import (
     SessionInfo,
     SessionListCapabilities,
     SessionResumeCapabilities,
+    SetSessionConfigOptionResponse,
+    SetSessionModeResponse,
     ToolCallStart,
     UserMessageChunk,
 )
 
 from penguin._version import __version__
 from penguin.integrations.acp.content import prepare_prompt
+from penguin.integrations.acp.controls import SessionControls
 from penguin.integrations.acp.events import EventBridge
 from penguin.integrations.acp.mcp import session_provider
 from penguin.integrations.acp.sessions import SessionRegistry
@@ -70,6 +77,10 @@ class Session:
     cancelled: bool = False
     running: bool = False
     mcp_provider: Any = None
+    mode: str = "build"
+    model_id: str = "default"
+    model_config: Any = None
+    api_client: Any = None
 
 
 class PenguinACPAgent:
@@ -88,12 +99,20 @@ class PenguinACPAgent:
         self._connection: Client | None = None
         self._approval_tasks: set[asyncio.Task[Any]] = set()
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._initialized = False
         self._approvals = get_approval_manager()
         self._approvals.on_request_created(self._on_approval)
         self._registry = SessionRegistry(core, self.allowed_roots)
+        self._controls = SessionControls(core)
         self._image_support = self._registry.available and bool(
             getattr(getattr(core, "model_config", None), "vision_enabled", False)
         )
+        if self._registry.available and callable(
+            getattr(core, "list_available_models", None)
+        ):
+            self._image_support = self._image_support or any(
+                item.get("vision_enabled") for item in core.list_available_models()
+            )
         self._mcp_support = HAS_MCP_SDK and hasattr(core, "tool_manager")
         self._events = EventBridge(
             getattr(core, "event_bus", None), self._active_cwd, self._send_update
@@ -136,6 +155,7 @@ class PenguinACPAgent:
         if protocol_version < PROTOCOL_VERSION:
             raise RequestError.invalid_params({"protocolVersion": protocol_version})
         self._loop = asyncio.get_running_loop()
+        self._initialized = True
         return InitializeResponse(
             protocol_version=PROTOCOL_VERSION,
             agent_info=Implementation(name="penguin", version=__version__),
@@ -195,7 +215,94 @@ class PenguinACPAgent:
                 if provider is not None:
                     await asyncio.to_thread(provider.close)
                 raise
-        return NewSessionResponse(session_id=sid)
+        await self._send_commands(sid)
+        return NewSessionResponse(
+            session_id=sid,
+            modes=self._controls.modes("build"),
+            config_options=self._controls.options("default"),
+        )
+
+    async def _send_commands(self, sid: str) -> None:
+        if self._connection is not None and self._initialized:
+            commands = [
+                AvailableCommand(
+                    name="status", description="Show this session's mode and model."
+                )
+            ]
+            if hasattr(self.core, "tool_manager"):
+                commands.append(
+                    AvailableCommand(
+                        name="mcp",
+                        description="Show this session's connected MCP servers.",
+                    )
+                )
+            await self._connection.session_update(
+                session_id=sid,
+                update=AvailableCommandsUpdate(
+                    session_update="available_commands_update",
+                    available_commands=commands,
+                ),
+            )
+
+    def _idle_session(self, sid: str) -> Session:
+        session = self.sessions.get(sid)
+        if session is None or session.task is not None:
+            raise RequestError.invalid_request({"reason": "Session is missing or busy"})
+        return session
+
+    def _save_controls(self, sid: str) -> None:
+        if self._registry.available:
+            saved = self._registry.get(sid)
+            session = self.sessions[sid]
+            saved.metadata["acp_mode"] = session.mode
+            saved.metadata["acp_model"] = session.model_id
+            self._registry.save(saved)
+
+    async def set_session_mode(
+        self, session_id: str, mode_id: str, **kwargs: Any
+    ) -> SetSessionModeResponse:
+        session = self._idle_session(session_id)
+        if mode_id not in {
+            mode.id for mode in self._controls.modes(session.mode).available_modes
+        }:
+            raise RequestError.invalid_params({"reason": "Unknown session mode"})
+        async with self._process_gate:
+            session = self._idle_session(session_id)
+            session.mode = mode_id
+            self._save_controls(session_id)
+            await self._send_update(
+                session_id,
+                CurrentModeUpdate(
+                    session_update="current_mode_update", current_mode_id=mode_id
+                ),
+            )
+        return SetSessionModeResponse()
+
+    async def set_config_option(
+        self, session_id: str, config_id: str, value: str, **kwargs: Any
+    ) -> SetSessionConfigOptionResponse:
+        session = self._idle_session(session_id)
+        if config_id != "model" or not isinstance(value, str):
+            raise RequestError.invalid_params(
+                {"reason": "Unknown configuration option"}
+            )
+        async with self._process_gate:
+            session = self._idle_session(session_id)
+            config, client = await self._controls.resolve(value)
+            session.model_id, session.model_config, session.api_client = (
+                value,
+                config,
+                client,
+            )
+            self._save_controls(session_id)
+            options = self._controls.options(value)
+            await self._send_update(
+                session_id,
+                ConfigOptionUpdate(
+                    session_update="config_option_update", config_options=options
+                ),
+            )
+        return SetSessionConfigOptionResponse(config_options=options)
 
     async def _new_mcp_provider(self, servers: list[Any] | None, cwd: Path) -> Any:
         if not servers:
@@ -229,7 +336,11 @@ class PenguinACPAgent:
         await self._restore_session(
             cwd, session_id, mcp_servers, additional_directories, replay=True
         )
-        return LoadSessionResponse()
+        session = self.sessions[session_id]
+        return LoadSessionResponse(
+            modes=self._controls.modes(session.mode),
+            config_options=self._controls.options(session.model_id),
+        )
 
     async def resume_session(
         self,
@@ -243,7 +354,11 @@ class PenguinACPAgent:
         await self._restore_session(
             cwd, session_id, mcp_servers, additional_directories, replay=False
         )
-        return ResumeSessionResponse()
+        session = self.sessions[session_id]
+        return ResumeSessionResponse(
+            modes=self._controls.modes(session.mode),
+            config_options=self._controls.options(session.model_id),
+        )
 
     async def close_session(
         self, session_id: str, **kwargs: Any
@@ -289,15 +404,38 @@ class PenguinACPAgent:
                     {"reason": "Session workspace does not match"}
                 )
             history = self._registry.history(saved)
+            model_id = saved.metadata.get("acp_model", "default")
+            mode = saved.metadata.get("acp_mode", "build")
+            if not isinstance(model_id, str) or mode not in {"build", "plan"}:
+                raise RequestError.invalid_params(
+                    {"reason": "Invalid stored session configuration"}
+                )
+            if mode == "plan" and not self._controls.supports_plan:
+                raise RequestError.invalid_params(
+                    {"reason": "Stored plan mode requires permission enforcement"}
+                )
+            config, client = (
+                await self._controls.resolve(model_id)
+                if model_id != "default"
+                else (None, None)
+            )
             provider = await self._new_mcp_provider(mcp_servers, owned_cwd)
             if active and active.mcp_provider is not None:
                 await asyncio.to_thread(active.mcp_provider.close)
-            self.sessions[session_id] = Session(cwd=owned_cwd, mcp_provider=provider)
+            self.sessions[session_id] = Session(
+                cwd=owned_cwd,
+                mcp_provider=provider,
+                mode=mode if mode in {"build", "plan"} else "build",
+                model_id=model_id,
+                model_config=config,
+                api_client=client,
+            )
             if replay:
                 for update in history:
                     await self._connection.session_update(
                         session_id=session_id, update=update
                     )
+            await self._send_commands(session_id)
 
     async def list_sessions(
         self, cwd: str | None = None, cursor: str | None = None, **kwargs: Any
@@ -338,6 +476,10 @@ class PenguinACPAgent:
             raise RequestError.invalid_request(
                 {"reason": "A turn is already active for this session"}
             )
+        if session.mode == "plan" and not self._controls.supports_plan:
+            raise RequestError.invalid_params(
+                {"reason": "Plan mode requires permission enforcement"}
+            )
         assets = None
         if self._registry.available:
             base = self._registry.store.base_path.resolve()
@@ -346,8 +488,13 @@ class PenguinACPAgent:
                 raise RequestError.invalid_params(
                     {"reason": "Invalid attachment storage"}
                 )
+        active_config = session.model_config or getattr(self.core, "model_config", None)
         message = prepare_prompt(
-            prompt, session.cwd, assets, allow_images=self._image_support
+            prompt,
+            session.cwd,
+            assets,
+            allow_images=self._registry.available
+            and bool(getattr(active_config, "vision_enabled", False)),
         )
         if self._connection is None:
             raise RequestError.internal_error()
@@ -394,15 +541,46 @@ class PenguinACPAgent:
                             directory=str(session.cwd),
                             project_root=str(session.cwd),
                             request_id=uuid4().hex,
+                            agent_mode=session.mode,
                         )
                     )
                 )
-                result = await self.core.process(
-                    message,
-                    conversation_id=session_id,
-                    streaming=True,
-                    stream_callback=on_chunk,
-                )
+                command = message.strip() if isinstance(message, str) else ""
+                runtime = {}
+                if session.model_config is not None:
+                    runtime = {
+                        "model_config_override": session.model_config,
+                        "api_client_override": session.api_client,
+                    }
+                if command == "/status":
+                    result = {
+                        "assistant_response": (
+                            f"Mode: {session.mode}; model: {session.model_id}"
+                        )
+                    }
+                elif command == "/mcp" and hasattr(self.core, "tool_manager"):
+                    import json
+
+                    status = self.core.tool_manager.get_mcp_status()
+                    result = {
+                        "assistant_response": json.dumps(
+                            {
+                                "servers": {
+                                    name: item["status"]
+                                    for name, item in status.get("servers", {}).items()
+                                }
+                            },
+                            indent=2,
+                        )
+                    }
+                else:
+                    result = await self.core.process(
+                        message,
+                        conversation_id=session_id,
+                        streaming=True,
+                        stream_callback=on_chunk,
+                        **runtime,
+                    )
             if not isinstance(result, dict):
                 raise RequestError.internal_error(
                     {"reason": "Penguin returned no valid turn result"}

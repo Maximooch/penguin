@@ -68,6 +68,10 @@ class Core:
         if hasattr(self, 'conversation_manager'):
             return self.conversation_manager.session_manager.create_session().id
         return 'cli-session'
+    def list_available_models(self):
+        return [{'id': 'other', 'name': 'Other', 'vision_enabled': True}]
+    async def resolve_request_runtime(self, model_id):
+        return types.SimpleNamespace(vision_enabled=True), object()
     async def process(self, text, **kwargs):
         print('provider diagnostic')
         if text == 'tools':
@@ -131,9 +135,13 @@ async def test_real_cli_stdio_keeps_diagnostics_out_of_protocol(tmp_path):
 class RecordingClient:
     def __init__(self):
         self.updates = []
+        self.commands = []
 
     async def session_update(self, session_id, update, **kwargs):
-        self.updates.append((session_id, update))
+        if update.session_update == "available_commands_update":
+            self.commands.append(update)
+        else:
+            self.updates.append((session_id, update))
 
 
 @pytest.mark.asyncio
@@ -184,6 +192,12 @@ async def test_cli_restart_session_load_resume_and_close(tmp_path):
             ),
         )
         assert (await conn.prompt(sid, [embedded])).stop_reason == "end_turn"
+        choices = await conn.set_config_option(
+            session_id=sid, config_id="model", value="other"
+        )
+        assert choices.config_options[0].current_value == "other"
+        await conn.prompt(sid, [text_block("/status")])
+        assert second_client.updates[-1][1].content.text == "Mode: build; model: other"
 
 
 @pytest.mark.asyncio
