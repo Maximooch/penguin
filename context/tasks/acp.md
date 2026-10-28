@@ -54,7 +54,7 @@ Windows process termination uses taskkill tree cleanup, not Windows Job Objects 
 
 Baseline sequence: #134 baseline -> #135 tool events -> #136 sessions -> #137 rich input -> #138 replay journal -> #139 contract CI -> #140 session MCP -> #141 controls.
 
-`stack/acp-runtime-base` combines that sequence with separate reliability #133. Then #142 child sessions, with sibling #143 native diffs and #144 child approval cleanup. `stack/acp-progress-base` combines those siblings, followed by #145 process UI -> #147 deletion -> #148 questions. `stack/acp-windows-base` combines that stack with Windows runtime #146 (including environment correction), then #149 cross-platform producer tests -> #150 scoped usage -> #151 exact prompt request cancellation. Then #152 records the audit, #153 additional roots, #154 opt-in client files, #155 foreground client terminals, #156 real permission-request serialization and #157 exact retained approvals. `stack/acp-storage-base` combines #157 with native storage #158 (47485319), preserving both storage and process CI jobs. The editor-ordering follow-up builds on that integration. These are Git branch integrations for review, not merged pull requests.
+`stack/acp-runtime-base` combines that sequence with separate reliability #133. Then #142 child sessions, with sibling #143 native diffs and #144 child approval cleanup. `stack/acp-progress-base` combines those siblings, followed by #145 process UI -> #147 deletion -> #148 questions. `stack/acp-windows-base` combines that stack with Windows runtime #146 (including environment correction), then #149 cross-platform producer tests -> #150 scoped usage -> #151 exact prompt request cancellation. Then #152 records the audit, #153 additional roots, #154 opt-in client files, #155 foreground client terminals, #156 real permission-request serialization and #157 exact retained approvals. `stack/acp-storage-base` combines #157 with native storage #158 (3d2eb201, including sharing-probe follow-up), preserving both storage and process CI jobs. The editor-ordering follow-up builds on that integration. These are Git branch integrations for review, not merged pull requests.
 
 ## Validation gates
 
@@ -63,7 +63,7 @@ Baseline sequence: #134 baseline -> #135 tool events -> #136 sessions -> #137 ri
 - [x] Dedicated CI on Windows/Linux and Python 3.11/3.12 with ACP dependencies, no provider secrets.
 - [x] Windows native process capture and environment assertions; no skipped Windows ACP producer.
 - [x] Locked dependency check and scoped Ruff checks.
-- [x] Storage integration aggregate: 118 ACP/edit-contract tests and 29 native storage tests passed on Windows Python 3.11.14, no skips. The editor-ordering regression is additional.
+- [x] Latest storage/editor integration aggregate: 119 ACP/edit-contract tests passed on Windows Python 3.11.14, no skips; pinned uv 0.11.2 lock check passed. A separate earlier storage run passed 29 tests. The later expanded storage test exposed an assertion that counts retry attempts as new temporary files; tracked independently.
 - [x] #151 code-head CI passed, including all four ACP OS/Python jobs and broader repository contracts. Later increments require their own CI.
 - [x] Installed Zed deterministic-provider smoke: text, tool card and command discovery.
 - [ ] Live-provider and full interactive acceptance as specified above.
