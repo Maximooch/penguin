@@ -59,6 +59,7 @@ from penguin.integrations.acp.controls import SessionControls
 from penguin.integrations.acp.events import EventBridge
 from penguin.integrations.acp.mcp import session_provider
 from penguin.integrations.acp.processes import ProcessTracker
+from penguin.integrations.acp.questions import QuestionBridge
 from penguin.integrations.acp.sessions import SessionRegistry
 from penguin.integrations.mcp.manager import HAS_MCP_SDK
 from penguin.security.approval import (
@@ -129,6 +130,7 @@ class PenguinACPAgent:
         self._transport = None
         self._children = ChildTracker(self)
         self._processes = ProcessTracker(self)
+        self._questions = QuestionBridge(self)
 
     def _active_cwd(self, sid: str) -> Path | None:
         session = self.sessions.get(sid)
@@ -150,6 +152,7 @@ class PenguinACPAgent:
 
     def close(self) -> None:
         self._closed = True
+        self._questions.close()
         self._processes.close()
         self._children.close()
         self._events.close()
@@ -167,6 +170,7 @@ class PenguinACPAgent:
 
     def _cancel_approvals(self, sid: str) -> None:
         """Deny requests before cancelling their network waiters."""
+        self._questions.cancel(sid)
         for request in self._approvals.get_pending(sid):
             self._approvals.deny(request.id)
         try:
@@ -184,7 +188,10 @@ class PenguinACPAgent:
             child = self._children.children.get(sid)
             if child and child.active and not child.cancelled and not self._closed:
                 state = (
-                    "requires_action" if self._approvals.get_pending(sid) else "running"
+                    "requires_action"
+                    if self._approvals.get_pending(sid)
+                    or self._questions.manager.list_pending(sid)
+                    else "running"
                 )
                 await self._children.state(sid, state)
 
@@ -199,6 +206,8 @@ class PenguinACPAgent:
             raise RequestError.invalid_params({"protocolVersion": protocol_version})
         self._loop = asyncio.get_running_loop()
         self._initialized = True
+        elicitation = getattr(client_capabilities, "elicitation", None)
+        self._questions.supported = getattr(elicitation, "form", None) is not None
         return InitializeResponse(
             protocol_version=PROTOCOL_VERSION,
             agent_info=Implementation(name="penguin", version=__version__),

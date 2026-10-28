@@ -45,3 +45,4 @@ jobs:
           tests/integrations/test_acp_child_approvals.py
           tests/integrations/test_acp_processes.py
           tests/integrations/test_acp_delete.py
+          tests/integrations/test_acp_questions.py

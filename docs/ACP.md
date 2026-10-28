@@ -135,3 +135,14 @@ event, ownership and reconnect regressions still run on Windows.
 It rejects busy sessions and unresolved background processes, checks indexed ACP
 workspace ownership, and deletes the native conversation plus its replay journal
 and attachment directory. Close merely detaches; delete is permanent.
+
+## Questions
+
+The actual Penguin question tool uses form elicitation when the client explicitly
+advertises it. This optional SDK feature remains experimental. Single-choice,
+free-text and fixed multi-choice answers are validated before resolving the
+question. Unsupported clients and custom multi-select questions receive the
+question and choices as text for the user's next message, and the pending tool
+request is rejected immediately rather than waiting for a missing web UI.
+Cancellation and disconnect reject pending forms; late replies cannot revive
+them. No answers or approval authority are inferred from a declined form.
