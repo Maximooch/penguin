@@ -17,14 +17,23 @@ restores without replay; close detaches without deleting history. List supports
 workspace filtering and pagination. Legacy sessions without ACP ownership are
 not exposed. Interrupted tool entries replay as failed, without re-execution.
 Turns and lifecycle operations are serialized because the core conversation
-manager is shared. Images, client MCP, configuration, child-session and deletion
-capabilities are not advertised yet. Do not interpret this as full ACP parity.
+manager is shared. Embedded context is supported with persistent attachment
+storage. PNG/JPEG/WebP image input is advertised only for a vision-enabled model.
+Client MCP, configuration, child-session and deletion capabilities are not
+advertised yet. Do not interpret this as full ACP parity.
 
 Resource links are passed to the agent as clearly labeled context references.
 The adapter does not fetch their contents or grant file/network permission. Local
 file URIs must resolve inside the session workspace, including after decoding
 and symlink resolution. Ordinary tools and permission policy govern later reads.
 Remote URIs remain references, without an automatic network request.
+
+Images and embedded binary resources are stored by content hash under the native
+session store's `acp-assets` directory. Images use Penguin's native image input;
+binary resources become inert attachment references. Embedded text remains
+labeled untrusted context. Per-binary limits are 10 MiB, total attachments 20 MiB,
+and images 40 million pixels. The bytes remain available after close so future
+turns can reuse their attachments. No attachment is executed automatically.
 
 Diagnostic prints go to stderr; protocol frames always go to the original
 stdout stream, including on Windows. Clients must keep stdin open for the session
@@ -46,7 +55,7 @@ required before claiming the complete user workflow.
 2. Tool results, plans and bounded output (implemented); native complete-file
    diff previews and finer execution progress still need runtime evidence.
 3. Session persistence, history replay, list/resume/close (implemented).
-4. Image and embedded-resource input.
+4. Image and embedded-resource input (implemented).
 5. Per-session client MCP servers.
 6. Model/mode/configuration and command discovery/authentication where supported.
 7. Child-agent and background-task visibility using negotiated capabilities.

@@ -29,6 +29,7 @@ from acp.schema import (
     LoadSessionResponse,
     NewSessionResponse,
     PermissionOption,
+    PromptCapabilities,
     PromptResponse,
     ResumeSessionResponse,
     SessionCapabilities,
@@ -41,7 +42,7 @@ from acp.schema import (
 )
 
 from penguin._version import __version__
-from penguin.integrations.acp.content import prompt_text
+from penguin.integrations.acp.content import prepare_prompt
 from penguin.integrations.acp.events import EventBridge
 from penguin.integrations.acp.sessions import SessionRegistry
 from penguin.security.approval import (
@@ -85,6 +86,9 @@ class PenguinACPAgent:
         self._approvals = get_approval_manager()
         self._approvals.on_request_created(self._on_approval)
         self._registry = SessionRegistry(core, self.allowed_roots)
+        self._image_support = self._registry.available and bool(
+            getattr(getattr(core, "model_config", None), "vision_enabled", False)
+        )
         self._events = EventBridge(
             getattr(core, "event_bus", None), self._active_cwd, self._send_update
         )
@@ -124,6 +128,9 @@ class PenguinACPAgent:
             protocol_version=PROTOCOL_VERSION,
             agent_info=Implementation(name="penguin", version=__version__),
             agent_capabilities=AgentCapabilities(
+                prompt_capabilities=PromptCapabilities(
+                    image=self._image_support, embedded_context=self._registry.available
+                ),
                 load_session=self._registry.available,
                 session_capabilities=SessionCapabilities(
                     list=SessionListCapabilities()
@@ -285,7 +292,17 @@ class PenguinACPAgent:
             raise RequestError.invalid_request(
                 {"reason": "A turn is already active for this session"}
             )
-        message = prompt_text(prompt, session.cwd)
+        assets = None
+        if self._registry.available:
+            base = self._registry.store.base_path.resolve()
+            assets = base / "acp-assets" / session_id
+            if not assets.resolve().is_relative_to(base):
+                raise RequestError.invalid_params(
+                    {"reason": "Invalid attachment storage"}
+                )
+        message = prepare_prompt(
+            prompt, session.cwd, assets, allow_images=self._image_support
+        )
         if self._connection is None:
             raise RequestError.internal_error()
         session.task = asyncio.current_task()

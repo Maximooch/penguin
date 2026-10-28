@@ -59,6 +59,7 @@ class Core:
             from penguin.system.session_manager import SessionManager
             self.conversation_manager = types.SimpleNamespace(session_manager=
                 SessionManager(os.environ['ACP_TEST_STORE'], auto_save_interval=0))
+        self.model_config = types.SimpleNamespace(vision_enabled=True)
     @classmethod
     async def create(cls, **kwargs):
         print('startup diagnostic')
@@ -171,6 +172,18 @@ async def test_cli_restart_session_load_resume_and_close(tmp_path):
         await conn.resume_session(sid, str(tmp_path))
         assert len(second_client.updates) == before
         assert (await conn.prompt(sid, [text_block("again")])).stop_reason == "end_turn"
+        from acp.schema import EmbeddedResourceContentBlock, TextResourceContents
+
+        assert response.agent_capabilities.prompt_capabilities.image
+        embedded = EmbeddedResourceContentBlock(
+            type="resource",
+            resource=TextResourceContents(
+                uri="file:///virtual/file.txt",
+                text="client-provided content",
+                mime_type="text/plain",
+            ),
+        )
+        assert (await conn.prompt(sid, [embedded])).stop_reason == "end_turn"
 
 
 @pytest.mark.asyncio
