@@ -1,7 +1,5 @@
 """Configured approval rules must reach real tool dispatch."""
 
-# ruff: noqa: E402 -- optional ACP dependency gate.
-
 import asyncio
 from unittest.mock import AsyncMock
 
@@ -76,7 +74,8 @@ def test_rules_loaded_from_explicit_config_path(tmp_path, monkeypatch):
 
     config_file = tmp_path / "config.yml"
     config_file.write_text(
-        "security:\n  require_approval: [filesystem.write]\n  denied_paths: [blocked.txt]\n",
+        "security:\n  require_approval: [filesystem.write]\n"
+        "  denied_paths: [blocked.txt]\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("PENGUIN_CONFIG_PATH", str(config_file))
