@@ -1173,6 +1173,23 @@ class PenguinACPAgent:
             await self._update_child_approval_state(request.session_id)
 
 
+def _startup_config() -> Any:
+    """Activate the selected provider's saved login for this ACP process only."""
+    from penguin.config import Config
+    from penguin.web.services.provider_credentials import (
+        apply_credentials_to_environment,
+        get_provider_credential,
+    )
+
+    config = Config.load_config()
+    provider = str(getattr(config.model_config, "provider", "") or "").strip()
+    if provider:
+        credential = get_provider_credential(provider)
+        if credential is not None:
+            apply_credentials_to_environment(provider, credential)
+    return config
+
+
 async def serve() -> None:
     from acp.stdio import stdio_streams
 
@@ -1187,6 +1204,7 @@ async def serve() -> None:
         from penguin.config import WORKSPACE_PATH
         from penguin.core import PenguinCore
 
+        startup_config = _startup_config()
         if os.environ.get("PENGUIN_ACP_ISOLATED_SESSIONS") == "1":
             from copy import deepcopy
 
@@ -1201,7 +1219,7 @@ async def serve() -> None:
                     config = (
                         deepcopy(getattr(catalog.agent.core, "config", None))
                         if catalog
-                        else None
+                        else deepcopy(startup_config)
                     )
                     runtime_core = await PenguinCore.create(
                         config=config, show_progress=False
@@ -1217,7 +1235,7 @@ async def serve() -> None:
             catalog = await create_runtime()
             agent = IsolatedACPAgent(catalog, create_runtime)
         else:
-            core = await PenguinCore.create(show_progress=False)
+            core = await PenguinCore.create(config=startup_config, show_progress=False)
             roots = (Path.cwd(), Path(WORKSPACE_PATH))
             agent = PenguinACPAgent(core, allowed_roots=roots)
         reader, _ = await stdio_streams(limit=50 * 1024 * 1024)

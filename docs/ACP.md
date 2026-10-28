@@ -217,3 +217,14 @@ unknown-window data are omitted; no runtime-wide usage is attributed to a sessio
 Stale IDs cannot cancel a later turn in the same session. `session/cancel` remains
 the whole-turn cancellation interface. Cancellation of short control operations
 or session setup is not implemented; partial session deletion is never attempted.
+
+
+## Integrated live baseline verification
+
+The integration was exercised with Penguin's own stored ChatGPT OAuth login and a live `gpt-6.1-sol` model, using a temporary workspace. No credentials from other applications were imported. ACP startup now activates only its configured provider's existing credential through Penguin's credential service; it does not require a separate environment-token bootstrap.
+
+The live checks covered MCP echo discovery/invocation, file read/write with an approval request, a denied write with the preexisting canary unchanged after the complete turn, PNG vision plus embedded text, close/load and fresh-process history recall, active cancellation, and simultaneous isolated sessions writing separate files. The denial run attempted one `write_file` and no alternative mutating tool.
+
+Live testing found and corrected three additional integration defects: configured approval/path rules were not passed to the workspace policy; the default model tool allowlist omitted negotiated MCP tools; and startup discarded explicit vision support. These paths now have deterministic regression coverage, including configuration loaded through `PENGUIN_CONFIG_PATH` and an explicit tool allowlist that still excludes unselected MCP tools.
+
+For a ChatGPT-backed provider already connected in Penguin, select `provider: openai` and `client_preference: native` in the normal configuration. `client_preference: openai` is not the native-adapter selector. Keep the workspace and model choice explicit for acceptance runs. The documented optional-feature and recovery limits above still apply; passing these checks is a baseline acceptance result, not a claim of complete protocol parity.

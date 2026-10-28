@@ -55,6 +55,7 @@ jobs:
           tests/integrations/test_acp_grants.py
           tests/integrations/test_acp_isolation.py
           tests/integrations/test_acp_configured_permissions.py
+          tests/integrations/test_acp_stored_auth.py
           tests/multi/test_executor.py
           tests/system/test_message_bus_delivery.py
           tests/test_event_bus_lifecycle.py
