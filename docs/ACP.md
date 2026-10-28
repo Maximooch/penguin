@@ -8,8 +8,10 @@ Current baseline: new sessions, text and resource-reference prompts, streamed
 assistant text, one-time tool approvals, and cancellation. Tool starts/results
 and todo plans are delivered as native ACP updates with stable call IDs. Display
 output is bounded; file locations are resolved inside the session workspace.
-Returned unified diffs are displayed as diff text (not fabricated full-file
-before/after snapshots). Interrupted tools receive failed terminal updates;
+Canonical asynchronous file edits expose native before/after snapshots from
+the authorized transaction, without additional file reads. Snapshots are complete
+or explicitly omitted above 128 KiB (16 files per tool call); deletion remains
+a textual result. Other returned unified diffs remain diff text. Interrupted tools receive failed terminal updates;
 duplicate and unrelated-session events are suppressed. ACP-created sessions
 store workspace ownership in Penguin's native session store and visible updates
 in an append-only journal beneath that store. Load replays the journal before
@@ -73,8 +75,8 @@ required before claiming the complete user workflow.
 ## Planned PR series
 
 1. Baseline resource inputs, protocol output, failures and wire validation (implemented).
-2. Tool results, plans and bounded output (implemented); native complete-file
-   diff previews and finer execution progress still need runtime evidence.
+2. Tool results, plans, bounded output and native canonical-edit snapshots
+   (implemented); finer command-stream progress remains separate.
 3. Session persistence, history replay, list/resume/close (implemented).
 4. Image and embedded-resource input (implemented).
 5. Per-session client MCP servers (implemented; SDK 1.x compatibility pin).

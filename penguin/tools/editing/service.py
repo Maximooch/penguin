@@ -536,6 +536,9 @@ class EditService:
             display: self._safe_file_shape(Path(resolved))
             for display, resolved in zip(display_files, resolved_files)
         }
+        from .observation import record_edits
+
+        record_edits(changes)
         diff_text = "\n".join(diffs)
         legacy_payload = {
             "success": True,

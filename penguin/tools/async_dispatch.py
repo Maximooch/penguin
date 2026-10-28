@@ -160,7 +160,29 @@ class AsyncToolDispatcher:
                     }
                 )
         with authorized_call(name, arguments, ctx, resources):
-            return await self._execute(name, arguments, ctx)
+            from penguin.tools.editing.observation import capture_edits
+
+            with capture_edits() as edits:
+                try:
+                    return await self._execute(name, arguments, ctx)
+                finally:
+                    core = getattr(manager, "_core", None)
+                    emit = getattr(core, "emit_ui_event", None)
+                    if edits and callable(emit):
+                        from penguin.system.execution_context import (
+                            get_current_execution_context,
+                        )
+
+                        execution = get_current_execution_context()
+                        await emit(
+                            "file_edit",
+                            {
+                                "session_id": ctx.get("session_id"),
+                                "id": execution.tool_call_id if execution else None,
+                                "action": name,
+                                "changes": edits,
+                            },
+                        )
 
     async def _execute(
         self,

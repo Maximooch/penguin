@@ -41,3 +41,4 @@ jobs:
           tests/integrations/test_acp_mcp.py
           tests/integrations/test_acp_controls.py
           tests/integrations/test_acp_children.py
+          tests/integrations/test_acp_diffs.py

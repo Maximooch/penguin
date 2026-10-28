@@ -11,6 +11,7 @@ from acp.helpers import text_block
 from acp.schema import (
     AgentPlanUpdate,
     ContentToolCallContent,
+    FileEditToolCallContent,
     PlanEntry,
     ToolCallLocation,
     ToolCallProgress,
@@ -62,7 +63,7 @@ class EventBridge:
         self.finished: set[tuple[str, str]] = set()
         self.lock = asyncio.Lock()
         self.handler = self.on_event
-        self.event_types = ("action", "action_result", "todo.updated")
+        self.event_types = ("action", "action_result", "todo.updated", "file_edit")
         if bus is not None:
             for event in self.event_types:
                 bus.subscribe(event, self.handler)
@@ -161,6 +162,37 @@ class EventBridge:
                     ),
                 )
             if event_type != "action_result":
+                if event_type == "file_edit":
+                    name, tool_input, metadata = self.calls[key]
+                    diffs = metadata.setdefault("acp_diffs", [])
+                    for change in data.get("changes", []):
+                        path = Path(change["path"]).resolve()
+                        if not path.is_relative_to(cwd):
+                            continue
+                        if change.get("omitted"):
+                            diffs.extend(
+                                _contents(
+                                    "Full-file diff omitted (deleted or over 128 KiB)."
+                                )
+                            )
+                        else:
+                            diffs.append(
+                                FileEditToolCallContent(
+                                    type="diff",
+                                    path=str(path),
+                                    old_text=change.get("old_text"),
+                                    new_text=change["new_text"],
+                                )
+                            )
+                    await self.send(
+                        sid,
+                        ToolCallProgress(
+                            session_update="tool_call_update",
+                            tool_call_id=call_id,
+                            status="in_progress",
+                            content=diffs,
+                        ),
+                    )
                 return
             name, tool_input, metadata = self.calls.pop(key)
             failed = data.get("status") in {
@@ -179,6 +211,7 @@ class EventBridge:
                 status="error" if failed else "completed",
             )
             content = _contents(result)
+            content += metadata.get("acp_diffs", [])
             diff = metadata.get("diff")
             if isinstance(diff, str) and diff and not failed:
                 content += _contents("```diff\n" + diff + "\n```")

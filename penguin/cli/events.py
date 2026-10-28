@@ -206,6 +206,7 @@ class EventBus:
             "action",
             "action_result",
             "agent.lifecycle",
+            "file_edit",
             "opencode_event",
         ]:
             return False
