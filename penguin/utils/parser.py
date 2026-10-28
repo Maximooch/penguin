@@ -1830,7 +1830,13 @@ class ActionExecutor:
 
             client_files = active_client_tools(self.tool_manager)
             handler_name = getattr(handler, "__name__", "")
-            if client_files is not None and handler_name in {
+            if (client_files is not None and getattr(client_files, "supports_terminal", False)
+                and handler_name == "_execute_command"):
+                result = await self.tool_manager.execute_tool_async(
+                    "execute_command", handler_params if isinstance(handler_params, dict)
+                    else {"command": handler_params}
+                )
+            elif client_files is not None and handler_name in {
                 "_read_file",
                 "_enhanced_read",
                 "_write_file",

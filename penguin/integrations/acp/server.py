@@ -59,6 +59,7 @@ from acp.schema import (
 from penguin._version import __version__
 from penguin.integrations.acp.children import ChildTracker
 from penguin.integrations.acp.client_files import ClientFiles
+from penguin.integrations.acp.client_terminals import DEFAULT_SHELL, ClientTerminals
 from penguin.integrations.acp.content import prepare_prompt
 from penguin.integrations.acp.controls import SessionControls
 from penguin.integrations.acp.events import EventBridge
@@ -96,6 +97,8 @@ class Session:
     model_config: Any = None
     api_client: Any = None
     filesystem: str = "local"
+    terminal: bool = False
+    shell: str = DEFAULT_SHELL
 
 
 class PenguinACPAgent:
@@ -119,6 +122,7 @@ class PenguinACPAgent:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._initialized = False
         self._client_file_support = False
+        self._client_terminal_support = False
         self._approvals = get_approval_manager()
         self._approvals.on_request_created(self._on_approval)
         self._registry = SessionRegistry(core, self.allowed_roots)
@@ -231,6 +235,9 @@ class PenguinACPAgent:
             and getattr(fs, "write_text_file", False)
             and hasattr(self.core, "tool_manager")
         )
+        self._client_terminal_support = bool(
+            getattr(client_capabilities, "terminal", False)
+        )
         return InitializeResponse(
             protocol_version=PROTOCOL_VERSION,
             agent_info=Implementation(name="penguin", version=__version__),
@@ -339,9 +346,17 @@ class PenguinACPAgent:
             saved.metadata["acp_mode"] = session.mode
             saved.metadata["acp_model"] = session.model_id
             saved.metadata["acp_filesystem"] = session.filesystem
+            saved.metadata["acp_client_terminal"] = session.terminal
+            saved.metadata["acp_client_shell"] = session.shell
             self._registry.save(saved)
 
-    def _options(self, model_id: str, filesystem: str = "local") -> list[Any]:
+    def _options(
+        self,
+        model_id: str,
+        filesystem: str = "local",
+        terminal: bool = False,
+        shell: str = DEFAULT_SHELL,
+    ) -> list[Any]:
         options = self._controls.options(model_id)
         if self._client_file_support:
             options.append(
@@ -359,6 +374,39 @@ class PenguinACPAgent:
                         ),
                     ],
                 )
+            )
+        if filesystem == "client" and self._client_terminal_support:
+            options.extend(
+                [
+                    SessionConfigOptionSelect(
+                        id="client_terminal",
+                        name="Client commands",
+                        type="select",
+                        current_value="client" if terminal else "disabled",
+                        options=[
+                            SessionConfigSelectOption(
+                                value="disabled", name="Disabled"
+                            ),
+                            SessionConfigSelectOption(
+                                value="client", name="Client foreground terminal"
+                            ),
+                        ],
+                    ),
+                    SessionConfigOptionSelect(
+                        id="client_shell",
+                        name="Client shell",
+                        type="select",
+                        current_value=shell,
+                        options=[
+                            SessionConfigSelectOption(value=v, name=n)
+                            for v, n in (
+                                ("cmd", "Windows cmd"),
+                                ("pwsh", "PowerShell"),
+                                ("sh", "POSIX sh"),
+                            )
+                        ],
+                    ),
+                ]
             )
         return options
 
@@ -386,18 +434,50 @@ class PenguinACPAgent:
         self, session_id: str, config_id: str, value: str, **kwargs: Any
     ) -> SetSessionConfigOptionResponse:
         session = self._idle_session(session_id)
-        if config_id == "file_access":
-            if value not in {"local", "client"} or (
-                value == "client" and not self._client_file_support
+        if config_id in {"file_access", "client_terminal", "client_shell"}:
+            if any(
+                child.active and child.root == session_id
+                for child in self._children.children.values()
+            ):
+                raise RequestError.invalid_request(
+                    {"reason": "Active children still use this backend"}
+                )
+            allowed = {
+                "file_access": {"local", "client"},
+                "client_terminal": {"disabled", "client"},
+                "client_shell": {"cmd", "pwsh", "sh"},
+            }[config_id]
+            if value not in allowed or (
+                config_id == "file_access"
+                and value == "client"
+                and not self._client_file_support
             ):
                 raise RequestError.invalid_params(
                     {"reason": "Client text files are unavailable"}
                 )
+            if config_id != "file_access" and (
+                session.filesystem != "client" or not self._client_terminal_support
+            ):
+                raise RequestError.invalid_params(
+                    {"reason": "Client terminal is unavailable"}
+                )
             async with self._process_gate:
                 session = self._idle_session(session_id)
-                session.filesystem = value
+                if config_id == "file_access":
+                    session.filesystem = value
+                    if value == "local":
+                        session.terminal = False
+                elif config_id == "client_terminal":
+                    session.terminal = value == "client"
+                else:
+                    session.shell = value
                 self._save_controls(session_id)
-                options = self._options(session.model_id, session.filesystem)
+                options = self._options(
+                    session.model_id,
+                    session.filesystem,
+                    session.terminal,
+                    session.shell,
+                )
                 await self._send_update(
                     session_id,
                     ConfigOptionUpdate(
@@ -419,7 +499,9 @@ class PenguinACPAgent:
                 client,
             )
             self._save_controls(session_id)
-            options = self._options(value, session.filesystem)
+            options = self._options(
+                value, session.filesystem, session.terminal, session.shell
+            )
             await self._send_update(
                 session_id,
                 ConfigOptionUpdate(
@@ -463,7 +545,9 @@ class PenguinACPAgent:
         session = self.sessions[session_id]
         return LoadSessionResponse(
             modes=self._controls.modes(session.mode),
-            config_options=self._options(session.model_id, session.filesystem),
+            config_options=self._options(
+                session.model_id, session.filesystem, session.terminal, session.shell
+            ),
         )
 
     async def resume_session(
@@ -481,7 +565,9 @@ class PenguinACPAgent:
         session = self.sessions[session_id]
         return ResumeSessionResponse(
             modes=self._controls.modes(session.mode),
-            config_options=self._options(session.model_id, session.filesystem),
+            config_options=self._options(
+                session.model_id, session.filesystem, session.terminal, session.shell
+            ),
         )
 
     async def close_session(
@@ -605,6 +691,19 @@ class PenguinACPAgent:
                 )
             model_id = saved.metadata.get("acp_model", "default")
             filesystem = saved.metadata.get("acp_filesystem", "local")
+            terminal = saved.metadata.get("acp_client_terminal", False)
+            shell = saved.metadata.get("acp_client_shell", DEFAULT_SHELL)
+            if (
+                type(terminal) is not bool
+                or shell not in {"cmd", "pwsh", "sh"}
+                or (
+                    terminal
+                    and (filesystem != "client" or not self._client_terminal_support)
+                )
+            ):
+                raise RequestError.invalid_params(
+                    {"reason": "Saved client terminal is unavailable"}
+                )
             if filesystem not in {"local", "client"} or (
                 filesystem == "client" and not self._client_file_support
             ):
@@ -637,6 +736,8 @@ class PenguinACPAgent:
                 model_config=config,
                 api_client=client,
                 filesystem=filesystem,
+                terminal=terminal,
+                shell=shell,
             )
             saved.metadata["acp_additional_directories"] = [
                 str(root) for root in roots[1:]
@@ -713,6 +814,10 @@ class PenguinACPAgent:
             raise RequestError.invalid_request(
                 {"reason": "Client text files are unavailable"}
             )
+        if session.terminal and not self._client_terminal_support:
+            raise RequestError.invalid_request(
+                {"reason": "Client terminal is unavailable"}
+            )
         if session.task is not None:
             raise RequestError.invalid_request(
                 {"reason": "A turn is already active for this session"}
@@ -782,7 +887,10 @@ class PenguinACPAgent:
                 if session.filesystem == "client":
                     scopes.enter_context(
                         client_tool_scope(
-                            self.core.tool_manager, ClientFiles(self, session_id)
+                            self.core.tool_manager,
+                            ClientTerminals(self, session_id, session.shell)
+                            if session.terminal
+                            else ClientFiles(self, session_id),
                         )
                     )
                 if session.mcp_provider is not None:

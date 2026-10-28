@@ -50,5 +50,6 @@ jobs:
           tests/integrations/test_acp_request_cancel.py
           tests/integrations/test_acp_roots.py
           tests/integrations/test_acp_client_files.py
+          tests/integrations/test_acp_client_terminals.py
           tests/core_runtime/test_session_goal_runtime.py
           tests/system/test_tool_environment.py
