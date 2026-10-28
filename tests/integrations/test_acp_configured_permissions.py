@@ -94,3 +94,32 @@ def test_rules_loaded_from_explicit_config_path(tmp_path, monkeypatch):
         {"directory": str(tmp_path)},
     )
     assert result is PermissionResult.DENY
+
+
+def test_configured_read_only_mode_rejects_write(tmp_path):
+    from penguin.security.permission_engine import PermissionResult
+
+    manager = ToolManager(
+        {"workspace_path": str(tmp_path), "security": {"mode": "read_only"}},
+        lambda *_: None,
+        fast_startup=True,
+    )
+    result, _ = manager.check_tool_permission(
+        "write_file", {"path": str(tmp_path / "read-only.txt"), "content": "forbidden"}
+    )
+    assert result is PermissionResult.DENY
+
+
+def test_invalid_policy_cannot_leave_permissive_enforcer(tmp_path):
+    manager = ToolManager(
+        {"workspace_path": str(tmp_path), "security": {"mode": "invalid"}},
+        lambda *_: None,
+        fast_startup=True,
+    )
+    for _ in range(2):
+        with pytest.raises(ValueError):
+            manager.check_tool_permission(
+                "write_file",
+                {"path": str(tmp_path / "invalid.txt"), "content": "forbidden"},
+            )
+        assert manager._permission_enforcer is None
