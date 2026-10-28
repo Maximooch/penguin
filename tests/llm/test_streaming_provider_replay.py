@@ -35,7 +35,7 @@ def fixtures_path() -> Path:
 def provider_responses(fixtures_path: Path) -> Dict[str, Any]:
     """Load provider response fixtures."""
     fixture_file = fixtures_path / "provider_responses.json"
-    with open(fixture_file) as f:
+    with open(fixture_file, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -56,7 +56,7 @@ def manager():
 def get_fixture_ids() -> List[str]:
     """Get list of fixture IDs for parameterization."""
     fixture_file = Path(__file__).parent / "fixtures" / "provider_responses.json"
-    with open(fixture_file) as f:
+    with open(fixture_file, encoding="utf-8") as f:
         data = json.load(f)
     return [k for k in data.keys() if not k.startswith("_")]
 

@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import shlex
+import subprocess
+import sys
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -20,12 +24,25 @@ from penguin.tools.runtime import (
 
 
 @pytest.fixture
-def runtime() -> Iterator[ProcessRuntime]:
-    instance = ProcessRuntime()
+def runtime(tmp_path) -> Iterator[ProcessRuntime]:
+    instance = ProcessRuntime(log_dir=tmp_path / "logs")
     try:
         yield instance
     finally:
         instance.cleanup()
+
+
+@pytest.fixture
+def child_command(tmp_path):
+    """Run actual pipe I/O using this interpreter on every supported OS."""
+
+    def command(source):
+        script = tmp_path / "pipe child.py"
+        script.write_text(source, encoding="utf-8")
+        argv = [sys.executable, "-u", str(script)]
+        return subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+
+    return command
 
 
 def _wait_for_stdout(
@@ -37,8 +54,10 @@ def _wait_for_stdout(
         assert record.changed.wait_for(lambda: record.next_sequence > sequence, 3)
 
 
-def test_first_default_poll_recovers_ready_output(runtime: ProcessRuntime) -> None:
-    started = runtime.start("printf 'hello\\n'; read line")
+def test_first_default_poll_recovers_ready_output(
+    runtime: ProcessRuntime, child_command
+) -> None:
+    started = runtime.start(child_command("print('hello', flush=True); input()"))
     process_id = started["process_id"]
     _wait_for_stdout(runtime, process_id)
 
@@ -51,10 +70,13 @@ def test_first_default_poll_recovers_ready_output(runtime: ProcessRuntime) -> No
 
 @pytest.mark.parametrize("after_output", [False, True])
 def test_returned_cursor_does_not_skip_output(
-    runtime: ProcessRuntime, after_output: bool
+    runtime: ProcessRuntime, after_output: bool, child_command
 ) -> None:
     started = runtime.start(
-        "read first; printf 'first\\n'; read second; printf 'second\\n'; read done"
+        child_command(
+            "input(); print('first', flush=True); "
+            "input(); print('second', flush=True); input()"
+        )
     )
     process_id = started["process_id"]
     cursor = started["next_sequence"]
@@ -77,8 +99,9 @@ def test_returned_cursor_does_not_skip_output(
 
 def test_running_process_can_wait_through_three_empty_polls(
     runtime: ProcessRuntime,
+    child_command,
 ) -> None:
-    process_id = runtime.start("read done")["process_id"]
+    process_id = runtime.start(child_command("input()"))["process_id"]
     state = LoopState()
     for _ in range(3):
         polled = runtime.poll(process_id)
@@ -91,8 +114,9 @@ def test_running_process_can_wait_through_three_empty_polls(
 @pytest.mark.asyncio
 async def test_scheduler_preserves_running_process_metadata_and_nonempty_hash(
     runtime: ProcessRuntime,
+    child_command,
 ) -> None:
-    process_id = runtime.start("read done")["process_id"]
+    process_id = runtime.start(child_command("input()"))["process_id"]
 
     def execute_call(call: ToolCall) -> dict[str, Any]:
         return runtime.poll(call.arguments["process_id"])
