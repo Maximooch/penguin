@@ -52,7 +52,7 @@ from acp.schema import (
     SessionResumeCapabilities,
     SetSessionConfigOptionResponse,
     SetSessionModeResponse,
-    ToolCallStart,
+    ToolCallUpdate,
     UserMessageChunk,
 )
 
@@ -1085,10 +1085,9 @@ class PenguinACPAgent:
             response = await asyncio.wait_for(
                 self._connection.request_permission(
                     session_id=target,
-                    tool_call=ToolCallStart(
+                    tool_call=ToolCallUpdate(
                         tool_call_id=request.id,
                         title=f"{request.tool_name}: {request.resource}",
-                        session_update="tool_call",
                     ),
                     options=[
                         PermissionOption(
