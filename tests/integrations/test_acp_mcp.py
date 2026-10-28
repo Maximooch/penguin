@@ -51,6 +51,16 @@ server.run(transport='stdio')
     await agent.initialize(1)
 
     async def process(text, **kwargs):
+        schemas = core.tool_manager.get_responses_tools()
+        assert "mcp__echo__echo" in {
+            schema.get("name") or schema.get("function", {}).get("name")
+            for schema in schemas
+        }
+        restricted = core.tool_manager.get_responses_tools(allowed_names=["read_file"])
+        assert "mcp__echo__echo" not in {
+            schema.get("name") or schema.get("function", {}).get("name")
+            for schema in restricted
+        }
         result = await core.tool_manager.execute_tool_async(
             "mcp__echo__echo", {"value": text}
         )

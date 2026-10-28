@@ -2393,12 +2393,24 @@ class ToolManager:
                         audit_all=True,
                     )
 
-                    # Add workspace boundary policy
+                    # Add workspace boundary policy with configured restrictions.
+                    security_policy = (
+                        self.config.get("security")
+                        if isinstance(self.config, dict)
+                        else getattr(self.config, "security", None)
+                    ) or {}
+                    if callable(getattr(security_policy, "to_dict", None)):
+                        security_policy = security_policy.to_dict()
+                    if not isinstance(security_policy, dict):
+                        raise ValueError("security must be a configuration object")
                     if _WorkspaceBoundaryPolicy is not None:
                         boundary_policy = _WorkspaceBoundaryPolicy(
                             workspace_root=self.workspace_root,
                             project_root=self.project_root,
                             mode=mode,
+                            allowed_paths=security_policy.get("allowed_paths"),
+                            denied_paths=security_policy.get("denied_paths"),
+                            require_approval=security_policy.get("require_approval"),
                         )
                         self._permission_enforcer.add_policy(boundary_policy)
 
@@ -3129,6 +3141,14 @@ class ToolManager:
             self._canonical_tool_name(name)
             for name in (allowed_names or default_allowed)
         }
+        if allowed_names is None:
+            # Negotiated session MCP tools are discovered at request time, so
+            # they cannot appear in the static built-in default allowlist.
+            allowed.update(
+                tool["name"]
+                for tool in self._get_mcp_provider().get_tool_schemas()
+                if isinstance(tool.get("name"), str)
+            )
         if not subagents_enabled():
             allowed.difference_update(SUBAGENT_TOOL_NAMES)
         responses_tools: List[Dict[str, Any]] = []

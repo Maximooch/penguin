@@ -267,6 +267,11 @@ class WorkspaceBoundaryPolicy(PolicyEngine):
 
         # For non-filesystem operations, defer to other policies
         if operation.category != "filesystem":
+            if operation.value in self._require_approval:
+                return (
+                    PermissionResult.ASK,
+                    f"Operation '{operation.value}' requires approval",
+                )
             return (
                 PermissionResult.ALLOW,
                 "Non-filesystem operation - deferred to other policies",
