@@ -34,6 +34,8 @@ class ProtocolTransport:
         self.tasks: set[asyncio.Task[Any]] = set()
         self.pending: dict[Any, tuple[dict[str, Any], asyncio.Task[Any]]] = {}
         self.cancel_handlers: dict[str, Callable[..., Any]] = {}
+        self.session_responses: set[Any] = set()
+        self.after_session_response: Callable[..., Any] | None = None
 
     def register(
         self,
@@ -76,6 +78,14 @@ class ProtocolTransport:
                 (json.dumps(message, ensure_ascii=False) + "\n").encode("utf-8")
             )
             await self.writer.drain()
+        request_id = message.get("id")
+        if type(request_id) in (str, int) and request_id in self.session_responses:
+            self.session_responses.discard(request_id)
+            result = message.get("result")
+            if isinstance(result, dict) and self.after_session_response is not None:
+                sid = result.get("sessionId")
+                if isinstance(sid, str):
+                    await self.after_session_response(sid)
 
     async def receive(self) -> dict[str, Any] | None:
         while line := await self.reader.readline():
@@ -101,6 +111,11 @@ class ProtocolTransport:
                     }
                 )
                 continue
+            if message.get("method") == "session/new" and type(message.get("id")) in (
+                str,
+                int,
+            ):
+                self.session_responses.add(message["id"])
             if message.get("method") == "initialize":
                 params = message.get("params")
                 capabilities = (
@@ -167,6 +182,7 @@ class ProtocolTransport:
         return None
 
     async def close(self) -> None:
+        self.session_responses.clear()
         for task in self.tasks.copy():
             task.cancel()
         if self.tasks:

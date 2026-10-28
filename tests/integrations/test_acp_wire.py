@@ -264,3 +264,52 @@ async def test_acp_stdio_rejects_unsupported_requests_without_killing_connection
             await asyncio.wait_for(conn.prompt(sid, [text_block("okay")]), 10)
         ).stop_reason == "end_turn"
         assert process.returncode is None
+
+
+@pytest.mark.asyncio
+async def test_new_session_response_precedes_command_discovery(tmp_path):
+    """Editors drop updates before the session response registers their target."""
+    import json
+
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        _CLI_AGENT,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+        env={**os.environ, "PENGUIN_WORKSPACE": str(tmp_path)},
+    )
+
+    async def request(identifier, method, params):
+        process.stdin.write(
+            (
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": identifier,
+                        "method": method,
+                        "params": params,
+                    }
+                )
+                + "\n"
+            ).encode()
+        )
+        await process.stdin.drain()
+
+    async def read():
+        return json.loads(await asyncio.wait_for(process.stdout.readline(), 15))
+
+    try:
+        await request(1, "initialize", {"protocolVersion": 1})
+        assert (await read())["id"] == 1
+        await request(2, "session/new", {"cwd": str(tmp_path), "mcpServers": []})
+        response = await read()
+        assert response["id"] == 2
+        update = await read()
+        assert update["params"]["sessionId"] == response["result"]["sessionId"]
+        commands = update["params"]["update"]["availableCommands"]
+        assert {item["name"] for item in commands} == {"status", "permissions"}
+    finally:
+        process.stdin.close()
+        await asyncio.wait_for(process.wait(), 15)

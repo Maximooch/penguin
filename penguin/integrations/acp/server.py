@@ -307,7 +307,10 @@ class PenguinACPAgent:
                 if provider is not None:
                     await asyncio.to_thread(provider.close)
                 raise
-        await self._send_commands(sid)
+        # Editors register the new session only after its response. Sending
+        # commands earlier loses discovery in clients such as Zed.
+        if self._transport is None:
+            await self._send_commands(sid)
         return NewSessionResponse(
             session_id=sid,
             modes=self._controls.modes("build"),
@@ -1189,6 +1192,7 @@ async def serve() -> None:
         agent = PenguinACPAgent(core, allowed_roots=roots)
         transport = ProtocolTransport(reader, writer)
         agent._transport = transport
+        transport.after_session_response = agent._send_commands
         transport.register("session/delete", agent._delete_request)
         transport.register(
             "session/prompt", agent._prompt_request, agent._cancel_prompt_request

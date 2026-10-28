@@ -25,7 +25,7 @@ The current subagent RFD and form elicitation are optional negotiated/experiment
 | Long sessions | Append-only replay journal; native model state saved at turn boundaries. Incomplete final append recovery, malformed complete-record rejection, 2,000-chunk linear-write regression. Reload does not inject a whole transcript into model context. |
 | Tools | Scoped stable start/result IDs, bounded content, todo plans, terminal failed updates on interruption. Canonical authorized EditService transactions provide native complete before/after snapshots up to limits; other tools retain textual results. |
 | Processes | Actual runtime events update independent execution cards after the initiating turn, without polling or consuming model cursors. Retained output, capture failure and exit status shown. Missing root-process handle after reconnect is explicitly unknown. |
-| Permissions | Existing policy enforced; ACP offers allow-once or deny. Timeouts, cancel, close and child completion deny pending requests; no late grants. Multiple pending child approvals preserve requires_action until all resolve. |
+| Permissions | Existing policy enforced; ACP offers allow-once/deny and exact file read/write retention, explicitly until close or remembered for this saved session. /permissions reset revokes retained grants. Timeouts, cancel, close and child completion deny pending requests; no late grants. Multiple pending child approvals preserve requires_action until all resolve. |
 | Questions | Actual ActionExecutor question tool, negotiated form answers validated before resolution. Unsupported clients receive a text question for their next message; the tool request is rejected immediately so it cannot wait on an absent web UI. Cancel/close rejects forms. |
 | Controls | Per-session configured-model selection and Build/Plan modes, busy changes rejected. Plan appears only with permission enforcement and cannot become writable after enforcement is disabled. Settings persist; provider choices must be configured locally. `/status` and `/mcp` are local read-only commands. |
 | Usage | Session-scoped current context/window telemetry; unknown/global/malformed values omitted. Cost is not fabricated. |
@@ -46,7 +46,7 @@ The current subagent RFD and form elicitation are optional negotiated/experiment
 | Reconnect and recovery | Native conversation and replay persist; live child execution is not resumed after adapter-process death. Historical child association has no cancel authority. Root process cards check only live owned handles; historical child-process cards cannot reconstruct live work. | Durable supervisor identity/ownership and explicit recovery protocol; reconnect must distinguish known live work from unknown outcomes. |
 | Advanced UI extensions | No client-specific goal/task panel, arbitrary native tool renderer, hidden reasoning feed, ACP v2 or older AIR shape. Process output uses standard cards. | Negotiate an actual released/compatible client contract and test that client; do not infer parity from extension count. |
 | Diff breadth | Complete snapshots only from the canonical authorized async edit path; deleted/oversized files remain textual. | Additional tool producers must expose trustworthy bounded transaction snapshots, not extra unauthorized reads. |
-| Real editor/provider acceptance | Not done in this stack. Real CLI/SDK transport with fake provider is proven, not an installed editor or live model. | Launch a supported editor against this branch with a configured provider; exercise multi-turn tools, approve/deny, image, MCP, cancel, close/reopen and persisted replay. Repeat child tests with a client supporting the current draft. |
+| Real editor/provider acceptance | Zed 0.208.4 tested with an isolated profile and the actual CLI/adapter plus deterministic provider: handshake, Unicode output, visible tool card and /status discovery. This exposed and fixed command announcements arriving before the new-session response. A live provider and full interactive matrix remain unverified. | Launch a supported editor against this branch with a configured provider; exercise multi-turn tools, approve/deny, image, MCP, cancel, close/reopen and persisted replay. Repeat child tests with a client supporting the current draft. |
 
 Windows process termination uses taskkill tree cleanup, not Windows Job Objects or guaranteed ownership of detached descendants. Tests preserve this distinction.
 
@@ -54,7 +54,7 @@ Windows process termination uses taskkill tree cleanup, not Windows Job Objects 
 
 Baseline sequence: #134 baseline -> #135 tool events -> #136 sessions -> #137 rich input -> #138 replay journal -> #139 contract CI -> #140 session MCP -> #141 controls.
 
-`stack/acp-runtime-base` combines that sequence with separate reliability #133. Then #142 child sessions, with sibling #143 native diffs and #144 child approval cleanup. `stack/acp-progress-base` combines those siblings, followed by #145 process UI -> #147 deletion -> #148 questions. `stack/acp-windows-base` combines that stack with Windows runtime #146 (including environment correction), then #149 cross-platform producer tests -> #150 scoped usage -> #151 exact prompt request cancellation. These are Git branch integrations for review, not merged pull requests.
+`stack/acp-runtime-base` combines that sequence with separate reliability #133. Then #142 child sessions, with sibling #143 native diffs and #144 child approval cleanup. `stack/acp-progress-base` combines those siblings, followed by #145 process UI -> #147 deletion -> #148 questions. `stack/acp-windows-base` combines that stack with Windows runtime #146 (including environment correction), then #149 cross-platform producer tests -> #150 scoped usage -> #151 exact prompt request cancellation. Then #152 records the audit, #153 additional roots, #154 opt-in client files, #155 foreground client terminals, #156 real permission-request serialization and #157 exact retained approvals. `stack/acp-storage-base` combines #157 with native storage #158 (47485319), preserving both storage and process CI jobs. The editor-ordering follow-up builds on that integration. These are Git branch integrations for review, not merged pull requests.
 
 ## Validation gates
 
@@ -63,9 +63,16 @@ Baseline sequence: #134 baseline -> #135 tool events -> #136 sessions -> #137 ri
 - [x] Dedicated CI on Windows/Linux and Python 3.11/3.12 with ACP dependencies, no provider secrets.
 - [x] Windows native process capture and environment assertions; no skipped Windows ACP producer.
 - [x] Locked dependency check and scoped Ruff checks.
-- [x] Final code aggregate: 111 passed on Windows Python 3.11.14, no skips; scoped Ruff and pinned uv 0.11.2 lock check passed.
+- [x] Storage integration aggregate: 118 ACP/edit-contract tests and 29 native storage tests passed on Windows Python 3.11.14, no skips. The editor-ordering regression is additional.
 - [x] #151 code-head CI passed, including all four ACP OS/Python jobs and broader repository contracts. Later increments require their own CI.
-- [ ] Real editor plus live-provider acceptance as specified above.
+- [x] Installed Zed deterministic-provider smoke: text, tool card and command discovery.
+- [ ] Live-provider and full interactive acceptance as specified above.
 - [ ] All optional decisions above revisited before claiming parity for a particular remote/advanced client.
 
 Code aggregate after #151: 111 ACP, native Windows process and environment-policy checks passed, with no skips, on Windows Python 3.11.14. Scoped Ruff and the pinned uv 0.11.2 lock check passed. #149 and #151 full CI passed, including four ACP matrix jobs. Additional-root iteration has its own producer, persisted-goal and protocol tests. Older full-repository failures must be reported separately, not hidden by focused results.
+
+## Editor smoke setup and limit
+
+The isolated fixture lives outside the repository under `Documents/Codex/acp-editor-smoke`. It uses `tests/integrations/test_acp_wire.py`'s deterministic core with the shipped CLI entrypoint. It does not execute a real shell command or call a paid model: the displayed tool event is deterministic. On Windows, launch the Zed CLI with `--user-data-dir <profile> --foreground <workspace>` after the prior test process exits; otherwise an existing process can route the workspace to its own profile. Custom agent configuration follows Zed's documented `agent_servers` command/args/env format. The actual test confirmed `/status` is offered and returns `Mode: build; model: default` after the fix; previously Zed reported that command unsupported.
+
+Command discovery is emitted after the transport writes/drains the matching successful `session/new` response, with a raw stdio order assertion. There is no timing sleep. Direct SDK/in-process use retains its existing callback behavior; the shipped transport handles editor ordering.
