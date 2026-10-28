@@ -276,6 +276,7 @@ class ChildTracker:
             "tool_call",
             "tool_call_update",
             "plan",
+            "usage_update",
         }:
             raise ValueError("Unsupported child replay update")
         if not self.native:

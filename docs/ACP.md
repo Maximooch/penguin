@@ -147,3 +147,8 @@ question and choices as text for the user's next message, and the pending tool
 request is rejected immediately rather than waiting for a missing web UI.
 Cancellation and disconnect reject pending forms; late replies cannot revive
 them. No answers or approval authority are inferred from a declined form.
+
+Context usage comes from Penguin's session-scoped telemetry after each turn or
+from an explicitly scoped token event. The adapter sends current context tokens
+and window size, not an invented spend figure. Global, missing, malformed and
+unknown-window data are omitted; no runtime-wide usage is attributed to a session.

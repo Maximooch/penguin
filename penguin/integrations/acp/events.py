@@ -16,6 +16,7 @@ from acp.schema import (
     ToolCallLocation,
     ToolCallProgress,
     ToolCallStart,
+    UsageUpdate,
 )
 
 from penguin.core_runtime.action_mapping import (
@@ -63,7 +64,13 @@ class EventBridge:
         self.finished: set[tuple[str, str]] = set()
         self.lock = asyncio.Lock()
         self.handler = self.on_event
-        self.event_types = ("action", "action_result", "todo.updated", "file_edit")
+        self.event_types = (
+            "action",
+            "action_result",
+            "todo.updated",
+            "file_edit",
+            "token_update",
+        )
         if bus is not None:
             for event in self.event_types:
                 bus.subscribe(event, self.handler)
@@ -99,6 +106,22 @@ class EventBridge:
         if not isinstance(sid, str) or (cwd := self.session_cwd(sid)) is None:
             return
         async with self.lock:
+            if event_type == "token_update":
+                used = data.get("current_total_tokens")
+                size = data.get("max_context_window_tokens")
+                if (
+                    data.get("scope") != "session"
+                    or type(used) is not int
+                    or type(size) is not int
+                ):
+                    return
+                if used < 0 or size <= 0:
+                    return
+                await self.send(
+                    sid,
+                    UsageUpdate(session_update="usage_update", used=used, size=size),
+                )
+                return
             if event_type == "todo.updated":
                 entries = []
                 for todo in normalize_todo_items(data.get("todos"))[:100]:

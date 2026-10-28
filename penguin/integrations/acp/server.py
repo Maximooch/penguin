@@ -712,6 +712,17 @@ class PenguinACPAgent:
                 raise RequestError.internal_error(
                     {"reason": "Penguin returned no valid turn result"}
                 )
+            getter = getattr(self.core, "get_token_usage", None)
+            if callable(getter):
+                try:
+                    usage = getter(session_id=session_id)
+                    if (
+                        isinstance(usage, dict)
+                        and usage.get("session_id") == session_id
+                    ):
+                        await self._events.on_event("token_update", usage)
+                except Exception:
+                    logger.debug("Scoped token usage unavailable", exc_info=True)
             if session.cancelled or result.get("aborted"):
                 return PromptResponse(stop_reason="cancelled")
             if result.get("error") or result.get("status") in {
