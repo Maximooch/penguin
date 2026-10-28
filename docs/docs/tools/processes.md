@@ -173,3 +173,6 @@ do not rerun a command or mutation merely to retrieve its output.
 `process_poll.max_chars` still apply independently; process output is retained
 in the process log indicated by `log_path`. A tool-result artifact preserves
 what the tool returned, not output already omitted by an upstream tool limit.
+
+
+On Windows, tree cleanup normally uses `taskkill`. If that helper fails while the owned root is still running, Penguin falls back to native process enumeration and termination through psutil, including PID-reuse checks. This handles local WMI quota/cancellation failures without leaving the observed child tree running. Cleanup remains snapshot-based; it does not claim Windows Job Object ownership or guarantee recovery of detached descendants.

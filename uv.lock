@@ -11,7 +11,7 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-10-21T05:19:08.6891075Z"
+exclude-newer = "2026-10-21T22:19:37.7295609Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -2374,6 +2374,7 @@ dependencies = [
     { name = "pandas" },
     { name = "pillow" },
     { name = "plotext" },
+    { name = "psutil", marker = "sys_platform == 'win32'" },
     { name = "pydantic" },
     { name = "pygithub" },
     { name = "python-dotenv" },
@@ -2537,6 +2538,7 @@ requires-dist = [
     { name = "pillow", specifier = ">=13.0.0" },
     { name = "plotext" },
     { name = "pre-commit", marker = "extra == 'dev'" },
+    { name = "psutil", marker = "sys_platform == 'win32'", specifier = ">=7,<8" },
     { name = "pyarrow", marker = "extra == 'all'", specifier = ">=15.0.0" },
     { name = "pyarrow", marker = "extra == 'memory-lance'", specifier = ">=15.0.0" },
     { name = "pydantic", specifier = ">=2.11.3,<3" },

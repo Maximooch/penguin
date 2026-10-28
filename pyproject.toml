@@ -42,6 +42,7 @@ dependencies = [
     "requests>=2.26.0",
     "tiktoken",
     "typing_extensions>=4.0.0",
+    "psutil>=7,<8; sys_platform == 'win32'",
     "fastapi>=0.68.0,<1.0",
     "uvicorn>=0.15.0",
     "websockets>=10.0",

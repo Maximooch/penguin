@@ -406,3 +406,22 @@ async def test_bound_process_events_arrive_after_start_returns(runtime, command)
         assert "first" in runtime.poll(pid)["output"]
     finally:
         service.cleanup()
+
+
+def test_native_fallback_stops_tree_when_taskkill_fails(runtime, command, monkeypatch):
+    import psutil
+
+    real_run = subprocess.run
+
+    def unavailable(argv, **kwargs):
+        if str(argv[0]).lower().endswith("taskkill.exe"):
+            return subprocess.CompletedProcess(argv, 1, b"", b"ERROR: Quota violation")
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", unavailable)
+    source = "import subprocess,sys,time; child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); print(child.pid,flush=True); time.sleep(30)"
+    pid = runtime.start(command(source))["process_id"]
+    output = runtime.poll(pid, wait_ms=2000)["output"]
+    child = psutil.Process(int(output.split()[-1]))
+    assert runtime.stop(pid)["process_status"] == "exited"
+    assert not child.is_running()

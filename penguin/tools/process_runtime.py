@@ -547,7 +547,9 @@ class ProcessRuntime:
                     env=build_tool_environment(),
                 )
                 if result.returncode and record.process.poll() is None:
-                    raise OSError(f"taskkill failed: {result.stderr!r}")
+                    from penguin.tools.windows_process_tree import terminate_owned_tree
+                    logger.warning("taskkill failed; using native owned-tree cleanup")
+                    terminate_owned_tree(record.process)
             elif record.owns_group:
                 os.killpg(
                     record.process.pid,
