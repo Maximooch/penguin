@@ -47,12 +47,12 @@ def synchronized_store(method: Callable[..., _T]) -> Callable[..., _T]:
     return guarded
 
 
-def _windows_delete_is_shared(path: Path) -> bool:
+def _windows_delete_access(path: Path) -> int:
     """Probe DELETE access to distinguish sharing from ACL/read-only failures.
 
-    MoveFileEx may report access denied (5) for an open file. CreateFile reports
-    sharing violation (32) for a conflicting handle, while a real access denial
-    remains 5. The probe never changes the file and closes successful handles.
+    Return zero when access is now available, or the Windows error code. A
+    conflicting reader may close before this probe runs. Read-only attributes
+    and ACL denials still return 5, so they cannot be mistaken for that race.
     """
     import ctypes
     from ctypes import wintypes
@@ -68,13 +68,20 @@ def _windows_delete_is_shared(path: Path) -> bool:
         wintypes.HANDLE,
     ]
     kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.GetFileAttributesW.argtypes = [wintypes.LPCWSTR]
+    kernel.GetFileAttributesW.restype = wintypes.DWORD
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel.CloseHandle.restype = wintypes.BOOL
+    attributes = kernel.GetFileAttributesW(str(path))
+    if attributes == 0xFFFFFFFF:
+        return ctypes.get_last_error()
+    if attributes & 1:  # FILE_ATTRIBUTE_READONLY
+        return 5
     handle = kernel.CreateFileW(str(path), 0x10000, 7, None, 3, 0, None)
     if handle == wintypes.HANDLE(-1).value:
-        return ctypes.get_last_error() in (32, 33)
+        return ctypes.get_last_error()
     kernel.CloseHandle(handle)
-    return False
+    return 0
 
 
 def _sharing_violation(error: OSError, source: Path, target: Path) -> bool:
@@ -82,11 +89,16 @@ def _sharing_violation(error: OSError, source: Path, target: Path) -> bool:
     if os.name != "nt":
         return False
     code = getattr(error, "winerror", None)
-    if code in (32, 33):
+    if code in (32, 33, 303):  # sharing, lock, or delete-pending conflict
         return True
-    return code == 5 and (
-        _windows_delete_is_shared(source) or _windows_delete_is_shared(target)
-    )
+    if code != 5:
+        return False
+    source_access = _windows_delete_access(source)
+    target_access = _windows_delete_access(target)
+    # The helper owns a newly-created sibling source, so directory creation
+    # access was already verified. Require DELETE access to be available or
+    # explicitly sharing-blocked; never retry a remaining access denial.
+    return source_access in (0, 32, 33, 303) and target_access in (0, 2, 3, 32, 33, 303)
 
 
 def _replace(source: Path, target: Path) -> None:

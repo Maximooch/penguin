@@ -148,7 +148,9 @@ with the saved index so another manager's session entries are retained.
 
 On Windows, replacement retries are limited to sharing/lock violations. An
 access-denied error is retried only when a delete-access probe confirms a sharing
-conflict; ordinary permission failures are returned immediately. There are at
+conflict or that access has recovered; read-only and ACL denials fail immediately.
+External Windows readers should allow delete sharing to avoid blocking a rename;
+public manager reads use the same store lock. There are at
 most six attempts with 310 ms total backoff. Failed replacements retain the previous
 destination, clean up only their own temporary file, and keep cached sessions
 marked dirty. Callers must check `save_session()`'s boolean result.
