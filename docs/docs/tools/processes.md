@@ -43,7 +43,18 @@ atomic, including concurrent reads from the same consumer.
 
 `process_stop` interrupts, terminates, or kills
 the owned process group, escalating when necessary. Processes use pipes, not a
-PTY. The local implementation requires POSIX shell and pipe support.
+PTY. POSIX hosts use Bash; Windows hosts use native `cmd.exe /d /s /c`.
+Use cmd syntax on Windows or invoke PowerShell explicitly. Windows capture
+checks pipe readiness with `PeekNamedPipe` and waits between scans (20 ms),
+including when both streams close before the process exits. It supports Python
+3.11 without `os.set_blocking` or socket-only selectors on subprocess pipes.
+
+Windows stop/timeout uses the system `taskkill /T /F` to target the local tree
+while its launching process remains alive. Interrupt first attempts CTRL_BREAK;
+headless hosts without a console fall back to tree termination. This is not a
+Windows Job Object: detached descendants or descendants whose launching process
+has already exited are not guaranteed to be recoverable. Stopping a local SSH
+client does not guarantee termination of remote work.
 
 Memory is bounded to 256,000 output characters and 10,000 chunks per process.
 Large reads report `truncated` and `history_lost`. The `log_path` points to captured
