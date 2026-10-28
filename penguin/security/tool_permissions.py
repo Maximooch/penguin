@@ -56,6 +56,7 @@ TOOL_OPERATION_MAP: dict[str, list[Operation]] = {
     "execute_command": [Operation.PROCESS_EXECUTE],
     "process_start": [Operation.PROCESS_SPAWN],
     "process_poll": [Operation.PROCESS_INSPECT],
+    "process_status": [Operation.PROCESS_INSPECT],
     "process_write_stdin": [Operation.PROCESS_EXECUTE],
     "process_stop": [Operation.PROCESS_KILL],
     # Search operations (generally safe)
@@ -277,7 +278,7 @@ def extract_resource_from_input(
     if tool_name in ("memory_search", "perplexity_search"):
         return tool_input.get("query")
 
-    if tool_name in ("process_poll", "process_write_stdin", "process_stop"):
+    if tool_name in ("process_poll", "process_status", "process_write_stdin", "process_stop"):
         return tool_input.get("process_id")
 
     if tool_name == "git_push":

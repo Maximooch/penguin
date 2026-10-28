@@ -3,6 +3,12 @@
 `process_start` launches a command and returns a `process_id`. Penguin captures
 stdout and stderr continuously, even when no client polls the process.
 
+`process_status` accepts a `process_id` and returns lifecycle, exit code,
+completion reason, and capture errors immediately. It does not consume output,
+advance a cursor, or stop the process. Like polling, it is restricted to the
+launching session and agent. Processes survive assistant turns within the same
+backend lifetime; restarting the backend is not a process recovery mechanism.
+
 `process_poll` waits up to `wait_ms` (default 5000, maximum 60000) for new output
 or completion. Omit `since_sequence` for incremental reads by the current agent.
 Pass `since_sequence: 0` to replay retained output. Pass a prior `next_sequence`
@@ -19,6 +25,8 @@ tool-call completion from process lifecycle and retain the process ID and cursor
 Repeated identical non-wait tool results get one corrective model turn before a
 stale-loop stop. Recovery uses retained results rather than automatically
 replaying commands or mutations. Output-length continuation comes from PR #106.
+Silent commands are compared using their arguments and exit/output metadata,
+so different successful commands do not collide just because both print nothing.
 
 `process_write_stdin` sends UTF-8 input with a `timeout_ms` deadline (default 1000,
 range 1–60000), including time queued behind another writer. Writes return

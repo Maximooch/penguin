@@ -240,6 +240,22 @@ class ProcessRuntime:
                     record, output="", since_sequence=0, next_sequence=0
                 )
 
+    def status(self, process_id: str) -> dict[str, Any]:
+        """Return lifecycle metadata without waiting or consuming output."""
+        with self._lock:
+            record = self._processes.get(process_id)
+            if record is None:
+                return self.retired_result(process_id) or self._error(
+                    process_id, "unknown_process_id"
+                )
+            with record.changed:
+                return self._snapshot(
+                    record,
+                    output="",
+                    since_sequence=0,
+                    next_sequence=record.next_sequence - 1,
+                )
+
     def _retired_path(self, process_id: str) -> Path | None:
         if self._retired_dir is None:
             return None
