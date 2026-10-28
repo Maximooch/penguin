@@ -7,6 +7,7 @@ import json
 from typing import TYPE_CHECKING, Any, BinaryIO
 
 from acp import RequestError
+from acp.schema import CancelRequestNotification
 from pydantic import ValidationError
 
 if TYPE_CHECKING:
@@ -19,8 +20,8 @@ class ProtocolTransport:
     """NDJSON transport preserving draft capability fields for negotiation.
 
     SDK 0.12 drops unknown ClientCapabilities fields. Observe the canonical
-    draft subagents field before SDK validation. Published methods missing from
-    the SDK router have explicit schema-validated handlers; others stay in SDK.
+    draft subagents field before SDK validation. Explicit schema-validated
+    handlers cover deletion and cancellable prompts; other routes stay in SDK.
     """
 
     def __init__(
@@ -31,10 +32,19 @@ class ProtocolTransport:
         self.lock = asyncio.Lock()
         self.handlers: dict[str, Callable[..., Any]] = {}
         self.tasks: set[asyncio.Task[Any]] = set()
+        self.pending: dict[Any, tuple[dict[str, Any], asyncio.Task[Any]]] = {}
+        self.cancel_handlers: dict[str, Callable[..., Any]] = {}
 
-    def register(self, method: str, handler: Callable[..., Any]) -> None:
-        """Add a published method absent from this SDK's router."""
+    def register(
+        self,
+        method: str,
+        handler: Callable[..., Any],
+        cancel: Callable[..., Any] | None = None,
+    ) -> None:
+        """Add a validated method handler with optional exact-request cancellation."""
         self.handlers[method] = handler
+        if cancel is not None:
+            self.cancel_handlers[method] = cancel
 
     async def _dispatch(self, message: dict[str, Any]) -> None:
         response = {"jsonrpc": "2.0", "id": message["id"]}
@@ -47,7 +57,18 @@ class ProtocolTransport:
             response["error"] = exc.to_error_obj()
         except Exception:
             response["error"] = RequestError.internal_error().to_error_obj()
-        await self.send(response)
+        try:
+            await self.send(response)
+        finally:
+            self.pending.pop(message["id"], None)
+
+    async def _cancel(self, record: tuple[dict[str, Any], asyncio.Task[Any]]) -> None:
+        message, task = record
+        if self.pending.get(message["id"]) != record or task.done():
+            return
+        callback = self.cancel_handlers.get(message["method"])
+        if callback is not None:
+            await callback(message.get("params"), task)
 
     async def send(self, message: dict[str, Any]) -> None:
         async with self.lock:
@@ -90,15 +111,49 @@ class ProtocolTransport:
                 self.subagents = isinstance(capabilities, dict) and isinstance(
                     capabilities.get("subagents"), dict
                 )
+            if message.get("method") == "$/cancel_request" and "id" not in message:
+                try:
+                    request = CancelRequestNotification.model_validate(
+                        message.get("params")
+                    )
+                except ValidationError:
+                    continue
+                record = self.pending.get(request.request_id)
+                if record is not None:
+                    task = asyncio.create_task(self._cancel(record))
+                    self.tasks.add(task)
+                    task.add_done_callback(self.tasks.discard)
+                continue
             if message.get("method") in self.handlers:
                 # A request-only method must not mutate state from a notification.
                 if message.get("jsonrpc") == "2.0" and type(message.get("id")) in (
                     str,
                     int,
                 ):
+                    if message["id"] in self.pending:
+                        await self.send(
+                            {
+                                "jsonrpc": "2.0",
+                                "id": message["id"],
+                                "error": RequestError.invalid_request().to_error_obj(),
+                            }
+                        )
+                        continue
                     task = asyncio.create_task(self._dispatch(message))
+                    self.pending[message["id"]] = (message, task)
                     self.tasks.add(task)
-                    task.add_done_callback(self.tasks.discard)
+
+                    def done(
+                        completed: asyncio.Task[Any], request_id=message["id"]
+                    ) -> None:
+                        self.tasks.discard(completed)
+                        record = self.pending.get(request_id)
+                        if record is not None and record[1] is completed:
+                            self.pending.pop(request_id, None)
+
+                    task.add_done_callback(done)
+                    # Establish handler ownership before reading a back-to-back cancel.
+                    await asyncio.sleep(0)
                 elif "id" in message:
                     await self.send(
                         {

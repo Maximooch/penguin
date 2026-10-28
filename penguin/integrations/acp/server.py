@@ -38,6 +38,7 @@ from acp.schema import (
     NewSessionResponse,
     PermissionOption,
     PromptCapabilities,
+    PromptRequest,
     PromptResponse,
     ResumeSessionResponse,
     SessionCapabilities,
@@ -486,6 +487,20 @@ class PenguinACPAgent:
         request = DeleteSessionRequest.model_validate(params)
         return await self.delete_session(request.session_id)
 
+    async def _prompt_request(self, params: Any) -> PromptResponse:
+        if not self._initialized:
+            raise RequestError.invalid_request({"reason": "Initialize first"})
+        request = PromptRequest.model_validate(params)
+        return await self.prompt(request.session_id, request.prompt)
+
+    async def _cancel_prompt_request(
+        self, params: Any, task: asyncio.Task[Any]
+    ) -> None:
+        request = PromptRequest.model_validate(params)
+        session = self.sessions.get(request.session_id)
+        if session is not None and session.task is task:
+            await self.cancel(request.session_id)
+
     async def _restore_session(
         self,
         cwd: str,
@@ -904,6 +919,9 @@ async def serve() -> None:
         transport = ProtocolTransport(reader, writer)
         agent._transport = transport
         transport.register("session/delete", agent._delete_request)
+        transport.register(
+            "session/prompt", agent._prompt_request, agent._cancel_prompt_request
+        )
         try:
             # SDK 0.12 calls resume/close "unstable" although current v1 docs
             # include them. Unimplemented draft methods still return not found.

@@ -98,8 +98,8 @@ receive separate child-session associations, observed directed messages, tool
 updates, public assistant output and work-state changes. Announcement precedes
 all child traffic. The SDK currently drops that draft capability, so the stdio
 transport observes it before SDK validation; ordinary RPC dispatch remains in
-the SDK except the published `session/delete` method, absent from the pinned
-SDK router and dispatched through an explicit schema-validated handler. No
+the SDK except published `session/delete` and `session/prompt`, dispatched through
+explicit schema-validated handlers for deletion and exact-request cancellation. No
 draft updates are sent without negotiation. This is the current
 subagent RFD, not ACP v2 or the older AIR-specific shape.
 
@@ -152,3 +152,8 @@ Context usage comes from Penguin's session-scoped telemetry after each turn or
 from an explicitly scoped token event. The adapter sends current context tokens
 and window size, not an invented spend figure. Global, missing, malformed and
 unknown-window data are omitted; no runtime-wide usage is attributed to a session.
+
+`$/cancel_request` targets an active or queued prompt by its JSON-RPC request ID.
+Stale IDs cannot cancel a later turn in the same session. `session/cancel` remains
+the whole-turn cancellation interface. Cancellation of short control operations
+or session setup is not implemented; partial session deletion is never attempted.
