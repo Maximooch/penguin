@@ -142,16 +142,19 @@ class SessionRegistry:
                 {"reason": "Invalid ACP replay history"}
             ) from None
         pending: set[str] = set()
+        background: set[str] = set()
         for update in updates:
             if isinstance(update, dict):
                 continue
             if update.session_update not in {"tool_call", "tool_call_update"}:
                 continue
+            if (getattr(update, "field_meta", None) or {}).get("penguin_process"):
+                background.add(update.tool_call_id)
             if update.status in {"completed", "failed"}:
                 pending.discard(update.tool_call_id)
             else:
                 pending.add(update.tool_call_id)
-        for call_id in sorted(pending):
+        for call_id in sorted(pending - background):
             failed = ToolCallProgress(
                 session_update="tool_call_update",
                 tool_call_id=call_id,

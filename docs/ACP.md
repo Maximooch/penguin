@@ -76,7 +76,7 @@ required before claiming the complete user workflow.
 
 1. Baseline resource inputs, protocol output, failures and wire validation (implemented).
 2. Tool results, plans, bounded output and native canonical-edit snapshots
-   (implemented); finer command-stream progress remains separate.
+   (implemented); process output also updates outside the initiating turn.
 3. Session persistence, history replay, list/resume/close (implemented).
 4. Image and embedded-resource input (implemented).
 5. Per-session client MCP servers (implemented; SDK 1.x compatibility pin).
@@ -112,4 +112,19 @@ tool cards instead. Shared-session children do not become fake separate sessions
 The current tests use the real runtime lifecycle producer with deterministic
 core/scope fixtures over raw stdio, plus cancellation and replay contracts. They
 do not claim verification in a particular GUI editor. Background shell-task
-panels and client-specific goal extensions remain separate work.
+client-specific goal extensions remain separate work.
+
+## Background processes
+
+Real scoped process events create separate execution cards that remain live after
+the initiating model turn. They show a bounded output tail, exit status and
+capture failures. They do not poll or advance the model's output cursor. Reload
+checks an existing root-session process handle without consuming output; absent
+handles produce an explicitly unknown outcome, never a claimed successful exit.
+Historical child-process cards replay, but reconnecting child process activity is
+not reconstructed without a live observed child. These cards are ACP tool updates,
+not a claim to implement a client-specific task panel or terminal RPC.
+
+The producer regression runs a real subprocess on Linux. Windows execution is
+temporarily skipped pending the separate ProcessRuntime capture fix; synthetic
+event, ownership and reconnect regressions still run on Windows.

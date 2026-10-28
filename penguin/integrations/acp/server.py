@@ -1,7 +1,7 @@
 """Local editor-facing ACP v1 adapter. Optional dependency: penguin-ai[acp].
 
-Text/resource-reference prompts, new sessions, streaming text, permissions, and
-cancellation are implemented. Load and client-provided MCP are not advertised.
+Workspace-scoped prompts, persistence, tools, permissions, client MCP, session
+controls and negotiated experimental child-session events are implemented.
 """
 
 from __future__ import annotations
@@ -54,6 +54,7 @@ from penguin.integrations.acp.content import prepare_prompt
 from penguin.integrations.acp.controls import SessionControls
 from penguin.integrations.acp.events import EventBridge
 from penguin.integrations.acp.mcp import session_provider
+from penguin.integrations.acp.processes import ProcessTracker
 from penguin.integrations.acp.sessions import SessionRegistry
 from penguin.integrations.mcp.manager import HAS_MCP_SDK
 from penguin.security.approval import (
@@ -123,6 +124,7 @@ class PenguinACPAgent:
         )
         self._transport = None
         self._children = ChildTracker(self)
+        self._processes = ProcessTracker(self)
 
     def _active_cwd(self, sid: str) -> Path | None:
         session = self.sessions.get(sid)
@@ -144,6 +146,7 @@ class PenguinACPAgent:
 
     def close(self) -> None:
         self._closed = True
+        self._processes.close()
         self._children.close()
         self._events.close()
         for session in self.sessions.values():
@@ -467,6 +470,9 @@ class PenguinACPAgent:
                 model_config=config,
                 api_client=client,
             )
+            for update in history:
+                if not isinstance(update, dict):
+                    self._processes.restore(session_id, update)
             if replay:
                 for update in history:
                     if isinstance(update, dict):
@@ -485,6 +491,7 @@ class PenguinACPAgent:
                     ):
                         await self._children.replay(session_id, update)
                 await self._children.finish_replay(session_id)
+            await self._processes.refresh(session_id)
             await self._send_commands(session_id)
 
     async def list_sessions(
