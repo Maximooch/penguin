@@ -11,8 +11,9 @@ output is bounded; file locations are resolved inside the session workspace.
 Returned unified diffs are displayed as diff text (not fabricated full-file
 before/after snapshots). Interrupted tools receive failed terminal updates;
 duplicate and unrelated-session events are suppressed. ACP-created sessions
-store workspace ownership and the complete visible ACP transcript in Penguin's
-native session store. Load replays that transcript before returning; resume
+store workspace ownership in Penguin's native session store and visible updates
+in an append-only journal beneath that store. Load replays the journal before
+returning; resume
 restores without replay; close detaches without deleting history. List supports
 workspace filtering and pagination. Legacy sessions without ACP ownership are
 not exposed. Interrupted tool entries replay as failed, without re-execution.
@@ -41,6 +42,12 @@ and send newline-delimited JSON-RPC. Provider errors become protocol errors;
 explicit provider stop reasons are preserved.
 
 ## Validation
+
+Streaming appends one record per update rather than rewriting growing history.
+Native model state is checkpointed at turn boundaries. An incomplete final
+journal write is discarded on recovery; malformed complete records fail closed.
+Loading replays history only to the client; it does not inject the full transcript
+into model context or bypass Penguin's context-window policy.
 
 `python -m pytest tests/integrations/test_acp_server.py tests/integrations/test_acp_wire.py -q`
 

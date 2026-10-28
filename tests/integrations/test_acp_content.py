@@ -49,7 +49,7 @@ async def test_image_becomes_persisted_native_input(tmp_path):
         assert image_path.read_bytes() == png()
         assert image_path.is_relative_to(core.store.base_path)
         assert (
-            core.store.load_session(sid).metadata["acp_history"][0]["content"]["type"]
+            agent._registry.history(core.store.load_session(sid))[0].content.type
             == "image"
         )
     finally:

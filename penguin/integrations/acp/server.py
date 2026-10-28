@@ -307,10 +307,11 @@ class PenguinACPAgent:
             raise RequestError.internal_error()
         session.task = asyncio.current_task()
         session.cancelled = False
-        sent: list[str] = []
+        sent = False
         gate_owned = False
 
         async def on_chunk(chunk: str, message_type: str = "assistant") -> None:
+            nonlocal sent
             if session.cancelled or message_type != "assistant" or not chunk:
                 return
             await self._send_update(
@@ -319,7 +320,7 @@ class PenguinACPAgent:
                     content=text_block(chunk), session_update="agent_message_chunk"
                 ),
             )
-            sent.append(chunk)
+            sent = True
 
         try:
             await self._process_gate.acquire()
@@ -392,13 +393,17 @@ class PenguinACPAgent:
             try:
                 await self._events.end_turn(session_id)
             finally:
-                if session.cancelled:
-                    for request in self._approvals.get_pending(session_id):
-                        self._approvals.deny(request.id)
-                session.running = False
-                session.task = None
-                if gate_owned:
-                    self._process_gate.release()
+                try:
+                    if gate_owned:
+                        self._registry.checkpoint(session_id)
+                finally:
+                    if session.cancelled:
+                        for request in self._approvals.get_pending(session_id):
+                            self._approvals.deny(request.id)
+                    session.running = False
+                    session.task = None
+                    if gate_owned:
+                        self._process_gate.release()
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
         session = self.sessions.get(session_id)

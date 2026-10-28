@@ -1,5 +1,6 @@
 """Exercise ACP restart/replay against the actual Penguin session store."""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -8,6 +9,7 @@ import pytest
 pytest.importorskip("acp")
 from acp import RequestError
 from acp.helpers import text_block
+from acp.schema import AgentMessageChunk
 
 from penguin.cli.events import EventBus
 from penguin.integrations.acp.server import PenguinACPAgent
@@ -89,7 +91,7 @@ async def test_restart_replays_all_visible_updates_and_continues_core(tmp_path):
             second_conn.session_update.call_args.kwargs["update"].content.text
             == "previous=2"
         )
-        assert len(second._registry.get(sid).metadata["acp_history"]) == 8
+        assert len(second._registry.history(second._registry.get(sid))) == 8
     finally:
         second.close()
 
@@ -141,7 +143,7 @@ async def test_replay_recovers_unfinished_tool_without_reexecuting(tmp_path):
         updates = [c.kwargs["update"] for c in conn.session_update.call_args_list]
         assert [u.status for u in updates] == ["pending", "failed"]
         assert not core.store.load_session(sid).messages
-        assert len(saved.metadata["acp_history"]) == 2
+        assert len(agent._registry.history(saved)) == 2
     finally:
         agent.close()
 
@@ -160,5 +162,77 @@ async def test_session_list_pagination(tmp_path):
         assert len(tail.sessions) == 1
         assert tail.next_cursor is None
         assert {s.session_id for s in page.sessions + tail.sessions} == ids
+    finally:
+        agent.close()
+
+
+@pytest.mark.asyncio
+async def test_long_stream_appends_linear_bytes_without_session_rewrites(
+    tmp_path, monkeypatch
+):
+    core = PersistentCore(tmp_path / "sessions")
+    agent = PenguinACPAgent(core, allowed_roots=(tmp_path,))
+    sid = (await agent.new_session(str(tmp_path))).session_id
+    original_save = core.store.save_session
+    saves = []
+    monkeypatch.setattr(
+        core.store,
+        "save_session",
+        lambda session: saves.append(session.id) or original_save(session),
+    )
+    try:
+        for _ in range(2000):
+            agent._registry.record(
+                sid,
+                AgentMessageChunk(
+                    session_update="agent_message_chunk", content=text_block("x")
+                ),
+            )
+        path = core.store.base_path / "acp-history" / (sid + ".jsonl")
+        assert path.stat().st_size < 2000 * 150
+        assert saves == []  # No quadratic full-session writes for streamed text.
+        agent._registry.checkpoint(sid)
+        assert saves == [sid]
+        assert len(agent._registry.history(agent._registry.get(sid))) == 2000
+        with path.open("ab") as file:
+            file.write(b'{"sessionUpdate":')  # Simulate interrupted final append.
+        assert len(agent._registry.history(agent._registry.get(sid))) == 2000
+        agent._registry.record(
+            sid,
+            AgentMessageChunk(
+                session_update="agent_message_chunk", content=text_block("end")
+            ),
+        )
+        assert len(agent._registry.history(agent._registry.get(sid))) == 2001
+    finally:
+        agent.close()
+
+
+@pytest.mark.asyncio
+async def test_new_session_waits_for_active_turn_checkpoint(tmp_path):
+    core = PersistentCore(tmp_path / "sessions")
+    agent = PenguinACPAgent(core, allowed_roots=(tmp_path,))
+    agent.on_connect(AsyncMock())
+    sid = (await agent.new_session(str(tmp_path))).session_id
+    original_process = core.process
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def process(*args, **kwargs):
+        started.set()
+        await release.wait()
+        return await original_process(*args, **kwargs)
+
+    core.process = process
+    try:
+        first = asyncio.create_task(agent.prompt(sid, [text_block("first")]))
+        await started.wait()
+        other = asyncio.create_task(agent.new_session(str(tmp_path)))
+        await asyncio.sleep(0)
+        assert not other.done()
+        release.set()
+        await first
+        new_id = (await other).session_id
+        assert len(core.store.load_session(sid).messages) == 2
+        assert len(core.store.load_session(new_id).messages) == 0
     finally:
         agent.close()

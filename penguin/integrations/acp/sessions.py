@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -68,20 +69,65 @@ class SessionRegistry:
         return resolved
 
     def record(self, sid: str, update: Any) -> None:
-        """Keep exactly the visible protocol history, including tool ordering."""
+        """Append one update without rewriting the growing transcript."""
         if not self.available:
             return
         session = self.get(sid)
-        history = session.metadata.setdefault("acp_history", [])
-        history.append(update.model_dump(by_alias=True, exclude_none=True))
-        self.save(session)
+        path = self._journal_path(session)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            with path.open("x", encoding="utf-8") as output:
+                for record in session.metadata.get("acp_history", []):
+                    output.write(json.dumps(record) + "\n")
+        with path.open("a", encoding="utf-8") as output:
+            output.write(
+                json.dumps(update.model_dump(by_alias=True, exclude_none=True)) + "\n"
+            )
+
+    def checkpoint(self, sid: str) -> None:
+        """Persist native model state once at the turn boundary."""
+        if self.available:
+            session = self.get(sid)
+            if self._journal_path(session).exists():
+                session.metadata.pop("acp_history", None)
+            self.save(session)
+
+    def _journal_path(self, session: Any) -> Path:
+        base = self.store.base_path.resolve()
+        path = base / "acp-history" / (session.id + ".jsonl")
+        if self.cwd(session) is None or not path.resolve().is_relative_to(base):
+            raise RequestError.invalid_params({"reason": "Invalid replay storage"})
+        return path
+
+    def _records(self, session: Any) -> list[dict[str, Any]]:
+        path = self._journal_path(session)
+        if not path.exists():
+            return session.metadata.get("acp_history", [])
+        records = []
+        offset = 0
+        with path.open("rb") as source:
+            lines = source.readlines()
+        for index, line in enumerate(lines):
+            try:
+                records.append(json.loads(line))
+            except (ValueError, UnicodeError):
+                if index != len(lines) - 1 or line.endswith(b"\n"):
+                    raise RequestError.internal_error(
+                        {"reason": "Invalid replay journal"}
+                    ) from None
+                # A crash may leave an incomplete final append. Keep all complete
+                # records and remove the uncommitted tail before future appends.
+                with path.open("r+b") as output:
+                    output.truncate(offset)
+            offset += len(line)
+        return records
 
     def history(self, session: Any) -> list[Any]:
         """Validate stored updates before replay; fail rather than omit records."""
         try:
             updates = [
                 SessionNotification(session_id=session.id, update=item).update
-                for item in session.metadata.get("acp_history", [])
+                for item in self._records(session)
             ]
         except (TypeError, ValueError):
             raise RequestError.internal_error(
@@ -110,9 +156,5 @@ class SessionRegistry:
                 ],
             )
             updates.append(failed)
-            session.metadata["acp_history"].append(
-                failed.model_dump(by_alias=True, exclude_none=True)
-            )
-        if pending:
-            self.save(session)
+            self.record(session.id, failed)
         return updates
