@@ -18,6 +18,41 @@ from penguin.system.session_manager import SessionManager
 from penguin.system.state import Session
 
 
+def _read_atomic_snapshot(path):
+    """Keep Windows readers compatible with replacement while still reading bytes."""
+    if os.name != "nt":
+        return path.read_text(encoding="utf-8")
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    # FILE_SHARE_DELETE lets the writer replace a file with an open reader.
+    # The separate held-reader regression deliberately withholds this right.
+    handle = kernel.CreateFileW(str(path), 0x80000000, 7, None, 3, 0, None)
+    if handle == wintypes.HANDLE(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY)
+    except OSError:
+        kernel.CloseHandle(handle)
+        raise
+    with os.fdopen(descriptor, "r", encoding="utf-8") as source:
+        return source.read()
+
+
 def test_concurrent_same_session_writes_are_complete_and_use_unique_temps(
     tmp_path, monkeypatch
 ):
@@ -37,7 +72,7 @@ def test_concurrent_same_session_writes_are_complete_and_use_unique_temps(
         while not stop.wait(0.001):
             for path in tmp_path.glob("*.json"):
                 try:
-                    json.loads(path.read_text(encoding="utf-8"))
+                    json.loads(_read_atomic_snapshot(path))
                 except Exception as error:
                     invalid.append(error)
 
@@ -191,11 +226,11 @@ def test_failed_index_save_is_not_reported_as_complete(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "code,shared,attempts",
-    [(32, False, 2), (33, False, 2), (5, True, 2), (5, False, 1)],
+    "code,access,attempts",
+    [(32, 0, 2), (33, 0, 2), (303, 0, 2), (5, 32, 2), (5, 0, 2), (5, 5, 1)],
 )
 def test_retry_requires_a_confirmed_sharing_failure(
-    tmp_path, monkeypatch, code, shared, attempts
+    tmp_path, monkeypatch, code, access, attempts
 ):
     real_os = atomic_storage.os
     calls, sleeps = [], []
@@ -213,9 +248,7 @@ def test_retry_requires_a_confirmed_sharing_failure(
         "os",
         SimpleNamespace(name="nt", replace=replace, fsync=real_os.fsync),
     )
-    monkeypatch.setattr(
-        atomic_storage, "_windows_delete_is_shared", lambda path: shared
-    )
+    monkeypatch.setattr(atomic_storage, "_windows_delete_access", lambda path: access)
     monkeypatch.setattr(atomic_storage.time, "sleep", sleeps.append)
     target = tmp_path / "data.json"
     target.write_text("old")
