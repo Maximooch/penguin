@@ -6449,9 +6449,14 @@ class ToolManager:
         if self._agent_executor is None and create:
             if self._core is None:
                 raise RuntimeError("Core unavailable for background agent execution")
-            from penguin.multi.executor import AgentExecutor
+            from penguin.core_runtime.isolation import runtime_isolated
+            from penguin.multi.executor import AgentExecutor, get_executor
 
-            self._agent_executor = AgentExecutor(self._core)
+            self._agent_executor = (
+                get_executor(self._core)
+                if runtime_isolated()
+                else AgentExecutor(self._core)
+            )
         return self._agent_executor
 
     async def shutdown_background_agents(self) -> int:

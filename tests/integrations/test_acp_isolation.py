@@ -534,6 +534,8 @@ async def test_same_named_native_children_messages_and_approvals_are_isolated(
                     if native_executor
                     else get_executor(_core)
                 )
+                assert executor is get_executor(_core)
+                assert executor is _core.tool_manager._get_agent_executor(create=True)
                 executors[_root] = executor
                 await executor.spawn_agent(
                     "worker",
