@@ -205,6 +205,7 @@ class EventBus:
             EventType.TOKEN_UPDATE.value,
             "action",
             "action_result",
+            "agent.lifecycle",
             "opencode_event",
         ]:
             return False

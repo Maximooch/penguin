@@ -49,6 +49,7 @@ from acp.schema import (
 )
 
 from penguin._version import __version__
+from penguin.integrations.acp.children import ChildTracker
 from penguin.integrations.acp.content import prepare_prompt
 from penguin.integrations.acp.controls import SessionControls
 from penguin.integrations.acp.events import EventBridge
@@ -117,12 +118,20 @@ class PenguinACPAgent:
         self._events = EventBridge(
             getattr(core, "event_bus", None), self._active_cwd, self._send_update
         )
+        self._transport = None
+        self._children = ChildTracker(self)
 
     def _active_cwd(self, sid: str) -> Path | None:
         session = self.sessions.get(sid)
-        return session.cwd if session and session.running else None
+        if session and session.running:
+            return session.cwd
+        child = self._children.children.get(sid)
+        return child.cwd if child and child.active else None
 
     async def _send_update(self, sid: str, update: Any) -> None:
+        if sid in self._children.children:
+            await self._children.send(sid, update)
+            return
         self._registry.record(sid, update)
         if self._connection is not None:
             await self._connection.session_update(session_id=sid, update=update)
@@ -131,6 +140,7 @@ class PenguinACPAgent:
         self._connection = conn
 
     def close(self) -> None:
+        self._children.close()
         self._events.close()
         for session in self.sessions.values():
             if session.mcp_provider is not None:
@@ -371,6 +381,7 @@ class PenguinACPAgent:
         if task is not None:
             await self.cancel(session_id)
             await asyncio.shield(task)
+        await self._children.close_root(session_id)
         if session.mcp_provider is not None:
             await asyncio.to_thread(session.mcp_provider.close)
         self.sessions.pop(session_id, None)
@@ -432,9 +443,22 @@ class PenguinACPAgent:
             )
             if replay:
                 for update in history:
-                    await self._connection.session_update(
-                        session_id=session_id, update=update
-                    )
+                    if isinstance(update, dict):
+                        await self._children.replay(session_id, update)
+                    else:
+                        await self._connection.session_update(
+                            session_id=session_id, update=update
+                        )
+                await self._children.finish_replay(session_id)
+            elif self._children.native:
+                for update in history:
+                    if (
+                        isinstance(update, dict)
+                        and update.get("update", {}).get("sessionUpdate")
+                        == "subagent_update"
+                    ):
+                        await self._children.replay(session_id, update)
+                await self._children.finish_replay(session_id)
             await self._send_commands(session_id)
 
     async def list_sessions(
@@ -637,6 +661,9 @@ class PenguinACPAgent:
                         self._process_gate.release()
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
+        if session_id in self._children.children:
+            await self._children.cancel(session_id)
+            return
         session = self.sessions.get(session_id)
         if session is None or session.task is None:
             return
@@ -654,9 +681,10 @@ class PenguinACPAgent:
 
     def _on_approval(self, request: ApprovalRequest) -> None:
         session = self.sessions.get(request.session_id)
-        if session is None or self._loop is None:
+        child = self._children.children.get(request.session_id)
+        if (session is None and child is None) or self._loop is None:
             return
-        if session.cancelled:
+        if (session and session.cancelled) or (child and not child.active):
             self._approvals.deny(request.id)
             return
 
@@ -672,9 +700,15 @@ class PenguinACPAgent:
             self._approvals.deny(request.id)
             return
         try:
+            child = self._children.children.get(request.session_id)
+            target = request.session_id
+            if child:
+                await self._children.state(request.session_id, "requires_action")
+                if not self._children.native:
+                    target = child.root
             response = await asyncio.wait_for(
                 self._connection.request_permission(
-                    session_id=request.session_id,
+                    session_id=target,
                     tool_call=ToolCallStart(
                         tool_call_id=request.id,
                         title=f"{request.tool_name}: {request.resource}",
@@ -692,11 +726,12 @@ class PenguinACPAgent:
                 timeout=300,
             )
             current = self._approvals.get_request(request.id)
-            session = self.sessions[request.session_id]
+            session = self.sessions.get(request.session_id)
+            cancelled = session.cancelled if session else not child or not child.active
             if (
                 current is not None
                 and current.status == ApprovalStatus.PENDING
-                and not session.cancelled
+                and not cancelled
                 and response.outcome.outcome == "selected"
                 and response.outcome.option_id == "allow_once"
             ):
@@ -709,12 +744,16 @@ class PenguinACPAgent:
         except Exception:
             logger.warning("ACP permission request failed; denying", exc_info=True)
             self._approvals.deny(request.id)
+        finally:
+            child = self._children.children.get(request.session_id)
+            if child and child.active:
+                await self._children.state(request.session_id, "running")
 
 
 async def serve() -> None:
     from acp.stdio import stdio_streams
 
-    from penguin.integrations.acp.stdio import protocol_writer
+    from penguin.integrations.acp.stdio import ProtocolTransport, protocol_writer
 
     output = sys.stdout.buffer
     # The SDK's Windows writer resolves sys.stdout on each write, so capturing
@@ -728,13 +767,14 @@ async def serve() -> None:
         writer = protocol_writer(output)
         roots = (Path.cwd(), Path(WORKSPACE_PATH))
         agent = PenguinACPAgent(core, allowed_roots=roots)
+        transport = ProtocolTransport(reader, writer)
+        agent._transport = transport
         try:
             # SDK 0.12 calls resume/close "unstable" although current v1 docs
             # include them. Unimplemented draft methods still return not found.
             await run_agent(
                 agent,
-                input_stream=writer,
-                output_stream=reader,
+                input_stream=transport,
                 use_unstable_protocol=True,
             )
         finally:

@@ -32,7 +32,11 @@ class SessionRegistry:
             raise RequestError.invalid_params({"reason": "Unknown ACP session"})
         if sid not in self.store.session_index:
             raise RequestError.invalid_params({"reason": "Unknown ACP session"})
-        session = self.store.load_session(sid)
+        previous = self.store.current_session
+        try:
+            session = self.store.load_session(sid)
+        finally:
+            self.store.current_session = previous
         if session is None or session.id != sid:
             raise RequestError.internal_error(
                 {"reason": "Session could not be restored"}
@@ -70,6 +74,10 @@ class SessionRegistry:
 
     def record(self, sid: str, update: Any) -> None:
         """Append one update without rewriting the growing transcript."""
+        self.append(sid, update.model_dump(by_alias=True, exclude_none=True))
+
+    def append(self, sid: str, payload: dict[str, Any]) -> None:
+        """Append a validated update or a child-targeted replay envelope."""
         if not self.available:
             return
         session = self.get(sid)
@@ -80,9 +88,7 @@ class SessionRegistry:
                 for record in session.metadata.get("acp_history", []):
                     output.write(json.dumps(record) + "\n")
         with path.open("a", encoding="utf-8") as output:
-            output.write(
-                json.dumps(update.model_dump(by_alias=True, exclude_none=True)) + "\n"
-            )
+            output.write(json.dumps(payload) + "\n")
 
     def checkpoint(self, sid: str) -> None:
         """Persist native model state once at the turn boundary."""
@@ -126,7 +132,9 @@ class SessionRegistry:
         """Validate stored updates before replay; fail rather than omit records."""
         try:
             updates = [
-                SessionNotification(session_id=session.id, update=item).update
+                item
+                if "acp_target" in item
+                else SessionNotification(session_id=session.id, update=item).update
                 for item in self._records(session)
             ]
         except (TypeError, ValueError):
@@ -135,6 +143,8 @@ class SessionRegistry:
             ) from None
         pending: set[str] = set()
         for update in updates:
+            if isinstance(update, dict):
+                continue
             if update.session_update not in {"tool_call", "tool_call_update"}:
                 continue
             if update.status in {"completed", "failed"}:

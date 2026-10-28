@@ -13,8 +13,7 @@ before/after snapshots). Interrupted tools receive failed terminal updates;
 duplicate and unrelated-session events are suppressed. ACP-created sessions
 store workspace ownership in Penguin's native session store and visible updates
 in an append-only journal beneath that store. Load replays the journal before
-returning; resume
-restores without replay; close detaches without deleting history. List supports
+returning; resume restores without replay; close detaches without deleting history. List supports
 workspace filtering and pagination. Legacy sessions without ACP ownership are
 not exposed. Interrupted tool entries replay as failed, without re-execution.
 Turns and lifecycle operations are serialized because the core conversation
@@ -30,8 +29,9 @@ request-scoped model/runtime overrides and does not change other sessions or the
 global default. Build mode uses normal permission policy; Plan mode is offered
 only while the tool permission enforcer is enabled and blocks mutating tools.
 Mode/model settings persist across resume. `/status` and `/mcp` provide read-only
-session information without making a model request. Child-session and deletion
-capabilities are not advertised yet. Do not interpret this as full ACP parity.
+session information without making a model request. Deletion is not supported
+yet; experimental negotiated child sessions are described below. Do not
+interpret this as full ACP parity.
 
 Provider authentication uses the existing local Penguin configuration. This
 adapter does not advertise an interactive ACP authentication flow. Model choices
@@ -88,3 +88,26 @@ draft v2, draft subagent protocols and client-specific AIR extensions. Each PR
 must document precisely what it advertises and proves. The process/subagent
 runtime reliability PR is a dependency of later runtime-backed integrations,
 not part of the baseline.
+
+## Experimental child sessions
+
+Clients that explicitly advertise the current draft `clientCapabilities.subagents`
+receive separate child-session associations, observed directed messages, tool
+updates, public assistant output and work-state changes. Announcement precedes
+all child traffic. The SDK currently drops that draft capability, so the stdio
+transport observes it before SDK validation; ordinary RPC dispatch remains in
+the SDK. No draft updates are sent without negotiation. This is the current
+subagent RFD, not ACP v2 or the older AIR-specific shape.
+
+Background children with independent runtime tasks may advertise targeted cancel.
+Foreground children sharing their parent's task do not advertise independent
+cancel, since cancelling that task would also cancel the parent. On reload,
+historical associations carry no effective cancel authorization, and current
+activity is unknown unless this process still observes a live child. Nested
+parentage is retained. Clients without the draft capability get ordinary parent
+tool cards instead. Shared-session children do not become fake separate sessions.
+
+The current tests use the real runtime lifecycle producer with deterministic
+core/scope fixtures over raw stdio, plus cancellation and replay contracts. They
+do not claim verification in a particular GUI editor. Background shell-task
+panels and client-specific goal extensions remain separate work.
