@@ -36,7 +36,6 @@ from acp.schema import (
     LoadSessionResponse,
     McpCapabilities,
     NewSessionResponse,
-    PermissionOption,
     PromptCapabilities,
     PromptRequest,
     PromptResponse,
@@ -63,6 +62,7 @@ from penguin.integrations.acp.client_terminals import DEFAULT_SHELL, ClientTermi
 from penguin.integrations.acp.content import prepare_prompt
 from penguin.integrations.acp.controls import SessionControls
 from penguin.integrations.acp.events import EventBridge
+from penguin.integrations.acp.grants import ExactGrants
 from penguin.integrations.acp.mcp import session_provider
 from penguin.integrations.acp.processes import ProcessTracker
 from penguin.integrations.acp.questions import QuestionBridge
@@ -147,6 +147,7 @@ class PenguinACPAgent:
         self._children = ChildTracker(self)
         self._processes = ProcessTracker(self)
         self._questions = QuestionBridge(self)
+        self._grants = ExactGrants(self)
 
     def _active_cwd(self, sid: str) -> Path | None:
         session = self.sessions.get(sid)
@@ -191,6 +192,8 @@ class PenguinACPAgent:
 
     def _cancel_approvals(self, sid: str) -> None:
         """Deny requests before cancelling their network waiters."""
+        if sid in self._children.children:
+            self._grants.close(sid)
         self._questions.cancel(sid)
         for request in self._approvals.get_pending(sid):
             self._approvals.deny(request.id)
@@ -325,6 +328,12 @@ class PenguinACPAgent:
                         description="Show this session's connected MCP servers.",
                     )
                 )
+            commands.append(
+                AvailableCommand(
+                    name="permissions",
+                    description="Show grant counts; /permissions reset revokes them.",
+                )
+            )
             await self._connection.session_update(
                 session_id=sid,
                 update=AvailableCommandsUpdate(
@@ -585,6 +594,10 @@ class PenguinACPAgent:
         if session.mcp_provider is not None:
             await asyncio.to_thread(session.mcp_provider.close)
         self.sessions.pop(session_id, None)
+        self._grants.close(session_id)
+        for child_id, child in self._children.children.items():
+            if child.root == session_id:
+                self._grants.close(child_id)
         return CloseSessionResponse()
 
     async def delete_session(self, session_id: str) -> DeleteSessionResponse:
@@ -746,6 +759,7 @@ class PenguinACPAgent:
                 str(root) for root in self._registry.execution_roots(session_id, roots)
             ]
             self._registry.save(saved)
+            self._grants.restore(session_id, saved)
             for update in history:
                 if not isinstance(update, dict):
                     self._processes.restore(session_id, update)
@@ -929,6 +943,17 @@ class PenguinACPAgent:
                             f"Mode: {session.mode}; model: {session.model_id}"
                         )
                     }
+                elif command in {"/permissions", "/permissions reset"}:
+                    if command.endswith(" reset"):
+                        self._grants.reset(session_id)
+                    volatile_count = len(self._grants.volatile.get(session_id, []))
+                    saved_count = len(self._grants.saved.get(session_id, []))
+                    result = {
+                        "assistant_response": (
+                            f"Exact grants: {volatile_count} until close; "
+                            f"{saved_count} saved."
+                        )
+                    }
                 elif command == "/mcp" and hasattr(self.core, "tool_manager"):
                     import json
 
@@ -1051,6 +1076,9 @@ class PenguinACPAgent:
         ):
             self._approvals.deny(request.id)
             return
+        if self._grants.allows(request):
+            self._approvals.approve(request.id, scope=ApprovalScope.ONCE)
+            return
 
         def schedule() -> None:
             if self._closed:
@@ -1077,6 +1105,7 @@ class PenguinACPAgent:
             return
         try:
             child = self._children.children.get(request.session_id)
+            options = self._grants.options(request)
             target = request.session_id
             if child:
                 await self._update_child_approval_state(request.session_id)
@@ -1089,14 +1118,7 @@ class PenguinACPAgent:
                         tool_call_id=request.id,
                         title=f"{request.tool_name}: {request.resource}",
                     ),
-                    options=[
-                        PermissionOption(
-                            option_id="allow_once", name="Allow once", kind="allow_once"
-                        ),
-                        PermissionOption(
-                            option_id="reject_once", name="Reject", kind="reject_once"
-                        ),
-                    ],
+                    options=options,
                 ),
                 timeout=300,
             )
@@ -1112,9 +1134,30 @@ class PenguinACPAgent:
                 and current.status == ApprovalStatus.PENDING
                 and not cancelled
                 and response.outcome.outcome == "selected"
-                and response.outcome.option_id == "allow_once"
+                and response.outcome.option_id
+                in {o.option_id for o in options if o.kind.startswith("allow")}
             ):
-                self._approvals.approve(request.id, scope=ApprovalScope.ONCE)
+                approved = self._approvals.approve(request.id, scope=ApprovalScope.ONCE)
+                if approved and response.outcome.option_id in {
+                    "allow_session",
+                    "allow_saved",
+                }:
+                    try:
+                        self._grants.remember(
+                            request, response.outcome.option_id == "allow_saved"
+                        )
+                    except Exception:
+                        logger.warning("Exact grant could not be saved", exc_info=True)
+                        await self._send_update(
+                            request.session_id,
+                            AgentMessageChunk(
+                                session_update="agent_message_chunk",
+                                content=text_block(
+                                    "This request was allowed, but saving its future "
+                                    "approval could not be confirmed."
+                                ),
+                            ),
+                        )
             else:
                 self._approvals.deny(request.id)
         except asyncio.CancelledError:

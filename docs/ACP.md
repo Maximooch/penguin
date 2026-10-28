@@ -5,7 +5,7 @@ in the authorized workspace. This starts a stdio agent directly, without a web
 server. Configure the Penguin provider as usual before starting the agent.
 
 Current baseline: new sessions, text and resource-reference prompts, streamed
-assistant text, one-time tool approvals, and cancellation. Tool starts/results
+assistant text, scoped tool approvals, and cancellation. Tool starts/results
 and todo plans are delivered as native ACP updates with stable call IDs. Display
 output is bounded; file locations are resolved inside the session workspace.
 Canonical asynchronous file edits expose native before/after snapshots from
@@ -122,6 +122,15 @@ a bounded wait for a late create response; incomplete cleanup is reported.
 Background process handles, yielding and terminal stdin are not advertised in
 client mode. The standard ACP terminal API has no stdin method. Local mode
 retains Penguin's existing complete managed-process interface.
+
+Read/write permission prompts for one canonical file may offer an exact-resource
+grant until close or a remembered grant for that saved session. Grants bind the
+tool, operation, agent, mode, policy fingerprint, workspace roots and file backend;
+they cannot override a denied operation. No process, network, delete, wildcard or
+global grants are added. `/permissions` shows counts and `/permissions reset`
+revokes this session's retained grants. Closing clears ephemeral grants; remembered
+grants are restored from native session storage. A cancelled/denied prompt never
+creates a grant.
 
 ## Planned PR series
 
