@@ -159,9 +159,8 @@ def test_process_runtime_and_notebook_shell_use_policy(
     """Actual shell paths cannot inherit a synthetic service credential."""
     monkeypatch.setenv("PENGUIN_TOOL_ENVIRONMENT", "hosted")
     monkeypatch.setenv("LINK_INFERENCE_SERVICE_TOKEN", "synthetic-secret")
-    command = f"{shlex.quote(sys.executable)} -c " + shlex.quote(
-        "import os,json; print(json.dumps(dict(os.environ)))"
-    )
+    argv = [sys.executable, "-c", "import os,json; print(json.dumps(dict(os.environ)))"]
+    command = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
     runtime = ProcessRuntime(log_dir=tmp_path)
     started = runtime.start(command, cwd=str(tmp_path), env={"BUILD_LABEL": "test"})
     process_id = started["process_id"]
@@ -234,7 +233,7 @@ def test_tool_subprocess_sites_pass_explicit_environment() -> None:
         )
     ]
     for path in paths:
-        for node in ast.walk(ast.parse(path.read_text())):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if not isinstance(node, ast.Call) or not isinstance(
                 node.func, ast.Attribute
             ):

@@ -127,9 +127,10 @@ Historical child-process cards replay, but reconnecting child process activity i
 not reconstructed without a live observed child. These cards are ACP tool updates,
 not a claim to implement a client-specific task panel or terminal RPC.
 
-The producer regression runs a real subprocess on Linux. Windows execution is
-temporarily skipped pending the separate ProcessRuntime capture fix; synthetic
-event, ownership and reconnect regressions still run on Windows.
+The producer regression runs a real subprocess on Windows and Linux. It includes
+the separate Windows ProcessRuntime capture fix (#146) as an explicit dependency.
+Windows tree termination uses taskkill, not Job Object ownership; detached-child
+cleanup guarantees are outside this adapter's claims.
 
 `session/delete` is advertised only by the transport with its installed handler.
 It rejects busy sessions and unresolved background processes, checks indexed ACP

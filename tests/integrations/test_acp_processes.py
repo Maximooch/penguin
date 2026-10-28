@@ -20,10 +20,6 @@ from penguin.tools.tool_manager import ToolManager
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="Windows capture runtime fix is being integrated separately",
-)
 async def test_process_streams_after_parent_turn_and_keeps_model_cursor(tmp_path):
     core = PersistentCore(tmp_path / "sessions")
     core.tool_manager = ToolManager(
