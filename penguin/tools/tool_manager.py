@@ -3820,7 +3820,9 @@ class ToolManager:
             finally:
                 result_container["done"] = True
 
-        t = threading.Thread(target=_runner, daemon=True)
+        from contextvars import copy_context
+        worker_context = copy_context()
+        t = threading.Thread(target=lambda: worker_context.run(_runner), daemon=True)
         t.start()
         t.join(timeout=default_timeout)
         if not result_container["done"]:
@@ -3871,7 +3873,9 @@ class ToolManager:
             finally:
                 result_container["done"] = True
 
-        t = threading.Thread(target=_runner, daemon=True)
+        from contextvars import copy_context
+        worker_context = copy_context()
+        t = threading.Thread(target=lambda: worker_context.run(_runner), daemon=True)
         t.start()
         t.join(timeout=default_timeout)
         if not result_container["done"]:
@@ -5044,7 +5048,9 @@ class ToolManager:
             finally:
                 result_container["done"] = True
 
-        t = threading.Thread(target=_runner, daemon=True)
+        from contextvars import copy_context
+        worker_context = copy_context()
+        t = threading.Thread(target=lambda: worker_context.run(_runner), daemon=True)
         t.start()
         t.join(timeout=default_timeout)
 

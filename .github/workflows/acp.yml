@@ -29,7 +29,7 @@ jobs:
       - name: Install ACP and test dependencies
         run: python -m pip install -e ".[acp,dev]"
       - name: Lint ACP implementation
-        run: python -m ruff check penguin/integrations/acp
+        run: python -m ruff check penguin/integrations/acp penguin/core_runtime/isolation.py
       - name: Verify real stdio and deterministic contracts
         run: >-
           python -m pytest -q
@@ -53,5 +53,6 @@ jobs:
           tests/integrations/test_acp_client_terminals.py
           tests/integrations/test_acp_permission_wire.py
           tests/integrations/test_acp_grants.py
+          tests/integrations/test_acp_isolation.py
           tests/core_runtime/test_session_goal_runtime.py
           tests/system/test_tool_environment.py

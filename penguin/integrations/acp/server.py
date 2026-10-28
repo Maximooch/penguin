@@ -1182,14 +1182,46 @@ async def serve() -> None:
     # The SDK's Windows writer resolves sys.stdout on each write, so capturing
     # its streams alone does not protect stdout when diagnostics are redirected.
     with contextlib.redirect_stdout(sys.stderr):
+        import os
+
         from penguin.config import WORKSPACE_PATH
         from penguin.core import PenguinCore
 
-        core = await PenguinCore.create(show_progress=False)
+        if os.environ.get("PENGUIN_ACP_ISOLATED_SESSIONS") == "1":
+            from copy import deepcopy
+
+            from penguin.core_runtime.isolation import RuntimeServices
+            from penguin.integrations.acp.isolated import IsolatedACPAgent, Runtime
+
+            catalog = None
+
+            async def create_runtime():
+                services = RuntimeServices()
+                with services.activate():
+                    config = (
+                        deepcopy(getattr(catalog.agent.core, "config", None))
+                        if catalog
+                        else None
+                    )
+                    runtime_core = await PenguinCore.create(
+                        config=config, show_progress=False
+                    )
+                    return Runtime(
+                        PenguinACPAgent(
+                            runtime_core,
+                            allowed_roots=(Path.cwd(), Path(WORKSPACE_PATH)),
+                        ),
+                        services,
+                    )
+
+            catalog = await create_runtime()
+            agent = IsolatedACPAgent(catalog, create_runtime)
+        else:
+            core = await PenguinCore.create(show_progress=False)
+            roots = (Path.cwd(), Path(WORKSPACE_PATH))
+            agent = PenguinACPAgent(core, allowed_roots=roots)
         reader, _ = await stdio_streams(limit=50 * 1024 * 1024)
         writer = protocol_writer(output)
-        roots = (Path.cwd(), Path(WORKSPACE_PATH))
-        agent = PenguinACPAgent(core, allowed_roots=roots)
         transport = ProtocolTransport(reader, writer)
         agent._transport = transport
         transport.after_session_response = agent._send_commands
@@ -1206,7 +1238,10 @@ async def serve() -> None:
                 use_unstable_protocol=True,
             )
         finally:
-            agent.close()
+            if hasattr(agent, "aclose"):
+                await agent.aclose()
+            else:
+                agent.close()
 
 
 def main() -> int:

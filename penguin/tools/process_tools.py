@@ -10,6 +10,7 @@ import logging
 import math
 import os
 import threading
+from contextvars import Context, copy_context
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -51,7 +52,7 @@ class ProcessTools:
         self._pending: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
         self._listeners: dict[
             tuple[str, str],
-            tuple[asyncio.AbstractEventLoop, Callable[..., Awaitable[None]]],
+            tuple[asyncio.AbstractEventLoop, Callable[..., Awaitable[None]], Context],
         ] = {}
 
     def bind(
@@ -59,7 +60,7 @@ class ProcessTools:
     ) -> None:
         """Bind an event sink on its owning loop; payloads carry explicit scope."""
         with self._lock:
-            self._listeners[owner] = (asyncio.get_running_loop(), emit)
+            self._listeners[owner] = (asyncio.get_running_loop(), emit, copy_context())
 
     def pending(self, owner: tuple[str, str]) -> list[dict[str, Any]]:
         """Peek at completion notices until the conversation persists them."""
@@ -83,7 +84,7 @@ class ProcessTools:
             listener = self._listeners.get(owner)
         if listener is None or listener[0].is_closed():
             return
-        loop, emit = listener
+        loop, emit, bound_context = listener
         process_id = payload["process_id"]
         if kind == "output":
             with self._lock:
@@ -103,7 +104,9 @@ class ProcessTools:
 
         delivery = deliver()
         try:
-            future = asyncio.run_coroutine_threadsafe(delivery, loop)
+            future = bound_context.copy().run(
+                asyncio.run_coroutine_threadsafe, delivery, loop
+            )
             # Observe cancellation/errors without blocking the pipe reader.
             future.add_done_callback(
                 lambda done: None if done.cancelled() else done.exception()
@@ -268,6 +271,11 @@ class ProcessTools:
             action="execute_command", tool="execute_command", timeout_seconds=timeout
         )
         return result
+
+    def close(self) -> dict[str, Any]:
+        """Release an explicitly disposed owner, including its exit hook."""
+        atexit.unregister(self.cleanup)
+        return self.cleanup()
 
     def cleanup(self) -> dict[str, Any]:
         """Stop workers before clearing event sinks and pending notices."""

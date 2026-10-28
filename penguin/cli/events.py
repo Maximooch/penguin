@@ -121,6 +121,10 @@ class EventBus:
     @classmethod
     async def get_instance(cls) -> "EventBus":
         """Get or create singleton instance (async-safe)"""
+        from penguin.core_runtime.isolation import scoped_service
+        scoped = scoped_service("cli_event_bus", cls)
+        if scoped is not None:
+            return scoped
         if cls._instance is None:
             async with cls._lock:
                 if cls._instance is None:
@@ -130,6 +134,10 @@ class EventBus:
     @classmethod
     def get_sync(cls) -> "EventBus":
         """Get instance synchronously (for initialization)"""
+        from penguin.core_runtime.isolation import scoped_service
+        scoped = scoped_service("cli_event_bus", cls)
+        if scoped is not None:
+            return scoped
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance

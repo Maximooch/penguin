@@ -536,6 +536,12 @@ def get_executor(core: Any = None) -> Optional[AgentExecutor]:
     Returns:
         The global AgentExecutor instance
     """
+    from penguin.core_runtime.isolation import runtime_isolated, scoped_service
+    scoped = scoped_service(
+        "agent_executor", lambda: AgentExecutor(core) if core else None
+    )
+    if runtime_isolated():
+        return scoped
     global _executor_instance
     if _executor_instance is None and core is not None:
         _executor_instance = AgentExecutor(core)
@@ -548,5 +554,8 @@ def set_executor(executor: AgentExecutor) -> None:
     Args:
         executor: The AgentExecutor to use globally
     """
+    from penguin.core_runtime.isolation import set_scoped_service
+    if set_scoped_service("agent_executor", executor):
+        return
     global _executor_instance
     _executor_instance = executor
