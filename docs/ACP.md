@@ -31,8 +31,8 @@ request-scoped model/runtime overrides and does not change other sessions or the
 global default. Build mode uses normal permission policy; Plan mode is offered
 only while the tool permission enforcer is enabled and blocks mutating tools.
 Mode/model settings persist across resume. `/status` and `/mcp` provide read-only
-session information without making a model request. Deletion is not supported
-yet; experimental negotiated child sessions are described below. Do not
+session information without making a model request. Owned session deletion and
+experimental negotiated child sessions are described below. Do not
 interpret this as full ACP parity.
 
 Provider authentication uses the existing local Penguin configuration. This
@@ -71,6 +71,16 @@ The suite uses the official SDK client over subprocess stdio and the real CLI
 entrypoint with a deterministic fake provider core. This proves routing/framing,
 not a live provider or editor interaction. An actual editor smoke test remains
 required before claiming the complete user workflow.
+
+October 28 code-head validation (#151): 111 combined ACP, native Windows process
+and environment-policy checks passed on Windows Python 3.11.14, without skips.
+Scoped Ruff and pinned uv 0.11.2 lock validation passed. #149's full CI matrix
+passed; final code-head CI is tracked separately from local results.
+
+The current implementation/unsupported-feature matrix and draft dependency
+graph live in [the conformance audit](../context/tasks/acp.md). Optional editor
+filesystem/terminal RPCs, additional roots, parallel root turns, persisted
+permission grants and interactive ACP authentication remain deliberately absent.
 
 ## Planned PR series
 
