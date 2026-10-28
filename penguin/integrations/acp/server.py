@@ -223,7 +223,7 @@ class PenguinACPAgent:
                     delete=SessionDeleteCapabilities()
                     if self._registry.available
                     and self._transport is not None
-                    and "session/delete" in self._transport.handlers
+                    and "session/delete" in getattr(self._transport, "handlers", {})
                     else None,
                 ),
             ),
