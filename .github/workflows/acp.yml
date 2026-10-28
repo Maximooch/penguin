@@ -54,5 +54,11 @@ jobs:
           tests/integrations/test_acp_permission_wire.py
           tests/integrations/test_acp_grants.py
           tests/integrations/test_acp_isolation.py
+          tests/multi/test_executor.py
+          tests/system/test_message_bus_delivery.py
+          tests/test_event_bus_lifecycle.py
+          tests/test_action_executor_question.py
+          tests/test_action_executor_subagent_events.py
+          tests/llm/test_connection_pool.py
           tests/core_runtime/test_session_goal_runtime.py
           tests/system/test_tool_environment.py

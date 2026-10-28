@@ -245,6 +245,9 @@ class IsolatedACPAgent:
             if executor is not None:
                 await executor.shutdown()
             manager = getattr(runtime.agent.core, "tool_manager", None)
+            shutdown_agents = getattr(manager, "shutdown_background_agents", None)
+            if callable(shutdown_agents):
+                await shutdown_agents()
             process_tools = getattr(manager, "_process_tools", None)
             if process_tools is not None:
                 await asyncio.to_thread(process_tools.close)

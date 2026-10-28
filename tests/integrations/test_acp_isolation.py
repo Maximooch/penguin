@@ -449,8 +449,9 @@ async def test_runtime_limit_freed_by_close_and_saved_session_can_reload(tmp_pat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("native_executor", [False, True])
 async def test_same_named_native_children_messages_and_approvals_are_isolated(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, native_executor
 ):
     from acp.schema import AllowedOutcome, RequestPermissionResponse
 
@@ -528,7 +529,11 @@ async def test_same_named_native_children_messages_and_approvals_are_isolated(
                 count += 1
                 if count == 2:
                     registered.set()
-                executor = get_executor(_core)
+                executor = (
+                    _core.tool_manager._get_agent_executor(create=True)
+                    if native_executor
+                    else get_executor(_core)
+                )
                 executors[_root] = executor
                 await executor.spawn_agent(
                     "worker",
@@ -568,5 +573,33 @@ async def test_same_named_native_children_messages_and_approvals_are_isolated(
         assert all(
             executors[sid].get_status("worker")["state"] == "completed" for sid in ids
         )
+    finally:
+        await router.aclose()
+
+
+@pytest.mark.asyncio
+async def test_idle_close_stops_only_its_native_owned_children(tmp_path):
+    router, _, _ = await setup(tmp_path)
+    started = asyncio.Event()
+    try:
+        first, second = [
+            (await router.new_session(str(tmp_path))).session_id for _ in range(2)
+        ]
+        runtime = router.roots[first]
+
+        async def child(*args, **kwargs):
+            started.set()
+            await asyncio.Event().wait()
+
+        runtime.agent.core.run_agent_prompt_in_session = child
+        with runtime.services.activate():
+            executor = runtime.agent.core.tool_manager._get_agent_executor(create=True)
+            await executor.spawn_agent("worker", "wait")
+        await asyncio.wait_for(started.wait(), 2)
+        await router.close_session(first)
+        assert executor.get_status("worker")["state"] == "cancelled"
+        assert first not in router.roots and second in router.roots
+        result = await router.prompt(second, [text_block("still usable")])
+        assert result.stop_reason == "end_turn"
     finally:
         await router.aclose()
