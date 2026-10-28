@@ -2953,6 +2953,13 @@ class ToolManager:
         """Get available tool schemas."""
         tools = list(self.tools)
         tools.extend(self._get_mcp_provider().get_tool_schemas())
+        from penguin.tools.providers.client import active_client_tools
+
+        client = active_client_tools(self)
+        if client is not None:
+            tools = [
+                mapped for tool in tools if (mapped := client.schema(tool)) is not None
+            ]
         return tools
 
     @property
@@ -4484,6 +4491,13 @@ class ToolManager:
         with profile_operation(f"ToolManager.execute_tool.{tool_name}"):
             requested_tool_name = tool_name
             tool_name = self._canonical_tool_name(tool_name)
+            from penguin.tools.providers.client import active_client_tools
+
+            client = active_client_tools(self)
+            if client is not None and client.handles(tool_name):
+                return json.dumps(
+                    {"error": "client_tool_requires_async_dispatch", "tool": tool_name}
+                )
             effective_context = self._merged_execution_context(context)
             if tool_name in SUBAGENT_TOOL_NAMES and not subagents_enabled(
                 effective_context

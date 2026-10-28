@@ -1826,7 +1826,18 @@ class ActionExecutor:
             handler = action_map[action.action_type]
             logger.debug(f"Handler for action {action.action_type.value}: {handler}")
 
-            if asyncio.iscoroutinefunction(handler):
+            from penguin.tools.providers.client import active_client_tools
+
+            client_files = active_client_tools(self.tool_manager)
+            handler_name = getattr(handler, "__name__", "")
+            if client_files is not None and handler_name in {
+                "_read_file",
+                "_enhanced_read",
+                "_write_file",
+                "_enhanced_write",
+            }:
+                result = await self._client_text_file(handler_name, handler_params)
+            elif asyncio.iscoroutinefunction(handler):
                 logger.debug(f"Executing async handler for {action.action_type.value}")
                 result = await handler(handler_params)
             else:
@@ -4419,6 +4430,32 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
                 "include_external": include_external,
                 "respect_gitignore": respect_gitignore,
             },
+        )
+
+    async def _client_text_file(self, handler_name: str, params: Any) -> str:
+        """Keep legacy XML text-file actions on the owning ACP event loop."""
+        reading = handler_name in {"_read_file", "_enhanced_read"}
+        parsed = (
+            parse_read_file_payload(params)
+            if reading
+            else parse_write_file_payload(params)
+        )
+        if parsed.get("error"):
+            return f"Error: {parsed['error']}"
+        args = {"path": parsed["path"]}
+        if reading:
+            if parsed.get("max_lines") is not None:
+                args["max_lines"] = parsed["max_lines"]
+            args["show_line_numbers"] = parsed.get("show_line_numbers", False)
+        else:
+            args["content"] = parsed["content"]
+            raw = params if isinstance(params, dict) else {}
+            if isinstance(params, str) and params.lstrip().startswith("{"):
+                raw = json.loads(params)
+            if "backup" in raw:
+                args["backup"] = parsed["backup"]
+        return await self.tool_manager.execute_tool_async(
+            "read_file" if reading else "write_file", args
         )
 
     def _read_file(self, params: Any) -> str:

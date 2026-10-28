@@ -93,6 +93,23 @@ The session's private attachment-copy directory is also available to file tools,
 so attached resources remain usable; other sessions' storage is not included.
 This is a file-tool boundary, not an OS sandbox for shell commands or MCP servers.
 
+Clients advertising both text-file RPCs may opt into `file_access=client` through
+session config. Local tools remain the default. In client mode, reads observe
+the client's text buffer and writes replace it through `fs/write_text_file`;
+path and Plan-mode checks happen first. Unsupported file tools are hidden and
+explicit direct calls fail, with no silent local fallback. Backup requests fail
+because ACP's text-write RPC has no backup/atomic-commit guarantee. Requests are
+bounded to 2 MiB and reads default to at most 2,000 lines. Local shell/code tools
+are hidden and rejected in this mode to avoid mixing client buffers with local
+execution; client terminal routing is the next increment.
+The selection persists, but reload fails if the new client lacks the required
+RPCs. The current adapter still requires a locally visible session directory;
+fully remote virtual directories need a separate path/authority model. This
+opt-in mode requires a client using the same canonical workspace paths; the
+client must enforce its own filesystem/permission contract. The agent resolves
+local symlinks and checks active roots before RPC, and acknowledges a write only
+after the client reports completion.
+
 ## Planned PR series
 
 1. Baseline resource inputs, protocol output, failures and wire validation (implemented).

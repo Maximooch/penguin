@@ -44,6 +44,8 @@ from acp.schema import (
     SessionAdditionalDirectoriesCapabilities,
     SessionCapabilities,
     SessionCloseCapabilities,
+    SessionConfigOptionSelect,
+    SessionConfigSelectOption,
     SessionDeleteCapabilities,
     SessionInfo,
     SessionListCapabilities,
@@ -56,6 +58,7 @@ from acp.schema import (
 
 from penguin._version import __version__
 from penguin.integrations.acp.children import ChildTracker
+from penguin.integrations.acp.client_files import ClientFiles
 from penguin.integrations.acp.content import prepare_prompt
 from penguin.integrations.acp.controls import SessionControls
 from penguin.integrations.acp.events import EventBridge
@@ -71,6 +74,7 @@ from penguin.security.approval import (
     get_approval_manager,
 )
 from penguin.system.execution_context import ExecutionContext, execution_context_scope
+from penguin.tools.providers.client import client_tool_scope
 from penguin.tools.providers.mcp import mcp_provider_scope
 
 if TYPE_CHECKING:
@@ -91,6 +95,7 @@ class Session:
     model_id: str = "default"
     model_config: Any = None
     api_client: Any = None
+    filesystem: str = "local"
 
 
 class PenguinACPAgent:
@@ -113,6 +118,7 @@ class PenguinACPAgent:
         self._closed = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._initialized = False
+        self._client_file_support = False
         self._approvals = get_approval_manager()
         self._approvals.on_request_created(self._on_approval)
         self._registry = SessionRegistry(core, self.allowed_roots)
@@ -219,6 +225,12 @@ class PenguinACPAgent:
         self._initialized = True
         elicitation = getattr(client_capabilities, "elicitation", None)
         self._questions.supported = getattr(elicitation, "form", None) is not None
+        fs = getattr(client_capabilities, "fs", None)
+        self._client_file_support = bool(
+            getattr(fs, "read_text_file", False)
+            and getattr(fs, "write_text_file", False)
+            and hasattr(self.core, "tool_manager")
+        )
         return InitializeResponse(
             protocol_version=PROTOCOL_VERSION,
             agent_info=Implementation(name="penguin", version=__version__),
@@ -289,7 +301,7 @@ class PenguinACPAgent:
         return NewSessionResponse(
             session_id=sid,
             modes=self._controls.modes("build"),
-            config_options=self._controls.options("default"),
+            config_options=self._options("default"),
         )
 
     async def _send_commands(self, sid: str) -> None:
@@ -326,7 +338,29 @@ class PenguinACPAgent:
             session = self.sessions[sid]
             saved.metadata["acp_mode"] = session.mode
             saved.metadata["acp_model"] = session.model_id
+            saved.metadata["acp_filesystem"] = session.filesystem
             self._registry.save(saved)
+
+    def _options(self, model_id: str, filesystem: str = "local") -> list[Any]:
+        options = self._controls.options(model_id)
+        if self._client_file_support:
+            options.append(
+                SessionConfigOptionSelect(
+                    id="file_access",
+                    name="Text-file access",
+                    type="select",
+                    current_value=filesystem,
+                    options=[
+                        SessionConfigSelectOption(
+                            value="local", name="Local Penguin tools"
+                        ),
+                        SessionConfigSelectOption(
+                            value="client", name="ACP client text buffers"
+                        ),
+                    ],
+                )
+            )
+        return options
 
     async def set_session_mode(
         self, session_id: str, mode_id: str, **kwargs: Any
@@ -352,6 +386,26 @@ class PenguinACPAgent:
         self, session_id: str, config_id: str, value: str, **kwargs: Any
     ) -> SetSessionConfigOptionResponse:
         session = self._idle_session(session_id)
+        if config_id == "file_access":
+            if value not in {"local", "client"} or (
+                value == "client" and not self._client_file_support
+            ):
+                raise RequestError.invalid_params(
+                    {"reason": "Client text files are unavailable"}
+                )
+            async with self._process_gate:
+                session = self._idle_session(session_id)
+                session.filesystem = value
+                self._save_controls(session_id)
+                options = self._options(session.model_id, session.filesystem)
+                await self._send_update(
+                    session_id,
+                    ConfigOptionUpdate(
+                        session_update="config_option_update",
+                        config_options=options,
+                    ),
+                )
+            return SetSessionConfigOptionResponse(config_options=options)
         if config_id != "model" or not isinstance(value, str):
             raise RequestError.invalid_params(
                 {"reason": "Unknown configuration option"}
@@ -365,7 +419,7 @@ class PenguinACPAgent:
                 client,
             )
             self._save_controls(session_id)
-            options = self._controls.options(value)
+            options = self._options(value, session.filesystem)
             await self._send_update(
                 session_id,
                 ConfigOptionUpdate(
@@ -409,7 +463,7 @@ class PenguinACPAgent:
         session = self.sessions[session_id]
         return LoadSessionResponse(
             modes=self._controls.modes(session.mode),
-            config_options=self._controls.options(session.model_id),
+            config_options=self._options(session.model_id, session.filesystem),
         )
 
     async def resume_session(
@@ -427,7 +481,7 @@ class PenguinACPAgent:
         session = self.sessions[session_id]
         return ResumeSessionResponse(
             modes=self._controls.modes(session.mode),
-            config_options=self._controls.options(session.model_id),
+            config_options=self._options(session.model_id, session.filesystem),
         )
 
     async def close_session(
@@ -550,6 +604,13 @@ class PenguinACPAgent:
                     {"reason": "Session has active children"}
                 )
             model_id = saved.metadata.get("acp_model", "default")
+            filesystem = saved.metadata.get("acp_filesystem", "local")
+            if filesystem not in {"local", "client"} or (
+                filesystem == "client" and not self._client_file_support
+            ):
+                raise RequestError.invalid_params(
+                    {"reason": "Saved client text-file mode is unavailable"}
+                )
             mode = saved.metadata.get("acp_mode", "build")
             if not isinstance(model_id, str) or mode not in {"build", "plan"}:
                 raise RequestError.invalid_params(
@@ -575,6 +636,7 @@ class PenguinACPAgent:
                 model_id=model_id,
                 model_config=config,
                 api_client=client,
+                filesystem=filesystem,
             )
             saved.metadata["acp_additional_directories"] = [
                 str(root) for root in roots[1:]
@@ -647,6 +709,10 @@ class PenguinACPAgent:
         session = self.sessions.get(session_id)
         if session is None:
             raise RequestError.invalid_params({"sessionId": session_id})
+        if session.filesystem == "client" and not self._client_file_support:
+            raise RequestError.invalid_request(
+                {"reason": "Client text files are unavailable"}
+            )
         if session.task is not None:
             raise RequestError.invalid_request(
                 {"reason": "A turn is already active for this session"}
@@ -713,6 +779,12 @@ class PenguinACPAgent:
                     ),
                 )
             with contextlib.ExitStack() as scopes:
+                if session.filesystem == "client":
+                    scopes.enter_context(
+                        client_tool_scope(
+                            self.core.tool_manager, ClientFiles(self, session_id)
+                        )
+                    )
                 if session.mcp_provider is not None:
                     scopes.enter_context(
                         mcp_provider_scope(self.core.tool_manager, session.mcp_provider)

@@ -160,6 +160,11 @@ class AsyncToolDispatcher:
                     }
                 )
         with authorized_call(name, arguments, ctx, resources):
+            from penguin.tools.providers.client import active_client_tools
+
+            client = active_client_tools(manager)
+            if client is not None and client.handles(name):
+                return await client.execute(name, arguments, ctx)
             from penguin.tools.editing.observation import capture_edits
 
             with capture_edits() as edits:
