@@ -32,6 +32,7 @@ class Child:
     active: bool = True
     streamed: bool = False
     cancellable: bool = False
+    cancelled: bool = False
 
 
 class ChildTracker:
@@ -55,12 +56,17 @@ class ChildTracker:
         return bool(transport and transport.subagents)
 
     def close(self) -> None:
+        try:
+            current = asyncio.current_task()
+        except RuntimeError:
+            current = None
         for child in self.children.values():
+            child.cancelled = True
             if (
                 child.active
                 and child.cancellable
                 and child.task is not None
-                and child.task is not asyncio.current_task()
+                and child.task is not current
             ):
                 child.task.cancel()
         if self.bus is not None:
@@ -208,6 +214,8 @@ class ChildTracker:
                 )
         elif sid in self.children:
             child = self.children[sid]
+            child.active = False
+            self.owner._cancel_approvals(sid)
             await self.owner._events.end_turn(sid)
             text = data.get("text")
             if isinstance(text, str) and text and not child.streamed:
@@ -324,6 +332,10 @@ class ChildTracker:
             )
 
     async def close_root(self, root: str) -> None:
+        for sid, child in self.children.items():
+            if child.root == root:
+                child.cancelled = True
+                self.owner._cancel_approvals(sid)
         tasks = {
             child.task
             for child in self.children.values()
@@ -344,6 +356,11 @@ class ChildTracker:
             return False
         if child.task is asyncio.current_task():
             return False
+        child.cancelled = True
+        self.owner._cancel_approvals(sid)
         child.task.cancel()
         await asyncio.gather(child.task, return_exceptions=True)
+        if child.active:
+            child.active = False
+            await self.state(sid, "idle", "cancelled")
         return True
