@@ -3,6 +3,12 @@
 `process_start` launches a command and returns a `process_id`. Penguin captures
 stdout and stderr continuously, even when no client polls the process.
 
+`process_status` accepts a `process_id` and returns lifecycle, exit code,
+completion reason, and capture errors immediately. It does not consume output,
+advance a cursor, or stop the process. Like polling, it is restricted to the
+launching session and agent. Processes survive assistant turns within the same
+backend lifetime; restarting the backend is not a process recovery mechanism.
+
 `process_poll` waits up to `wait_ms` (default 5000, maximum 60000) for new output
 or completion. Omit `since_sequence` for incremental reads by the current agent.
 Pass `since_sequence: 0` to replay retained output. Pass a prior `next_sequence`
@@ -19,6 +25,8 @@ tool-call completion from process lifecycle and retain the process ID and cursor
 Repeated identical non-wait tool results get one corrective model turn before a
 stale-loop stop. Recovery uses retained results rather than automatically
 replaying commands or mutations. Output-length continuation comes from PR #106.
+Silent commands are compared using their arguments and exit/output metadata,
+so different successful commands do not collide just because both print nothing.
 
 `process_write_stdin` sends UTF-8 input with a `timeout_ms` deadline (default 1000,
 range 1–60000), including time queued behind another writer. Writes return
@@ -35,7 +43,18 @@ atomic, including concurrent reads from the same consumer.
 
 `process_stop` interrupts, terminates, or kills
 the owned process group, escalating when necessary. Processes use pipes, not a
-PTY. The local implementation requires POSIX shell and pipe support.
+PTY. POSIX hosts use Bash; Windows hosts use native `cmd.exe /d /s /c`.
+Use cmd syntax on Windows or invoke PowerShell explicitly. Windows capture
+checks pipe readiness with `PeekNamedPipe` and waits between scans (20 ms),
+including when both streams close before the process exits. It supports Python
+3.11 without `os.set_blocking` or socket-only selectors on subprocess pipes.
+
+Windows stop/timeout uses the system `taskkill /T /F` to target the local tree
+while its launching process remains alive. Interrupt first attempts CTRL_BREAK;
+headless hosts without a console fall back to tree termination. This is not a
+Windows Job Object: detached descendants or descendants whose launching process
+has already exited are not guaranteed to be recoverable. Stopping a local SSH
+client does not guarantee termination of remote work.
 
 Memory is bounded to 256,000 output characters and 10,000 chunks per process.
 Large reads report `truncated` and `history_lost`. The `log_path` points to captured
@@ -154,3 +173,6 @@ do not rerun a command or mutation merely to retrieve its output.
 `process_poll.max_chars` still apply independently; process output is retained
 in the process log indicated by `log_path`. A tool-result artifact preserves
 what the tool returned, not output already omitted by an upstream tool limit.
+
+
+On Windows, tree cleanup normally uses `taskkill`. If that helper fails while the owned root is still running, Penguin falls back to native process enumeration and termination through psutil, including PID-reuse checks. This handles local WMI quota/cancellation failures without leaving the observed child tree running. Cleanup remains snapshot-based; it does not claim Windows Job Object ownership or guarantee recovery of detached descendants.

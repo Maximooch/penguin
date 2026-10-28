@@ -11,6 +11,7 @@ from pathlib import Path
 import time
 import re
 import threading
+import uuid
 from collections import defaultdict
 
 # from utils.log_error import log_error
@@ -63,7 +64,7 @@ from penguin.tools.browser_harness_tools import (
     BrowserHarnessTypeTool,
     BrowserHarnessWaitTool,
 )
-from penguin.tools.providers.mcp import MCPToolProvider
+from penguin.tools.providers.mcp import MCPToolProvider, active_mcp_provider
 from penguin.tools.schema_contract import (
     normalize_model_visible_tool_schema,
     runtime_metadata_from_tool_schema,
@@ -387,6 +388,7 @@ class ToolManager:
                 "execute_command": "self.execute_command",
                 "process_start": "self.process_runtime.start",
                 "process_poll": "self.process_runtime.poll",
+                "process_status": "self.process_runtime.status",
                 "process_write_stdin": "self.process_runtime.write_stdin",
                 "process_stop": "self.process_runtime.stop",
                 "add_summary_note": "self.summary_notes_tool.add_summary",
@@ -935,6 +937,21 @@ class ToolManager:
                     "long_running": True,
                     "streams_output": True,
                     "risk": "high",
+                },
+            },
+            {
+                "name": "process_status",
+                "description": "Inspect process lifecycle and exit code immediately without consuming output.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"process_id": {"type": "string"}},
+                    "required": ["process_id"],
+                },
+                "x-penguin-permissions": {
+                    "mutates_state": False,
+                    "requires_approval": False,
+                    "parallel_safe": False,
+                    "risk": "low",
                 },
             },
             {
@@ -2299,6 +2316,12 @@ class ToolManager:
 
     @property
     def notebook_executor(self):
+        from penguin.core_runtime.isolation import runtime_isolated
+        if runtime_isolated():
+            raise RuntimeError(
+                "In-process Python is unavailable in isolated runtimes; "
+                "use execute_command with a Python subprocess"
+            )
         if not self._lazy_initialized["notebook_executor"]:
             with profile_operation("ToolManager.lazy_load_notebook_executor"):
                 logger.debug("Lazy-loading notebook executor")
@@ -2356,32 +2379,37 @@ class ToolManager:
             if _PermissionEnforcer is not None:
                 with profile_operation("ToolManager.lazy_load_permission_enforcer"):
                     logger.debug("Lazy-loading permission enforcer")
-                    # Create enforcer with WORKSPACE mode by default
-                    mode = _PermissionMode.WORKSPACE
+                    security_policy = (
+                        self.config.get("security")
+                        if isinstance(self.config, dict)
+                        else getattr(self.config, "security", None)
+                    ) or {}
+                    if callable(getattr(security_policy, "to_dict", None)):
+                        security_policy = security_policy.to_dict()
+                    if not isinstance(security_policy, dict):
+                        raise ValueError("security must be a configuration object")
+                    mode = _PermissionMode(security_policy.get("mode", "workspace"))
                     yolo = os.environ.get("PENGUIN_YOLO", "").lower() in (
-                        "1",
-                        "true",
-                        "yes",
+                        "1", "true", "yes"
                     )
+                    enforcer = _PermissionEnforcer(mode=mode, yolo=yolo, audit_all=True)
 
-                    self._permission_enforcer = _PermissionEnforcer(
-                        mode=mode,
-                        yolo=yolo,
-                        audit_all=True,
-                    )
-
-                    # Add workspace boundary policy
+                    # Publish only after all configured policies are valid.
                     if _WorkspaceBoundaryPolicy is not None:
                         boundary_policy = _WorkspaceBoundaryPolicy(
                             workspace_root=self.workspace_root,
                             project_root=self.project_root,
                             mode=mode,
+                            allowed_paths=security_policy.get("allowed_paths"),
+                            denied_paths=security_policy.get("denied_paths"),
+                            require_approval=security_policy.get("require_approval"),
                         )
-                        self._permission_enforcer.add_policy(boundary_policy)
+                        enforcer.add_policy(boundary_policy)
 
                     # Add mode-aware plan/build policy (hard block in plan mode).
                     if _AgentModePolicy is not None:
-                        self._permission_enforcer.add_policy(_AgentModePolicy())
+                        enforcer.add_policy(_AgentModePolicy())
+                    self._permission_enforcer = enforcer
 
                     if _WorkspaceBoundaryPolicy is not None:
                         logger.info(
@@ -2454,6 +2482,29 @@ class ToolManager:
         coroutine execution.
         """
 
+        from penguin.security.scoped_paths import (
+            enforce_execution_path,
+            execution_roots,
+        )
+
+        if execution_roots() is not None:
+            from penguin.security.tool_approval import approval_identity
+            from penguin.security.tool_permissions import get_tool_operations
+
+            if any(
+                op.category == "filesystem" for op in get_tool_operations(tool_name)
+            ):
+                try:
+                    _, _, scoped_resources = approval_identity(
+                        tool_name, tool_input, context
+                    )
+                    for resource in scoped_resources:
+                        enforce_execution_path(Path(resource))
+                except (ValueError, OSError) as exc:
+                    return json.dumps(
+                        {"error": "permission_denied", "tool": tool_name,
+                         "reason": str(exc)}
+                    )
         if not self._permission_enabled:
             return None
 
@@ -2905,10 +2956,24 @@ class ToolManager:
                 self._lazy_initialized["pydoll_tools"] = True
         return self._pydoll_browser_scroll_tool
 
+    def _get_mcp_provider(self) -> MCPToolProvider:
+        """Resolve MCP tools from the current request, preserving global defaults."""
+        return active_mcp_provider(self, self._mcp_provider)
+
     def get_tools(self):
         """Get available tool schemas."""
         tools = list(self.tools)
-        tools.extend(self._mcp_provider.get_tool_schemas())
+        from penguin.core_runtime.isolation import runtime_isolated
+        if runtime_isolated():
+            tools = [tool for tool in tools if tool.get("name") != "code_execution"]
+        tools.extend(self._get_mcp_provider().get_tool_schemas())
+        from penguin.tools.providers.client import active_client_tools
+
+        client = active_client_tools(self)
+        if client is not None:
+            tools = [
+                mapped for tool in tools if (mapped := client.schema(tool)) is not None
+            ]
         return tools
 
     @property
@@ -2923,19 +2988,19 @@ class ToolManager:
 
     def get_mcp_status(self) -> Dict[str, Any]:
         """Return MCP provider diagnostics."""
-        return self._mcp_provider.status()
+        return self._get_mcp_provider().status()
 
     def refresh_mcp_tools(self) -> List[Dict[str, Any]]:
         """Force MCP tool rediscovery and return fresh schemas."""
-        return self._mcp_provider.refresh()
+        return self._get_mcp_provider().refresh()
 
     def reconnect_mcp(self, server_name: Optional[str] = None) -> Dict[str, Any]:
         """Reconnect one or all MCP servers."""
-        return self._mcp_provider.reconnect(server_name)
+        return self._get_mcp_provider().reconnect(server_name)
 
     def close_mcp(self) -> Dict[str, Any]:
         """Close MCP sessions."""
-        return self._mcp_provider.close()
+        return self._get_mcp_provider().close()
 
     def get_tool_aliases(self) -> Dict[str, str]:
         """Return centralized legacy-to-canonical tool aliases."""
@@ -3021,6 +3086,7 @@ class ToolManager:
             "execute_command",
             "process_start",
             "process_poll",
+            "process_status",
             "process_write_stdin",
             "process_stop",
             ORDERED_TOOL_BATCH_NAME,
@@ -3068,6 +3134,14 @@ class ToolManager:
             self._canonical_tool_name(name)
             for name in (allowed_names or default_allowed)
         }
+        if allowed_names is None:
+            # Negotiated session MCP tools are discovered at request time, so
+            # they cannot appear in the static built-in default allowlist.
+            allowed.update(
+                tool["name"]
+                for tool in self._get_mcp_provider().get_tool_schemas()
+                if isinstance(tool.get("name"), str)
+            )
         if not subagents_enabled():
             allowed.difference_update(SUBAGENT_TOOL_NAMES)
         responses_tools: List[Dict[str, Any]] = []
@@ -3099,8 +3173,9 @@ class ToolManager:
     def get_tool(self, tool_name: str):
         """Get a tool instance on-demand with caching."""
         tool_name = self._canonical_tool_name(tool_name)
-        if self._mcp_provider.is_mcp_tool(tool_name):
-            return lambda **kwargs: self._mcp_provider.execute_tool(tool_name, kwargs)
+        provider = self._get_mcp_provider()
+        if provider.is_mcp_tool(tool_name):
+            return lambda **kwargs: provider.execute_tool(tool_name, kwargs)
 
         if tool_name in self._tool_instances:
             return self._tool_instances[tool_name]
@@ -3767,7 +3842,9 @@ class ToolManager:
             finally:
                 result_container["done"] = True
 
-        t = threading.Thread(target=_runner, daemon=True)
+        from contextvars import copy_context
+        worker_context = copy_context()
+        t = threading.Thread(target=lambda: worker_context.run(_runner), daemon=True)
         t.start()
         t.join(timeout=default_timeout)
         if not result_container["done"]:
@@ -3818,7 +3895,9 @@ class ToolManager:
             finally:
                 result_container["done"] = True
 
-        t = threading.Thread(target=_runner, daemon=True)
+        from contextvars import copy_context
+        worker_context = copy_context()
+        t = threading.Thread(target=lambda: worker_context.run(_runner), daemon=True)
         t.start()
         t.join(timeout=default_timeout)
         if not result_container["done"]:
@@ -4426,18 +4505,43 @@ class ToolManager:
         Returns:
             Completed tool output.
         """
+        disabled = self._isolated_tool_error(tool_name)
+        if disabled is not None:
+            return disabled
         return await self._async_tool_dispatcher.execute(
             tool_name,
             tool_input,
             context,
         )
 
+    def _isolated_tool_error(self, tool_name: str) -> Optional[str]:
+        from penguin.core_runtime.isolation import runtime_isolated
+        if (
+            runtime_isolated()
+            and self._canonical_tool_name(tool_name) == "code_execution"
+        ):
+            return json.dumps({
+                "error": "in_process_python_unavailable_in_isolated_runtime",
+                "reason": "Use execute_command with a Python subprocess",
+            })
+        return None
+
     def execute_tool(
         self, tool_name: str, tool_input: dict, context: dict = None
     ) -> Union[str, dict]:
         with profile_operation(f"ToolManager.execute_tool.{tool_name}"):
+            disabled = self._isolated_tool_error(tool_name)
+            if disabled is not None:
+                return disabled
             requested_tool_name = tool_name
             tool_name = self._canonical_tool_name(tool_name)
+            from penguin.tools.providers.client import active_client_tools
+
+            client = active_client_tools(self)
+            if client is not None and client.handles(tool_name):
+                return json.dumps(
+                    {"error": "client_tool_requires_async_dispatch", "tool": tool_name}
+                )
             effective_context = self._merged_execution_context(context)
             if tool_name in SUBAGENT_TOOL_NAMES and not subagents_enabled(
                 effective_context
@@ -4463,13 +4567,13 @@ class ToolManager:
                     effective_context, tool_input
                 )
 
-            if self._mcp_provider.is_mcp_tool(tool_name):
+            if self._get_mcp_provider().is_mcp_tool(tool_name):
                 permission_response = self._permission_response(
                     tool_name, tool_input, effective_context
                 )
                 if permission_response is not None:
                     return permission_response
-                return self._mcp_provider.execute_tool(tool_name, tool_input)
+                return self._get_mcp_provider().execute_tool(tool_name, tool_input)
 
             tool_input = self._normalize_tool_input_paths(tool_input, file_root)
             if tool_name in {"execute_command", "process_start"}:
@@ -4552,6 +4656,9 @@ class ToolManager:
                     "process_start",
                     tool_input,
                     {**effective_context, "directory": file_root},
+                ),
+                "process_status": lambda: self.process_tools.execute(
+                    "process_status", tool_input, effective_context
                 ),
                 "process_poll": lambda: self.process_tools.execute(
                     "process_poll", tool_input, effective_context
@@ -4981,7 +5088,9 @@ class ToolManager:
             finally:
                 result_container["done"] = True
 
-        t = threading.Thread(target=_runner, daemon=True)
+        from contextvars import copy_context
+        worker_context = copy_context()
+        t = threading.Thread(target=lambda: worker_context.run(_runner), daemon=True)
         t.start()
         t.join(timeout=default_timeout)
 
@@ -6380,9 +6489,14 @@ class ToolManager:
         if self._agent_executor is None and create:
             if self._core is None:
                 raise RuntimeError("Core unavailable for background agent execution")
-            from penguin.multi.executor import AgentExecutor
+            from penguin.core_runtime.isolation import runtime_isolated
+            from penguin.multi.executor import AgentExecutor, get_executor
 
-            self._agent_executor = AgentExecutor(self._core)
+            self._agent_executor = (
+                get_executor(self._core)
+                if runtime_isolated()
+                else AgentExecutor(self._core)
+            )
         return self._agent_executor
 
     async def shutdown_background_agents(self) -> int:
@@ -6484,19 +6598,27 @@ class ToolManager:
 
         delivered_targets: list[str] = []
         failed_targets: list[str] = []
+        deliveries: dict[str, str] = {}
         for tgt in targets:
             msg = ProtocolMessage(
-                sender=None,  # Will be set by context
+                sender=get_current_execution_context_dict().get("agent_id") or "default",
                 recipient=tgt,
                 content=content,
                 message_type=message_type,
                 metadata=metadata,
                 channel=channel,
+                message_id=str(uuid.uuid4()),
             )
             try:
-                delivered = await bus.send(msg)
+                engine = getattr(self._core, "engine", None)
+                queue_message = getattr(engine, "queue_agent_message", None)
+                if tgt != "human" and asyncio.iscoroutinefunction(queue_message):
+                    delivered = await queue_message(msg)
+                else:
+                    delivered = await bus.send(msg)
                 if delivered:
                     delivered_targets.append(tgt)
+                    deliveries[tgt] = msg.message_id
                 else:
                     failed_targets.append(tgt)
             except Exception as e:
@@ -6508,9 +6630,11 @@ class ToolManager:
                     "error": "message_delivery_failed",
                     "sent_to": delivered_targets,
                     "failed": failed_targets,
+                    "recovery": "Verify the target is registered in this runtime; inspect get_agent_status or stop_sub_agent before retrying.",
                 }
             )
-        return json.dumps({"sent_to": delivered_targets, "status": "ok"})
+        return json.dumps({"sent_to": delivered_targets, "status": "ok",
+                           "message_ids": deliveries})
 
     async def _execute_spawn_sub_agent(self, tool_input: Dict[str, Any]) -> str:
         """Execute spawn_sub_agent tool.
@@ -7061,7 +7185,7 @@ class ToolManager:
             timeout,
         )
 
-        poll_interval_seconds = 0.05
+        poll_interval_seconds = 0.1
         start = time.monotonic()
         poll_count = 0
         next_progress_log_at = 0.0
@@ -7178,12 +7302,26 @@ class ToolManager:
                     }
                 )
 
+            wait_for_change = getattr(executor, "wait_for_change", None)
+            if callable(wait_for_change):
+                remaining = (
+                    max(0.0, float(timeout) - elapsed) if timeout is not None else None
+                )
+                await wait_for_change(
+                    [aid for aid, status in status_by_agent.items()
+                     if status.get("state") not in terminal_states],
+                    timeout=remaining,
+                )
+                continue
+
+            # Compatibility with executor adapters without completion events.
             sleep_seconds = poll_interval_seconds
             if timeout is not None:
                 remaining = float(timeout) - elapsed
                 if remaining < sleep_seconds:
                     sleep_seconds = max(remaining, 0.0)
             await asyncio.sleep(sleep_seconds)
+            poll_interval_seconds = min(2.0, poll_interval_seconds * 2)
 
     async def _execute_get_context_info(self, tool_input: Dict[str, Any]) -> str:
         """Get context window sharing information for an agent.
@@ -7333,7 +7471,9 @@ class ToolManager:
                     )
                     return json.dumps(
                         {
-                            "error": f"Agent '{child}' is already running a background task"
+                            "error": f"Agent '{child}' is already running a background task",
+                            "code": "agent_busy",
+                            "recovery": "Use send_message to steer the running child, get_agent_status to inspect it, or stop_sub_agent to cancel it."
                         }
                     )
 

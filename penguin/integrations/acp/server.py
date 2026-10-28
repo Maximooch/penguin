@@ -1,37 +1,85 @@
 """Local editor-facing ACP v1 adapter. Optional dependency: penguin-ai[acp].
 
-Only text prompts, new sessions, streaming text, permissions, and cancellation are
-implemented. In particular, load and client-provided MCP are not advertised.
+Workspace-scoped prompts, persistence, tools, permissions, client MCP, session
+controls and negotiated experimental child-session events are implemented.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import re
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from acp import PROTOCOL_VERSION, RequestError, run_agent
 from acp.helpers import text_block
-from acp.interfaces import Client
 from acp.schema import (
+    AgentCapabilities,
     AgentMessageChunk,
+    AvailableCommand,
+    AvailableCommandsUpdate,
     ClientCapabilities,
+    CloseSessionResponse,
+    ConfigOptionUpdate,
+    CurrentModeUpdate,
+    DeleteSessionRequest,
+    DeleteSessionResponse,
     Implementation,
     InitializeResponse,
+    ListSessionsResponse,
+    LoadSessionResponse,
+    McpCapabilities,
     NewSessionResponse,
-    PermissionOption,
+    PromptCapabilities,
+    PromptRequest,
     PromptResponse,
-    TextContentBlock,
-    ToolCallStart,
+    ResumeSessionResponse,
+    SessionAdditionalDirectoriesCapabilities,
+    SessionCapabilities,
+    SessionCloseCapabilities,
+    SessionConfigOptionSelect,
+    SessionConfigSelectOption,
+    SessionDeleteCapabilities,
+    SessionInfo,
+    SessionListCapabilities,
+    SessionResumeCapabilities,
+    SetSessionConfigOptionResponse,
+    SetSessionModeResponse,
+    ToolCallUpdate,
+    UserMessageChunk,
 )
 
 from penguin._version import __version__
-from penguin.security.approval import ApprovalRequest, ApprovalScope, ApprovalStatus, get_approval_manager
+from penguin.integrations.acp.children import ChildTracker
+from penguin.integrations.acp.client_files import ClientFiles
+from penguin.integrations.acp.client_terminals import DEFAULT_SHELL, ClientTerminals
+from penguin.integrations.acp.content import prepare_prompt
+from penguin.integrations.acp.controls import SessionControls
+from penguin.integrations.acp.events import EventBridge
+from penguin.integrations.acp.grants import ExactGrants
+from penguin.integrations.acp.mcp import session_provider
+from penguin.integrations.acp.processes import ProcessTracker
+from penguin.integrations.acp.questions import QuestionBridge
+from penguin.integrations.acp.sessions import SessionRegistry
+from penguin.integrations.mcp.manager import HAS_MCP_SDK
+from penguin.security.approval import (
+    ApprovalRequest,
+    ApprovalScope,
+    ApprovalStatus,
+    get_approval_manager,
+)
 from penguin.system.execution_context import ExecutionContext, execution_context_scope
+from penguin.tools.providers.client import client_tool_scope
+from penguin.tools.providers.mcp import mcp_provider_scope
+
+if TYPE_CHECKING:
+    from acp.interfaces import Client
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +87,18 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Session:
     cwd: Path
+    roots: tuple[Path, ...] = ()
     task: asyncio.Task[Any] | None = None
     cancelled: bool = False
     running: bool = False
+    mcp_provider: Any = None
+    mode: str = "build"
+    model_id: str = "default"
+    model_config: Any = None
+    api_client: Any = None
+    filesystem: str = "local"
+    terminal: bool = False
+    shell: str = DEFAULT_SHELL
 
 
 class PenguinACPAgent:
@@ -59,20 +116,108 @@ class PenguinACPAgent:
         self._process_gate = asyncio.Lock()
         self._connection: Client | None = None
         self._approval_tasks: set[asyncio.Task[Any]] = set()
+        self._approval_tasks_by_session: dict[str, set[asyncio.Task[Any]]] = {}
+        self._approval_state_locks: dict[str, asyncio.Lock] = {}
+        self._closed = False
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._initialized = False
+        self._client_file_support = False
+        self._client_terminal_support = False
         self._approvals = get_approval_manager()
         self._approvals.on_request_created(self._on_approval)
+        self._registry = SessionRegistry(core, self.allowed_roots)
+        self._controls = SessionControls(core)
+        self._image_support = self._registry.available and bool(
+            getattr(getattr(core, "model_config", None), "vision_enabled", False)
+        )
+        if self._registry.available and callable(
+            getattr(core, "list_available_models", None)
+        ):
+            self._image_support = self._image_support or any(
+                item.get("vision_enabled") for item in core.list_available_models()
+            )
+        self._mcp_support = HAS_MCP_SDK and hasattr(core, "tool_manager")
+        self._events = EventBridge(
+            getattr(core, "event_bus", None),
+            self._active_cwd,
+            self._send_update,
+            self._roots_for,
+        )
+        self._transport = None
+        self._children = ChildTracker(self)
+        self._processes = ProcessTracker(self)
+        self._questions = QuestionBridge(self)
+        self._grants = ExactGrants(self)
+
+    def _active_cwd(self, sid: str) -> Path | None:
+        session = self.sessions.get(sid)
+        if session and session.running:
+            return session.cwd
+        child = self._children.children.get(sid)
+        return child.cwd if child and child.active else None
+
+    def _roots_for(self, sid: str) -> tuple[Path, ...]:
+        child = self._children.children.get(sid)
+        session = self.sessions.get(child.root if child else sid)
+        return (session.roots or (session.cwd,)) if session else ()
+
+    async def _send_update(self, sid: str, update: Any) -> None:
+        if sid in self._children.children:
+            await self._children.send(sid, update)
+            return
+        self._registry.record(sid, update)
+        if self._connection is not None:
+            await self._connection.session_update(session_id=sid, update=update)
 
     def on_connect(self, conn: Client) -> None:
         self._connection = conn
 
     def close(self) -> None:
+        self._closed = True
+        self._questions.close()
+        self._processes.close()
+        self._children.close()
+        self._events.close()
+        for session in self.sessions.values():
+            if session.mcp_provider is not None:
+                try:
+                    session.mcp_provider.close()
+                except Exception:
+                    logger.warning("Could not close ACP MCP provider", exc_info=True)
         self._approvals.remove_callback(self._on_approval)
         for task in self._approval_tasks:
             task.cancel()
-        for sid in self.sessions:
-            for request in self._approvals.get_pending(sid):
-                self._approvals.deny(request.id)
+        for sid in set(self.sessions) | set(self._children.children):
+            self._cancel_approvals(sid)
+
+    def _cancel_approvals(self, sid: str) -> None:
+        """Deny requests before cancelling their network waiters."""
+        if sid in self._children.children:
+            self._grants.close(sid)
+        self._questions.cancel(sid)
+        for request in self._approvals.get_pending(sid):
+            self._approvals.deny(request.id)
+        try:
+            current = asyncio.current_task()
+        except RuntimeError:
+            current = None
+        for task in self._approval_tasks_by_session.get(sid, set()).copy():
+            if task is not current:
+                task.cancel()
+
+    async def _update_child_approval_state(self, sid: str) -> None:
+        """Keep requires_action until the last pending request is resolved."""
+        lock = self._approval_state_locks.setdefault(sid, asyncio.Lock())
+        async with lock:
+            child = self._children.children.get(sid)
+            if child and child.active and not child.cancelled and not self._closed:
+                state = (
+                    "requires_action"
+                    if self._approvals.get_pending(sid)
+                    or self._questions.manager.list_pending(sid)
+                    else "running"
+                )
+                await self._children.state(sid, state)
 
     async def initialize(
         self,
@@ -84,9 +229,47 @@ class PenguinACPAgent:
         if protocol_version < PROTOCOL_VERSION:
             raise RequestError.invalid_params({"protocolVersion": protocol_version})
         self._loop = asyncio.get_running_loop()
+        self._initialized = True
+        elicitation = getattr(client_capabilities, "elicitation", None)
+        self._questions.supported = getattr(elicitation, "form", None) is not None
+        fs = getattr(client_capabilities, "fs", None)
+        self._client_file_support = bool(
+            getattr(fs, "read_text_file", False)
+            and getattr(fs, "write_text_file", False)
+            and hasattr(self.core, "tool_manager")
+        )
+        self._client_terminal_support = bool(
+            getattr(client_capabilities, "terminal", False)
+        )
         return InitializeResponse(
             protocol_version=PROTOCOL_VERSION,
             agent_info=Implementation(name="penguin", version=__version__),
+            agent_capabilities=AgentCapabilities(
+                mcp_capabilities=McpCapabilities(
+                    http=self._mcp_support, sse=self._mcp_support
+                ),
+                prompt_capabilities=PromptCapabilities(
+                    image=self._image_support, embedded_context=self._registry.available
+                ),
+                load_session=self._registry.available,
+                session_capabilities=SessionCapabilities(
+                    additional_directories=SessionAdditionalDirectoriesCapabilities(),
+                    list=SessionListCapabilities()
+                    if self._registry.available
+                    else None,
+                    resume=SessionResumeCapabilities()
+                    if self._registry.available
+                    else None,
+                    close=SessionCloseCapabilities()
+                    if self._registry.available
+                    else None,
+                    delete=SessionDeleteCapabilities()
+                    if self._registry.available
+                    and self._transport is not None
+                    and "session/delete" in getattr(self._transport, "handlers", {})
+                    else None,
+                ),
+            ),
         )
 
     async def new_session(
@@ -96,84 +279,778 @@ class PenguinACPAgent:
         mcp_servers: list[Any] | None = None,
         **kwargs: Any,
     ) -> NewSessionResponse:
-        if additional_directories or mcp_servers:
-            raise RequestError.invalid_params({"reason": "Additional directories and MCP servers are not yet supported"})
+        if mcp_servers and not self._mcp_support:
+            raise RequestError.invalid_params({"reason": "MCP servers are unsupported"})
         directory = Path(cwd).expanduser()
         if not directory.is_absolute() or not directory.is_dir():
             raise RequestError.invalid_params({"cwd": cwd})
         directory = directory.resolve()
-        if not any(directory == root or root in directory.parents for root in self.allowed_roots):
-            raise RequestError.invalid_params({"reason": "cwd is outside the authorized workspace"})
+        roots = self._registry.validate_roots(directory, additional_directories)
+        if not any(
+            directory == root or root in directory.parents
+            for root in self.allowed_roots
+        ):
+            raise RequestError.invalid_params(
+                {"reason": "cwd is outside the authorized workspace"}
+            )
         # PenguinCore's create_conversation is synchronous, despite the web
         # interface's separate async convenience wrapper.
-        sid = self.core.create_conversation()
-        self.sessions[sid] = Session(cwd=directory)
-        return NewSessionResponse(session_id=sid)
+        async with self._process_gate:
+            provider = await self._new_mcp_provider(mcp_servers, directory)
+            try:
+                sid = self.core.create_conversation()
+                self._registry.create(sid, directory, roots)
+                self.sessions[sid] = Session(
+                    cwd=directory, roots=roots, mcp_provider=provider
+                )
+            except BaseException:
+                if provider is not None:
+                    await asyncio.to_thread(provider.close)
+                raise
+        # Editors register the new session only after its response. Sending
+        # commands earlier loses discovery in clients such as Zed.
+        if self._transport is None:
+            await self._send_commands(sid)
+        return NewSessionResponse(
+            session_id=sid,
+            modes=self._controls.modes("build"),
+            config_options=self._options("default"),
+        )
 
-    async def prompt(self, session_id: str, prompt: list[Any], **kwargs: Any) -> PromptResponse:
+    async def _send_commands(self, sid: str) -> None:
+        if self._connection is not None and self._initialized:
+            commands = [
+                AvailableCommand(
+                    name="status", description="Show this session's mode and model."
+                )
+            ]
+            if hasattr(self.core, "tool_manager"):
+                commands.append(
+                    AvailableCommand(
+                        name="mcp",
+                        description="Show this session's connected MCP servers.",
+                    )
+                )
+            commands.append(
+                AvailableCommand(
+                    name="permissions",
+                    description="Show grant counts; /permissions reset revokes them.",
+                )
+            )
+            await self._connection.session_update(
+                session_id=sid,
+                update=AvailableCommandsUpdate(
+                    session_update="available_commands_update",
+                    available_commands=commands,
+                ),
+            )
+
+    def _idle_session(self, sid: str) -> Session:
+        session = self.sessions.get(sid)
+        if session is None or session.task is not None:
+            raise RequestError.invalid_request({"reason": "Session is missing or busy"})
+        return session
+
+    def _save_controls(self, sid: str) -> None:
+        if self._registry.available:
+            saved = self._registry.get(sid)
+            session = self.sessions[sid]
+            saved.metadata["acp_mode"] = session.mode
+            saved.metadata["acp_model"] = session.model_id
+            saved.metadata["acp_filesystem"] = session.filesystem
+            saved.metadata["acp_client_terminal"] = session.terminal
+            saved.metadata["acp_client_shell"] = session.shell
+            self._registry.save(saved)
+
+    def _options(
+        self,
+        model_id: str,
+        filesystem: str = "local",
+        terminal: bool = False,
+        shell: str = DEFAULT_SHELL,
+    ) -> list[Any]:
+        options = self._controls.options(model_id)
+        if self._client_file_support:
+            options.append(
+                SessionConfigOptionSelect(
+                    id="file_access",
+                    name="Text-file access",
+                    type="select",
+                    current_value=filesystem,
+                    options=[
+                        SessionConfigSelectOption(
+                            value="local", name="Local Penguin tools"
+                        ),
+                        SessionConfigSelectOption(
+                            value="client", name="ACP client text buffers"
+                        ),
+                    ],
+                )
+            )
+        if filesystem == "client" and self._client_terminal_support:
+            options.extend(
+                [
+                    SessionConfigOptionSelect(
+                        id="client_terminal",
+                        name="Client commands",
+                        type="select",
+                        current_value="client" if terminal else "disabled",
+                        options=[
+                            SessionConfigSelectOption(
+                                value="disabled", name="Disabled"
+                            ),
+                            SessionConfigSelectOption(
+                                value="client", name="Client foreground terminal"
+                            ),
+                        ],
+                    ),
+                    SessionConfigOptionSelect(
+                        id="client_shell",
+                        name="Client shell",
+                        type="select",
+                        current_value=shell,
+                        options=[
+                            SessionConfigSelectOption(value=v, name=n)
+                            for v, n in (
+                                ("cmd", "Windows cmd"),
+                                ("pwsh", "PowerShell"),
+                                ("sh", "POSIX sh"),
+                            )
+                        ],
+                    ),
+                ]
+            )
+        return options
+
+    async def set_session_mode(
+        self, session_id: str, mode_id: str, **kwargs: Any
+    ) -> SetSessionModeResponse:
+        session = self._idle_session(session_id)
+        if mode_id not in {
+            mode.id for mode in self._controls.modes(session.mode).available_modes
+        }:
+            raise RequestError.invalid_params({"reason": "Unknown session mode"})
+        async with self._process_gate:
+            session = self._idle_session(session_id)
+            session.mode = mode_id
+            self._save_controls(session_id)
+            await self._send_update(
+                session_id,
+                CurrentModeUpdate(
+                    session_update="current_mode_update", current_mode_id=mode_id
+                ),
+            )
+        return SetSessionModeResponse()
+
+    async def set_config_option(
+        self, session_id: str, config_id: str, value: str, **kwargs: Any
+    ) -> SetSessionConfigOptionResponse:
+        session = self._idle_session(session_id)
+        if config_id in {"file_access", "client_terminal", "client_shell"}:
+            if any(
+                child.active and child.root == session_id
+                for child in self._children.children.values()
+            ):
+                raise RequestError.invalid_request(
+                    {"reason": "Active children still use this backend"}
+                )
+            allowed = {
+                "file_access": {"local", "client"},
+                "client_terminal": {"disabled", "client"},
+                "client_shell": {"cmd", "pwsh", "sh"},
+            }[config_id]
+            if value not in allowed or (
+                config_id == "file_access"
+                and value == "client"
+                and not self._client_file_support
+            ):
+                raise RequestError.invalid_params(
+                    {"reason": "Client text files are unavailable"}
+                )
+            if config_id != "file_access" and (
+                session.filesystem != "client" or not self._client_terminal_support
+            ):
+                raise RequestError.invalid_params(
+                    {"reason": "Client terminal is unavailable"}
+                )
+            async with self._process_gate:
+                session = self._idle_session(session_id)
+                if config_id == "file_access":
+                    session.filesystem = value
+                    if value == "local":
+                        session.terminal = False
+                elif config_id == "client_terminal":
+                    session.terminal = value == "client"
+                else:
+                    session.shell = value
+                self._save_controls(session_id)
+                options = self._options(
+                    session.model_id,
+                    session.filesystem,
+                    session.terminal,
+                    session.shell,
+                )
+                await self._send_update(
+                    session_id,
+                    ConfigOptionUpdate(
+                        session_update="config_option_update",
+                        config_options=options,
+                    ),
+                )
+            return SetSessionConfigOptionResponse(config_options=options)
+        if config_id != "model" or not isinstance(value, str):
+            raise RequestError.invalid_params(
+                {"reason": "Unknown configuration option"}
+            )
+        async with self._process_gate:
+            session = self._idle_session(session_id)
+            config, client = await self._controls.resolve(value)
+            session.model_id, session.model_config, session.api_client = (
+                value,
+                config,
+                client,
+            )
+            self._save_controls(session_id)
+            options = self._options(
+                value, session.filesystem, session.terminal, session.shell
+            )
+            await self._send_update(
+                session_id,
+                ConfigOptionUpdate(
+                    session_update="config_option_update", config_options=options
+                ),
+            )
+        return SetSessionConfigOptionResponse(config_options=options)
+
+    async def _new_mcp_provider(self, servers: list[Any] | None, cwd: Path) -> Any:
+        if not servers:
+            return None
+        if not self._mcp_support:
+            raise RequestError.invalid_params({"reason": "Client MCP is unavailable"})
+        provider = session_provider(servers, cwd, self.core.tool_manager.config)
+        try:
+            await asyncio.to_thread(provider.get_tool_schemas)
+            if any(
+                item["status"] != "connected"
+                for item in provider.status()["servers"].values()
+            ):
+                raise RequestError.internal_error(
+                    {"reason": "MCP server could not connect"}
+                )
+        except BaseException:
+            await asyncio.to_thread(provider.close)
+            raise
+        return provider
+
+    async def load_session(
+        self,
+        cwd: str,
+        session_id: str,
+        mcp_servers: list[Any] | None = None,
+        additional_directories: list[str] | None = None,
+        **kwargs: Any,
+    ) -> LoadSessionResponse:
+        """Restore only this adapter's sessions and replay before acknowledging."""
+        await self._restore_session(
+            cwd, session_id, mcp_servers, additional_directories, replay=True
+        )
+        session = self.sessions[session_id]
+        return LoadSessionResponse(
+            modes=self._controls.modes(session.mode),
+            config_options=self._options(
+                session.model_id, session.filesystem, session.terminal, session.shell
+            ),
+        )
+
+    async def resume_session(
+        self,
+        cwd: str,
+        session_id: str,
+        mcp_servers: list[Any] | None = None,
+        additional_directories: list[str] | None = None,
+        **kwargs: Any,
+    ) -> ResumeSessionResponse:
+        """Restore context without sending historical updates again."""
+        await self._restore_session(
+            cwd, session_id, mcp_servers, additional_directories, replay=False
+        )
+        session = self.sessions[session_id]
+        return ResumeSessionResponse(
+            modes=self._controls.modes(session.mode),
+            config_options=self._options(
+                session.model_id, session.filesystem, session.terminal, session.shell
+            ),
+        )
+
+    async def close_session(
+        self, session_id: str, **kwargs: Any
+    ) -> CloseSessionResponse:
+        """Cancel active work and detach the session without deleting its history."""
+        session = self.sessions.get(session_id)
+        if session is None:
+            raise RequestError.invalid_params({"reason": "Session is not open"})
+        task = session.task
+        if task is not None:
+            await self.cancel(session_id)
+            await asyncio.shield(task)
+        await self._children.close_root(session_id)
+        if session.mcp_provider is not None:
+            await asyncio.to_thread(session.mcp_provider.close)
+        self.sessions.pop(session_id, None)
+        self._grants.close(session_id)
+        for child_id, child in self._children.children.items():
+            if child.root == session_id:
+                self._grants.close(child_id)
+        return CloseSessionResponse()
+
+    async def delete_session(self, session_id: str) -> DeleteSessionResponse:
+        """Delete only indexed ACP-owned history; reject all busy sessions."""
+        if not self._registry.available:
+            raise RequestError.method_not_found("session/delete")
+        active = self.sessions.get(session_id)
+        if active and active.task is not None:
+            raise RequestError.invalid_request({"reason": "Session is busy"})
+        async with self._process_gate:
+            session = self._registry.get(session_id)
+            if session is None or self._registry.cwd(session) is None:
+                raise RequestError.invalid_params({"reason": "Unknown owned session"})
+            active = self.sessions.get(session_id)
+            if (active and active.task is not None) or any(
+                child.root == session_id and child.active
+                for child in self._children.children.values()
+            ):
+                raise RequestError.invalid_request({"reason": "Session is busy"})
+            if any(
+                sid == session_id and not state.get("completed")
+                for (sid, _), state in self._processes.states.items()
+            ):
+                raise RequestError.invalid_request(
+                    {"reason": "Session has an unresolved background process"}
+                )
+            base = self._registry.store.base_path.resolve()
+            assets = base / "acp-assets" / session_id
+            journal = base / "acp-history" / (session_id + ".jsonl")
+            for path in (assets, journal):
+                if not path.resolve().is_relative_to(base):
+                    raise RequestError.invalid_params({"reason": "Unsafe storage path"})
+            if active is not None:
+                await self.close_session(session_id)
+            delete = getattr(
+                self.core.conversation_manager,
+                "delete_conversation",
+                self._registry.store.delete_session,
+            )
+            if not delete(session_id):
+                raise RequestError.internal_error(
+                    {"reason": "Could not delete session"}
+                )
+            journal.unlink(missing_ok=True)
+            if assets.exists():
+                shutil.rmtree(assets)
+        return DeleteSessionResponse()
+
+    async def _delete_request(self, params: Any) -> DeleteSessionResponse:
+        if not self._initialized:
+            raise RequestError.invalid_request({"reason": "Initialize first"})
+        request = DeleteSessionRequest.model_validate(params)
+        return await self.delete_session(request.session_id)
+
+    async def _prompt_request(self, params: Any) -> PromptResponse:
+        if not self._initialized:
+            raise RequestError.invalid_request({"reason": "Initialize first"})
+        request = PromptRequest.model_validate(params)
+        return await self.prompt(request.session_id, request.prompt)
+
+    async def _cancel_prompt_request(
+        self, params: Any, task: asyncio.Task[Any]
+    ) -> None:
+        request = PromptRequest.model_validate(params)
+        session = self.sessions.get(request.session_id)
+        if session is not None and session.task is task:
+            await self.cancel(request.session_id)
+
+    async def _restore_session(
+        self,
+        cwd: str,
+        session_id: str,
+        mcp_servers: list[Any] | None,
+        additional_directories: list[str] | None,
+        *,
+        replay: bool,
+    ) -> None:
+        if mcp_servers and not self._mcp_support:
+            raise RequestError.invalid_params({"reason": "Unsupported session options"})
+        if self._connection is None:
+            raise RequestError.internal_error()
+        active = self.sessions.get(session_id)
+        if active and active.task is not None:
+            raise RequestError.invalid_request({"reason": "Session is busy"})
+        async with self._process_gate:
+            saved = self._registry.get(session_id)
+            owned_cwd = self._registry.cwd(saved)
+            if (
+                owned_cwd is None
+                or Path(cwd).resolve() != owned_cwd
+                or not Path(cwd).is_absolute()
+            ):
+                raise RequestError.invalid_params(
+                    {"reason": "Session workspace does not match"}
+                )
+            history = self._registry.history(saved)
+            roots = self._registry.validate_roots(owned_cwd, additional_directories)
+            if any(
+                child.active and child.root == session_id
+                for child in self._children.children.values()
+            ):
+                raise RequestError.invalid_request(
+                    {"reason": "Session has active children"}
+                )
+            model_id = saved.metadata.get("acp_model", "default")
+            filesystem = saved.metadata.get("acp_filesystem", "local")
+            terminal = saved.metadata.get("acp_client_terminal", False)
+            shell = saved.metadata.get("acp_client_shell", DEFAULT_SHELL)
+            if (
+                type(terminal) is not bool
+                or shell not in {"cmd", "pwsh", "sh"}
+                or (
+                    terminal
+                    and (filesystem != "client" or not self._client_terminal_support)
+                )
+            ):
+                raise RequestError.invalid_params(
+                    {"reason": "Saved client terminal is unavailable"}
+                )
+            if filesystem not in {"local", "client"} or (
+                filesystem == "client" and not self._client_file_support
+            ):
+                raise RequestError.invalid_params(
+                    {"reason": "Saved client text-file mode is unavailable"}
+                )
+            mode = saved.metadata.get("acp_mode", "build")
+            if not isinstance(model_id, str) or mode not in {"build", "plan"}:
+                raise RequestError.invalid_params(
+                    {"reason": "Invalid stored session configuration"}
+                )
+            if mode == "plan" and not self._controls.supports_plan:
+                raise RequestError.invalid_params(
+                    {"reason": "Stored plan mode requires permission enforcement"}
+                )
+            config, client = (
+                await self._controls.resolve(model_id)
+                if model_id != "default"
+                else (None, None)
+            )
+            provider = await self._new_mcp_provider(mcp_servers, owned_cwd)
+            if active and active.mcp_provider is not None:
+                await asyncio.to_thread(active.mcp_provider.close)
+            self.sessions[session_id] = Session(
+                cwd=owned_cwd,
+                roots=roots,
+                mcp_provider=provider,
+                mode=mode if mode in {"build", "plan"} else "build",
+                model_id=model_id,
+                model_config=config,
+                api_client=client,
+                filesystem=filesystem,
+                terminal=terminal,
+                shell=shell,
+            )
+            saved.metadata["acp_additional_directories"] = [
+                str(root) for root in roots[1:]
+            ]
+            saved.metadata["execution_allowed_roots"] = [
+                str(root) for root in self._registry.execution_roots(session_id, roots)
+            ]
+            self._registry.save(saved)
+            self._grants.restore(session_id, saved)
+            for update in history:
+                if not isinstance(update, dict):
+                    self._processes.restore(session_id, update)
+            if replay:
+                for update in history:
+                    if isinstance(update, dict):
+                        await self._children.replay(session_id, update)
+                    else:
+                        await self._connection.session_update(
+                            session_id=session_id, update=update
+                        )
+                await self._children.finish_replay(session_id)
+            elif self._children.native:
+                for update in history:
+                    if (
+                        isinstance(update, dict)
+                        and update.get("update", {}).get("sessionUpdate")
+                        == "subagent_update"
+                    ):
+                        await self._children.replay(session_id, update)
+                await self._children.finish_replay(session_id)
+            await self._processes.refresh(session_id)
+            await self._send_commands(session_id)
+
+    async def list_sessions(
+        self, cwd: str | None = None, cursor: str | None = None, **kwargs: Any
+    ) -> ListSessionsResponse:
+        """List scoped ACP sessions with stable ID-based pagination."""
+        if not self._registry.available:
+            raise RequestError.method_not_found("session/list")
+        if cursor is not None and not re.fullmatch(r"[A-Za-z0-9_-]+", cursor):
+            raise RequestError.invalid_params({"reason": "Invalid cursor"})
+        sessions = []
+        async with self._process_gate:
+            for sid in sorted(self._registry.store.session_index):
+                if cursor and sid <= cursor:
+                    continue
+                saved = self._registry.get(sid)
+                path = self._registry.cwd(saved)
+                if path is None or (cwd is not None and str(path) != cwd):
+                    continue
+                sessions.append(
+                    SessionInfo(
+                        session_id=sid,
+                        cwd=str(path),
+                        updated_at=saved.last_active,
+                        additional_directories=saved.metadata.get(
+                            "acp_additional_directories", []
+                        ),
+                    )
+                )
+                if len(sessions) == 51:
+                    break
+        return ListSessionsResponse(
+            sessions=sessions[:50],
+            next_cursor=sessions[49].session_id if len(sessions) > 50 else None,
+        )
+
+    async def prompt(
+        self, session_id: str, prompt: list[Any], **kwargs: Any
+    ) -> PromptResponse:
         session = self.sessions.get(session_id)
         if session is None:
             raise RequestError.invalid_params({"sessionId": session_id})
+        if session.filesystem == "client" and not self._client_file_support:
+            raise RequestError.invalid_request(
+                {"reason": "Client text files are unavailable"}
+            )
+        if session.terminal and not self._client_terminal_support:
+            raise RequestError.invalid_request(
+                {"reason": "Client terminal is unavailable"}
+            )
         if session.task is not None:
-            raise RequestError.invalid_request({"reason": "A turn is already active for this session"})
-        if not prompt or any(not isinstance(block, TextContentBlock) for block in prompt):
-            raise RequestError.invalid_params({"reason": "Only non-empty text prompts are supported"})
+            raise RequestError.invalid_request(
+                {"reason": "A turn is already active for this session"}
+            )
+        if session.mode == "plan" and not self._controls.supports_plan:
+            raise RequestError.invalid_params(
+                {"reason": "Plan mode requires permission enforcement"}
+            )
+        assets = None
+        if self._registry.available:
+            assets = self._registry.execution_roots(
+                session_id, session.roots or (session.cwd,)
+            )[-1]
+        active_config = session.model_config or getattr(self.core, "model_config", None)
+        message = prepare_prompt(
+            prompt,
+            session.cwd,
+            assets,
+            allow_images=self._registry.available
+            and bool(getattr(active_config, "vision_enabled", False)),
+            roots=session.roots,
+        )
+        if len(session.roots) > 1:
+            roots_note = (
+                "Additional authorized workspace directories: "
+                + ", ".join(str(root) for root in session.roots[1:])
+                + "\n"
+            )
+            message = (
+                {**message, "text": roots_note + str(message["text"])}
+                if isinstance(message, dict)
+                else roots_note + message
+            )
         if self._connection is None:
             raise RequestError.internal_error()
         session.task = asyncio.current_task()
         session.cancelled = False
-        sent: list[str] = []
+        sent = False
+        gate_owned = False
 
         async def on_chunk(chunk: str, message_type: str = "assistant") -> None:
+            nonlocal sent
             if session.cancelled or message_type != "assistant" or not chunk:
                 return
-            await self._connection.session_update(
-                session_id=session_id,
-                update=AgentMessageChunk(
+            await self._send_update(
+                session_id,
+                AgentMessageChunk(
                     content=text_block(chunk), session_update="agent_message_chunk"
                 ),
             )
-            sent.append(chunk)
+            sent = True
 
         try:
-            async with self._process_gate:
-                if session.cancelled:
-                    return PromptResponse(stop_reason="cancelled")
-                session.running = True
-                with execution_context_scope(
-                    ExecutionContext(
-                        session_id=session_id,
-                        conversation_id=session_id,
-                        directory=str(session.cwd),
-                        project_root=str(session.cwd),
-                        request_id=uuid4().hex,
+            await self._process_gate.acquire()
+            gate_owned = True
+            if session.cancelled:
+                return PromptResponse(stop_reason="cancelled")
+            session.running = True
+            for block in prompt:
+                self._registry.record(
+                    session_id,
+                    UserMessageChunk(
+                        session_update="user_message_chunk", content=block
+                    ),
+                )
+            with contextlib.ExitStack() as scopes:
+                if session.filesystem == "client":
+                    scopes.enter_context(
+                        client_tool_scope(
+                            self.core.tool_manager,
+                            ClientTerminals(self, session_id, session.shell)
+                            if session.terminal
+                            else ClientFiles(self, session_id),
+                        )
                     )
-                ):
+                if session.mcp_provider is not None:
+                    scopes.enter_context(
+                        mcp_provider_scope(self.core.tool_manager, session.mcp_provider)
+                    )
+                scopes.enter_context(
+                    execution_context_scope(
+                        ExecutionContext(
+                            session_id=session_id,
+                            conversation_id=session_id,
+                            directory=str(session.cwd),
+                            project_root=str(session.cwd),
+                            workspace_root=str(session.cwd),
+                            allowed_roots=tuple(
+                                str(root)
+                                for root in self._registry.execution_roots(
+                                    session_id, session.roots or (session.cwd,)
+                                )
+                            ),
+                            request_id=uuid4().hex,
+                            agent_mode=session.mode,
+                        )
+                    )
+                )
+                command = message.strip() if isinstance(message, str) else ""
+                runtime = {}
+                if session.model_config is not None:
+                    runtime = {
+                        "model_config_override": session.model_config,
+                        "api_client_override": session.api_client,
+                    }
+                if command == "/status":
+                    result = {
+                        "assistant_response": (
+                            f"Mode: {session.mode}; model: {session.model_id}"
+                        )
+                    }
+                elif command in {"/permissions", "/permissions reset"}:
+                    if command.endswith(" reset"):
+                        self._grants.reset(session_id)
+                    volatile_count = len(self._grants.volatile.get(session_id, []))
+                    saved_count = len(self._grants.saved.get(session_id, []))
+                    result = {
+                        "assistant_response": (
+                            f"Exact grants: {volatile_count} until close; "
+                            f"{saved_count} saved."
+                        )
+                    }
+                elif command == "/mcp" and hasattr(self.core, "tool_manager"):
+                    import json
+
+                    status = self.core.tool_manager.get_mcp_status()
+                    result = {
+                        "assistant_response": json.dumps(
+                            {
+                                "servers": {
+                                    name: item["status"]
+                                    for name, item in status.get("servers", {}).items()
+                                }
+                            },
+                            indent=2,
+                        )
+                    }
+                else:
                     result = await self.core.process(
-                        "\n".join(block.text for block in prompt),
+                        message,
                         conversation_id=session_id,
                         streaming=True,
                         stream_callback=on_chunk,
+                        **runtime,
                     )
+            if not isinstance(result, dict):
+                raise RequestError.internal_error(
+                    {"reason": "Penguin returned no valid turn result"}
+                )
+            getter = getattr(self.core, "get_token_usage", None)
+            if callable(getter):
+                try:
+                    usage = getter(session_id=session_id)
+                    if (
+                        isinstance(usage, dict)
+                        and usage.get("session_id") == session_id
+                    ):
+                        await self._events.on_event("token_update", usage)
+                except Exception:
+                    logger.debug("Scoped token usage unavailable", exc_info=True)
             if session.cancelled or result.get("aborted"):
                 return PromptResponse(stop_reason="cancelled")
-            if result.get("error") or result.get("status") in {"error", "provider_error", "failed"}:
-                raise RequestError.internal_error({"reason": "Penguin could not complete the turn"})
+            if result.get("error") or result.get("status") in {
+                "error",
+                "provider_error",
+                "failed",
+            }:
+                raise RequestError.internal_error(
+                    {"reason": "Penguin could not complete the turn"}
+                )
             text = result.get("assistant_response") or ""
             if text and not sent:
                 await on_chunk(text)
-            return PromptResponse(stop_reason="end_turn")
+            stop_reason = result.get("stop_reason", "end_turn")
+            if stop_reason not in {
+                "end_turn",
+                "max_tokens",
+                "max_turn_requests",
+                "refusal",
+                "cancelled",
+            }:
+                raise RequestError.internal_error(
+                    {"reason": "Unknown turn stop reason"}
+                )
+            return PromptResponse(stop_reason=stop_reason)
         except asyncio.CancelledError:
             session.cancelled = True
             return PromptResponse(stop_reason="cancelled")
+        except RequestError:
+            raise
+        except Exception:
+            logger.exception("ACP turn failed")
+            raise RequestError.internal_error(
+                {"reason": "Penguin could not complete the turn"}
+            ) from None
         finally:
-            if session.cancelled:
-                for request in self._approvals.get_pending(session_id):
-                    self._approvals.deny(request.id)
-            session.running = False
-            session.task = None
+            try:
+                await self._events.end_turn(session_id)
+            finally:
+                try:
+                    if gate_owned:
+                        self._registry.checkpoint(session_id)
+                finally:
+                    if session.cancelled:
+                        for request in self._approvals.get_pending(session_id):
+                            self._approvals.deny(request.id)
+                    session.running = False
+                    session.task = None
+                    if gate_owned:
+                        self._process_gate.release()
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
+        if session_id in self._children.children:
+            await self._children.cancel(session_id)
+            return
+        self._cancel_approvals(session_id)
         session = self.sessions.get(session_id)
         if session is None or session.task is None:
             return
@@ -182,22 +1059,46 @@ class PenguinACPAgent:
             self._approvals.deny(request.id)
         # A queued turn has no Penguin execution to abort. Cancel it without
         # interrupting the other session that currently owns the process gate.
-        if session.running:
-            await self.core.abort_session(session_id)
-        session.task.cancel()
+        task = session.task
+        try:
+            if session.running:
+                await self.core.abort_session(session_id)
+        finally:
+            task.cancel()
 
     def _on_approval(self, request: ApprovalRequest) -> None:
-        session = self.sessions.get(request.session_id)
-        if session is None or self._loop is None:
-            return
-        if session.cancelled:
+        if self._closed:
             self._approvals.deny(request.id)
+            return
+        session = self.sessions.get(request.session_id)
+        child = self._children.children.get(request.session_id)
+        if (session is None and child is None) or self._loop is None:
+            return
+        if (session and session.cancelled) or (
+            child and (not child.active or child.cancelled)
+        ):
+            self._approvals.deny(request.id)
+            return
+        if self._grants.allows(request):
+            self._approvals.approve(request.id, scope=ApprovalScope.ONCE)
             return
 
         def schedule() -> None:
+            if self._closed:
+                self._approvals.deny(request.id)
+                return
             task = self._loop.create_task(self._request_permission(request))
             self._approval_tasks.add(task)
-            task.add_done_callback(self._approval_tasks.discard)
+            owned = self._approval_tasks_by_session.setdefault(
+                request.session_id, set()
+            )
+            owned.add(task)
+
+            def done(completed: asyncio.Task[Any]) -> None:
+                self._approval_tasks.discard(completed)
+                owned.discard(completed)
+
+            task.add_done_callback(done)
 
         self._loop.call_soon_threadsafe(schedule)
 
@@ -206,31 +1107,60 @@ class PenguinACPAgent:
             self._approvals.deny(request.id)
             return
         try:
+            child = self._children.children.get(request.session_id)
+            options = self._grants.options(request)
+            target = request.session_id
+            if child:
+                await self._update_child_approval_state(request.session_id)
+                if not self._children.native:
+                    target = child.root
             response = await asyncio.wait_for(
                 self._connection.request_permission(
-                    session_id=request.session_id,
-                    tool_call=ToolCallStart(
+                    session_id=target,
+                    tool_call=ToolCallUpdate(
                         tool_call_id=request.id,
                         title=f"{request.tool_name}: {request.resource}",
-                        session_update="tool_call",
                     ),
-                    options=[
-                        PermissionOption(option_id="allow_once", name="Allow once", kind="allow_once"),
-                        PermissionOption(option_id="reject_once", name="Reject", kind="reject_once"),
-                    ],
+                    options=options,
                 ),
                 timeout=300,
             )
             current = self._approvals.get_request(request.id)
-            session = self.sessions[request.session_id]
+            session = self.sessions.get(request.session_id)
+            cancelled = (
+                session.cancelled
+                if session
+                else not child or not child.active or child.cancelled
+            )
             if (
                 current is not None
                 and current.status == ApprovalStatus.PENDING
-                and not session.cancelled
+                and not cancelled
                 and response.outcome.outcome == "selected"
-                and response.outcome.option_id == "allow_once"
+                and response.outcome.option_id
+                in {o.option_id for o in options if o.kind.startswith("allow")}
             ):
-                self._approvals.approve(request.id, scope=ApprovalScope.ONCE)
+                approved = self._approvals.approve(request.id, scope=ApprovalScope.ONCE)
+                if approved and response.outcome.option_id in {
+                    "allow_session",
+                    "allow_saved",
+                }:
+                    try:
+                        self._grants.remember(
+                            request, response.outcome.option_id == "allow_saved"
+                        )
+                    except Exception:
+                        logger.warning("Exact grant could not be saved", exc_info=True)
+                        await self._send_update(
+                            request.session_id,
+                            AgentMessageChunk(
+                                session_update="agent_message_chunk",
+                                content=text_block(
+                                    "This request was allowed, but saving its future "
+                                    "approval could not be confirmed."
+                                ),
+                            ),
+                        )
             else:
                 self._approvals.deny(request.id)
         except asyncio.CancelledError:
@@ -239,31 +1169,97 @@ class PenguinACPAgent:
         except Exception:
             logger.warning("ACP permission request failed; denying", exc_info=True)
             self._approvals.deny(request.id)
+        finally:
+            await self._update_child_approval_state(request.session_id)
+
+
+def _startup_config() -> Any:
+    """Activate the selected provider's saved login for this ACP process only."""
+    from penguin.config import Config
+    from penguin.web.services.provider_credentials import (
+        apply_credentials_to_environment,
+        get_provider_credential,
+    )
+
+    config = Config.load_config()
+    provider = str(getattr(config.model_config, "provider", "") or "").strip()
+    if provider:
+        credential = get_provider_credential(provider)
+        if credential is not None:
+            apply_credentials_to_environment(provider, credential)
+    return config
 
 
 async def serve() -> None:
     from acp.stdio import stdio_streams
 
-    from penguin.config import WORKSPACE_PATH
-    from penguin.core import PenguinCore
+    from penguin.integrations.acp.stdio import ProtocolTransport, protocol_writer
 
-    # ACP owns stdout. Startup code and provider libraries may print; keep their
-    # output on stderr for the entire lifetime of the agent. Bind the SDK's
-    # protocol writer to the real stdout pipe before redirecting Python prints.
-    sys.stdout = sys.stderr
-    core = await PenguinCore.create(show_progress=False)
-    protocol_stdout = sys.__stdout__
-    sys.stdout = protocol_stdout
-    try:
-        reader, writer = await stdio_streams()
-    finally:
-        sys.stdout = sys.stderr
-    roots = (Path.cwd(), Path(WORKSPACE_PATH))
-    agent = PenguinACPAgent(core, allowed_roots=roots)
-    try:
-        await run_agent(agent, input_stream=writer, output_stream=reader)
-    finally:
-        agent.close()
+    output = sys.stdout.buffer
+    # The SDK's Windows writer resolves sys.stdout on each write, so capturing
+    # its streams alone does not protect stdout when diagnostics are redirected.
+    with contextlib.redirect_stdout(sys.stderr):
+        import os
+
+        from penguin.config import WORKSPACE_PATH
+        from penguin.core import PenguinCore
+
+        startup_config = _startup_config()
+        if os.environ.get("PENGUIN_ACP_ISOLATED_SESSIONS") == "1":
+            from copy import deepcopy
+
+            from penguin.core_runtime.isolation import RuntimeServices
+            from penguin.integrations.acp.isolated import IsolatedACPAgent, Runtime
+
+            catalog = None
+
+            async def create_runtime():
+                services = RuntimeServices()
+                with services.activate():
+                    config = (
+                        deepcopy(getattr(catalog.agent.core, "config", None))
+                        if catalog
+                        else deepcopy(startup_config)
+                    )
+                    runtime_core = await PenguinCore.create(
+                        config=config, show_progress=False
+                    )
+                    return Runtime(
+                        PenguinACPAgent(
+                            runtime_core,
+                            allowed_roots=(Path.cwd(), Path(WORKSPACE_PATH)),
+                        ),
+                        services,
+                    )
+
+            catalog = await create_runtime()
+            agent = IsolatedACPAgent(catalog, create_runtime)
+        else:
+            core = await PenguinCore.create(config=startup_config, show_progress=False)
+            roots = (Path.cwd(), Path(WORKSPACE_PATH))
+            agent = PenguinACPAgent(core, allowed_roots=roots)
+        reader, _ = await stdio_streams(limit=50 * 1024 * 1024)
+        writer = protocol_writer(output)
+        transport = ProtocolTransport(reader, writer)
+        agent._transport = transport
+        transport.after_session_response = agent._send_commands
+        transport.register("session/delete", agent._delete_request)
+        transport.register(
+            "session/prompt", agent._prompt_request, agent._cancel_prompt_request
+        )
+        try:
+            # SDK 0.12 calls resume/close "unstable" although current v1 docs
+            # include them. Unimplemented draft methods still return not found.
+            await run_agent(
+                agent,
+                input_stream=transport,
+                use_unstable_protocol=True,
+            )
+        finally:
+            if hasattr(agent, "aclose"):
+                await agent.aclose()
+            else:
+                agent.close()
 
 
 def main() -> int:

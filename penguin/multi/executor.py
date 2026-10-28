@@ -7,6 +7,7 @@ concurrently on one owning event loop.
 import asyncio
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Mapping, Optional, Tuple
@@ -80,6 +81,8 @@ class AgentTask:
     error: Optional[str] = None
     task: Optional[asyncio.Task] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
 
 
 class AgentExecutor:
@@ -210,6 +213,7 @@ class AgentExecutor:
         try:
             async with self._semaphore:
                 agent_task.state = AgentState.RUNNING
+                agent_task.started_at = time.time()
                 logger.info(f"Agent '{agent_task.agent_id}' started execution")
 
                 # Execute via core.process
@@ -255,6 +259,8 @@ class AgentExecutor:
             agent_task.error = str(e)
             agent_task.state = AgentState.FAILED
             logger.error(f"Agent '{agent_task.agent_id}' failed: {e}")
+        finally:
+            agent_task.finished_at = time.time()
 
     async def wait_for(
         self,
@@ -322,6 +328,24 @@ class AgentExecutor:
 
         return {aid: self._tasks[aid].result for aid in agent_ids if aid in self._tasks}
 
+    async def wait_for_change(
+        self, agent_ids: List[str], timeout: Optional[float] = None
+    ) -> None:
+        """Wait for a selected child's termination without polling or cancelling it.
+
+        asyncio.wait does not propagate waiter cancellation to owned child tasks.
+        Snapshotting and subscribing happen without an intervening await, so a
+        completion between the caller's status read and this call is not lost.
+        """
+        tasks = {
+            record.task
+            for aid in agent_ids
+            if (record := self._tasks.get(aid)) is not None
+            and record.task is not None
+        }
+        if tasks:
+            await asyncio.wait(tasks, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+
     def get_status(self, agent_id: str) -> Optional[Dict[str, Any]]:
         """Get status of a specific agent.
 
@@ -335,12 +359,18 @@ class AgentExecutor:
         if not agent_task:
             return None
 
+        from penguin.multi.mailbox import AgentMailbox
+
+        mailbox = getattr(getattr(self._core, "engine", None), "agent_mailbox", None)
         return {
             "agent_id": agent_task.agent_id,
             "state": agent_task.state.value,
             "result": agent_task.result,
             "error": agent_task.error,
             "metadata": agent_task.metadata,
+            "started_at": agent_task.started_at,
+            "finished_at": agent_task.finished_at,
+            "messaging": mailbox.status(agent_id) if isinstance(mailbox, AgentMailbox) else None,
         }
 
     def get_all_status(self) -> Dict[str, Dict[str, Any]]:
@@ -506,6 +536,12 @@ def get_executor(core: Any = None) -> Optional[AgentExecutor]:
     Returns:
         The global AgentExecutor instance
     """
+    from penguin.core_runtime.isolation import runtime_isolated, scoped_service
+    scoped = scoped_service(
+        "agent_executor", lambda: AgentExecutor(core) if core else None
+    )
+    if runtime_isolated():
+        return scoped
     global _executor_instance
     if _executor_instance is None and core is not None:
         _executor_instance = AgentExecutor(core)
@@ -518,5 +554,8 @@ def set_executor(executor: AgentExecutor) -> None:
     Args:
         executor: The AgentExecutor to use globally
     """
+    from penguin.core_runtime.isolation import set_scoped_service
+    if set_scoped_service("agent_executor", executor):
+        return
     global _executor_instance
     _executor_instance = executor

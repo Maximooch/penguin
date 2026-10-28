@@ -4,13 +4,37 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import TYPE_CHECKING, Any
 
 from penguin.integrations.mcp.config import load_mcp_server_configs
 from penguin.integrations.mcp.manager import HAS_MCP_SDK, MCPClientManager
 from penguin.integrations.mcp.names import is_mcp_tool_name
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
 logger = logging.getLogger(__name__)
+
+_SESSION_PROVIDERS: ContextVar[dict[int, Any]] = ContextVar(
+    "mcp_session_providers", default={}
+)
+
+
+@contextmanager
+def mcp_provider_scope(owner: Any, provider: Any) -> Iterator[None]:
+    """Bind MCP configuration to one tool manager and inherited request tasks."""
+    token = _SESSION_PROVIDERS.set({**_SESSION_PROVIDERS.get(), id(owner): provider})
+    try:
+        yield
+    finally:
+        _SESSION_PROVIDERS.reset(token)
+
+
+def active_mcp_provider(owner: Any, default: Any) -> Any:
+    """Resolve a request-owned provider without mutating shared configuration."""
+    return _SESSION_PROVIDERS.get().get(id(owner), default)
 
 
 class MCPToolProvider:
@@ -132,4 +156,4 @@ class MCPToolProvider:
         }
 
 
-__all__ = ["MCPToolProvider"]
+__all__ = ["MCPToolProvider", "active_mcp_provider", "mcp_provider_scope"]

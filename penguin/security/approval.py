@@ -150,6 +150,10 @@ class ApprovalManager:
     
     def __new__(cls) -> "ApprovalManager":
         """Singleton pattern - ensure only one instance exists."""
+        from penguin.core_runtime.isolation import scoped_service
+        scoped = scoped_service("approval_manager", lambda: object.__new__(cls))
+        if scoped is not None:
+            return scoped
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:

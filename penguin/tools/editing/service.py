@@ -536,6 +536,9 @@ class EditService:
             display: self._safe_file_shape(Path(resolved))
             for display, resolved in zip(display_files, resolved_files)
         }
+        from .observation import record_edits
+
+        record_edits(changes)
         diff_text = "\n".join(diffs)
         legacy_payload = {
             "success": True,
@@ -1007,7 +1010,14 @@ class EditService:
         )
         if not path_obj.is_absolute() and workspace_root is not None:
             path_obj = workspace_root / path_obj
-        resolved_path = path_obj.resolve()
+        from penguin.security.scoped_paths import (
+            enforce_execution_path,
+            execution_roots,
+        )
+
+        resolved_path = enforce_execution_path(path_obj)
+        if execution_roots() is not None:
+            return resolved_path
         if workspace_root is not None:
             try:
                 resolved_path.relative_to(workspace_root)

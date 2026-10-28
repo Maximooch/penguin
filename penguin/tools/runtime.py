@@ -579,6 +579,7 @@ _READ_ONLY_TOOL_NAMES = {
     "browser_page_info",
     "browser_list_tabs",
     "process_poll",
+    "process_status",
 }
 _FILESYSTEM_MUTATION_TOOL_NAMES = {
     "create_folder",
@@ -735,7 +736,7 @@ def infer_tool_resources(tool_call: ToolCall) -> tuple[ToolResource, ...]:
     if name in _PROCESS_MUTATION_TOOL_NAMES:
         resources.append("process:*")
         resources.extend(_command_git_resources(_argument_text(tool_call.arguments)))
-    if name == "process_poll":
+    if name in {"process_poll", "process_status"}:
         process_id = _argument_mapping(tool_call.arguments).get("process_id")
         resources.append(f"process:{process_id or '*'}")
     if name in {"process_write_stdin", "process_stop"}:
@@ -1241,6 +1242,8 @@ def tool_loop_signature(action_result: Any) -> dict[str, Any]:
         "process_status",
         "returncode",
         "next_sequence",
+        "command",
+        "cwd",
     ):
         value = action_result.get(key, metadata.get(key, argument_fields.get(key)))
         if value is not None:
@@ -1252,6 +1255,20 @@ def tool_loop_signature(action_result: Any) -> dict[str, Any]:
         or metadata.get("output_hash")
         or hash_tool_output(output)
     )
+    if "process_status" in common_fields:
+        # Formatted process results include volatile IDs and log paths. Loop
+        # evidence must describe the action and its actual output instead.
+        output_hash = metadata.get("process_output_hash") or hash_tool_output(
+            action_result.get("output", metadata.get("output", ""))
+        )
+        output_hash = hash_tool_output(
+            _stable_json([
+                output_hash,
+                common_fields.get("process_status"),
+                common_fields.get("returncode"),
+                common_fields.get("next_sequence"),
+            ])
+        )
     return {
         "call_id": str(
             action_result.get("tool_call_id")
@@ -1276,7 +1293,19 @@ def tool_loop_signature(action_result: Any) -> dict[str, Any]:
 def _fingerprint_entry(entry: dict[str, Any]) -> dict[str, Any]:
     """Return the stable portion of a tool-loop identity entry."""
 
-    return {key: value for key, value in entry.items() if key != "call_id"}
+    stable = {key: value for key, value in entry.items() if key != "call_id"}
+    arguments = entry.get("arguments") or {}
+    fields = dict(entry.get("fields") or {})
+    if fields.get("command") and (
+        entry.get("name") in {"execute_command", "process_start"}
+        or (isinstance(arguments, dict) and "command" in arguments)
+        or (entry.get("name") == "process" and not arguments)
+    ):
+        # Distinct launches of the same silent command can still be a loop;
+        # distinct commands must never collide merely because both are silent.
+        fields.pop("process_id", None)
+        stable["fields"] = fields
+    return stable
 
 
 def _summarize_tool_loop_entry(entry: dict[str, Any]) -> str:
@@ -1544,6 +1573,7 @@ async def execute_tool_calls_serially(
                 name=tool_call.name,
                 status="completed",
                 output=str(output if output is not None else ""),
+                structured_output={"tool_arguments": tool_call.arguments},
                 started_at=started_at,
                 ended_at=ended_at,
             )
@@ -1778,6 +1808,11 @@ def tool_result_from_action_result(
         if raw_status in {"completed", "error", "cancelled", "requires_approval"}
         else "error",
     )
+    if "process_status" in action_result:
+        structured_output = {
+            **(structured_output or {}),
+            "process_output_hash": hash_tool_output(action_result.get("output", "")),
+        }
 
     return ToolResult(
         call_id=str(

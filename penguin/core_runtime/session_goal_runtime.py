@@ -793,6 +793,19 @@ async def run_session_goal(
             ) = _resolve_scope(core, session_id, directory)
         except GoalNotFoundError as exc:
             raise GoalRunNotFoundError(str(exc)) from exc
+        from penguin.security.scoped_paths import persisted_roots
+
+        try:
+            allowed_roots = persisted_roots(
+                session_metadata.get("execution_allowed_roots")
+            )
+            if allowed_roots is not None and not any(
+                Path(resolved_directory).resolve().is_relative_to(Path(root))
+                for root in allowed_roots
+            ):
+                raise ValueError("Goal directory is outside persisted execution roots")
+        except (ValueError, TypeError) as exc:
+            raise GoalRunStateError(str(exc)) from exc
         try:
             record = load_session_goal_record(core, session_id, require_goal=True)
         except GoalNotFoundError as exc:
@@ -947,6 +960,7 @@ async def run_session_goal(
         project_root=resolved_directory,
         workspace_root=resolved_directory,
         request_id=run_id,
+        allowed_roots=allowed_roots,
     )
     context = {
         "run_kind": "session_goal",

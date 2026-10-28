@@ -141,6 +141,26 @@ sequenceDiagram
 
 ## Session Management
 
+Session, backup, and index writes use unique sibling temporary files, flush them
+to disk, and atomically replace the destination. Managers for the same directory
+share a reentrant lock within one process. Index updates merge changed entries
+with the saved index so another manager's session entries are retained.
+
+On Windows, replacement retries are limited to sharing/lock violations. An
+access-denied error is retried only when a delete-access probe confirms a sharing
+conflict or that access has recovered; read-only and ACL denials fail immediately.
+External Windows readers should allow delete sharing to avoid blocking a rename;
+public manager reads use the same store lock. There are at
+most six attempts with 310 ms total backoff. Failed replacements retain the previous
+destination, clean up only their own temporary file, and keep cached sessions
+marked dirty. Callers must check `save_session()`'s boolean result.
+
+The session file and index are separate atomic writes, not a cross-file
+transaction. If the index write fails after the session succeeds, the save reports
+failure and the existing stale-index recovery can rebuild it. Cross-process
+revision merging and arbitrary concurrent mutation of a `Session` object are not
+provided by the in-process lock.
+
 ```mermaid
 flowchart TD
     UserMsg[User Message] --> CheckID{Has Conversation ID?}

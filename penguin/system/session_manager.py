@@ -11,7 +11,6 @@ This module handles session lifecycle operations including:
 import json
 import logging
 import os
-import shutil
 import threading
 import time
 from collections import OrderedDict
@@ -40,6 +39,11 @@ builtins.open = _safe_open  # type: ignore[attr-defined]
 
 from penguin.config import CONVERSATIONS_PATH
 from penguin.system.state import Message, MessageCategory, Session, create_message
+from penguin.system.atomic_storage import (
+    atomic_write_text,
+    store_lock,
+    synchronized_store,
+)
 from penguin.constants import DEFAULT_MAX_MESSAGES_PER_SESSION
 
 
@@ -77,6 +81,8 @@ class SessionManager:
             auto_save_interval: Seconds between auto-saves of modified sessions
         """
         self.base_path = Path(base_path)
+        self._store_lock = store_lock(self.base_path)
+        self._saved_index: Optional[Dict[str, Dict[str, Any]]] = None
         self.max_messages_per_session = max_messages_per_session
         self.max_sessions_in_memory = max_sessions_in_memory
         self.format = format
@@ -91,6 +97,7 @@ class SessionManager:
         # Initialize the session index
         self.index_path = self.base_path / "session_index.json"
         self.session_index = self._load_or_create_index()
+        self._saved_index = deepcopy(self.session_index)
         
         # Setup auto-save thread if interval > 0
         self.auto_save_interval = auto_save_interval
@@ -102,6 +109,7 @@ class SessionManager:
             )
             self._auto_save_thread.start()
     
+    @synchronized_store
     def _load_or_create_index(self) -> Dict[str, Dict[str, Any]]:
         """Load the session index or create it if it doesn't exist."""
         if not self.index_path.exists():
@@ -142,6 +150,7 @@ class SessionManager:
         except OSError:
             return True
     
+    @synchronized_store
     def _rebuild_index(self) -> Dict[str, Dict[str, Any]]:
         """Rebuild the session index by scanning session files."""
         logger.info("Rebuilding session index from files")
@@ -177,18 +186,35 @@ class SessionManager:
         self._save_index(index)
         return index
     
-    def _save_index(self, index: Dict[str, Dict[str, Any]]) -> None:
-        """Save the session index to disk."""
+    @synchronized_store
+    def _save_index(self, index: Dict[str, Dict[str, Any]]) -> bool:
+        """Atomically persist local index changes without erasing peer saves."""
         try:
-            # Write to temp file first - fix the suffix
-            temp_path = Path(f"{self.index_path}.temp")  # Fix: Use explicit Path constructor
-            with _safe_open(temp_path, 'w', encoding='utf-8') as f:
-                json.dump(index, f, indent=2)
-                
-            # Atomic rename
-            os.replace(temp_path, self.index_path)
-        except Exception as e:
-            logger.error(f"Error saving session index: {str(e)}")
+            merged = deepcopy(index)
+            if self._saved_index is not None:
+                try:
+                    with _safe_open(self.index_path, "r", encoding="utf-8") as source:
+                        on_disk = json.load(source)
+                except (FileNotFoundError, json.JSONDecodeError, UnicodeError):
+                    on_disk = None
+                if isinstance(on_disk, dict):
+                    merged = on_disk
+                    for key in self._saved_index.keys() - index.keys():
+                        merged.pop(key, None)
+                    for key, value in index.items():
+                        if (
+                            key not in self._saved_index
+                            or value != self._saved_index[key]
+                        ):
+                            merged[key] = deepcopy(value)
+            atomic_write_text(self.index_path, json.dumps(merged, indent=2))
+            index.clear()
+            index.update(merged)
+            self._saved_index = deepcopy(merged)
+            return True
+        except (OSError, ValueError, TypeError) as error:
+            logger.error("Error saving session index: %s", error)
+            return False
 
     def _copy_metadata_to_index_entry(
         self,
@@ -244,6 +270,7 @@ class SessionManager:
             # Sleep for the configured interval
             self._stop_auto_save.wait(self.auto_save_interval)
     
+    @synchronized_store
     def _auto_save_sessions(self) -> None:
         """Save all modified sessions."""
         modified_sessions = []
@@ -285,6 +312,7 @@ class SessionManager:
         if saved_count > 0:
             logger.debug(f"Auto-saved {saved_count} session(s)")
     
+    @synchronized_store
     def create_session(self) -> Session:
         """
         Create a new empty session.
@@ -314,6 +342,7 @@ class SessionManager:
         logger.debug(f"Created new session: {session.id}")
         return session
     
+    @synchronized_store
     def load_session(self, session_id: str) -> Optional[Session]:
         """
         Load a session by ID with error recovery.
@@ -367,7 +396,9 @@ class SessionManager:
                         self.current_session = session
 
                         # Restore from backup
-                        shutil.copy2(backup_path, primary_path)
+                        atomic_write_text(
+                            primary_path, backup_path.read_text(encoding="utf-8")
+                        )
                         logger.warning(f"Successfully restored session {session_id} from backup")
                         return session
             except Exception as backup_error:
@@ -381,6 +412,7 @@ class SessionManager:
         )
         return self._create_recovery_session(session_id)
     
+    @synchronized_store
     def _add_to_session_cache(self, session_id: str, session: Session) -> None:
         """Add a session to the cache, managing the LRU behavior."""
         # Add to sessions cache
@@ -423,6 +455,7 @@ class SessionManager:
             
         return session
     
+    @synchronized_store
     def _create_recovery_session(self, failed_session_id: str) -> Session:
         """
         Create a recovery session when loading fails.
@@ -478,6 +511,7 @@ class SessionManager:
         
         return session
         
+    @synchronized_store
     def save_session(self, session: Optional[Session] = None) -> bool:
         """
         Save a session with transaction safety.
@@ -498,7 +532,6 @@ class SessionManager:
             return False
             
         try:
-            temp_path = self.base_path / f"{session.id}.{self.format}.temp"
             backup_path = self.base_path / f"{session.id}.{self.format}.bak"
             target_path = self.base_path / f"{session.id}.{self.format}"
             
@@ -510,17 +543,12 @@ class SessionManager:
             token_count = session.total_tokens
             session.metadata["token_count"] = token_count
             
-            # Write to temp file first
-            with _safe_open(temp_path, 'w', encoding='utf-8') as f:
-                f.write(session.to_json())
-                
-            # Create backup of current file if it exists
+            # Serialize before touching disk; preserve a complete previous version.
+            serialized = session.to_json()
             if target_path.exists():
-                shutil.copy2(target_path, backup_path)
-                
-            # Atomic rename of temp to target
-            os.replace(temp_path, target_path)
-            
+                atomic_write_text(backup_path, target_path.read_text(encoding="utf-8"))
+            atomic_write_text(target_path, serialized)
+
             # Update the session index with consistent token information
             self.session_index[session.id] = {
                 "created_at": session.created_at,
@@ -546,7 +574,10 @@ class SessionManager:
             if "continued_to" in session.metadata:
                 self.session_index[session.id]["continued_to"] = session.metadata["continued_to"]
             
-            self._save_index(self.session_index)
+            if self._save_index(self.session_index) is False:
+                if session.id in self.sessions:
+                    self.sessions[session.id] = (session, True)
+                return False
             
             # Update cache status
             if session.id in self.sessions:
@@ -557,8 +588,11 @@ class SessionManager:
             
         except Exception as e:
             logger.error(f"Error saving session {session.id}: {str(e)}")
+            if session.id in self.sessions:
+                self.sessions[session.id] = (session, True)
             return False
     
+    @synchronized_store
     def check_session_boundary(self, session: Optional[Session] = None) -> bool:
         """
         Check if a session has reached its boundary and should transition.
@@ -577,6 +611,7 @@ class SessionManager:
         # Token budget concerns are handled by ContextWindowManager
         return len(session.messages) >= self.max_messages_per_session
     
+    @synchronized_store
     def create_continuation_session(self, source_session: Optional[Session] = None) -> Session:
         """
         Create a new session that continues from an existing one.
@@ -682,6 +717,7 @@ class SessionManager:
         
         return continuation
     
+    @synchronized_store
     def _get_continuation_index(self, session_id: str) -> int:
         """
         Get the continuation index for a session using the index.
@@ -700,6 +736,7 @@ class SessionManager:
                 
         return continuation_count + 1
     
+    @synchronized_store
     def list_sessions(self, limit: int = 100, offset: int = 0) -> List[Dict]:
         """
         List available sessions with metadata using the index.
@@ -796,6 +833,7 @@ class SessionManager:
         
         return result
     
+    @synchronized_store
     def delete_session(self, session_id: str) -> bool:
         """
         Delete a session and its files.
@@ -832,6 +870,7 @@ class SessionManager:
             logger.error(f"Error deleting session {session_id}: {str(e)}")
             return False
     
+    @synchronized_store
     def mark_session_modified(self, session_id: str) -> None:
         """Mark a session as modified in the cache.
         
