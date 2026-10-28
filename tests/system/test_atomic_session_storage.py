@@ -7,6 +7,7 @@ import os
 import stat
 import threading
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
@@ -57,14 +58,32 @@ def test_concurrent_same_session_writes_are_complete_and_use_unique_temps(
     tmp_path, monkeypatch
 ):
     managers = [SessionManager(str(tmp_path), auto_save_interval=0) for _ in range(4)]
-    paths = []
+    created_paths, attempts = [], []
+    real_temporary_file = atomic_storage.tempfile.NamedTemporaryFile
     real_replace = atomic_storage.os.replace
+    real_sharing_violation = atomic_storage._sharing_violation
+    injected_error = PermissionError("injected transient sharing conflict")
+
+    def create_temporary(*args, **kwargs):
+        temporary = real_temporary_file(*args, **kwargs)
+        created_paths.append(str(temporary.name))
+        return temporary
 
     def observe(source, target):
-        paths.append(str(source))
+        attempts.append(str(source))
+        if len(attempts) == 1:
+            raise injected_error
         return real_replace(source, target)
 
+    monkeypatch.setattr(atomic_storage.tempfile, "NamedTemporaryFile", create_temporary)
     monkeypatch.setattr(atomic_storage.os, "replace", observe)
+    monkeypatch.setattr(
+        atomic_storage,
+        "_sharing_violation",
+        lambda error, source, target: (
+            error is injected_error or real_sharing_violation(error, source, target)
+        ),
+    )
     stop = threading.Event()
     invalid = []
 
@@ -92,7 +111,11 @@ def test_concurrent_same_session_writes_are_complete_and_use_unique_temps(
         stop.set()
         reader.join(2)
     assert not invalid
-    assert len(paths) == len(set(paths))
+    assert len(created_paths) == len(set(created_paths))
+    assert set(attempts) == set(created_paths)
+    attempts_per_write = Counter(attempts)
+    assert attempts_per_write[created_paths[0]] >= 2
+    assert all(1 <= count <= 6 for count in attempts_per_write.values())
     for name in ("shared.json", "shared.json.bak"):
         data = json.loads((tmp_path / name).read_text(encoding="utf-8"))
         assert data["metadata"]["payload"] == str(data["metadata"]["revision"]) * 2000
