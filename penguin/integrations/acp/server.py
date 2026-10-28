@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import logging
 import re
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +28,8 @@ from acp.schema import (
     CloseSessionResponse,
     ConfigOptionUpdate,
     CurrentModeUpdate,
+    DeleteSessionRequest,
+    DeleteSessionResponse,
     Implementation,
     InitializeResponse,
     ListSessionsResponse,
@@ -39,6 +42,7 @@ from acp.schema import (
     ResumeSessionResponse,
     SessionCapabilities,
     SessionCloseCapabilities,
+    SessionDeleteCapabilities,
     SessionInfo,
     SessionListCapabilities,
     SessionResumeCapabilities,
@@ -215,6 +219,11 @@ class PenguinACPAgent:
                     else None,
                     close=SessionCloseCapabilities()
                     if self._registry.available
+                    else None,
+                    delete=SessionDeleteCapabilities()
+                    if self._registry.available
+                    and self._transport is not None
+                    and "session/delete" in self._transport.handlers
                     else None,
                 ),
             ),
@@ -415,6 +424,58 @@ class PenguinACPAgent:
             await asyncio.to_thread(session.mcp_provider.close)
         self.sessions.pop(session_id, None)
         return CloseSessionResponse()
+
+    async def delete_session(self, session_id: str) -> DeleteSessionResponse:
+        """Delete only indexed ACP-owned history; reject all busy sessions."""
+        if not self._registry.available:
+            raise RequestError.method_not_found("session/delete")
+        active = self.sessions.get(session_id)
+        if active and active.task is not None:
+            raise RequestError.invalid_request({"reason": "Session is busy"})
+        async with self._process_gate:
+            session = self._registry.get(session_id)
+            if session is None or self._registry.cwd(session) is None:
+                raise RequestError.invalid_params({"reason": "Unknown owned session"})
+            active = self.sessions.get(session_id)
+            if (active and active.task is not None) or any(
+                child.root == session_id and child.active
+                for child in self._children.children.values()
+            ):
+                raise RequestError.invalid_request({"reason": "Session is busy"})
+            if any(
+                sid == session_id and not state.get("completed")
+                for (sid, _), state in self._processes.states.items()
+            ):
+                raise RequestError.invalid_request(
+                    {"reason": "Session has an unresolved background process"}
+                )
+            base = self._registry.store.base_path.resolve()
+            assets = base / "acp-assets" / session_id
+            journal = base / "acp-history" / (session_id + ".jsonl")
+            for path in (assets, journal):
+                if not path.resolve().is_relative_to(base):
+                    raise RequestError.invalid_params({"reason": "Unsafe storage path"})
+            if active is not None:
+                await self.close_session(session_id)
+            delete = getattr(
+                self.core.conversation_manager,
+                "delete_conversation",
+                self._registry.store.delete_session,
+            )
+            if not delete(session_id):
+                raise RequestError.internal_error(
+                    {"reason": "Could not delete session"}
+                )
+            journal.unlink(missing_ok=True)
+            if assets.exists():
+                shutil.rmtree(assets)
+        return DeleteSessionResponse()
+
+    async def _delete_request(self, params: Any) -> DeleteSessionResponse:
+        if not self._initialized:
+            raise RequestError.invalid_request({"reason": "Initialize first"})
+        request = DeleteSessionRequest.model_validate(params)
+        return await self.delete_session(request.session_id)
 
     async def _restore_session(
         self,
@@ -822,6 +883,7 @@ async def serve() -> None:
         agent = PenguinACPAgent(core, allowed_roots=roots)
         transport = ProtocolTransport(reader, writer)
         agent._transport = transport
+        transport.register("session/delete", agent._delete_request)
         try:
             # SDK 0.12 calls resume/close "unstable" although current v1 docs
             # include them. Unimplemented draft methods still return not found.

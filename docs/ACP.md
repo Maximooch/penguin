@@ -77,7 +77,7 @@ required before claiming the complete user workflow.
 1. Baseline resource inputs, protocol output, failures and wire validation (implemented).
 2. Tool results, plans, bounded output and native canonical-edit snapshots
    (implemented); process output also updates outside the initiating turn.
-3. Session persistence, history replay, list/resume/close (implemented).
+3. Session persistence, history replay, list/resume/close/delete (implemented).
 4. Image and embedded-resource input (implemented).
 5. Per-session client MCP servers (implemented; SDK 1.x compatibility pin).
 6. Model/mode selection and command discovery (implemented); interactive ACP
@@ -98,7 +98,9 @@ receive separate child-session associations, observed directed messages, tool
 updates, public assistant output and work-state changes. Announcement precedes
 all child traffic. The SDK currently drops that draft capability, so the stdio
 transport observes it before SDK validation; ordinary RPC dispatch remains in
-the SDK. No draft updates are sent without negotiation. This is the current
+the SDK except the published `session/delete` method, absent from the pinned
+SDK router and dispatched through an explicit schema-validated handler. No
+draft updates are sent without negotiation. This is the current
 subagent RFD, not ACP v2 or the older AIR-specific shape.
 
 Background children with independent runtime tasks may advertise targeted cancel.
@@ -128,3 +130,8 @@ not a claim to implement a client-specific task panel or terminal RPC.
 The producer regression runs a real subprocess on Linux. Windows execution is
 temporarily skipped pending the separate ProcessRuntime capture fix; synthetic
 event, ownership and reconnect regressions still run on Windows.
+
+`session/delete` is advertised only by the transport with its installed handler.
+It rejects busy sessions and unresolved background processes, checks indexed ACP
+workspace ownership, and deletes the native conversation plus its replay journal
+and attachment directory. Close merely detaches; delete is permanent.
