@@ -1008,3 +1008,60 @@ async def test_stale_recovery_respects_iteration_limit(mode: str) -> None:
     assert result["status"] == (
         "iterations_exceeded" if mode == "task" else "max_iterations"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["task", "response"])
+@pytest.mark.parametrize("limit", [1, 3])
+async def test_late_steering_precedes_completion_within_budget(mode, limit):
+    """A message during the final step gets a turn, without extending budgets."""
+    from penguin.system.message_bus import ProtocolMessage
+
+    final = (
+        _finish_turn(status="done", summary="Finished")
+        if mode == "task"
+        else {"assistant_response": "Finished", "action_results": []}
+    )
+    engine = _ScriptedTaskEngine([final, final])
+    original_step = engine._llm_step
+    cm = engine.test_conversation_manager
+
+    async def step(**kwargs):
+        if engine.provider_calls == 0:
+            engine.agent_mailbox.enqueue(
+                "default",
+                cm.conversation.session.id,
+                ProtocolMessage(
+                    "parent", "default", "Check one more thing", message_id="steer"
+                ),
+            )
+        else:
+            engine.agent_mailbox.deliver("default", cm)
+        return await original_step(**kwargs)
+
+    engine._llm_step = step
+    await (
+        engine.run_task("Work", max_iterations=limit, enable_events=False)
+        if mode == "task"
+        else engine.run_response("Work", max_iterations=limit, streaming=False)
+    )
+    assert engine.provider_calls == min(limit, 2)
+    assert engine.agent_mailbox.has_pending("default", cm.conversation.session.id) is (
+        limit == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_late_steering_does_not_extend_token_budget():
+    from penguin.system.message_bus import ProtocolMessage
+
+    engine = _ScriptedTaskEngine([_finish_turn(status="done", summary="Finished")])
+    cm = engine.test_conversation_manager
+    engine.agent_mailbox.enqueue(
+        "default",
+        cm.conversation.session.id,
+        ProtocolMessage("parent", "default", "Check again", message_id="steer"),
+    )
+    result = await engine.run_task("Work", token_budget=12, enable_events=False)
+    assert engine.provider_calls == 1
+    assert result["status"] == "budget_limited"

@@ -24,6 +24,7 @@ PROCESS_TOOL_NAMES = frozenset(
         "execute_command",
         "process_start",
         "process_poll",
+        "process_status",
         "process_write_stdin",
         "process_stop",
     }
@@ -131,6 +132,8 @@ class ProcessTools:
             ) or self.runtime._error(process_id, "unknown_process_id")
         if record.owner != owner:
             return self.runtime._error(process_id, "unknown_process_id")
+        if name == "process_status":
+            return self.runtime.status(process_id)
         if name == "process_write_stdin":
             return self.runtime.write_stdin(
                 process_id,

@@ -11,6 +11,7 @@ from pathlib import Path
 import time
 import re
 import threading
+import uuid
 from collections import defaultdict
 
 # from utils.log_error import log_error
@@ -387,6 +388,7 @@ class ToolManager:
                 "execute_command": "self.execute_command",
                 "process_start": "self.process_runtime.start",
                 "process_poll": "self.process_runtime.poll",
+                "process_status": "self.process_runtime.status",
                 "process_write_stdin": "self.process_runtime.write_stdin",
                 "process_stop": "self.process_runtime.stop",
                 "add_summary_note": "self.summary_notes_tool.add_summary",
@@ -935,6 +937,21 @@ class ToolManager:
                     "long_running": True,
                     "streams_output": True,
                     "risk": "high",
+                },
+            },
+            {
+                "name": "process_status",
+                "description": "Inspect process lifecycle and exit code immediately without consuming output.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"process_id": {"type": "string"}},
+                    "required": ["process_id"],
+                },
+                "x-penguin-permissions": {
+                    "mutates_state": False,
+                    "requires_approval": False,
+                    "parallel_safe": False,
+                    "risk": "low",
                 },
             },
             {
@@ -3021,6 +3038,7 @@ class ToolManager:
             "execute_command",
             "process_start",
             "process_poll",
+            "process_status",
             "process_write_stdin",
             "process_stop",
             ORDERED_TOOL_BATCH_NAME,
@@ -4552,6 +4570,9 @@ class ToolManager:
                     "process_start",
                     tool_input,
                     {**effective_context, "directory": file_root},
+                ),
+                "process_status": lambda: self.process_tools.execute(
+                    "process_status", tool_input, effective_context
                 ),
                 "process_poll": lambda: self.process_tools.execute(
                     "process_poll", tool_input, effective_context
@@ -6484,19 +6505,27 @@ class ToolManager:
 
         delivered_targets: list[str] = []
         failed_targets: list[str] = []
+        deliveries: dict[str, str] = {}
         for tgt in targets:
             msg = ProtocolMessage(
-                sender=None,  # Will be set by context
+                sender=get_current_execution_context_dict().get("agent_id") or "default",
                 recipient=tgt,
                 content=content,
                 message_type=message_type,
                 metadata=metadata,
                 channel=channel,
+                message_id=str(uuid.uuid4()),
             )
             try:
-                delivered = await bus.send(msg)
+                engine = getattr(self._core, "engine", None)
+                queue_message = getattr(engine, "queue_agent_message", None)
+                if tgt != "human" and asyncio.iscoroutinefunction(queue_message):
+                    delivered = await queue_message(msg)
+                else:
+                    delivered = await bus.send(msg)
                 if delivered:
                     delivered_targets.append(tgt)
+                    deliveries[tgt] = msg.message_id
                 else:
                     failed_targets.append(tgt)
             except Exception as e:
@@ -6508,9 +6537,11 @@ class ToolManager:
                     "error": "message_delivery_failed",
                     "sent_to": delivered_targets,
                     "failed": failed_targets,
+                    "recovery": "Verify the target is registered in this runtime; inspect get_agent_status or stop_sub_agent before retrying.",
                 }
             )
-        return json.dumps({"sent_to": delivered_targets, "status": "ok"})
+        return json.dumps({"sent_to": delivered_targets, "status": "ok",
+                           "message_ids": deliveries})
 
     async def _execute_spawn_sub_agent(self, tool_input: Dict[str, Any]) -> str:
         """Execute spawn_sub_agent tool.
@@ -7061,7 +7092,7 @@ class ToolManager:
             timeout,
         )
 
-        poll_interval_seconds = 0.05
+        poll_interval_seconds = 0.1
         start = time.monotonic()
         poll_count = 0
         next_progress_log_at = 0.0
@@ -7178,12 +7209,26 @@ class ToolManager:
                     }
                 )
 
+            wait_for_change = getattr(executor, "wait_for_change", None)
+            if callable(wait_for_change):
+                remaining = (
+                    max(0.0, float(timeout) - elapsed) if timeout is not None else None
+                )
+                await wait_for_change(
+                    [aid for aid, status in status_by_agent.items()
+                     if status.get("state") not in terminal_states],
+                    timeout=remaining,
+                )
+                continue
+
+            # Compatibility with executor adapters without completion events.
             sleep_seconds = poll_interval_seconds
             if timeout is not None:
                 remaining = float(timeout) - elapsed
                 if remaining < sleep_seconds:
                     sleep_seconds = max(remaining, 0.0)
             await asyncio.sleep(sleep_seconds)
+            poll_interval_seconds = min(2.0, poll_interval_seconds * 2)
 
     async def _execute_get_context_info(self, tool_input: Dict[str, Any]) -> str:
         """Get context window sharing information for an agent.
@@ -7333,7 +7378,9 @@ class ToolManager:
                     )
                     return json.dumps(
                         {
-                            "error": f"Agent '{child}' is already running a background task"
+                            "error": f"Agent '{child}' is already running a background task",
+                            "code": "agent_busy",
+                            "recovery": "Use send_message to steer the running child, get_agent_status to inspect it, or stop_sub_agent to cancel it."
                         }
                     )
 
