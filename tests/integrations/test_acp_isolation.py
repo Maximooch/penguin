@@ -605,3 +605,28 @@ async def test_idle_close_stops_only_its_native_owned_children(tmp_path):
         assert result.stop_reason == "end_turn"
     finally:
         await router.aclose()
+
+
+@pytest.mark.asyncio
+async def test_isolated_in_process_python_is_rejected_without_global_mutation(tmp_path):
+    from penguin.utils.parser import ActionExecutor, ActionType, CodeActAction
+
+    manager = ToolManager(
+        {"workspace_path": str(tmp_path)}, lambda *_: None, fast_startup=True
+    )
+    stdout, cwd = sys.stdout, os.getcwd()
+    with RuntimeServices().activate():
+        assert "code_execution" not in {tool["name"] for tool in manager.get_tools()}
+        native = await manager.execute_tool_async(
+            "code_execution", {"code": "raise RuntimeError('must not run')"}
+        )
+        assert "in_process_python_unavailable" in native
+        executor = ActionExecutor(tool_manager=manager, task_manager=SimpleNamespace())
+        legacy = await executor.execute_action(
+            CodeActAction(ActionType.EXECUTE, "raise RuntimeError('must not run')")
+        )
+        assert "in_process_python_unavailable" in legacy
+        with pytest.raises(RuntimeError, match="In-process Python"):
+            _ = manager.notebook_executor
+    assert manager._notebook_executor is None
+    assert sys.stdout is stdout and os.getcwd() == cwd

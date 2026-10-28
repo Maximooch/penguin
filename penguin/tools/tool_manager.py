@@ -2316,6 +2316,12 @@ class ToolManager:
 
     @property
     def notebook_executor(self):
+        from penguin.core_runtime.isolation import runtime_isolated
+        if runtime_isolated():
+            raise RuntimeError(
+                "In-process Python is unavailable in isolated runtimes; "
+                "use execute_command with a Python subprocess"
+            )
         if not self._lazy_initialized["notebook_executor"]:
             with profile_operation("ToolManager.lazy_load_notebook_executor"):
                 logger.debug("Lazy-loading notebook executor")
@@ -2952,6 +2958,9 @@ class ToolManager:
     def get_tools(self):
         """Get available tool schemas."""
         tools = list(self.tools)
+        from penguin.core_runtime.isolation import runtime_isolated
+        if runtime_isolated():
+            tools = [tool for tool in tools if tool.get("name") != "code_execution"]
         tools.extend(self._get_mcp_provider().get_tool_schemas())
         from penguin.tools.providers.client import active_client_tools
 
@@ -4483,16 +4492,34 @@ class ToolManager:
         Returns:
             Completed tool output.
         """
+        disabled = self._isolated_tool_error(tool_name)
+        if disabled is not None:
+            return disabled
         return await self._async_tool_dispatcher.execute(
             tool_name,
             tool_input,
             context,
         )
 
+    def _isolated_tool_error(self, tool_name: str) -> Optional[str]:
+        from penguin.core_runtime.isolation import runtime_isolated
+        if (
+            runtime_isolated()
+            and self._canonical_tool_name(tool_name) == "code_execution"
+        ):
+            return json.dumps({
+                "error": "in_process_python_unavailable_in_isolated_runtime",
+                "reason": "Use execute_command with a Python subprocess",
+            })
+        return None
+
     def execute_tool(
         self, tool_name: str, tool_input: dict, context: dict = None
     ) -> Union[str, dict]:
         with profile_operation(f"ToolManager.execute_tool.{tool_name}"):
+            disabled = self._isolated_tool_error(tool_name)
+            if disabled is not None:
+                return disabled
             requested_tool_name = tool_name
             tool_name = self._canonical_tool_name(tool_name)
             from penguin.tools.providers.client import active_client_tools
