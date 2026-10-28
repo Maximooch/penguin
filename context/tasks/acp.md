@@ -20,6 +20,7 @@ The current subagent RFD and form elicitation are optional negotiated/experiment
 | Transport and baseline | Real shipped CLI over subprocess stdio, clean stdout, Unicode, malformed frames, supported version negotiation, provider errors and explicit stop reasons. Tests use a deterministic provider core, not a live model. |
 | Input | Text and resource references; local URIs confined to authorized cwd after decoding and resolution, remote references never automatically fetched. PNG/JPEG/WebP only on a vision-enabled selected model; bounded embedded text/binary storage. Audio is rejected and not advertised. |
 | Ownership | One ACP root session maps to one native conversation and immutable cwd. Indexed ACP metadata is required on reload; legacy or foreign-root sessions are rejected. File reads/writes continue through normal tool permissions. |
+| Additional roots | Absolute existing roots inside launch-authorized directories, fixed during a turn. Load/resume activates the complete requested list, with cwd unchanged; list reports it. File permissions, URI references, native diffs, child execution and persisted goals retain the scope. Per-session attachment copies are included internally. |
 | Lifecycle | New, load with ordered replay, resume without replay, list/filter/page, close, delete. Delete checks ownership, rejects active work/unresolved processes, and removes native history, journal and attachments. Close retains history. |
 | Long sessions | Append-only replay journal; native model state saved at turn boundaries. Incomplete final append recovery, malformed complete-record rejection, 2,000-chunk linear-write regression. Reload does not inject a whole transcript into model context. |
 | Tools | Scoped stable start/result IDs, bounded content, todo plans, terminal failed updates on interruption. Canonical authorized EditService transactions provide native complete before/after snapshots up to limits; other tools retain textual results. |
@@ -36,7 +37,6 @@ The current subagent RFD and form elicitation are optional negotiated/experiment
 
 | Gap | Current decision | Requirement to close it |
 | --- | --- | --- |
-| Additional directories | Not advertised; requests are rejected. Cwd alone is the immutable workspace boundary. | Carry an immutable authorized-root set through core/tool permissions, MCP resources, child execution and reload, with path-escape tests. Do not broaden access merely because the client sends paths. |
 | Client filesystem/terminal RPC | Not invoked. Penguin uses its local tool suite and process owner policy. Clients can still use ACP without implementing these optional RPCs. | Needed for remote editor-owned files/terminals: negotiated routing, permission-preserving policy, handle lifetime, output limits, disconnect cleanup and real remote-client tests. |
 | True parallel top-level sessions | A process gate serializes model turns and stateful lifecycle operations because the core conversation manager is shared. Independent runtime background tasks may outlive a turn. | Separate mutable conversation/model/tool state per root session and prove overlapping prompts, models, permissions, reload/close, and cancellation do not contaminate each other. |
 | Persisted approvals | Only allow-once/deny are exposed. No always/session allow options or persisted grants. | Define resource/tool scope, revocation and reconnect policy before offering broader authorization. Restoring a transcript never restores a permission grant. |
@@ -64,8 +64,8 @@ Baseline sequence: #134 baseline -> #135 tool events -> #136 sessions -> #137 ri
 - [x] Windows native process capture and environment assertions; no skipped Windows ACP producer.
 - [x] Locked dependency check and scoped Ruff checks.
 - [x] Final code aggregate: 111 passed on Windows Python 3.11.14, no skips; scoped Ruff and pinned uv 0.11.2 lock check passed.
-- [ ] Final code-head CI completion recorded after the last increment.
+- [x] #151 code-head CI passed, including all four ACP OS/Python jobs and broader repository contracts. Later increments require their own CI.
 - [ ] Real editor plus live-provider acceptance as specified above.
 - [ ] All optional decisions above revisited before claiming parity for a particular remote/advanced client.
 
-Final code aggregate after #151: 111 ACP, native Windows process and environment-policy checks passed, with no skips, on Windows Python 3.11.14. Scoped Ruff and the pinned uv 0.11.2 lock check passed. #149's entire CI, including four ACP matrix jobs, passed; #151 CI was still running when this audit was prepared. Older full-repository failures must be reported separately, not hidden by focused results.
+Code aggregate after #151: 111 ACP, native Windows process and environment-policy checks passed, with no skips, on Windows Python 3.11.14. Scoped Ruff and the pinned uv 0.11.2 lock check passed. #149 and #151 full CI passed, including four ACP matrix jobs. Additional-root iteration has its own producer, persisted-goal and protocol tests. Older full-repository failures must be reported separately, not hidden by focused results.

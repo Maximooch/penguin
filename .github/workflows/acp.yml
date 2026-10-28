@@ -48,4 +48,6 @@ jobs:
           tests/integrations/test_acp_questions.py
           tests/integrations/test_acp_usage.py
           tests/integrations/test_acp_request_cancel.py
+          tests/integrations/test_acp_roots.py
+          tests/core_runtime/test_session_goal_runtime.py
           tests/system/test_tool_environment.py

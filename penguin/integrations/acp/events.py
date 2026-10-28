@@ -54,10 +54,12 @@ class EventBridge:
         bus: Any,
         session_cwd: Callable[[str], Path | None],
         send: Callable[[str, Any], Awaitable[None]],
+        session_roots: Callable[[str], tuple[Path, ...]] | None = None,
     ) -> None:
         self.bus = bus
         self.session_cwd = session_cwd
         self.send = send
+        self.session_roots = session_roots
         self.calls: dict[
             tuple[str, str], tuple[str, dict[str, Any], dict[str, Any]]
         ] = {}
@@ -82,7 +84,7 @@ class EventBridge:
                 self.bus.unsubscribe(event, self.handler)
 
     def _locations(
-        self, cwd: Path, tool_input: dict[str, Any]
+        self, cwd: Path, tool_input: dict[str, Any], sid: str
     ) -> list[ToolCallLocation]:
         raw = extract_tool_file_path(tool_input)
         if not raw or raw.startswith("("):
@@ -94,7 +96,12 @@ class EventBridge:
             path = path.resolve()
         except (OSError, ValueError):
             return []
-        return [ToolCallLocation(path=str(path))] if path.is_relative_to(cwd) else []
+        roots = self.session_roots(sid) if self.session_roots else (cwd,)
+        return (
+            [ToolCallLocation(path=str(path))]
+            if any(path.is_relative_to(root) for root in roots)
+            else []
+        )
 
     async def on_event(self, event_type: str, data: dict[str, Any]) -> None:
         """Emit starts/results/plans in order, never borrowing another session."""
@@ -181,7 +188,7 @@ class EventBridge:
                         title=bounded(name),
                         kind=kind,
                         status="pending",
-                        locations=self._locations(cwd, tool_input),
+                        locations=self._locations(cwd, tool_input, sid),
                     ),
                 )
             if event_type != "action_result":
@@ -190,7 +197,10 @@ class EventBridge:
                     diffs = metadata.setdefault("acp_diffs", [])
                     for change in data.get("changes", []):
                         path = Path(change["path"]).resolve()
-                        if not path.is_relative_to(cwd):
+                        roots = (
+                            self.session_roots(sid) if self.session_roots else (cwd,)
+                        )
+                        if not any(path.is_relative_to(root) for root in roots):
                             continue
                         if change.get("omitted"):
                             diffs.extend(

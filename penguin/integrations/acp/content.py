@@ -52,7 +52,12 @@ def _store(data: bytes, root: Path, suffix: str) -> Path:
 
 
 def prepare_prompt(
-    blocks: list[object], cwd: Path, asset_root: Path | None, *, allow_images: bool
+    blocks: list[object],
+    cwd: Path,
+    asset_root: Path | None,
+    *,
+    allow_images: bool,
+    roots: tuple[Path, ...] = (),
 ) -> str | dict[str, object]:
     """Preserve attachment data in local storage and use native image input."""
     plain: list[object] = []
@@ -133,11 +138,13 @@ def prepare_prompt(
         plain.append(
             TextContentBlock(type="text", text="Inspect the attached image(s).")
         )
-    text = prompt_text(plain, cwd)
+    text = prompt_text(plain, cwd, roots=roots)
     return {"text": text, "image_paths": images} if images else text
 
 
-def prompt_text(blocks: list[object], cwd: Path) -> str:
+def prompt_text(
+    blocks: list[object], cwd: Path, *, roots: tuple[Path, ...] = ()
+) -> str:
     """Preserve ordered text and resource references for the normal tool policy.
 
     Links are references, not an instruction to fetch. Local files must stay in
@@ -175,7 +182,7 @@ def prompt_text(blocks: list[object], cwd: Path) -> str:
                         {"reason": "Local resource URI must be absolute"}
                     )
                 path = raw_path.resolve()
-                if not path.is_relative_to(cwd):
+                if not any(path.is_relative_to(root) for root in (roots or (cwd,))):
                     raise RequestError.invalid_params(
                         {"reason": "Resource is outside the session workspace"}
                     )

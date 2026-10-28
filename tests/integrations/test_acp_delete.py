@@ -26,7 +26,7 @@ async def test_delete_checks_ownership_busy_and_cleans_attachments(tmp_path):
     try:
         sid = (await agent.new_session(str(root))).session_id
         asset = core.store.base_path / "acp-assets" / sid / "image.png"
-        asset.parent.mkdir(parents=True)
+        asset.parent.mkdir(parents=True, exist_ok=True)
         asset.write_bytes(b"fixture")
         plain = core.create_conversation()
         for invalid in (plain, "../escape"):

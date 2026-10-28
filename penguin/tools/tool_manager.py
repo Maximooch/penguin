@@ -2471,6 +2471,29 @@ class ToolManager:
         coroutine execution.
         """
 
+        from penguin.security.scoped_paths import (
+            enforce_execution_path,
+            execution_roots,
+        )
+
+        if execution_roots() is not None:
+            from penguin.security.tool_approval import approval_identity
+            from penguin.security.tool_permissions import get_tool_operations
+
+            if any(
+                op.category == "filesystem" for op in get_tool_operations(tool_name)
+            ):
+                try:
+                    _, _, scoped_resources = approval_identity(
+                        tool_name, tool_input, context
+                    )
+                    for resource in scoped_resources:
+                        enforce_execution_path(Path(resource))
+                except (ValueError, OSError) as exc:
+                    return json.dumps(
+                        {"error": "permission_denied", "tool": tool_name,
+                         "reason": str(exc)}
+                    )
         if not self._permission_enabled:
             return None
 

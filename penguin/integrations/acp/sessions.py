@@ -43,13 +43,56 @@ class SessionRegistry:
             )
         return session
 
-    def create(self, sid: str, cwd: Path) -> None:
+    def validate_roots(
+        self, cwd: Path, additional: list[str] | None
+    ) -> tuple[Path, ...]:
+        if additional is not None and (
+            not isinstance(additional, list) or len(additional) > 32
+        ):
+            raise RequestError.invalid_params(
+                {"reason": "Invalid additional directories"}
+            )
+        roots = [cwd]
+        for raw in additional or []:
+            if not isinstance(raw, str) or not Path(raw).is_absolute():
+                raise RequestError.invalid_params(
+                    {"reason": "Additional roots must be absolute"}
+                )
+            path = Path(raw).resolve()
+            if not path.is_dir() or not any(
+                path.is_relative_to(root) for root in self.allowed_roots
+            ):
+                raise RequestError.invalid_params(
+                    {"reason": "Additional root is outside authorized directories"}
+                )
+            if path not in roots:
+                roots.append(path)
+        return tuple(roots)
+
+    def create(self, sid: str, cwd: Path, roots: tuple[Path, ...] = ()) -> None:
         if not self.available:
             return
         session = self.get(sid)
         session.metadata["acp_workspace"] = str(cwd)
         session.metadata["acp_history"] = []
+        session.metadata["acp_additional_directories"] = [
+            str(root) for root in roots if root != cwd
+        ]
+        session.metadata["execution_allowed_roots"] = [
+            str(root) for root in self.execution_roots(sid, roots or (cwd,))
+        ]
         self.save(session)
+
+    def execution_roots(self, sid: str, roots: tuple[Path, ...]) -> tuple[Path, ...]:
+        """Include only this session's private copies of attached resources."""
+        if not self.available:
+            return roots
+        base = self.store.base_path.resolve()
+        assets = base / "acp-assets" / sid
+        if assets.resolve() != assets or not assets.is_relative_to(base):
+            raise RequestError.invalid_params({"reason": "Unsafe attachment directory"})
+        assets.mkdir(parents=True, exist_ok=True)
+        return (*roots, assets)
 
     def save(self, session: Any) -> None:
         if not self.store.save_session(session):

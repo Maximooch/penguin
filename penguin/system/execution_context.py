@@ -30,6 +30,7 @@ class ExecutionContext:
     subagents_enabled: Optional[bool] = None
     permission_mode: Optional[str] = None
     approval_policy: Optional[dict[str, Any]] = None
+    allowed_roots: Optional[tuple[str, ...]] = None
 
     def as_dict(self) -> dict[str, Any]:
         """Return a dictionary representation for compatibility with existing APIs."""
@@ -46,6 +47,7 @@ class ExecutionContext:
             "subagents_enabled": self.subagents_enabled,
             "permission_mode": self.permission_mode,
             "approval_policy": self.approval_policy,
+            "allowed_roots": self.allowed_roots,
         }
 
 

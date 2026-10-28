@@ -221,6 +221,17 @@ class WorkspaceBoundaryPolicy(PolicyEngine):
             Tuple of (PermissionResult, reason_string)
         """
         context = context or {}
+        from penguin.security.scoped_paths import (
+            enforce_execution_path,
+            execution_roots,
+        )
+
+        scoped_roots = execution_roots()
+        if scoped_roots is not None and operation.category == "filesystem":
+            try:
+                enforce_execution_path(Path(resource))
+            except (ValueError, OSError):
+                return PermissionResult.DENY, "Outside execution-authorized roots"
 
         requested_mode = context.get("permission_mode")
         mode = {
@@ -263,7 +274,11 @@ class WorkspaceBoundaryPolicy(PolicyEngine):
 
         # Normalize and resolve the path
         try:
-            path = self._normalize_path(resource)
+            path = (
+                enforce_execution_path(Path(resource))
+                if scoped_roots is not None
+                else self._normalize_path(resource)
+            )
         except ValueError as e:
             return PermissionResult.DENY, str(e)
 
@@ -298,7 +313,10 @@ class WorkspaceBoundaryPolicy(PolicyEngine):
         within_workspace = self._is_within_boundary(path, workspace_root)
         within_project = self._is_within_boundary(path, project_root)
 
-        if not within_workspace and not within_project:
+        within_additional = scoped_roots is not None and any(
+            path.is_relative_to(root) for root in scoped_roots
+        )
+        if not within_workspace and not within_project and not within_additional:
             if Operation.is_read_only(operation):
                 # Allow reads outside boundaries (useful for reading system files)
                 return PermissionResult.ALLOW, "Read outside boundaries allowed"

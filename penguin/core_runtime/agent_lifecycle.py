@@ -7,6 +7,7 @@ import copy
 import inspect
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 from penguin.llm.api_client import APIClient
@@ -997,7 +998,14 @@ async def run_agent_prompt_in_session(
         project_root=scope.get("project_root"),
         workspace_root=scope.get("workspace_root"),
         request_id=(f"subagent:{agent_id}:{scope.get('conversation_id') or 'unknown'}"),
+        allowed_roots=parent_context.allowed_roots if parent_context else None,
     )
+    if execution_context.allowed_roots is not None:
+        from penguin.security.scoped_paths import enforce_execution_path
+
+        with execution_context_scope(execution_context):
+            enforce_execution_path(Path(execution_context.directory or "."))
+
     async def emit_lifecycle(state: str, **details: Any) -> None:
         emit = getattr(core, "emit_ui_event", None)
         if callable(emit) and parent_context and parent_context.session_id:

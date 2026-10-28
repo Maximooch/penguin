@@ -147,7 +147,9 @@ class ChildTracker:
         else:
             return
         cwd = Path(data.get("directory") or parent_cwd).resolve()
-        if not cwd.is_relative_to(parent_cwd):
+        if not any(
+            cwd.is_relative_to(allowed) for allowed in self.owner._roots_for(root)
+        ):
             return
         if data.get("state") == "running":
             existing = self.children.get(sid)

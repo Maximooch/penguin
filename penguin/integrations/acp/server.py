@@ -41,6 +41,7 @@ from acp.schema import (
     PromptRequest,
     PromptResponse,
     ResumeSessionResponse,
+    SessionAdditionalDirectoriesCapabilities,
     SessionCapabilities,
     SessionCloseCapabilities,
     SessionDeleteCapabilities,
@@ -81,6 +82,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Session:
     cwd: Path
+    roots: tuple[Path, ...] = ()
     task: asyncio.Task[Any] | None = None
     cancelled: bool = False
     running: bool = False
@@ -126,7 +128,10 @@ class PenguinACPAgent:
             )
         self._mcp_support = HAS_MCP_SDK and hasattr(core, "tool_manager")
         self._events = EventBridge(
-            getattr(core, "event_bus", None), self._active_cwd, self._send_update
+            getattr(core, "event_bus", None),
+            self._active_cwd,
+            self._send_update,
+            self._roots_for,
         )
         self._transport = None
         self._children = ChildTracker(self)
@@ -139,6 +144,11 @@ class PenguinACPAgent:
             return session.cwd
         child = self._children.children.get(sid)
         return child.cwd if child and child.active else None
+
+    def _roots_for(self, sid: str) -> tuple[Path, ...]:
+        child = self._children.children.get(sid)
+        session = self.sessions.get(child.root if child else sid)
+        return (session.roots or (session.cwd,)) if session else ()
 
     async def _send_update(self, sid: str, update: Any) -> None:
         if sid in self._children.children:
@@ -221,6 +231,7 @@ class PenguinACPAgent:
                 ),
                 load_session=self._registry.available,
                 session_capabilities=SessionCapabilities(
+                    additional_directories=SessionAdditionalDirectoriesCapabilities(),
                     list=SessionListCapabilities()
                     if self._registry.available
                     else None,
@@ -246,14 +257,13 @@ class PenguinACPAgent:
         mcp_servers: list[Any] | None = None,
         **kwargs: Any,
     ) -> NewSessionResponse:
-        if additional_directories or (mcp_servers and not self._mcp_support):
-            raise RequestError.invalid_params(
-                {"reason": "Additional directories and MCP servers are unsupported"}
-            )
+        if mcp_servers and not self._mcp_support:
+            raise RequestError.invalid_params({"reason": "MCP servers are unsupported"})
         directory = Path(cwd).expanduser()
         if not directory.is_absolute() or not directory.is_dir():
             raise RequestError.invalid_params({"cwd": cwd})
         directory = directory.resolve()
+        roots = self._registry.validate_roots(directory, additional_directories)
         if not any(
             directory == root or root in directory.parents
             for root in self.allowed_roots
@@ -267,8 +277,10 @@ class PenguinACPAgent:
             provider = await self._new_mcp_provider(mcp_servers, directory)
             try:
                 sid = self.core.create_conversation()
-                self._registry.create(sid, directory)
-                self.sessions[sid] = Session(cwd=directory, mcp_provider=provider)
+                self._registry.create(sid, directory, roots)
+                self.sessions[sid] = Session(
+                    cwd=directory, roots=roots, mcp_provider=provider
+                )
             except BaseException:
                 if provider is not None:
                     await asyncio.to_thread(provider.close)
@@ -510,7 +522,7 @@ class PenguinACPAgent:
         *,
         replay: bool,
     ) -> None:
-        if additional_directories or (mcp_servers and not self._mcp_support):
+        if mcp_servers and not self._mcp_support:
             raise RequestError.invalid_params({"reason": "Unsupported session options"})
         if self._connection is None:
             raise RequestError.internal_error()
@@ -529,6 +541,14 @@ class PenguinACPAgent:
                     {"reason": "Session workspace does not match"}
                 )
             history = self._registry.history(saved)
+            roots = self._registry.validate_roots(owned_cwd, additional_directories)
+            if any(
+                child.active and child.root == session_id
+                for child in self._children.children.values()
+            ):
+                raise RequestError.invalid_request(
+                    {"reason": "Session has active children"}
+                )
             model_id = saved.metadata.get("acp_model", "default")
             mode = saved.metadata.get("acp_mode", "build")
             if not isinstance(model_id, str) or mode not in {"build", "plan"}:
@@ -549,12 +569,20 @@ class PenguinACPAgent:
                 await asyncio.to_thread(active.mcp_provider.close)
             self.sessions[session_id] = Session(
                 cwd=owned_cwd,
+                roots=roots,
                 mcp_provider=provider,
                 mode=mode if mode in {"build", "plan"} else "build",
                 model_id=model_id,
                 model_config=config,
                 api_client=client,
             )
+            saved.metadata["acp_additional_directories"] = [
+                str(root) for root in roots[1:]
+            ]
+            saved.metadata["execution_allowed_roots"] = [
+                str(root) for root in self._registry.execution_roots(session_id, roots)
+            ]
+            self._registry.save(saved)
             for update in history:
                 if not isinstance(update, dict):
                     self._processes.restore(session_id, update)
@@ -598,7 +626,12 @@ class PenguinACPAgent:
                     continue
                 sessions.append(
                     SessionInfo(
-                        session_id=sid, cwd=str(path), updated_at=saved.last_active
+                        session_id=sid,
+                        cwd=str(path),
+                        updated_at=saved.last_active,
+                        additional_directories=saved.metadata.get(
+                            "acp_additional_directories", []
+                        ),
                     )
                 )
                 if len(sessions) == 51:
@@ -624,12 +657,9 @@ class PenguinACPAgent:
             )
         assets = None
         if self._registry.available:
-            base = self._registry.store.base_path.resolve()
-            assets = base / "acp-assets" / session_id
-            if not assets.resolve().is_relative_to(base):
-                raise RequestError.invalid_params(
-                    {"reason": "Invalid attachment storage"}
-                )
+            assets = self._registry.execution_roots(
+                session_id, session.roots or (session.cwd,)
+            )[-1]
         active_config = session.model_config or getattr(self.core, "model_config", None)
         message = prepare_prompt(
             prompt,
@@ -637,7 +667,19 @@ class PenguinACPAgent:
             assets,
             allow_images=self._registry.available
             and bool(getattr(active_config, "vision_enabled", False)),
+            roots=session.roots,
         )
+        if len(session.roots) > 1:
+            roots_note = (
+                "Additional authorized workspace directories: "
+                + ", ".join(str(root) for root in session.roots[1:])
+                + "\n"
+            )
+            message = (
+                {**message, "text": roots_note + str(message["text"])}
+                if isinstance(message, dict)
+                else roots_note + message
+            )
         if self._connection is None:
             raise RequestError.internal_error()
         session.task = asyncio.current_task()
@@ -682,6 +724,13 @@ class PenguinACPAgent:
                             conversation_id=session_id,
                             directory=str(session.cwd),
                             project_root=str(session.cwd),
+                            workspace_root=str(session.cwd),
+                            allowed_roots=tuple(
+                                str(root)
+                                for root in self._registry.execution_roots(
+                                    session_id, session.roots or (session.cwd,)
+                                )
+                            ),
                             request_id=uuid4().hex,
                             agent_mode=session.mode,
                         )

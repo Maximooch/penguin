@@ -79,8 +79,19 @@ passed; final code-head CI is tracked separately from local results.
 
 The current implementation/unsupported-feature matrix and draft dependency
 graph live in [the conformance audit](../context/tasks/acp.md). Optional editor
-filesystem/terminal RPCs, additional roots, parallel root turns, persisted
+filesystem/terminal RPCs, parallel root turns, persisted
 permission grants and interactive ACP authentication remain deliberately absent.
+
+Additional session roots are accepted only as absolute existing directories inside
+the adapter's launch-authorized roots. They are fixed during a turn; loading or
+resuming activates the complete supplied list (omitting it narrows to cwd alone).
+Roots are reported by session/list. They preserve cwd as the relative
+path base, propagate to child file-tool scopes and permit resource references and
+native diff locations in those directories. File-tool attempts outside the scoped
+set are rejected even if an ordinary tool context tries to override the root list.
+The session's private attachment-copy directory is also available to file tools,
+so attached resources remain usable; other sessions' storage is not included.
+This is a file-tool boundary, not an OS sandbox for shell commands or MCP servers.
 
 ## Planned PR series
 
