@@ -1370,7 +1370,9 @@ class OpenAIAdapter(BaseAdapter):
                         }
                     )
                     seen_function_call_ids.add(tool_call_id)
-                if tool_call_id and output_text:
+                # Empty text is a completed result (e.g. an empty file), not a
+                # missing result. Keep it paired with its function call.
+                if tool_call_id and message.get("content") is not None:
                     items.append(
                         {
                             "type": "function_call_output",
