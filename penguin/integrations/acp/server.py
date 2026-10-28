@@ -1,22 +1,22 @@
 """Local editor-facing ACP v1 adapter. Optional dependency: penguin-ai[acp].
 
-Only text prompts, new sessions, streaming text, permissions, and cancellation are
-implemented. In particular, load and client-provided MCP are not advertised.
+Text/resource-reference prompts, new sessions, streaming text, permissions, and
+cancellation are implemented. Load and client-provided MCP are not advertised.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from acp import PROTOCOL_VERSION, RequestError, run_agent
 from acp.helpers import text_block
-from acp.interfaces import Client
 from acp.schema import (
     AgentMessageChunk,
     ClientCapabilities,
@@ -25,13 +25,21 @@ from acp.schema import (
     NewSessionResponse,
     PermissionOption,
     PromptResponse,
-    TextContentBlock,
     ToolCallStart,
 )
 
 from penguin._version import __version__
-from penguin.security.approval import ApprovalRequest, ApprovalScope, ApprovalStatus, get_approval_manager
+from penguin.integrations.acp.content import prompt_text
+from penguin.security.approval import (
+    ApprovalRequest,
+    ApprovalScope,
+    ApprovalStatus,
+    get_approval_manager,
+)
 from penguin.system.execution_context import ExecutionContext, execution_context_scope
+
+if TYPE_CHECKING:
+    from acp.interfaces import Client
 
 logger = logging.getLogger(__name__)
 
@@ -97,27 +105,39 @@ class PenguinACPAgent:
         **kwargs: Any,
     ) -> NewSessionResponse:
         if additional_directories or mcp_servers:
-            raise RequestError.invalid_params({"reason": "Additional directories and MCP servers are not yet supported"})
+            raise RequestError.invalid_params(
+                {
+                    "reason": "Additional directories and MCP servers are unsupported"
+                }
+            )
         directory = Path(cwd).expanduser()
         if not directory.is_absolute() or not directory.is_dir():
             raise RequestError.invalid_params({"cwd": cwd})
         directory = directory.resolve()
-        if not any(directory == root or root in directory.parents for root in self.allowed_roots):
-            raise RequestError.invalid_params({"reason": "cwd is outside the authorized workspace"})
+        if not any(
+            directory == root or root in directory.parents
+            for root in self.allowed_roots
+        ):
+            raise RequestError.invalid_params(
+                {"reason": "cwd is outside the authorized workspace"}
+            )
         # PenguinCore's create_conversation is synchronous, despite the web
         # interface's separate async convenience wrapper.
         sid = self.core.create_conversation()
         self.sessions[sid] = Session(cwd=directory)
         return NewSessionResponse(session_id=sid)
 
-    async def prompt(self, session_id: str, prompt: list[Any], **kwargs: Any) -> PromptResponse:
+    async def prompt(
+        self, session_id: str, prompt: list[Any], **kwargs: Any
+    ) -> PromptResponse:
         session = self.sessions.get(session_id)
         if session is None:
             raise RequestError.invalid_params({"sessionId": session_id})
         if session.task is not None:
-            raise RequestError.invalid_request({"reason": "A turn is already active for this session"})
-        if not prompt or any(not isinstance(block, TextContentBlock) for block in prompt):
-            raise RequestError.invalid_params({"reason": "Only non-empty text prompts are supported"})
+            raise RequestError.invalid_request(
+                {"reason": "A turn is already active for this session"}
+            )
+        message = prompt_text(prompt, session.cwd)
         if self._connection is None:
             raise RequestError.internal_error()
         session.task = asyncio.current_task()
@@ -150,22 +170,50 @@ class PenguinACPAgent:
                     )
                 ):
                     result = await self.core.process(
-                        "\n".join(block.text for block in prompt),
+                        message,
                         conversation_id=session_id,
                         streaming=True,
                         stream_callback=on_chunk,
                     )
+            if not isinstance(result, dict):
+                raise RequestError.internal_error(
+                    {"reason": "Penguin returned no valid turn result"}
+                )
             if session.cancelled or result.get("aborted"):
                 return PromptResponse(stop_reason="cancelled")
-            if result.get("error") or result.get("status") in {"error", "provider_error", "failed"}:
-                raise RequestError.internal_error({"reason": "Penguin could not complete the turn"})
+            if result.get("error") or result.get("status") in {
+                "error",
+                "provider_error",
+                "failed",
+            }:
+                raise RequestError.internal_error(
+                    {"reason": "Penguin could not complete the turn"}
+                )
             text = result.get("assistant_response") or ""
             if text and not sent:
                 await on_chunk(text)
-            return PromptResponse(stop_reason="end_turn")
+            stop_reason = result.get("stop_reason", "end_turn")
+            if stop_reason not in {
+                "end_turn",
+                "max_tokens",
+                "max_turn_requests",
+                "refusal",
+                "cancelled",
+            }:
+                raise RequestError.internal_error(
+                    {"reason": "Unknown turn stop reason"}
+                )
+            return PromptResponse(stop_reason=stop_reason)
         except asyncio.CancelledError:
             session.cancelled = True
             return PromptResponse(stop_reason="cancelled")
+        except RequestError:
+            raise
+        except Exception:
+            logger.exception("ACP turn failed")
+            raise RequestError.internal_error(
+                {"reason": "Penguin could not complete the turn"}
+            ) from None
         finally:
             if session.cancelled:
                 for request in self._approvals.get_pending(session_id):
@@ -182,9 +230,12 @@ class PenguinACPAgent:
             self._approvals.deny(request.id)
         # A queued turn has no Penguin execution to abort. Cancel it without
         # interrupting the other session that currently owns the process gate.
-        if session.running:
-            await self.core.abort_session(session_id)
-        session.task.cancel()
+        task = session.task
+        try:
+            if session.running:
+                await self.core.abort_session(session_id)
+        finally:
+            task.cancel()
 
     def _on_approval(self, request: ApprovalRequest) -> None:
         session = self.sessions.get(request.session_id)
@@ -215,8 +266,12 @@ class PenguinACPAgent:
                         session_update="tool_call",
                     ),
                     options=[
-                        PermissionOption(option_id="allow_once", name="Allow once", kind="allow_once"),
-                        PermissionOption(option_id="reject_once", name="Reject", kind="reject_once"),
+                        PermissionOption(
+                            option_id="allow_once", name="Allow once", kind="allow_once"
+                        ),
+                        PermissionOption(
+                            option_id="reject_once", name="Reject", kind="reject_once"
+                        ),
                     ],
                 ),
                 timeout=300,
@@ -244,26 +299,24 @@ class PenguinACPAgent:
 async def serve() -> None:
     from acp.stdio import stdio_streams
 
-    from penguin.config import WORKSPACE_PATH
-    from penguin.core import PenguinCore
+    from penguin.integrations.acp.stdio import protocol_writer
 
-    # ACP owns stdout. Startup code and provider libraries may print; keep their
-    # output on stderr for the entire lifetime of the agent. Bind the SDK's
-    # protocol writer to the real stdout pipe before redirecting Python prints.
-    sys.stdout = sys.stderr
-    core = await PenguinCore.create(show_progress=False)
-    protocol_stdout = sys.__stdout__
-    sys.stdout = protocol_stdout
-    try:
-        reader, writer = await stdio_streams()
-    finally:
-        sys.stdout = sys.stderr
-    roots = (Path.cwd(), Path(WORKSPACE_PATH))
-    agent = PenguinACPAgent(core, allowed_roots=roots)
-    try:
-        await run_agent(agent, input_stream=writer, output_stream=reader)
-    finally:
-        agent.close()
+    output = sys.stdout.buffer
+    # The SDK's Windows writer resolves sys.stdout on each write, so capturing
+    # its streams alone does not protect stdout when diagnostics are redirected.
+    with contextlib.redirect_stdout(sys.stderr):
+        from penguin.config import WORKSPACE_PATH
+        from penguin.core import PenguinCore
+
+        core = await PenguinCore.create(show_progress=False)
+        reader, _ = await stdio_streams(limit=50 * 1024 * 1024)
+        writer = protocol_writer(output)
+        roots = (Path.cwd(), Path(WORKSPACE_PATH))
+        agent = PenguinACPAgent(core, allowed_roots=roots)
+        try:
+            await run_agent(agent, input_stream=writer, output_stream=reader)
+        finally:
+            agent.close()
 
 
 def main() -> int:

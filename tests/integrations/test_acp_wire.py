@@ -1,5 +1,7 @@
 """Exercise the existing ACP adapter over real stdio, without a model provider."""
 
+# ruff: noqa: E402 -- optional SDK must be skipped before importing its models.
+
 import asyncio
 import os
 import sys
@@ -10,7 +12,6 @@ acp = pytest.importorskip("acp")
 from acp import RequestError
 from acp.helpers import text_block
 from acp.schema import ImageContentBlock
-
 
 # A subprocess, not an in-process mock connection: assertions cover framing,
 # stdout cleanliness and the SDK's actual request/notification dispatcher.
@@ -44,6 +45,63 @@ async def main():
 asyncio.run(main())
 """
 
+# Exercise the shipped entrypoint and serve(), substituting only the expensive
+# provider-backed core. Startup and processing prints must never enter stdout.
+_CLI_AGENT = """
+import sys, types
+from pathlib import Path
+module = types.ModuleType('penguin.core')
+class Core:
+    @classmethod
+    async def create(cls, **kwargs):
+        print('startup diagnostic')
+        return cls()
+    def create_conversation(self):
+        return 'cli-session'
+    async def process(self, text, **kwargs):
+        print('provider diagnostic')
+        await kwargs['stream_callback']('answer: café 🐧', 'assistant')
+        return {'assistant_response': 'answer: café 🐧'}
+    async def abort_session(self, session_id):
+        return True
+module.PenguinCore = Core
+sys.modules['penguin.core'] = module
+from penguin.cli.entrypoint import main
+raise SystemExit(main(['acp']))
+"""
+
+
+@pytest.mark.asyncio
+async def test_real_cli_stdio_keeps_diagnostics_out_of_protocol(tmp_path):
+    client = RecordingClient()
+    env = {**os.environ, "PENGUIN_WORKSPACE": str(tmp_path)}
+    async with acp.spawn_agent_process(
+        client, sys.executable, "-c", _CLI_AGENT, env=env
+    ) as (conn, process):
+        await asyncio.wait_for(conn.initialize(acp.PROTOCOL_VERSION), 15)
+        sid = (await asyncio.wait_for(conn.new_session(str(tmp_path)), 10)).session_id
+        from acp.schema import ResourceContentBlock
+
+        response = await asyncio.wait_for(
+            conn.prompt(
+                sid,
+                [
+                    text_block("review"),
+                    ResourceContentBlock(
+                        type="resource_link",
+                        uri=(tmp_path / "context.txt").as_uri(),
+                        name="context",
+                    ),
+                ],
+            ),
+            10,
+        )
+        assert response.stop_reason == "end_turn"
+        assert [update.content.text for _, update in client.updates] == [
+            "answer: café 🐧"
+        ]
+        assert process.returncode is None
+
 
 class RecordingClient:
     def __init__(self):
@@ -64,25 +122,32 @@ async def test_acp_stdio_initialize_sessions_and_two_turns(tmp_path):
         assert response.protocol_version == acp.PROTOCOL_VERSION
         assert response.agent_capabilities.load_session is False
         first = (await asyncio.wait_for(conn.new_session(str(tmp_path)), 10)).session_id
-        second = (await asyncio.wait_for(conn.new_session(str(tmp_path)), 10)).session_id
+        second = (
+            await asyncio.wait_for(conn.new_session(str(tmp_path)), 10)
+        ).session_id
         assert first != second
         for sid, text in ((first, "one"), (second, "other"), (first, "two")):
             result = await asyncio.wait_for(conn.prompt(sid, [text_block(text)]), 10)
             assert result.stop_reason == "end_turn"
-            chunks = [update.content.text for session, update in client.updates
-                      if session == sid and update.content.text.startswith(text)]
+            chunks = [
+                update.content.text
+                for session, update in client.updates
+                if session == sid and update.content.text.startswith(text)
+            ]
             assert chunks[-1] == f"{text}: "
-        assert [update.content.text for sid, update in client.updates if sid == first] == [
-            "one: ", "done", "two: ", "done"
-        ]
-        assert [update.content.text for sid, update in client.updates if sid == second] == [
-            "other: ", "done"
-        ]
+        assert [
+            update.content.text for sid, update in client.updates if sid == first
+        ] == ["one: ", "done", "two: ", "done"]
+        assert [
+            update.content.text for sid, update in client.updates if sid == second
+        ] == ["other: ", "done"]
         assert process.returncode is None
 
 
 @pytest.mark.asyncio
-async def test_acp_stdio_rejects_unsupported_requests_without_killing_connection(tmp_path):
+async def test_acp_stdio_rejects_unsupported_requests_without_killing_connection(
+    tmp_path,
+):
     client = RecordingClient()
     env = {**os.environ, "ACP_TEST_ROOT": str(tmp_path)}
     async with acp.spawn_agent_process(
@@ -95,8 +160,18 @@ async def test_acp_stdio_rejects_unsupported_requests_without_killing_connection
             await asyncio.wait_for(conn.new_session(str(tmp_path.parent)), 10)
         sid = (await asyncio.wait_for(conn.new_session(str(tmp_path)), 10)).session_id
         with pytest.raises(RequestError):
-            await asyncio.wait_for(conn.prompt(sid, [
-                ImageContentBlock(type="image", data="aGVsbG8=", mime_type="image/png")
-            ]), 10)
-        assert (await asyncio.wait_for(conn.prompt(sid, [text_block("okay")]), 10)).stop_reason == "end_turn"
+            await asyncio.wait_for(
+                conn.prompt(
+                    sid,
+                    [
+                        ImageContentBlock(
+                            type="image", data="aGVsbG8=", mime_type="image/png"
+                        )
+                    ],
+                ),
+                10,
+            )
+        assert (
+            await asyncio.wait_for(conn.prompt(sid, [text_block("okay")]), 10)
+        ).stop_reason == "end_turn"
         assert process.returncode is None

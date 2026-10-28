@@ -1,8 +1,10 @@
 # Penguin ACP (Agent Client Protocol) implementation
 
-Status: phased implementation in progress. Date: September 28, 2026.
+Status: phased implementation in progress. Updated: October 27, 2026.
 
-Current local baseline: uncommitted ACP adapter and its in-process tests were already present when this checklist was created. This plan does not claim that code as completed end-to-end. Independent additions in this phase: subprocess SDK wire tests in `tests/integrations/test_acp_wire.py`. Installed SDK tested: `agent-client-protocol==0.12.1` on Python 3.12. **Version gap:** the published v1 schema now requires prompt `resource_link`, but this installed SDK's `PromptRequest` union does not include it. Resolve by upgrading to a compatible SDK or explicitly implementing/version-negotiating the missing wire shape before claiming published v1 conformance; do not mark resource links supported based on the current SDK. `pytest -q tests/integrations/test_acp_server.py tests/integrations/test_acp_wire.py`: 7 passed; full matrix, live editor, and actual CLI startup remain unverified.
+Current baseline update (October 27, 2026): the adapter accepts text and resource-link prompts, preserves explicit stop reasons, sanitizes invalid core results, and binds protocol stdout independently of diagnostic redirection (including Windows). The current installed official SDK `agent-client-protocol==0.12.1` includes `ResourceContentBlock` in `PromptRequest`; the earlier claim that this SDK lacked resource links is stale. The adapter, not the installed SDK, was rejecting them.
+
+Validation: 21 focused tests passed on Python 3.11, including the shipped CLI dispatch and `serve()` over subprocess stdio with a fake provider core, resource references, path traversal rejection, Unicode output, and failure recovery. This is not a live-provider or real-editor smoke test. Remaining baseline gates and later capabilities are still open; see `docs/ACP.md` for the scoped PR series.
 
 ## Contract and scope
 
@@ -35,7 +37,7 @@ Local seams: `penguin/cli/entrypoint.py`, `penguin/core_runtime/process_facade.p
 - [x] Add opt-in stdio agent entry point and initialize handshake with minimal advertised capabilities; no HTTP listener or A2A dependency. Wire and version-negotiation tests still pending.
 - [x] Implement basic `session/new`: absolute existing authorized `cwd`, independent conversation ID; explicitly reject requested MCP servers and additional directories until supported.
 - [x] Implement basic `session/prompt` with text blocks and existing `core.process` path using a scoped conversation/working directory context; verify continuation and path policy end to end.
-- [ ] Support baseline `resource_link` prompt blocks safely (path/URI parsing and authorized resource handling). The present text-only adapter rejects them; do not call v1 input coverage complete yet.
+- [x] Support baseline `resource_link` prompt blocks safely as references; local URIs are confined to session cwd and any later reads use normal tool policy. Remote links are not fetched by the adapter.
 - [ ] Emit correctly ordered `session/update` agent text chunks and one terminal `session/prompt` response with valid stop reason; distinguish normal end, provider failure, user cancellation and incomplete work without inventing a success message.
 - [ ] Harden existing `session/cancel` against quiet provider/tool phases and completion races; prove the session remains usable and final status reflects actual stop.
 - [ ] Harden existing fail-closed validation for missing sessions, wrong request shape, unsupported content blocks and concurrent prompts; a process-wide execution lock currently serializes turns to protect shared conversation state.
