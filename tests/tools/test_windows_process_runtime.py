@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -159,6 +160,50 @@ def test_quiet_capture_blocks_between_bounded_readiness_scans(
     assert result["returncode"] == 0
     # Two pipes, one readiness scan per 20ms plus startup/EOF boundary scans.
     assert len(scans) <= 2 * math.ceil(elapsed / 0.02) + 12, (len(scans), elapsed)
+
+
+@pytest.mark.parametrize("timeout", [0.02, 0.06])
+def test_quiet_selector_does_not_rescan_due_to_coarse_clock(monkeypatch, timeout):
+    from penguin.tools import windows_pipes
+
+    elapsed = [0.0]
+    waits, scans = [], []
+
+    class ClockedStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, seconds):
+            waits.append(seconds)
+            elapsed[0] += seconds
+            return False
+
+    monkeypatch.setattr(
+        windows_pipes,
+        "time",
+        SimpleNamespace(
+            monotonic=lambda: math.floor(elapsed[0] / 0.015625) * 0.015625,
+            perf_counter=lambda: elapsed[0],
+        ),
+    )
+    real_peek = windows_pipes._kernel.PeekNamedPipe
+
+    def peek(*args):
+        scans.append(elapsed[0])
+        return real_peek(*args)
+
+    monkeypatch.setattr(windows_pipes._kernel, "PeekNamedPipe", peek)
+    read_fd, write_fd = os.pipe()
+    try:
+        selector = windows_pipes.PipeSelector(ClockedStopEvent())
+        selector.register(SimpleNamespace(fileno=lambda: read_fd), 1, "stdout")
+        assert selector.select(timeout) == []
+        assert elapsed[0] == pytest.approx(timeout)
+        assert waits == pytest.approx([0.02] * math.ceil(timeout / 0.02))
+        assert len(scans) == math.ceil(timeout / 0.02)
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
 
 
 def test_closed_stream_selector_blocks_and_cancellation_wakes_it():
