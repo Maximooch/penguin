@@ -515,6 +515,8 @@ class ProcessRuntime:
         return result
 
     def _signal(self, record: ManagedProcess, mode: str) -> None:
+        from penguin.system.tool_environment import build_tool_environment
+
         try:
             if os.name == "nt" and record.process.poll() is None:
                 if mode == "interrupt":
@@ -542,6 +544,7 @@ class ProcessRuntime:
                     capture_output=True,
                     timeout=5,
                     check=False,
+                    env=build_tool_environment(),
                 )
                 if result.returncode and record.process.poll() is None:
                     raise OSError(f"taskkill failed: {result.stderr!r}")

@@ -223,6 +223,28 @@ def test_interrupt_without_console_falls_back_to_tree_stop(
     assert runtime.stop(pid, mode="interrupt")["process_status"] == "exited"
 
 
+def test_hosted_cleanup_filters_helper_environment(runtime, command, monkeypatch):
+    """The actual Windows helper works with the restricted environment."""
+    monkeypatch.setenv("PENGUIN_TOOL_ENVIRONMENT", "hosted")
+    monkeypatch.setenv("SYNTHETIC_CLEANUP_SECRET", "synthetic-secret")
+    real_run = subprocess.run
+    environments = []
+
+    def capture_run(*args, **kwargs):
+        environments.append(kwargs.get("env"))
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", capture_run)
+    pid = runtime.start(command("import time; print('started'); time.sleep(30)"))[
+        "process_id"
+    ]
+    assert "started" in runtime.poll(pid, wait_ms=2000)["output"]
+    assert runtime.stop(pid)["process_status"] == "exited"
+    assert environments
+    assert all(isinstance(environment, dict) for environment in environments)
+    assert all("SYNTHETIC_CLEANUP_SECRET" not in env for env in environments)
+
+
 def test_timeout_stops_child_tree(runtime, command, tmp_path):
     import ctypes
     from ctypes import wintypes
