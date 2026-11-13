@@ -652,6 +652,7 @@ def test_build_initial_model_config_uses_live_config_and_api_base_fallback() -> 
             max_output_tokens=4096,
             max_context_window_tokens=128000,
             service_tier="flex",
+            vision_enabled=True,
         ),
         api=SimpleNamespace(base_url="https://api.example.test/v1"),
     )
@@ -680,6 +681,7 @@ def test_build_initial_model_config_uses_live_config_and_api_base_fallback() -> 
         "max_output_tokens": 4096,
         "max_context_window_tokens": 128000,
         "service_tier": "flex",
+        "vision_enabled": True,
     }
 
 

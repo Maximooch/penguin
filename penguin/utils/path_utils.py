@@ -77,6 +77,11 @@ def is_path_allowed(target: Path, root_pref: str = 'auto', cwd_override: Optiona
     except Exception:
         return False
 
+    from penguin.security.scoped_paths import execution_roots
+    scoped = execution_roots()
+    if scoped is not None:
+        return any(target.is_relative_to(root) for root in scoped)
+
     project_root, workspace_root, project_additional, context_additional = get_allowed_roots(cwd_override)
 
     def _starts_with(parent: Path) -> bool:
@@ -104,7 +109,8 @@ def get_default_write_root() -> str:
 
 def enforce_allowed_path(target: Path, root_pref: str = 'auto', cwd_override: Optional[str] = None) -> Path:
     """Raise ValueError if target is outside allowed roots; return resolved path otherwise."""
-    resolved = target.expanduser().resolve()
+    from penguin.security.scoped_paths import enforce_execution_path
+    resolved = enforce_execution_path(target)
     from penguin.security.tool_approval import is_path_authorized
 
     if not is_path_authorized(resolved) and not is_path_allowed(

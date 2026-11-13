@@ -37,6 +37,10 @@ class MessageBus:
 
     @classmethod
     def get_instance(cls) -> "MessageBus":
+        from penguin.core_runtime.isolation import scoped_service
+        scoped = scoped_service("message_bus", cls)
+        if scoped is not None:
+            return scoped
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance

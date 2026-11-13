@@ -154,19 +154,22 @@ def test_failed_temp_write_preserves_good_primary_and_backup_then_retry_succeeds
     backup_before = backup.read_bytes()
     updated = _session(session_id, "durable original", "new message")
 
-    real_open = session_manager_module._safe_open
+    real_write = session_manager_module.atomic_write_text
 
-    def fail_temp_open(path: object, mode: str = "r", *args: object, **kwargs: object):
-        if Path(path) == temp and "w" in mode:
+    def fail_primary_write(target: Path, text: str) -> None:
+        if Path(target) == primary:
             raise OSError("synthetic temp write failure")
-        return real_open(path, mode, *args, **kwargs)
+        real_write(target, text)
 
-    monkeypatch.setattr(session_manager_module, "_safe_open", fail_temp_open)
+    monkeypatch.setattr(session_manager_module, "atomic_write_text", fail_primary_write)
     assert manager.save_session(updated) is False
     assert primary.read_bytes() == primary_before
-    assert backup.read_bytes() == backup_before
+    # The backup is refreshed before the primary is written, so after a failed
+    # primary write it holds the last complete primary, not the older backup.
+    assert backup_before != primary_before
+    assert backup.read_bytes() == primary_before
 
-    monkeypatch.setattr(session_manager_module, "_safe_open", real_open)
+    monkeypatch.setattr(session_manager_module, "atomic_write_text", real_write)
     assert manager.save_session(updated) is True
     reloaded = _manager(tmp_path).load_session(session_id)
     assert reloaded is not None
@@ -190,7 +193,7 @@ def test_failed_primary_replace_preserves_good_primary_and_backup_then_retry_suc
     real_replace = session_manager_module.os.replace
 
     def fail_primary_replace(source: object, destination: object) -> None:
-        if Path(source) == temp and Path(destination) == primary:
+        if Path(destination) == primary:
             raise OSError("synthetic atomic replace failure")
         real_replace(source, destination)
 

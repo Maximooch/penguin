@@ -59,6 +59,10 @@ class QuestionManager:
     _lock = threading.Lock()
 
     def __new__(cls) -> QuestionManager:
+        from penguin.core_runtime.isolation import scoped_service
+        scoped = scoped_service("question_manager", lambda: object.__new__(cls))
+        if scoped is not None:
+            return scoped
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:

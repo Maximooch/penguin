@@ -129,6 +129,10 @@ class ConnectionPoolManager:
         Returns:
             The global ConnectionPoolManager instance
         """
+        from penguin.core_runtime.isolation import scoped_service
+        scoped = scoped_service("connection_pool", lambda: cls(config))
+        if scoped is not None:
+            return scoped
         if cls._instance is None:
             cls._instance = cls(config or ConnectionPoolConfig())
         return cls._instance
@@ -145,6 +149,10 @@ class ConnectionPoolManager:
         Returns:
             The global ConnectionPoolManager instance
         """
+        from penguin.core_runtime.isolation import scoped_service
+        scoped = scoped_service("connection_pool", lambda: cls(config))
+        if scoped is not None:
+            return scoped
         if cls._instance is None:
             async with cls._lock:
                 if cls._instance is None:

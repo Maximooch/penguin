@@ -10,6 +10,7 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -78,6 +79,38 @@ def test_local_mode_preserves_inheritance(monkeypatch: pytest.MonkeyPatch) -> No
     assert build_tool_environment({"PATH": "custom"})["PATH"] == "custom"
 
 
+@pytest.mark.parametrize("mode", ["local", "hosted"])
+def test_windows_cleanup_helper_uses_environment_policy(
+    mode: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercise the Windows launch site without needing Windows or taskkill."""
+    from penguin.tools import process_runtime
+
+    monkeypatch.setenv("PENGUIN_TOOL_ENVIRONMENT", mode)
+    monkeypatch.setenv("SYNTHETIC_CLEANUP_SECRET", "synthetic-secret")
+    monkeypatch.setattr(
+        process_runtime, "os", SimpleNamespace(name="nt", environ=os.environ)
+    )
+    calls = []
+
+    def run_helper(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(process_runtime.subprocess, "run", run_helper)
+    record = SimpleNamespace(process=SimpleNamespace(pid=12345, poll=lambda: None))
+    with tool_environment_scope({"CLEANUP_SCOPE": "scoped-value"}):
+        ProcessRuntime(log_dir=tmp_path)._signal(record, "kill")
+        assert calls[0][1]["env"] == build_tool_environment()
+
+    environment = calls[0][1]["env"]
+    assert calls[0][0][-4:] == ["/PID", "12345", "/T", "/F"]
+    assert ("SYNTHETIC_CLEANUP_SECRET" in environment) is (mode == "local")
+    if mode == "hosted":
+        assert environment["CLEANUP_SCOPE"] == "scoped-value"
+        assert "synthetic-secret" not in environment.values()
+
+
 def test_unknown_mode_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     """A misspelled deployment policy must not select local inheritance."""
     monkeypatch.setenv("PENGUIN_TOOL_ENVIRONMENT", "hosetd")
@@ -126,9 +159,8 @@ def test_process_runtime_and_notebook_shell_use_policy(
     """Actual shell paths cannot inherit a synthetic service credential."""
     monkeypatch.setenv("PENGUIN_TOOL_ENVIRONMENT", "hosted")
     monkeypatch.setenv("LINK_INFERENCE_SERVICE_TOKEN", "synthetic-secret")
-    command = f"{shlex.quote(sys.executable)} -c " + shlex.quote(
-        "import os,json; print(json.dumps(dict(os.environ)))"
-    )
+    argv = [sys.executable, "-c", "import os,json; print(json.dumps(dict(os.environ)))"]
+    command = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
     runtime = ProcessRuntime(log_dir=tmp_path)
     started = runtime.start(command, cwd=str(tmp_path), env={"BUILD_LABEL": "test"})
     process_id = started["process_id"]
@@ -201,7 +233,7 @@ def test_tool_subprocess_sites_pass_explicit_environment() -> None:
         )
     ]
     for path in paths:
-        for node in ast.walk(ast.parse(path.read_text())):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if not isinstance(node, ast.Call) or not isinstance(
                 node.func, ast.Attribute
             ):

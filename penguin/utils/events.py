@@ -46,6 +46,10 @@ class EventBus:
     @classmethod
     def get_instance(cls):
         """Get or create the singleton instance of EventBus."""
+        from penguin.core_runtime.isolation import scoped_service
+        scoped = scoped_service("system_event_bus", cls)
+        if scoped is not None:
+            return scoped
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance

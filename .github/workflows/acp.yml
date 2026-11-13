@@ -1,0 +1,67 @@
+name: ACP contract checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  acp-contract:
+    name: ACP / ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install ACP and test dependencies
+        run: python -m pip install -e ".[acp,dev]"
+      - name: Lint ACP implementation
+        run: python -m ruff check penguin/integrations/acp penguin/core_runtime/isolation.py
+      - name: Verify real stdio and deterministic contracts
+        run: >-
+          python -m pytest -q
+          tests/integrations/test_acp_server.py
+          tests/integrations/test_acp_wire.py
+          tests/integrations/test_acp_events.py
+          tests/integrations/test_acp_sessions.py
+          tests/integrations/test_acp_content.py
+          tests/integrations/test_acp_mcp.py
+          tests/integrations/test_acp_controls.py
+          tests/integrations/test_acp_children.py
+          tests/integrations/test_acp_diffs.py
+          tests/integrations/test_acp_child_approvals.py
+          tests/integrations/test_acp_processes.py
+          tests/integrations/test_acp_delete.py
+          tests/integrations/test_acp_questions.py
+          tests/integrations/test_acp_usage.py
+          tests/integrations/test_acp_request_cancel.py
+          tests/integrations/test_acp_roots.py
+          tests/integrations/test_acp_client_files.py
+          tests/integrations/test_acp_client_terminals.py
+          tests/integrations/test_acp_permission_wire.py
+          tests/integrations/test_acp_grants.py
+          tests/integrations/test_acp_isolation.py
+          tests/integrations/test_acp_configured_permissions.py
+          tests/integrations/test_acp_stored_auth.py
+          tests/multi/test_executor.py
+          tests/system/test_message_bus_delivery.py
+          tests/test_event_bus_lifecycle.py
+          tests/test_action_executor_question.py
+          tests/test_action_executor_subagent_events.py
+          tests/llm/test_connection_pool.py
+          tests/core_runtime/test_startup.py
+          tests/core_runtime/test_session_goal_runtime.py
+          tests/system/test_tool_environment.py

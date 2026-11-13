@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
+import inspect
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 from penguin.llm.api_client import APIClient
@@ -978,6 +981,7 @@ async def run_agent_prompt_in_session(
     streaming: bool | None = None,
 ) -> dict[str, Any]:
     """Run an agent prompt inside that agent's session-scoped execution context."""
+    parent_context = get_current_execution_context()
     scope = resolve_agent_execution_scope(
         core,
         agent_id,
@@ -994,11 +998,49 @@ async def run_agent_prompt_in_session(
         project_root=scope.get("project_root"),
         workspace_root=scope.get("workspace_root"),
         request_id=(f"subagent:{agent_id}:{scope.get('conversation_id') or 'unknown'}"),
+        allowed_roots=parent_context.allowed_roots if parent_context else None,
     )
-    with execution_context_scope(execution_context):
-        return await core.process(
-            input_data={"text": prompt},
-            conversation_id=scope.get("conversation_id"),
-            agent_id=agent_id,
-            streaming=streaming,
-        )
+    if execution_context.allowed_roots is not None:
+        from penguin.security.scoped_paths import enforce_execution_path
+
+        with execution_context_scope(execution_context):
+            enforce_execution_path(Path(execution_context.directory or "."))
+
+    async def emit_lifecycle(state: str, **details: Any) -> None:
+        emit = getattr(core, "emit_ui_event", None)
+        if callable(emit) and parent_context and parent_context.session_id:
+            result = emit("agent.lifecycle", {
+                "parent_session_id": parent_context.session_id,
+                "session_id": execution_context.session_id,
+                "agent_id": agent_id, "directory": execution_context.directory,
+                "state": state, **details,
+            })
+            if inspect.isawaitable(result):
+                await result
+
+    await emit_lifecycle("running", prompt=prompt)
+    try:
+        with execution_context_scope(execution_context):
+            result = await core.process(
+                input_data={"text": prompt},
+                conversation_id=scope.get("conversation_id"),
+                agent_id=agent_id,
+                streaming=streaming,
+            )
+    except asyncio.CancelledError:
+        await emit_lifecycle("cancelled")
+        raise
+    except Exception:
+        await emit_lifecycle("failed")
+        raise
+    state = "completed"
+    if isinstance(result, dict):
+        if result.get("aborted") or result.get("status") in {"cancelled", "aborted"}:
+            state = "cancelled"
+        elif result.get("error") or result.get("status") in {"failed", "error"}:
+            state = "failed"
+    await emit_lifecycle(
+        state,
+        text=result.get("assistant_response", "") if isinstance(result, dict) else "",
+    )
+    return result

@@ -62,6 +62,7 @@ from penguin.llm.runtime import (
 from penguin.tools import ToolManager  # type: ignore
 from penguin.core_runtime.process_notifications import process_session_scope
 from penguin.tools.process_wait import ProcessWaitGuard
+from penguin.multi.mailbox import AgentMailbox
 from penguin.tools.runtime import (
     DEFAULT_TOOL_MODEL_OUTPUT_MAX_CHARS,
     ToolCall,
@@ -740,6 +741,7 @@ class Engine:
 
         # Multi-agent registry and defaults
         self.agents: Dict[str, EngineAgent] = {}
+        self._agent_mailbox = AgentMailbox()
         # Must be initialized before property-backed fields are assigned.
         self._default_run_state = EngineRunState()
         self.default_agent_id: str = "default"
@@ -988,6 +990,12 @@ class Engine:
             tool_manager=tool_manager,
             action_executor=action_executor,
         )
+        if MessageBus:
+            async def receive(message: Any) -> None:
+                if not await self.queue_agent_message(message):
+                    raise ValueError("Target agent has no active session")
+
+            MessageBus.get_instance().register_handler(agent_id, receive)
 
     def get_agent(self, agent_id: Optional[str] = None) -> Optional[EngineAgent]:
         return self.agents.get(agent_id or self.default_agent_id)
@@ -1005,6 +1013,9 @@ class Engine:
         if agent_id == self.default_agent_id:
             raise ValueError("Cannot unregister the default agent")
         self.agents.pop(agent_id, None)
+        self.agent_mailbox.remove(agent_id)
+        if MessageBus:
+            MessageBus.get_instance().unregister_handler(agent_id)
         if self.current_agent_id == agent_id:
             self.current_agent_id = self.default_agent_id
 
@@ -1029,6 +1040,24 @@ class Engine:
     # ------------------------------------------------------------------
     # MessageBus integration
     # ------------------------------------------------------------------
+
+    @property
+    def agent_mailbox(self) -> AgentMailbox:
+        """Return the per-engine inbox, including for legacy constructed Engines."""
+        if not hasattr(self, "_agent_mailbox"):
+            self._agent_mailbox = AgentMailbox()
+        return self._agent_mailbox
+
+    async def queue_agent_message(self, message: Any) -> bool:
+        """Queue steering within this Engine, without cross-runtime routing."""
+        if message.recipient not in self.agents:
+            return False
+        manager = self.get_conversation_manager(message.recipient)
+        session_id = self._conversation_session_id(manager)
+        if not session_id:
+            return False
+        self.agent_mailbox.enqueue(message.recipient, session_id, message)
+        return True
 
     def setup_message_bus(
         self,
@@ -1115,7 +1144,10 @@ class Engine:
                 metadata=metadata or {},
                 session_id=session_id,
                 channel=channel,
+                message_id=str(uuid.uuid4()),
             )
+            if recipient_id != "human":
+                return await self.queue_agent_message(msg)
             return await MessageBus.get_instance().send(msg)
         except Exception as e:
             logger.error(f"route_message failed: {e}")
@@ -1849,6 +1881,14 @@ class Engine:
                     usage_data if isinstance(usage_data, dict) else {},
                 )
 
+                # Steering received during this step gets a model turn before
+                # accepting completion. The loop's original budgets still apply.
+                if self.agent_mailbox.has_pending(
+                    self.current_agent_id or self.default_agent_id,
+                    self._conversation_session_id(cm) or "",
+                ):
+                    continue
+
                 # Check for explicit termination signal
                 (
                     termination_detected,
@@ -2371,6 +2411,12 @@ class Engine:
                 # Collect all action results
                 if iteration_results:
                     all_action_results.extend(iteration_results)
+
+                if self.agent_mailbox.has_pending(
+                    self.current_agent_id or self.default_agent_id,
+                    self._conversation_session_id(cm) or "",
+                ):
+                    continue
 
                 # Check legacy finish_response compatibility signal.
                 # Normal native-provider turns now complete by returning final text
@@ -3723,6 +3769,13 @@ class Engine:
         cm, api_client, tool_manager, action_executor = self._resolve_components(
             agent_id or self.current_agent_id
         )
+        self.agent_mailbox.deliver(
+            agent_id or self.current_agent_id or self.default_agent_id, cm
+        )
+        self.agent_mailbox.note_progress(
+            agent_id or self.current_agent_id or self.default_agent_id,
+            self._conversation_session_id(cm) or "", "model_step",
+        )
         run_state = _CURRENT_ENGINE_RUN_STATE.get()
         epoch = None
         if run_state is not None:
@@ -3936,6 +3989,11 @@ class Engine:
             len(assistant_response or ""),
             len(action_results),
             usage,
+        )
+
+        self.agent_mailbox.note_progress(
+            agent_id or self.current_agent_id or self.default_agent_id,
+            self._conversation_session_id(cm) or "", "step_completed",
         )
 
         # Note: cm.save() removed - caller (run_response/run_task) handles persistence

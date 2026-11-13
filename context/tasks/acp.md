@@ -1,87 +1,95 @@
-# Penguin ACP (Agent Client Protocol) implementation
+# Penguin ACP implementation and conformance audit
 
-Status: phased implementation in progress. Date: September 28, 2026.
+Updated October 28, 2026. This file supersedes the original phase checklist with the implemented state and remaining gates. The stack is draft and unmerged. It is not a claim of complete ACP parity.
 
-Current local baseline: uncommitted ACP adapter and its in-process tests were already present when this checklist was created. This plan does not claim that code as completed end-to-end. Independent additions in this phase: subprocess SDK wire tests in `tests/integrations/test_acp_wire.py`. Installed SDK tested: `agent-client-protocol==0.12.1` on Python 3.12. **Version gap:** the published v1 schema now requires prompt `resource_link`, but this installed SDK's `PromptRequest` union does not include it. Resolve by upgrading to a compatible SDK or explicitly implementing/version-negotiating the missing wire shape before claiming published v1 conformance; do not mark resource links supported based on the current SDK. `pytest -q tests/integrations/test_acp_server.py tests/integrations/test_acp_wire.py`: 7 passed; full matrix, live editor, and actual CLI startup remain unverified.
+## Contract and evidence
 
-## Contract and scope
+Penguin acts as an ACP agent over `penguin acp` stdio. The implementation targets protocol v1 using `agent-client-protocol>=0.12.1,<0.13`, Pydantic 2 and MCP 1.x. It is independent of the A2A HTTP server and MCP tools. The SDK includes resource links; earlier notes claiming it did not were incorrect. Published session deletion and exact prompt-request cancellation need explicit schema-validated transport handlers because the pinned SDK does not route them. Most RPCs and all client RPCs still use the official SDK.
 
-Build a **Penguin-as-agent** adapter for editor/client-facing ACP; this is independent of the A2A agent-to-agent server in PR #105 (merged). Target the stable **ACP v1** schema and official Python SDK, pin and test the chosen SDK/schema version before implementation. Do not conflate ACP with IBM's former Agent Communication Protocol or with MCP. Support every applicable v1 capability below or explicitly document a principled unsupported decision; never advertise a capability before its behavior and tests exist. Track v2/draft features separately; they are not acceptance criteria for v1.
-
-Primary sources (recheck versions before each phase):
+Primary references:
 - https://github.com/agentclientprotocol/agent-client-protocol/blob/main/docs/protocol/v1/overview.mdx
-- https://github.com/agentclientprotocol/agent-client-protocol/blob/main/docs/protocol/v1/session-setup.mdx
 - https://github.com/agentclientprotocol/agent-client-protocol/blob/main/schema/v1/schema.json
-- https://github.com/agentclientprotocol/python-sdk/blob/main/docs/quickstart.md
+- https://github.com/agentclientprotocol/python-sdk
 
-### v1 wire inventory (checked against the published v1 schema, September 28, 2026)
+The current subagent RFD and form elicitation are optional negotiated/experimental behavior. They are not counted as mandatory v1 features, ACP v2 support, or old AIR extensions.
 
-The checklists below are the implementation work; this inventory is the completeness audit. "Optional" means an honest unsupported capability/explicit error is acceptable, not that it can be silently ignored. v1 **agent methods**: `initialize`, conditional `authenticate` and `logout`, `session/new`, conditional `session/load`, `session/list`, `session/delete`, `session/resume`, `session/close`, `session/set_mode`, `session/set_config_option`, `session/prompt`. **Agent-to-client notification**: `session/update`; **client-to-agent notifications**: `session/cancel`, `$/cancel_request`; **client RPCs** the agent may invoke: `session/request_permission`, `fs/read_text_file`, `fs/write_text_file`, `terminal/create`, `terminal/output`, `terminal/release`, `terminal/wait_for_exit`, `terminal/kill`, `elicitation/create`; **client-to-agent notification**: `elicitation/complete`. Condition each invocation on advertised peer capabilities and schema support.
+## Implemented and tested
 
-Capability families to verify: `AgentCapabilities.loadSession`, `promptCapabilities` (image/audio/embeddedContext), `mcpCapabilities` (http/sse; stdio server descriptors exist independently), `sessionCapabilities` (list/delete/additionalDirectories/resume/close), `auth`; `ClientCapabilities.fs`, `terminal`, `session` (including boolean config options where negotiated), `auth`, `elicitation` (form/url). Session updates: `user_message_chunk`, `agent_message_chunk`, `agent_thought_chunk`, `tool_call`, `tool_call_update`, `plan`, `available_commands_update`, `current_mode_update`, `config_option_update`, `session_info_update`, `usage_update`. Prompt block types: text/resource_link (both required baseline inputs), image/audio/resource (conditional on support and negotiation). Stop reasons: `end_turn`, `max_tokens`, `max_turn_requests`, `refusal`, `cancelled`. Check each variant's required fields, absolute-path and 1-based-line invariants, size and security constraints against the pinned SDK rather than treating this paragraph as a schema substitute. `session/fork` and `session/set_model` are **not** in the published v1 schema.
+| Area | Behavior and evidence |
+| --- | --- |
+| Transport and baseline | Real shipped CLI over subprocess stdio, clean stdout, Unicode, malformed frames, supported version negotiation, provider errors and explicit stop reasons. Tests use a deterministic provider core, not a live model. |
+| Input | Text and resource references; local URIs confined to authorized cwd after decoding and resolution, remote references never automatically fetched. PNG/JPEG/WebP only on a vision-enabled selected model; bounded embedded text/binary storage. Audio is rejected and not advertised. |
+| Ownership | One ACP root session maps to one native conversation and immutable cwd. Indexed ACP metadata is required on reload; legacy or foreign-root sessions are rejected. File reads/writes continue through normal tool permissions. |
+| Additional roots | Absolute existing roots inside launch-authorized directories, fixed during a turn. Load/resume activates the complete requested list, with cwd unchanged; list reports it. File permissions, URI references, native diffs, child execution and persisted goals retain the scope. Per-session attachment copies are included internally. |
+| Lifecycle | New, load with ordered replay, resume without replay, list/filter/page, close, delete. Delete checks ownership, rejects active work/unresolved processes, and removes native history, journal and attachments. Close retains history. |
+| Long sessions | Append-only replay journal; native model state saved at turn boundaries. Incomplete final append recovery, malformed complete-record rejection, 2,000-chunk linear-write regression. Reload does not inject a whole transcript into model context. |
+| Tools | Scoped stable start/result IDs, bounded content, todo plans, terminal failed updates on interruption. Canonical authorized EditService transactions provide native complete before/after snapshots up to limits; other tools retain textual results. |
+| Processes | Actual runtime events update independent execution cards after the initiating turn, without polling or consuming model cursors. Retained output, capture failure and exit status shown. Missing root-process handle after reconnect is explicitly unknown. |
+| Permissions | Existing policy enforced; ACP offers allow-once/deny and exact file read/write retention, explicitly until close or remembered for this saved session. /permissions reset revokes retained grants. Timeouts, cancel, close and child completion deny pending requests; no late grants. Multiple pending child approvals preserve requires_action until all resolve. |
+| Questions | Actual ActionExecutor question tool, negotiated form answers validated before resolution. Unsupported clients receive a text question for their next message; the tool request is rejected immediately so it cannot wait on an absent web UI. Cancel/close rejects forms. |
+| Controls | Per-session configured-model selection and Build/Plan modes, busy changes rejected. Plan appears only with permission enforcement and cannot become writable after enforcement is disabled. Settings persist; provider choices must be configured locally. `/status` and `/mcp` are local read-only commands. |
+| Usage | Session-scoped current context/window telemetry; unknown/global/malformed values omitted. Cost is not fabricated. |
+| MCP | Per-session stdio/HTTP/SSE providers, literal client env values, independent context and permissions; server descriptions resent on reconnect, provider closed on session close. Actual isolated local MCP server contracts. |
+| Cancel | Whole-turn session/cancel and exact prompt RPC cancellation through $/cancel_request. Running and queued prompt isolation, stale request IDs and continued use are tested over real stdio. |
+| Child agents | Current draft negotiation only. Actual runtime lifecycle/public output, directed messages, child tools, nested parentage and replay. Legacy clients get ordinary parent cards. Independently scheduled background children can be cancelled; foreground children sharing a task cannot claim independent cancel. |
 
-Local seams: `penguin/cli/entrypoint.py`, `penguin/core_runtime/process_facade.py`, `penguin/core_runtime/streaming_facade.py`, `penguin/core_runtime/stream_events.py`, `penguin/security/tool_approval.py`, `penguin/integrations/mcp/config.py`. The A2A HTTP handler is **not** an ACP backend; reuse Penguin core APIs rather than calling A2A endpoints or routing through the web server.
+## Deliberate limits and exact remaining work
 
-## Phase 0 — contract, ownership, and test harness
+| Gap | Current decision | Requirement to close it |
+| --- | --- | --- |
+| Client filesystem/terminal RPC | Opt-in client text reads/writes and separately selected foreground client terminals, with no local fallback. Other unsupported file/process tools are hidden/rejected. | Client background handles still need a retained remote-process manager; standard terminal RPC has no stdin operation. Fully remote directories need a virtual-path authority model; richer edits need client transaction/backup semantics. |
+| True parallel top-level sessions | Opt in with `PENGUIN_ACP_ISOLATED_SESSIONS=1`: a full core/adapter and task-local services per root. The default remains serialized. Actual core wiring, concurrent stdio requests, native tool writes, independent approvals/cancellation/models/history and background capture callbacks are covered. | Full live-provider and editor acceptance in isolated mode remains. Multiple adapter processes sharing a store do not gain cross-process transaction guarantees. |
+| Persisted approvals | Exact-resource read/write grants are now available by explicit choice, until close or remembered for this saved session. Key includes tool, agent, policy, mode, roots and backend; /permissions reset revokes them. | Broader operation-wide, wildcard, process/network/delete and cross-session grants remain intentionally unsupported. Native session storage is the trust boundary; these are not a sandbox against local filesystem tampering. |
+| Interactive ACP auth/logout | No interactive auth advertised; use normal local Penguin provider setup. | A provider-specific flow with token storage/refresh/revocation and client negotiation. Editor identity must never become tool authority. |
+| Extra model configuration | Configured models and modes only; no arbitrary provider/model IDs, effort or sampling knobs. | Add only knobs the selected backend can validate and apply through request-scoped runtime APIs. |
+| Other request cancellation | Exact cancellation is for prompts. Atomic/short control operations and session setup do not implement request cancellation. | Explicit lifecycle rollback/resource cleanup for cancellable MCP discovery and session setup; do not partially cancel permanent deletion. |
+| Reconnect and recovery | Native conversation and replay persist; live child execution is not resumed after adapter-process death. Historical child association has no cancel authority. Root process cards check only live owned handles; historical child-process cards cannot reconstruct live work. | Durable supervisor identity/ownership and explicit recovery protocol; reconnect must distinguish known live work from unknown outcomes. |
+| Advanced UI extensions | No client-specific goal/task panel, arbitrary native tool renderer, hidden reasoning feed, ACP v2 or older AIR shape. Process output uses standard cards. | Negotiate an actual released/compatible client contract and test that client; do not infer parity from extension count. |
+| Diff breadth | Complete snapshots only from the canonical authorized async edit path; deleted/oversized files remain textual. | Additional tool producers must expose trustworthy bounded transaction snapshots, not extra unauthorized reads. |
+| Real editor/provider acceptance | Zed 0.208.4 tested with an isolated profile and the actual CLI/adapter plus deterministic provider: handshake, Unicode output, visible tool card and /status discovery. This exposed and fixed command announcements arriving before the new-session response. A live provider and full interactive matrix remain unverified. | Launch a supported editor against this branch with a configured provider; exercise multi-turn tools, approve/deny, image, MCP, cancel, close/reopen and persisted replay. Repeat child tests with a client supporting the current draft. |
 
-- [ ] Inventory stable v1 schema methods, capability flags, content block and update variants, stop reasons, error codes and SDK version; the wire inventory above covers method/capability/variant names but not the pinned SDK version or detailed error/schema requirements.
-- [x] Choose optional dependency (`agent-client-protocol`) and isolate its Pydantic 2 requirement in the `acp` extra; compatibility across the supported Python/Pydantic matrix remains unverified.
-- [x] Choose `penguin acp` as stdio entry point; verify stdout cleanliness with a subprocess wire test (including startup failures) before checking off transport correctness.
-- [ ] Decide one ACP session = one Penguin conversation + immutable effective roots + per-session runtime state; document lifecycle after process exit/reconnect and per-session concurrency policy.
-- [ ] Complete subprocess wire tests using the official SDK/client and deterministic fake core/provider, including malformed JSON-RPC, version negotiation, disconnect, and clean stdout; SDK-based subprocess tests now cover valid/invalid handshake, sessions, multi-turn updates and unsupported input with a fake core, but not malformed frames, disconnect, startup, or actual CLI startup.
+Windows process termination uses taskkill tree cleanup, not Windows Job Objects or guaranteed ownership of detached descendants. Tests preserve this distinction.
 
-## Phase 1 — runnable baseline (do not claim full ACP yet)
+## Draft PR dependency graph
 
-- [x] Add opt-in stdio agent entry point and initialize handshake with minimal advertised capabilities; no HTTP listener or A2A dependency. Wire and version-negotiation tests still pending.
-- [x] Implement basic `session/new`: absolute existing authorized `cwd`, independent conversation ID; explicitly reject requested MCP servers and additional directories until supported.
-- [x] Implement basic `session/prompt` with text blocks and existing `core.process` path using a scoped conversation/working directory context; verify continuation and path policy end to end.
-- [ ] Support baseline `resource_link` prompt blocks safely (path/URI parsing and authorized resource handling). The present text-only adapter rejects them; do not call v1 input coverage complete yet.
-- [ ] Emit correctly ordered `session/update` agent text chunks and one terminal `session/prompt` response with valid stop reason; distinguish normal end, provider failure, user cancellation and incomplete work without inventing a success message.
-- [ ] Harden existing `session/cancel` against quiet provider/tool phases and completion races; prove the session remains usable and final status reflects actual stop.
-- [ ] Harden existing fail-closed validation for missing sessions, wrong request shape, unsupported content blocks and concurrent prompts; a process-wide execution lock currently serializes turns to protect shared conversation state.
-- [ ] Test new → two prompts → updates → final, two interleaved sessions, cancellation races, tool/provider errors, EOF/restart and stderr/stdout separation; exercise a real ACP client/editor.
+Baseline sequence: #134 baseline -> #135 tool events -> #136 sessions -> #137 rich input -> #138 replay journal -> #139 contract CI -> #140 session MCP -> #141 controls.
 
-## Phase 2 — sessions, persistence, and complete lifecycle
+`stack/acp-runtime-base` combines that sequence with separate reliability #133. Then #142 child sessions, with sibling #143 native diffs and #144 child approval cleanup. `stack/acp-progress-base` combines those siblings, followed by #145 process UI -> #147 deletion -> #148 questions. `stack/acp-windows-base` combines that stack with Windows runtime #146 (including environment correction), then #149 cross-platform producer tests -> #150 scoped usage -> #151 exact prompt request cancellation. Then #152 records the audit, #153 additional roots, #154 opt-in client files, #155 foreground client terminals, #156 real permission-request serialization and #157 exact retained approvals. `stack/acp-storage-base` combines #157 with native storage #158 (3d2eb201, including sharing-probe follow-up), preserving both storage and process CI jobs. The editor-ordering follow-up builds on that integration. These are Git branch integrations for review, not merged pull requests.
 
-- [ ] Implement `session/load` and advertise `loadSession` only after restoring Penguin conversation/context and replaying **all retained history** as ordered `session/update` notifications *before* returning; preserve role, tool, and reasoning visibility rules.
-- [ ] Implement optional v1 `session/resume` without replay, `session/list` with stable metadata/filter/pagination, `session/delete`, and `session/close` with cancellation/cleanup; advertise each only when actually supported by the pinned v1 schema and runtime. `session/fork` is **not** in the current v1 schema; evaluate it separately as an extension or future version, not a v1 gate.
-- [ ] Validate session ownership/workspace roots on load/resume; prevent cross-session/cross-root reads, stale IDs, privilege escalation on reload, and duplicate execution after reconnect.
-- [ ] Decide and implement `additionalDirectories` only with explicit path validation and policy integration; advertise only if supported. Use session `cwd` as relative-path base, not the process launch directory.
-- [ ] Test restart/replay with user, assistant, tool calls/results, interrupted and failed turns; concurrent sessions; close while busy; session IDs and path changes after restart.
+## Validation gates
 
-## Phase 3 — editor-grade progress and user interaction
+- [x] Deterministic real stdio CLI/SDK contracts and negative inputs.
+- [x] Actual runtime producers: child lifecycle, authorized edit transactions, process output, question tool, persisted usage.
+- [x] Dedicated CI on Windows/Linux and Python 3.11/3.12 with ACP dependencies, no provider secrets.
+- [x] Windows native process capture and environment assertions; no skipped Windows ACP producer.
+- [x] Locked dependency check and scoped Ruff checks.
+- [x] Latest storage/editor integration aggregate: 119 ACP/edit-contract tests passed on Windows Python 3.11.14, no skips; pinned uv 0.11.2 lock check passed. A separate earlier storage run passed 29 tests. The later expanded storage test exposed an assertion that counts retry attempts as new temporary files; tracked independently.
+- [x] #151 code-head CI passed, including all four ACP OS/Python jobs and broader repository contracts. Later increments require their own CI.
+- [x] Installed Zed deterministic-provider smoke: text, tool card and command discovery.
+- [ ] Live-provider and full interactive acceptance as specified above.
+- [ ] All optional decisions above revisited before claiming parity for a particular remote/advanced client.
 
-- [ ] Bridge runtime tool start/progress/update/finish into ACP tool-call updates with stable IDs, names, kind, locations and bounded content; every started tool reaches a terminal status, including denied/interrupted tools.
-- [ ] Send plan updates, meaningful usage/cost and mode/model/session-info updates where genuine data exists; do not fabricate metrics or expose hidden reasoning by default.
-- [ ] Render file edits as editor-friendly diffs/file locations and shell operations as bounded command/output, sanitizing secrets and unsafe paths; keep streaming text and tool status in correct per-session order.
-- [ ] Bridge Penguin's approval manager to ACP `session/request_permission` with scoped options (one-time/session/deny as permitted), timeout/disconnect denial, policy precedence, and no global approval leakage between sessions.
-- [ ] Support client questions/clarifications and replies via the ACP-supported mechanism or clearly specify the v1-compatible fallback; never hang awaiting a UI event the client cannot answer.
-- [ ] Test approval allow/deny/timeout, slow tools, duplicate/late updates, tool failure after cancel, and cross-session event isolation.
+Code aggregate after #151: 111 ACP, native Windows process and environment-policy checks passed, with no skips, on Windows Python 3.11.14. Scoped Ruff and the pinned uv 0.11.2 lock check passed. #149 and #151 full CI passed, including four ACP matrix jobs. Additional-root iteration has its own producer, persisted-goal and protocol tests. Older full-repository failures must be reported separately, not hidden by focused results.
 
-## Phase 4 — complete advertised inputs, capabilities, configuration
+## Editor smoke setup and limit
 
-- [ ] Handle supported ACP prompt content block variants: text, images and embedded/linked resources (including binary size, media type and path safety); reject unsupported types explicitly rather than flattening or discarding them.
-- [ ] Attach `session/new`/load-provided MCP servers (stdio and supported remote transports) to that session only, with lifecycle/reconnect, credential isolation, policy checks and clean shutdown; test multiple servers and failure modes.
-- [ ] Implement filesystem read/write and terminal client RPCs *only if needed* and only when the client advertises them; otherwise use Penguin tools under normal permission policy, and avoid capability claims implying remote client RPC use.
-- [ ] Implement applicable v1 authentication methods (`authenticate`, optional `logout`, setup flow/`auth_required` when appropriate) without accepting editor authentication as tool authority; redact credentials from updates/logs.
-- [ ] Implement v1 `session/set_mode` and `session/set_config_option` for model/mode discovery and selection using Penguin's supported models and policies; validate IDs, isolate changes per session, and emit correct state changes. `session/set_model` is **not** a current v1 method; model selection belongs in config options if supported.
-- [ ] Implement client-facing `elicitation/create` and `elicitation/complete` for supported interactive prompts if the pinned v1 SDK and negotiated client support them; otherwise document an explicit fallback with no indefinite waits.
-- [ ] Handle v1 `$/cancel_request` where applicable, keeping request cancellation separate from `session/cancel`.
-- [ ] Advertise commands and session metadata/title/usage capabilities only with concrete handlers and correct notifications; decide on registry `agent.json` distribution separately from protocol conformance.
-- [ ] Check every applicable method, enum/variant and capability in the pinned schema against implemented behavior; explicitly mark v1 optional features supported, deliberately unsupported, or not applicable.
+The isolated fixture lives outside the repository under `Documents/Codex/acp-editor-smoke`. It uses `tests/integrations/test_acp_wire.py`'s deterministic core with the shipped CLI entrypoint. It does not execute a real shell command or call a paid model: the displayed tool event is deterministic. On Windows, launch the Zed CLI with `--user-data-dir <profile> --foreground <workspace>` after the prior test process exits; otherwise an existing process can route the workspace to its own profile. Custom agent configuration follows Zed's documented `agent_servers` command/args/env format. The actual test confirmed `/status` is offered and returns `Mode: build; model: default` after the fix; previously Zed reported that command unsupported.
 
-## Phase 5 — conformance, packaging, and release
+Command discovery is emitted after the transport writes/drains the matching successful `session/new` response, with a raw stdio order assertion. There is no timing sleep. Direct SDK/in-process use retains its existing callback behavior; the shipped transport handles editor ordering.
 
-- [ ] Add schema/SDK contract tests for all advertised methods and bidirectional requests; negative tests for unknown methods, invalid params, unsupported client capabilities, EOF and interrupted streams.
-- [ ] Exercise official SDK client plus at least one real editor through install, multiple sessions, tools, permissions, images/MCP (if advertised), cancel, reconnect, and reload; document results and known client differences.
-- [ ] Verify path containment and permission policy, authorization lifetime, concurrent turn isolation, backpressure/output limits, secret redaction, shutdown cleanup and crash/restart behavior.
-- [ ] Document install/opt-in invocation, editor configuration, capabilities, auth/setup, troubleshooting and actual limitations; update public docs/API and packaging metadata.
-- [ ] Run narrow unit/contract tests, supported Python/Pydantic matrix, lint/type checks, then editor smoke tests; record exact evidence before declaring full v1 support.
+## Opt-in concurrent root sessions
 
-## Phase gates
+Set `PENGUIN_ACP_ISOLATED_SESSIONS=1` in the editor's agent environment before starting Penguin. Each root gets a distinct Core, Engine, ConversationManager, ToolManager, request API/model state and runtime configuration. CLI/system event buses, MessageBus, child executor, approval/question managers and HTTP pools are task-local. Background asyncio work inherits the scope; native process callbacks and legacy worker threads explicitly capture it. No provider call is necessary for this setup.
 
-- Phase 1: a real editor can launch Penguin, create a session, prompt twice and cancel without a web service.
-- Phase 2: a restart can reload a conversation with accurate replay and no cross-session state leaks.
-- Phase 3: tools and approvals are visible, scoped, and terminate correctly under failure/cancel.
-- Phase 4: every advertised capability is demonstrably implemented; unsupported v1 options are explicit.
-- Phase 5: conformance/security/interop evidence supports the public claim. A2A/Link tests are separate and not ACP acceptance evidence.
+The adapter reserves a separate catalog for disk-backed list/history lookup and uses the native process-local store coordination from #158. Root creation is serialized; prompts in different roots overlap. Same-root turns continue to serialize through their own gate. The runtime limit is 16 roots plus the catalog. Closing an idle root disposes it and retains disk history for loading into a fresh runtime. Roots with unresolved background processes remain allocated until that work is resolved or the adapter exits; there is no silent eviction. Deletion and adapter shutdown clean up only owned processes, child tasks, callbacks and HTTP pools.
+
+This is opt-in because it costs more memory and connections than the default. It is a concurrency boundary between cooperative requests, not a hostile-code sandbox. Native storage coordinates managers inside one adapter process; different adapter processes still require external ownership coordination.
+
+The concurrent-root increment is draft #160, based on `stack/acp-isolation-base` (which includes #159 plus the latest Windows readiness and storage-test follow-ups). Native and legacy same-named child executors, directed messages and simultaneous allow/deny decisions are tested in two roots. Explicit shutdown covers both executor paths. Default-mode regression checks cover the existing executor, MessageBus, event bus, question/subagent actions and HTTP pool behavior (79 tests passed locally), in addition to ACP contracts. Both the isolated checkout and original checkout report the default OpenRouter model without usable provider credentials; no credentials were copied or changed, and no live model call was attempted.
+
+Isolated mode hides and rejects the legacy `code_execution`/in-process notebook tool, including XML actions and direct lazy initialization. That implementation shares an IPython shell and mutates process cwd/stdout, so it cannot be made concurrent merely by cloning the core. Agents can run Python through the existing `execute_command` subprocess instead. The default mode retains its existing tool behavior.
+
+
+## Integration acceptance
+
+Integration PR #161 contains every head from #133 through #160, preserving their commit history. Live acceptance used Penguin's existing ChatGPT login with `gpt-6.1-sol`: MCP, approved and denied writes, image/context input, active cancel, close/reopen, fresh-process recall and isolated parallel writes all completed. The original and integration working directories remain separate. See `docs/ACP.md` for the corrected startup/configuration paths and exact acceptance scope. Earlier credential-unavailable notes described only the configured default provider; the separate saved OpenAI OAuth provider was present and usable.

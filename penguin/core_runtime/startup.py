@@ -554,6 +554,7 @@ def build_initial_model_config(
             None,
         ),
         service_tier=getattr(source_model_config, "service_tier", None),
+        vision_enabled=getattr(source_model_config, "vision_enabled", None),
     )
 
 

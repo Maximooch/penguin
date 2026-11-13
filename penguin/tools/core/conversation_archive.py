@@ -249,7 +249,7 @@ def open_session(
         limit: Maximum number of messages to return (clamped to 30).
 
     Returns:
-        Session metadata and bounded dialog messages, or a structured error.
+        Session metadata and bounded persisted records, or a structured error.
 
     Raises:
         ValueError: If either identifier or the starting index is invalid.
@@ -275,13 +275,18 @@ def open_session(
     messages = []
     for index in range(start, min(start + count, len(data["messages"]))):
         message = data["messages"][index]
-        if not isinstance(message, dict) or message.get("category", "DIALOG") != "DIALOG" or message.get("role") not in ("user", "assistant"):
-            continue
+        if not isinstance(message, dict):
+            return {"error": "invalid_message_record", "session_id": session_id,
+                    "message_index": index}
+        # Page raw archive indices, just as search's message_index does. Hiding
+        # tool/system records after slicing made valid pages silently empty.
         text = _text(message.get("content"))
         messages.append({
             "message_index": index,
             "id": message.get("id"),
             "role": message.get("role"),
+            "category": message.get("category"),
+            "tool_call_id": message.get("tool_call_id"),
             "timestamp": message.get("timestamp"),
             "content": text[:_MAX_TEXT],
             "content_truncated": len(text) > _MAX_TEXT,
@@ -296,5 +301,6 @@ def open_session(
         "last_active": data.get("last_active"),
         "total_messages": len(data["messages"]),
         "message_start": start,
+        "next_message_start": min(start + count, len(data["messages"])),
         "messages": messages,
     }

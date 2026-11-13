@@ -21,6 +21,7 @@ from penguin.core_runtime.session_goal_store import (
     get_session_goal_lock,
     save_session_goal,
 )
+from penguin.system.execution_context import get_current_execution_context
 from penguin.system.state import Session
 from penguin.web.schemas.session_goal import SessionGoalUpdateRequest
 from penguin.web.services.session_goal import update_goal
@@ -685,7 +686,12 @@ async def test_orphaned_claim_recovers_to_paused_and_requires_resume(
 @pytest.mark.asyncio
 async def test_run_uses_persisted_model_scope_and_accounts_tokens(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    clock = iter((10.0, 11.0))
+    monkeypatch.setattr(
+        session_goal_runtime, "time", SimpleNamespace(monotonic=lambda: next(clock))
+    )
     session, core = _session(tmp_path)
     session.metadata.update(
         {
@@ -1001,3 +1007,31 @@ async def test_goal_runtime_emits_goal_and_compatibility_session_events(
     ]
     assert event_types.count("session.goal.updated") == 2
     assert event_types.count("session.updated") == 2
+
+@pytest.mark.asyncio
+async def test_goal_retains_persisted_execution_roots(tmp_path: Path) -> None:
+    session, core = _session(tmp_path)
+    session.metadata["execution_allowed_roots"] = [str(tmp_path)]
+    observed = []
+
+    class ScopedRun(_RunMode):
+        def __init__(self, core, **kwargs):
+            super().__init__(core, **kwargs)
+            self.start = self.run
+
+        async def run(self, **kwargs):
+            observed.append(get_current_execution_context().allowed_roots)
+            return core.run_mode_result
+
+    await run_session_goal(core, session.id, run_mode_factory=ScopedRun)
+    assert observed == [(str(tmp_path),)]
+
+
+@pytest.mark.asyncio
+async def test_goal_rejects_invalid_persisted_roots_before_claim(tmp_path: Path) -> None:
+    session, core = _session(tmp_path)
+    session.metadata["execution_allowed_roots"] = ["relative"]
+    with pytest.raises(GoalRunStateError, match="canonical"):
+        await run_session_goal(core, session.id, run_mode_factory=_RunMode)
+    assert core.run_mode is None
+    assert not get_session_goal(core, session.id).get("active_run_id")
