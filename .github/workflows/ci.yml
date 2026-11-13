@@ -9,6 +9,31 @@ permissions:
   contents: read
 
 jobs:
+  tool-replay-regressions:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.2"
+      - run: uv sync --locked --python '${{ matrix.python-version }}'
+      - name: Verify process inputs and tool-result replay without live providers
+        run: >-
+          uv run --locked pytest -q
+          tests/tools/test_process_input_validation_regressions.py
+          tests/tools/test_process_poll_empty_loop.py
+          tests/llm/test_codex_log_derived_replay.py
+          tests/llm/test_openai_oauth_subscription_flow.py
+          tests/llm/test_streaming_provider_replay.py
+
   session-storage-contract:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15

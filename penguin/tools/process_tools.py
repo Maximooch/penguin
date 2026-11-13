@@ -120,7 +120,13 @@ class ProcessTools:
     def execute(
         self, name: str, arguments: dict[str, Any], context: dict[str, Any]
     ) -> dict[str, Any]:
-        """Execute a validated process operation within its owning session."""
+        """Validate and execute a process operation within its owning session."""
+        error = self._validate_arguments(name, arguments)
+        if error:
+            process_id = arguments.get("process_id", "")
+            return self.runtime._error(
+                process_id if isinstance(process_id, str) else "", error
+            )
         owner = process_owner(context)
         if name in {"execute_command", "process_start"}:
             return self._start(name, arguments, context, owner)
@@ -165,6 +171,67 @@ class ProcessTools:
         if result.get("process_status") == "exited":
             self.acknowledge(owner, process_id)
         return result
+
+    @staticmethod
+    def _validate_arguments(name: str, arguments: dict[str, Any]) -> str | None:
+        """Reject malformed model arguments before ownership lookup or side effects."""
+        if name not in PROCESS_TOOL_NAMES:
+            return "unknown process operation"
+        launch = name in {"execute_command", "process_start"}
+        required = "command" if launch else "process_id"
+        value = arguments.get(required)
+        if not isinstance(value, str) or not value.strip():
+            return f"{required} must be a nonempty string"
+
+        numeric_fields: dict[str, tuple[float, float | None, bool]] = {}
+        if launch:
+            numeric_fields.update(
+                timeout_seconds=(0, None, False),
+                yield_time_ms=(0, 60000, False),
+                max_chars=(0, None, True),
+            )
+        elif name == "process_poll":
+            numeric_fields.update(
+                wait_ms=(0, 60000, False),
+                max_chars=(0, None, True),
+                since_sequence=(0, None, True),
+            )
+        elif name == "process_write_stdin":
+            if not isinstance(arguments.get("text", ""), str):
+                return "text must be a string"
+            numeric_fields["timeout_ms"] = (1, 60000, False)
+        elif name == "process_stop":
+            if arguments.get("mode", "terminate") not in (
+                "terminate",
+                "kill",
+                "interrupt",
+            ):
+                return "mode must be terminate, kill, or interrupt"
+            numeric_fields["timeout"] = (0, None, False)
+
+        for field, (minimum, maximum, integer) in numeric_fields.items():
+            if field not in arguments:
+                continue
+            value = arguments[field]
+            if value is None and field in {"timeout_seconds", "since_sequence"}:
+                continue
+            valid_type = isinstance(value, int if integer else (int, float))
+            try:
+                finite = valid_type and math.isfinite(value)
+            except OverflowError:
+                finite = False
+            if (
+                isinstance(value, bool)
+                or not finite
+                or value < minimum
+                or (maximum is not None and value > maximum)
+            ):
+                kind = "integer" if integer else "number"
+                bounds = f"{minimum:g} or greater"
+                if maximum is not None:
+                    bounds = f"between {minimum:g} and {maximum:g}"
+                return f"{field} must be a finite {kind} {bounds}"
+        return None
 
     def _start(
         self,
