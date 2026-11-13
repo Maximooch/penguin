@@ -307,6 +307,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.2"
+      - name: Verify reviewed Python security floors and cooldown
+        run: >-
+          uv run --locked pytest -q
+          tests/test_security_dependency_versions.py
+          tests/test_dependency_cooldown.py
       - uses: actions/setup-node@v4
         with:
           node-version: "24"

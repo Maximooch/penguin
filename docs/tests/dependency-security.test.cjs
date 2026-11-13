@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const braces = require('braces');
 const CachePolicy = require('http-cache-semantics');
+const merge = require('deepmerge');
 test('deep brace patterns are rejected before recursive traversal', () => {
   for (const fn of [braces, braces.parse, braces.compile, braces.expand, braces.stringify]) {
     assert.throws(() => fn('{'.repeat(1000) + 'a,b' + '}'.repeat(1000)), /security limit/);
@@ -45,4 +46,22 @@ test('fresh shared s-maxage responses can still be reused', () => {
   const req = {url: '/account', method: 'GET', headers: {authorization: 'Bearer secret'}};
   const policy = new CachePolicy(req, {status: 200, headers: {'cache-control': 's-maxage=3600'}});
   assert.equal(policy.satisfiesWithoutRevalidation(req), true);
+});
+
+test('deepmerge does not pollute the global object prototype', () => {
+  const payloads = [
+    '{"__proto__":{"admin":true}}',
+    '{"session":{"__proto__":{"admin":true}}}',
+    '{"constructor":{"prototype":{"admin":true}}}',
+    '{"session":{"constructor":{"prototype":{"admin":true}}}}',
+  ];
+  const targets = [Object.create(null), {session: null}, {session: {}}];
+
+  for (const target of targets) {
+    for (const payload of payloads) {
+      merge(target, JSON.parse(payload));
+      assert.equal(Object.hasOwn(Object.prototype, 'admin'), false);
+      assert.equal(({}).admin, undefined);
+    }
+  }
 });
