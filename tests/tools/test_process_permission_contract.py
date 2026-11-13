@@ -68,12 +68,25 @@ def test_process_asks_are_not_reusable_session_grants(contract, name, args):
 )
 def test_new_policy_applies_to_each_operation(contract, name, args):
     manager, _, ctx, service = contract
+    # Unsandboxed shell runs without asking only when every capability a
+    # program could exercise is allowed, not shell alone.
+    unrestricted = dict.fromkeys(
+        ("shell", "fileWrite", "fileDelete", "gitPush", "network", "secrets"),
+        "allow",
+    )
     assert (
-        manager.execute_tool(
-            name, args, {**ctx, "approval_policy": {"shell": "allow"}}
-        )["status"]
+        manager.execute_tool(name, args, {**ctx, "approval_policy": unrestricted})[
+            "status"
+        ]
         == "completed"
     )
+    if name != "process_stop":  # Stopping a process runs no new program.
+        service.reset_mock()
+        shell_only = manager.execute_tool(
+            name, args, {**ctx, "approval_policy": {"shell": "allow"}}
+        )
+        assert json.loads(shell_only)["status"] == "pending_approval"
+        service.execute.assert_not_called()
     service.reset_mock()
     result = manager.execute_tool(name, args, {**ctx, "permission_mode": "read_only"})
     assert json.loads(result)["error"] == "permission_denied"
