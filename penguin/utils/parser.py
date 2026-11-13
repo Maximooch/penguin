@@ -982,8 +982,10 @@ def parse_action(content: str) -> List[CodeActAction]:
     # Extract only the AI's response part
     try:
         # Use more specific pattern matching to only extract valid action types
+        # Same flags as strip_action_tags: whatever is removed from history
+        # must be exactly what is executed.
         pattern = f"<({action_tag_pattern})>(.*?)</\\1>"
-        matches = re.finditer(pattern, content, re.DOTALL)
+        matches = re.finditer(pattern, content, re.DOTALL | re.IGNORECASE)
 
         actions = []  # Initialize the actions list
 
@@ -1050,6 +1052,13 @@ def strip_action_tags(content: str) -> str:
     return cleaned
 
 
+def _is_action_tag_prefix(fragment: str) -> bool:
+    """Return whether ``fragment`` is the start of some action tag name."""
+
+    lowered = fragment.lower()
+    return any(action_type.value.startswith(lowered) for action_type in ActionType)
+
+
 def strip_incomplete_action_tags(content: str) -> str:
     """Strip incomplete/unclosed action tags from the end of content.
 
@@ -1076,10 +1085,12 @@ def strip_incomplete_action_tags(content: str) -> str:
     # Remove trailing incomplete tags
     cleaned = re.sub(incomplete_pattern, "", content, flags=re.DOTALL | re.IGNORECASE)
 
-    # Also remove partially-started opening tags at the end (e.g., <finish_ or <execute)
-    # This handles cases where streaming was interrupted mid-tag
-    partial_tag_pattern = f"<(?:{action_tag_pattern})?[^>]*$"
-    cleaned = re.sub(partial_tag_pattern, "", cleaned, flags=re.IGNORECASE)
+    # Also remove a partially-started tag at the end (e.g., <finish_ or </exec).
+    # Only a fragment that could still grow into an action tag is removed, so
+    # prose such as "a < b" survives.
+    partial_tag = re.search(r"</?([A-Za-z_]*)$", cleaned)
+    if partial_tag and _is_action_tag_prefix(partial_tag.group(1)):
+        cleaned = cleaned[: partial_tag.start()]
 
     # Also remove orphaned closing tags at the start (from previous incomplete)
     orphan_close_pattern = f"^\\s*</({action_tag_pattern})>"

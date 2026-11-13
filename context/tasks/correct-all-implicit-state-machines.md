@@ -117,7 +117,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
   - State: fixed and committed locally. Laws in
     `prototypes/bend_tool_status/LAWS.bend` were drafted by Claude and await
     Maximus's review.
-- [ ] **SM-02 Action-tag grammar, five implementations** (a) [confirmed, security, design]
+- [x] **SM-02 Action-tag grammar, five implementations** (a) [confirmed, security, design]
   - `penguin/utils/parser.py:958-1088`, `penguin/tui_adapter/part_events.py:181`,
     `penguin/cli/cli.py:3821`, `penguin/cli/streaming_display.py:66`
   - The pre-check and the stripper ignore case, the extractor does not, so
@@ -131,6 +131,12 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     code fence or backticks, so the executor's behaviour stays and the other
     copies are brought in line with it. Confirm this reading before the
     display copies (SM-44) are changed.
+  - State: the two confirmed gaps are fixed. Left open, each a behaviour
+    question and not a contradiction between copies: a nested same-name close
+    tag still truncates the payload (a regex cannot pair them);
+    `html.unescape` still rewrites `&lt;` and `&amp;` inside params; the CLI
+    display copies still use their own single-tag patterns. The streaming
+    display's treatment of backtick-adjacent tags as literal is SM-44.
 - [ ] **SM-03 Effective permission mode** (a) [security, bend]
   - `penguin/security/permission_engine.py:274-397,487`,
     `penguin/security/tool_permissions.py:476-586,955`,
@@ -465,3 +471,16 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
   `test_process_permission_contract.py` failures were a stale test. `9ddb96066`
   made unsandboxed shell ask unless every capability is allowed; the test set
   only `shell: allow`. Test updated; no product change.
+- Baseline repair (2026-11-13): `tests/test_core_tool_mapping.py::test_run_agent_prompt_in_session_overrides_parent_execution_scope`
+  failed on `origin/main` because its bare core had no UI emitter after the
+  agent lifecycle emit was added. Fixture updated; no product change.
+- SM-02: fixed (2026-11-13). `parse_action` now matches tags with the same
+  case-insensitive flags as `strip_action_tags`, and
+  `strip_incomplete_action_tags` removes a trailing fragment only when it is a
+  prefix of an action tag name.
+  - `pytest -q tests/test_action_tag_grammar.py`: 13 passed (7 red before the
+    fix; red again under two mutations).
+  - 25 parser-using test files plus `tests/llm`,
+    `tests/test_part_event_persist_callback.py` and
+    `tests/test_engine_task_finish_contract.py`: 731 passed, 4 skipped.
+  - `ruff check` on the new test file: clean.
