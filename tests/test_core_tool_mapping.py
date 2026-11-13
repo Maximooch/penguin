@@ -765,6 +765,8 @@ async def test_run_agent_prompt_in_session_overrides_parent_execution_scope(
     setattr(core, "conversation_manager", conversation_manager)
     setattr(core, "_opencode_session_directories", {"session_child": str(child_dir)})
     setattr(core, "process", AsyncMock(side_effect=_process))
+    lifecycle_events: list[tuple[Any, ...]] = []
+    setattr(core, "emit_ui_event", lambda *args, **_kwargs: lifecycle_events.append(args))
 
     with execution_context_scope(
         ExecutionContext(
@@ -789,6 +791,8 @@ async def test_run_agent_prompt_in_session_overrides_parent_execution_scope(
     assert context.conversation_id == "session_child"
     assert context.agent_id == "child-agent"
     assert context.directory == str(child_dir)
+    assert [args[1]["state"] for args in lifecycle_events][0] == "running"
+    assert {args[1]["session_id"] for args in lifecycle_events} == {"session_child"}
 
 
 @pytest.mark.asyncio
