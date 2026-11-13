@@ -27,6 +27,50 @@ logger = logging.getLogger(__name__)
 
 ToolCallSource = Literal["action_xml", "responses", "mcp", "internal"]
 ToolResultStatus = Literal["completed", "error", "cancelled", "requires_approval"]
+
+_CHILD_STATUS_ALIASES: dict[str, ToolResultStatus] = {
+    "error": "error",
+    "cancelled": "cancelled",
+    "pending_approval": "requires_approval",
+    "requires_approval": "requires_approval",
+}
+
+
+def tool_status_from_output(output: Any) -> ToolResultStatus:
+    """Classify a raw tool output as a normalized tool result status.
+
+    Args:
+        output: The value a tool returned: a dict, a JSON string, or plain text.
+
+    Returns:
+        ``completed`` unless the output reports an error, a cancellation, or a
+        permission request that is still waiting for an answer.
+    """
+
+    payload = output
+    if isinstance(output, str):
+        try:
+            payload = json.loads(output)
+        except ValueError:
+            return "completed"
+    if not isinstance(payload, dict):
+        return "completed"
+    if payload.get("error"):
+        return "error"
+    raw_status = str(payload.get("status") or "").strip().lower()
+    return _CHILD_STATUS_ALIASES.get(raw_status, "completed")
+
+
+def halts_ordered_execution(status: ToolResultStatus) -> bool:
+    """Return whether a result must stop the calls that follow it.
+
+    A later call may depend on an earlier one, so anything short of
+    ``completed`` stops the sequence when the policy asks to stop on error.
+    """
+
+    return status != "completed"
+
+
 ToolEffect = Literal[
     "read",
     "filesystem_mutation",
@@ -1529,7 +1573,9 @@ async def execute_tool_calls_serially(
                     duration_ms=duration_ms,
                 )
                 results.append(result)
-                if active_policy.stop_on_error and result.status == "error":
+                if active_policy.stop_on_error and halts_ordered_execution(
+                    result.status
+                ):
                     break
                 continue
             if isinstance(output, dict):
@@ -1565,7 +1611,9 @@ async def execute_tool_calls_serially(
                     duration_ms=duration_ms,
                 )
                 results.append(result)
-                if active_policy.stop_on_error and result.status == "error":
+                if active_policy.stop_on_error and halts_ordered_execution(
+                    result.status
+                ):
                     break
                 continue
             tool_result = ToolResult(
@@ -1590,7 +1638,9 @@ async def execute_tool_calls_serially(
                 duration_ms=duration_ms,
             )
             results.append(result)
-            if active_policy.stop_on_error and result.status == "error":
+            if active_policy.stop_on_error and halts_ordered_execution(
+                    result.status
+                ):
                 break
         except Exception as exc:
             duration_ms = (time.perf_counter() - started_perf) * 1000
@@ -1944,6 +1994,8 @@ __all__ = [
     "ToolResult",
     "ToolResultRecord",
     "ToolResultStatus",
+    "halts_ordered_execution",
+    "tool_status_from_output",
     "ToolScheduleDecision",
     "ORDERED_TOOL_BATCH_NAME",
     "ORDERED_TOOL_BATCH_REJECTED_NAMES",

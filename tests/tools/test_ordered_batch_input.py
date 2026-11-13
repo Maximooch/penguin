@@ -140,3 +140,58 @@ def test_serialized_batch_preserves_child_permission_checks(tmp_path: Path) -> N
     assert result["status"] == "error"
     assert checked == ["ordered_tool_batch", "create_file"]
     assert not (tmp_path / "a.txt").exists()
+
+
+def _pending_for(path_fragment: str):
+    """Build a permission stub that leaves one child awaiting approval."""
+
+    def check(name, args, context):
+        if name != "ordered_tool_batch" and path_fragment in str(args):
+            return json.dumps(
+                {"status": "pending_approval", "approval_id": "apr_1", "tool": name}
+            )
+        return None
+
+    return check
+
+
+def test_child_awaiting_approval_stops_later_children(tmp_path: Path) -> None:
+    manager = ToolManager({}, lambda *_: None, fast_startup=True)
+    manager._permission_response = _pending_for("a.txt")
+    payload = {
+        "tool_uses": [
+            {"tool": "create_file", "arguments": {"path": "a.txt", "content": "one"}},
+            {"tool": "create_file", "arguments": {"path": "b.txt", "content": "two"}},
+        ]
+    }
+    result = json.loads(
+        manager.execute_tool(
+            "ordered_tool_batch", json.dumps(payload), {"directory": str(tmp_path)}
+        )
+    )
+    assert result["status"] != "completed"
+    assert "requires_approval" in result["result"]
+    assert not (tmp_path / "a.txt").exists()
+    assert not (tmp_path / "b.txt").exists()
+
+
+def test_child_awaiting_approval_is_not_reported_completed_when_continuing(
+    tmp_path: Path,
+) -> None:
+    manager = ToolManager({}, lambda *_: None, fast_startup=True)
+    manager._permission_response = _pending_for("a.txt")
+    payload = {
+        "stop_on_error": False,
+        "tool_uses": [
+            {"tool": "create_file", "arguments": {"path": "a.txt", "content": "one"}},
+            {"tool": "create_file", "arguments": {"path": "b.txt", "content": "two"}},
+        ],
+    }
+    result = json.loads(
+        manager.execute_tool(
+            "ordered_tool_batch", json.dumps(payload), {"directory": str(tmp_path)}
+        )
+    )
+    assert result["status"] != "completed"
+    assert "1/2 child calls completed" in result["result"]
+    assert (tmp_path / "b.txt").read_text() == "two"

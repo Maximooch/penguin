@@ -4383,23 +4383,12 @@ class ToolManager:
     ) -> Any:
         """Normalize one direct ordered-batch child output."""
 
-        from penguin.tools.runtime import ToolResult
+        from penguin.tools.runtime import ToolResult, tool_status_from_output
 
-        status = "completed"
+        status = tool_status_from_output(output)
         output_text = output
         if isinstance(output, dict):
-            if output.get("error") or output.get("status") == "error":
-                status = "error"
             output_text = output.get("result", output.get("output", output))
-        elif isinstance(output, str):
-            try:
-                parsed = json.loads(output)
-            except Exception:
-                parsed = None
-            if isinstance(parsed, dict) and (
-                parsed.get("error") or parsed.get("status") == "error"
-            ):
-                status = "error"
         return ToolResult(
             call_id=tool_call.id,
             name=tool_call.name,
