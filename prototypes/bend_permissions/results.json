@@ -1,0 +1,255 @@
+{
+  "recorded_date": "2026-10-14",
+  "notes": [
+    "Local illustrative measurements, not a production Penguin benchmark.",
+    "Raw wall times include startup/output. One warmup per configuration, five shuffled samples."
+  ],
+  "compute": {
+    "platform": "macOS-15.7.3-arm64-arm-64bit",
+    "machine": "arm64",
+    "logical_cpus": 8,
+    "python": "3.12.8",
+    "bend": "bend 2.0.37",
+    "depth": 12,
+    "work_per_leaf": 10000,
+    "leaves": 4096,
+    "samples": 5,
+    "timing_scope": "wall ms including process start and stdout; CPU only",
+    "runner_build_ms": 1004.2143339960603,
+    "scoring_build_ms": 1069.341333990451,
+    "checksum": "2347956224",
+    "measurements": {
+      "scoring_threads=1_forks=0": {
+        "median_ms": 44.278917004703544,
+        "samples_ms": [
+          48.83608399541117,
+          44.9049169983482,
+          43.80945899174549,
+          44.278917004703544,
+          43.916291993809864
+        ]
+      },
+      "scoring_threads=1_forks=4": {
+        "median_ms": 44.216042006155476,
+        "samples_ms": [
+          47.711957988212816,
+          44.216042006155476,
+          45.72441599157173,
+          44.1549999959534,
+          43.89187500055414
+        ]
+      },
+      "scoring_threads=1_forks=12": {
+        "median_ms": 45.275166994542815,
+        "samples_ms": [
+          45.275166994542815,
+          47.6243750017602,
+          47.75945900473744,
+          43.47654100274667,
+          44.23608300567139
+        ]
+      },
+      "scoring_threads=4_forks=0": {
+        "median_ms": 45.70925000007264,
+        "samples_ms": [
+          45.70925000007264,
+          44.65454201272223,
+          45.279458005097695,
+          46.977999998489395,
+          45.79945799196139
+        ]
+      },
+      "scoring_threads=4_forks=4": {
+        "median_ms": 18.732333002844825,
+        "samples_ms": [
+          18.034292006632313,
+          18.959916997118853,
+          19.66220799658913,
+          18.732333002844825,
+          17.59462500922382
+        ]
+      },
+      "scoring_threads=4_forks=12": {
+        "median_ms": 16.642916001728736,
+        "samples_ms": [
+          17.59899999888148,
+          17.951124988030642,
+          16.246250001131557,
+          14.965416994527914,
+          16.642916001728736
+        ]
+      },
+      "scoring_threads=8_forks=0": {
+        "median_ms": 45.087833001161925,
+        "samples_ms": [
+          49.643500009551644,
+          45.599875011248514,
+          45.087833001161925,
+          43.159374996321276,
+          42.58779200608842
+        ]
+      },
+      "scoring_threads=8_forks=4": {
+        "median_ms": 16.402124994783662,
+        "samples_ms": [
+          15.881749990512617,
+          17.343375002383254,
+          16.112166005768813,
+          17.19829200010281,
+          16.402124994783662
+        ]
+      },
+      "scoring_threads=8_forks=12": {
+        "median_ms": 13.588457994046621,
+        "samples_ms": [
+          13.311625007190742,
+          16.769709007348865,
+          12.191292000352405,
+          13.588457994046621,
+          15.307665991713293
+        ]
+      },
+      "one_permission_chain": {
+        "median_ms": 5.388500008848496,
+        "samples_ms": [
+          5.409167002653703,
+          4.789792001247406,
+          5.223166008363478,
+          5.388500008848496,
+          5.596749993856065
+        ]
+      }
+    },
+    "python_baseline": {
+      "depth": 10,
+      "work_per_leaf": 1000,
+      "elapsed_ms": 64.4883339991793,
+      "scope": "one in-process Python loop sample; not a Penguin hot path",
+      "bend_one_thread_ms": 7.423999995808117
+    }
+  },
+  "overhead": {
+    "platform": "macOS-15.7.3-arm64-arm-64bit",
+    "machine": "arm64",
+    "logical_cpus": 8,
+    "python": "3.12.8",
+    "bend": "bend 2.0.37",
+    "depth": 12,
+    "work_per_leaf": 0,
+    "leaves": 4096,
+    "samples": 5,
+    "timing_scope": "wall ms including process start and stdout; CPU only",
+    "runner_build_ms": 1084.1064170090249,
+    "scoring_build_ms": 982.6734160014894,
+    "checksum": "25163776",
+    "measurements": {
+      "scoring_threads=1_forks=0": {
+        "median_ms": 5.215291996137239,
+        "samples_ms": [
+          5.314458001521416,
+          5.373457999667153,
+          4.588458003127016,
+          4.946874993038364,
+          5.215291996137239
+        ]
+      },
+      "scoring_threads=1_forks=4": {
+        "median_ms": 4.912457996397279,
+        "samples_ms": [
+          4.912457996397279,
+          4.564957998809405,
+          4.68683399958536,
+          5.931833991780877,
+          5.029541003750637
+        ]
+      },
+      "scoring_threads=1_forks=12": {
+        "median_ms": 5.261708996840753,
+        "samples_ms": [
+          5.261708996840753,
+          5.25583399576135,
+          5.870374996447936,
+          4.958292003720999,
+          6.928041999344714
+        ]
+      },
+      "scoring_threads=4_forks=0": {
+        "median_ms": 5.144708004081622,
+        "samples_ms": [
+          4.651957991882227,
+          5.4962919966783375,
+          5.039166993810795,
+          5.431041994597763,
+          5.144708004081622
+        ]
+      },
+      "scoring_threads=4_forks=4": {
+        "median_ms": 5.7267079973826185,
+        "samples_ms": [
+          6.178875002660789,
+          5.7267079973826185,
+          5.894083995372057,
+          5.131083991727792,
+          4.916417005006224
+        ]
+      },
+      "scoring_threads=4_forks=12": {
+        "median_ms": 5.538707991945557,
+        "samples_ms": [
+          5.656875000568107,
+          5.538707991945557,
+          4.987124993931502,
+          5.699041998013854,
+          5.099415997392498
+        ]
+      },
+      "scoring_threads=8_forks=0": {
+        "median_ms": 5.378292000386864,
+        "samples_ms": [
+          4.646917004720308,
+          5.378292000386864,
+          5.60087499616202,
+          5.417332999058999,
+          4.643250009394251
+        ]
+      },
+      "scoring_threads=8_forks=4": {
+        "median_ms": 5.812875009723939,
+        "samples_ms": [
+          5.686290998710319,
+          6.708708999212831,
+          5.812875009723939,
+          5.9652089985320345,
+          4.347375012002885
+        ]
+      },
+      "scoring_threads=8_forks=12": {
+        "median_ms": 5.002667006920092,
+        "samples_ms": [
+          5.129333003424108,
+          4.283125002984889,
+          5.002667006920092,
+          5.862042002263479,
+          4.761332995258272
+        ]
+      },
+      "one_permission_chain": {
+        "median_ms": 5.001375000574626,
+        "samples_ms": [
+          5.001375000574626,
+          4.36795900168363,
+          5.869917004019953,
+          4.457417002413422,
+          5.043791999923997
+        ]
+      }
+    },
+    "python_baseline": {
+      "depth": 10,
+      "work_per_leaf": 1000,
+      "elapsed_ms": 80.45237501210067,
+      "scope": "one in-process Python loop sample; not a Penguin hot path",
+      "bend_one_thread_ms": 6.349541989038698
+    }
+  }
+}

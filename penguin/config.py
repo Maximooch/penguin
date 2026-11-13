@@ -1360,6 +1360,7 @@ class Config:
     model_configs: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     agent_personas: Dict[str, AgentPersonaConfig] = field(default_factory=dict)
     skills: Dict[str, Any] = field(default_factory=dict)
+    mcp: Dict[str, Any] = field(default_factory=dict)
     
     # Dictionary-like access to model settings
     @property
@@ -1575,6 +1576,15 @@ class Config:
             fast_startup=config_data.get("performance", {}).get("fast_startup", False),
             model_configs=model_configs_section,
             agent_personas=agent_personas,
+            mcp=(
+                config_data["mcp"]
+                if isinstance(config_data.get("mcp"), dict)
+                else {
+                    "servers": config_data.get("mcpServers")
+                    or config_data.get("mcp_servers")
+                    or {}
+                }
+            ),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -1602,6 +1612,7 @@ class Config:
             },
             "workspace_dir": str(self.workspace_dir),
             "skills": dict(self.skills),
+            "mcp": dict(self.mcp),
             "cache_dir": str(self.cache_dir),
             "workspace_path": str(self.workspace_path),
             "model_configs": self.model_configs,

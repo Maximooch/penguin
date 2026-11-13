@@ -581,6 +581,24 @@ class OpenRouterGateway:
     def get_last_reasoning(self) -> str:
         return self._last_reasoning
 
+    @staticmethod
+    def _describe_unexpected_error(
+        exc: BaseException,
+    ) -> tuple[str, Optional[ErrorCategory]]:
+        """Describe an unexpected exception and classify transport failures by type.
+
+        Upstream disconnects mid-stream often raise httpx/asyncio exceptions with
+        an empty ``str()``, which text-based categorization treats as a
+        non-retryable runtime error.
+        """
+        detail = str(exc).strip() or type(exc).__name__
+        message = f"Unexpected error communicating with OpenRouter - {detail}"
+        if isinstance(exc, (httpx.TimeoutException, asyncio.TimeoutError)):
+            return message, ErrorCategory.TIMEOUT
+        if isinstance(exc, httpx.TransportError):
+            return message, ErrorCategory.NETWORK
+        return message, None
+
     def _record_error(
         self,
         *,
@@ -1118,7 +1136,7 @@ class OpenRouterGateway:
         for message in messages:
             if isinstance(message.get("content"), list):
                 new_content = []
-                image_processed = False
+                content_changed = False
                 for item in message["content"]:
                     if (
                         isinstance(item, dict)
@@ -1132,21 +1150,21 @@ class OpenRouterGateway:
                             new_content.append(
                                 {"type": "image_url", "image_url": {"url": data_uri}}
                             )
-                            image_processed = True
                         else:
-                            # Failed to encode, maybe add a text note?
+                            # Failed to encode (e.g. file deleted): never send the
+                            # raw image_path part, providers reject it.
                             new_content.append(
                                 {
                                     "type": "text",
                                     "text": f"[Error: Could not load image at {image_path}]",
                                 }
                             )
+                        content_changed = True
                     else:
                         # Keep other content parts as is
                         new_content.append(item)
 
-                # If an image was processed, update the message content
-                if image_processed:
+                if content_changed:
                     processed_messages.append({**message, "content": new_content})
                 else:
                     # No image processed, keep original message
@@ -2115,10 +2133,9 @@ class OpenRouterGateway:
                     )
                 except Exception:
                     pass
-            self._record_error(
-                message=f"Unexpected error communicating with OpenRouter - {str(e)}"
-            )
-            return f"[Error: Unexpected error communicating with OpenRouter - {str(e)}]"
+            message, category = self._describe_unexpected_error(e)
+            self._record_error(message=message, category=category)
+            return f"[Error: {message}]"
 
     async def _direct_api_call_with_reasoning(
         self,

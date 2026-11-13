@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from penguin.constants import get_catalog_max_output_tokens_cap
 from penguin.core import PenguinCore
 from penguin.llm.model_config import ModelConfig, safe_context_window
 
@@ -307,7 +308,9 @@ async def test_load_model_clamps_explicit_max_output_tokens_to_safe_window() -> 
 
     assert ok is True
     assert applied["model"] == "z-ai/glm-5.1"
-    assert applied["max_output_tokens"] == safe_context_window(204800)
+    assert applied["max_output_tokens"] == min(
+        get_catalog_max_output_tokens_cap(), safe_context_window(204800)
+    )
     assert applied["context_window_tokens"] == safe_context_window(204800)
 
 

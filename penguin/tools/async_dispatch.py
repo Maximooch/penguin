@@ -124,6 +124,8 @@ class AsyncToolDispatcher:
 
         manager = self._tool_manager
         name = manager._canonical_tool_name(tool_name)
+        if not manager.tool_capability_policy.allows(tool_name, name):
+            return manager.tool_capability_policy.denial_json(tool_name)
         ctx = manager._merged_execution_context(context)
         if name in SUBAGENT_TOOL_NAMES and not subagents_enabled(ctx):
             return json.dumps(disabled_subagent_result(name))
@@ -173,6 +175,10 @@ class AsyncToolDispatcher:
         manager = self._tool_manager
         requested_name = tool_name
         canonical_name = manager._canonical_tool_name(tool_name)
+        if not manager.tool_capability_policy.allows(
+            requested_name, canonical_name
+        ):
+            return manager.tool_capability_policy.denial_json(requested_name)
         effective_context = manager._merged_execution_context(context)
         if canonical_name in SUBAGENT_TOOL_NAMES and not subagents_enabled(
             effective_context

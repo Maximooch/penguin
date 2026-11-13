@@ -10,8 +10,8 @@ from unittest.mock import MagicMock
 import pytest
 from hypothesis import given, settings, strategies as st
 
+from penguin.constants import get_catalog_max_output_tokens_cap
 from penguin.core_runtime.model_runtime import (
-    provider_credential_available,
     apply_new_model_config,
     build_model_config_for_model,
     canonicalize_runtime_model_id,
@@ -21,6 +21,7 @@ from penguin.core_runtime.model_runtime import (
     ensure_litellm_runtime_state,
     list_available_models,
     load_model_for_core,
+    provider_credential_available,
     refresh_api_client,
     resolve_model_provider,
     resolve_request_runtime,
@@ -721,6 +722,73 @@ async def test_build_model_config_for_model_clamps_config_output_cap() -> None:
 
     assert model_config.max_output_tokens == 174080
     assert safe_window == 174080
+
+
+@pytest.mark.asyncio
+async def test_build_model_config_caps_huge_openrouter_catalog_output() -> None:
+    """Catalog max_completion_tokens is a ceiling, not a per-request default.
+
+    OpenRouter reserves credits for prompt + max_tokens, so sending a 384K
+    catalog ceiling on every request yields 402s on modest balances.
+    """
+
+    async def _fetch_specs(model_id: str) -> dict[str, Any]:
+        assert model_id == "deepseek/deepseek-v4.1-flash-1017"
+        return {
+            "context_length": 1048576,
+            "max_output_tokens": 393216,
+            "supports_vision": True,
+        }
+
+    model_config, _ = await build_model_config_for_model(
+        "openrouter/deepseek/deepseek-v4.1-flash-1017",
+        model_configs={},
+        fetch_specs=_fetch_specs,
+    )
+
+    assert model_config.max_output_tokens == get_catalog_max_output_tokens_cap()
+
+
+@pytest.mark.asyncio
+async def test_build_model_config_prefers_configured_output_over_catalog() -> None:
+    async def _fetch_specs(model_id: str) -> dict[str, Any]:
+        return {
+            "context_length": 1048576,
+            "max_output_tokens": 393216,
+            "supports_vision": False,
+        }
+
+    model_config, _ = await build_model_config_for_model(
+        "openrouter/deepseek/deepseek-v4.1-flash-1017",
+        model_configs={
+            "openrouter/deepseek/deepseek-v4.1-flash-1017": {
+                "provider": "openrouter",
+                "client_preference": "openrouter",
+                "max_output_tokens": 16000,
+            }
+        },
+        fetch_specs=_fetch_specs,
+    )
+
+    assert model_config.max_output_tokens == 16000
+
+
+@pytest.mark.asyncio
+async def test_build_model_config_catalog_output_cap_respects_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PENGUIN_CATALOG_MAX_OUTPUT_TOKENS_CAP", "4096")
+
+    async def _fetch_specs(model_id: str) -> dict[str, Any]:
+        return {"context_length": 1048576, "max_output_tokens": 393216}
+
+    model_config, _ = await build_model_config_for_model(
+        "openrouter/deepseek/deepseek-v4.1-flash-1017",
+        model_configs={},
+        fetch_specs=_fetch_specs,
+    )
+
+    assert model_config.max_output_tokens == 4096
 
 
 @given(

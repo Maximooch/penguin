@@ -21,6 +21,7 @@ from penguin.config import config, WORKSPACE_PATH
 from penguin.system.execution_context import get_current_execution_context_dict
 from penguin.utils.path_utils import get_allowed_roots, get_default_write_root
 from penguin.memory.summary_notes import SummaryNotes
+from penguin.security.tool_capabilities import ToolCapabilityPolicy
 from penguin.utils import FileMap
 from penguin.utils.profiling import profile_operation, profile_startup_phase, profiler
 
@@ -225,6 +226,7 @@ class ToolManager:
             self.config = config
             self.log_error = log_error_func
             self.fast_startup = fast_startup
+            self.tool_capability_policy = ToolCapabilityPolicy.from_environment()
             # Resolve the active project root (prefer env override, then git-root)
             project_root_env = os.environ.get("PENGUIN_PROJECT_ROOT")
             if project_root_env:
@@ -2909,7 +2911,15 @@ class ToolManager:
         """Get available tool schemas."""
         tools = list(self.tools)
         tools.extend(self._mcp_provider.get_tool_schemas())
-        return tools
+        if not self.tool_capability_policy.restricted:
+            return tools
+        return [
+            tool
+            for tool in tools
+            if isinstance(tool, dict)
+            and isinstance(tool.get("name"), str)
+            and self.tool_capability_policy.allows(tool["name"], tool["name"])
+        ]
 
     @property
     def todo_tools(self) -> TodoTools:
@@ -3066,14 +3076,17 @@ class ToolManager:
         ]
         allowed = {
             self._canonical_tool_name(name)
-            for name in (allowed_names or default_allowed)
+            for name in (default_allowed if allowed_names is None else allowed_names)
         }
         if not subagents_enabled():
             allowed.difference_update(SUBAGENT_TOOL_NAMES)
         responses_tools: List[Dict[str, Any]] = []
         for t in self.get_tools():
             name = t.get("name")
-            if not name or name not in allowed:
+            # Discovered MCP tools join the default native surface, but an
+            # explicit allowlist remains authoritative (including an empty one).
+            include_mcp = allowed_names is None and self._mcp_provider.is_mcp_tool(name)
+            if not name or (name not in allowed and not include_mcp):
                 continue
             desc = t.get("description", "")
             params_schema = t.get("input_schema") or {
@@ -3089,7 +3102,9 @@ class ToolManager:
                 }
             )
         # Optionally add built-in Responses web_search tool
-        if include_web_search:
+        if include_web_search and self.tool_capability_policy.allows(
+            "web_search", "web_search"
+        ):
             try:
                 responses_tools.append({"type": "web_search"})
             except Exception:
@@ -3098,7 +3113,9 @@ class ToolManager:
 
     def get_tool(self, tool_name: str):
         """Get a tool instance on-demand with caching."""
+        requested_tool_name = tool_name
         tool_name = self._canonical_tool_name(tool_name)
+        self.tool_capability_policy.require(requested_tool_name, tool_name)
         if self._mcp_provider.is_mcp_tool(tool_name):
             return lambda **kwargs: self._mcp_provider.execute_tool(tool_name, kwargs)
 
@@ -4438,6 +4455,10 @@ class ToolManager:
         with profile_operation(f"ToolManager.execute_tool.{tool_name}"):
             requested_tool_name = tool_name
             tool_name = self._canonical_tool_name(tool_name)
+            if not self.tool_capability_policy.allows(
+                requested_tool_name, tool_name
+            ):
+                return self.tool_capability_policy.denial_json(requested_tool_name)
             effective_context = self._merged_execution_context(context)
             if tool_name in SUBAGENT_TOOL_NAMES and not subagents_enabled(
                 effective_context

@@ -9,6 +9,7 @@ from typing import Any
 from penguin.integrations.mcp.config import load_mcp_server_configs
 from penguin.integrations.mcp.manager import HAS_MCP_SDK, MCPClientManager
 from penguin.integrations.mcp.names import is_mcp_tool_name
+from penguin.security.mcp_isolation import isolated_mcp_config
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +18,7 @@ class MCPToolProvider:
     """Expose external MCP server tools through Penguin's ToolManager."""
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
-        self.config = config or {}
+        self.config = isolated_mcp_config(config or {})
         self._manager: MCPClientManager | None = None
         self._schemas: list[dict[str, Any]] | None = None
 

@@ -2583,6 +2583,16 @@ class OpenAIAdapter(BaseAdapter):
                                     }
                                 )
                                 continue
+                        if path:
+                            # Local file missing or unreadable: never forward the
+                            # raw path-based part, providers reject it.
+                            new_content.append(
+                                {
+                                    "type": "text",
+                                    "text": f"[Error: Could not load image at {path}]",
+                                }
+                            )
+                            continue
                     new_content.append(item)
                 processed.append({**message, "content": new_content})
             else:
