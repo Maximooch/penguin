@@ -13,6 +13,12 @@ DEFAULT_CONTEXT_WINDOW_EMERGENCY_FALLBACK_TOKENS = 100_000
 # Used when a provider adapter needs a last-resort output token cap.
 DEFAULT_MAX_OUTPUT_TOKENS = 8192
 
+# Upper bound applied to provider-catalog output ceilings (e.g. OpenRouter
+# max_completion_tokens) when no explicit per-model cap is configured. Catalog
+# values are ceilings, not sensible per-request defaults, and OpenRouter
+# reserves credits for prompt + max_tokens up front.
+DEFAULT_CATALOG_MAX_OUTPUT_TOKENS_CAP = 65_536
+
 PYDOLL_SLEEP_SECONDS = float(os.getenv("PENGUIN_PYDOLL_SLEEP_SECONDS", "0.05"))
 
 # Small async sleep used to yield control / enforce UI message boundaries.
@@ -86,4 +92,14 @@ def get_default_max_output_tokens() -> int:
     return _coerce_int(
         os.getenv("PENGUIN_DEFAULT_MAX_OUTPUT_TOKENS", DEFAULT_MAX_OUTPUT_TOKENS),
         DEFAULT_MAX_OUTPUT_TOKENS,
+    )
+
+
+def get_catalog_max_output_tokens_cap() -> int:
+    return _coerce_int(
+        os.getenv(
+            "PENGUIN_CATALOG_MAX_OUTPUT_TOKENS_CAP",
+            DEFAULT_CATALOG_MAX_OUTPUT_TOKENS_CAP,
+        ),
+        DEFAULT_CATALOG_MAX_OUTPUT_TOKENS_CAP,
     )

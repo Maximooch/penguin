@@ -12,6 +12,7 @@ import logging
 import os
 from typing import Any, Awaitable, Callable, Mapping, Optional
 
+from penguin.constants import get_catalog_max_output_tokens_cap
 from penguin.llm.model_config import (
     ModelConfig,
     fetch_model_specs,
@@ -516,11 +517,23 @@ async def build_model_config_for_model(
         )
 
     safe_window = safe_context_window(context_length)
-    max_output = _coerce_optional_int(model_specs.get("max_output_tokens"))
+    # Explicit per-model config wins; a catalog ceiling is only a fallback and
+    # is capped so it does not become the per-request max_tokens.
+    max_output = _coerce_optional_int(
+        model_specific.get("max_output_tokens") or model_specific.get("max_tokens")
+    )
     if max_output is None:
-        max_output = _coerce_optional_int(
-            model_specific.get("max_output_tokens") or model_specific.get("max_tokens")
-        )
+        catalog_output = _coerce_optional_int(model_specs.get("max_output_tokens"))
+        catalog_cap = get_catalog_max_output_tokens_cap()
+        if catalog_output is not None and catalog_output > catalog_cap:
+            logger.info(
+                "Capping catalog max_output_tokens for '%s' from %s to %s",
+                runtime_model_id,
+                catalog_output,
+                catalog_cap,
+            )
+            catalog_output = catalog_cap
+        max_output = catalog_output
     if max_output is not None and safe_window is not None and max_output > safe_window:
         logger.warning(
             "Clamping model '%s' max_output_tokens from %s to safe window %s",
