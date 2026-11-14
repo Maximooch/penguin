@@ -28,6 +28,7 @@ from ...contracts import (
     StreamCallback,
 )
 from ...provider_transform import build_llm_error, extract_retry_after_seconds
+from ...tool_call_accumulator import ToolCallAccumulator
 from .chat_completions_protocol import (
     build_chat_completions_body,
     normalize_chat_usage,
@@ -129,7 +130,7 @@ class LinkProvider:
         self._last_lifecycle: LLMRequestLifecycle | None = None
         self._last_finish_reason = FinishReason.UNKNOWN
         self._last_reasoning = ""
-        self._pending_tool_calls: list[LLMToolCall] = []
+        self._tool_calls = ToolCallAccumulator()
         self._last_provider_data: dict[str, Any] = {}
 
     def get_capabilities(self) -> LLMProviderCapabilities:
@@ -275,7 +276,7 @@ class LinkProvider:
         )
         self._last_lifecycle = lifecycle
         self._last_error = None
-        self._pending_tool_calls = []
+        self._tool_calls.discard()
 
         try:
             client = await self._client()
@@ -331,7 +332,16 @@ class LinkProvider:
             text, reasoning, tool_calls, usage, finish, provider_data = result
             self._last_usage = usage
             self._last_reasoning = reasoning
-            self._pending_tool_calls = list(tool_calls)
+            self._tool_calls.discard()
+            for call in tool_calls:
+                self._tool_calls.add(
+                    {
+                        "item_id": call.item_id,
+                        "call_id": call.call_id,
+                        "name": call.name,
+                        "arguments": call.arguments,
+                    }
+                )
             self._last_finish_reason = finish
             self._last_provider_data.update(provider_data)
             lifecycle.status = ProviderRequestStatus.COMPLETED
@@ -413,23 +423,14 @@ class LinkProvider:
         return self._last_reasoning
 
     def has_pending_tool_call(self) -> bool:
-        return bool(self._pending_tool_calls)
+        return self._tool_calls.has_pending()
 
     def get_and_clear_last_tool_call(self) -> dict[str, Any] | None:
         calls = self.get_and_clear_pending_tool_calls()
         return calls[-1] if calls else None
 
     def get_and_clear_pending_tool_calls(self) -> list[dict[str, Any]]:
-        calls = [
-            {
-                "id": call.call_id,
-                "type": "function",
-                "function": {"name": call.name, "arguments": call.arguments},
-            }
-            for call in self._pending_tool_calls
-        ]
-        self._pending_tool_calls = []
-        return calls
+        return self._tool_calls.drain()
 
     async def _client(self) -> httpx.AsyncClient:
         if self._http_client is not None:

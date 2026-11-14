@@ -311,7 +311,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     check; LiteLLM's `finally: return`; Anthropic's 30 s hard cap and its
     error text returned as the response string; the Bend model.
   - State: (2026-11-13) one rule, `classify_stream_end` in `penguin/llm/stream_end.py`, now decides the outcome in the OpenAI (Codex, SDK, HTTP), OpenRouter (SDK, direct) and Anthropic stream ends. Fixed with it: `response.incomplete` handled; OpenRouter discards a partial tool call on a mid-stream error; LiteLLM no longer returns a failed or cancelled stream as a short answer; Anthropic's 30 s cap removed and its stream errors no longer sent as assistant text. Bend model in `prototypes/bend_stream_end` (draft laws await review). Not exercised by a test: the Codex and SDK `response.incomplete` branches, and OpenRouter's SDK path. See "Decisions taken while away" for what was kept as is.
-- [ ] **SM-13 Pending tool-call accumulation, four adapters** (waits on the SM-12 consolidation) (c)
+- [x] **SM-13 Pending tool-call accumulation, four adapters** (waits on the SM-12 consolidation) (c)
   - `penguin/llm/adapters/openai.py:143-158,451-565`,
     `penguin/llm/adapters/openrouter.py:91,709-814,2552`,
     `penguin/llm/adapters/anthropic.py:78,422-498`,
@@ -322,6 +322,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
   - Correction: one accumulator class with one promotion rule.
   - Blocked by: SM-12
   - State: (partial, 2026-11-13) one `ToolCallAccumulator` (`penguin/llm/tool_call_accumulator.py`) with one rule (runnable only once closed; merged only on a shared id; never without a name) now backs the OpenAI, OpenRouter, Anthropic, Modal and RunInfra adapters. Fixed: an Anthropic tool call was runnable from its first fragment, and an id-less one was recorded once per fragment with partial JSON; OpenAI merged identical id-less calls. Still open: Link keeps its own list and drains a different shape (the runtime accepts both).
+  - State: (done, 2026-11-14) Link now records its calls in the same accumulator and drains the same shape as the other adapters (`item_id`, `call_id`, `name`, `arguments`). Its two tests that asserted or replayed the old chat shape were updated.
 - [ ] **SM-14 Retry and replay layering** (re-read 2026-11-13: the unbounded Link loop is deliberate connection backoff, covered by `tests/llm/test_link_runtime_recovery.py`; the rest waits on the SM-12 consolidation) (b) [bend]
   - `penguin/llm/runtime.py:329-347,599-757`,
     `penguin/llm/providers/link/provider.py:205-246`,
@@ -732,3 +733,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-12: done (2026-11-13). Shared stream-end rule wired into four adapters; 11 deterministic tests, 5 opt-in Bend tests.
 - SM-16: partly fixed (2026-11-13). One owner for session run tracking; busy-forever after a crash and the unbounded abort marker fixed.
 - SM-13: partly fixed (2026-11-13). Shared tool-call accumulator in five adapters; Link not yet moved.
+- SM-13: done (2026-11-14). Link moved onto the shared accumulator.
