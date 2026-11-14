@@ -199,7 +199,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     already-resolved request (`True` versus 404) and on scopes offered;
     `_approval_ws_manager.connect()` is still never called.
   - Blocked by: SM-04
-- [ ] **SM-06 Per-call authorization grant** (c) [security]
+- [ ] **SM-06 Per-call authorization grant** (on hold) (c) [security]
   - `penguin/tools/async_dispatch.py:112-264`,
     `penguin/security/tool_approval.py:22-116`,
     `penguin/tools/tool_manager.py:2445-2591,4487`
@@ -208,7 +208,11 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     tools are checked twice. The wait has no timeout of its own.
   - Correction: carry the grant as a value from approval to dispatch instead
     of recomputing a key.
-- [ ] **SM-07 Session dirty/save protocol** (c) [design]
+  - On hold (2026-11-13): when the key drifts the code asks again, which is
+    safe. The fix is a redesign of a security boundary with a large existing
+    contract suite (`tests/tools/test_permission_resume.py`); it needs a
+    design conversation, not a loop iteration.
+- [x] **SM-07 Session dirty/save protocol** (c) [design]
   - `penguin/system/conversation.py:100-269,648`,
     `penguin/system/session_manager.py:86-103,252-263,501,553,841`
   - No lock between the auto-save thread and appends, so a message added
@@ -217,6 +221,12 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     `save_session` returns True when the index write failed.
   - Correction: one dirty counter compared before and after serialise, or one
     lock; unique temp paths; surface index failures.
+  - State: fixed. Main had already added unique temp files, a store lock and
+    index-failure reporting; the dirty-bit lost update remained and is now
+    closed with a per-session revision counter. Left open:
+    `mark_session_modified` is still a no-op for a session that is neither
+    cached nor current; `SessionManager.__del__` still saves to disk during
+    garbage collection, which crashed the interpreter once in a test here.
 - [ ] **SM-08 Rollback and branch pointer swap** (b)
   - `penguin/system/conversation_manager.py:1678-1718`,
     `penguin/system/checkpoint_manager.py:300`
@@ -555,3 +565,11 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
   - `tests/test_cli_surface_audit_regressions.py::test_runmode_help_text_reflects_continuous_mode_truth`:
     click `make_metavar` `TypeError` in this environment.
   - `tests/test_a2a_server.py`: cannot be collected, `a2a` is not installed.
+- SM-07: fixed (2026-11-13). `SessionManager` counts modifications per
+  session; `save_session` clears the modified flag only if the count is
+  unchanged since it took its snapshot, and `_auto_save_sessions` no longer
+  clears the flag itself.
+  - `pytest -q tests/system/test_session_dirty_tracking.py`: 3 passed; 2 red
+    without the fix.
+  - `tests/system` and `tests/core_runtime`: 544 passed, 2 skipped, 3 xfailed.
+    Other files that use `SessionManager`: 120 passed, 3 skipped.
