@@ -272,7 +272,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
 
 ## Tier 1: wrong output, hung or stuck sessions
 
-- [ ] **SM-12 Stream-end outcome, seven copies** (b → a) [confirmed, bend, design]
+- [ ] **SM-12 Stream-end outcome, seven copies** (two confirmed bugs fixed; consolidation open) (b → a) [confirmed, bend, design]
   - `penguin/llm/adapters/openai.py:1852,2627,2719`,
     `penguin/llm/adapters/openrouter.py:1547,2212`,
     `penguin/llm/adapters/anthropic.py:760-1091`,
@@ -287,6 +287,11 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
   - Correction: one pure `classify_stream_end(saw_completed, saw_error,
     pending_tool, has_text, cancelled, …)` used by every adapter; errors are
     raised, never returned as text. Model it in Bend next to `retry.bend`.
+  - State: the OpenAI HTTP swallow and the Anthropic unrecorded timeout are
+    fixed. Still open: one shared classifier for all seven copies;
+    `response.incomplete`; OpenRouter finalising tool calls before its error
+    check; LiteLLM's `finally: return`; Anthropic's 30 s hard cap and its
+    error text returned as the response string; the Bend model.
 - [ ] **SM-13 Pending tool-call accumulation, four adapters** (c)
   - `penguin/llm/adapters/openai.py:143-158,451-565`,
     `penguin/llm/adapters/openrouter.py:91,709-814,2552`,
@@ -637,3 +642,13 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
     test was red before the fix.
   - Every non-API test file touching the event bus, telemetry, `local_task`
     or run mode: 558 passed, 9 skipped, and the two known baseline failures.
+- SM-12: partly fixed (2026-11-13).
+  - OpenAI HTTP stream: `LLMProviderError` raised for an error event is no
+    longer caught by the malformed-line handler.
+    `pytest -q tests/llm/test_openai_http_stream_errors.py`: 2 passed; the
+    error-event test was red before the fix.
+  - Anthropic stream: a timeout is recorded as a retryable TIMEOUT `LLMError`
+    and pending tool calls are cleared.
+    `pytest -q tests/llm/test_anthropic_stream_timeout_error.py`: 1 passed;
+    red without the fix.
+  - `tests/llm` and `tests/test_openai_adapter_streaming.py`: 439 passed.

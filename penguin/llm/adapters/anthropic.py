@@ -974,10 +974,21 @@ class AnthropicAdapter(BaseAdapter):
                 stream_error = self._record_anthropic_stream_incomplete(output_state)
 
             if stream_error:
-                error_message = str(stream_error)
-                if isinstance(stream_error, LLMError):
-                    error_message = stream_error.message
-                    self._set_last_error(stream_error)
+                if not isinstance(stream_error, LLMError):
+                    # A timeout is a failure of the request. Record it so the
+                    # caller does not read the error text as the model's answer.
+                    stream_error = build_llm_error(
+                        message=str(stream_error),
+                        provider=self.provider,
+                        model=getattr(self.model_config, "model", None),
+                        category=ErrorCategory.TIMEOUT,
+                        retryable=True,
+                        finish_reason=FinishReason.ERROR,
+                    )
+                    self._pending_tool_calls = []
+                    self._last_tool_call = None
+                error_message = stream_error.message
+                self._set_last_error(stream_error)
                 self._set_last_finish_reason(FinishReason.ERROR)
                 if complete_response:
                     return (

@@ -2802,6 +2802,10 @@ class OpenAIAdapter(BaseAdapter):
                         await self._emit_reasoning_event(
                             reasoning_stream, data, stream_callback
                         )
+                except LLMProviderError:
+                    # A provider error event is the outcome of the request,
+                    # not a malformed line.
+                    raise
                 except Exception:
                     # Skip malformed lines
                     continue
