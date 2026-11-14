@@ -1,6 +1,6 @@
 # Provider request lifecycle model
 
-Optional assurance experiment for SM-32 in
+Optional assurance experiment for SM-32 and SM-33 in
 `context/tasks/correct-all-implicit-state-machines.md`. It adds no runtime
 dependency. Tests are opt-in (`PENGUIN_TEST_BEND=1`).
 
@@ -11,12 +11,19 @@ dependency. Tests are opt-in (`PENGUIN_TEST_BEND=1`).
 status is asked for. `LLMRequestLifecycle.advance` applies it; every adapter
 and the Link provider record status only through `advance` and `finish`.
 
+`outcome.bend` projects `classify_call_outcome` from the same module: one
+provider attempt's outcome (completed, retryable error, fatal error,
+cancelled) from its lifecycle status and recorded error. `APIClient` and the
+runtime's fallback both use it.
+
 The harm it guards against: a late event reopens or relabels a request that
-has already ended, so a failed request reads as completed or still running.
+has already ended, so a failed request reads as completed or still running;
+or a cancelled or failed attempt is reported to the turn loop as completed.
 
 ## Files
 
 - `lifecycle.bend`: the model, and a `main` that prints all 64 transitions.
+- `outcome.bend`: the outcome model, and a `main` that prints all 24 cases.
 - `LAWS.bend`: the contracts. Drafted by Claude on 2026-11-14 and awaiting
   human review; by Bend convention this file belongs to the human.
 - `PROOF.bend`: proofs of those contracts.
@@ -39,6 +46,7 @@ PENGUIN_TEST_BEND=1 python -m pytest -q tests/integrations/test_bend_request_lif
 ## Covered code and sync point
 
 - `penguin/llm/contracts.py`: `next_request_status`,
-  `LLMRequestLifecycle.advance`, `LLMRequestLifecycle.finish`.
+  `LLMRequestLifecycle.advance`, `LLMRequestLifecycle.finish`,
+  `classify_call_outcome`.
 - Last confirmed against the working tree on top of `907c483bd`, 2026-11-14.
   Move this forward only after re-checking the model against the code.

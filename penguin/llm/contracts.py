@@ -590,6 +590,35 @@ class LLMResult:
     provider_data: Dict[str, Any] = field(default_factory=dict)
 
 
+def classify_call_outcome(
+    *,
+    lifecycle_status: Optional[ProviderRequestStatus],
+    error: Optional["LLMError"],
+) -> "LLMCallStatus":
+    """Classify one provider attempt from its lifecycle status and error.
+
+    Cancellation wins. Any recorded error makes the attempt a failure,
+    retryable or not as the error says. A request that ended badly
+    (``DISCONNECTED``, ``FAILED``, ``RETRYING``) without a recorded error is
+    still a fatal failure. Anything else completed.
+    """
+    if lifecycle_status is ProviderRequestStatus.CANCELLED:
+        return LLMCallStatus.CANCELLED
+    if error is not None:
+        return (
+            LLMCallStatus.RETRYABLE_ERROR
+            if error.retryable
+            else LLMCallStatus.FATAL_ERROR
+        )
+    if lifecycle_status in {
+        ProviderRequestStatus.DISCONNECTED,
+        ProviderRequestStatus.FAILED,
+        ProviderRequestStatus.RETRYING,
+    }:
+        return LLMCallStatus.FATAL_ERROR
+    return LLMCallStatus.COMPLETED
+
+
 @dataclass
 class LLMCallResult:
     """Typed attempt result used by Engine/provider loop control."""
@@ -701,6 +730,7 @@ __all__ = [
     "LLMToolCall",
     "LLMUsage",
     "ProviderRequestStatus",
+    "classify_call_outcome",
     "next_request_status",
     "ProviderRuntime",
     "RequestLifecycleRuntime",

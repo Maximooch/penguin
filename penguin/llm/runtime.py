@@ -35,6 +35,8 @@ from .contracts import (
     LLMCallStatus,
     LLMError,
     LLMProviderError,
+    LLMRequestLifecycle,
+    classify_call_outcome,
 )
 from .provider_transform import (
     native_tool_format,
@@ -245,6 +247,22 @@ def _get_last_provider_error(api_client: Any) -> Optional[LLMError]:
     return provider_error if isinstance(provider_error, LLMError) else None
 
 
+def _get_last_request_lifecycle(api_client: Any) -> Optional[LLMRequestLifecycle]:
+    """Return the last request lifecycle from the client or its handler."""
+    for source in (api_client, getattr(api_client, "client_handler", None)):
+        getter = getattr(source, "get_last_request_lifecycle", None)
+        if not callable(getter):
+            continue
+        try:
+            lifecycle = getter()
+        except Exception:
+            logger.debug("Failed to read the request lifecycle", exc_info=True)
+            continue
+        if isinstance(lifecycle, LLMRequestLifecycle):
+            return lifecycle
+    return None
+
+
 def _get_last_call_result(api_client: Any) -> Optional[LLMCallResult]:
     try:
         getter = getattr(api_client, "get_last_response_result", None)
@@ -282,17 +300,18 @@ async def _get_response_result(
     result = _get_last_call_result(api_client)
     if result is not None:
         return result
-    provider_error = _get_last_provider_error(api_client)
+    lifecycle = _get_last_request_lifecycle(api_client)
+    provider_error = _get_last_provider_error(api_client) or (
+        lifecycle.error if lifecycle is not None else None
+    )
     return LLMCallResult(
         text=str(text or ""),
-        status=(
-            LLMCallStatus.RETRYABLE_ERROR
-            if provider_error is not None and provider_error.retryable
-            else LLMCallStatus.FATAL_ERROR
-            if provider_error is not None
-            else LLMCallStatus.COMPLETED
+        status=classify_call_outcome(
+            lifecycle_status=lifecycle.status if lifecycle is not None else None,
+            error=provider_error,
         ),
         error=provider_error,
+        lifecycle=lifecycle,
     )
 
 

@@ -13,8 +13,14 @@ from pathlib import Path
 
 import pytest
 
+from penguin.llm.contracts import (
+    ErrorCategory,
+    LLMCallStatus,
+    LLMError,
+    classify_call_outcome,
+    next_request_status,
+)
 from penguin.llm.contracts import ProviderRequestStatus as S
-from penguin.llm.contracts import next_request_status
 
 SOURCE = Path(__file__).resolve().parents[2] / "prototypes" / "bend_request_lifecycle"
 ORDER = (
@@ -75,6 +81,27 @@ def test_all_transitions_against_python(compiler: str) -> None:
         assert observed[index] == expected, (current, requested)
 
 
+def test_all_call_outcomes_against_python(compiler: str) -> None:
+    """8 lifecycle statuses x no, retryable or fatal error."""
+    observed = run(compiler, SOURCE / "outcome.bend").stdout.split()[0]
+    errors = (
+        None,
+        LLMError(message="r", category=ErrorCategory.NETWORK, retryable=True),
+        LLMError(message="f", category=ErrorCategory.AUTH, retryable=False),
+    )
+    symbols = {
+        LLMCallStatus.COMPLETED: "c",
+        LLMCallStatus.RETRYABLE_ERROR: "r",
+        LLMCallStatus.FATAL_ERROR: "f",
+        LLMCallStatus.CANCELLED: "x",
+    }
+    cases = list(itertools.product(ORDER, errors))
+    assert len(observed) == len(cases)
+    for index, (status, error) in enumerate(cases):
+        expected = symbols[classify_call_outcome(lifecycle_status=status, error=error)]
+        assert observed[index] == expected, (status, error)
+
+
 @pytest.mark.parametrize(
     "needle,replacement",
     [
@@ -90,9 +117,36 @@ def test_unsafe_mutation_rejected(
     compiler: str, tmp_path: Path, needle: str, replacement: str
 ) -> None:
     """The laws catch a finished request that is reopened or relabelled."""
+    _assert_mutation_rejected(compiler, tmp_path, "lifecycle.bend", needle, replacement)
+
+
+@pytest.mark.parametrize(
+    "needle,replacement",
+    [
+        (
+            "    case L.Cancelled{}:\n      CancelledOut{}",
+            "    case L.Cancelled{}:\n      Succeeded{}",
+        ),
+        (
+            "    case True{}:\n      FatalError{}",
+            "    case True{}:\n      Succeeded{}",
+        ),
+    ],
+    ids=["cancelled-reported-done", "failed-request-reported-done"],
+)
+def test_unsafe_outcome_mutation_rejected(
+    compiler: str, tmp_path: Path, needle: str, replacement: str
+) -> None:
+    """The laws catch a failed or cancelled request reported as completed."""
+    _assert_mutation_rejected(compiler, tmp_path, "outcome.bend", needle, replacement)
+
+
+def _assert_mutation_rejected(
+    compiler: str, tmp_path: Path, name: str, needle: str, replacement: str
+) -> None:
     for source in SOURCE.glob("*.bend"):
         shutil.copyfile(source, tmp_path / source.name)
-    implementation = tmp_path / "lifecycle.bend"
+    implementation = tmp_path / name
     text = implementation.read_text()
     assert text.count(needle) == 1
     implementation.write_text(text.replace(needle, replacement))

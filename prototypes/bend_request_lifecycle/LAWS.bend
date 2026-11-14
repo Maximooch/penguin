@@ -1,5 +1,6 @@
 import Base
 import ./lifecycle.bend as L
+import ./outcome.bend as O
 
 # Safety contracts for a provider request's lifecycle status (SM-32 in
 # context/tasks/correct-all-implicit-state-machines.md).
@@ -47,3 +48,27 @@ law retry_does_not_complete:
 
 law retry_can_be_cancelled:
   {L.next(L.Retrying{}, L.Cancelled{}) == L.Cancelled{} : L.St}
+
+# Call outcome (SM-33): classify_call_outcome.
+
+# A cancelled request is reported cancelled, whatever error it carries.
+law cancelled_outcome_wins:
+  for e: O.Err
+  {O.outcome(L.Cancelled{}, e) == O.CancelledOut{} : O.Out}
+
+# A request that ended badly is never reported as completed.
+law failed_request_is_not_done:
+  {O.outcome(L.Failed{}, O.NoErr{}) == O.FatalError{} : O.Out}
+
+law disconnected_request_is_not_done:
+  {O.outcome(L.Disconnected{}, O.NoErr{}) == O.FatalError{} : O.Out}
+
+# A recorded error decides retryability, even on a completed request.
+law completed_with_retryable_error_is_retryable:
+  {O.outcome(L.Completed{}, O.Retryable{}) == O.RetryableError{} : O.Out}
+
+law completed_with_fatal_error_is_fatal:
+  {O.outcome(L.Completed{}, O.Fatal{}) == O.FatalError{} : O.Out}
+
+law clean_completion_is_done:
+  {O.outcome(L.Completed{}, O.NoErr{}) == O.Succeeded{} : O.Out}
