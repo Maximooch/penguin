@@ -652,3 +652,16 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
     `pytest -q tests/llm/test_anthropic_stream_timeout_error.py`: 1 passed;
     red without the fix.
   - `tests/llm` and `tests/test_openai_adapter_streaming.py`: 439 passed.
+- SM-03 follow-up (2026-11-13): three cases of
+  `tests/integrations/test_bend_permissions.py::test_python_boundary_characterization`
+  recorded the old fail-open behaviour and are updated to fail-closed; the
+  prototype README says so.
+- Known red baseline, Bend lane: 14 tests in
+  `tests/integrations/test_bend_permissions.py` fail on `origin/main` too. The
+  native `runner` and `scoring` binaries exit with status 2 under Bend 2.0.37
+  as installed here. Not investigated.
+- Branch check (2026-11-13, 13 commits): every new test plus `tests/system`,
+  `tests/llm`, `tests/tools`, `tests/core_runtime` and the touched single
+  files: 1423 passed, 22 skipped, 3 xfailed.
+  `tests/integrations/test_bend_tool_status.py` and `test_bend_runtime.py`:
+  8 passed.

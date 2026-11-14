@@ -85,10 +85,11 @@ and Bend, audit correctness, or production permission safety.
 
 ### Existing Python boundaries matter
 
-`PermissionEnforcer.check` skips policy exceptions. The injected exception-only
-case returned ALLOW; exception followed by ASK or DENY returned the surviving
-policy's result. That warrants a separate fail-open security review. It was not
-changed here. YOLO/allowlist bypasses, policy evaluation side effects, first-DENY
+`PermissionEnforcer.check` used to skip policy exceptions: the injected
+exception-only case returned ALLOW, and an exception followed by ASK or DENY
+returned the surviving policy's result. That was changed on 2026-11-13 (SM-03 in
+`context/tasks/correct-all-implicit-state-machines.md`): a policy that raises now
+denies and stops evaluation. YOLO/allowlist bypasses, policy evaluation side effects, first-DENY
 short circuit, and audit ordering must not be replaced by parallel evaluation
 just because the outcome algebra is commutative.
 
