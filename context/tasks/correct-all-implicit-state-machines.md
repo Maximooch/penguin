@@ -113,6 +113,11 @@ on its own.
   item said "reject"; rejecting would leave the user's click with no effect.
 - SM-04: resolved approval history is capped at 1000 entries
   (`MAX_RESOLVED_HISTORY`); the oldest are dropped.
+- SM-31: bound-method subscribers on the `utils` event bus now receive
+  events. That wakes handlers that have never run: `TelemetryCollector` and
+  the legacy `local_task` `ProjectManager` handlers. Handler errors are caught
+  and logged by the bus. If either misbehaves, revert this commit or
+  unsubscribe that handler.
 
 ## Item format
 
@@ -408,7 +413,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     empty-response retry has no counter. `start()` checks a status the task
     engine never returns.
   - Blocked by: SM-15
-- [ ] **SM-31 `utils` event bus subscription liveness** (c) [confirmed]
+- [x] **SM-31 `utils` event bus subscription liveness** (c) [confirmed]
   - `penguin/utils/events.py:79,117,128`
   - Handlers are stored as `weakref.ref`, which is dead immediately for bound
     methods. `publish` mutates the list it iterates and holds a lock across
@@ -624,3 +629,11 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
   - `pytest -q tests/test_engine_llm_stream_sentinel.py`: 2 passed; both red
     before the fix (one by hanging until its 2 s timeout).
   - `tests/test_engine*.py`: 129 passed.
+- SM-31: fixed (2026-11-13). `subscribe` stores `weakref.WeakMethod` for bound
+  methods, `unsubscribe` compares by equality, and `publish` rebuilds the
+  handler list instead of removing from it while iterating. Left open:
+  `publish` still holds its lock across handler awaits.
+  - `pytest -q tests/test_event_bus_weak_methods.py`: 3 passed; the delivery
+    test was red before the fix.
+  - Every non-API test file touching the event bus, telemetry, `local_task`
+    or run mode: 558 passed, 9 skipped, and the two known baseline failures.
