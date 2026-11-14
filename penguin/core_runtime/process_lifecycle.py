@@ -8,6 +8,8 @@ import traceback
 from typing import Any
 
 __all__ = [
+    "active_request_session_ids",
+    "consume_session_abort",
     "discard_opencode_abort_session",
     "emit_process_user_message",
     "finalize_opencode_process_request",
@@ -15,7 +17,11 @@ __all__ = [
     "get_session_request_gate",
     "handle_process_cancelled",
     "handle_process_error",
+    "mark_session_aborted",
     "register_opencode_process_request",
+    "session_has_active_request",
+    "track_session_task",
+    "untrack_session_task",
 ]
 
 logger = logging.getLogger(__name__)
@@ -76,6 +82,97 @@ def get_session_request_gate(owner: Any, session_id: Any) -> asyncio.Lock:
         gate = asyncio.Lock()
         gates[sid] = gate
     return gate
+
+
+def active_request_session_ids(owner: Any) -> set[str]:
+    """Return the sessions that have a request in flight right now."""
+
+    _ensure_request_state(owner)
+    counted = {
+        sid
+        for sid, count in owner._opencode_active_requests.items()
+        if isinstance(sid, str) and isinstance(count, int) and count > 0
+    }
+    tracked = {
+        sid
+        for sid, tasks in owner._opencode_process_tasks.items()
+        if isinstance(sid, str) and tasks
+    }
+    return counted | tracked
+
+
+def session_has_active_request(owner: Any, session_id: Any) -> bool:
+    """Return whether a request for the session is in flight."""
+
+    sid = _session_id(session_id)
+    return bool(sid) and sid in active_request_session_ids(owner)
+
+
+def track_session_task(
+    owner: Any,
+    session_id: Any,
+    request_task: asyncio.Task[Any] | None,
+) -> bool:
+    """Record a task that an abort of the session must cancel."""
+
+    sid = _session_id(session_id)
+    if not sid or request_task is None:
+        return False
+    _ensure_request_state(owner)
+    tasks = owner._opencode_process_tasks.get(sid)
+    if not isinstance(tasks, set):
+        tasks = set()
+        owner._opencode_process_tasks[sid] = tasks
+    tasks.add(request_task)
+    return True
+
+
+def untrack_session_task(
+    owner: Any,
+    session_id: Any,
+    request_task: asyncio.Task[Any] | None,
+) -> None:
+    """Forget a task recorded with :func:`track_session_task`."""
+
+    sid = _session_id(session_id)
+    if not sid or request_task is None:
+        return
+    _ensure_request_state(owner)
+    tasks = owner._opencode_process_tasks.get(sid)
+    if not isinstance(tasks, set):
+        return
+    tasks.discard(request_task)
+    if not tasks:
+        owner._opencode_process_tasks.pop(sid, None)
+
+
+def mark_session_aborted(owner: Any, session_id: Any) -> None:
+    """Ask in-flight work for the session to stop at its next stream chunk."""
+
+    sid = _session_id(session_id)
+    if not sid:
+        return
+    _ensure_request_state(owner)
+    owner._opencode_abort_sessions.add(sid)
+
+
+def consume_session_abort(owner: Any, session_id: Any) -> bool:
+    """Return whether the session was asked to abort.
+
+    A request tracked by this module clears the marker when it ends, so the
+    marker holds for every chunk of that request. With no tracked request
+    nothing would ever clear it, so it is used up the first time it is read.
+    """
+
+    sid = _session_id(session_id)
+    if not sid:
+        return False
+    _ensure_request_state(owner)
+    if sid not in owner._opencode_abort_sessions:
+        return False
+    if not session_has_active_request(owner, sid):
+        owner._opencode_abort_sessions.discard(sid)
+    return True
 
 
 def discard_opencode_abort_session(owner: Any, session_id: Any) -> None:
@@ -228,14 +325,9 @@ async def register_opencode_process_request(
         return False
 
     owner._opencode_abort_sessions.discard(sid)
-    if request_task is None:
+    if not track_session_task(owner, sid, request_task):
         return False
-
-    tasks = owner._opencode_process_tasks.get(sid)
-    if not isinstance(tasks, set):
-        tasks = set()
-        owner._opencode_process_tasks[sid] = tasks
-    tasks.add(request_task)
+    tasks = owner._opencode_process_tasks[sid]
 
     previous_count = owner._opencode_active_requests.get(sid, 0)
     next_count = previous_count + 1

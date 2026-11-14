@@ -3966,16 +3966,8 @@ async def _process_chat_message(
 
         if request_session_id:
             request_task = asyncio.current_task()
-            if request_task is not None:
-                tasks_map = getattr(core, "_opencode_process_tasks", None)
-                if not isinstance(tasks_map, dict):
-                    tasks_map = {}
-                    setattr(core, "_opencode_process_tasks", tasks_map)
-                tasks = tasks_map.get(request_session_id)
-                if not isinstance(tasks, set):
-                    tasks = set()
-                    tasks_map[request_session_id] = tasks
-                tasks.add(request_task)
+            if process_lifecycle.track_session_task(core, request_session_id, request_task):
+                tasks = core._opencode_process_tasks[request_session_id]
                 request_tracked = True
                 _request_log_debug(
                     "chat.trace.track request=%s session=%s task=%s tracked=%s session_tasks=%s",
@@ -4431,14 +4423,8 @@ async def _process_chat_message(
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         _restore_reasoning_variant_override(core, reasoning_variant_snapshot)
-        if request_tracked and request_session_id and request_task is not None:
-            tasks_map = getattr(core, "_opencode_process_tasks", None)
-            if isinstance(tasks_map, dict):
-                tasks = tasks_map.get(request_session_id)
-                if isinstance(tasks, set):
-                    tasks.discard(request_task)
-                    if not tasks:
-                        tasks_map.pop(request_session_id, None)
+        if request_tracked:
+            process_lifecycle.untrack_session_task(core, request_session_id, request_task)
         for temp_file in temp_image_files:
             try:
                 Path(temp_file).unlink(missing_ok=True)

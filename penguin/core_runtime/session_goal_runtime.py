@@ -844,11 +844,7 @@ async def run_session_goal(
         elif current["status"] != "active":
             raise GoalRunStateError(f"Goal status {current['status']} is not runnable")
         else:
-            active_requests = getattr(core, "_opencode_active_requests", {})
-            if (
-                isinstance(active_requests, dict)
-                and active_requests.get(session_id, 0) > 0
-            ):
+            if process_lifecycle.session_has_active_request(core, session_id):
                 raise GoalRunConflictError("Session already has active work")
             request_gate = process_lifecycle.get_session_request_gate(
                 core,

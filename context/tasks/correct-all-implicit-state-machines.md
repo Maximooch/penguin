@@ -130,6 +130,12 @@ on its own.
   error recorded, because existing tests assert that and `APIClient` reads the
   recorded error. Only LiteLLM changed to raising. The item said "errors are
   raised, never returned as text".
+- SM-16: a session is busy only while a request, stream or adapter is live.
+  A saved assistant message with no completion time no longer makes it busy,
+  so a session interrupted by a crash can be reverted and shows as idle.
+- SM-16: an abort marker left with no tracked request is used up the first
+  time it cancels a stream chunk. Before, it cancelled every later chunk for
+  that session until a `process` request cleared it.
 
 ## Item format
 
@@ -331,7 +337,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
   - Correction: one `LoopOutcome` reducer both loops call; bound every
     continue.
   - State: (partial, 2026-11-13) the output-limit continuation is bounded at 8 consecutive turns in both loops; the task loop then reports `iterations_exceeded`. Still open: the single `LoopOutcome` reducer; the stop, finish-tool and empty-response differences between the two loops; the malformed-action repair continue, which is still unbounded without an iteration cap; `CancelledError` skipping save and stream abort.
-- [ ] **SM-16 Session abort, request accounting and busy/idle** (not started: design item; one per-session run record owned by `process_lifecycle`) (c) [design]
+- [ ] **SM-16 Session abort, request accounting and busy/idle** (partly fixed; the single run record is open) (c) [design]
   - `penguin/core_runtime/process_lifecycle.py:30-313`,
     `penguin/core_runtime/stream_events.py:244-325,417-547,1031`,
     `penguin/web/services/session_view.py:1090-1133`,
@@ -342,6 +348,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     busy forever. Every cancellation returns as a normal 200.
   - Correction: one per-session run record owned by `process_lifecycle`;
     status derived from it only.
+  - State: (partial, 2026-11-13) `process_lifecycle` is now the only writer of the task set and the abort marker (`track_session_task`, `untrack_session_task`, `mark_session_aborted`, `consume_session_abort`) and the only reader of "is a request in flight" (`session_has_active_request`, `active_request_session_ids`); routes, stream events, session view and goal runtime call it. Fixed: a crashed stream no longer leaves the session busy forever; a stale abort marker cancels at most one untracked chunk. Still open: the task set, counter and marker are still three attributes, not one run record (71 test references read them directly); a stale marker can still cancel one later untracked stream; every cancellation still returns as a normal 200; the stream-state and adapter busy sources are unchanged.
 - [x] **SM-17 Stream scope lifecycle** (c)
   - `penguin/core_runtime/stream_events.py:193-216,604-986`,
     `penguin/core_runtime/process_streaming.py:114`,
@@ -722,3 +729,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - Branch check (2026-11-13, at `0199c737a`): the suites listed in the PR
   description: 1667 passed, 23 skipped, 3 xfailed. 27 items ticked, 49 open.
 - SM-12: done (2026-11-13). Shared stream-end rule wired into four adapters; 11 deterministic tests, 5 opt-in Bend tests.
+- SM-16: partly fixed (2026-11-13). One owner for session run tracking; busy-forever after a crash and the unbounded abort marker fixed.
