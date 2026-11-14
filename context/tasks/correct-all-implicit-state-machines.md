@@ -449,7 +449,8 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
 - [ ] **SM-44 Streaming action-tag stripper** (b): `penguin/tui_adapter/part_events.py:112,181-267`; an unterminated tag drops all later text; reasoning and content share one parser state. Blocked by SM-02.
 - [ ] **SM-45 Message / part / tool lifecycle** (c): `penguin/tui_adapter/part_events.py:97-769`; the error path leaves `_stream_active` set; two sources of truth for active tools.
 - [ ] **SM-46 Headless CLI streaming display** (c): `penguin/cli/streaming_manager.py:27-80`, `penguin/cli/streaming_display.py:53-201`, `penguin/cli/cli.py:3763-4617`, `penguin/cli/event_manager.py:151-291`; stopping the spinner leaves the stream id set; five copies of the cleanup.
-- [ ] **SM-47 CLI event bus delivery and dedup** (c): `penguin/cli/events.py:107-234`; events without `content` share a dedup key; sync handlers mutate display state from a worker thread.
+- [x] **SM-47 CLI event bus delivery and dedup** (c): `penguin/cli/events.py:107-234`; events without `content` share a dedup key; sync handlers mutate display state from a worker thread.
+  - State: events without `content` are deduplicated on their whole payload. Still open: sync handlers run on a worker thread and mutate display state unlocked; `PenguinCLI` never unsubscribes.
 - [ ] **SM-48 Launcher web-server ownership** (b): `penguin/cli/opencode_launcher.py:205-276,964-1054`; a foreign server on the port counts as ours; no SIGTERM handler.
 - [ ] **SM-49 Provider OAuth pending flow** (c): `penguin/web/services/provider_auth.py:40-512,1023-1227`; one slot per provider, popped by provider and not by state; four TODOs already name the gaps.
 - [ ] **SM-50 OpenAI OAuth resolve and refresh** (b): `penguin/llm/adapters/openai.py:1019-1145`; resolve and peek duplicate env parsing; refresh writes process-wide state unlocked.
@@ -679,3 +680,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-21: partly fixed (2026-11-13). `pytest -q tests/test_orchestration_terminal_signals.py`: 7 passed, 6 red before the fix; `tests/test_orchestration.py` passes.
 - SM-43: partly fixed (2026-11-13). `pytest -q tests/test_plugin_action_unregister.py`: 1 passed, red before the fix.
 - SM-54: partly fixed (2026-11-13). `pytest -q tests/test_agent_executor_cancel_race.py`: 2 passed, the race test red before the fix.
+- SM-47: partly fixed (2026-11-13). `pytest -q tests/test_cli_event_dedup_key.py`: 3 passed, 2 red before the fix.
