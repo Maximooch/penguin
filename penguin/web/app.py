@@ -208,6 +208,15 @@ def create_app() -> "FastAPI":
             start_vcs_watcher(core)
         except Exception:
             logger.debug("Unable to start VCS watcher", exc_info=True)
+        # Register permission and question listeners before any request, so a
+        # prompt raised by a webhook or WebSocket task still reaches clients.
+        from .routes import (
+            _setup_approval_websocket_callbacks,
+            _setup_question_event_callbacks,
+        )
+
+        _setup_approval_websocket_callbacks()
+        _setup_question_event_callbacks()
         yield
         process_tools = getattr(
             getattr(core, "tool_manager", None), "_process_tools", None

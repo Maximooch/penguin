@@ -184,7 +184,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
   - State: fixed. On hold: `PermissionEnforcer._session_allowlist` is still a
     second remembered-allow store with no session key; SESSION scope still
     grants the whole operation on any resource.
-- [ ] **SM-05 Permission reply surfaces** (c) [security]
+- [x] **SM-05 Permission reply surfaces** (c) [security]
   - `penguin/web/routes.py:1670-1985,8169-8238,8505-8595`,
     `penguin/integrations/acp/server.py:189`
   - Two reply endpoints disagree on already-resolved requests, glob escaping
@@ -193,6 +193,11 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     `permission.asked`. `_approval_ws_manager.connect()` is never called.
   - Correction: one service function behind both endpoints; session
     ownership check; register callbacks at startup; delete the dead manager.
+  - State: event delivery is fixed. On hold: neither reply endpoint checks
+    that the request belongs to the caller's session (needs the client to send
+    a session id, an API change); the two endpoints still differ on an
+    already-resolved request (`True` versus 404) and on scopes offered;
+    `_approval_ws_manager.connect()` is still never called.
   - Blocked by: SM-04
 - [ ] **SM-06 Per-call authorization grant** (c) [security]
   - `penguin/tools/async_dispatch.py:112-264`,
@@ -533,3 +538,20 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
     `tests/test_cli_surface_audit_regressions.py::test_runmode_help_text_reflects_continuous_mode_truth`,
     a `TypeError` inside click's `make_metavar` in this environment; it fails
     the same way without this change.
+- SM-05: fixed (2026-11-13). `permission.asked` / `permission.replied` are
+  emitted before, and independently of, the WebSocket send; listeners are
+  registered in the app lifespan and in `/approvals/*`; a reject message is
+  attached before the request is resolved.
+  - `pytest -q tests/api/test_permission_reply_surfaces.py`: 3 passed, all red
+    before the fix.
+  - `tests/api`, `tests/web` and `tests/tools/test_permission_resume.py`, one
+    file at a time with a 60 s cap: all pass except the two below.
+- Known red baseline, not caused by this branch (same result on `HEAD`
+  without the change), not yet investigated:
+  - `tests/api/test_web_app_credentials_rehydrate.py`: 1 failed.
+  - `tests/api/test_web_auth_hardening.py`: hangs for more than 60 s. This is
+    why whole-directory and whole-suite runs never finish. Run `tests/api`
+    per file, or deselect it.
+  - `tests/test_cli_surface_audit_regressions.py::test_runmode_help_text_reflects_continuous_mode_truth`:
+    click `make_metavar` `TypeError` in this environment.
+  - `tests/test_a2a_server.py`: cannot be collected, `a2a` is not installed.

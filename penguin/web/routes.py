@@ -1931,30 +1931,40 @@ def _setup_approval_websocket_callbacks():
         # Create async-safe callback wrappers
         def on_request_created(request):
             """Callback when an approval request is created."""
+            request_dict = request.to_dict()
+            # The session event must not depend on the WebSocket send: a
+            # request can be created off the event loop, where that send fails.
             try:
-                request_dict = request.to_dict()
-                # Schedule the coroutine in the event loop
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.create_task(
-                        _approval_ws_manager.send_approval_required(request_dict)
-                    )
-                else:
-                    loop.run_until_complete(
-                        _approval_ws_manager.send_approval_required(request_dict)
-                    )
-
                 _schedule_opencode_event(
                     "permission.asked",
                     _approval_request_to_permission_payload(request_dict),
                 )
             except Exception as e:
+                logger.error(f"Error emitting permission.asked event: {e}")
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.create_task(
+                        _approval_ws_manager.send_approval_required(request_dict)
+                    )
+                else:
+                    loop.run_until_complete(
+                        _approval_ws_manager.send_approval_required(request_dict)
+                    )
+            except Exception as e:
                 logger.error(f"Error sending approval_required event: {e}")
 
         def on_request_resolved(request):
             """Callback when an approval request is resolved."""
+            request_dict = request.to_dict()
             try:
-                request_dict = request.to_dict()
+                _schedule_opencode_event(
+                    "permission.replied",
+                    _approval_request_to_permission_reply_payload(request_dict),
+                )
+            except Exception as e:
+                logger.error(f"Error emitting permission.replied event: {e}")
+            try:
                 loop = asyncio.get_event_loop()
                 if loop.is_running():
                     asyncio.create_task(
@@ -1964,11 +1974,6 @@ def _setup_approval_websocket_callbacks():
                     loop.run_until_complete(
                         _approval_ws_manager.send_approval_resolved(request_dict)
                     )
-
-                _schedule_opencode_event(
-                    "permission.replied",
-                    _approval_request_to_permission_reply_payload(request_dict),
-                )
             except Exception as e:
                 logger.error(f"Error sending approval_resolved event: {e}")
 
@@ -8194,9 +8199,10 @@ async def reply_permission_request(
 
         reply = action.reply.strip().lower() if isinstance(action.reply, str) else ""
         if reply == "reject":
+            # Attach the message before resolving so listeners can see it.
+            if isinstance(action.message, str) and action.message.strip():
+                existing.context["message"] = action.message.strip()
             resolved = manager.deny(request_id)
-            if resolved and isinstance(action.message, str) and action.message.strip():
-                resolved.context["message"] = action.message.strip()
         elif reply == "once":
             resolved = manager.approve(request_id, scope=ApprovalScope.ONCE)
         elif reply == "always":
@@ -8519,6 +8525,7 @@ async def approve_request(
     try:
         from penguin.security.approval import ApprovalScope
 
+        _setup_approval_websocket_callbacks()
         manager = _get_approval_manager()
 
         # Parse scope
@@ -8574,6 +8581,7 @@ async def deny_request(request_id: str):
         The resolved approval request
     """
     try:
+        _setup_approval_websocket_callbacks()
         manager = _get_approval_manager()
         result = manager.deny(request_id)
 
