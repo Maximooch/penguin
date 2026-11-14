@@ -362,7 +362,7 @@ class PluginManager:
         # Unregister actions
         actions_to_remove = []
         for action_name, registered_plugin in self.action_registry.items():
-            if registered_plugin.metadata.name == action_name:
+            if registered_plugin.metadata.name == plugin_name:
                 actions_to_remove.append(action_name)
         
         for action_name in actions_to_remove:

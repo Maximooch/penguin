@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 import json
 
+from penguin.project.exceptions import StateTransitionError
 from penguin.utils.events import TaskEvent  ## type: ignore
 from penguin.utils.serialization import to_dict, from_dict  ## type: ignore
 
@@ -551,6 +552,20 @@ class Task:
         valid_transitions = TaskStatus.valid_transitions()
         return new_status in valid_transitions.get(self.status, [])
     
+    def _require_transition(self, new_status: TaskStatus) -> None:
+        """Raise unless the status move is legal, before any field is changed.
+
+        Status and phase are set together by the review helpers; checking first
+        keeps a rejected status move from leaving the phase already advanced.
+        """
+        if not self.can_transition_to(new_status):
+            raise StateTransitionError(
+                f"Task cannot move from {self.status.value} to {new_status.value}",
+                from_state=self.status.value,
+                to_state=new_status.value,
+                task_id=self.id,
+            )
+
     def transition_to(self, new_status: TaskStatus, reason: Optional[str] = None, user_id: Optional[str] = None) -> bool:
         """Perform state transition with validation and logging."""
         if not self.can_transition_to(new_status):
@@ -660,7 +675,13 @@ class Task:
                 self.transition_to(TaskStatus.FAILED, reason="Execution failed")
     
     def mark_pending_review(self, notes: str, reviewer: Optional[str] = None) -> None:
-        """Mark task as pending human review."""
+        """Mark task as pending human review.
+
+        Raises:
+            StateTransitionError: If the task cannot move to PENDING_REVIEW from
+                its current status. Nothing is changed in that case.
+        """
+        self._require_transition(TaskStatus.PENDING_REVIEW)
         self.phase = TaskPhase.DONE
         self.phase_started_at = datetime.utcnow().isoformat()
         self.transition_to(TaskStatus.PENDING_REVIEW, reason="Pending review")
@@ -670,7 +691,13 @@ class Task:
             self.reviewed_at = datetime.utcnow().isoformat()
     
     def approve(self, reviewer: str, notes: Optional[str] = None) -> None:
-        """Approve task completion."""
+        """Approve task completion.
+
+        Raises:
+            StateTransitionError: If the task cannot move to COMPLETED from its
+                current status. Nothing is changed in that case.
+        """
+        self._require_transition(TaskStatus.COMPLETED)
         if self.phase != TaskPhase.DONE:
             self.phase = TaskPhase.DONE
             self.phase_started_at = datetime.utcnow().isoformat()

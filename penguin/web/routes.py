@@ -1060,6 +1060,9 @@ _INLINE_FILE_REFERENCE_PATTERN = re.compile(
 )
 
 
+_VARIANT_TARGET_KEY = "_target_model_config"
+
+
 def _apply_reasoning_variant_override(
     core: PenguinCore,
     variant: Optional[str],
@@ -1072,11 +1075,17 @@ def _apply_reasoning_variant_override(
     if callable(capabilities_getter):
         capabilities = capabilities_getter()
         supported_efforts = getattr(capabilities, "reasoning_efforts", None)
-    return apply_llm_reasoning_variant_override(
-        model_config or getattr(core, "model_config", None),
+    target = model_config or getattr(core, "model_config", None)
+    snapshot = apply_llm_reasoning_variant_override(
+        target,
         variant,
         supported_efforts=supported_efforts,
     )
+    if isinstance(snapshot, dict):
+        # Remember which config was changed so the restore cannot land on a
+        # different one (the request copy versus the shared core config).
+        snapshot[_VARIANT_TARGET_KEY] = target
+    return snapshot
 
 
 def _restore_reasoning_variant_override(
@@ -1085,8 +1094,9 @@ def _restore_reasoning_variant_override(
     *,
     model_config: Optional[Any] = None,
 ) -> None:
+    recorded = snapshot.get(_VARIANT_TARGET_KEY) if isinstance(snapshot, dict) else None
     restore_llm_reasoning_variant_override(
-        model_config or getattr(core, "model_config", None),
+        model_config or recorded or getattr(core, "model_config", None),
         snapshot,
     )
 
@@ -1931,30 +1941,40 @@ def _setup_approval_websocket_callbacks():
         # Create async-safe callback wrappers
         def on_request_created(request):
             """Callback when an approval request is created."""
+            request_dict = request.to_dict()
+            # The session event must not depend on the WebSocket send: a
+            # request can be created off the event loop, where that send fails.
             try:
-                request_dict = request.to_dict()
-                # Schedule the coroutine in the event loop
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.create_task(
-                        _approval_ws_manager.send_approval_required(request_dict)
-                    )
-                else:
-                    loop.run_until_complete(
-                        _approval_ws_manager.send_approval_required(request_dict)
-                    )
-
                 _schedule_opencode_event(
                     "permission.asked",
                     _approval_request_to_permission_payload(request_dict),
                 )
             except Exception as e:
+                logger.error(f"Error emitting permission.asked event: {e}")
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.create_task(
+                        _approval_ws_manager.send_approval_required(request_dict)
+                    )
+                else:
+                    loop.run_until_complete(
+                        _approval_ws_manager.send_approval_required(request_dict)
+                    )
+            except Exception as e:
                 logger.error(f"Error sending approval_required event: {e}")
 
         def on_request_resolved(request):
             """Callback when an approval request is resolved."""
+            request_dict = request.to_dict()
             try:
-                request_dict = request.to_dict()
+                _schedule_opencode_event(
+                    "permission.replied",
+                    _approval_request_to_permission_reply_payload(request_dict),
+                )
+            except Exception as e:
+                logger.error(f"Error emitting permission.replied event: {e}")
+            try:
                 loop = asyncio.get_event_loop()
                 if loop.is_running():
                     asyncio.create_task(
@@ -1964,11 +1984,6 @@ def _setup_approval_websocket_callbacks():
                     loop.run_until_complete(
                         _approval_ws_manager.send_approval_resolved(request_dict)
                     )
-
-                _schedule_opencode_event(
-                    "permission.replied",
-                    _approval_request_to_permission_reply_payload(request_dict),
-                )
             except Exception as e:
                 logger.error(f"Error sending approval_resolved event: {e}")
 
@@ -3951,16 +3966,10 @@ async def _process_chat_message(
 
         if request_session_id:
             request_task = asyncio.current_task()
-            if request_task is not None:
-                tasks_map = getattr(core, "_opencode_process_tasks", None)
-                if not isinstance(tasks_map, dict):
-                    tasks_map = {}
-                    setattr(core, "_opencode_process_tasks", tasks_map)
-                tasks = tasks_map.get(request_session_id)
-                if not isinstance(tasks, set):
-                    tasks = set()
-                    tasks_map[request_session_id] = tasks
-                tasks.add(request_task)
+            if process_lifecycle.track_session_task(
+                core, request_session_id, request_task
+            ):
+                tasks = process_lifecycle.session_tasks(core, request_session_id)
                 request_tracked = True
                 _request_log_debug(
                     "chat.trace.track request=%s session=%s task=%s tracked=%s session_tasks=%s",
@@ -4253,11 +4262,8 @@ async def _process_chat_message(
             request_gate = _get_session_request_gate(core, request_session_id)
             gate_locked_before = request_gate.locked()
             gate_wait_started = time.perf_counter()
-            active_requests = getattr(core, "_opencode_active_requests", {})
-            active_request_count = (
-                active_requests.get(request_session_id, 0)
-                if isinstance(active_requests, dict) and request_session_id
-                else 0
+            active_request_count = process_lifecycle.active_request_count(
+                core, request_session_id
             )
             _request_log_debug(
                 "chat.trace.before_process request=%s session=%s gate=%s gate_locked=%s active=%s cm=%s tracked=%s ctx=%s",
@@ -4416,14 +4422,8 @@ async def _process_chat_message(
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         _restore_reasoning_variant_override(core, reasoning_variant_snapshot)
-        if request_tracked and request_session_id and request_task is not None:
-            tasks_map = getattr(core, "_opencode_process_tasks", None)
-            if isinstance(tasks_map, dict):
-                tasks = tasks_map.get(request_session_id)
-                if isinstance(tasks, set):
-                    tasks.discard(request_task)
-                    if not tasks:
-                        tasks_map.pop(request_session_id, None)
+        if request_tracked:
+            process_lifecycle.untrack_session_task(core, request_session_id, request_task)
         for temp_file in temp_image_files:
             try:
                 Path(temp_file).unlink(missing_ok=True)
@@ -8194,9 +8194,10 @@ async def reply_permission_request(
 
         reply = action.reply.strip().lower() if isinstance(action.reply, str) else ""
         if reply == "reject":
+            # Attach the message before resolving so listeners can see it.
+            if isinstance(action.message, str) and action.message.strip():
+                existing.context["message"] = action.message.strip()
             resolved = manager.deny(request_id)
-            if resolved and isinstance(action.message, str) and action.message.strip():
-                resolved.context["message"] = action.message.strip()
         elif reply == "once":
             resolved = manager.approve(request_id, scope=ApprovalScope.ONCE)
         elif reply == "always":
@@ -8519,6 +8520,7 @@ async def approve_request(
     try:
         from penguin.security.approval import ApprovalScope
 
+        _setup_approval_websocket_callbacks()
         manager = _get_approval_manager()
 
         # Parse scope
@@ -8574,6 +8576,7 @@ async def deny_request(request_id: str):
         The resolved approval request
     """
     try:
+        _setup_approval_websocket_callbacks()
         manager = _get_approval_manager()
         result = manager.deny(request_id)
 

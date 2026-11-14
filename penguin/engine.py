@@ -91,6 +91,10 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Consecutive turns that may end at the provider's output limit before a run
+# without an iteration cap gives up on continuing.
+MAX_CONSECUTIVE_OUTPUT_CONTINUATIONS = 8
+
 _OUTPUT_BOUNDARY_CONTINUATION = (
     "The previous assistant output reached a per-call output boundary. "
     "Continue exactly where it stopped without repeating any prior text."
@@ -325,8 +329,12 @@ class LoopState:
     last_tool_only_summary: str = ""
     repeated_tool_only_count: int = 0
 
+    # Consecutive turns cut off at the provider's output limit
+    output_continuation_count: int = 0
+
     def reset(self) -> None:
         """Reset state for a new run."""
+        self.output_continuation_count = 0
         self.stall_recovery_attempted = False
         self.empty_response_count = 0
         self.last_response_hash = None
@@ -764,7 +772,6 @@ class Engine:
             self.stop_conditions.append(WallClockStop(settings.wall_clock_stop_seconds))
 
         # Light run‑time state
-        self._interrupted: bool = False
         self._pending_scoped_conversation_managers: Dict[tuple[str, str], Any] = {}
 
     @staticmethod
@@ -1932,7 +1939,21 @@ class Engine:
                     completion_status = "budget_limited"
                     break
 
-                if response_data.get("finish_reason") == FinishReason.LENGTH:
+                loop_state = self._get_loop_state()
+                if response_data.get("finish_reason") != FinishReason.LENGTH:
+                    loop_state.output_continuation_count = 0
+                else:
+                    loop_state.output_continuation_count += 1
+                    if (
+                        loop_state.output_continuation_count
+                        > MAX_CONSECUTIVE_OUTPUT_CONTINUATIONS
+                    ):
+                        logger.warning(
+                            "Output limit reached %s turns in a row; stopping.",
+                            loop_state.output_continuation_count,
+                        )
+                        completion_status = "iterations_exceeded"
+                        break
                     if (
                         max_iterations is None
                         or self.current_iteration < max_iterations
@@ -2442,7 +2463,20 @@ class Engine:
                         f"[LOOP DEBUG] Response contains 'finish_response' text but wasn't parsed as action. Response preview: {last_response[:100]}..."
                     )
 
-                if response_data.get("finish_reason") == FinishReason.LENGTH:
+                loop_state = self._get_loop_state()
+                if response_data.get("finish_reason") != FinishReason.LENGTH:
+                    loop_state.output_continuation_count = 0
+                else:
+                    loop_state.output_continuation_count += 1
+                    if (
+                        loop_state.output_continuation_count
+                        > MAX_CONSECUTIVE_OUTPUT_CONTINUATIONS
+                    ):
+                        logger.warning(
+                            "Output limit reached %s turns in a row; stopping.",
+                            loop_state.output_continuation_count,
+                        )
+                        break
                     if max_iters is None or self.current_iteration < max_iters:
                         cm.conversation.add_message(
                             "system", _OUTPUT_BOUNDARY_CONTINUATION
@@ -3897,7 +3931,9 @@ class Engine:
                 len(assistant_response or ""),
                 self._handler_has_pending_tool_call(api_client),
             )
-        except LLMProviderError:
+        except BaseException:
+            # Any failure here, including cancellation, leaves an uncommitted
+            # stream buffer behind. Discard it whatever the cause.
             self._abort_streaming_response(
                 cm,
                 streaming,
@@ -4010,41 +4046,51 @@ class Engine:
     async def _llm_stream(self, prompt: str, *, agent_id: Optional[str] = None):
         """Helper to stream chunks to caller."""
         loop = asyncio.get_running_loop()
-        queue: asyncio.Queue[str] = asyncio.Queue()
+        queue: asyncio.Queue[Any] = asyncio.Queue()
+        done = object()
 
-        async def run():
-            # Prepare conversation
-            cm, api_client, _tm, _ae = self._resolve_components(
-                agent_id or self.current_agent_id
-            )
-            cm.conversation.prepare_conversation(prompt)
+        async def run() -> None:
+            try:
+                # Prepare conversation
+                cm, api_client, _tm, _ae = self._resolve_components(
+                    agent_id or self.current_agent_id
+                )
+                cm.conversation.prepare_conversation(prompt)
 
-            # Inner callback forwards chunks into queue
-            async def _cb(chunk: str):
-                await queue.put(chunk)
+                # Queue chunks directly so they keep their order and cannot
+                # land after the end marker.
+                def _cb(chunk: str, *_args: Any, **_kwargs: Any) -> None:
+                    queue.put_nowait(chunk)
 
-            # Call provider with streaming enabled
-            messages = cm.conversation.get_formatted_messages()
-            messages = self._apply_agent_mode_notice(messages)
-            full_response = await api_client.get_response(
-                messages,
-                stream=True,
-                stream_callback=lambda c: asyncio.create_task(_cb(c)),
-            )
+                # Call provider with streaming enabled
+                messages = cm.conversation.get_formatted_messages()
+                messages = self._apply_agent_mode_notice(messages)
+                full_response = await api_client.get_response(
+                    messages,
+                    stream=True,
+                    stream_callback=_cb,
+                )
 
-            # Persist full assistant response now that streaming done
-            # add_assistant_message automatically strips action tags
-            cm.conversation.add_assistant_message(full_response)
-            cm.save()
+                # Persist full assistant response now that streaming done
+                # add_assistant_message automatically strips action tags
+                cm.conversation.add_assistant_message(full_response)
+                cm.save()
+            finally:
+                # Always end the stream, including when the provider fails.
+                queue.put_nowait(done)
 
-            await queue.put(None)  # sentinel
-
-        loop.create_task(run())
-        while True:
-            chunk = await queue.get()
-            if chunk is None:
-                break
-            yield chunk
+        producer = loop.create_task(run())
+        try:
+            while True:
+                chunk = await queue.get()
+                if chunk is done:
+                    break
+                yield chunk
+            # Surface a provider failure to the consumer.
+            await producer
+        finally:
+            if not producer.done():
+                producer.cancel()
 
     async def _check_stop(self) -> bool:
         for cond in self.stop_conditions:

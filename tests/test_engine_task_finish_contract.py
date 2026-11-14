@@ -1065,3 +1065,41 @@ async def test_late_steering_does_not_extend_token_budget():
     result = await engine.run_task("Work", token_budget=12, enable_events=False)
     assert engine.provider_calls == 1
     assert result["status"] == "budget_limited"
+
+
+def _length_turns(count: int) -> list[dict[str, Any]]:
+    return [
+        {
+            "assistant_response": f"partial {index}, ",
+            "action_results": [],
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            "finish_reason": FinishReason.LENGTH,
+        }
+        for index in range(count)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_unbounded_task_stops_after_repeated_length_boundaries() -> None:
+    from penguin.engine import MAX_CONSECUTIVE_OUTPUT_CONTINUATIONS
+
+    engine = _PersistingLengthEngine(_length_turns(40))
+
+    result = await engine.run_task(
+        task_prompt="Give the complete answer",
+        enable_events=False,
+    )
+
+    assert engine.provider_calls == MAX_CONSECUTIVE_OUTPUT_CONTINUATIONS + 1
+    assert result["status"] == "iterations_exceeded"
+
+
+@pytest.mark.asyncio
+async def test_unbounded_response_stops_after_repeated_length_boundaries() -> None:
+    from penguin.engine import MAX_CONSECUTIVE_OUTPUT_CONTINUATIONS
+
+    engine = _PersistingLengthEngine(_length_turns(40))
+
+    await engine.run_response(prompt="Give the complete answer")
+
+    assert engine.provider_calls == MAX_CONSECUTIVE_OUTPUT_CONTINUATIONS + 1

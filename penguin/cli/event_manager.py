@@ -140,7 +140,13 @@ class EventManager:
             else ""
         )
         if msg_key in self.cli.processed_messages:
-            return
+            # The key is only the first 50 characters, so it is a duplicate
+            # only within the turn that recorded it. A reply in a later turn
+            # that opens the same way is a new message. User messages keep the
+            # session-wide check: they are what advances the turn.
+            seen_turn = self.cli.message_turn_map.get(msg_key)
+            if role == "user" or seen_turn == self.cli.current_conversation_turn:
+                return
 
         # If this is a user message, it's start of a new conversation turn
         if role == "user":

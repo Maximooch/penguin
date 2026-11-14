@@ -6,6 +6,7 @@ import logging
 import os
 import time
 import traceback
+from types import SimpleNamespace
 from functools import lru_cache
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
@@ -26,6 +27,8 @@ from ..contracts import (
 from ..model_config import ModelConfig
 from ..provider_transform import build_llm_error, normalize_finish_reason
 from ..reasoning_variants import anthropic_reasoning_efforts
+from ..stream_end import StreamEnd, classify_stream_end, stream_output_state
+from ..tool_call_accumulator import ToolCallAccumulator
 
 from penguin.constants import get_default_max_output_tokens
 
@@ -75,9 +78,7 @@ class AnthropicAdapter(BaseAdapter):
         self._last_error: Optional[LLMError] = None
         self._last_finish_reason = FinishReason.UNKNOWN
         self._last_reasoning = ""
-        self._last_tool_call: Optional[Dict[str, Any]] = None
-        self._pending_tool_calls: List[Dict[str, Any]] = []
-        self._tool_use_accs: Dict[int, Dict[str, Any]] = {}
+        self._tool_calls = ToolCallAccumulator()
         self._last_request_lifecycle: Optional[LLMRequestLifecycle] = None
 
         # Add a logger for the adapter
@@ -92,9 +93,7 @@ class AnthropicAdapter(BaseAdapter):
         self._last_error = None
         self._last_finish_reason = FinishReason.UNKNOWN
         self._last_reasoning = ""
-        self._last_tool_call = None
-        self._pending_tool_calls = []
-        self._tool_use_accs = {}
+        self._tool_call_state().discard()
 
     def _set_last_error(self, error: Optional[LLMError]) -> None:
         self._last_error = error
@@ -136,41 +135,20 @@ class AnthropicAdapter(BaseAdapter):
         lifecycle = getattr(self, "_last_request_lifecycle", None)
         if lifecycle is None:
             return
-        now = time.time()
-        lifecycle.status = status
-        lifecycle.last_event_at = now
-        if status in {
-            ProviderRequestStatus.COMPLETED,
-            ProviderRequestStatus.DISCONNECTED,
-            ProviderRequestStatus.FAILED,
-            ProviderRequestStatus.CANCELLED,
-        }:
-            lifecycle.ended_at = now
-        if finish_reason is not None:
-            lifecycle.finish_reason = finish_reason
-        if error is not None:
-            lifecycle.error = error
-        if event_type:
-            lifecycle.last_event_type = event_type
-        if provider_response_id:
-            lifecycle.provider_response_id = provider_response_id
+        lifecycle.advance(
+            status,
+            finish_reason=finish_reason,
+            error=error,
+            event_type=event_type,
+            provider_response_id=provider_response_id,
+        )
 
     def _finish_request_lifecycle_from_state(self) -> None:
-        error = self.get_last_error()
-        if error is not None:
-            status = (
-                ProviderRequestStatus.DISCONNECTED
-                if error.category in {ErrorCategory.NETWORK, ErrorCategory.TIMEOUT}
-                else ProviderRequestStatus.FAILED
-            )
-            self._update_request_lifecycle(
-                status=status,
-                finish_reason=error.finish_reason or self.get_last_finish_reason(),
-                error=error,
-            )
+        lifecycle = getattr(self, "_last_request_lifecycle", None)
+        if lifecycle is None:
             return
-        self._update_request_lifecycle(
-            status=ProviderRequestStatus.COMPLETED,
+        lifecycle.finish(
+            error=self.get_last_error(),
             finish_reason=self.get_last_finish_reason(),
         )
 
@@ -218,8 +196,7 @@ class AnthropicAdapter(BaseAdapter):
         )
         self._set_last_error(error)
         self._set_last_finish_reason(FinishReason.ERROR)
-        self._pending_tool_calls = []
-        self._last_tool_call = None
+        self._tool_call_state().discard()
         return error
 
     def _append_reasoning(self, text: str) -> None:
@@ -393,31 +370,21 @@ class AnthropicAdapter(BaseAdapter):
             },
         )
 
+    def _tool_call_state(self) -> ToolCallAccumulator:
+        # Tests build the adapter with ``__new__``; create the state on demand.
+        if not isinstance(getattr(self, "_tool_calls", None), ToolCallAccumulator):
+            self._tool_calls = ToolCallAccumulator()
+        return self._tool_calls
+
     def has_pending_tool_call(self) -> bool:
-        return bool(
-            isinstance(getattr(self, "_last_tool_call", None), dict)
-            and self._last_tool_call.get("name")
-        ) or any(
-            isinstance(tool_call, dict) and bool(tool_call.get("name"))
-            for tool_call in getattr(self, "_pending_tool_calls", [])
-        )
+        return self._tool_call_state().has_pending()
 
     def get_and_clear_last_tool_call(self) -> Optional[Dict[str, Any]]:
         pending = self.get_and_clear_pending_tool_calls()
         return pending[-1] if pending else None
 
     def get_and_clear_pending_tool_calls(self) -> List[Dict[str, Any]]:
-        pending = [
-            dict(tool_call)
-            for tool_call in getattr(self, "_pending_tool_calls", [])
-            if isinstance(tool_call, dict) and tool_call.get("name")
-        ]
-        if not pending and isinstance(getattr(self, "_last_tool_call", None), dict):
-            pending = [dict(self._last_tool_call)]
-        self._pending_tool_calls = []
-        self._last_tool_call = None
-        self._tool_use_accs = {}
-        return pending
+        return self._tool_call_state().drain()
 
     def _remember_tool_use(
         self,
@@ -426,76 +393,58 @@ class AnthropicAdapter(BaseAdapter):
         name: Optional[str],
         arguments: str,
     ) -> None:
-        if not name:
-            return
-        if not hasattr(self, "_pending_tool_calls"):
-            self._pending_tool_calls = []
-        remembered = {
-            "item_id": tool_id,
-            "call_id": tool_id,
-            "name": name,
-            "arguments": arguments or "{}",
-        }
-        existing_index = next(
-            (
-                index
-                for index, pending in enumerate(self._pending_tool_calls)
-                if tool_id and pending.get("call_id") == tool_id
-            ),
-            None,
-        )
-        if existing_index is None:
-            self._pending_tool_calls.append(remembered)
-        else:
-            self._pending_tool_calls[existing_index] = remembered
-        self._last_tool_call = remembered
-        self._set_last_finish_reason(FinishReason.TOOL_CALLS)
+        """Record a complete tool_use block from a non-streaming response."""
+        if self._tool_call_state().add(
+            {
+                "item_id": tool_id,
+                "call_id": tool_id,
+                "name": name,
+                "arguments": arguments or "{}",
+            }
+        ):
+            self._set_last_finish_reason(FinishReason.TOOL_CALLS)
 
     def _record_tool_use_start(self, chunk: Any) -> None:
-        if not hasattr(self, "_tool_use_accs"):
-            self._tool_use_accs = {}
         content_block = getattr(chunk, "content_block", None)
         if content_block is None:
             return
-        try:
-            index = int(getattr(chunk, "index", len(self._tool_use_accs)))
-        except Exception:
-            index = len(self._tool_use_accs)
         tool_input = getattr(content_block, "input", {}) or {}
-        arguments = json.dumps(tool_input, separators=(",", ":")) if tool_input else ""
-        acc = {
-            "tool_id": getattr(content_block, "id", None),
-            "name": getattr(content_block, "name", None),
-            "arguments": arguments,
-        }
-        self._tool_use_accs[index] = acc
-        self._remember_tool_use(
-            tool_id=acc.get("tool_id"),
-            name=acc.get("name"),
-            arguments=arguments or "{}",
+        tool_id = getattr(content_block, "id", None)
+        self._tool_call_state().open_call(
+            self._tool_use_key(chunk),
+            call_id=tool_id,
+            item_id=tool_id,
+            name=getattr(content_block, "name", None),
+            arguments=(
+                json.dumps(tool_input, separators=(",", ":")) if tool_input else None
+            ),
         )
 
     def _record_tool_use_delta(self, chunk: Any) -> None:
-        if not hasattr(self, "_tool_use_accs"):
-            self._tool_use_accs = {}
         delta = getattr(chunk, "delta", None)
         if delta is None or getattr(delta, "type", None) != "input_json_delta":
             return
+        self._tool_call_state().append_arguments(
+            self._tool_use_key(chunk), getattr(delta, "partial_json", "")
+        )
+
+    def _record_tool_use_stop(self, chunk: Any) -> None:
+        key = self._tool_use_key(chunk)
+        state = self._tool_call_state()
+        if not state.is_open(key):
+            return  # a text or thinking block ended
+        call = state.close_call(key)
+        if call is not None:
+            if not call["arguments"]:
+                call["arguments"] = "{}"
+            self._set_last_finish_reason(FinishReason.TOOL_CALLS)
+
+    @staticmethod
+    def _tool_use_key(chunk: Any) -> int:
         try:
-            index = int(getattr(chunk, "index", 0))
-        except Exception:
-            index = 0
-        acc = self._tool_use_accs.setdefault(
-            index, {"tool_id": None, "name": None, "arguments": ""}
-        )
-        partial_json = getattr(delta, "partial_json", "")
-        if isinstance(partial_json, str):
-            acc["arguments"] = str(acc.get("arguments") or "") + partial_json
-        self._remember_tool_use(
-            tool_id=acc.get("tool_id"),
-            name=acc.get("name"),
-            arguments=str(acc.get("arguments") or "{}"),
-        )
+            return int(getattr(chunk, "index", 0))
+        except (TypeError, ValueError):
+            return 0
 
     async def create_message(
         self,
@@ -766,7 +715,6 @@ class AnthropicAdapter(BaseAdapter):
         self._reset_response_state()
         accumulated_response = []
         stream_start_time = time.time()
-        streaming_timeout = 30  # seconds
         final_response_object = None  # To store the final message object
         stream_error = None  # To store any exception during streaming
         stop_reason = None  # To store the stop reason if available
@@ -779,13 +727,8 @@ class AnthropicAdapter(BaseAdapter):
             # Create the streaming response
             stream = await self._create_messages(params)
 
-            # Track content reception
-            last_chunk_time = time.time()
-            chunk_timeout = 10  # seconds
-
             # Process each chunk as it comes in
             async for chunk in stream:
-                last_chunk_time = time.time()
                 chunk_count += 1
                 self._update_request_lifecycle(
                     status=ProviderRequestStatus.STREAMING,
@@ -803,6 +746,12 @@ class AnthropicAdapter(BaseAdapter):
                     if hasattr(chunk, "type"):
                         if chunk.type == "message_stop":
                             saw_message_stop = True
+                            # Blocks whose stop event never arrived end with
+                            # the message.
+                            for key in self._tool_call_state().open_keys():
+                                self._record_tool_use_stop(
+                                    SimpleNamespace(index=key)
+                                )
                             # Capture the final response object from the stream if possible
                             # Note: The structure might vary, need to check Anthropic docs/examples
                             # For now, just log that we stopped. The final object might not be in the chunk itself.
@@ -839,6 +788,9 @@ class AnthropicAdapter(BaseAdapter):
                             elif chunk.delta.type == "input_json_delta":
                                 self._record_tool_use_delta(chunk)
                                 continue
+
+                        elif chunk.type == "content_block_stop":
+                            self._record_tool_use_stop(chunk)
 
                         elif chunk.type == "content_block_start" and hasattr(
                             chunk, "content_block"
@@ -894,25 +846,6 @@ class AnthropicAdapter(BaseAdapter):
                     error_msg = f"Error processing chunk {chunk_count}: {str(e)}"
                     self.logger.error(f"{error_msg}\n{traceback.format_exc()}")
 
-                # Check for chunk timeout
-                current_time = time.time()
-                if current_time - last_chunk_time > chunk_timeout:
-                    self.logger.warning(
-                        f"No chunks received for {chunk_timeout} seconds, stopping stream"
-                    )
-                    stream_error = TimeoutError(f"Chunk timeout after {chunk_timeout}s")
-                    break
-
-                # Check for overall timeout
-                if current_time - stream_start_time > streaming_timeout:
-                    self.logger.warning(
-                        f"Streaming exceeded timeout of {streaming_timeout} seconds, stopping"
-                    )
-                    stream_error = TimeoutError(
-                        f"Streaming timeout after {streaming_timeout}s"
-                    )
-                    break
-
             # ---- After the loop ----
             # Try to get the final message object AFTER the stream completes.
             # Raw SDK streams (`messages.create(stream=True)`) do not expose
@@ -963,30 +896,35 @@ class AnthropicAdapter(BaseAdapter):
             # Join all chunks to get the complete response
             complete_response = "".join(accumulated_response)
 
-            if not saw_message_stop and stream_error is None:
-                output_state = (
-                    "tool_call"
-                    if self.has_pending_tool_call()
-                    else "text"
-                    if complete_response
-                    else "empty"
+            end = classify_stream_end(
+                saw_error=stream_error is not None,
+                saw_terminal=saw_message_stop,
+                pending_tool=self.has_pending_tool_call(),
+                has_text=bool(complete_response),
+            )
+            if end is StreamEnd.INCOMPLETE:
+                stream_error = self._record_anthropic_stream_incomplete(
+                    stream_output_state(
+                        pending_tool=self.has_pending_tool_call()
+                        or self._tool_call_state().has_open(),
+                        has_text=bool(complete_response),
+                    )
                 )
-                stream_error = self._record_anthropic_stream_incomplete(output_state)
 
             if stream_error:
-                error_message = str(stream_error)
-                if isinstance(stream_error, LLMError):
-                    error_message = stream_error.message
-                    self._set_last_error(stream_error)
+                # A tool call from a failed stream may be partial.
+                self._tool_call_state().discard()
+                error_message = stream_error.message
+                self._set_last_error(stream_error)
                 self._set_last_finish_reason(FinishReason.ERROR)
                 if complete_response:
                     return (
                         f"{complete_response}\n\n"
                         f"[Error: Stream interrupted by Anthropic: {error_message}]"
                     )
-                return f"Error during response generation: {error_message}"
+                return f"[Error: {error_message}]"
 
-            if not complete_response.strip() and self.has_pending_tool_call():
+            if not complete_response.strip() and end is StreamEnd.TOOL_CALLS:
                 self._set_last_finish_reason(FinishReason.TOOL_CALLS)
                 return ""
 
@@ -1058,21 +996,24 @@ class AnthropicAdapter(BaseAdapter):
             self.logger.error(
                 f"Stream error details: elapsed_time={elapsed_time:.2f}s, chunks_received={chunk_count}, stop_reason={stop_reason}, usage={usage_info}"
             )
+            timed_out = isinstance(e, (TimeoutError, asyncio.TimeoutError))
             self._set_last_error(
                 build_llm_error(
                     message=error_msg,
                     provider=self.provider,
                     model=getattr(self.model_config, "model", None),
-                    finish_reason=stop_reason,
+                    finish_reason=FinishReason.ERROR,
+                    **(
+                        {"category": ErrorCategory.TIMEOUT, "retryable": True}
+                        if timed_out
+                        else {}
+                    ),
                 )
             )
-
-            if callback:
-                await self._safe_invoke_callback(
-                    callback,
-                    f"\n[Streaming Error: {str(e)}]",
-                    "assistant",
-                )
+            self._set_last_finish_reason(FinishReason.ERROR)
+            # A tool call from a failed stream may be partial. The error is
+            # reported through the recorded error, not as assistant text.
+            self._tool_call_state().discard()
 
             # Return partial response if we have any content
             if accumulated_response:
@@ -1082,7 +1023,7 @@ class AnthropicAdapter(BaseAdapter):
                 return "".join(accumulated_response)
 
             # Otherwise return an error message including stop reason if available
-            return f"Error during response generation: {str(e)}. Stop Reason: {stop_reason}"
+            return f"[Error: {str(e)}. Stop Reason: {stop_reason}]"
         finally:
             # Log final state regardless of how we exited
             total_stream_time = time.time() - stream_start_time

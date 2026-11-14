@@ -11,6 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from penguin.project.models import TaskStatus
+
 from .backend import (
     OrchestrationBackend,
     PhaseResult,
@@ -23,6 +25,10 @@ from .config import OrchestrationConfig
 from .state import WorkflowState, WorkflowStateStorage
 
 logger = logging.getLogger(__name__)
+
+_TERMINAL_STATUSES = frozenset(
+    {WorkflowStatus.COMPLETED, WorkflowStatus.FAILED, WorkflowStatus.CANCELLED}
+)
 
 
 class NativeBackend(OrchestrationBackend):
@@ -154,7 +160,18 @@ class NativeBackend(OrchestrationBackend):
         state = self.storage.get_state(workflow_id)
         if not state:
             return False
-        
+
+        # A finished workflow keeps its outcome: pausing or cancelling it
+        # afterwards must not rewrite the stored result.
+        if signal in {"pause", "cancel"} and state.status in _TERMINAL_STATUSES:
+            logger.info(
+                "Ignoring %s for workflow %s: already %s",
+                signal,
+                workflow_id,
+                state.status.value,
+            )
+            return False
+
         if signal == "pause":
             self._paused_workflows.add(workflow_id)
             state.status = WorkflowStatus.PAUSED
@@ -533,6 +550,12 @@ class NativeBackend(OrchestrationBackend):
             # Update task status if project manager available
             if self._project_manager and task:
                 try:
+                    # The workflow ran the task without going through the
+                    # project manager, so it may still be ACTIVE here.
+                    if task.status == TaskStatus.ACTIVE:
+                        task.transition_to(
+                            TaskStatus.RUNNING, reason="ITUV workflow executed"
+                        )
                     task.mark_pending_review(
                         "ITUV workflow completed successfully",
                         reviewer="native",

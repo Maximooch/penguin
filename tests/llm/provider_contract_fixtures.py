@@ -5,10 +5,10 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Iterable, cast
 
-from penguin.llm.contracts import FinishReason
 from penguin.llm.adapters.anthropic import AnthropicAdapter
 from penguin.llm.adapters.openai import OpenAIAdapter
 from penguin.llm.adapters.openai_compatible import OpenAICompatibleAdapter
+from penguin.llm.contracts import FinishReason
 from penguin.llm.model_config import ModelConfig
 from penguin.llm.openrouter_gateway import OpenRouterGateway
 
@@ -380,9 +380,6 @@ def build_anthropic_handler(
     adapter._last_error = None
     adapter._last_finish_reason = FinishReason.UNKNOWN
     adapter._last_reasoning = ""
-    adapter._last_tool_call = None
-    adapter._pending_tool_calls = []
-    adapter._tool_use_accs = {}
     adapter._last_request_lifecycle = None
     chunk_sequences = (
         list(stream_chunk_sequences)

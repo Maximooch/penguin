@@ -1676,11 +1676,17 @@ class ConversationManager:
         success = await self.checkpoint_manager.rollback_to_checkpoint(checkpoint_id)
 
         if success:
-            # Update conversation system with the restored session
-            self.conversation.session = self.session_manager.current_session
-            self.conversation._modified = True
+            self._adopt_restored_session()
 
         return success
+
+    def _adopt_restored_session(self) -> None:
+        """Point the conversation at the session a checkpoint operation restored."""
+        session = self.session_manager.current_session
+        self.conversation.session = session
+        self.conversation._modified = True
+        if session is not None:
+            self.session_manager.adopt_current_session(session)
 
     async def branch_from_checkpoint(
         self,
@@ -1708,14 +1714,7 @@ class ConversationManager:
         )
 
         if branch_id:
-            # Update conversation system with the new branch session
-            self.conversation.session = self.session_manager.current_session
-            self.conversation._modified = True
-            if self.session_manager.current_session is not None:
-                self.session_manager.mark_session_modified(
-                    self.session_manager.current_session.id
-                )
-                self.session_manager.save_session(self.session_manager.current_session)
+            self._adopt_restored_session()
 
         return branch_id
 

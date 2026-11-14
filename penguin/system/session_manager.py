@@ -82,6 +82,10 @@ class SessionManager:
         """
         self.base_path = Path(base_path)
         self._store_lock = store_lock(self.base_path)
+        # Counts modifications per session so a save can tell whether the
+        # session changed while it was being serialised.
+        self._dirty_lock = threading.Lock()
+        self._revisions: Dict[str, int] = {}
         self._saved_index: Optional[Dict[str, Dict[str, Any]]] = None
         self.max_messages_per_session = max_messages_per_session
         self.max_sessions_in_memory = max_sessions_in_memory
@@ -283,11 +287,10 @@ class SessionManager:
         # Save each modified session
         saved_count = 0
         for session in modified_sessions:
+            # save_session owns the modified flag; it stays set if the session
+            # changed while it was being written.
             if self.save_session(session):
                 saved_count += 1
-                # Mark as not modified in the cache
-                if session.id in self.sessions:
-                    self.sessions[session.id] = (session, False)
                     
         # Also ensure current_session is saved if it exists
         # This handles edge cases where current_session might not be in cache
@@ -301,7 +304,6 @@ class SessionManager:
                     # This shouldn't happen if the loop above worked, but safety check
                     if self.save_session(self.current_session):
                         saved_count += 1
-                        self.sessions[self.current_session.id] = (self.current_session, False)
             else:
                 # Current session not in cache - save it
                 if self.save_session(self.current_session):
@@ -386,23 +388,24 @@ class SessionManager:
             primary_error = e
             logger.error(f"Error loading session {session_id} from primary file ({primary_path}): {str(e)}", exc_info=True)
 
-            # Try backup file
-            try:
-                if backup_path.exists():
-                    logger.info(f"Attempting to restore session {session_id} from backup")
-                    session = self._load_from_file(backup_path)
-                    if session and session.validate():
-                        self._add_to_session_cache(session_id, session)
-                        self.current_session = session
+        # The primary is missing or unusable: fall back to the backup, whichever
+        # of those it was.
+        try:
+            if backup_path.exists():
+                logger.info(f"Attempting to restore session {session_id} from backup")
+                session = self._load_from_file(backup_path)
+                if session and session.validate():
+                    self._add_to_session_cache(session_id, session)
+                    self.current_session = session
 
-                        # Restore from backup
-                        atomic_write_text(
-                            primary_path, backup_path.read_text(encoding="utf-8")
-                        )
-                        logger.warning(f"Successfully restored session {session_id} from backup")
-                        return session
-            except Exception as backup_error:
-                logger.error(f"Error loading backup for session {session_id} ({backup_path}): {str(backup_error)}", exc_info=True)
+                    # Restore from backup
+                    atomic_write_text(
+                        primary_path, backup_path.read_text(encoding="utf-8")
+                    )
+                    logger.warning(f"Successfully restored session {session_id} from backup")
+                    return session
+        except Exception as backup_error:
+            logger.error(f"Error loading backup for session {session_id} ({backup_path}): {str(backup_error)}", exc_info=True)
 
         # If we get here, loading failed despite files existing - create recovery session
         logger.warning(
@@ -544,6 +547,8 @@ class SessionManager:
             session.metadata["token_count"] = token_count
             
             # Serialize before touching disk; preserve a complete previous version.
+            with self._dirty_lock:
+                saved_revision = self._revisions.get(session.id, 0)
             serialized = session.to_json()
             if target_path.exists():
                 atomic_write_text(backup_path, target_path.read_text(encoding="utf-8"))
@@ -579,9 +584,11 @@ class SessionManager:
                     self.sessions[session.id] = (session, True)
                 return False
             
-            # Update cache status
-            if session.id in self.sessions:
-                self.sessions[session.id] = (session, False)  # Mark as not modified
+            # Clean only if nothing changed since the snapshot was taken.
+            with self._dirty_lock:
+                still_modified = self._revisions.get(session.id, 0) != saved_revision
+                if session.id in self.sessions:
+                    self.sessions[session.id] = (session, still_modified)
             
             logger.debug(f"Saved session {session.id} with {token_count} tokens")
             return True
@@ -871,16 +878,38 @@ class SessionManager:
             return False
     
     @synchronized_store
+    @synchronized_store
+    def adopt_current_session(self, session: Session) -> bool:
+        """Make ``session`` the current session and the only cached copy of its id.
+
+        Used after a rollback or branch, where a restored object replaces a live
+        one that may share its id. The stale object is dropped from the cache so
+        a later auto-save cannot write its history back.
+
+        Args:
+            session: The restored or branched session.
+
+        Returns:
+            True if the session was saved, False otherwise.
+        """
+        self.current_session = session
+        self._add_to_session_cache(session.id, session)
+        self.mark_session_modified(session.id)
+        return self.save_session(session)
+
     def mark_session_modified(self, session_id: str) -> None:
         """Mark a session as modified in the cache.
         
         If the session is not in the cache but is the current_session,
         it will be added to the cache and marked as modified.
         """
-        if session_id in self.sessions:
-            session, _ = self.sessions[session_id]
-            self.sessions[session_id] = (session, True)
-        elif self.current_session and self.current_session.id == session_id:
+        with self._dirty_lock:
+            self._revisions[session_id] = self._revisions.get(session_id, 0) + 1
+            if session_id in self.sessions:
+                session, _ = self.sessions[session_id]
+                self.sessions[session_id] = (session, True)
+                return
+        if self.current_session and self.current_session.id == session_id:
             # Session not in cache but is current_session - add it
             # This handles edge cases where session was created outside create_session()
             self._add_to_session_cache(session_id, self.current_session)

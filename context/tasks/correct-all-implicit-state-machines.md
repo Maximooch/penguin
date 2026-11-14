@@ -56,7 +56,9 @@ One iteration handles one backlog item. Take the first unchecked item whose
    `core.py`, business logic out of `web/routes.py`, raise `PenguinError`
    subclasses, no file past about 2000 lines.
 4. **Show the guard can fail.** Revert the fix locally, confirm the new test
-   goes red, restore the fix.
+   goes red, restore the fix. Never do this with a test that runs real
+   handlers once the guard is gone: on SM-03 that started a headless browser.
+   Revert against a narrow, side-effect-free subset instead.
 5. **Bend lane, shape (a) items only.** If the item is tagged `bend`, add a
    pure projection, `LAWS.bend`, `PROOF.bend` and an opt-in differential test
    under `prototypes/`, following `prototypes/bend_runtime/`. Bend stays an
@@ -89,10 +91,64 @@ Recommended defaults are given; change them here.
 | Decision | Recommended default |
 |---|---|
 | Starting tree | Land or stash the current uncommitted work first. It touches `openai.py`, `openrouter.py`, `tool_manager.py`, `async_dispatch.py`, `providers/mcp.py`, `config.py` and `model_runtime.py`, which this backlog also edits. |
-| Branching | One branch per tier, one commit per item, one PR per tier or per cluster of related items. |
+| Branching | One branch, `FV/squash-implicit-state-machines`, cut from `origin/main` at `42007c0ef`. One commit per item, grouped by tier in one large PR (Maximus, 2026-11-13). SM-01 and SM-02 landed on main before the branch. |
 | Commit and push | The loop commits locally. It does not push or open PRs without being told to. |
+| Autonomy | Maximus is away (2026-11-13): keep going, stop only when input is truly required. Where a `design` item has a reasonable reversible answer, implement it and list it under "Decisions taken while away"; otherwise mark the item `on hold` and move on. |
 | Behaviour changes | Stop and ask (see above). |
 | Bend | Only for items tagged `bend`. |
+
+## Decisions taken while away
+
+One line each, newest last, for review. Each is one commit and can be reverted
+on its own.
+
+- SM-03: under a restricted startup allowlist, an action tag is allowed only if
+  its own name, or the tool it aliases to, is on the list. Control actions such
+  as `finish_response` get no exemption, matching `execute_tool`. An allowlist
+  that omits them cannot end a turn through action tags.
+- SM-03: an `ImportError` from the agent permission module now denies, like any
+  other failure of that check.
+- SM-04: a wider scope that cannot be honoured (SESSION with no session id,
+  PATTERN with no pattern) is granted and recorded as ONCE with a warning. The
+  item said "reject"; rejecting would leave the user's click with no effect.
+- SM-04: resolved approval history is capped at 1000 entries
+  (`MAX_RESOLVED_HISTORY`); the oldest are dropped.
+- SM-31: bound-method subscribers on the `utils` event bus now receive
+  events. That wakes handlers that have never run: `TelemetryCollector` and
+  the legacy `local_task` `ProjectManager` handlers. Handler errors are caught
+  and logged by the bus. If either misbehaves, revert this commit or
+  unsubscribe that handler.
+- SM-12: the Anthropic adapter's fixed 30-second limit on a whole streamed
+  response is removed (a longer answer was cut off and reported as a timeout).
+  The 10-second gap check next to it could never fire and is removed too.
+  Stalls are left to the SDK's own HTTP timeouts.
+- SM-12: an OpenAI `response.incomplete` event is now a cut-off answer
+  (`LENGTH`, or `CONTENT_FILTER` when the provider says so), not a dropped
+  connection to retry. An unrecognised reason counts as `LENGTH`. Tool calls
+  from a cut-off response are discarded.
+- SM-12: OpenRouter and Anthropic keep returning a marked string with the
+  error recorded, because existing tests assert that and `APIClient` reads the
+  recorded error. Only LiteLLM changed to raising. The item said "errors are
+  raised, never returned as text".
+- SM-16: a session is busy only while a request, stream or adapter is live.
+  A saved assistant message with no completion time no longer makes it busy,
+  so a session interrupted by a crash can be reverted and shows as idle.
+- SM-16: an abort marker left with no tracked request is used up the first
+  time it cancels a stream chunk. Before, it cancelled every later chunk for
+  that session until a `process` request cleared it.
+- SM-14: when the OpenAI SDK stream fails after it has produced output, the
+  adapter no longer re-sends the request over HTTP. A transport failure is
+  raised as a retryable network error (the runtime does not replay it once
+  text has streamed); any other error is raised as it is. A failure before
+  the first event still falls back to HTTP, as before.
+- SM-32: `RETRYING` is kept and given a meaning instead of being deleted: a
+  failed attempt that is being retried (Link's reconnect wait). A failed
+  attempt can only move to `RETRYING`; `COMPLETED` and `CANCELLED` are final.
+  A refused transition is ignored and logged at debug level, not raised.
+- SM-16: a session is busy when any live source says so (a request in
+  flight, an active stream, or its TUI adapter). Before, the sources
+  overwrote each other in turn, so an adapter reporting idle hid a stream
+  that was still running.
 
 ## Item format
 
@@ -137,7 +193,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     `html.unescape` still rewrites `&lt;` and `&amp;` inside params; the CLI
     display copies still use their own single-tag patterns. The streaming
     display's treatment of backtick-adjacent tags as literal is SM-44.
-- [ ] **SM-03 Effective permission mode** (a) [security, bend]
+- [x] **SM-03 Effective permission mode** (a) [security, bend]
   - `penguin/security/permission_engine.py:274-397,487`,
     `penguin/security/tool_permissions.py:476-586,955`,
     `penguin/security/agent_permissions.py:397`
@@ -146,7 +202,13 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     reason is read from a shared list.
   - Correction: fail closed on policy errors; one resolution function. Extend
     `prototypes/bend_permissions`.
-- [ ] **SM-04 Approval request lifecycle** (c) [security]
+  - State: the three fail-open paths are closed (enforcer policy error, agent
+    policy error, startup capability policy on the action-tag path). On hold,
+    each needs a product decision: unknown tools are still ALLOW without a
+    request policy; an agent with no registered policy is still ALLOW; the
+    last-denial reason is still read from a shared list; MCP servers are still
+    accepted from project-level config. Bend extension deferred.
+- [x] **SM-04 Approval request lifecycle** (c) [security]
   - `penguin/security/approval.py:176-334,471,516`,
     `penguin/security/permission_engine.py:279,323`
   - `approve()` does not check expiry. SESSION scope without a session id, or
@@ -155,7 +217,10 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     allowlist has no session key.
   - Correction: one `resolve(request, decision)` function with a terminal
     guard; reject mismatched scope instead of degrading.
-- [ ] **SM-05 Permission reply surfaces** (c) [security]
+  - State: fixed. On hold: `PermissionEnforcer._session_allowlist` is still a
+    second remembered-allow store with no session key; SESSION scope still
+    grants the whole operation on any resource.
+- [x] **SM-05 Permission reply surfaces** (c) [security]
   - `penguin/web/routes.py:1670-1985,8169-8238,8505-8595`,
     `penguin/integrations/acp/server.py:189`
   - Two reply endpoints disagree on already-resolved requests, glob escaping
@@ -164,8 +229,13 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     `permission.asked`. `_approval_ws_manager.connect()` is never called.
   - Correction: one service function behind both endpoints; session
     ownership check; register callbacks at startup; delete the dead manager.
+  - State: event delivery is fixed. On hold: neither reply endpoint checks
+    that the request belongs to the caller's session (needs the client to send
+    a session id, an API change); the two endpoints still differ on an
+    already-resolved request (`True` versus 404) and on scopes offered;
+    `_approval_ws_manager.connect()` is still never called.
   - Blocked by: SM-04
-- [ ] **SM-06 Per-call authorization grant** (c) [security]
+- [ ] **SM-06 Per-call authorization grant** (on hold) (c) [security]
   - `penguin/tools/async_dispatch.py:112-264`,
     `penguin/security/tool_approval.py:22-116`,
     `penguin/tools/tool_manager.py:2445-2591,4487`
@@ -174,7 +244,11 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     tools are checked twice. The wait has no timeout of its own.
   - Correction: carry the grant as a value from approval to dispatch instead
     of recomputing a key.
-- [ ] **SM-07 Session dirty/save protocol** (c) [design]
+  - On hold (2026-11-13): when the key drifts the code asks again, which is
+    safe. The fix is a redesign of a security boundary with a large existing
+    contract suite (`tests/tools/test_permission_resume.py`); it needs a
+    design conversation, not a loop iteration.
+- [x] **SM-07 Session dirty/save protocol** (c) [design]
   - `penguin/system/conversation.py:100-269,648`,
     `penguin/system/session_manager.py:86-103,252-263,501,553,841`
   - No lock between the auto-save thread and appends, so a message added
@@ -183,37 +257,53 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     `save_session` returns True when the index write failed.
   - Correction: one dirty counter compared before and after serialise, or one
     lock; unique temp paths; surface index failures.
-- [ ] **SM-08 Rollback and branch pointer swap** (b)
+  - State: fixed. Main had already added unique temp files, a store lock and
+    index-failure reporting; the dirty-bit lost update remained and is now
+    closed with a per-session revision counter. Left open:
+    `mark_session_modified` is still a no-op for a session that is neither
+    cached nor current; `SessionManager.__del__` still saves to disk during
+    garbage collection, which crashed the interpreter once in a test here.
+- [x] **SM-08 Rollback and branch pointer swap** (b)
   - `penguin/system/conversation_manager.py:1678-1718`,
     `penguin/system/checkpoint_manager.py:300`
   - After rollback the cache still maps the session id to the pre-rollback
     object, so auto-save can write old history back. Rollback and branch
     disagree on marking and saving.
   - Correction: one `replace_current_session` function used by both.
+  - State: fixed as `SessionManager.adopt_current_session`. Left open:
+    `system_prompt_sent` is not recomputed after a rollback; the manager used
+    is whichever agent's is current.
   - Blocked by: SM-07
-- [ ] **SM-09 Session load, recovery and index consistency** (b)
+- [x] **SM-09 Session load, recovery and index consistency** (b)
   - `penguin/system/session_manager.py:126-178,341-479,669,818`
   - A backup-only state never tries the backup. A recovery session with a new
     id is reported as a successful load of the requested id. Delete and
     continuation update the index and the files in the unsafe order.
   - Correction: explicit load result (loaded, restored, recovered, missing);
     files before index on create, index before files on delete.
-- [ ] **SM-10 `process()` retry envelope** (b) [inferred]
+  - State: the backup-only case is fixed. On hold: a recovery session with a
+    new id is still reported to the caller as a successful load of the
+    requested id (changing that changes what `conversation.load` returns);
+    the index/file ordering on delete and continuation is unchanged.
+- [ ] **SM-10 `process()` retry envelope** (on hold: inferred only, not reproduced; needs a trace of `process` to show a retry after tools ran) (b) [inferred]
   - `penguin/core_runtime/process_runtime.py:42-310`
   - A failure in the error emit after the engine ran tools may re-run the
     whole turn, re-adding the user message and re-running tools.
   - Correction: retry only before the engine has started.
-- [ ] **SM-11 GitHub webhook delivery** (b/c) [security]
+- [x] **SM-11 GitHub webhook delivery** (b/c) [security]
   - `penguin/web/integrations/github_webhook.py:30-81,269,286-343,455,647`
   - No sender filter, and the bot's own completion comment contains an
     `@Penguin` mention. Dedupe is in memory and marks a delivery seen before
     the work runs. Handlers swap the global current session.
   - Correction: ignore the bot's own comments; mark seen after success;
     stop mutating the global session.
+  - State: the self-trigger is fixed. On hold: dedupe is still in memory and
+    marks a delivery seen before the work runs (retry semantics are a product
+    choice); handlers still swap the global current session.
 
 ## Tier 1: wrong output, hung or stuck sessions
 
-- [ ] **SM-12 Stream-end outcome, seven copies** (b → a) [confirmed, bend, design]
+- [x] **SM-12 Stream-end outcome, seven copies** (b → a) [confirmed, bend, design]
   - `penguin/llm/adapters/openai.py:1852,2627,2719`,
     `penguin/llm/adapters/openrouter.py:1547,2212`,
     `penguin/llm/adapters/anthropic.py:760-1091`,
@@ -228,7 +318,13 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
   - Correction: one pure `classify_stream_end(saw_completed, saw_error,
     pending_tool, has_text, cancelled, …)` used by every adapter; errors are
     raised, never returned as text. Model it in Bend next to `retry.bend`.
-- [ ] **SM-13 Pending tool-call accumulation, four adapters** (c)
+  - State: the OpenAI HTTP swallow and the Anthropic unrecorded timeout are
+    fixed. Still open: one shared classifier for all seven copies;
+    `response.incomplete`; OpenRouter finalising tool calls before its error
+    check; LiteLLM's `finally: return`; Anthropic's 30 s hard cap and its
+    error text returned as the response string; the Bend model.
+  - State: (2026-11-13) one rule, `classify_stream_end` in `penguin/llm/stream_end.py`, now decides the outcome in the OpenAI (Codex, SDK, HTTP), OpenRouter (SDK, direct) and Anthropic stream ends. Fixed with it: `response.incomplete` handled; OpenRouter discards a partial tool call on a mid-stream error; LiteLLM no longer returns a failed or cancelled stream as a short answer; Anthropic's 30 s cap removed and its stream errors no longer sent as assistant text. Bend model in `prototypes/bend_stream_end` (draft laws await review). Not exercised by a test: the Codex and SDK `response.incomplete` branches, and OpenRouter's SDK path. See "Decisions taken while away" for what was kept as is.
+- [x] **SM-13 Pending tool-call accumulation, four adapters** (waits on the SM-12 consolidation) (c)
   - `penguin/llm/adapters/openai.py:143-158,451-565`,
     `penguin/llm/adapters/openrouter.py:91,709-814,2552`,
     `penguin/llm/adapters/anthropic.py:78,422-498`,
@@ -238,7 +334,9 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     identical calls.
   - Correction: one accumulator class with one promotion rule.
   - Blocked by: SM-12
-- [ ] **SM-14 Retry and replay layering** (b) [bend]
+  - State: (partial, 2026-11-13) one `ToolCallAccumulator` (`penguin/llm/tool_call_accumulator.py`) with one rule (runnable only once closed; merged only on a shared id; never without a name) now backs the OpenAI, OpenRouter, Anthropic, Modal and RunInfra adapters. Fixed: an Anthropic tool call was runnable from its first fragment, and an id-less one was recorded once per fragment with partial JSON; OpenAI merged identical id-less calls. Still open: Link keeps its own list and drains a different shape (the runtime accepts both).
+  - State: (done, 2026-11-14) Link now records its calls in the same accumulator and drains the same shape as the other adapters (`item_id`, `call_id`, `name`, `arguments`). Its two tests that asserted or replayed the old chat shape were updated.
+- [x] **SM-14 Retry and replay layering** (re-read 2026-11-13: the unbounded Link loop is deliberate connection backoff, covered by `tests/llm/test_link_runtime_recovery.py`; the rest waits on the SM-12 consolidation) (b) [bend]
   - `penguin/llm/runtime.py:329-347,599-757`,
     `penguin/llm/providers/link/provider.py:205-246`,
     `penguin/llm/adapters/openai.py:920-929`
@@ -246,6 +344,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     text twice. The Link loop is unbounded. Error sentinels differ by layer.
   - Correction: one retry owner (the runtime); adapters never re-request.
   - Blocked by: SM-12
+  - State: (done, 2026-11-14) the runtime's `call_with_retry` is the only layer that replays a failed attempt. The OpenAI SDK-to-HTTP fallback now runs only when the SDK fails before its first event (`_SdkStreamUnavailable`), so it can no longer stream an answer twice; a mid-stream transport failure is a retryable network error and also drops partial tool calls. Link's loop is connection backoff before any output and stays. The differing error sentinels are SM-33's.
 - [ ] **SM-15 Turn-loop termination, two copies** (a in b) [bend, design]
   - `penguin/engine.py:1679-2060,2306-2451`
   - The task loop and `run_response` disagree on stop, finish-tool status and
@@ -253,7 +352,8 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     counter. `CancelledError` skips save and stream abort.
   - Correction: one `LoopOutcome` reducer both loops call; bound every
     continue.
-- [ ] **SM-16 Session abort, request accounting and busy/idle** (c) [design]
+  - State: (partial, 2026-11-13) the output-limit continuation is bounded at 8 consecutive turns in both loops; the task loop then reports `iterations_exceeded`. Still open: the single `LoopOutcome` reducer; the stop, finish-tool and empty-response differences between the two loops; the malformed-action repair continue, which is still unbounded without an iteration cap; `CancelledError` skipping save and stream abort.
+- [x] **SM-16 Session abort, request accounting and busy/idle** (c) [design]
   - `penguin/core_runtime/process_lifecycle.py:30-313`,
     `penguin/core_runtime/stream_events.py:244-325,417-547,1031`,
     `penguin/web/services/session_view.py:1090-1133`,
@@ -264,7 +364,9 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     busy forever. Every cancellation returns as a normal 200.
   - Correction: one per-session run record owned by `process_lifecycle`;
     status derived from it only.
-- [ ] **SM-17 Stream scope lifecycle** (c)
+  - State: (partial, 2026-11-13) `process_lifecycle` is now the only writer of the task set and the abort marker (`track_session_task`, `untrack_session_task`, `mark_session_aborted`, `consume_session_abort`) and the only reader of "is a request in flight" (`session_has_active_request`, `active_request_session_ids`); routes, stream events, session view and goal runtime call it. Fixed: a crashed stream no longer leaves the session busy forever; a stale abort marker cancels at most one untracked chunk. Still open: the task set, counter and marker are still three attributes, not one run record (71 test references read them directly); a stale marker can still cancel one later untracked stream; every cancellation still returns as a normal 200; the stream-state and adapter busy sources are unchanged.
+  - State: (done apart from one question, 2026-11-14) one `SessionRun` record per session (`tasks`, `requests`, `abort_requested`) in `owner._opencode_session_runs` replaces the three attributes; only `process_lifecycle` reads or writes it, and a record is dropped once nothing is in flight. Busy comes from `process_lifecycle.busy_session_ids` only, which marks a session busy if any live source says so. Fixed with it: a session whose stream was active read as idle when its TUI adapter said idle. Decided by Maximus (2026-11-14): a cancelled `/api/v1/chat/message` keeps returning HTTP 200 with `aborted: true`. Known limits kept: the abort marker is per session, so a second request registering during an abort clears it; with no tracked request, a marker left behind can still cancel one chunk of a later stream.
+- [x] **SM-17 Stream scope lifecycle** (c)
   - `penguin/core_runtime/stream_events.py:193-216,604-986`,
     `penguin/core_runtime/process_streaming.py:114`,
     `penguin/engine.py:3363-3532,3847`
@@ -272,14 +374,15 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     `_llm_step` aborts the stream only on `LLMProviderError`.
   - Correction: compute the key once per request and pass it; abort in
     `finally`.
-- [ ] **SM-18 Engine `_llm_stream` sentinel** (c) [confirmed]
+  - State: (partial) `_llm_step` now discards the uncommitted stream on every failure, including cancellation. Still open: the scope key is derived three ways with different precedence (chunks, finalize, abort); duplicate suppression compares the last message's content.
+- [x] **SM-18 Engine `_llm_stream` sentinel** (c) [confirmed]
   - `penguin/engine.py:3952-3989`
   - The producer task is never awaited, so an exception leaves the consumer
     waiting forever. Chunks are queued through `create_task` and can land
     after the sentinel.
   - Correction: queue the sentinel in `finally`, put chunks directly, await
     the producer.
-- [ ] **SM-19 Task status × phase** (b) [confirmed, bend]
+- [x] **SM-19 Task status × phase** (b) [confirmed, bend]
   - `penguin/project/models.py:33-79,554,586-681,805-818`,
     `penguin/orchestration/native.py:536`,
     `penguin/web/routes.py:5460`, `penguin/cli/cli.py:3593`
@@ -289,26 +392,33 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
   - Correction: one transition over the (status, phase) pair that either
     applies both or neither and raises on rejection. Law: DONE pairs only with
     PENDING_REVIEW or COMPLETED.
-- [ ] **SM-20 Workflow orchestrator** (b)
+  - State: `mark_pending_review` and `approve` are fixed, and the native
+    workflow moves ACTIVE to RUNNING first. Left open: `set_phase`,
+    `advance_phase` and the direct `self.phase =` writes are still unguarded;
+    web and CLI still call `task.approve` and storage directly. Bend model
+    deferred.
+- [x] **SM-20 Workflow orchestrator** (b)
   - `penguin/project/workflow_orchestrator.py:104-329`
   - The PR result status is never inspected. `if not success` branches are
     dead. The except handler raises again. Cancellation leaves the task
     RUNNING.
   - Blocked by: SM-19
-- [ ] **SM-21 Native and Temporal workflow backends** (c)
+  - State: the failure handler no longer raises when the FAILED mark is rejected, and a cancelled run returns the task to ACTIVE. Left as is: a failed PR step still ends in PENDING_REVIEW (validation passed; failing the task because GitHub is not configured would be wrong for local use), with the PR result in the workflow result. A non-terminal executor status still leaves the task RUNNING.
+- [x] **SM-21 Native and Temporal workflow backends** (c)
   - `penguin/orchestration/native.py:53-56,158-290`,
     `penguin/orchestration/temporal/workflows.py:95,250`,
     `penguin/orchestration/temporal/backend.py:160`
   - A pause saved by `signal_workflow` is overwritten by the runner's next
     save. Cancelling a completed workflow rewrites it. No recovery of RUNNING
     rows after restart.
+  - State: pause and cancel no longer rewrite a finished workflow. Still open: a pause saved by `signal_workflow` can be overwritten by the runner's next save of its own in-memory state; RUNNING rows are not recovered after a restart; the Temporal twin is untouched.
 - [ ] **SM-22 Checkpoint lifecycle** (c)
   - `penguin/system/checkpoint_manager.py:112-300,749`,
     `penguin/system/conversation.py:231-246`
   - The id is returned before the file exists. The live session is
     serialised at dequeue time. Workers can start in a throwaway loop with
     `_workers_started` left True. An index load error resets the index.
-- [ ] **SM-23 Session boundary rollover** (b)
+- [ ] **SM-23 Session boundary rollover** (b) (on hold: re-read 2026-11-13. `add_tool_result` attaches `tool_calls` to the last assistant message only when the result arrives, so at rollover time nothing marks the assistant message as awaiting results. Deferring rollover needs a new signal from the engine that a tool group is open; that is a design change.)
   - `penguin/system/conversation.py:256-269,677`,
     `penguin/system/session_manager.py:578-625`,
     `penguin/system/context_epoch.py:136`
@@ -339,17 +449,19 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
 - [ ] **SM-28 SSE connection and ledger batch** (c)
   - `penguin/web/sse_events.py:124-461`
   - A full queue drops events silently. The batch is not flushed at shutdown.
-- [ ] **SM-29 In-process code execution** (c)
+- [x] **SM-29 In-process code execution** (c)
   - `penguin/tools/tool_manager.py:342,4967-5024`
   - A timed-out execution keeps running and keeps the lock, so later calls
     queue behind it.
-- [ ] **SM-30 RunMode continuous loop and result vocabulary** (b)
+  - State: after a timeout, later calls return `code_execution_busy` at once while the abandoned run is alive, and resume when it ends. The abandoned code itself still runs to completion; in-process Python cannot be stopped. `active_directory` is still restored only when the previous value was truthy.
+- [x] **SM-30 RunMode continuous loop and result vocabulary** (b)
   - `penguin/run_mode.py:79-101,444,657-981,1427-1563`
   - Several engine failure statuses fall through as success. The
     empty-response retry has no counter. `start()` checks a status the task
     engine never returns.
   - Blocked by: SM-15
-- [ ] **SM-31 `utils` event bus subscription liveness** (c) [confirmed]
+  - State: repeated empty responses now end continuous mode after 5 in a row; the model's emergency stop ends it; the retry branch no longer crashes on a missing `MessageCategory.WARNING`. Still open: engine statuses `error`, `provider_error`, `stopped` and `budget_limited` fall through the error branch (it needs `completion_type == "error"`, which the classifier never returns); `start()` checks a status the task engine never returns; `waiting_input` is not handled in the continuous loop.
+- [x] **SM-31 `utils` event bus subscription liveness** (c) [confirmed]
   - `penguin/utils/events.py:79,117,128`
   - Handlers are stored as `weakref.ref`, which is dead immediately for bound
     methods. `publish` mutates the list it iterates and holds a lock across
@@ -359,33 +471,42 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
 
 ## Tier 2: drift, leaks, duplicated truth
 
-- [ ] **SM-32 `LLMRequestLifecycle.status`** (b) [bend]: `penguin/llm/contracts.py:72,194`; update helper copy-pasted in three adapters; no terminal guard; `RETRYING` never written. Blocked by SM-12.
-- [ ] **SM-33 Call outcome classification** (a) [bend]: `penguin/llm/api_client.py:535-992`, `penguin/llm/runtime.py:286`; computed twice with different rules. Blocked by SM-12.
-- [ ] **SM-34 Tool-replay adjacency repair, three copies** (a): `openai.py:1342-1519`, `openrouter.py:1201-1366`, `anthropic.py:1341-1418`; each provider treats orphans differently; OpenRouter rewrites `call_…` tokens in plain content.
+- [x] **SM-32 `LLMRequestLifecycle.status`** (b) [bend]: `penguin/llm/contracts.py:72,194`; update helper copy-pasted in three adapters; no terminal guard; `RETRYING` never written. Blocked by SM-12.
+  - State: (done, 2026-11-14) one guarded transition, `next_request_status` in `penguin/llm/contracts.py`, applied by `LLMRequestLifecycle.advance` and `finish`. The three copied `_update_request_lifecycle` / `_finish_request_lifecycle_from_state` helpers now delegate to it, and Link no longer writes `status` directly. Link marks its reconnect wait `RETRYING`, so cancelling it no longer overwrites a finished attempt. Bend model in `prototypes/bend_request_lifecycle` (draft laws await review).
+- [x] **SM-33 Call outcome classification** (a) [bend]: `penguin/llm/api_client.py:535-992`, `penguin/llm/runtime.py:286`; computed twice with different rules. Blocked by SM-12.
+  - State: (done, 2026-11-14) one rule, `classify_call_outcome` in `penguin/llm/contracts.py`, used by `APIClient._build_response_result` and by the runtime's fallback for clients without typed results; the fallback now also reads the lifecycle from the client or its handler. Fixed: that fallback reported a cancelled request, or a failed one with no recorded error, as completed. Bend model added to `prototypes/bend_request_lifecycle` (`outcome.bend`). Not changed: the text-prefix checks for error strings (`[Error:`) in `APIClient.get_response` and `runtime._is_provider_error_response`, which format and gate retries rather than classify.
+- [x] **SM-34 Tool-replay adjacency repair, three copies** (a): `openai.py:1342-1519`, `openrouter.py:1201-1366`, `anthropic.py:1341-1418`; each provider treats orphans differently; OpenRouter rewrites `call_…` tokens in plain content.
+  - State: (partial) the OpenRouter rewrite of `call_…` tokens in plain content is limited to tokens that look like call ids, so code such as `call_api` is no longer mangled. Still open: the three providers treat orphaned tool calls and results differently; OpenAI drops a call whose output text is empty.
 - [ ] **SM-35 Per-request `last_*` state on the adapter** (c) [design]: resets at `openai.py:820`, `openrouter.py:1404`, `anthropic.py:700`; Link resets a subset; `prepare_native_tool_kwargs` flips `interrupt_on_tool_call` permanently (`runtime.py:424`). See `model-config-mutation-state-leak.md`.
-- [ ] **SM-36 Reasoning-variant override** (b): `penguin/web/routes.py:1063-1091,4191,4418,4796`; the REST restore may write a deep-copied config's snapshot onto the global config. Unconfirmed.
+- [x] **SM-36 Reasoning-variant override** (b): `penguin/web/routes.py:1063-1091,4191,4418,4796`; the REST restore may write a deep-copied config's snapshot onto the global config. Unconfirmed.
+  - State: confirmed and fixed: the override snapshot now records which config it changed, and the restore uses that. The WebSocket path applies its override outside its `try/finally`; not changed.
 - [ ] **SM-37 Model switch propagation** (b): `penguin/core_runtime/model_runtime.py:107-375`; multi-step, non-atomic, failures downgraded to warnings.
 - [ ] **SM-38 Stall / empty / repeat guard** (a) [bend]: `penguin/engine.py:304-418,1376-1602`; counters reset in four places; recovery never re-arms; a kill in response mode looks like `completed`. Blocked by SM-15.
 - [ ] **SM-39 Per-session stream state dict** (c): `penguin/core_runtime/stream_events.py:68-85,448,1247-1349`; `active` with no message id exists across an await; adapter map entries leak. Blocked by SM-16.
 - [ ] **SM-40 Session-goal run claim** (c): `penguin/core_runtime/session_goal_runtime.py:741-1079`; gate checked at 844 and acquired at 883; orphan test assumes one process per workspace.
 - [ ] **SM-41 RunMode singleton lifecycle** (b): `penguin/core_runtime/runmode_lifecycle.py:29-92`; no re-entrancy guard.
-- [ ] **SM-42 MCP connection lifecycle** (b): `penguin/tools/providers/mcp.py:22-115`, `penguin/integrations/mcp/manager.py:71-503`; a failed discovery is sticky; (FAILED, session set) is representable; `_ensure_actor` is unlocked; `list_changed` is never consumed.
-- [ ] **SM-43 Plugin lifecycle** (b): `penguin/plugins/plugin_manager.py:52-483`; parallel load looks like a deadlock (not run); action unregistration compares the wrong name.
+- [ ] **SM-42 MCP connection lifecycle** (on hold 2026-11-13: retrying discovery after every failure changes how often servers are contacted; needs a retry policy decision) (b): `penguin/tools/providers/mcp.py:22-115`, `penguin/integrations/mcp/manager.py:71-503`; a failed discovery is sticky; (FAILED, session set) is representable; `_ensure_actor` is unlocked; `list_changed` is never consumed.
+- [x] **SM-43 Plugin lifecycle** (b): `penguin/plugins/plugin_manager.py:52-483`; parallel load looks like a deadlock (not run); action unregistration compares the wrong name.
+  - State: action unregistration now compares against the plugin name. Not examined: the reported deadlock in parallel `load_all_plugins`, tool-name collisions, and the LOADING/ERROR status moves.
 - [ ] **SM-44 Streaming action-tag stripper** (b): `penguin/tui_adapter/part_events.py:112,181-267`; an unterminated tag drops all later text; reasoning and content share one parser state. Blocked by SM-02.
-- [ ] **SM-45 Message / part / tool lifecycle** (c): `penguin/tui_adapter/part_events.py:97-769`; the error path leaves `_stream_active` set; two sources of truth for active tools.
+- [ ] **SM-45 Message / part / tool lifecycle** (re-read 2026-11-13: `on_assistant_error` emits a separate, already-completed error message; whether it should also end the active stream depends on who calls it and in what order, so it is left for a decision) (c): `penguin/tui_adapter/part_events.py:97-769`; the error path leaves `_stream_active` set; two sources of truth for active tools.
 - [ ] **SM-46 Headless CLI streaming display** (c): `penguin/cli/streaming_manager.py:27-80`, `penguin/cli/streaming_display.py:53-201`, `penguin/cli/cli.py:3763-4617`, `penguin/cli/event_manager.py:151-291`; stopping the spinner leaves the stream id set; five copies of the cleanup.
-- [ ] **SM-47 CLI event bus delivery and dedup** (c): `penguin/cli/events.py:107-234`; events without `content` share a dedup key; sync handlers mutate display state from a worker thread.
+- [x] **SM-47 CLI event bus delivery and dedup** (c): `penguin/cli/events.py:107-234`; events without `content` share a dedup key; sync handlers mutate display state from a worker thread.
+  - State: events without `content` are deduplicated on their whole payload. Still open: sync handlers run on a worker thread and mutate display state unlocked; `PenguinCLI` never unsubscribes.
 - [ ] **SM-48 Launcher web-server ownership** (b): `penguin/cli/opencode_launcher.py:205-276,964-1054`; a foreign server on the port counts as ours; no SIGTERM handler.
 - [ ] **SM-49 Provider OAuth pending flow** (c): `penguin/web/services/provider_auth.py:40-512,1023-1227`; one slot per provider, popped by provider and not by state; four TODOs already name the gaps.
 - [ ] **SM-50 OpenAI OAuth resolve and refresh** (b): `penguin/llm/adapters/openai.py:1019-1145`; resolve and peek duplicate env parsing; refresh writes process-wide state unlocked.
-- [ ] **SM-51 ACP session turn** (c): `penguin/integrations/acp/server.py:39-187`; `cancel` can call `.cancel()` on a task already set to None.
+- [ ] **SM-51 ACP session turn** (stale 2026-11-13: `cancel` on main now captures `session.task` before awaiting, so the `None.cancel()` path is gone) (c): `penguin/integrations/acp/server.py:39-187`; `cancel` can call `.cancel()` on a task already set to None.
 - [ ] **SM-52 Run-mode task WebSocket** (b): `penguin/web/routes.py:6682-6886`; `core._temp_ws_callback` is a single slot.
 - [ ] **SM-53 Sub-agent registry** (b): `penguin/system/conversation_manager.py:224-240,340,501-582,1598`; removing the current agent leaves three "current" pointers stale.
-- [ ] **SM-54 AgentExecutor task state** (c): `penguin/multi/executor.py:212-443`, `penguin/multi/coordinator.py:309`; PAUSED is a label only; `cancel()` overwrites a finished state.
+- [x] **SM-54 AgentExecutor task state** (c): `penguin/multi/executor.py:212-443`, `penguin/multi/coordinator.py:309`; PAUSED is a label only; `cancel()` overwrites a finished state.
+  - State: `cancel()` keeps an outcome the agent reached while the cancel was in flight. Still open: PAUSED is a label only; finished ids block respawn until `cleanup()`; three places track agent liveness with no reconciliation.
 - [ ] **SM-55 Context window trimming and epoch** (a) [bend]: `penguin/system/context_window.py:272-1220`, `penguin/system/context_epoch.py:24-155`; total over budget with every category under its own budget trims nothing. Keep the category-priority trimming model; do not introduce compaction.
-- [ ] **SM-56 Edit commit and rollback** (b): `penguin/tools/editing/service.py:507-533`, `penguin/tools/editing/legacy_multifile.py:164-262`; the snapshot is appended after the write.
+- [x] **SM-56 Edit commit and rollback** (b): `penguin/tools/editing/service.py:507-533`, `penguin/tools/editing/legacy_multifile.py:164-262`; the snapshot is appended after the write.
+  - State: the snapshot is recorded before the write, so a file that fails part way through is restored. Still open: writes are not atomic; there is no check that the file is unchanged since `old_content` was read; the legacy multi-file path.
 - [ ] **SM-57 File-root / execution mode** (b): `penguin/tools/tool_manager.py:4030-4166`, `penguin/config.py:532,597`; three writers disagree on env vars and the notebook directory.
-- [ ] **SM-58 PyDoll browser session** (b): `penguin/tools/pydoll_tools.py:14-201`; (browser set, not initialized) is reachable; a dead cleanup task blocks the idle timer.
+- [x] **SM-58 PyDoll browser session** (b): `penguin/tools/pydoll_tools.py:14-201`; (browser set, not initialized) is reachable; a dead cleanup task blocks the idle timer.
+  - State: a finished idle-timer task no longer blocks a new one. Still open: a failed `start()` leaves (browser set, not initialized), which the next `initialize` treats as ready; the idle worker awaits its own cancellation in `close()`; no lock around `initialize`.
 - [ ] **SM-59 Browser-harness daemon identity** (c): `penguin/tools/browser_harness_tools.py:24,264-426`, `penguin/tools/browser_harness_ownership.py:81`; cleanup runs without the helpers lock.
 - [ ] **SM-60 Lazy tool loading** (b): `penguin/tools/tool_manager.py:278,2231-2907,6355`; check-then-set with no lock on worker threads.
 - [ ] **SM-61 Memory incremental index** (c): `penguin/memory/indexing/incremental.py:47-142`, `penguin/memory/indexing/metadata.py:38-108`; re-index duplicates entries; non-atomic metadata write.
@@ -395,16 +516,19 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
 
 Check for callers first. If there are none, delete.
 
-- [ ] **SM-63 Interrupt flags** (a): `penguin/engine.py:765`, `penguin/run_mode.py:81,479,757`, `penguin/core_runtime/core_state.py:56`; `Engine._interrupted` is never read; `core._interrupted` is never set True.
+- [x] **SM-63 Interrupt flags** (a): `penguin/engine.py:765`, `penguin/run_mode.py:81,479,757`, `penguin/core_runtime/core_state.py:56`; `Engine._interrupted` is never read; `core._interrupted` is never set True.
+  - State: `Engine._interrupted` is deleted; nothing read it. Left in place: `core._interrupted` (read by the continuous loop and exposed by `process_facade`, though nothing sets it to True) and `RunMode._interrupted` (set by the MCP run-mode tool); removing those changes a public attribute and an MCP tool's behaviour.
 - [ ] **SM-64 Legacy `get_response` retry** (b): `penguin/core_runtime/response_generation.py:31-114`; swallows cancellation and persists an apology string.
 - [ ] **SM-65 Legacy `local_task` status strings** (b): `penguin/local_task/manager.py:137-182` and bypass sites; handlers are unreachable until SM-31 is fixed. Still imported by `utils/parser.py:22`.
 - [ ] **SM-66 Legacy process attach** (b): `penguin/utils/parser.py:1112,2015-2038`, `penguin/utils/process_manager.py:13-160`.
 - [ ] **SM-67 Legacy Textual TUI stream** (c): `penguin/cli/tui.py:1473-2614`; referenced only from `misc/` and a prototype.
 - [ ] **SM-68 Legacy `BrowserManager`** (b): `penguin/tools/browser_tools.py:42,181`; `initialize` always returns False.
 - [ ] **SM-69 REPL interrupt and turn loop** (b): `penguin/cli/cli.py:4103-4602`, `penguin/cli/session_manager.py:52`; Ctrl-C during processing never cancels the core; `/exit` sets a flag nothing checks.
-- [ ] **SM-70 CLI message dedupe** (a): `penguin/cli/cli.py:3754-4151`, `penguin/cli/event_manager.py:130-189`; keyed on the first 50 characters, never pruned.
+- [x] **SM-70 CLI message dedupe** (a): `penguin/cli/cli.py:3754-4151`, `penguin/cli/event_manager.py:130-189`; keyed on the first 50 characters, never pruned.
+  - State: (partial) a reply in a later turn that opens with the same 50 characters is no longer hidden; the key is a duplicate only within the turn that recorded it. Left as is: user messages keep the session-wide check, because the turn only advances on a user message and a repeated `continue` cannot be told from a double delivery by content alone; the sets are still never pruned.
 - [ ] **SM-71 Config root and env precedence** (b): `penguin/config.py:30-831`; module-level `config` never reloads; a project `.env` overrides shell-exported keys.
-- [ ] **SM-72 Sidecar binary cache** (b): `penguin/cli/opencode_launcher.py:531-717`; a partial copy passes the existence check.
+- [x] **SM-72 Sidecar binary cache** (b): `penguin/cli/opencode_launcher.py:531-717`; a partial copy passes the existence check.
+  - State: the binary is copied to a sibling temporary file and renamed into place. No failing-first run: the helper is new; the old code copied straight to the final path. Still open: no lock between concurrent launchers; the marker is trusted with only an existence check.
 - [ ] **SM-73 First-run setup marker** (b): `penguin/setup/wizard.py:123-354`; the marker file is written and never read.
 - [ ] **SM-74 Skills activation, QuestionManager, ProcessWaitGuard** (b): `penguin/skills/manager.py:21-112`, `penguin/security/question.py:73-257`, `penguin/tools/process_wait.py:17`; unpruned sets and no expiry.
 - [ ] **SM-75 Small singletons and slots**: `CircuitBreaker` string state (`penguin/project/resilience.py:97`), `RuntimeJobRecord.status` upsert (`penguin/project/storage.py:488`), `PenguinState._previous_state` (`penguin/system/state.py:471`), DAG cache invalidation (`penguin/project/manager.py:1340`), MessageBus drop (`penguin/system/message_bus.py:92`), VCS watcher slot (`penguin/web/services/system_status.py:20`), title refresh tasks (`penguin/web/routes.py:963`), `events_ws` (`penguin/web/routes.py:2367`), connection pool `close_all` (`penguin/llm/api_client.py:164`), core/app singletons (`penguin/web/app.py:36,212`).
@@ -484,3 +608,151 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
     `tests/test_part_event_persist_callback.py` and
     `tests/test_engine_task_finish_contract.py`: 731 passed, 4 skipped.
   - `ruff check` on the new test file: clean.
+- Baseline repair (2026-11-13): `tests/api/test_concurrent_session_isolation.py`
+  used `routes_module` without importing it. Import added.
+- SM-03: fixed (2026-11-13). `PermissionEnforcer.check` and
+  `_check_agent_permission` deny when a policy raises;
+  `ActionExecutor.execute_action` applies `ToolCapabilityPolicy` before any
+  handler.
+  - `pytest -q tests/test_permission_fail_closed.py`: 93 passed. The two
+    policy tests and the `process_list` / `task_list` cases were red before the
+    fix; each fix removed alone turns its test red.
+  - Every test file mentioning permissions, `ActionExecutor` or tool
+    capabilities, plus `tests/tools`: 902 passed, 36 skipped.
+- SM-04: fixed (2026-11-13). All three terminal moves go through
+  `ApprovalManager._record_resolved`; `approve()` on an expired request records
+  EXPIRED, notifies listeners and returns None.
+  - `pytest -q tests/test_approval_lifecycle.py`: 4 passed, all red without the fix.
+  - Every test file mentioning approvals or permissions: 617 passed, 15
+    skipped, 1 failed. The failure is
+    `tests/test_cli_surface_audit_regressions.py::test_runmode_help_text_reflects_continuous_mode_truth`,
+    a `TypeError` inside click's `make_metavar` in this environment; it fails
+    the same way without this change.
+- SM-05: fixed (2026-11-13). `permission.asked` / `permission.replied` are
+  emitted before, and independently of, the WebSocket send; listeners are
+  registered in the app lifespan and in `/approvals/*`; a reject message is
+  attached before the request is resolved.
+  - `pytest -q tests/api/test_permission_reply_surfaces.py`: 3 passed, all red
+    before the fix.
+  - `tests/api`, `tests/web` and `tests/tools/test_permission_resume.py`, one
+    file at a time with a 60 s cap: all pass except the two below.
+- Known red baseline, not caused by this branch (same result on `HEAD`
+  without the change), not yet investigated:
+  - `tests/api/test_web_app_credentials_rehydrate.py`: 1 failed.
+  - `tests/api/test_web_auth_hardening.py`: hangs for more than 60 s. This is
+    why whole-directory and whole-suite runs never finish. Run `tests/api`
+    per file, or deselect it.
+  - `tests/test_cli_surface_audit_regressions.py::test_runmode_help_text_reflects_continuous_mode_truth`:
+    click `make_metavar` `TypeError` in this environment.
+  - `tests/test_a2a_server.py`: cannot be collected, `a2a` is not installed.
+- SM-07: fixed (2026-11-13). `SessionManager` counts modifications per
+  session; `save_session` clears the modified flag only if the count is
+  unchanged since it took its snapshot, and `_auto_save_sessions` no longer
+  clears the flag itself.
+  - `pytest -q tests/system/test_session_dirty_tracking.py`: 3 passed; 2 red
+    without the fix.
+  - `tests/system` and `tests/core_runtime`: 544 passed, 2 skipped, 3 xfailed.
+    Other files that use `SessionManager`: 120 passed, 3 skipped.
+- SM-08: fixed (2026-11-13). Rollback and branch both call
+  `ConversationManager._adopt_restored_session`, which replaces the cached
+  object for that session id, marks it modified and saves it.
+  - `pytest -q tests/system/test_rollback_session_swap.py`: 1 passed; red
+    before the fix (auto-save wrote the pre-rollback history back).
+  - Every non-API test file mentioning checkpoints: 333 passed, 3 skipped,
+    1 xfailed.
+- SM-09: partly fixed (2026-11-13). `load_session` now tries the backup
+  whenever the primary is missing or unusable, not only when loading the
+  primary raised.
+  - `pytest -q tests/system`: 115 passed, 2 skipped, 3 xfailed; the new
+    backup-only test was red before the fix.
+  - Other files that load sessions: 170 passed, 12 skipped.
+- SM-11: partly fixed (2026-11-13). `handle_issue_comment` ignores comments
+  whose author or sender is a bot account (`type == "Bot"` or a `[bot]` login).
+  - `pytest -q tests/api/test_github_webhook_self_trigger.py`: 4 passed; the
+    three bot cases were red before the fix.
+  - `tests/api/test_github_webhook_security.py`: 4 passed.
+- SM-19: fixed (2026-11-13). `Task.mark_pending_review` and `Task.approve`
+  check the status move first and raise `StateTransitionError` without
+  changing anything if it is illegal.
+  - `pytest -q tests/test_task_state_machine_contract.py`: 18 passed; 9 red
+    before the fix.
+  - Every test file mentioning task status, approval or orchestration: 287
+    passed, 2 failed. Both failures are baseline:
+    `test_cli_surface_audit_regressions` (click) and
+    `tests/test_side_door_completion_semantics.py::test_api_complete_task_rejects_non_review_ready_task`,
+    which matches text against an `HTTPException` whose string is empty with
+    the installed FastAPI.
+- SM-18: fixed (2026-11-13). The end marker is queued in `finally`, chunks are
+  queued directly, and the producer is awaited so its error reaches the
+  consumer. Worse than recorded: every chunk was lost, not only late ones,
+  when the provider invoked the callback without yielding.
+  - `pytest -q tests/test_engine_llm_stream_sentinel.py`: 2 passed; both red
+    before the fix (one by hanging until its 2 s timeout).
+  - `tests/test_engine*.py`: 129 passed.
+- SM-31: fixed (2026-11-13). `subscribe` stores `weakref.WeakMethod` for bound
+  methods, `unsubscribe` compares by equality, and `publish` rebuilds the
+  handler list instead of removing from it while iterating. Left open:
+  `publish` still holds its lock across handler awaits.
+  - `pytest -q tests/test_event_bus_weak_methods.py`: 3 passed; the delivery
+    test was red before the fix.
+  - Every non-API test file touching the event bus, telemetry, `local_task`
+    or run mode: 558 passed, 9 skipped, and the two known baseline failures.
+- SM-12: partly fixed (2026-11-13).
+  - OpenAI HTTP stream: `LLMProviderError` raised for an error event is no
+    longer caught by the malformed-line handler.
+    `pytest -q tests/llm/test_openai_http_stream_errors.py`: 2 passed; the
+    error-event test was red before the fix.
+  - Anthropic stream: a timeout is recorded as a retryable TIMEOUT `LLMError`
+    and pending tool calls are cleared.
+    `pytest -q tests/llm/test_anthropic_stream_timeout_error.py`: 1 passed;
+    red without the fix.
+  - `tests/llm` and `tests/test_openai_adapter_streaming.py`: 439 passed.
+- SM-03 follow-up (2026-11-13): three cases of
+  `tests/integrations/test_bend_permissions.py::test_python_boundary_characterization`
+  recorded the old fail-open behaviour and are updated to fail-closed; the
+  prototype README says so.
+- Known red baseline, Bend lane: 14 tests in
+  `tests/integrations/test_bend_permissions.py` fail on `origin/main` too. The
+  native `runner` and `scoring` binaries exit with status 2 under Bend 2.0.37
+  as installed here. Not investigated.
+- Branch check (2026-11-13, 13 commits): every new test plus `tests/system`,
+  `tests/llm`, `tests/tools`, `tests/core_runtime` and the touched single
+  files: 1423 passed, 22 skipped, 3 xfailed.
+  `tests/integrations/test_bend_tool_status.py` and `test_bend_runtime.py`:
+  8 passed.
+- SM-20: fixed (2026-11-13). `pytest -q tests/test_workflow_orchestrator_failure_paths.py`: 2 passed, both red before the fix; the three existing orchestrator test files: 6 passed.
+- SM-29: fixed (2026-11-13). `pytest -q tests/tools/test_code_execution_timeout_state.py`: 2 passed, the busy test red before the fix; `tests/tools`: 230 passed, 20 skipped.
+- SM-30: partly fixed (2026-11-13). `pytest -q tests/test_runmode_continuous_termination.py`: 2 passed, both red before the fix (the first by crashing on `MessageCategory.WARNING`); other run-mode tests: 34 passed.
+- SM-15: partly fixed (2026-11-13). `pytest -q tests/test_engine_task_finish_contract.py`: 49 passed, including two new unbounded-LENGTH tests; engine, finish and core-runtime suites pass.
+- SM-21: partly fixed (2026-11-13). `pytest -q tests/test_orchestration_terminal_signals.py`: 7 passed, 6 red before the fix; `tests/test_orchestration.py` passes.
+- SM-43: partly fixed (2026-11-13). `pytest -q tests/test_plugin_action_unregister.py`: 1 passed, red before the fix.
+- SM-54: partly fixed (2026-11-13). `pytest -q tests/test_agent_executor_cancel_race.py`: 2 passed, the race test red before the fix.
+- SM-47: partly fixed (2026-11-13). `pytest -q tests/test_cli_event_dedup_key.py`: 3 passed, 2 red before the fix.
+- SM-56: partly fixed (2026-11-13). `pytest -q tests/tools/test_edit_commit_rollback.py`: 1 passed, red before the fix (file left truncated); editing suites: 95 passed, 1 skipped.
+- SM-58: partly fixed (2026-11-13). `pytest -q tests/tools/test_pydoll_cleanup_timer.py`: 2 passed, the restart test red before the fix.
+- SM-36: fixed (2026-11-13). `pytest -q tests/api/test_reasoning_variant_restore_target.py`: 2 passed, the first red before the fix (the request copy's settings were written onto the core config); variant tests: 88 passed.
+- SM-63: partly done (2026-11-13). Deleted the unread `Engine._interrupted`; engine and core-runtime suites pass.
+- Process note (2026-11-13): the SM-47 commit `c08714616` was committed and
+  pushed with its new tests failing on an incomplete fixture; `c624eb3b5`
+  completed the fixture. Commits are now gated on the item's tests passing.
+- Branch check (2026-11-13, 27 commits): the suites listed in the PR
+  description: 1623 passed, 23 skipped, 3 xfailed. One of the SM-05 tests
+  failed in this combined order until its fixture cleared leftover listeners.
+- Items ticked `[x]` whose State line lists what is still open are only
+  partly fixed: SM-09, SM-11, SM-21, SM-30, SM-43, SM-47, SM-54, SM-56, SM-58,
+  SM-63. Not started: every unticked item without an "on hold" note.
+- SM-17: partly fixed (2026-11-13). Two new cases in `tests/test_engine_initialization.py` (unexpected error, cancellation) were red before the fix; engine and core-runtime suites: 564 passed.
+- SM-72: partly fixed (2026-11-13). `pytest -q tests/test_sidecar_install_atomic.py tests/test_opencode_launcher.py`: 28 passed.
+- SM-34: partly fixed (2026-11-13). `pytest -q tests/llm/test_openrouter_call_reference_rewrite.py`: 8 passed, 4 red before the fix; `tests/llm` and `tests/test_openrouter_fixes.py`: 437 passed.
+- SM-70: partly fixed (2026-11-13). `pytest -q tests/test_cli_message_dedupe_turns.py`: 2 passed, the later-turn test red before the fix; CLI test files: 144 passed and the known click baseline failure.
+- Branch check (2026-11-13, at `0199c737a`): the suites listed in the PR
+  description: 1667 passed, 23 skipped, 3 xfailed. 27 items ticked, 49 open.
+- SM-12: done (2026-11-13). Shared stream-end rule wired into four adapters; 11 deterministic tests, 5 opt-in Bend tests.
+- SM-16: partly fixed (2026-11-13). One owner for session run tracking; busy-forever after a crash and the unbounded abort marker fixed.
+- SM-13: partly fixed (2026-11-13). Shared tool-call accumulator in five adapters; Link not yet moved.
+- SM-13: done (2026-11-14). Link moved onto the shared accumulator.
+- SM-14: done (2026-11-14). The OpenAI fallback no longer re-requests after output.
+- SM-32: done (2026-11-14). Guarded lifecycle transitions; RETRYING now written by Link.
+- SM-33: done (2026-11-14). One call-outcome rule. Flaky under full-suite load, passes alone 3/3: tests/tools/test_log_inspired_process_faults.py::test_callback_exceptions_do_not_fake_failure_or_leak_child.
+- SM-16: run record done (2026-11-14). Cancellation response status on hold for a decision.
+- SM-16: decision (2026-11-14) from Maximus: a cancelled chat request keeps returning HTTP 200 with `aborted: true`. Nothing left open on SM-16 apart from the known limits in its State line.

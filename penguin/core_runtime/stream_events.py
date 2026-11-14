@@ -16,6 +16,7 @@ from penguin.system.task_cancellation import AbortReason, abort_task
 from . import (
     opencode_bridge as core_opencode_bridge,
     opencode_transcript as core_opencode_transcript,
+    process_lifecycle,
 )
 
 __all__ = [
@@ -254,13 +255,7 @@ async def opencode_session_status_heartbeat(
     try:
         while True:
             await asyncio.sleep(interval)
-            active_requests = getattr(owner, "_opencode_active_requests", None)
-            active_count = (
-                active_requests.get(session_id, 0)
-                if isinstance(active_requests, dict)
-                else 0
-            )
-            if active_count <= 0:
+            if not process_lifecycle.session_has_active_request(owner, session_id):
                 return
             try:
                 await owner._emit_opencode_session_status(session_id, "busy")
@@ -426,24 +421,17 @@ async def abort_session(
     if not sid:
         return False
 
-    abort_sessions = getattr(owner, "_opencode_abort_sessions", None)
-    if not isinstance(abort_sessions, set):
-        abort_sessions = set()
-        owner._opencode_abort_sessions = abort_sessions
-    abort_sessions.add(sid)
+    process_lifecycle.mark_session_aborted(owner, sid)
     aborted = False
 
     adapter = owner._get_tui_adapter(sid)
     adapter_abort = getattr(adapter, "abort", None)
 
-    tasks_map = getattr(owner, "_opencode_process_tasks", None)
-    if isinstance(tasks_map, dict):
-        active_tasks = list(tasks_map.get(sid, set()))
-        for task in active_tasks:
-            if task.done():
-                continue
-            abort_task(task, AbortReason.USER_INTERRUPTED)
-            aborted = True
+    for task in process_lifecycle.session_tasks(owner, sid):
+        if task.done():
+            continue
+        abort_task(task, AbortReason.USER_INTERRUPTED)
+        aborted = True
 
     states = getattr(owner, "_opencode_stream_states", None)
     state = states.get(sid) if isinstance(states, dict) else None
@@ -1028,12 +1016,7 @@ async def handle_stream_chunk(
             or resolved_session_id
         )
 
-    abort_sessions = getattr(owner, "_opencode_abort_sessions", None)
-    if not isinstance(abort_sessions, set):
-        abort_sessions = set()
-        owner._opencode_abort_sessions = abort_sessions
-
-    if isinstance(resolved_session_id, str) and resolved_session_id in abort_sessions:
+    if process_lifecycle.consume_session_abort(owner, resolved_session_id):
         raise asyncio.CancelledError(f"Session {resolved_session_id} aborted")
 
     filter_event = getattr(owner, "_filter_internal_markers_from_event")

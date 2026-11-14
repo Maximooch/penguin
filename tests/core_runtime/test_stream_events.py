@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from penguin.core_runtime import stream_events
+from penguin.core_runtime.process_lifecycle import SessionRun
 from penguin.llm.stream_handler import AgentStreamingStateManager
 from penguin.system.execution_context import ExecutionContext, execution_context_scope
 from penguin.system.state import MessageCategory
@@ -494,8 +495,7 @@ async def test_abort_session_cancels_tasks_cleans_scoped_state_and_emits_idle() 
         event_bus=_EventBus(),
         _get_tui_adapter=lambda _session_id: adapter,
         _stream_manager=_StreamManager(),
-        _opencode_abort_sessions=set(),
-        _opencode_process_tasks={"session_1": {pending_task}},
+        _opencode_session_runs={"session_1": SessionRun(tasks={pending_task})},
         _opencode_stream_states={
             "session_1": {
                 "active": True,
@@ -533,7 +533,7 @@ async def test_abort_session_cancels_tasks_cleans_scoped_state_and_emits_idle() 
     await asyncio.wait_for(asyncio.gather(*cleanup_tasks), timeout=0.1)
     assert not cleanup_tasks
     assert adapter.reasons == ["Tool execution was interrupted"]
-    assert "session_1" in owner._opencode_abort_sessions
+    assert owner._opencode_session_runs["session_1"].abort_requested is True
 
     assert owner._opencode_stream_states["session_1"]["active"] is False
     assert owner._opencode_stream_states["session_1"]["stream_id"] is None
@@ -580,8 +580,7 @@ async def test_abort_session_does_not_wait_for_slow_adapter_cleanup() -> None:
         event_bus=_EventBus(),
         _get_tui_adapter=lambda _session_id: _SlowAbortAdapter(),
         _stream_manager=SimpleNamespace(get_active_agents=lambda: []),
-        _opencode_abort_sessions=set(),
-        _opencode_process_tasks={"session_1": {pending_task}},
+        _opencode_session_runs={"session_1": SessionRun(tasks={pending_task})},
         _opencode_stream_states={"session_1": {"active": True}},
         _opencode_tool_parts={},
         _opencode_tool_info={},
@@ -623,8 +622,7 @@ async def test_abort_session_accepts_adapter_only_cleanup() -> None:
         event_bus=_EventBus(),
         _get_tui_adapter=lambda _session_id: _Adapter(),
         _stream_manager=SimpleNamespace(get_active_agents=lambda: []),
-        _opencode_abort_sessions=set(),
-        _opencode_process_tasks={},
+        _opencode_session_runs={},
         _opencode_stream_states={},
         _opencode_tool_parts={},
         _opencode_tool_info={},
@@ -696,8 +694,7 @@ async def test_abort_session_finalizes_persisted_tool_after_restart() -> None:
         _get_tui_adapter=lambda _session_id: object(),
         _stream_manager=SimpleNamespace(get_active_agents=lambda: []),
         _find_session_store=lambda _session_id: (session, manager),
-        _opencode_abort_sessions=set(),
-        _opencode_process_tasks={},
+        _opencode_session_runs={},
         _opencode_stream_states={},
         _opencode_tool_parts={},
         _opencode_tool_info={},
@@ -1000,7 +997,7 @@ async def test_handle_stream_chunk_scopes_filters_and_forwards_runmode() -> None
     owner = SimpleNamespace(
         conversation_manager=SimpleNamespace(current_agent_id="ambient-agent"),
         _stream_manager=AgentStreamingStateManager(),
-        _opencode_abort_sessions=set(),
+        _opencode_session_runs={},
     )
     owner._filter_internal_markers_from_event = (
         stream_events.filter_internal_markers_from_event
@@ -1049,7 +1046,7 @@ async def test_handle_stream_chunk_cancels_aborted_session_before_state_mutation
     owner = SimpleNamespace(
         conversation_manager=SimpleNamespace(current_agent_id="agent-a"),
         _stream_manager=AgentStreamingStateManager(),
-        _opencode_abort_sessions={"session_1"},
+        _opencode_session_runs={"session_1": SessionRun(abort_requested=True)},
     )
     owner._filter_internal_markers_from_event = (
         stream_events.filter_internal_markers_from_event

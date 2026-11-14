@@ -953,9 +953,10 @@ def _check_agent_permission(
 
         return PermissionResult.ALLOW, f"Agent '{agent_id}' allowed"
 
-    except ImportError:
-        # Agent permissions module not available
-        return PermissionResult.ALLOW, "Agent permissions module not available"
     except Exception as e:
-        logger.warning(f"Error checking agent permission: {e}")
-        return PermissionResult.ALLOW, f"Agent permission check failed: {e}"
+        # An agent policy that cannot answer has not allowed anything.
+        logger.error("Error checking agent permission: %s", e, exc_info=True)
+        return (
+            PermissionResult.DENY,
+            f"Agent '{agent_id}' permission check failed: {e}",
+        )

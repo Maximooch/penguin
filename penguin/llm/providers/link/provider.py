@@ -28,6 +28,7 @@ from ...contracts import (
     StreamCallback,
 )
 from ...provider_transform import build_llm_error, extract_retry_after_seconds
+from ...tool_call_accumulator import ToolCallAccumulator
 from .chat_completions_protocol import (
     build_chat_completions_body,
     normalize_chat_usage,
@@ -129,7 +130,7 @@ class LinkProvider:
         self._last_lifecycle: LLMRequestLifecycle | None = None
         self._last_finish_reason = FinishReason.UNKNOWN
         self._last_reasoning = ""
-        self._pending_tool_calls: list[LLMToolCall] = []
+        self._tool_calls = ToolCallAccumulator()
         self._last_provider_data: dict[str, Any] = {}
 
     def get_capabilities(self) -> LLMProviderCapabilities:
@@ -231,12 +232,13 @@ class LinkProvider:
                 # This is a NEW model attempt, not replay of an uncertain charge.
                 # Keep the same completed tool context; never expose failed deltas.
                 kwargs = {**kwargs, "invocation_id": str(uuid.uuid4())}
+                if self._last_lifecycle is not None:
+                    self._last_lifecycle.advance(ProviderRequestStatus.RETRYING)
                 try:
                     await asyncio.sleep(max(delay, exc.error.retry_after_seconds or 0))
                 except asyncio.CancelledError:
                     if self._last_lifecycle is not None:
-                        self._last_lifecycle.status = ProviderRequestStatus.CANCELLED
-                        self._last_lifecycle.ended_at = time.time()
+                        self._last_lifecycle.advance(ProviderRequestStatus.CANCELLED)
                     raise
                 delay = min(delay * 2, 30.0)  # Connection backoff, not a run deadline.
                 continue
@@ -275,7 +277,7 @@ class LinkProvider:
         )
         self._last_lifecycle = lifecycle
         self._last_error = None
-        self._pending_tool_calls = []
+        self._tool_calls.discard()
 
         try:
             client = await self._client()
@@ -331,32 +333,31 @@ class LinkProvider:
             text, reasoning, tool_calls, usage, finish, provider_data = result
             self._last_usage = usage
             self._last_reasoning = reasoning
-            self._pending_tool_calls = list(tool_calls)
+            self._tool_calls.discard()
+            for call in tool_calls:
+                self._tool_calls.add(
+                    {
+                        "item_id": call.item_id,
+                        "call_id": call.call_id,
+                        "name": call.name,
+                        "arguments": call.arguments,
+                    }
+                )
             self._last_finish_reason = finish
             self._last_provider_data.update(provider_data)
-            lifecycle.status = ProviderRequestStatus.COMPLETED
-            lifecycle.finish_reason = finish
-            lifecycle.provider_response_id = _optional_str(
-                provider_data.get("response_id")
+            lifecycle.advance(
+                ProviderRequestStatus.COMPLETED,
+                finish_reason=finish,
+                provider_response_id=_optional_str(provider_data.get("response_id")),
+                provider_data=self._last_provider_data,
             )
-            lifecycle.ended_at = time.time()
-            lifecycle.last_event_at = lifecycle.ended_at
-            lifecycle.provider_data.update(self._last_provider_data)
             return text
         except asyncio.CancelledError:
-            lifecycle.status = ProviderRequestStatus.CANCELLED
-            lifecycle.ended_at = time.time()
+            lifecycle.advance(ProviderRequestStatus.CANCELLED)
             raise
         except LLMProviderError as error:
             self._last_error = error.error
-            lifecycle.error = error.error
-            lifecycle.status = (
-                ProviderRequestStatus.DISCONNECTED
-                if error.error.category
-                in {ErrorCategory.NETWORK, ErrorCategory.TIMEOUT}
-                else ProviderRequestStatus.FAILED
-            )
-            lifecycle.ended_at = time.time()
+            lifecycle.finish(error=error.error, finish_reason=None)
             raise
         except (httpx.HTTPError, asyncio.TimeoutError) as error:
             llm_error = build_llm_error(
@@ -372,9 +373,7 @@ class LinkProvider:
                 provider_data={"dispatch_outcome": "uncertain"},
             )
             self._last_error = llm_error
-            lifecycle.error = llm_error
-            lifecycle.status = ProviderRequestStatus.DISCONNECTED
-            lifecycle.ended_at = time.time()
+            lifecycle.finish(error=llm_error, finish_reason=None)
             raise LLMProviderError(llm_error) from error
         except Exception as error:
             llm_error = build_llm_error(
@@ -386,9 +385,7 @@ class LinkProvider:
                 provider_data={"dispatch_outcome": "uncertain"},
             )
             self._last_error = llm_error
-            lifecycle.error = llm_error
-            lifecycle.status = ProviderRequestStatus.FAILED
-            lifecycle.ended_at = time.time()
+            lifecycle.finish(error=llm_error, finish_reason=None)
             raise LLMProviderError(llm_error) from error
 
     def count_tokens(self, content: Any) -> int:
@@ -413,23 +410,14 @@ class LinkProvider:
         return self._last_reasoning
 
     def has_pending_tool_call(self) -> bool:
-        return bool(self._pending_tool_calls)
+        return self._tool_calls.has_pending()
 
     def get_and_clear_last_tool_call(self) -> dict[str, Any] | None:
         calls = self.get_and_clear_pending_tool_calls()
         return calls[-1] if calls else None
 
     def get_and_clear_pending_tool_calls(self) -> list[dict[str, Any]]:
-        calls = [
-            {
-                "id": call.call_id,
-                "type": "function",
-                "function": {"name": call.name, "arguments": call.arguments},
-            }
-            for call in self._pending_tool_calls
-        ]
-        self._pending_tool_calls = []
-        return calls
+        return self._tool_calls.drain()
 
     async def _client(self) -> httpx.AsyncClient:
         if self._http_client is not None:
@@ -549,7 +537,7 @@ class LinkProvider:
         ) as response:
             await self._raise_for_link_error(response, lifecycle)
             self._capture_response_headers(response.headers)
-            lifecycle.status = ProviderRequestStatus.STREAMING
+            lifecycle.advance(ProviderRequestStatus.STREAMING)
             async for line in response.aiter_lines():
                 lifecycle.last_event_at = time.time()
                 if not line.startswith("data:"):

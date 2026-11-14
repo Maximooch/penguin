@@ -13,6 +13,7 @@ import pytest
 
 from penguin.core import PenguinCore
 from penguin.core_runtime import action_mapping
+from penguin.core_runtime.process_lifecycle import SessionRun
 from penguin.system.execution_context import (
     ExecutionContext,
     execution_context_scope,
@@ -828,14 +829,14 @@ async def test_opencode_status_heartbeat_refreshes_busy_status() -> None:
     core = PenguinCore.__new__(PenguinCore)
 
     setattr(core, "event_bus", bus)
-    setattr(core, "_opencode_active_requests", {"session_busy": 1})
+    setattr(core, "_opencode_session_runs", {"session_busy": SessionRun(requests=1)})
     setattr(core, "_opencode_status_heartbeats", {})
 
     core._ensure_opencode_session_status_heartbeat("session_busy", interval=0.01)
     task = core._opencode_status_heartbeats.get("session_busy")
     await asyncio.sleep(0.035)
 
-    core._opencode_active_requests.pop("session_busy", None)
+    core._opencode_session_runs.pop("session_busy", None)
     core._cancel_opencode_session_status_heartbeat("session_busy")
     if task is not None:
         with suppress(asyncio.CancelledError):
@@ -861,7 +862,7 @@ async def test_opencode_status_heartbeat_continues_after_emit_failure() -> None:
     core = PenguinCore.__new__(PenguinCore)
     calls = 0
 
-    setattr(core, "_opencode_active_requests", {"session_busy": 1})
+    setattr(core, "_opencode_session_runs", {"session_busy": SessionRun(requests=1)})
     setattr(core, "_opencode_status_heartbeats", {})
 
     async def _flaky_emit(_session_id: str, _status: str) -> None:
@@ -876,7 +877,7 @@ async def test_opencode_status_heartbeat_continues_after_emit_failure() -> None:
         core._opencode_session_status_heartbeat("session_busy", interval=0.01)
     )
     await asyncio.sleep(0.035)
-    core._opencode_active_requests.pop("session_busy", None)
+    core._opencode_session_runs.pop("session_busy", None)
     await task
 
     assert calls >= 2
@@ -1084,8 +1085,11 @@ async def test_abort_session_cancels_tasks_aborts_adapter_and_clears_tool_maps()
     setattr(core, "_stream_manager", _StreamManager())
     setattr(core, "emit_ui_event", lambda *_args, **_kwargs: None)
     setattr(core, "_get_tui_adapter", lambda _session_id: adapter)
-    setattr(core, "_opencode_abort_sessions", set())
-    setattr(core, "_opencode_process_tasks", {"session_abort": {pending_task}})
+    setattr(
+        core,
+        "_opencode_session_runs",
+        {"session_abort": SessionRun(tasks={pending_task})},
+    )
     setattr(
         core,
         "_opencode_stream_states",

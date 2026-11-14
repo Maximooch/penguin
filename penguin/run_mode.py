@@ -55,6 +55,9 @@ class RunMode:
     It relies on Engine for all LLM interaction, action parsing, and execution.
     """
 
+    # Consecutive empty LLM responses tolerated before continuous mode ends.
+    MAX_CONSECUTIVE_EMPTY_RESPONSES = 5
+
     def __init__(
         self,
         core,
@@ -724,6 +727,7 @@ class RunMode:
                 specified_task_name = "user_specified_task"
 
             # Main continuous mode loop
+            consecutive_empty_responses = 0
             while not self._shutdown_requested:
                 logger.debug(
                     f"RunMode: Continuous mode loop - shutdown_requested: {self._shutdown_requested}"
@@ -862,6 +866,30 @@ class RunMode:
                     )
                 # Check if we got an LLM empty response error - retry instead of stopping
                 if task_result.get("status") == "llm_empty_response_error":
+                    consecutive_empty_responses += 1
+                    if (
+                        consecutive_empty_responses
+                        >= self.MAX_CONSECUTIVE_EMPTY_RESPONSES
+                    ):
+                        logger.error(
+                            "LLM returned %s empty responses in a row; "
+                            "ending continuous mode.",
+                            consecutive_empty_responses,
+                        )
+                        await self._emit_event(
+                            {
+                                "type": "message",
+                                "role": "system",
+                                "content": (
+                                    "LLM returned empty responses "
+                                    f"{consecutive_empty_responses} times in a "
+                                    "row. Ending continuous mode."
+                                ),
+                                "category": MessageCategory.ERROR,
+                            }
+                        )
+                        self._shutdown_requested = True
+                        break
                     logger.warning(
                         "LLM empty response error in continuous mode. Waiting 30s before retry..."
                     )
@@ -870,15 +898,25 @@ class RunMode:
                             "type": "message",
                             "role": "system",
                             "content": "LLM returned empty response. Waiting 30s before retrying...",
-                            "category": MessageCategory.WARNING,
+                            "category": MessageCategory.ERROR,
                         }
                     )
                     await asyncio.sleep(30)
                     continue  # Retry the loop (will pick up same or next task)
+                consecutive_empty_responses = 0
 
-                    # Old fatal error logic removed:
-                    # self._shutdown_requested = True
-                    # break
+                # The model asked for an emergency stop.
+                if task_result.get("completion_type") == "emergency_stop":
+                    logger.warning("RunMode: emergency stop requested by the model.")
+                    await self._emit_event(
+                        {
+                            "type": "status",
+                            "status_type": "continuous_mode_ending",
+                            "data": {"reason": "emergency_stop"},
+                        }
+                    )
+                    self._shutdown_requested = True
+                    break
 
                 # Check for other errors
                 if (
