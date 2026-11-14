@@ -1060,6 +1060,9 @@ _INLINE_FILE_REFERENCE_PATTERN = re.compile(
 )
 
 
+_VARIANT_TARGET_KEY = "_target_model_config"
+
+
 def _apply_reasoning_variant_override(
     core: PenguinCore,
     variant: Optional[str],
@@ -1072,11 +1075,17 @@ def _apply_reasoning_variant_override(
     if callable(capabilities_getter):
         capabilities = capabilities_getter()
         supported_efforts = getattr(capabilities, "reasoning_efforts", None)
-    return apply_llm_reasoning_variant_override(
-        model_config or getattr(core, "model_config", None),
+    target = model_config or getattr(core, "model_config", None)
+    snapshot = apply_llm_reasoning_variant_override(
+        target,
         variant,
         supported_efforts=supported_efforts,
     )
+    if isinstance(snapshot, dict):
+        # Remember which config was changed so the restore cannot land on a
+        # different one (the request copy versus the shared core config).
+        snapshot[_VARIANT_TARGET_KEY] = target
+    return snapshot
 
 
 def _restore_reasoning_variant_override(
@@ -1085,8 +1094,9 @@ def _restore_reasoning_variant_override(
     *,
     model_config: Optional[Any] = None,
 ) -> None:
+    recorded = snapshot.get(_VARIANT_TARGET_KEY) if isinstance(snapshot, dict) else None
     restore_llm_reasoning_variant_override(
-        model_config or getattr(core, "model_config", None),
+        model_config or recorded or getattr(core, "model_config", None),
         snapshot,
     )
 

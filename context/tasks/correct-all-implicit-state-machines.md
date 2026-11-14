@@ -437,7 +437,8 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
 - [ ] **SM-33 Call outcome classification** (a) [bend]: `penguin/llm/api_client.py:535-992`, `penguin/llm/runtime.py:286`; computed twice with different rules. Blocked by SM-12.
 - [ ] **SM-34 Tool-replay adjacency repair, three copies** (a): `openai.py:1342-1519`, `openrouter.py:1201-1366`, `anthropic.py:1341-1418`; each provider treats orphans differently; OpenRouter rewrites `call_…` tokens in plain content.
 - [ ] **SM-35 Per-request `last_*` state on the adapter** (c) [design]: resets at `openai.py:820`, `openrouter.py:1404`, `anthropic.py:700`; Link resets a subset; `prepare_native_tool_kwargs` flips `interrupt_on_tool_call` permanently (`runtime.py:424`). See `model-config-mutation-state-leak.md`.
-- [ ] **SM-36 Reasoning-variant override** (b): `penguin/web/routes.py:1063-1091,4191,4418,4796`; the REST restore may write a deep-copied config's snapshot onto the global config. Unconfirmed.
+- [x] **SM-36 Reasoning-variant override** (b): `penguin/web/routes.py:1063-1091,4191,4418,4796`; the REST restore may write a deep-copied config's snapshot onto the global config. Unconfirmed.
+  - State: confirmed and fixed: the override snapshot now records which config it changed, and the restore uses that. The WebSocket path applies its override outside its `try/finally`; not changed.
 - [ ] **SM-37 Model switch propagation** (b): `penguin/core_runtime/model_runtime.py:107-375`; multi-step, non-atomic, failures downgraded to warnings.
 - [ ] **SM-38 Stall / empty / repeat guard** (a) [bend]: `penguin/engine.py:304-418,1376-1602`; counters reset in four places; recovery never re-arms; a kill in response mode looks like `completed`. Blocked by SM-15.
 - [ ] **SM-39 Per-session stream state dict** (c): `penguin/core_runtime/stream_events.py:68-85,448,1247-1349`; `active` with no message id exists across an await; adapter map entries leak. Blocked by SM-16.
@@ -685,3 +686,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-47: partly fixed (2026-11-13). `pytest -q tests/test_cli_event_dedup_key.py`: 3 passed, 2 red before the fix.
 - SM-56: partly fixed (2026-11-13). `pytest -q tests/tools/test_edit_commit_rollback.py`: 1 passed, red before the fix (file left truncated); editing suites: 95 passed, 1 skipped.
 - SM-58: partly fixed (2026-11-13). `pytest -q tests/tools/test_pydoll_cleanup_timer.py`: 2 passed, the restart test red before the fix.
+- SM-36: fixed (2026-11-13). `pytest -q tests/api/test_reasoning_variant_restore_target.py`: 2 passed, the first red before the fix (the request copy's settings were written onto the core config); variant tests: 88 passed.
