@@ -20,6 +20,7 @@ from penguin.system.execution_context import (
     get_current_execution_context,
 )
 from penguin.tools.tool_manager import ToolManager
+from penguin.web import routes as routes_module
 from penguin.web.routes import MessageRequest, handle_chat_message, stream_chat
 
 
