@@ -4010,41 +4010,51 @@ class Engine:
     async def _llm_stream(self, prompt: str, *, agent_id: Optional[str] = None):
         """Helper to stream chunks to caller."""
         loop = asyncio.get_running_loop()
-        queue: asyncio.Queue[str] = asyncio.Queue()
+        queue: asyncio.Queue[Any] = asyncio.Queue()
+        done = object()
 
-        async def run():
-            # Prepare conversation
-            cm, api_client, _tm, _ae = self._resolve_components(
-                agent_id or self.current_agent_id
-            )
-            cm.conversation.prepare_conversation(prompt)
+        async def run() -> None:
+            try:
+                # Prepare conversation
+                cm, api_client, _tm, _ae = self._resolve_components(
+                    agent_id or self.current_agent_id
+                )
+                cm.conversation.prepare_conversation(prompt)
 
-            # Inner callback forwards chunks into queue
-            async def _cb(chunk: str):
-                await queue.put(chunk)
+                # Queue chunks directly so they keep their order and cannot
+                # land after the end marker.
+                def _cb(chunk: str, *_args: Any, **_kwargs: Any) -> None:
+                    queue.put_nowait(chunk)
 
-            # Call provider with streaming enabled
-            messages = cm.conversation.get_formatted_messages()
-            messages = self._apply_agent_mode_notice(messages)
-            full_response = await api_client.get_response(
-                messages,
-                stream=True,
-                stream_callback=lambda c: asyncio.create_task(_cb(c)),
-            )
+                # Call provider with streaming enabled
+                messages = cm.conversation.get_formatted_messages()
+                messages = self._apply_agent_mode_notice(messages)
+                full_response = await api_client.get_response(
+                    messages,
+                    stream=True,
+                    stream_callback=_cb,
+                )
 
-            # Persist full assistant response now that streaming done
-            # add_assistant_message automatically strips action tags
-            cm.conversation.add_assistant_message(full_response)
-            cm.save()
+                # Persist full assistant response now that streaming done
+                # add_assistant_message automatically strips action tags
+                cm.conversation.add_assistant_message(full_response)
+                cm.save()
+            finally:
+                # Always end the stream, including when the provider fails.
+                queue.put_nowait(done)
 
-            await queue.put(None)  # sentinel
-
-        loop.create_task(run())
-        while True:
-            chunk = await queue.get()
-            if chunk is None:
-                break
-            yield chunk
+        producer = loop.create_task(run())
+        try:
+            while True:
+                chunk = await queue.get()
+                if chunk is done:
+                    break
+                yield chunk
+            # Surface a provider failure to the consumer.
+            await producer
+        finally:
+            if not producer.done():
+                producer.cancel()
 
     async def _check_stop(self) -> bool:
         for cond in self.stop_conditions:

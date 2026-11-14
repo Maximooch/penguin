@@ -326,7 +326,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     `_llm_step` aborts the stream only on `LLMProviderError`.
   - Correction: compute the key once per request and pass it; abort in
     `finally`.
-- [ ] **SM-18 Engine `_llm_stream` sentinel** (c) [confirmed]
+- [x] **SM-18 Engine `_llm_stream` sentinel** (c) [confirmed]
   - `penguin/engine.py:3952-3989`
   - The producer task is never awaited, so an exception leaves the consumer
     waiting forever. Chunks are queued through `create_task` and can land
@@ -617,3 +617,10 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
     `tests/test_side_door_completion_semantics.py::test_api_complete_task_rejects_non_review_ready_task`,
     which matches text against an `HTTPException` whose string is empty with
     the installed FastAPI.
+- SM-18: fixed (2026-11-13). The end marker is queued in `finally`, chunks are
+  queued directly, and the producer is awaited so its error reaches the
+  consumer. Worse than recorded: every chunk was lost, not only late ones,
+  when the provider invoked the callback without yielding.
+  - `pytest -q tests/test_engine_llm_stream_sentinel.py`: 2 passed; both red
+    before the fix (one by hanging until its 2 s timeout).
+  - `tests/test_engine*.py`: 129 passed.
