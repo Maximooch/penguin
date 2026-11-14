@@ -141,6 +141,10 @@ on its own.
   raised as a retryable network error (the runtime does not replay it once
   text has streamed); any other error is raised as it is. A failure before
   the first event still falls back to HTTP, as before.
+- SM-32: `RETRYING` is kept and given a meaning instead of being deleted: a
+  failed attempt that is being retried (Link's reconnect wait). A failed
+  attempt can only move to `RETRYING`; `COMPLETED` and `CANCELLED` are final.
+  A refused transition is ignored and logged at debug level, not raised.
 
 ## Item format
 
@@ -462,7 +466,8 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
 
 ## Tier 2: drift, leaks, duplicated truth
 
-- [ ] **SM-32 `LLMRequestLifecycle.status`** (b) [bend]: `penguin/llm/contracts.py:72,194`; update helper copy-pasted in three adapters; no terminal guard; `RETRYING` never written. Blocked by SM-12.
+- [x] **SM-32 `LLMRequestLifecycle.status`** (b) [bend]: `penguin/llm/contracts.py:72,194`; update helper copy-pasted in three adapters; no terminal guard; `RETRYING` never written. Blocked by SM-12.
+  - State: (done, 2026-11-14) one guarded transition, `next_request_status` in `penguin/llm/contracts.py`, applied by `LLMRequestLifecycle.advance` and `finish`. The three copied `_update_request_lifecycle` / `_finish_request_lifecycle_from_state` helpers now delegate to it, and Link no longer writes `status` directly. Link marks its reconnect wait `RETRYING`, so cancelling it no longer overwrites a finished attempt. Bend model in `prototypes/bend_request_lifecycle` (draft laws await review).
 - [ ] **SM-33 Call outcome classification** (a) [bend]: `penguin/llm/api_client.py:535-992`, `penguin/llm/runtime.py:286`; computed twice with different rules. Blocked by SM-12.
 - [x] **SM-34 Tool-replay adjacency repair, three copies** (a): `openai.py:1342-1519`, `openrouter.py:1201-1366`, `anthropic.py:1341-1418`; each provider treats orphans differently; OpenRouter rewrites `call_…` tokens in plain content.
   - State: (partial) the OpenRouter rewrite of `call_…` tokens in plain content is limited to tokens that look like call ids, so code such as `call_api` is no longer mangled. Still open: the three providers treat orphaned tool calls and results differently; OpenAI drops a call whose output text is empty.
@@ -741,3 +746,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-13: partly fixed (2026-11-13). Shared tool-call accumulator in five adapters; Link not yet moved.
 - SM-13: done (2026-11-14). Link moved onto the shared accumulator.
 - SM-14: done (2026-11-14). The OpenAI fallback no longer re-requests after output.
+- SM-32: done (2026-11-14). Guarded lifecycle transitions; RETRYING now written by Link.

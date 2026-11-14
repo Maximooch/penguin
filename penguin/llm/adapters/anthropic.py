@@ -135,41 +135,20 @@ class AnthropicAdapter(BaseAdapter):
         lifecycle = getattr(self, "_last_request_lifecycle", None)
         if lifecycle is None:
             return
-        now = time.time()
-        lifecycle.status = status
-        lifecycle.last_event_at = now
-        if status in {
-            ProviderRequestStatus.COMPLETED,
-            ProviderRequestStatus.DISCONNECTED,
-            ProviderRequestStatus.FAILED,
-            ProviderRequestStatus.CANCELLED,
-        }:
-            lifecycle.ended_at = now
-        if finish_reason is not None:
-            lifecycle.finish_reason = finish_reason
-        if error is not None:
-            lifecycle.error = error
-        if event_type:
-            lifecycle.last_event_type = event_type
-        if provider_response_id:
-            lifecycle.provider_response_id = provider_response_id
+        lifecycle.advance(
+            status,
+            finish_reason=finish_reason,
+            error=error,
+            event_type=event_type,
+            provider_response_id=provider_response_id,
+        )
 
     def _finish_request_lifecycle_from_state(self) -> None:
-        error = self.get_last_error()
-        if error is not None:
-            status = (
-                ProviderRequestStatus.DISCONNECTED
-                if error.category in {ErrorCategory.NETWORK, ErrorCategory.TIMEOUT}
-                else ProviderRequestStatus.FAILED
-            )
-            self._update_request_lifecycle(
-                status=status,
-                finish_reason=error.finish_reason or self.get_last_finish_reason(),
-                error=error,
-            )
+        lifecycle = getattr(self, "_last_request_lifecycle", None)
+        if lifecycle is None:
             return
-        self._update_request_lifecycle(
-            status=ProviderRequestStatus.COMPLETED,
+        lifecycle.finish(
+            error=self.get_last_error(),
             finish_reason=self.get_last_finish_reason(),
         )
 

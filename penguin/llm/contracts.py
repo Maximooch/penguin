@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import (
@@ -16,6 +18,8 @@ from typing import (
 )
 
 StreamCallback = Callable[[str, str], Any]
+
+logger = logging.getLogger(__name__)
 
 
 def stable_payload_hash(payload: Any) -> str:
@@ -80,6 +84,45 @@ class ProviderRequestStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+
+_FINAL_REQUEST_STATUSES = frozenset(
+    {ProviderRequestStatus.COMPLETED, ProviderRequestStatus.CANCELLED}
+)
+_FAILED_REQUEST_STATUSES = frozenset(
+    {ProviderRequestStatus.DISCONNECTED, ProviderRequestStatus.FAILED}
+)
+_ENDED_REQUEST_STATUSES = _FINAL_REQUEST_STATUSES | _FAILED_REQUEST_STATUSES
+
+
+def next_request_status(
+    current: ProviderRequestStatus, requested: ProviderRequestStatus
+) -> ProviderRequestStatus:
+    """Return the status a request moves to when ``requested`` is asked for.
+
+    - ``COMPLETED`` and ``CANCELLED`` are final: nothing changes them.
+    - A failed attempt (``DISCONNECTED``, ``FAILED``) can only be retried.
+    - ``RETRYING`` is reached only from a failed attempt, and ends
+      ``CANCELLED`` or ``FAILED``; a successful retry is a new request.
+    - An active request (``PENDING``, ``RUNNING``, ``STREAMING``) can move
+      anywhere except ``RETRYING``.
+
+    A refused transition returns ``current``.
+    """
+    if requested is current:
+        return current
+    if current in _FINAL_REQUEST_STATUSES:
+        return current
+    if current in _FAILED_REQUEST_STATUSES:
+        return requested if requested is ProviderRequestStatus.RETRYING else current
+    if current is ProviderRequestStatus.RETRYING:
+        return (
+            requested
+            if requested
+            in {ProviderRequestStatus.CANCELLED, ProviderRequestStatus.FAILED}
+            else current
+        )
+    return current if requested is ProviderRequestStatus.RETRYING else requested
 
 
 class LLMCallStatus(str, Enum):
@@ -231,11 +274,77 @@ class LLMRequestLifecycle:
             "finish_reason": self.finish_reason.value
             if isinstance(self.finish_reason, FinishReason)
             else self.finish_reason,
-            "error": self.error.to_dict()
-            if isinstance(self.error, LLMError)
-            else None,
+            "error": self.error.to_dict() if isinstance(self.error, LLMError) else None,
             "provider_data": dict(self.provider_data or {}),
         }
+
+    def advance(
+        self,
+        status: ProviderRequestStatus,
+        *,
+        event_type: Optional[str] = None,
+        provider_response_id: Optional[str] = None,
+        finish_reason: Optional[FinishReason] = None,
+        error: Optional["LLMError"] = None,
+        provider_data: Optional[Dict[str, Any]] = None,
+        now: Optional[float] = None,
+    ) -> bool:
+        """Record one lifecycle event if :func:`next_request_status` allows it.
+
+        A refused transition changes nothing, so a late event cannot reopen or
+        relabel a request that has already ended.
+
+        Returns:
+            Whether the event was recorded.
+        """
+        if next_request_status(self.status, status) is not status:
+            logger.debug(
+                "Ignored lifecycle transition %s -> %s for request %s",
+                self.status.value,
+                status.value,
+                self.request_id,
+            )
+            return False
+        timestamp = time.time() if now is None else now
+        if status is not self.status and status in _ENDED_REQUEST_STATUSES:
+            self.ended_at = timestamp
+        self.status = status
+        self.last_event_at = timestamp
+        if event_type:
+            self.last_event_type = event_type
+        if provider_response_id:
+            self.provider_response_id = provider_response_id
+        if finish_reason is not None:
+            self.finish_reason = finish_reason
+        if error is not None:
+            self.error = error
+        if provider_data:
+            self.provider_data.update(dict(provider_data))
+        return True
+
+    def finish(
+        self,
+        *,
+        error: Optional["LLMError"],
+        finish_reason: Optional[FinishReason],
+        now: Optional[float] = None,
+    ) -> bool:
+        """End the request: failed with ``error`` if given, else completed."""
+        if error is None:
+            return self.advance(
+                ProviderRequestStatus.COMPLETED, finish_reason=finish_reason, now=now
+            )
+        status = (
+            ProviderRequestStatus.DISCONNECTED
+            if error.category in {ErrorCategory.NETWORK, ErrorCategory.TIMEOUT}
+            else ProviderRequestStatus.FAILED
+        )
+        return self.advance(
+            status,
+            finish_reason=error.finish_reason or finish_reason,
+            error=error,
+            now=now,
+        )
 
     @classmethod
     def from_dict(cls, payload: Dict[str, Any]) -> "LLMRequestLifecycle":
@@ -592,6 +701,7 @@ __all__ = [
     "LLMToolCall",
     "LLMUsage",
     "ProviderRequestStatus",
+    "next_request_status",
     "ProviderRuntime",
     "RequestLifecycleRuntime",
     "ResultMetadataRuntime",

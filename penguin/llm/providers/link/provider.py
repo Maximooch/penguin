@@ -232,12 +232,13 @@ class LinkProvider:
                 # This is a NEW model attempt, not replay of an uncertain charge.
                 # Keep the same completed tool context; never expose failed deltas.
                 kwargs = {**kwargs, "invocation_id": str(uuid.uuid4())}
+                if self._last_lifecycle is not None:
+                    self._last_lifecycle.advance(ProviderRequestStatus.RETRYING)
                 try:
                     await asyncio.sleep(max(delay, exc.error.retry_after_seconds or 0))
                 except asyncio.CancelledError:
                     if self._last_lifecycle is not None:
-                        self._last_lifecycle.status = ProviderRequestStatus.CANCELLED
-                        self._last_lifecycle.ended_at = time.time()
+                        self._last_lifecycle.advance(ProviderRequestStatus.CANCELLED)
                     raise
                 delay = min(delay * 2, 30.0)  # Connection backoff, not a run deadline.
                 continue
@@ -344,29 +345,19 @@ class LinkProvider:
                 )
             self._last_finish_reason = finish
             self._last_provider_data.update(provider_data)
-            lifecycle.status = ProviderRequestStatus.COMPLETED
-            lifecycle.finish_reason = finish
-            lifecycle.provider_response_id = _optional_str(
-                provider_data.get("response_id")
+            lifecycle.advance(
+                ProviderRequestStatus.COMPLETED,
+                finish_reason=finish,
+                provider_response_id=_optional_str(provider_data.get("response_id")),
+                provider_data=self._last_provider_data,
             )
-            lifecycle.ended_at = time.time()
-            lifecycle.last_event_at = lifecycle.ended_at
-            lifecycle.provider_data.update(self._last_provider_data)
             return text
         except asyncio.CancelledError:
-            lifecycle.status = ProviderRequestStatus.CANCELLED
-            lifecycle.ended_at = time.time()
+            lifecycle.advance(ProviderRequestStatus.CANCELLED)
             raise
         except LLMProviderError as error:
             self._last_error = error.error
-            lifecycle.error = error.error
-            lifecycle.status = (
-                ProviderRequestStatus.DISCONNECTED
-                if error.error.category
-                in {ErrorCategory.NETWORK, ErrorCategory.TIMEOUT}
-                else ProviderRequestStatus.FAILED
-            )
-            lifecycle.ended_at = time.time()
+            lifecycle.finish(error=error.error, finish_reason=None)
             raise
         except (httpx.HTTPError, asyncio.TimeoutError) as error:
             llm_error = build_llm_error(
@@ -382,9 +373,7 @@ class LinkProvider:
                 provider_data={"dispatch_outcome": "uncertain"},
             )
             self._last_error = llm_error
-            lifecycle.error = llm_error
-            lifecycle.status = ProviderRequestStatus.DISCONNECTED
-            lifecycle.ended_at = time.time()
+            lifecycle.finish(error=llm_error, finish_reason=None)
             raise LLMProviderError(llm_error) from error
         except Exception as error:
             llm_error = build_llm_error(
@@ -396,9 +385,7 @@ class LinkProvider:
                 provider_data={"dispatch_outcome": "uncertain"},
             )
             self._last_error = llm_error
-            lifecycle.error = llm_error
-            lifecycle.status = ProviderRequestStatus.FAILED
-            lifecycle.ended_at = time.time()
+            lifecycle.finish(error=llm_error, finish_reason=None)
             raise LLMProviderError(llm_error) from error
 
     def count_tokens(self, content: Any) -> int:
@@ -550,7 +537,7 @@ class LinkProvider:
         ) as response:
             await self._raise_for_link_error(response, lifecycle)
             self._capture_response_headers(response.headers)
-            lifecycle.status = ProviderRequestStatus.STREAMING
+            lifecycle.advance(ProviderRequestStatus.STREAMING)
             async for line in response.aiter_lines():
                 lifecycle.last_event_at = time.time()
                 if not line.startswith("data:"):

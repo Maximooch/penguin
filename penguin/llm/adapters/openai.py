@@ -1156,26 +1156,14 @@ class OpenAIAdapter(BaseAdapter):
         lifecycle = getattr(self, "_last_request_lifecycle", None)
         if lifecycle is None:
             return
-        now = time.time()
-        lifecycle.status = status
-        lifecycle.last_event_at = now
-        if status in {
-            ProviderRequestStatus.COMPLETED,
-            ProviderRequestStatus.DISCONNECTED,
-            ProviderRequestStatus.FAILED,
-            ProviderRequestStatus.CANCELLED,
-        }:
-            lifecycle.ended_at = now
-        if event_type:
-            lifecycle.last_event_type = event_type
-        if provider_response_id:
-            lifecycle.provider_response_id = provider_response_id
-        if finish_reason is not None:
-            lifecycle.finish_reason = finish_reason
-        if error is not None:
-            lifecycle.error = error
-        if provider_data:
-            lifecycle.provider_data.update(dict(provider_data))
+        lifecycle.advance(
+            status,
+            event_type=event_type,
+            provider_response_id=provider_response_id,
+            finish_reason=finish_reason,
+            error=error,
+            provider_data=provider_data,
+        )
 
     def _codex_model_for_oauth(self, model_id: str) -> tuple[str, bool]:
         value = str(model_id or "").strip()
