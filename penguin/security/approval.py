@@ -132,6 +132,10 @@ class SessionApproval:
         return datetime.utcnow() > self.expires_at
 
 
+# Resolved requests kept for history and audit lookups.
+MAX_RESOLVED_HISTORY = 1000
+
+
 class ApprovalManager:
     """Manages approval requests and session approvals.
     
@@ -262,6 +266,24 @@ class ApprovalManager:
         return request
     
     # --- Request Resolution ---
+
+    def _record_resolved(
+        self, request: ApprovalRequest, status: ApprovalStatus
+    ) -> None:
+        """Move a request to its terminal status. Caller holds ``_data_lock``."""
+        request.status = status
+        request.resolved_at = datetime.utcnow()
+        self._resolved[request.id] = request
+        while len(self._resolved) > MAX_RESOLVED_HISTORY:
+            del self._resolved[next(iter(self._resolved))]
+
+    def _notify_resolved(self, request: ApprovalRequest) -> None:
+        """Tell listeners a request reached a terminal status."""
+        for callback in self._on_request_resolved:
+            try:
+                callback(request)
+            except Exception as e:
+                logger.error(f"Error in approval resolved callback: {e}")
     
     def approve(
         self,
@@ -284,29 +306,52 @@ class ApprovalManager:
             if request is None:
                 logger.warning(f"Approval request not found or already resolved: {request_id}")
                 return None
-            
-            request.status = ApprovalStatus.APPROVED
-            request.resolved_at = datetime.utcnow()
-            request.resolution_scope = scope
-            
-            self._resolved[request_id] = request
-            
-            # Create session/pattern approval if scope warrants
-            if scope == ApprovalScope.SESSION and request.session_id:
-                self._add_session_approval(
-                    request.session_id,
-                    request.operation,
-                    pattern=None,
-                )
-            elif scope == ApprovalScope.PATTERN and pattern:
-                session_id = request.session_id or "__global__"
-                self._add_session_approval(
-                    session_id,
-                    request.operation,
-                    pattern=pattern,
-                )
-        
-        logger.info(f"Approval granted: id={request_id}, scope={scope.value}")
+
+            expired = request.is_expired()
+            if expired:
+                # Expiry is swept lazily, so an expired request can still be
+                # pending here. It must not be approvable.
+                self._record_resolved(request, ApprovalStatus.EXPIRED)
+            else:
+                # Record the scope that is actually granted. A wider scope that
+                # lacks what it needs (a session, a pattern) grants this call only.
+                granted = scope
+                if scope == ApprovalScope.SESSION and not request.session_id:
+                    granted = ApprovalScope.ONCE
+                elif scope == ApprovalScope.PATTERN and not pattern:
+                    granted = ApprovalScope.ONCE
+                if granted != scope:
+                    logger.warning(
+                        "Approval %s asked for scope %s but only %s can be granted",
+                        request_id,
+                        scope.value,
+                        granted.value,
+                    )
+                request.resolution_scope = granted
+                self._record_resolved(request, ApprovalStatus.APPROVED)
+
+                if granted == ApprovalScope.SESSION:
+                    self._add_session_approval(
+                        request.session_id,
+                        request.operation,
+                        pattern=None,
+                    )
+                elif granted == ApprovalScope.PATTERN:
+                    session_id = request.session_id or "__global__"
+                    self._add_session_approval(
+                        session_id,
+                        request.operation,
+                        pattern=pattern,
+                    )
+
+        if expired:
+            logger.warning("Approval request expired before approval: %s", request_id)
+            self._notify_resolved(request)
+            return None
+
+        logger.info(
+            f"Approval granted: id={request_id}, scope={request.resolution_scope.value}"
+        )
         
         # Notify listeners
         for callback in self._on_request_resolved:
@@ -332,10 +377,7 @@ class ApprovalManager:
                 logger.warning(f"Approval request not found or already resolved: {request_id}")
                 return None
             
-            request.status = ApprovalStatus.DENIED
-            request.resolved_at = datetime.utcnow()
-            
-            self._resolved[request_id] = request
+            self._record_resolved(request, ApprovalStatus.DENIED)
         
         logger.info(f"Approval denied: id={request_id}")
         
@@ -523,9 +565,7 @@ class ApprovalManager:
             
             for request_id in expired_ids:
                 request = self._pending.pop(request_id)
-                request.status = ApprovalStatus.EXPIRED
-                request.resolved_at = datetime.utcnow()
-                self._resolved[request_id] = request
+                self._record_resolved(request, ApprovalStatus.EXPIRED)
                 
                 # Notify listeners
                 for callback in self._on_request_resolved:

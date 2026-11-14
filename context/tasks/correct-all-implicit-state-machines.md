@@ -108,6 +108,11 @@ on its own.
   that omits them cannot end a turn through action tags.
 - SM-03: an `ImportError` from the agent permission module now denies, like any
   other failure of that check.
+- SM-04: a wider scope that cannot be honoured (SESSION with no session id,
+  PATTERN with no pattern) is granted and recorded as ONCE with a warning. The
+  item said "reject"; rejecting would leave the user's click with no effect.
+- SM-04: resolved approval history is capped at 1000 entries
+  (`MAX_RESOLVED_HISTORY`); the oldest are dropped.
 
 ## Item format
 
@@ -167,7 +172,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     request policy; an agent with no registered policy is still ALLOW; the
     last-denial reason is still read from a shared list; MCP servers are still
     accepted from project-level config. Bend extension deferred.
-- [ ] **SM-04 Approval request lifecycle** (c) [security]
+- [x] **SM-04 Approval request lifecycle** (c) [security]
   - `penguin/security/approval.py:176-334,471,516`,
     `penguin/security/permission_engine.py:279,323`
   - `approve()` does not check expiry. SESSION scope without a session id, or
@@ -176,6 +181,9 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     allowlist has no session key.
   - Correction: one `resolve(request, decision)` function with a terminal
     guard; reject mismatched scope instead of degrading.
+  - State: fixed. On hold: `PermissionEnforcer._session_allowlist` is still a
+    second remembered-allow store with no session key; SESSION scope still
+    grants the whole operation on any resource.
 - [ ] **SM-05 Permission reply surfaces** (c) [security]
   - `penguin/web/routes.py:1670-1985,8169-8238,8505-8595`,
     `penguin/integrations/acp/server.py:189`
@@ -516,3 +524,12 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
     fix; each fix removed alone turns its test red.
   - Every test file mentioning permissions, `ActionExecutor` or tool
     capabilities, plus `tests/tools`: 902 passed, 36 skipped.
+- SM-04: fixed (2026-11-13). All three terminal moves go through
+  `ApprovalManager._record_resolved`; `approve()` on an expired request records
+  EXPIRED, notifies listeners and returns None.
+  - `pytest -q tests/test_approval_lifecycle.py`: 4 passed, all red without the fix.
+  - Every test file mentioning approvals or permissions: 617 passed, 15
+    skipped, 1 failed. The failure is
+    `tests/test_cli_surface_audit_regressions.py::test_runmode_help_text_reflects_continuous_mode_truth`,
+    a `TypeError` inside click's `make_metavar` in this environment; it fails
+    the same way without this change.
