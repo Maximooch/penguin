@@ -317,6 +317,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     counter. `CancelledError` skips save and stream abort.
   - Correction: one `LoopOutcome` reducer both loops call; bound every
     continue.
+  - State: (partial, 2026-11-13) the output-limit continuation is bounded at 8 consecutive turns in both loops; the task loop then reports `iterations_exceeded`. Still open: the single `LoopOutcome` reducer; the stop, finish-tool and empty-response differences between the two loops; the malformed-action repair continue, which is still unbounded without an iteration cap; `CancelledError` skipping save and stream abort.
 - [ ] **SM-16 Session abort, request accounting and busy/idle** (c) [design]
   - `penguin/core_runtime/process_lifecycle.py:30-313`,
     `penguin/core_runtime/stream_events.py:244-325,417-547,1031`,
@@ -671,3 +672,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-20: fixed (2026-11-13). `pytest -q tests/test_workflow_orchestrator_failure_paths.py`: 2 passed, both red before the fix; the three existing orchestrator test files: 6 passed.
 - SM-29: fixed (2026-11-13). `pytest -q tests/tools/test_code_execution_timeout_state.py`: 2 passed, the busy test red before the fix; `tests/tools`: 230 passed, 20 skipped.
 - SM-30: partly fixed (2026-11-13). `pytest -q tests/test_runmode_continuous_termination.py`: 2 passed, both red before the fix (the first by crashing on `MessageCategory.WARNING`); other run-mode tests: 34 passed.
+- SM-15: partly fixed (2026-11-13). `pytest -q tests/test_engine_task_finish_contract.py`: 49 passed, including two new unbounded-LENGTH tests; engine, finish and core-runtime suites pass.

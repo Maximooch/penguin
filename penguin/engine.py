@@ -91,6 +91,10 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Consecutive turns that may end at the provider's output limit before a run
+# without an iteration cap gives up on continuing.
+MAX_CONSECUTIVE_OUTPUT_CONTINUATIONS = 8
+
 _OUTPUT_BOUNDARY_CONTINUATION = (
     "The previous assistant output reached a per-call output boundary. "
     "Continue exactly where it stopped without repeating any prior text."
@@ -325,8 +329,12 @@ class LoopState:
     last_tool_only_summary: str = ""
     repeated_tool_only_count: int = 0
 
+    # Consecutive turns cut off at the provider's output limit
+    output_continuation_count: int = 0
+
     def reset(self) -> None:
         """Reset state for a new run."""
+        self.output_continuation_count = 0
         self.stall_recovery_attempted = False
         self.empty_response_count = 0
         self.last_response_hash = None
@@ -1932,7 +1940,21 @@ class Engine:
                     completion_status = "budget_limited"
                     break
 
-                if response_data.get("finish_reason") == FinishReason.LENGTH:
+                loop_state = self._get_loop_state()
+                if response_data.get("finish_reason") != FinishReason.LENGTH:
+                    loop_state.output_continuation_count = 0
+                else:
+                    loop_state.output_continuation_count += 1
+                    if (
+                        loop_state.output_continuation_count
+                        > MAX_CONSECUTIVE_OUTPUT_CONTINUATIONS
+                    ):
+                        logger.warning(
+                            "Output limit reached %s turns in a row; stopping.",
+                            loop_state.output_continuation_count,
+                        )
+                        completion_status = "iterations_exceeded"
+                        break
                     if (
                         max_iterations is None
                         or self.current_iteration < max_iterations
@@ -2442,7 +2464,20 @@ class Engine:
                         f"[LOOP DEBUG] Response contains 'finish_response' text but wasn't parsed as action. Response preview: {last_response[:100]}..."
                     )
 
-                if response_data.get("finish_reason") == FinishReason.LENGTH:
+                loop_state = self._get_loop_state()
+                if response_data.get("finish_reason") != FinishReason.LENGTH:
+                    loop_state.output_continuation_count = 0
+                else:
+                    loop_state.output_continuation_count += 1
+                    if (
+                        loop_state.output_continuation_count
+                        > MAX_CONSECUTIVE_OUTPUT_CONTINUATIONS
+                    ):
+                        logger.warning(
+                            "Output limit reached %s turns in a row; stopping.",
+                            loop_state.output_continuation_count,
+                        )
+                        break
                     if max_iters is None or self.current_iteration < max_iters:
                         cm.conversation.add_message(
                             "system", _OUTPUT_BOUNDARY_CONTINUATION
