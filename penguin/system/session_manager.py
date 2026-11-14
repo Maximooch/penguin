@@ -388,23 +388,24 @@ class SessionManager:
             primary_error = e
             logger.error(f"Error loading session {session_id} from primary file ({primary_path}): {str(e)}", exc_info=True)
 
-            # Try backup file
-            try:
-                if backup_path.exists():
-                    logger.info(f"Attempting to restore session {session_id} from backup")
-                    session = self._load_from_file(backup_path)
-                    if session and session.validate():
-                        self._add_to_session_cache(session_id, session)
-                        self.current_session = session
+        # The primary is missing or unusable: fall back to the backup, whichever
+        # of those it was.
+        try:
+            if backup_path.exists():
+                logger.info(f"Attempting to restore session {session_id} from backup")
+                session = self._load_from_file(backup_path)
+                if session and session.validate():
+                    self._add_to_session_cache(session_id, session)
+                    self.current_session = session
 
-                        # Restore from backup
-                        atomic_write_text(
-                            primary_path, backup_path.read_text(encoding="utf-8")
-                        )
-                        logger.warning(f"Successfully restored session {session_id} from backup")
-                        return session
-            except Exception as backup_error:
-                logger.error(f"Error loading backup for session {session_id} ({backup_path}): {str(backup_error)}", exc_info=True)
+                    # Restore from backup
+                    atomic_write_text(
+                        primary_path, backup_path.read_text(encoding="utf-8")
+                    )
+                    logger.warning(f"Successfully restored session {session_id} from backup")
+                    return session
+        except Exception as backup_error:
+            logger.error(f"Error loading backup for session {session_id} ({backup_path}): {str(backup_error)}", exc_info=True)
 
         # If we get here, loading failed despite files existing - create recovery session
         logger.warning(

@@ -238,13 +238,17 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     `system_prompt_sent` is not recomputed after a rollback; the manager used
     is whichever agent's is current.
   - Blocked by: SM-07
-- [ ] **SM-09 Session load, recovery and index consistency** (b)
+- [x] **SM-09 Session load, recovery and index consistency** (b)
   - `penguin/system/session_manager.py:126-178,341-479,669,818`
   - A backup-only state never tries the backup. A recovery session with a new
     id is reported as a successful load of the requested id. Delete and
     continuation update the index and the files in the unsafe order.
   - Correction: explicit load result (loaded, restored, recovered, missing);
     files before index on create, index before files on delete.
+  - State: the backup-only case is fixed. On hold: a recovery session with a
+    new id is still reported to the caller as a successful load of the
+    requested id (changing that changes what `conversation.load` returns);
+    the index/file ordering on delete and continuation is unchanged.
 - [ ] **SM-10 `process()` retry envelope** (b) [inferred]
   - `penguin/core_runtime/process_runtime.py:42-310`
   - A failure in the error emit after the engine ran tools may re-run the
@@ -583,3 +587,9 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
     before the fix (auto-save wrote the pre-rollback history back).
   - Every non-API test file mentioning checkpoints: 333 passed, 3 skipped,
     1 xfailed.
+- SM-09: partly fixed (2026-11-13). `load_session` now tries the backup
+  whenever the primary is missing or unusable, not only when loading the
+  primary raised.
+  - `pytest -q tests/system`: 115 passed, 2 skipped, 3 xfailed; the new
+    backup-only test was red before the fix.
+  - Other files that load sessions: 170 passed, 12 skipped.
