@@ -63,6 +63,14 @@ from .responses_reasoning import ResponsesReasoningStream
 logger = logging.getLogger(__name__)
 
 
+class _SdkStreamUnavailable(Exception):
+    """The SDK failed before its stream produced any event.
+
+    Only this failure may be retried over HTTP SSE: nothing has reached the
+    caller yet, so a second request cannot repeat output.
+    """
+
+
 def _log_info(message: str, *args: Any) -> None:
     logger.info(message, *args)
     uvicorn_logger = logging.getLogger("uvicorn.error")
@@ -279,11 +287,15 @@ class OpenAIAdapter(BaseAdapter):
         self._set_last_finish_reason(finish_reason_for(end))
         return end
 
-    def _raise_responses_stream_incomplete(self, output_state: str) -> None:
+    def _raise_responses_stream_incomplete(
+        self, output_state: str, *, cause: Optional[BaseException] = None
+    ) -> None:
         detail = (
             "OpenAI Responses stream ended before response.completed "
             f"(output_state={output_state})"
         )
+        if cause is not None:
+            detail = f"{detail}: {str(cause) or type(cause).__name__}"
         error = build_llm_error(
             message=detail,
             provider=self.provider,
@@ -294,14 +306,14 @@ class OpenAIAdapter(BaseAdapter):
         )
         self._set_last_finish_reason(FinishReason.ERROR)
         self._set_last_error(error)
-        if output_state == "tool_call":
-            self._reset_tool_call_state()
+        # A tool call from a stream that never ended may be partial.
+        self._reset_tool_call_state()
         self._update_request_lifecycle(
             status=ProviderRequestStatus.DISCONNECTED,
             finish_reason=FinishReason.ERROR,
             error=error,
         )
-        raise LLMProviderError(error)
+        raise LLMProviderError(error) from cause
 
     def _append_reasoning(self, reasoning_text: str) -> None:
         if reasoning_text:
@@ -852,9 +864,7 @@ class OpenAIAdapter(BaseAdapter):
                     finish_reason=self.get_last_finish_reason(),
                 )
                 return result
-            except LLMProviderError:
-                raise
-            except Exception as e:
+            except _SdkStreamUnavailable as e:
                 logger.warning(f"SDK streaming failed, falling back to HTTP SSE: {e}")
                 result = await self._stream_with_http(request_params, stream_callback)
                 self._update_request_lifecycle(
@@ -2572,10 +2582,12 @@ class OpenAIAdapter(BaseAdapter):
         reasoning_stream = ResponsesReasoningStream()
         saw_completed_event = False
         stopped_early: Optional[FinishReason] = None
+        stream_started = False
         try:
             # Async streaming context
             async with self.client.responses.stream(**request_params) as stream:  # type: ignore[attr-defined]
                 async for event in stream:
+                    stream_started = True
                     tool_call = self._capture_responses_tool_event(event)
                     if tool_call and self._interrupt_on_tool_call():
                         self._set_last_finish_reason(FinishReason.TOOL_CALLS)
@@ -2653,10 +2665,22 @@ class OpenAIAdapter(BaseAdapter):
                             stream_callback, final_text, "assistant"
                         )
                     return final_text
-        except AttributeError:
-            # Older SDK without responses.stream async support
+        except LLMProviderError:
             raise
-        except Exception:
+        except Exception as exc:
+            if not stream_started:
+                # For example an older SDK without async ``responses.stream``.
+                raise _SdkStreamUnavailable(str(exc)) from exc
+            if isinstance(exc, (httpx.TransportError, asyncio.TimeoutError)) or (
+                type(exc).__name__ in {"APIConnectionError", "APITimeoutError"}
+            ):
+                self._raise_responses_stream_incomplete(
+                    stream_output_state(
+                        pending_tool=self.has_pending_tool_call(),
+                        has_text=bool(accumulated_content),
+                    ),
+                    cause=exc,
+                )
             raise
         # Fallback to accumulated content
         return "".join(accumulated_content)

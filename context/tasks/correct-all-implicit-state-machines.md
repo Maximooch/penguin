@@ -136,6 +136,11 @@ on its own.
 - SM-16: an abort marker left with no tracked request is used up the first
   time it cancels a stream chunk. Before, it cancelled every later chunk for
   that session until a `process` request cleared it.
+- SM-14: when the OpenAI SDK stream fails after it has produced output, the
+  adapter no longer re-sends the request over HTTP. A transport failure is
+  raised as a retryable network error (the runtime does not replay it once
+  text has streamed); any other error is raised as it is. A failure before
+  the first event still falls back to HTTP, as before.
 
 ## Item format
 
@@ -323,7 +328,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
   - Blocked by: SM-12
   - State: (partial, 2026-11-13) one `ToolCallAccumulator` (`penguin/llm/tool_call_accumulator.py`) with one rule (runnable only once closed; merged only on a shared id; never without a name) now backs the OpenAI, OpenRouter, Anthropic, Modal and RunInfra adapters. Fixed: an Anthropic tool call was runnable from its first fragment, and an id-less one was recorded once per fragment with partial JSON; OpenAI merged identical id-less calls. Still open: Link keeps its own list and drains a different shape (the runtime accepts both).
   - State: (done, 2026-11-14) Link now records its calls in the same accumulator and drains the same shape as the other adapters (`item_id`, `call_id`, `name`, `arguments`). Its two tests that asserted or replayed the old chat shape were updated.
-- [ ] **SM-14 Retry and replay layering** (re-read 2026-11-13: the unbounded Link loop is deliberate connection backoff, covered by `tests/llm/test_link_runtime_recovery.py`; the rest waits on the SM-12 consolidation) (b) [bend]
+- [x] **SM-14 Retry and replay layering** (re-read 2026-11-13: the unbounded Link loop is deliberate connection backoff, covered by `tests/llm/test_link_runtime_recovery.py`; the rest waits on the SM-12 consolidation) (b) [bend]
   - `penguin/llm/runtime.py:329-347,599-757`,
     `penguin/llm/providers/link/provider.py:205-246`,
     `penguin/llm/adapters/openai.py:920-929`
@@ -331,6 +336,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     text twice. The Link loop is unbounded. Error sentinels differ by layer.
   - Correction: one retry owner (the runtime); adapters never re-request.
   - Blocked by: SM-12
+  - State: (done, 2026-11-14) the runtime's `call_with_retry` is the only layer that replays a failed attempt. The OpenAI SDK-to-HTTP fallback now runs only when the SDK fails before its first event (`_SdkStreamUnavailable`), so it can no longer stream an answer twice; a mid-stream transport failure is a retryable network error and also drops partial tool calls. Link's loop is connection backoff before any output and stays. The differing error sentinels are SM-33's.
 - [ ] **SM-15 Turn-loop termination, two copies** (a in b) [bend, design]
   - `penguin/engine.py:1679-2060,2306-2451`
   - The task loop and `run_response` disagree on stop, finish-tool status and
@@ -734,3 +740,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-16: partly fixed (2026-11-13). One owner for session run tracking; busy-forever after a crash and the unbounded abort marker fixed.
 - SM-13: partly fixed (2026-11-13). Shared tool-call accumulator in five adapters; Link not yet moved.
 - SM-13: done (2026-11-14). Link moved onto the shared accumulator.
+- SM-14: done (2026-11-14). The OpenAI fallback no longer re-requests after output.
