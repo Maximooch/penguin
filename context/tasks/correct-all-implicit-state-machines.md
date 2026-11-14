@@ -436,7 +436,8 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
 
 - [ ] **SM-32 `LLMRequestLifecycle.status`** (b) [bend]: `penguin/llm/contracts.py:72,194`; update helper copy-pasted in three adapters; no terminal guard; `RETRYING` never written. Blocked by SM-12.
 - [ ] **SM-33 Call outcome classification** (a) [bend]: `penguin/llm/api_client.py:535-992`, `penguin/llm/runtime.py:286`; computed twice with different rules. Blocked by SM-12.
-- [ ] **SM-34 Tool-replay adjacency repair, three copies** (a): `openai.py:1342-1519`, `openrouter.py:1201-1366`, `anthropic.py:1341-1418`; each provider treats orphans differently; OpenRouter rewrites `call_…` tokens in plain content.
+- [x] **SM-34 Tool-replay adjacency repair, three copies** (a): `openai.py:1342-1519`, `openrouter.py:1201-1366`, `anthropic.py:1341-1418`; each provider treats orphans differently; OpenRouter rewrites `call_…` tokens in plain content.
+  - State: (partial) the OpenRouter rewrite of `call_…` tokens in plain content is limited to tokens that look like call ids, so code such as `call_api` is no longer mangled. Still open: the three providers treat orphaned tool calls and results differently; OpenAI drops a call whose output text is empty.
 - [ ] **SM-35 Per-request `last_*` state on the adapter** (c) [design]: resets at `openai.py:820`, `openrouter.py:1404`, `anthropic.py:700`; Link resets a subset; `prepare_native_tool_kwargs` flips `interrupt_on_tool_call` permanently (`runtime.py:424`). See `model-config-mutation-state-leak.md`.
 - [x] **SM-36 Reasoning-variant override** (b): `penguin/web/routes.py:1063-1091,4191,4418,4796`; the REST restore may write a deep-copied config's snapshot onto the global config. Unconfirmed.
   - State: confirmed and fixed: the override snapshot now records which config it changed, and the restore uses that. The WebSocket path applies its override outside its `try/finally`; not changed.
@@ -702,3 +703,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
   SM-63. Not started: every unticked item without an "on hold" note.
 - SM-17: partly fixed (2026-11-13). Two new cases in `tests/test_engine_initialization.py` (unexpected error, cancellation) were red before the fix; engine and core-runtime suites: 564 passed.
 - SM-72: partly fixed (2026-11-13). `pytest -q tests/test_sidecar_install_atomic.py tests/test_opencode_launcher.py`: 28 passed.
+- SM-34: partly fixed (2026-11-13). `pytest -q tests/llm/test_openrouter_call_reference_rewrite.py`: 8 passed, 4 red before the fix; `tests/llm` and `tests/test_openrouter_fixes.py`: 437 passed.

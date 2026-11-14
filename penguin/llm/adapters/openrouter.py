@@ -1250,8 +1250,13 @@ class OpenRouterGateway:
                     # Replace call_id references with plain text to avoid SDK validation
                     import re
 
+                    # Match call ids only: a standalone ``call_`` token whose
+                    # tail has a digit. Identifiers in code or prose such as
+                    # ``call_api`` or ``function_call_handler`` are left alone.
                     content = re.sub(
-                        r"call_[a-zA-Z0-9_-]+", "[tool-call-reference]", content
+                        r"(?<![A-Za-z0-9_])call_(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]+",
+                        "[tool-call-reference]",
+                        content,
                     )
                     self.logger.debug("Reformatted tool call references in message")
 
