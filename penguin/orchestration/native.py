@@ -11,6 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from penguin.project.models import TaskStatus
+
 from .backend import (
     OrchestrationBackend,
     PhaseResult,
@@ -533,6 +535,12 @@ class NativeBackend(OrchestrationBackend):
             # Update task status if project manager available
             if self._project_manager and task:
                 try:
+                    # The workflow ran the task without going through the
+                    # project manager, so it may still be ACTIVE here.
+                    if task.status == TaskStatus.ACTIVE:
+                        task.transition_to(
+                            TaskStatus.RUNNING, reason="ITUV workflow executed"
+                        )
                     task.mark_pending_review(
                         "ITUV workflow completed successfully",
                         reviewer="native",

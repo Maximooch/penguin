@@ -249,7 +249,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     new id is still reported to the caller as a successful load of the
     requested id (changing that changes what `conversation.load` returns);
     the index/file ordering on delete and continuation is unchanged.
-- [ ] **SM-10 `process()` retry envelope** (b) [inferred]
+- [ ] **SM-10 `process()` retry envelope** (on hold: inferred only, not reproduced; needs a trace of `process` to show a retry after tools ran) (b) [inferred]
   - `penguin/core_runtime/process_runtime.py:42-310`
   - A failure in the error emit after the engine ran tools may re-run the
     whole turn, re-adding the user message and re-running tools.
@@ -333,7 +333,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     after the sentinel.
   - Correction: queue the sentinel in `finally`, put chunks directly, await
     the producer.
-- [ ] **SM-19 Task status × phase** (b) [confirmed, bend]
+- [x] **SM-19 Task status × phase** (b) [confirmed, bend]
   - `penguin/project/models.py:33-79,554,586-681,805-818`,
     `penguin/orchestration/native.py:536`,
     `penguin/web/routes.py:5460`, `penguin/cli/cli.py:3593`
@@ -343,6 +343,11 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
   - Correction: one transition over the (status, phase) pair that either
     applies both or neither and raises on rejection. Law: DONE pairs only with
     PENDING_REVIEW or COMPLETED.
+  - State: `mark_pending_review` and `approve` are fixed, and the native
+    workflow moves ACTIVE to RUNNING first. Left open: `set_phase`,
+    `advance_phase` and the direct `self.phase =` writes are still unguarded;
+    web and CLI still call `task.approve` and storage directly. Bend model
+    deferred.
 - [ ] **SM-20 Workflow orchestrator** (b)
   - `penguin/project/workflow_orchestrator.py:104-329`
   - The PR result status is never inspected. `if not success` branches are
@@ -601,3 +606,14 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
   - `pytest -q tests/api/test_github_webhook_self_trigger.py`: 4 passed; the
     three bot cases were red before the fix.
   - `tests/api/test_github_webhook_security.py`: 4 passed.
+- SM-19: fixed (2026-11-13). `Task.mark_pending_review` and `Task.approve`
+  check the status move first and raise `StateTransitionError` without
+  changing anything if it is illegal.
+  - `pytest -q tests/test_task_state_machine_contract.py`: 18 passed; 9 red
+    before the fix.
+  - Every test file mentioning task status, approval or orchestration: 287
+    passed, 2 failed. Both failures are baseline:
+    `test_cli_surface_audit_regressions` (click) and
+    `tests/test_side_door_completion_semantics.py::test_api_complete_task_rejects_non_review_ready_task`,
+    which matches text against an `HTTPException` whose string is empty with
+    the installed FastAPI.
