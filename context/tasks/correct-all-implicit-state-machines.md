@@ -460,7 +460,8 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
 - [x] **SM-54 AgentExecutor task state** (c): `penguin/multi/executor.py:212-443`, `penguin/multi/coordinator.py:309`; PAUSED is a label only; `cancel()` overwrites a finished state.
   - State: `cancel()` keeps an outcome the agent reached while the cancel was in flight. Still open: PAUSED is a label only; finished ids block respawn until `cleanup()`; three places track agent liveness with no reconciliation.
 - [ ] **SM-55 Context window trimming and epoch** (a) [bend]: `penguin/system/context_window.py:272-1220`, `penguin/system/context_epoch.py:24-155`; total over budget with every category under its own budget trims nothing. Keep the category-priority trimming model; do not introduce compaction.
-- [ ] **SM-56 Edit commit and rollback** (b): `penguin/tools/editing/service.py:507-533`, `penguin/tools/editing/legacy_multifile.py:164-262`; the snapshot is appended after the write.
+- [x] **SM-56 Edit commit and rollback** (b): `penguin/tools/editing/service.py:507-533`, `penguin/tools/editing/legacy_multifile.py:164-262`; the snapshot is appended after the write.
+  - State: the snapshot is recorded before the write, so a file that fails part way through is restored. Still open: writes are not atomic; there is no check that the file is unchanged since `old_content` was read; the legacy multi-file path.
 - [ ] **SM-57 File-root / execution mode** (b): `penguin/tools/tool_manager.py:4030-4166`, `penguin/config.py:532,597`; three writers disagree on env vars and the notebook directory.
 - [ ] **SM-58 PyDoll browser session** (b): `penguin/tools/pydoll_tools.py:14-201`; (browser set, not initialized) is reachable; a dead cleanup task blocks the idle timer.
 - [ ] **SM-59 Browser-harness daemon identity** (c): `penguin/tools/browser_harness_tools.py:24,264-426`, `penguin/tools/browser_harness_ownership.py:81`; cleanup runs without the helpers lock.
@@ -681,3 +682,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-43: partly fixed (2026-11-13). `pytest -q tests/test_plugin_action_unregister.py`: 1 passed, red before the fix.
 - SM-54: partly fixed (2026-11-13). `pytest -q tests/test_agent_executor_cancel_race.py`: 2 passed, the race test red before the fix.
 - SM-47: partly fixed (2026-11-13). `pytest -q tests/test_cli_event_dedup_key.py`: 3 passed, 2 red before the fix.
+- SM-56: partly fixed (2026-11-13). `pytest -q tests/tools/test_edit_commit_rollback.py`: 1 passed, red before the fix (file left truncated); editing suites: 95 passed, 1 skipped.

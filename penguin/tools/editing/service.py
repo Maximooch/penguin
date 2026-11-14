@@ -510,11 +510,13 @@ class EditService:
                 resolved_path = Path(change["resolved_path"])
                 new_content = change.get("new_content")
                 resolved_path.parent.mkdir(parents=True, exist_ok=True)
+                # Record the file before touching it: a write that fails part
+                # way through must be rolled back as well.
+                written.append(snapshot)
                 if isinstance(new_content, str):
                     resolved_path.write_text(new_content, encoding="utf-8")
                 else:
                     resolved_path.unlink()
-                written.append(snapshot)
         except Exception as exc:
             for snapshot in reversed(written):
                 path = Path(snapshot["resolved_path"])
