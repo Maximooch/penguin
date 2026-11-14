@@ -772,7 +772,6 @@ class Engine:
             self.stop_conditions.append(WallClockStop(settings.wall_clock_stop_seconds))
 
         # Light run‑time state
-        self._interrupted: bool = False
         self._pending_scoped_conversation_managers: Dict[tuple[str, str], Any] = {}
 
     @staticmethod

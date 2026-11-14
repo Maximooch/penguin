@@ -475,7 +475,8 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
 
 Check for callers first. If there are none, delete.
 
-- [ ] **SM-63 Interrupt flags** (a): `penguin/engine.py:765`, `penguin/run_mode.py:81,479,757`, `penguin/core_runtime/core_state.py:56`; `Engine._interrupted` is never read; `core._interrupted` is never set True.
+- [x] **SM-63 Interrupt flags** (a): `penguin/engine.py:765`, `penguin/run_mode.py:81,479,757`, `penguin/core_runtime/core_state.py:56`; `Engine._interrupted` is never read; `core._interrupted` is never set True.
+  - State: `Engine._interrupted` is deleted; nothing read it. Left in place: `core._interrupted` (read by the continuous loop and exposed by `process_facade`, though nothing sets it to True) and `RunMode._interrupted` (set by the MCP run-mode tool); removing those changes a public attribute and an MCP tool's behaviour.
 - [ ] **SM-64 Legacy `get_response` retry** (b): `penguin/core_runtime/response_generation.py:31-114`; swallows cancellation and persists an apology string.
 - [ ] **SM-65 Legacy `local_task` status strings** (b): `penguin/local_task/manager.py:137-182` and bypass sites; handlers are unreachable until SM-31 is fixed. Still imported by `utils/parser.py:22`.
 - [ ] **SM-66 Legacy process attach** (b): `penguin/utils/parser.py:1112,2015-2038`, `penguin/utils/process_manager.py:13-160`.
@@ -687,3 +688,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-56: partly fixed (2026-11-13). `pytest -q tests/tools/test_edit_commit_rollback.py`: 1 passed, red before the fix (file left truncated); editing suites: 95 passed, 1 skipped.
 - SM-58: partly fixed (2026-11-13). `pytest -q tests/tools/test_pydoll_cleanup_timer.py`: 2 passed, the restart test red before the fix.
 - SM-36: fixed (2026-11-13). `pytest -q tests/api/test_reasoning_variant_restore_target.py`: 2 passed, the first red before the fix (the request copy's settings were written onto the core config); variant tests: 88 passed.
+- SM-63: partly done (2026-11-13). Deleted the unread `Engine._interrupted`; engine and core-runtime suites pass.
