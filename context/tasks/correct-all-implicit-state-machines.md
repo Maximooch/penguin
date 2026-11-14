@@ -444,7 +444,8 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
 - [ ] **SM-40 Session-goal run claim** (c): `penguin/core_runtime/session_goal_runtime.py:741-1079`; gate checked at 844 and acquired at 883; orphan test assumes one process per workspace.
 - [ ] **SM-41 RunMode singleton lifecycle** (b): `penguin/core_runtime/runmode_lifecycle.py:29-92`; no re-entrancy guard.
 - [ ] **SM-42 MCP connection lifecycle** (b): `penguin/tools/providers/mcp.py:22-115`, `penguin/integrations/mcp/manager.py:71-503`; a failed discovery is sticky; (FAILED, session set) is representable; `_ensure_actor` is unlocked; `list_changed` is never consumed.
-- [ ] **SM-43 Plugin lifecycle** (b): `penguin/plugins/plugin_manager.py:52-483`; parallel load looks like a deadlock (not run); action unregistration compares the wrong name.
+- [x] **SM-43 Plugin lifecycle** (b): `penguin/plugins/plugin_manager.py:52-483`; parallel load looks like a deadlock (not run); action unregistration compares the wrong name.
+  - State: action unregistration now compares against the plugin name. Not examined: the reported deadlock in parallel `load_all_plugins`, tool-name collisions, and the LOADING/ERROR status moves.
 - [ ] **SM-44 Streaming action-tag stripper** (b): `penguin/tui_adapter/part_events.py:112,181-267`; an unterminated tag drops all later text; reasoning and content share one parser state. Blocked by SM-02.
 - [ ] **SM-45 Message / part / tool lifecycle** (c): `penguin/tui_adapter/part_events.py:97-769`; the error path leaves `_stream_active` set; two sources of truth for active tools.
 - [ ] **SM-46 Headless CLI streaming display** (c): `penguin/cli/streaming_manager.py:27-80`, `penguin/cli/streaming_display.py:53-201`, `penguin/cli/cli.py:3763-4617`, `penguin/cli/event_manager.py:151-291`; stopping the spinner leaves the stream id set; five copies of the cleanup.
@@ -675,3 +676,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-30: partly fixed (2026-11-13). `pytest -q tests/test_runmode_continuous_termination.py`: 2 passed, both red before the fix (the first by crashing on `MessageCategory.WARNING`); other run-mode tests: 34 passed.
 - SM-15: partly fixed (2026-11-13). `pytest -q tests/test_engine_task_finish_contract.py`: 49 passed, including two new unbounded-LENGTH tests; engine, finish and core-runtime suites pass.
 - SM-21: partly fixed (2026-11-13). `pytest -q tests/test_orchestration_terminal_signals.py`: 7 passed, 6 red before the fix; `tests/test_orchestration.py` passes.
+- SM-43: partly fixed (2026-11-13). `pytest -q tests/test_plugin_action_unregister.py`: 1 passed, red before the fix.
