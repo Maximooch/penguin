@@ -227,13 +227,16 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     `mark_session_modified` is still a no-op for a session that is neither
     cached nor current; `SessionManager.__del__` still saves to disk during
     garbage collection, which crashed the interpreter once in a test here.
-- [ ] **SM-08 Rollback and branch pointer swap** (b)
+- [x] **SM-08 Rollback and branch pointer swap** (b)
   - `penguin/system/conversation_manager.py:1678-1718`,
     `penguin/system/checkpoint_manager.py:300`
   - After rollback the cache still maps the session id to the pre-rollback
     object, so auto-save can write old history back. Rollback and branch
     disagree on marking and saving.
   - Correction: one `replace_current_session` function used by both.
+  - State: fixed as `SessionManager.adopt_current_session`. Left open:
+    `system_prompt_sent` is not recomputed after a rollback; the manager used
+    is whichever agent's is current.
   - Blocked by: SM-07
 - [ ] **SM-09 Session load, recovery and index consistency** (b)
   - `penguin/system/session_manager.py:126-178,341-479,669,818`
@@ -573,3 +576,10 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
     without the fix.
   - `tests/system` and `tests/core_runtime`: 544 passed, 2 skipped, 3 xfailed.
     Other files that use `SessionManager`: 120 passed, 3 skipped.
+- SM-08: fixed (2026-11-13). Rollback and branch both call
+  `ConversationManager._adopt_restored_session`, which replaces the cached
+  object for that session id, marks it modified and saves it.
+  - `pytest -q tests/system/test_rollback_session_swap.py`: 1 passed; red
+    before the fix (auto-save wrote the pre-rollback history back).
+  - Every non-API test file mentioning checkpoints: 333 passed, 3 skipped,
+    1 xfailed.

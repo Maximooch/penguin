@@ -877,6 +877,25 @@ class SessionManager:
             return False
     
     @synchronized_store
+    @synchronized_store
+    def adopt_current_session(self, session: Session) -> bool:
+        """Make ``session`` the current session and the only cached copy of its id.
+
+        Used after a rollback or branch, where a restored object replaces a live
+        one that may share its id. The stale object is dropped from the cache so
+        a later auto-save cannot write its history back.
+
+        Args:
+            session: The restored or branched session.
+
+        Returns:
+            True if the session was saved, False otherwise.
+        """
+        self.current_session = session
+        self._add_to_session_cache(session.id, session)
+        self.mark_session_modified(session.id)
+        return self.save_session(session)
+
     def mark_session_modified(self, session_id: str) -> None:
         """Mark a session as modified in the cache.
         
