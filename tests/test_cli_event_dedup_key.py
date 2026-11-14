@@ -9,6 +9,7 @@ def _bus() -> EventBus:
     bus = EventBus.__new__(EventBus)
     bus._recent_events = []
     bus._dedup_window = 60.0
+    bus._max_recent = 100
     return bus
 
 
