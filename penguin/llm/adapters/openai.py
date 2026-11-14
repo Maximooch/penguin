@@ -30,8 +30,8 @@ from ..contracts import (
     FinishReason,
     LLMError,
     LLMPreparedRequest,
-    LLMProviderError,
     LLMProviderCapabilities,
+    LLMProviderError,
     LLMRequestLifecycle,
     LLMUsage,
     ProviderRequestStatus,
@@ -48,6 +48,13 @@ from ..provider_transform import (
 from ..reasoning_variants import (
     openai_reasoning_efforts,
     reasoning_efforts_from_metadata,
+)
+from ..stream_end import (
+    StreamEnd,
+    classify_stream_end,
+    finish_reason_for,
+    responses_incomplete_reason,
+    stream_output_state,
 )
 from .base import BaseAdapter
 from .responses_reasoning import ResponsesReasoningStream
@@ -248,6 +255,43 @@ class OpenAIAdapter(BaseAdapter):
             error=error,
         )
         raise LLMProviderError(error)
+
+    def _record_responses_incomplete(self, response: Any) -> FinishReason:
+        """Record a ``response.incomplete`` event and return why output stopped."""
+        payload = response if isinstance(response, dict) else self._to_dict(response)
+        if isinstance(payload, dict):
+            self._set_last_usage(payload.get("usage"))
+            self._record_served_tier(payload)
+        return responses_incomplete_reason(payload)
+
+    def _settle_responses_stream_end(
+        self,
+        *,
+        saw_terminal: bool,
+        stopped_early: Optional[FinishReason],
+        has_text: bool,
+    ) -> StreamEnd:
+        """Classify the end of a Responses stream and set the finish reason.
+
+        Raises:
+            LLMProviderError: The stream ended before its terminal event.
+        """
+        if stopped_early is not None:
+            # A tool call from a cut-off response may hold partial arguments.
+            self._reset_tool_call_state()
+        pending_tool = self.has_pending_tool_call()
+        end = classify_stream_end(
+            saw_terminal=saw_terminal,
+            stopped_early=stopped_early,
+            pending_tool=pending_tool,
+            has_text=has_text,
+        )
+        if end is StreamEnd.INCOMPLETE:
+            self._raise_responses_stream_incomplete(
+                stream_output_state(pending_tool=pending_tool, has_text=has_text)
+            )
+        self._set_last_finish_reason(finish_reason_for(end))
+        return end
 
     def _raise_responses_stream_incomplete(self, output_state: str) -> None:
         detail = (
@@ -1881,6 +1925,7 @@ class OpenAIAdapter(BaseAdapter):
         response: httpx.Response | None = None
         saw_done_marker = False
         saw_completed_event = False
+        stopped_early: Optional[FinishReason] = None
         self._start_request_lifecycle(
             request_id=diag_id,
             model_id=model_id,
@@ -2063,6 +2108,14 @@ class OpenAIAdapter(BaseAdapter):
                                 completed_text = extracted
                             continue
 
+                        if etype == "response.incomplete":
+                            saw_completed_event = True
+                            completed_ms = event_elapsed_ms
+                            stopped_early = self._record_responses_incomplete(
+                                data.get("response")
+                            )
+                            continue
+
                         await self._emit_reasoning_event(
                             reasoning_stream, data, stream_callback
                         )
@@ -2096,15 +2149,20 @@ class OpenAIAdapter(BaseAdapter):
             )
         assert response is not None
 
+        if stopped_early is not None:
+            self._reset_tool_call_state()
         pending_tool_call = self.has_pending_tool_call()
-        if not saw_completed_event:
+        codex_has_text = bool(completed_text or accumulated_content)
+        end = classify_stream_end(
+            saw_terminal=saw_completed_event,
+            stopped_early=stopped_early,
+            pending_tool=pending_tool_call,
+            has_text=codex_has_text,
+        )
+        if end is StreamEnd.INCOMPLETE:
             latency_ms = int((time.monotonic() - started) * 1000)
-            output_state = (
-                "tool_call"
-                if pending_tool_call
-                else "text"
-                if completed_text or accumulated_content
-                else "empty"
+            output_state = stream_output_state(
+                pending_tool=pending_tool_call, has_text=codex_has_text
             )
             detail = (
                 "Codex stream ended before response.completed "
@@ -2218,16 +2276,12 @@ class OpenAIAdapter(BaseAdapter):
             reasoning_stream.summary_lengths(),
         )
 
-        if pending_tool_call:
-            self._set_last_finish_reason(FinishReason.TOOL_CALLS)
-
+        self._set_last_finish_reason(finish_reason_for(end))
+        self._update_request_lifecycle(
+            status=ProviderRequestStatus.COMPLETED,
+            finish_reason=self.get_last_finish_reason(),
+        )
         if completed_text:
-            if not pending_tool_call:
-                self._set_last_finish_reason(FinishReason.STOP)
-            self._update_request_lifecycle(
-                status=ProviderRequestStatus.COMPLETED,
-                finish_reason=self.get_last_finish_reason(),
-            )
             if not accumulated_content and stream_callback:
                 await self._safe_invoke_callback(
                     stream_callback,
@@ -2235,13 +2289,6 @@ class OpenAIAdapter(BaseAdapter):
                     "assistant",
                 )
             return completed_text
-
-        if not pending_tool_call:
-            self._set_last_finish_reason(FinishReason.STOP)
-        self._update_request_lifecycle(
-            status=ProviderRequestStatus.COMPLETED,
-            finish_reason=self.get_last_finish_reason(),
-        )
         return "".join(accumulated_content)
 
     def _codex_error_detail(
@@ -2633,6 +2680,7 @@ class OpenAIAdapter(BaseAdapter):
         accumulated_content: List[str] = []
         reasoning_stream = ResponsesReasoningStream()
         saw_completed_event = False
+        stopped_early: Optional[FinishReason] = None
         try:
             # Async streaming context
             async with self.client.responses.stream(**request_params) as stream:  # type: ignore[attr-defined]
@@ -2656,6 +2704,12 @@ class OpenAIAdapter(BaseAdapter):
                     if etype == "response.completed":
                         saw_completed_event = True
                         continue
+                    if etype == "response.incomplete":
+                        saw_completed_event = True
+                        stopped_early = self._record_responses_incomplete(
+                            response_payload
+                        )
+                        continue
                     if etype == "response.output_text.delta":
                         delta = getattr(event, "delta", "")
                         if delta:
@@ -2668,15 +2722,15 @@ class OpenAIAdapter(BaseAdapter):
                         await self._emit_reasoning_event(
                             reasoning_stream, self._to_dict(event), stream_callback
                         )
-                if not saw_completed_event:
-                    output_state = (
-                        "tool_call"
-                        if self.has_pending_tool_call()
-                        else "text"
-                        if accumulated_content
-                        else "empty"
+                if not saw_completed_event or stopped_early is not None:
+                    # Raises when the stream never ended; a cut-off answer is
+                    # returned as it stands, without the final response object.
+                    self._settle_responses_stream_end(
+                        saw_terminal=saw_completed_event,
+                        stopped_early=stopped_early,
+                        has_text=bool(accumulated_content),
                     )
-                    self._raise_responses_stream_incomplete(output_state)
+                    return "".join(accumulated_content)
                 final = await stream.get_final_response()
                 self._update_request_lifecycle(
                     status=ProviderRequestStatus.STREAMING,
@@ -2739,6 +2793,7 @@ class OpenAIAdapter(BaseAdapter):
         accumulated_content: List[str] = []
         completed_text = ""
         saw_completed_event = False
+        stopped_early: Optional[FinishReason] = None
 
         # Use connection pool for efficient parallel LLM calls
         pool = ConnectionPoolManager.get_instance()
@@ -2798,6 +2853,11 @@ class OpenAIAdapter(BaseAdapter):
                         )
                         if extracted:
                             completed_text = extracted
+                    elif etype == "response.incomplete":
+                        saw_completed_event = True
+                        stopped_early = self._record_responses_incomplete(
+                            data.get("response")
+                        )
                     else:
                         await self._emit_reasoning_event(
                             reasoning_stream, data, stream_callback
@@ -2809,30 +2869,19 @@ class OpenAIAdapter(BaseAdapter):
                 except Exception:
                     # Skip malformed lines
                     continue
-        pending_tool_call = self.has_pending_tool_call()
-        if not saw_completed_event:
-            output_state = (
-                "tool_call"
-                if pending_tool_call
-                else "text"
-                if completed_text or accumulated_content
-                else "empty"
-            )
-            self._raise_responses_stream_incomplete(output_state)
-        if pending_tool_call:
-            self._set_last_finish_reason(FinishReason.TOOL_CALLS)
-            if self._interrupt_on_tool_call():
-                return completed_text or "".join(accumulated_content)
+        end = self._settle_responses_stream_end(
+            saw_terminal=saw_completed_event,
+            stopped_early=stopped_early,
+            has_text=bool(completed_text or accumulated_content),
+        )
+        if end is StreamEnd.TOOL_CALLS and self._interrupt_on_tool_call():
+            return completed_text or "".join(accumulated_content)
         if completed_text:
-            if not pending_tool_call:
-                self._set_last_finish_reason(FinishReason.STOP)
             if not accumulated_content and stream_callback:
                 await self._safe_invoke_callback(
                     stream_callback, completed_text, "assistant"
                 )
             return completed_text
-        if not pending_tool_call:
-            self._set_last_finish_reason(FinishReason.STOP)
         return "".join(accumulated_content)
 
     async def _safe_invoke_callback(

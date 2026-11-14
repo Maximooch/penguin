@@ -35,6 +35,7 @@ from penguin.llm.provider_transform import (
 )
 
 from ..model_config import ModelConfig
+from ..stream_end import StreamEnd, classify_stream_end, stream_output_state
 
 logger = logging.getLogger(__name__)
 
@@ -648,6 +649,35 @@ class OpenRouterGateway:
         self._clear_pending_tool_state()
         self._finish_request_lifecycle_from_state()
         return f"[Error: {message}]"
+
+    def _stream_output_state(self, has_text: bool) -> str:
+        return stream_output_state(
+            pending_tool=self.has_pending_tool_call() or bool(self._tool_call_accs),
+            has_text=has_text,
+        )
+
+    def _settle_stream_end(
+        self, *, saw_error: bool, saw_terminal: bool, has_text: bool
+    ) -> StreamEnd:
+        """Classify the end of a stream and settle the tool calls it gathered.
+
+        Tool calls still being accumulated are promoted to pending only when the
+        stream ended cleanly. After a provider error they are discarded, because
+        their arguments may be partial. An incomplete stream keeps them until
+        ``_record_stream_incomplete`` has described what was lost.
+        """
+        end = classify_stream_end(
+            saw_error=saw_error,
+            saw_terminal=saw_terminal,
+            pending_tool=self.has_pending_tool_call() or bool(self._tool_call_accs),
+            has_text=has_text,
+        )
+        if end is StreamEnd.PROVIDER_ERROR:
+            self._clear_pending_tool_state()
+            self._set_last_finish_reason(FinishReason.ERROR)
+        elif end is not StreamEnd.INCOMPLETE:
+            self._finalize_stream_tool_calls()
+        return end
 
     def _clear_pending_tool_state(self) -> None:
         """Discard incomplete tool-call state after an interrupted stream."""
@@ -1860,26 +1890,25 @@ class OpenRouterGateway:
                 self.logger.info(
                     f"[OpenRouterGateway] SDK streaming completed. Content: {len(full_response_content)} chars, finish_reason: {sdk_last_finish_reason}"
                 )
-                self._finalize_stream_tool_calls()
                 self._log_last_usage("sdk-stream")
+                end = self._settle_stream_end(
+                    saw_error=bool(sdk_stream_error),
+                    saw_terminal=sdk_last_finish_reason is not None,
+                    has_text=bool(full_response_content),
+                )
 
                 # Handle mid-stream error if one occurred
-                if sdk_stream_error:
+                if end is StreamEnd.PROVIDER_ERROR and sdk_stream_error:
                     error_msg = sdk_stream_error.get("message", "Unknown error")
                     provider = sdk_stream_error.get("provider", "unknown provider")
                     if full_response_content:
                         return f"{full_response_content}\n\n[Error: Stream interrupted by {provider}: {error_msg}]"
                     return f"[Error: {provider} returned mid-stream error: {error_msg}]"
 
-                if sdk_last_finish_reason is None:
-                    output_state = (
-                        "tool_call"
-                        if self.has_pending_tool_call() or self._tool_call_accs
-                        else "text"
-                        if full_response_content
-                        else "empty"
+                if end is StreamEnd.INCOMPLETE:
+                    return self._record_stream_incomplete(
+                        self._stream_output_state(bool(full_response_content))
                     )
-                    return self._record_stream_incomplete(output_state)
 
                 # For streaming responses, we return only the content part
                 # The reasoning was already streamed via callback
@@ -2466,7 +2495,12 @@ class OpenRouterGateway:
         self.logger.info(
             f"Direct streaming call completed. Reasoning: {len(full_reasoning)} chars, Content: {len(full_content)} chars, finish_reason: {last_finish_reason}"
         )
-        self._finalize_stream_tool_calls()
+        end = self._settle_stream_end(
+            saw_error=bool(stream_error),
+            saw_terminal=bool(interrupted_reason)
+            or (saw_done_marker and last_finish_reason is not None),
+            has_text=bool(full_content),
+        )
         if interrupted_reason and (
             not isinstance(self._last_usage, dict) or not self._last_usage
         ):
@@ -2479,7 +2513,7 @@ class OpenRouterGateway:
         self._log_last_usage("direct-stream")
 
         # Handle mid-stream error if one occurred
-        if stream_error:
+        if end is StreamEnd.PROVIDER_ERROR and stream_error:
             error_msg = stream_error.get("message", "Unknown error")
             provider = stream_error.get("provider", "unknown provider")
             # If we have partial content, include it with the error
@@ -2487,17 +2521,10 @@ class OpenRouterGateway:
                 return f"{full_content}\n\n[Error: Stream interrupted by {provider}: {error_msg}]"
             return f"[Error: {provider} returned mid-stream error: {error_msg}]"
 
-        if not interrupted_reason and (
-            not saw_done_marker or last_finish_reason is None
-        ):
-            output_state = (
-                "tool_call"
-                if self.has_pending_tool_call() or self._tool_call_accs
-                else "text"
-                if full_content
-                else "empty"
+        if end is StreamEnd.INCOMPLETE:
+            return self._record_stream_incomplete(
+                self._stream_output_state(bool(full_content))
             )
-            return self._record_stream_incomplete(output_state)
 
         # Check for empty content and provide helpful message
         if not full_content:

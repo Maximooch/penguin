@@ -26,6 +26,7 @@ from ..contracts import (
 from ..model_config import ModelConfig
 from ..provider_transform import build_llm_error, normalize_finish_reason
 from ..reasoning_variants import anthropic_reasoning_efforts
+from ..stream_end import StreamEnd, classify_stream_end, stream_output_state
 
 from penguin.constants import get_default_max_output_tokens
 
@@ -766,7 +767,6 @@ class AnthropicAdapter(BaseAdapter):
         self._reset_response_state()
         accumulated_response = []
         stream_start_time = time.time()
-        streaming_timeout = 30  # seconds
         final_response_object = None  # To store the final message object
         stream_error = None  # To store any exception during streaming
         stop_reason = None  # To store the stop reason if available
@@ -779,13 +779,8 @@ class AnthropicAdapter(BaseAdapter):
             # Create the streaming response
             stream = await self._create_messages(params)
 
-            # Track content reception
-            last_chunk_time = time.time()
-            chunk_timeout = 10  # seconds
-
             # Process each chunk as it comes in
             async for chunk in stream:
-                last_chunk_time = time.time()
                 chunk_count += 1
                 self._update_request_lifecycle(
                     status=ProviderRequestStatus.STREAMING,
@@ -894,25 +889,6 @@ class AnthropicAdapter(BaseAdapter):
                     error_msg = f"Error processing chunk {chunk_count}: {str(e)}"
                     self.logger.error(f"{error_msg}\n{traceback.format_exc()}")
 
-                # Check for chunk timeout
-                current_time = time.time()
-                if current_time - last_chunk_time > chunk_timeout:
-                    self.logger.warning(
-                        f"No chunks received for {chunk_timeout} seconds, stopping stream"
-                    )
-                    stream_error = TimeoutError(f"Chunk timeout after {chunk_timeout}s")
-                    break
-
-                # Check for overall timeout
-                if current_time - stream_start_time > streaming_timeout:
-                    self.logger.warning(
-                        f"Streaming exceeded timeout of {streaming_timeout} seconds, stopping"
-                    )
-                    stream_error = TimeoutError(
-                        f"Streaming timeout after {streaming_timeout}s"
-                    )
-                    break
-
             # ---- After the loop ----
             # Try to get the final message object AFTER the stream completes.
             # Raw SDK streams (`messages.create(stream=True)`) do not expose
@@ -963,30 +939,24 @@ class AnthropicAdapter(BaseAdapter):
             # Join all chunks to get the complete response
             complete_response = "".join(accumulated_response)
 
-            if not saw_message_stop and stream_error is None:
-                output_state = (
-                    "tool_call"
-                    if self.has_pending_tool_call()
-                    else "text"
-                    if complete_response
-                    else "empty"
+            end = classify_stream_end(
+                saw_error=stream_error is not None,
+                saw_terminal=saw_message_stop,
+                pending_tool=self.has_pending_tool_call(),
+                has_text=bool(complete_response),
+            )
+            if end is StreamEnd.INCOMPLETE:
+                stream_error = self._record_anthropic_stream_incomplete(
+                    stream_output_state(
+                        pending_tool=self.has_pending_tool_call(),
+                        has_text=bool(complete_response),
+                    )
                 )
-                stream_error = self._record_anthropic_stream_incomplete(output_state)
 
             if stream_error:
-                if not isinstance(stream_error, LLMError):
-                    # A timeout is a failure of the request. Record it so the
-                    # caller does not read the error text as the model's answer.
-                    stream_error = build_llm_error(
-                        message=str(stream_error),
-                        provider=self.provider,
-                        model=getattr(self.model_config, "model", None),
-                        category=ErrorCategory.TIMEOUT,
-                        retryable=True,
-                        finish_reason=FinishReason.ERROR,
-                    )
-                    self._pending_tool_calls = []
-                    self._last_tool_call = None
+                # A tool call from a failed stream may be partial.
+                self._pending_tool_calls = []
+                self._last_tool_call = None
                 error_message = stream_error.message
                 self._set_last_error(stream_error)
                 self._set_last_finish_reason(FinishReason.ERROR)
@@ -995,9 +965,9 @@ class AnthropicAdapter(BaseAdapter):
                         f"{complete_response}\n\n"
                         f"[Error: Stream interrupted by Anthropic: {error_message}]"
                     )
-                return f"Error during response generation: {error_message}"
+                return f"[Error: {error_message}]"
 
-            if not complete_response.strip() and self.has_pending_tool_call():
+            if not complete_response.strip() and end is StreamEnd.TOOL_CALLS:
                 self._set_last_finish_reason(FinishReason.TOOL_CALLS)
                 return ""
 
@@ -1069,21 +1039,25 @@ class AnthropicAdapter(BaseAdapter):
             self.logger.error(
                 f"Stream error details: elapsed_time={elapsed_time:.2f}s, chunks_received={chunk_count}, stop_reason={stop_reason}, usage={usage_info}"
             )
+            timed_out = isinstance(e, (TimeoutError, asyncio.TimeoutError))
             self._set_last_error(
                 build_llm_error(
                     message=error_msg,
                     provider=self.provider,
                     model=getattr(self.model_config, "model", None),
-                    finish_reason=stop_reason,
+                    finish_reason=FinishReason.ERROR,
+                    **(
+                        {"category": ErrorCategory.TIMEOUT, "retryable": True}
+                        if timed_out
+                        else {}
+                    ),
                 )
             )
-
-            if callback:
-                await self._safe_invoke_callback(
-                    callback,
-                    f"\n[Streaming Error: {str(e)}]",
-                    "assistant",
-                )
+            self._set_last_finish_reason(FinishReason.ERROR)
+            # A tool call from a failed stream may be partial. The error is
+            # reported through the recorded error, not as assistant text.
+            self._pending_tool_calls = []
+            self._last_tool_call = None
 
             # Return partial response if we have any content
             if accumulated_response:
@@ -1093,7 +1067,7 @@ class AnthropicAdapter(BaseAdapter):
                 return "".join(accumulated_response)
 
             # Otherwise return an error message including stop reason if available
-            return f"Error during response generation: {str(e)}. Stop Reason: {stop_reason}"
+            return f"[Error: {str(e)}. Stop Reason: {stop_reason}]"
         finally:
             # Log final state regardless of how we exited
             total_stream_time = time.time() - stream_start_time

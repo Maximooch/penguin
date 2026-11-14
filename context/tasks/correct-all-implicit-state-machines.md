@@ -118,6 +118,18 @@ on its own.
   the legacy `local_task` `ProjectManager` handlers. Handler errors are caught
   and logged by the bus. If either misbehaves, revert this commit or
   unsubscribe that handler.
+- SM-12: the Anthropic adapter's fixed 30-second limit on a whole streamed
+  response is removed (a longer answer was cut off and reported as a timeout).
+  The 10-second gap check next to it could never fire and is removed too.
+  Stalls are left to the SDK's own HTTP timeouts.
+- SM-12: an OpenAI `response.incomplete` event is now a cut-off answer
+  (`LENGTH`, or `CONTENT_FILTER` when the provider says so), not a dropped
+  connection to retry. An unrecognised reason counts as `LENGTH`. Tool calls
+  from a cut-off response are discarded.
+- SM-12: OpenRouter and Anthropic keep returning a marked string with the
+  error recorded, because existing tests assert that and `APIClient` reads the
+  recorded error. Only LiteLLM changed to raising. The item said "errors are
+  raised, never returned as text".
 
 ## Item format
 
@@ -272,7 +284,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
 
 ## Tier 1: wrong output, hung or stuck sessions
 
-- [ ] **SM-12 Stream-end outcome, seven copies** (two confirmed bugs fixed; consolidation open) (b → a) [confirmed, bend, design]
+- [x] **SM-12 Stream-end outcome, seven copies** (b → a) [confirmed, bend, design]
   - `penguin/llm/adapters/openai.py:1852,2627,2719`,
     `penguin/llm/adapters/openrouter.py:1547,2212`,
     `penguin/llm/adapters/anthropic.py:760-1091`,
@@ -292,6 +304,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     `response.incomplete`; OpenRouter finalising tool calls before its error
     check; LiteLLM's `finally: return`; Anthropic's 30 s hard cap and its
     error text returned as the response string; the Bend model.
+  - State: (2026-11-13) one rule, `classify_stream_end` in `penguin/llm/stream_end.py`, now decides the outcome in the OpenAI (Codex, SDK, HTTP), OpenRouter (SDK, direct) and Anthropic stream ends. Fixed with it: `response.incomplete` handled; OpenRouter discards a partial tool call on a mid-stream error; LiteLLM no longer returns a failed or cancelled stream as a short answer; Anthropic's 30 s cap removed and its stream errors no longer sent as assistant text. Bend model in `prototypes/bend_stream_end` (draft laws await review). Not exercised by a test: the Codex and SDK `response.incomplete` branches, and OpenRouter's SDK path. See "Decisions taken while away" for what was kept as is.
 - [ ] **SM-13 Pending tool-call accumulation, four adapters** (waits on the SM-12 consolidation) (c)
   - `penguin/llm/adapters/openai.py:143-158,451-565`,
     `penguin/llm/adapters/openrouter.py:91,709-814,2552`,
@@ -708,3 +721,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-70: partly fixed (2026-11-13). `pytest -q tests/test_cli_message_dedupe_turns.py`: 2 passed, the later-turn test red before the fix; CLI test files: 144 passed and the known click baseline failure.
 - Branch check (2026-11-13, at `0199c737a`): the suites listed in the PR
   description: 1667 passed, 23 skipped, 3 xfailed. 27 items ticked, 49 open.
+- SM-12: done (2026-11-13). Shared stream-end rule wired into four adapters; 11 deterministic tests, 5 opt-in Bend tests.
