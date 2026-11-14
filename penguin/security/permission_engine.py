@@ -393,8 +393,13 @@ class PermissionEnforcer:
             try:
                 result, reason = policy.check_operation(operation, resource, context)
             except Exception as e:
+                # A policy that cannot answer has not allowed anything.
                 logger.error(f"Policy '{policy.name}' raised exception: {e}", exc_info=True)
-                continue
+                reason = f"Policy '{policy.name}' failed to evaluate: {e}"
+                self._log_check(
+                    operation, resource, PermissionResult.DENY, reason, policy.name, context
+                )
+                return PermissionResult.DENY
             
             if result == PermissionResult.DENY:
                 self._log_check(operation, resource, result, reason, policy.name, context)

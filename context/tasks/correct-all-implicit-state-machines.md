@@ -56,7 +56,9 @@ One iteration handles one backlog item. Take the first unchecked item whose
    `core.py`, business logic out of `web/routes.py`, raise `PenguinError`
    subclasses, no file past about 2000 lines.
 4. **Show the guard can fail.** Revert the fix locally, confirm the new test
-   goes red, restore the fix.
+   goes red, restore the fix. Never do this with a test that runs real
+   handlers once the guard is gone: on SM-03 that started a headless browser.
+   Revert against a narrow, side-effect-free subset instead.
 5. **Bend lane, shape (a) items only.** If the item is tagged `bend`, add a
    pure projection, `LAWS.bend`, `PROOF.bend` and an opt-in differential test
    under `prototypes/`, following `prototypes/bend_runtime/`. Bend stays an
@@ -89,10 +91,23 @@ Recommended defaults are given; change them here.
 | Decision | Recommended default |
 |---|---|
 | Starting tree | Land or stash the current uncommitted work first. It touches `openai.py`, `openrouter.py`, `tool_manager.py`, `async_dispatch.py`, `providers/mcp.py`, `config.py` and `model_runtime.py`, which this backlog also edits. |
-| Branching | One branch per tier, one commit per item, one PR per tier or per cluster of related items. |
+| Branching | One branch, `FV/squash-implicit-state-machines`, cut from `origin/main` at `42007c0ef`. One commit per item, grouped by tier in one large PR (Maximus, 2026-11-13). SM-01 and SM-02 landed on main before the branch. |
 | Commit and push | The loop commits locally. It does not push or open PRs without being told to. |
+| Autonomy | Maximus is away (2026-11-13): keep going, stop only when input is truly required. Where a `design` item has a reasonable reversible answer, implement it and list it under "Decisions taken while away"; otherwise mark the item `on hold` and move on. |
 | Behaviour changes | Stop and ask (see above). |
 | Bend | Only for items tagged `bend`. |
+
+## Decisions taken while away
+
+One line each, newest last, for review. Each is one commit and can be reverted
+on its own.
+
+- SM-03: under a restricted startup allowlist, an action tag is allowed only if
+  its own name, or the tool it aliases to, is on the list. Control actions such
+  as `finish_response` get no exemption, matching `execute_tool`. An allowlist
+  that omits them cannot end a turn through action tags.
+- SM-03: an `ImportError` from the agent permission module now denies, like any
+  other failure of that check.
 
 ## Item format
 
@@ -137,7 +152,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     `html.unescape` still rewrites `&lt;` and `&amp;` inside params; the CLI
     display copies still use their own single-tag patterns. The streaming
     display's treatment of backtick-adjacent tags as literal is SM-44.
-- [ ] **SM-03 Effective permission mode** (a) [security, bend]
+- [x] **SM-03 Effective permission mode** (a) [security, bend]
   - `penguin/security/permission_engine.py:274-397,487`,
     `penguin/security/tool_permissions.py:476-586,955`,
     `penguin/security/agent_permissions.py:397`
@@ -146,6 +161,12 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     reason is read from a shared list.
   - Correction: fail closed on policy errors; one resolution function. Extend
     `prototypes/bend_permissions`.
+  - State: the three fail-open paths are closed (enforcer policy error, agent
+    policy error, startup capability policy on the action-tag path). On hold,
+    each needs a product decision: unknown tools are still ALLOW without a
+    request policy; an agent with no registered policy is still ALLOW; the
+    last-denial reason is still read from a shared list; MCP servers are still
+    accepted from project-level config. Bend extension deferred.
 - [ ] **SM-04 Approval request lifecycle** (c) [security]
   - `penguin/security/approval.py:176-334,471,516`,
     `penguin/security/permission_engine.py:279,323`
@@ -484,3 +505,14 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
     `tests/test_part_event_persist_callback.py` and
     `tests/test_engine_task_finish_contract.py`: 731 passed, 4 skipped.
   - `ruff check` on the new test file: clean.
+- Baseline repair (2026-11-13): `tests/api/test_concurrent_session_isolation.py`
+  used `routes_module` without importing it. Import added.
+- SM-03: fixed (2026-11-13). `PermissionEnforcer.check` and
+  `_check_agent_permission` deny when a policy raises;
+  `ActionExecutor.execute_action` applies `ToolCapabilityPolicy` before any
+  handler.
+  - `pytest -q tests/test_permission_fail_closed.py`: 93 passed. The two
+    policy tests and the `process_list` / `task_list` cases were red before the
+    fix; each fix removed alone turns its test red.
+  - Every test file mentioning permissions, `ActionExecutor` or tool
+    capabilities, plus `tests/tools`: 902 passed, 36 skipped.
