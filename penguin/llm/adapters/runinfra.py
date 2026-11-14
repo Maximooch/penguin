@@ -15,6 +15,7 @@ from openai import AsyncOpenAI  # type: ignore
 
 from penguin.llm.contracts import LLMPreparedRequest, LLMProviderCapabilities
 
+from ..tool_call_accumulator import ToolCallAccumulator
 from .openrouter import OpenRouterGateway
 
 if TYPE_CHECKING:
@@ -48,10 +49,7 @@ class RunInfraAdapter(OpenRouterGateway):
         self.site_url = None
         self.site_title = "Penguin"
         self._telemetry: dict[str, Any] = {"interrupts": 0, "streamed_bytes": 0}
-        self._tool_call_acc: dict[str, Any] = {"name": None, "arguments": ""}
-        self._tool_call_accs: dict[int, dict[str, Any]] = {}
-        self._pending_tool_calls: list[dict[str, Any]] = []
-        self._last_tool_call = None
+        self._tool_calls = ToolCallAccumulator()
         self._last_usage: dict[str, Any] = {}
         self._last_error = None
         self._last_finish_reason = __import__(

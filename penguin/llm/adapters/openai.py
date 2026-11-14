@@ -56,6 +56,7 @@ from ..stream_end import (
     responses_incomplete_reason,
     stream_output_state,
 )
+from ..tool_call_accumulator import ToolCallAccumulator
 from .base import BaseAdapter
 from .responses_reasoning import ResponsesReasoningStream
 
@@ -147,22 +148,11 @@ class OpenAIAdapter(BaseAdapter):
         return "openai"
 
     def _reset_tool_call_state(self) -> None:
-        self._tool_call_acc: Dict[str, Any] = {
-            "item_id": None,
-            "call_id": None,
-            "name": None,
-            "arguments": "",
-        }
-        self._tool_call_acc_by_item: Dict[str, Dict[str, Any]] = {}
-        self._pending_tool_calls: List[Dict[str, Any]] = []
-        self._last_tool_call: Optional[Dict[str, Any]] = None
+        self._tool_calls = ToolCallAccumulator()
 
     def has_pending_tool_call(self) -> bool:
         """Return whether a structured Responses tool call is waiting to run."""
-        return bool(self._pending_tool_calls) or (
-            isinstance(self._last_tool_call, dict)
-            and bool(self._last_tool_call.get("name"))
-        )
+        return self._tool_calls.has_pending()
 
     def get_and_clear_last_tool_call(self) -> Optional[Dict[str, Any]]:
         """Return the latest structured tool call and clear adapter state."""
@@ -171,11 +161,7 @@ class OpenAIAdapter(BaseAdapter):
 
     def get_and_clear_pending_tool_calls(self) -> List[Dict[str, Any]]:
         """Return all pending structured tool calls and clear adapter state."""
-        pending = [dict(call) for call in self._pending_tool_calls]
-        if not pending and isinstance(self._last_tool_call, dict):
-            pending = [dict(self._last_tool_call)]
-        self._reset_tool_call_state()
-        return pending
+        return self._tool_calls.drain()
 
     def _reset_response_state(self) -> None:
         self._last_usage = {}
@@ -443,168 +429,74 @@ class OpenAIAdapter(BaseAdapter):
             pass
         return {}
 
-    def _snapshot_tool_call(
-        self,
-        *,
-        item_id: Any = None,
-        call_id: Any = None,
-        name: Any = None,
-        arguments: Any = None,
-        accumulator: Optional[Dict[str, Any]] = None,
-    ) -> Optional[Dict[str, Any]]:
-        active_acc = (
-            accumulator if isinstance(accumulator, dict) else self._tool_call_acc
-        )
-        resolved_name = str(name or active_acc.get("name") or "").strip()
-        if not resolved_name:
+    def _function_call_fields(self, item: Any) -> Optional[Dict[str, Any]]:
+        """Return the tool-call fields of a ``function_call`` output item."""
+        payload = self._to_dict(item)
+        if payload.get("type") != "function_call":
             return None
-
-        resolved_arguments = arguments
-        if not isinstance(resolved_arguments, str):
-            resolved_arguments = active_acc.get("arguments", "")
-        if not isinstance(resolved_arguments, str):
-            resolved_arguments = ""
-
-        resolved_item_id = item_id or active_acc.get("item_id")
-        resolved_call_id = call_id or active_acc.get("call_id")
         return {
-            "item_id": str(resolved_item_id).strip() if resolved_item_id else None,
-            "call_id": str(resolved_call_id).strip() if resolved_call_id else None,
-            "name": resolved_name,
-            "arguments": resolved_arguments,
+            "item_id": payload.get("id"),
+            "call_id": payload.get("call_id"),
+            "name": payload.get("name"),
+            "arguments": payload.get("arguments"),
         }
 
-    def _tool_call_accumulator_for_item(
-        self,
-        *,
-        item_id: Any = None,
-        call_id: Any = None,
-    ) -> Dict[str, Any]:
-        key = str(item_id or call_id or "").strip()
-        if not key:
-            return self._tool_call_acc
-        if key not in self._tool_call_acc_by_item:
-            self._tool_call_acc_by_item[key] = {
-                "item_id": str(item_id).strip() if item_id else None,
-                "call_id": str(call_id).strip() if call_id else None,
-                "name": None,
-                "arguments": "",
-            }
-        return self._tool_call_acc_by_item[key]
+    @staticmethod
+    def _tool_call_key(fields: Dict[str, Any]) -> str:
+        return str(fields.get("item_id") or fields.get("call_id") or "").strip()
 
-    def _remember_tool_call(self, tool_call: Dict[str, Any]) -> Dict[str, Any]:
-        """Record one provider tool call without duplicating completed events."""
-        call_id = str(tool_call.get("call_id") or "").strip()
-        item_id = str(tool_call.get("item_id") or "").strip()
-        name = str(tool_call.get("name") or "").strip()
-        arguments = str(tool_call.get("arguments") or "")
-
-        for pending in self._pending_tool_calls:
-            same_call_id = call_id and call_id == str(pending.get("call_id") or "")
-            same_item_id = item_id and item_id == str(pending.get("item_id") or "")
-            if same_call_id or same_item_id:
-                pending.update(tool_call)
-                self._last_tool_call = pending
-                return pending
-            if (
-                not call_id
-                and not item_id
-                and name == str(pending.get("name") or "")
-                and arguments == str(pending.get("arguments") or "")
-            ):
-                self._last_tool_call = pending
-                return pending
-
-        remembered = dict(tool_call)
-        self._pending_tool_calls.append(remembered)
-        self._last_tool_call = remembered
-        return remembered
-
-    def _accumulate_function_call_item(
-        self,
-        item: Any,
-        *,
-        overwrite_arguments: bool,
+    def _remember_tool_call(
+        self, tool_call: Dict[str, Any]
     ) -> Optional[Dict[str, Any]]:
-        item_payload = self._to_dict(item)
-        if item_payload.get("type") != "function_call":
-            return None
-
-        item_id = item_payload.get("id")
-        call_id = item_payload.get("call_id")
-        name = item_payload.get("name")
-        arguments = item_payload.get("arguments")
-        accumulator = self._tool_call_accumulator_for_item(
-            item_id=item_id,
-            call_id=call_id,
-        )
-
-        if isinstance(item_id, str) and item_id.strip():
-            accumulator["item_id"] = item_id.strip()
-            self._tool_call_acc["item_id"] = item_id.strip()
-        if isinstance(call_id, str) and call_id.strip():
-            accumulator["call_id"] = call_id.strip()
-            self._tool_call_acc["call_id"] = call_id.strip()
-        if isinstance(name, str) and name.strip():
-            accumulator["name"] = name.strip()
-            self._tool_call_acc["name"] = name.strip()
-
-        if isinstance(arguments, str):
-            if overwrite_arguments:
-                accumulator["arguments"] = arguments
-                self._tool_call_acc["arguments"] = arguments
-            elif arguments and not accumulator.get("arguments"):
-                accumulator["arguments"] = arguments
-                self._tool_call_acc["arguments"] = arguments
-
-        return self._snapshot_tool_call(
-            item_id=item_id,
-            call_id=call_id,
-            name=name,
-            arguments=arguments if overwrite_arguments else None,
-            accumulator=accumulator,
-        )
+        """Record one complete provider tool call; a repeated id updates it."""
+        return self._tool_calls.add(tool_call)
 
     def _capture_responses_tool_event(self, event: Any) -> Optional[Dict[str, Any]]:
         payload = self._to_dict(event)
         etype = payload.get("type") or getattr(event, "type", None)
 
         if etype == "response.output_item.added":
-            self._accumulate_function_call_item(
-                payload.get("item") or getattr(event, "item", None),
-                overwrite_arguments=False,
+            fields = self._function_call_fields(
+                payload.get("item") or getattr(event, "item", None)
             )
+            if fields:
+                arguments = fields.pop("arguments")
+                self._tool_calls.open_call(
+                    self._tool_call_key(fields),
+                    arguments=arguments if isinstance(arguments, str) else None,
+                    **fields,
+                )
             return None
 
         if etype == "response.function_call_arguments.delta":
             item_id = payload.get("item_id") or getattr(event, "item_id", None)
             delta = payload.get("delta") or getattr(event, "delta", None)
-            accumulator = self._tool_call_accumulator_for_item(item_id=item_id)
-            if isinstance(item_id, str) and item_id:
-                accumulator["item_id"] = item_id
-                self._tool_call_acc["item_id"] = item_id
-            if isinstance(delta, str) and delta:
-                accumulator["arguments"] = str(accumulator.get("arguments") or "")
-                accumulator["arguments"] += delta
-                self._tool_call_acc["arguments"] = accumulator["arguments"]
+            key = str(item_id or "").strip()
+            self._tool_calls.open_call(key, item_id=item_id)
+            self._tool_calls.append_arguments(key, delta)
             return None
 
         if etype == "response.output_item.done":
-            tool_call = self._accumulate_function_call_item(
-                payload.get("item") or getattr(event, "item", None),
-                overwrite_arguments=True,
+            fields = self._function_call_fields(
+                payload.get("item") or getattr(event, "item", None)
             )
-            if tool_call:
-                self._remember_tool_call(tool_call)
-            return tool_call
+            if not fields:
+                return None
+            arguments = fields.pop("arguments")
+            tool_call = self._tool_calls.close_call(
+                self._tool_call_key(fields),
+                arguments=arguments if isinstance(arguments, str) else None,
+                **fields,
+            )
+            return dict(tool_call) if tool_call else None
 
         if etype == "response.completed":
             tool_calls = self._extract_function_calls_from_response_object(
                 payload.get("response") or getattr(event, "response", None)
             )
-            for tool_call in tool_calls:
-                self._remember_tool_call(tool_call)
-            return tool_calls[-1] if tool_calls else None
+            remembered = [self._remember_tool_call(call) for call in tool_calls]
+            remembered = [call for call in remembered if call]
+            return dict(remembered[-1]) if remembered else None
 
         return None
 
@@ -612,6 +504,7 @@ class OpenAIAdapter(BaseAdapter):
         self,
         resp: Any,
     ) -> List[Dict[str, Any]]:
+        """Return the tool calls in a final response object, without recording."""
         output = None
         if isinstance(resp, dict):
             output = resp.get("output")
@@ -623,13 +516,11 @@ class OpenAIAdapter(BaseAdapter):
 
         tool_calls: List[Dict[str, Any]] = []
         for item in output:
-            tool_call = self._accumulate_function_call_item(
-                item,
-                overwrite_arguments=True,
-            )
-            if tool_call:
-                tool_calls.append(tool_call)
-
+            fields = self._function_call_fields(item)
+            if fields and str(fields.get("name") or "").strip():
+                if not isinstance(fields.get("arguments"), str):
+                    fields["arguments"] = ""
+                tool_calls.append(fields)
         return tool_calls
 
     def _extract_function_call_from_response_object(

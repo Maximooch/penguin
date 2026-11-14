@@ -321,6 +321,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     identical calls.
   - Correction: one accumulator class with one promotion rule.
   - Blocked by: SM-12
+  - State: (partial, 2026-11-13) one `ToolCallAccumulator` (`penguin/llm/tool_call_accumulator.py`) with one rule (runnable only once closed; merged only on a shared id; never without a name) now backs the OpenAI, OpenRouter, Anthropic, Modal and RunInfra adapters. Fixed: an Anthropic tool call was runnable from its first fragment, and an id-less one was recorded once per fragment with partial JSON; OpenAI merged identical id-less calls. Still open: Link keeps its own list and drains a different shape (the runtime accepts both).
 - [ ] **SM-14 Retry and replay layering** (re-read 2026-11-13: the unbounded Link loop is deliberate connection backoff, covered by `tests/llm/test_link_runtime_recovery.py`; the rest waits on the SM-12 consolidation) (b) [bend]
   - `penguin/llm/runtime.py:329-347,599-757`,
     `penguin/llm/providers/link/provider.py:205-246`,
@@ -730,3 +731,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
   description: 1667 passed, 23 skipped, 3 xfailed. 27 items ticked, 49 open.
 - SM-12: done (2026-11-13). Shared stream-end rule wired into four adapters; 11 deterministic tests, 5 opt-in Bend tests.
 - SM-16: partly fixed (2026-11-13). One owner for session run tracking; busy-forever after a crash and the unbounded abort marker fixed.
+- SM-13: partly fixed (2026-11-13). Shared tool-call accumulator in five adapters; Link not yet moved.

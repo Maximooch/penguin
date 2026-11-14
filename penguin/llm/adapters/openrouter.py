@@ -36,6 +36,7 @@ from penguin.llm.provider_transform import (
 
 from ..model_config import ModelConfig
 from ..stream_end import StreamEnd, classify_stream_end, stream_output_state
+from ..tool_call_accumulator import ToolCallAccumulator
 
 logger = logging.getLogger(__name__)
 
@@ -89,10 +90,7 @@ class OpenRouterGateway:
             "streamed_bytes": 0,
         }
         # Tool-call accumulation for SSE
-        self._tool_call_acc: Dict[str, Any] = {"name": None, "arguments": ""}
-        self._tool_call_accs: Dict[int, Dict[str, Any]] = {}
-        self._pending_tool_calls: List[Dict[str, Any]] = []
-        self._last_tool_call: Optional[Dict[str, Any]] = None
+        self._tool_calls = ToolCallAccumulator()
         self._last_usage: Dict[str, Any] = {}
         self._last_error: Optional[LLMError] = None
         self._last_finish_reason = FinishReason.UNKNOWN
@@ -652,7 +650,7 @@ class OpenRouterGateway:
 
     def _stream_output_state(self, has_text: bool) -> str:
         return stream_output_state(
-            pending_tool=self.has_pending_tool_call() or bool(self._tool_call_accs),
+            pending_tool=self.has_pending_tool_call() or self._tool_calls.has_open(),
             has_text=has_text,
         )
 
@@ -669,22 +667,21 @@ class OpenRouterGateway:
         end = classify_stream_end(
             saw_error=saw_error,
             saw_terminal=saw_terminal,
-            pending_tool=self.has_pending_tool_call() or bool(self._tool_call_accs),
+            pending_tool=self.has_pending_tool_call() or self._tool_calls.has_open(),
             has_text=has_text,
         )
         if end is StreamEnd.PROVIDER_ERROR:
             self._clear_pending_tool_state()
             self._set_last_finish_reason(FinishReason.ERROR)
         elif end is not StreamEnd.INCOMPLETE:
-            self._finalize_stream_tool_calls()
+            self._tool_calls.close_all()
+            if self._tool_calls.has_pending():
+                self._set_last_finish_reason(FinishReason.TOOL_CALLS)
         return end
 
     def _clear_pending_tool_state(self) -> None:
         """Discard incomplete tool-call state after an interrupted stream."""
-        self._pending_tool_calls = []
-        self._last_tool_call = None
-        self._tool_call_acc = {"name": None, "arguments": ""}
-        self._tool_call_accs = {}
+        self._tool_calls.discard()
 
     def _raise_stream_timeout(
         self,
@@ -736,40 +733,8 @@ class OpenRouterGateway:
         except Exception:
             return {}
 
-    def _remember_tool_call(
-        self,
-        *,
-        call_id: Optional[str],
-        name: Optional[str],
-        arguments: str,
-        item_id: Optional[str] = None,
-    ) -> None:
-        if not name:
-            return
-        if not hasattr(self, "_pending_tool_calls"):
-            self._pending_tool_calls = []
-        remembered = {
-            "item_id": item_id,
-            "call_id": call_id,
-            "name": name,
-            "arguments": arguments or "",
-        }
-        existing_index = next(
-            (
-                index
-                for index, pending in enumerate(self._pending_tool_calls)
-                if call_id and pending.get("call_id") == call_id
-            ),
-            None,
-        )
-        if existing_index is None:
-            self._pending_tool_calls.append(remembered)
-        else:
-            self._pending_tool_calls[existing_index] = remembered
-        self._last_tool_call = remembered
-        self._set_last_finish_reason(FinishReason.TOOL_CALLS)
-
     def _store_tool_call(self, tool_call: Any) -> None:
+        """Record complete tool calls from a non-streaming response."""
         tool_calls = (
             list(tool_call)
             if isinstance(tool_call, (list, tuple))
@@ -780,28 +745,21 @@ class OpenRouterGateway:
         for current_call in tool_calls:
             payload = self._tool_call_payload(current_call)
             function_payload = self._function_payload(current_call)
-            name = function_payload.get("name")
-            arguments = function_payload.get("arguments") or ""
             call_id = payload.get("id")
             if not call_id and current_call is not None:
                 call_id = getattr(current_call, "id", None)
-            item_id = payload.get("id") if isinstance(payload, dict) else None
-            self._remember_tool_call(
-                call_id=call_id,
-                item_id=item_id,
-                name=name,
-                arguments=arguments,
-            )
-            if name:
-                self._tool_call_acc = {
-                    "name": name,
-                    "arguments": arguments,
+            if self._tool_calls.add(
+                {
+                    "item_id": call_id,
                     "call_id": call_id,
+                    "name": function_payload.get("name"),
+                    "arguments": function_payload.get("arguments") or "",
                 }
+            ):
+                self._set_last_finish_reason(FinishReason.TOOL_CALLS)
 
     def _record_tool_call_delta(self, tool_calls_delta: Any) -> None:
-        if not hasattr(self, "_tool_call_accs"):
-            self._tool_call_accs = {}
+        """Record streamed tool-call fragments; they run once the stream ends."""
         tool_calls = (
             list(tool_calls_delta)
             if isinstance(tool_calls_delta, (list, tuple))
@@ -816,31 +774,17 @@ class OpenRouterGateway:
                 index = getattr(current_call, "index", None)
             try:
                 call_index = int(index)
-            except Exception:
+            except (TypeError, ValueError):
                 call_index = offset
-
-            acc = self._tool_call_accs.setdefault(
-                call_index, {"name": None, "arguments": "", "call_id": None}
-            )
             function_payload = self._function_payload(current_call)
-            name = function_payload.get("name")
-            arguments_delta = function_payload.get("arguments")
             call_id = payload.get("id")
             if not call_id and current_call is not None:
                 call_id = getattr(current_call, "id", None)
-            if call_id:
-                acc["call_id"] = call_id
-            if name:
-                acc["name"] = name
-            if isinstance(arguments_delta, str):
-                acc["arguments"] = str(acc.get("arguments") or "") + arguments_delta
-
-    def _finalize_stream_tool_calls(self) -> None:
-        for _call_index, acc in sorted(self._tool_call_accs.items()):
-            self._remember_tool_call(
-                call_id=acc.get("call_id"),
-                name=acc.get("name"),
-                arguments=str(acc.get("arguments") or ""),
+            self._tool_calls.open_call(
+                call_index, call_id=call_id, name=function_payload.get("name")
+            )
+            self._tool_calls.append_arguments(
+                call_index, function_payload.get("arguments")
             )
 
     def _extract_generation_id_from_headers(self, headers: Any) -> Optional[str]:
@@ -1440,10 +1384,7 @@ class OpenRouterGateway:
         self._last_error = None
         self._last_finish_reason = FinishReason.UNKNOWN
         self._last_reasoning = ""
-        self._last_tool_call = None
-        self._tool_call_acc = {"name": None, "arguments": ""}
-        self._tool_call_accs = {}
-        self._pending_tool_calls = []
+        self._tool_calls.discard()
 
         # Determine if streaming should be used *based on the passed flag first*
         # If stream is explicitly False, don't stream, even if config says yes.
@@ -2572,49 +2513,17 @@ class OpenRouterGateway:
         return dict(self._last_usage)
 
     def has_pending_tool_call(self) -> bool:
-        """Return whether a Responses/tool-call interrupt is waiting to execute."""
-        return bool(
-            isinstance(getattr(self, "_last_tool_call", None), dict)
-            and self._last_tool_call.get("name")
-        ) or any(
-            isinstance(tool_call, dict) and bool(tool_call.get("name"))
-            for tool_call in getattr(self, "_pending_tool_calls", [])
-        )
+        """Return whether a complete tool call is waiting to execute."""
+        return self._tool_calls.has_pending()
 
     def get_and_clear_last_tool_call(self) -> Optional[Dict[str, Any]]:
-        """Return last detected tool_call (name, arguments) and clear accumulators."""
+        """Return the last complete tool call and clear tool-call state."""
         pending = self.get_and_clear_pending_tool_calls()
-        if pending:
-            selected = pending[-1]
-            return dict(selected) if isinstance(selected, dict) else None
-        data = getattr(self, "_last_tool_call", None)
-        self._last_tool_call = None
-        self._tool_call_acc = {"name": None, "arguments": ""}
-        return dict(data) if isinstance(data, dict) else None
+        return pending[-1] if pending else None
 
     def get_and_clear_pending_tool_calls(self) -> List[Dict[str, Any]]:
-        """Return all detected tool calls and clear accumulators."""
-        pending: List[Dict[str, Any]] = []
-        try:
-            pending = [
-                dict(tool_call)
-                for tool_call in getattr(self, "_pending_tool_calls", [])
-                if isinstance(tool_call, dict) and tool_call.get("name")
-            ]
-            if not pending and isinstance(getattr(self, "_last_tool_call", None), dict):
-                pending = [dict(self._last_tool_call)]
-            return pending
-        except Exception as exc:
-            self.logger.exception(
-                "[OpenRouterGateway] Failed to collect pending tool calls: %s",
-                exc,
-            )
-            return []
-        finally:
-            self._pending_tool_calls = []
-            self._last_tool_call = None
-            self._tool_call_acc = {"name": None, "arguments": ""}
-            self._tool_call_accs = {}
+        """Return all complete tool calls and clear tool-call state."""
+        return self._tool_calls.drain()
 
     async def _handle_non_streaming_response(
         self,
