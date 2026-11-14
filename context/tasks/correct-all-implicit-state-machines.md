@@ -292,7 +292,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     `response.incomplete`; OpenRouter finalising tool calls before its error
     check; LiteLLM's `finally: return`; Anthropic's 30 s hard cap and its
     error text returned as the response string; the Bend model.
-- [ ] **SM-13 Pending tool-call accumulation, four adapters** (c)
+- [ ] **SM-13 Pending tool-call accumulation, four adapters** (waits on the SM-12 consolidation) (c)
   - `penguin/llm/adapters/openai.py:143-158,451-565`,
     `penguin/llm/adapters/openrouter.py:91,709-814,2552`,
     `penguin/llm/adapters/anthropic.py:78,422-498`,
@@ -302,7 +302,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     identical calls.
   - Correction: one accumulator class with one promotion rule.
   - Blocked by: SM-12
-- [ ] **SM-14 Retry and replay layering** (b) [bend]
+- [ ] **SM-14 Retry and replay layering** (re-read 2026-11-13: the unbounded Link loop is deliberate connection backoff, covered by `tests/llm/test_link_runtime_recovery.py`; the rest waits on the SM-12 consolidation) (b) [bend]
   - `penguin/llm/runtime.py:329-347,599-757`,
     `penguin/llm/providers/link/provider.py:205-246`,
     `penguin/llm/adapters/openai.py:920-929`
@@ -445,7 +445,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
 - [ ] **SM-39 Per-session stream state dict** (c): `penguin/core_runtime/stream_events.py:68-85,448,1247-1349`; `active` with no message id exists across an await; adapter map entries leak. Blocked by SM-16.
 - [ ] **SM-40 Session-goal run claim** (c): `penguin/core_runtime/session_goal_runtime.py:741-1079`; gate checked at 844 and acquired at 883; orphan test assumes one process per workspace.
 - [ ] **SM-41 RunMode singleton lifecycle** (b): `penguin/core_runtime/runmode_lifecycle.py:29-92`; no re-entrancy guard.
-- [ ] **SM-42 MCP connection lifecycle** (b): `penguin/tools/providers/mcp.py:22-115`, `penguin/integrations/mcp/manager.py:71-503`; a failed discovery is sticky; (FAILED, session set) is representable; `_ensure_actor` is unlocked; `list_changed` is never consumed.
+- [ ] **SM-42 MCP connection lifecycle** (on hold 2026-11-13: retrying discovery after every failure changes how often servers are contacted; needs a retry policy decision) (b): `penguin/tools/providers/mcp.py:22-115`, `penguin/integrations/mcp/manager.py:71-503`; a failed discovery is sticky; (FAILED, session set) is representable; `_ensure_actor` is unlocked; `list_changed` is never consumed.
 - [x] **SM-43 Plugin lifecycle** (b): `penguin/plugins/plugin_manager.py:52-483`; parallel load looks like a deadlock (not run); action unregistration compares the wrong name.
   - State: action unregistration now compares against the plugin name. Not examined: the reported deadlock in parallel `load_all_plugins`, tool-name collisions, and the LOADING/ERROR status moves.
 - [ ] **SM-44 Streaming action-tag stripper** (b): `penguin/tui_adapter/part_events.py:112,181-267`; an unterminated tag drops all later text; reasoning and content share one parser state. Blocked by SM-02.
@@ -456,7 +456,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
 - [ ] **SM-48 Launcher web-server ownership** (b): `penguin/cli/opencode_launcher.py:205-276,964-1054`; a foreign server on the port counts as ours; no SIGTERM handler.
 - [ ] **SM-49 Provider OAuth pending flow** (c): `penguin/web/services/provider_auth.py:40-512,1023-1227`; one slot per provider, popped by provider and not by state; four TODOs already name the gaps.
 - [ ] **SM-50 OpenAI OAuth resolve and refresh** (b): `penguin/llm/adapters/openai.py:1019-1145`; resolve and peek duplicate env parsing; refresh writes process-wide state unlocked.
-- [ ] **SM-51 ACP session turn** (c): `penguin/integrations/acp/server.py:39-187`; `cancel` can call `.cancel()` on a task already set to None.
+- [ ] **SM-51 ACP session turn** (stale 2026-11-13: `cancel` on main now captures `session.task` before awaiting, so the `None.cancel()` path is gone) (c): `penguin/integrations/acp/server.py:39-187`; `cancel` can call `.cancel()` on a task already set to None.
 - [ ] **SM-52 Run-mode task WebSocket** (b): `penguin/web/routes.py:6682-6886`; `core._temp_ws_callback` is a single slot.
 - [ ] **SM-53 Sub-agent registry** (b): `penguin/system/conversation_manager.py:224-240,340,501-582,1598`; removing the current agent leaves three "current" pointers stale.
 - [x] **SM-54 AgentExecutor task state** (c): `penguin/multi/executor.py:212-443`, `penguin/multi/coordinator.py:309`; PAUSED is a label only; `cancel()` overwrites a finished state.
@@ -486,7 +486,8 @@ Check for callers first. If there are none, delete.
 - [ ] **SM-69 REPL interrupt and turn loop** (b): `penguin/cli/cli.py:4103-4602`, `penguin/cli/session_manager.py:52`; Ctrl-C during processing never cancels the core; `/exit` sets a flag nothing checks.
 - [ ] **SM-70 CLI message dedupe** (a): `penguin/cli/cli.py:3754-4151`, `penguin/cli/event_manager.py:130-189`; keyed on the first 50 characters, never pruned.
 - [ ] **SM-71 Config root and env precedence** (b): `penguin/config.py:30-831`; module-level `config` never reloads; a project `.env` overrides shell-exported keys.
-- [ ] **SM-72 Sidecar binary cache** (b): `penguin/cli/opencode_launcher.py:531-717`; a partial copy passes the existence check.
+- [x] **SM-72 Sidecar binary cache** (b): `penguin/cli/opencode_launcher.py:531-717`; a partial copy passes the existence check.
+  - State: the binary is copied to a sibling temporary file and renamed into place. No failing-first run: the helper is new; the old code copied straight to the final path. Still open: no lock between concurrent launchers; the marker is trusted with only an existence check.
 - [ ] **SM-73 First-run setup marker** (b): `penguin/setup/wizard.py:123-354`; the marker file is written and never read.
 - [ ] **SM-74 Skills activation, QuestionManager, ProcessWaitGuard** (b): `penguin/skills/manager.py:21-112`, `penguin/security/question.py:73-257`, `penguin/tools/process_wait.py:17`; unpruned sets and no expiry.
 - [ ] **SM-75 Small singletons and slots**: `CircuitBreaker` string state (`penguin/project/resilience.py:97`), `RuntimeJobRecord.status` upsert (`penguin/project/storage.py:488`), `PenguinState._previous_state` (`penguin/system/state.py:471`), DAG cache invalidation (`penguin/project/manager.py:1340`), MessageBus drop (`penguin/system/message_bus.py:92`), VCS watcher slot (`penguin/web/services/system_status.py:20`), title refresh tasks (`penguin/web/routes.py:963`), `events_ws` (`penguin/web/routes.py:2367`), connection pool `close_all` (`penguin/llm/api_client.py:164`), core/app singletons (`penguin/web/app.py:36,212`).
@@ -700,3 +701,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
   partly fixed: SM-09, SM-11, SM-21, SM-30, SM-43, SM-47, SM-54, SM-56, SM-58,
   SM-63. Not started: every unticked item without an "on hold" note.
 - SM-17: partly fixed (2026-11-13). Two new cases in `tests/test_engine_initialization.py` (unexpected error, cancellation) were red before the fix; engine and core-runtime suites: 564 passed.
+- SM-72: partly fixed (2026-11-13). `pytest -q tests/test_sidecar_install_atomic.py tests/test_opencode_launcher.py`: 28 passed.

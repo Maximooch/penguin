@@ -607,6 +607,27 @@ def _select_release_asset(release: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+
+def _install_sidecar_binary(source: Path, target: Path) -> None:
+    """Copy the sidecar binary into the cache without exposing a partial file.
+
+    The copy goes to a sibling temporary file that is renamed into place, so an
+    interrupted copy cannot leave a truncated file where a later run would find
+    it and treat it as a valid cached binary.
+
+    Args:
+        source: The extracted binary.
+        target: The final cached path.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    try:
+        shutil.copy2(source, temporary)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _resolve_sidecar_binary() -> Path:
     explicit_path = os.getenv("PENGUIN_TUI_BIN_PATH", "").strip()
     if explicit_path:
@@ -699,8 +720,7 @@ def _resolve_sidecar_binary() -> Path:
                 "Downloaded Penguin TUI sidecar archive did not contain an executable"
             )
 
-        binary_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(extracted_binary, binary_path)
+        _install_sidecar_binary(extracted_binary, binary_path)
 
     if not sys.platform.startswith("win"):
         mode = binary_path.stat().st_mode
