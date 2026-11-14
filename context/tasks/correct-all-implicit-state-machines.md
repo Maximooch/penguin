@@ -329,7 +329,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     busy forever. Every cancellation returns as a normal 200.
   - Correction: one per-session run record owned by `process_lifecycle`;
     status derived from it only.
-- [ ] **SM-17 Stream scope lifecycle** (c)
+- [x] **SM-17 Stream scope lifecycle** (c)
   - `penguin/core_runtime/stream_events.py:193-216,604-986`,
     `penguin/core_runtime/process_streaming.py:114`,
     `penguin/engine.py:3363-3532,3847`
@@ -337,6 +337,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     `_llm_step` aborts the stream only on `LLMProviderError`.
   - Correction: compute the key once per request and pass it; abort in
     `finally`.
+  - State: (partial) `_llm_step` now discards the uncommitted stream on every failure, including cancellation. Still open: the scope key is derived three ways with different precedence (chunks, finalize, abort); duplicate suppression compares the last message's content.
 - [x] **SM-18 Engine `_llm_stream` sentinel** (c) [confirmed]
   - `penguin/engine.py:3952-3989`
   - The producer task is never awaited, so an exception leaves the consumer
@@ -698,3 +699,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - Items ticked `[x]` whose State line lists what is still open are only
   partly fixed: SM-09, SM-11, SM-21, SM-30, SM-43, SM-47, SM-54, SM-56, SM-58,
   SM-63. Not started: every unticked item without an "on hold" note.
+- SM-17: partly fixed (2026-11-13). Two new cases in `tests/test_engine_initialization.py` (unexpected error, cancellation) were red before the fix; engine and core-runtime suites: 564 passed.

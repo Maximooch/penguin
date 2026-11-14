@@ -3931,7 +3931,9 @@ class Engine:
                 len(assistant_response or ""),
                 self._handler_has_pending_tool_call(api_client),
             )
-        except LLMProviderError:
+        except BaseException:
+            # Any failure here, including cancellation, leaves an uncommitted
+            # stream buffer behind. Discard it whatever the cause.
             self._abort_streaming_response(
                 cm,
                 streaming,
