@@ -139,7 +139,9 @@ class PyDollBrowserManager:
     
     async def _start_cleanup_timer(self):
         """Start a background task to cleanup inactive browser instances"""
-        if self._cleanup_task:
+        # A finished task (for example one whose event loop has gone) no
+        # longer watches anything, so it must not block a new timer.
+        if self._cleanup_task and not self._cleanup_task.done():
             return
             
         async def cleanup_worker():

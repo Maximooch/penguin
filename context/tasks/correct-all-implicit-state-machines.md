@@ -463,7 +463,8 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
 - [x] **SM-56 Edit commit and rollback** (b): `penguin/tools/editing/service.py:507-533`, `penguin/tools/editing/legacy_multifile.py:164-262`; the snapshot is appended after the write.
   - State: the snapshot is recorded before the write, so a file that fails part way through is restored. Still open: writes are not atomic; there is no check that the file is unchanged since `old_content` was read; the legacy multi-file path.
 - [ ] **SM-57 File-root / execution mode** (b): `penguin/tools/tool_manager.py:4030-4166`, `penguin/config.py:532,597`; three writers disagree on env vars and the notebook directory.
-- [ ] **SM-58 PyDoll browser session** (b): `penguin/tools/pydoll_tools.py:14-201`; (browser set, not initialized) is reachable; a dead cleanup task blocks the idle timer.
+- [x] **SM-58 PyDoll browser session** (b): `penguin/tools/pydoll_tools.py:14-201`; (browser set, not initialized) is reachable; a dead cleanup task blocks the idle timer.
+  - State: a finished idle-timer task no longer blocks a new one. Still open: a failed `start()` leaves (browser set, not initialized), which the next `initialize` treats as ready; the idle worker awaits its own cancellation in `close()`; no lock around `initialize`.
 - [ ] **SM-59 Browser-harness daemon identity** (c): `penguin/tools/browser_harness_tools.py:24,264-426`, `penguin/tools/browser_harness_ownership.py:81`; cleanup runs without the helpers lock.
 - [ ] **SM-60 Lazy tool loading** (b): `penguin/tools/tool_manager.py:278,2231-2907,6355`; check-then-set with no lock on worker threads.
 - [ ] **SM-61 Memory incremental index** (c): `penguin/memory/indexing/incremental.py:47-142`, `penguin/memory/indexing/metadata.py:38-108`; re-index duplicates entries; non-atomic metadata write.
@@ -683,3 +684,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-54: partly fixed (2026-11-13). `pytest -q tests/test_agent_executor_cancel_race.py`: 2 passed, the race test red before the fix.
 - SM-47: partly fixed (2026-11-13). `pytest -q tests/test_cli_event_dedup_key.py`: 3 passed, 2 red before the fix.
 - SM-56: partly fixed (2026-11-13). `pytest -q tests/tools/test_edit_commit_rollback.py`: 1 passed, red before the fix (file left truncated); editing suites: 95 passed, 1 skipped.
+- SM-58: partly fixed (2026-11-13). `pytest -q tests/tools/test_pydoll_cleanup_timer.py`: 2 passed, the restart test red before the fix.
