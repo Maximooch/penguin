@@ -485,7 +485,8 @@ Check for callers first. If there are none, delete.
 - [ ] **SM-67 Legacy Textual TUI stream** (c): `penguin/cli/tui.py:1473-2614`; referenced only from `misc/` and a prototype.
 - [ ] **SM-68 Legacy `BrowserManager`** (b): `penguin/tools/browser_tools.py:42,181`; `initialize` always returns False.
 - [ ] **SM-69 REPL interrupt and turn loop** (b): `penguin/cli/cli.py:4103-4602`, `penguin/cli/session_manager.py:52`; Ctrl-C during processing never cancels the core; `/exit` sets a flag nothing checks.
-- [ ] **SM-70 CLI message dedupe** (a): `penguin/cli/cli.py:3754-4151`, `penguin/cli/event_manager.py:130-189`; keyed on the first 50 characters, never pruned.
+- [x] **SM-70 CLI message dedupe** (a): `penguin/cli/cli.py:3754-4151`, `penguin/cli/event_manager.py:130-189`; keyed on the first 50 characters, never pruned.
+  - State: (partial) a reply in a later turn that opens with the same 50 characters is no longer hidden; the key is a duplicate only within the turn that recorded it. Left as is: user messages keep the session-wide check, because the turn only advances on a user message and a repeated `continue` cannot be told from a double delivery by content alone; the sets are still never pruned.
 - [ ] **SM-71 Config root and env precedence** (b): `penguin/config.py:30-831`; module-level `config` never reloads; a project `.env` overrides shell-exported keys.
 - [x] **SM-72 Sidecar binary cache** (b): `penguin/cli/opencode_launcher.py:531-717`; a partial copy passes the existence check.
   - State: the binary is copied to a sibling temporary file and renamed into place. No failing-first run: the helper is new; the old code copied straight to the final path. Still open: no lock between concurrent launchers; the marker is trusted with only an existence check.
@@ -704,3 +705,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-17: partly fixed (2026-11-13). Two new cases in `tests/test_engine_initialization.py` (unexpected error, cancellation) were red before the fix; engine and core-runtime suites: 564 passed.
 - SM-72: partly fixed (2026-11-13). `pytest -q tests/test_sidecar_install_atomic.py tests/test_opencode_launcher.py`: 28 passed.
 - SM-34: partly fixed (2026-11-13). `pytest -q tests/llm/test_openrouter_call_reference_rewrite.py`: 8 passed, 4 red before the fix; `tests/llm` and `tests/test_openrouter_fixes.py`: 437 passed.
+- SM-70: partly fixed (2026-11-13). `pytest -q tests/test_cli_message_dedupe_turns.py`: 2 passed, the later-turn test red before the fix; CLI test files: 144 passed and the known click baseline failure.
