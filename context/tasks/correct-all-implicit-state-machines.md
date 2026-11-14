@@ -689,3 +689,12 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-58: partly fixed (2026-11-13). `pytest -q tests/tools/test_pydoll_cleanup_timer.py`: 2 passed, the restart test red before the fix.
 - SM-36: fixed (2026-11-13). `pytest -q tests/api/test_reasoning_variant_restore_target.py`: 2 passed, the first red before the fix (the request copy's settings were written onto the core config); variant tests: 88 passed.
 - SM-63: partly done (2026-11-13). Deleted the unread `Engine._interrupted`; engine and core-runtime suites pass.
+- Process note (2026-11-13): the SM-47 commit `c08714616` was committed and
+  pushed with its new tests failing on an incomplete fixture; `c624eb3b5`
+  completed the fixture. Commits are now gated on the item's tests passing.
+- Branch check (2026-11-13, 27 commits): the suites listed in the PR
+  description: 1623 passed, 23 skipped, 3 xfailed. One of the SM-05 tests
+  failed in this combined order until its fixture cleared leftover listeners.
+- Items ticked `[x]` whose State line lists what is still open are only
+  partly fixed: SM-09, SM-11, SM-21, SM-30, SM-43, SM-47, SM-54, SM-56, SM-58,
+  SM-63. Not started: every unticked item without an "on hold" note.

@@ -14,6 +14,9 @@ from penguin.web import routes
 def approvals(monkeypatch: pytest.MonkeyPatch):
     manager = get_approval_manager()
     manager.reset()
+    # Listeners registered by earlier tests would deliver each event twice.
+    manager._on_request_created.clear()
+    manager._on_request_resolved.clear()
     monkeypatch.setattr(routes, "_approval_callbacks_registered", False)
     events: list[tuple[str, dict[str, Any]]] = []
     monkeypatch.setattr(
