@@ -26,6 +26,10 @@ from .state import WorkflowState, WorkflowStateStorage
 
 logger = logging.getLogger(__name__)
 
+_TERMINAL_STATUSES = frozenset(
+    {WorkflowStatus.COMPLETED, WorkflowStatus.FAILED, WorkflowStatus.CANCELLED}
+)
+
 
 class NativeBackend(OrchestrationBackend):
     """Native orchestration backend using in-memory execution with SQLite persistence.
@@ -156,7 +160,18 @@ class NativeBackend(OrchestrationBackend):
         state = self.storage.get_state(workflow_id)
         if not state:
             return False
-        
+
+        # A finished workflow keeps its outcome: pausing or cancelling it
+        # afterwards must not rewrite the stored result.
+        if signal in {"pause", "cancel"} and state.status in _TERMINAL_STATUSES:
+            logger.info(
+                "Ignoring %s for workflow %s: already %s",
+                signal,
+                workflow_id,
+                state.status.value,
+            )
+            return False
+
         if signal == "pause":
             self._paused_workflows.add(workflow_id)
             state.status = WorkflowStatus.PAUSED

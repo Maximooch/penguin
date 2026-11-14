@@ -366,13 +366,14 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
     RUNNING.
   - Blocked by: SM-19
   - State: the failure handler no longer raises when the FAILED mark is rejected, and a cancelled run returns the task to ACTIVE. Left as is: a failed PR step still ends in PENDING_REVIEW (validation passed; failing the task because GitHub is not configured would be wrong for local use), with the PR result in the workflow result. A non-terminal executor status still leaves the task RUNNING.
-- [ ] **SM-21 Native and Temporal workflow backends** (c)
+- [x] **SM-21 Native and Temporal workflow backends** (c)
   - `penguin/orchestration/native.py:53-56,158-290`,
     `penguin/orchestration/temporal/workflows.py:95,250`,
     `penguin/orchestration/temporal/backend.py:160`
   - A pause saved by `signal_workflow` is overwritten by the runner's next
     save. Cancelling a completed workflow rewrites it. No recovery of RUNNING
     rows after restart.
+  - State: pause and cancel no longer rewrite a finished workflow. Still open: a pause saved by `signal_workflow` can be overwritten by the runner's next save of its own in-memory state; RUNNING rows are not recovered after a restart; the Temporal twin is untouched.
 - [ ] **SM-22 Checkpoint lifecycle** (c)
   - `penguin/system/checkpoint_manager.py:112-300,749`,
     `penguin/system/conversation.py:231-246`
@@ -673,3 +674,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-29: fixed (2026-11-13). `pytest -q tests/tools/test_code_execution_timeout_state.py`: 2 passed, the busy test red before the fix; `tests/tools`: 230 passed, 20 skipped.
 - SM-30: partly fixed (2026-11-13). `pytest -q tests/test_runmode_continuous_termination.py`: 2 passed, both red before the fix (the first by crashing on `MessageCategory.WARNING`); other run-mode tests: 34 passed.
 - SM-15: partly fixed (2026-11-13). `pytest -q tests/test_engine_task_finish_contract.py`: 49 passed, including two new unbounded-LENGTH tests; engine, finish and core-runtime suites pass.
+- SM-21: partly fixed (2026-11-13). `pytest -q tests/test_orchestration_terminal_signals.py`: 7 passed, 6 red before the fix; `tests/test_orchestration.py` passes.
