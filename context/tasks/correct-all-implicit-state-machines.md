@@ -414,12 +414,13 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
   - A timed-out execution keeps running and keeps the lock, so later calls
     queue behind it.
   - State: after a timeout, later calls return `code_execution_busy` at once while the abandoned run is alive, and resume when it ends. The abandoned code itself still runs to completion; in-process Python cannot be stopped. `active_directory` is still restored only when the previous value was truthy.
-- [ ] **SM-30 RunMode continuous loop and result vocabulary** (b)
+- [x] **SM-30 RunMode continuous loop and result vocabulary** (b)
   - `penguin/run_mode.py:79-101,444,657-981,1427-1563`
   - Several engine failure statuses fall through as success. The
     empty-response retry has no counter. `start()` checks a status the task
     engine never returns.
   - Blocked by: SM-15
+  - State: repeated empty responses now end continuous mode after 5 in a row; the model's emergency stop ends it; the retry branch no longer crashes on a missing `MessageCategory.WARNING`. Still open: engine statuses `error`, `provider_error`, `stopped` and `budget_limited` fall through the error branch (it needs `completion_type == "error"`, which the classifier never returns); `start()` checks a status the task engine never returns; `waiting_input` is not handled in the continuous loop.
 - [x] **SM-31 `utils` event bus subscription liveness** (c) [confirmed]
   - `penguin/utils/events.py:79,117,128`
   - Handlers are stored as `weakref.ref`, which is dead immediately for bound
@@ -669,3 +670,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
   8 passed.
 - SM-20: fixed (2026-11-13). `pytest -q tests/test_workflow_orchestrator_failure_paths.py`: 2 passed, both red before the fix; the three existing orchestrator test files: 6 passed.
 - SM-29: fixed (2026-11-13). `pytest -q tests/tools/test_code_execution_timeout_state.py`: 2 passed, the busy test red before the fix; `tests/tools`: 230 passed, 20 skipped.
+- SM-30: partly fixed (2026-11-13). `pytest -q tests/test_runmode_continuous_termination.py`: 2 passed, both red before the fix (the first by crashing on `MessageCategory.WARNING`); other run-mode tests: 34 passed.
