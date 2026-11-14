@@ -706,5 +706,5 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-72: partly fixed (2026-11-13). `pytest -q tests/test_sidecar_install_atomic.py tests/test_opencode_launcher.py`: 28 passed.
 - SM-34: partly fixed (2026-11-13). `pytest -q tests/llm/test_openrouter_call_reference_rewrite.py`: 8 passed, 4 red before the fix; `tests/llm` and `tests/test_openrouter_fixes.py`: 437 passed.
 - SM-70: partly fixed (2026-11-13). `pytest -q tests/test_cli_message_dedupe_turns.py`: 2 passed, the later-turn test red before the fix; CLI test files: 144 passed and the known click baseline failure.
-- Branch check (2026-11-13, 33 commits): the suites listed in the PR
+- Branch check (2026-11-13, at `0199c737a`): the suites listed in the PR
   description: 1667 passed, 23 skipped, 3 xfailed. 27 items ticked, 49 open.
