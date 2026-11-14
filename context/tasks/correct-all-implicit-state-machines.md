@@ -378,7 +378,7 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
   - The id is returned before the file exists. The live session is
     serialised at dequeue time. Workers can start in a throwaway loop with
     `_workers_started` left True. An index load error resets the index.
-- [ ] **SM-23 Session boundary rollover** (b)
+- [ ] **SM-23 Session boundary rollover** (b) (on hold: re-read 2026-11-13. `add_tool_result` attaches `tool_calls` to the last assistant message only when the result arrives, so at rollover time nothing marks the assistant message as awaiting results. Deferring rollover needs a new signal from the engine that a tool group is open; that is a design change.)
   - `penguin/system/conversation.py:256-269,677`,
     `penguin/system/session_manager.py:578-625`,
     `penguin/system/context_epoch.py:136`
@@ -409,10 +409,11 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
 - [ ] **SM-28 SSE connection and ledger batch** (c)
   - `penguin/web/sse_events.py:124-461`
   - A full queue drops events silently. The batch is not flushed at shutdown.
-- [ ] **SM-29 In-process code execution** (c)
+- [x] **SM-29 In-process code execution** (c)
   - `penguin/tools/tool_manager.py:342,4967-5024`
   - A timed-out execution keeps running and keeps the lock, so later calls
     queue behind it.
+  - State: after a timeout, later calls return `code_execution_busy` at once while the abandoned run is alive, and resume when it ends. The abandoned code itself still runs to completion; in-process Python cannot be stopped. `active_directory` is still restored only when the previous value was truthy.
 - [ ] **SM-30 RunMode continuous loop and result vocabulary** (b)
   - `penguin/run_mode.py:79-101,444,657-981,1427-1563`
   - Several engine failure statuses fall through as success. The
@@ -667,3 +668,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
   `tests/integrations/test_bend_tool_status.py` and `test_bend_runtime.py`:
   8 passed.
 - SM-20: fixed (2026-11-13). `pytest -q tests/test_workflow_orchestrator_failure_paths.py`: 2 passed, both red before the fix; the three existing orchestrator test files: 6 passed.
+- SM-29: fixed (2026-11-13). `pytest -q tests/tools/test_code_execution_timeout_state.py`: 2 passed, the busy test red before the fix; `tests/tools`: 230 passed, 20 skipped.

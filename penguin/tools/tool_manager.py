@@ -341,6 +341,9 @@ class ToolManager:
             self._agent_executor = None
             self._async_tool_dispatcher = AsyncToolDispatcher(self)
             self._code_execution_lock = threading.Lock()
+            # The worker of an execution that timed out and is still running.
+            # In-process Python cannot be stopped, so it keeps the lock.
+            self._abandoned_code_thread: Optional[threading.Thread] = None
 
             # Permission enforcer (lazy initialized)
             self._permission_enforcer = None
@@ -5080,6 +5083,22 @@ class ToolManager:
         except Exception:
             default_timeout = 300
 
+        abandoned = self._abandoned_code_thread
+        if abandoned is not None:
+            if abandoned.is_alive():
+                # Waiting would only time out again behind the same lock.
+                return json.dumps(
+                    {
+                        "error": "code_execution_busy",
+                        "tool": "code_execution",
+                        "reason": (
+                            "An earlier execution timed out and is still "
+                            "running; in-process Python cannot be stopped."
+                        ),
+                    }
+                )
+            self._abandoned_code_thread = None
+
         result_container = {"done": False, "result": None, "error": None}
 
         def _runner():
@@ -5105,6 +5124,7 @@ class ToolManager:
         t.join(timeout=default_timeout)
 
         if not result_container["done"]:
+            self._abandoned_code_thread = t
             return json.dumps(
                 {
                     "error": "timeout",
