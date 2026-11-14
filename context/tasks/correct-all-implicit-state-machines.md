@@ -456,7 +456,8 @@ Tags: `confirmed`, `inferred`, `bend`, `design`, `security`.
 - [ ] **SM-51 ACP session turn** (c): `penguin/integrations/acp/server.py:39-187`; `cancel` can call `.cancel()` on a task already set to None.
 - [ ] **SM-52 Run-mode task WebSocket** (b): `penguin/web/routes.py:6682-6886`; `core._temp_ws_callback` is a single slot.
 - [ ] **SM-53 Sub-agent registry** (b): `penguin/system/conversation_manager.py:224-240,340,501-582,1598`; removing the current agent leaves three "current" pointers stale.
-- [ ] **SM-54 AgentExecutor task state** (c): `penguin/multi/executor.py:212-443`, `penguin/multi/coordinator.py:309`; PAUSED is a label only; `cancel()` overwrites a finished state.
+- [x] **SM-54 AgentExecutor task state** (c): `penguin/multi/executor.py:212-443`, `penguin/multi/coordinator.py:309`; PAUSED is a label only; `cancel()` overwrites a finished state.
+  - State: `cancel()` keeps an outcome the agent reached while the cancel was in flight. Still open: PAUSED is a label only; finished ids block respawn until `cleanup()`; three places track agent liveness with no reconciliation.
 - [ ] **SM-55 Context window trimming and epoch** (a) [bend]: `penguin/system/context_window.py:272-1220`, `penguin/system/context_epoch.py:24-155`; total over budget with every category under its own budget trims nothing. Keep the category-priority trimming model; do not introduce compaction.
 - [ ] **SM-56 Edit commit and rollback** (b): `penguin/tools/editing/service.py:507-533`, `penguin/tools/editing/legacy_multifile.py:164-262`; the snapshot is appended after the write.
 - [ ] **SM-57 File-root / execution mode** (b): `penguin/tools/tool_manager.py:4030-4166`, `penguin/config.py:532,597`; three writers disagree on env vars and the notebook directory.
@@ -677,3 +678,4 @@ Append one line per finished item: id, outcome (`fixed`, `deleted`, `stale`,
 - SM-15: partly fixed (2026-11-13). `pytest -q tests/test_engine_task_finish_contract.py`: 49 passed, including two new unbounded-LENGTH tests; engine, finish and core-runtime suites pass.
 - SM-21: partly fixed (2026-11-13). `pytest -q tests/test_orchestration_terminal_signals.py`: 7 passed, 6 red before the fix; `tests/test_orchestration.py` passes.
 - SM-43: partly fixed (2026-11-13). `pytest -q tests/test_plugin_action_unregister.py`: 1 passed, red before the fix.
+- SM-54: partly fixed (2026-11-13). `pytest -q tests/test_agent_executor_cancel_race.py`: 2 passed, the race test red before the fix.
